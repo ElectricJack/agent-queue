@@ -6,12 +6,13 @@ tags: [system-spec, task-graph, tasks, dependencies, hierarchy, gates, readiness
 
 **System:** `task-graph`, one of the 18 systems in the Agent Queue system inventory
 (vault: `projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`,
-review `rev-bright-rapids`, in review on 2026-10-20).
+review `rev-bright-rapids`, approved revision 1).
 **Written:** 2026-10-20, against `main` at `22cffd1b7`, for task `eager-vault-55.2`.
+**Audited:** 2026-10-22 against `origin/dev` at `52d2efe4c` for task `nimble-falcon-98`.
 **What this page is:** a map of the system as the code stands, written for an engineer
-new to Agent Queue. It describes; it does not decide. The "Planned work" section is a
-snapshot of the open tasks and in-flight specs on the date above and goes stale as they
-land.
+new to Agent Queue. It describes; it does not decide. Section 7 is a historical
+snapshot of open tasks and in-flight specs on 2026-10-20, with an audit note
+identifying subsequently shipped mechanisms.
 
 Where this page summarises something another document explains in depth, it links
 there instead of repeating it. The everyday reader's page is
@@ -39,10 +40,9 @@ The task graph is the durable record that answers both. It stores:
   close says what actually happened.
 
 From those facts it derives, in the same database transaction as every write, one
-persisted bit per task: `tasks.is_blocked`. That bit is the single authority on
-whether the graph allows a task to run. Everything downstream — the scheduler, worker
-claims, `aq task explain`, the dashboard — reads it instead of re-deriving dependency
-semantics.
+persisted bit per task: `tasks.is_blocked`. That bit owns dependency/gate blockedness,
+not full claim eligibility. The scheduler, claims, explain and dashboard combine it
+with holds, routing and the shared integration `AdmissionView` (section 3.3.3).
 
 The design principle behind this split is the repository's "mechanism in code, policy in
 playbooks": the graph is deterministic mechanism. It never calls an LLM, never guesses
@@ -97,8 +97,11 @@ docs, chore, operator, research, plan, sync, design, art, plus the daemon-only
 promotion and backmerge), a priority, routing fields, and a JSON list of
 `deliverables`.
 
-**Status.** One of nine stored values (`TaskStatus`, `src/models.py`): DEFINED, READY,
-ASSIGNED, IN_PROGRESS, WAITING_INPUT, PAUSED, COMPLETED, FAILED, BLOCKED. Status is
+**Status.** One of twelve stored values (`TaskStatus`, `src/models.py`): DEFINED, READY,
+ASSIGNED, IN_PROGRESS, WAITING, HIBERNATED, RESUME_PENDING, WAITING_INPUT, PAUSED,
+COMPLETED, FAILED, BLOCKED. WAITING/HIBERNATED/RESUME_PENDING are durable-wait
+states: register a wait, hibernate without a resident session, then arrange resumption.
+They remain open task states; claim preparation phases are separate. Status is
 the task's *lifecycle*; it is not its blockedness. A READY task can still be blocked by
 a gate; a BLOCKED task is one that was stopped *by a decision* (a hard failure, a spent
 retry budget, an operator stop) and needs attention. The approval statuses that once
@@ -113,7 +116,7 @@ block (`BLOCKING_DEP_TYPES`):
 | Kind | Satisfied when |
 |---|---|
 | `blocks` | the prerequisite is COMPLETED |
-| `parent-child` | the parent (container) has been released — is no longer DEFINED |
+| `parent-child` | the parent is neither DEFINED nor manually PAUSED with child withholding enabled |
 | `waits-for` | every child of the named container is COMPLETED (dynamic fan-in; vacuously true with no children) |
 | `conditional-blocks` | the prerequisite has *terminally* failed (a contingency path); a retryable failure does not count |
 | `delivery-of` | source completion in SQL, plus current default-target Git containment in `AdmissionView` |
@@ -144,8 +147,8 @@ batch is released. It is independent of status, routing and gates
 the same transaction as the edge. A unique partial index (`uq_task_deps_single_parent`)
 enforces one parent per task. A task with children is a *container*: it is never leased
 to a worker, it is withheld from the frontier, and it **settles** — completes itself —
-when its children are done. Structural depth is capped at three levels below a root
-(`MAX_STRUCTURAL_DEPTH`). A container can also be *declared* (`task_metadata.container`)
+when its children and any managed integration completion gates are satisfied. Structural
+depth is capped at three levels including the root (root = 1; `MAX_STRUCTURAL_DEPTH`). A container can also be *declared* (`task_metadata.container`)
 before it has children, so an empty epic stays open rather than being mistaken for a leaf.
 
 **Phase.** A container (born DEFINED, `task_type` plan) with `phase` metadata
@@ -161,8 +164,9 @@ separate "barrier" primitive: phases and `blocks` edges are the ordering tools
 
 **Subtask.** A checklist line on one task, in `task_subtasks` (pending, in_progress,
 done, skipped). Subtasks are *not* tasks: no edges, no claims, no ids. They exist so a
-worker's plan is visible on the graph, and a close is refused with `subtasks.open` while
-any is unfinished unless the closer explicitly skips them
+worker's plan is visible on the graph (at most 15 rows, 1-based ordinals). A passing
+close is refused with `subtasks.open` while any is unfinished unless the closer
+explicitly supplies `--skip-open-subtasks`
 ([work-graph design §13c](../design/work-graph.md)).
 
 **Keyed standing parent.** A long-lived container identified by a `parent_key`
@@ -242,7 +246,12 @@ There are five ways in, all through `CommandHandler` (section 5, principle 1):
    and promoted by the cascade; new containers are born IN_PROGRESS and settle. Children
    of a new container get ids `<container>.1..N`; a graph placed under an existing
    container gets provisional ids that are reserved and rewritten inside the same
-   transaction. A scoped worker session can only file under the task it holds.
+   transaction. A scoped worker granted graph creation files under its held task by
+   default. A document `parent:` creates a container there, or at project root with
+   `--root`; root filing requires that document parent. Hierarchical/train worker
+   graphs cannot declare a document parent (`hierarchy.parent_out_of_scope`). Worker
+   filing requires a reason. `--after-review` validates an existing nonwithdrawn
+   review and attaches an approval gate to every node until approved.
 3. **A formula** — `aq formula cook` renders a vault template into a graph document and
    creates it the same way ([formulas design](../design/formulas.md)). Formulas can
    `extend` one parent (phases merge by key); the registry keeps the last good parse of
@@ -317,20 +326,25 @@ Each orchestrator cycle (the ordering is owned by `daemon-core`) runs, among muc
    rejected by the frontier for `work_graph.frontier_rejected_after_seconds` (600 s) with
    `needs_attention = stale_open`, so a long wait is reported rather than silent.
 
-A READY, unblocked task is *graph*-ready. Whether a particular worker may take it is the
-**claim frontier**, owned by `scheduling-and-claims` but built from this system's
-predicates. `claim_frontier_predicates()` in `src/database/queries/claim_queries.py`
-combines, among others: `is_blocked` is false; no `hold:*` label; not ingestion-held;
-not a container; not a plan subtask; and, for hierarchical (train) projects, the
-delivery fences — same-parent prerequisites delivered to the shared parent,
-cross-epic prerequisites contained in the default branch, and no pending epic refresh.
-Each predicate has a human sentence in `FRONTIER_PREDICATE_DETAILS`, which is what
-explain prints.
+A READY, unblocked task is *graph*-ready. The **claim frontier** adds no `hold:*`
+label, no held ingestion batch, no container/plan subtask, routing, and delivery
+admission. The shared immutable, request-scoped `AdmissionView` in
+`src/integration/admission.py` is used by frontier, claims, explain and readiness.
+It observes completed prerequisites against fetched repository snapshots outside
+database locks and revalidates exact inputs before activation; missing evidence
+withholds affected tasks. Artifact-free prerequisites use the SQL fast path.
 
-`src/task_graph/readiness.py` is the read-only projection the dashboard and lists use:
-it labels each task `claimable`, `withheld`, `waiting_on_delivery` or `unknown`, from the
-same exclusions (with `cached_only=True`, so a list never waits on git).
-`aq project ready` lists the READY, unblocked, unheld frontier plus a withheld section.
+Prerequisite branch stacking is now the default unless project policy explicitly
+opts out (`src/integration/stacked_branches.py`). A dependent can prepare on a
+topologically ordered overlay of completed sources before parent/default delivery.
+Reopened sources invalidate stale preparation. This does not prove delivery:
+`delivery-of` still requires current default-target containment, including after a
+target rewind. Parent refresh and other integration fences remain explicit reasons.
+
+`src/task_graph/readiness.py` labels tasks `claimable`, `withheld`,
+`waiting_on_delivery` or `unknown` using that shared reader (or scoped frontier
+exclusions as fallback). Lists use `cached_only=True` and do not fetch Git.
+`aq project ready` reports the frontier and withheld work.
 
 #### 3.3.4 Held ingestion (partly built)
 
@@ -363,13 +377,15 @@ A claim moves the task to ASSIGNED/IN_PROGRESS (claims are `scheduling-and-claim
 sessions are `sessions-and-harnesses`). Every status change goes through
 `transition_task` (`task_queries.py`), which checks the pair against
 `VALID_STATUS_TRANSITIONS` in `src/state_machine.py`. By default an invalid transition
-is **logged, not refused**: `state_machine.enforce` defaults to false. One rule is
-always enforced: a task cannot move to COMPLETED while it has open children
-(`hierarchy.open_children`).
+is **logged, not refused** for legacy states: `state_machine.enforce` defaults to
+false. Transitions involving WAITING/HIBERNATED/RESUME_PENDING are checked even
+with enforcement off. Completion guards also reject open children
+(`hierarchy.open_children`) and missing managed integration completion authority,
+except through explicit administrative force paths.
 
 A worker's `aq task close` (`_cmd_task_close` in `session_commands.py`) is where the
 graph's completion rules bite. After checking that the status is closeable and that the
-caller owns the claim fence, an ordinary close refuses, in order, when:
+caller owns the claim fence, an ordinary close applies these guards:
 
 - the session has unread messages (`messages.pending_before_close`) or an unpublished
   review revision (`reviews.revision_unpublished`);
@@ -377,21 +393,30 @@ caller owns the claim fence, an ordinary close refuses, in order, when:
   (`deliverables.unmet`, `deliverables.invalid_waiver`; `src/deliverables.py`: a path
   target is checked in the worktree, a command target against the `--test`/`--command`
   values on the close, a `review` item against the task's submitted document reviews);
-- a subtask is still pending or in progress (`subtasks.open`, unless
+- on a pass, a subtask is still pending or in progress (`subtasks.open`, unless
   `--skip-open-subtasks`);
 - a child is still open (`open_children`, `hierarchy.open_children`,
   `hierarchy.live_descendants`, `hierarchy.manually_paused_descendants`);
 - required completion CI has not passed (`completion.required_ci`; see
   [task completion CI](../design/task-completion-ci.md)).
 
-The close records outcome metadata and, through the integration system, the delivery
-evidence. Completion recomputes the dependents' `is_blocked` in the same transaction, and
+Deliverable evaluation never executes commands. A `test` item needs `--test` evidence
+and existing named paths; `--command` alone is insufficient. A `command` item accepts
+either evidence field. A `review` item requires a nonwithdrawn submission of the
+requested kind, not approval. Waivers do not bypass separate review-revision guards.
+
+A train-managed passing close may return `close_in_progress` while author-assisted
+parent publication runs (`src/integration/close_runtime.py`). Follow its returned
+next step and preserve the claim/workspace; inspect task and claim after an ambiguous
+response before retrying. The close records outcome metadata and integration evidence.
+Completion recomputes the dependents' `is_blocked` in the same transaction, and
 the next cascade promotes them.
 
 For work no worker will close, the operator and supervisor have one-shot dispositions
 (`src/sessions/obsolete.py`): `aq task close --obsolete` (`work_outcome=abandoned`),
 `--no-change` (passing, `no-op`) and `--done` (passing, `shipped`). Each completes the
-task from any non-terminal status in one transaction and leaves nothing to publish.
+task through its disposition-specific proof and hierarchy guards; the disposition
+itself performs no new source publication.
 See [superseded completion](../../guides/superseded-completion.md).
 
 #### 3.3.6 Containers settle themselves
@@ -402,7 +427,9 @@ child's close. A low-cadence backstop (`_sweep_container_completion`, every
 `work_graph.container_sweep_interval_seconds`) catches anything the event path missed
 and logs a warning when it does; it also releases claims stopped workers left on
 containers and completes stale BLOCKED/PAUSED containers whose children are all
-delivered. A held container never auto-settles.
+delivered, with Git proof observed outside the settlement transaction and rechecked
+inside it. Managed integration parents additionally require the train's completion
+token; completed children alone are insufficient. A held container never auto-settles.
 
 A container's *stored* status is bookkeeping (an epic reads IN_PROGRESS while any child
 is unfinished). What the dashboard shows is derived on read by
@@ -414,13 +441,13 @@ Hierarchy edits — reparent, container declaration, abandoning a subtree — go
 `HierarchyQueryMixin` and refuse with a structured `hierarchy.<code>` error: `not_found`,
 `self_parent`, `cross_project`, `container_closed`, `dependency_on_container`, `cycle`,
 `depth`, `open_children`, `open_descendants`, `has_children`, `live_descendants`,
-`live_parent`, `manually_paused_descendants`. In hierarchical (train) projects bulk
-writes, phases and keyed standing parents are refused
+`live_parent`, `manually_paused_descendants`. In hierarchical (train) projects
+phases and keyed standing parents are refused
 (`hierarchy.phases_unsupported_mode`), because the train owns the branch layout.
 
 #### 3.3.7 Explaining
 
-`aq task explain <id>` (`_cmd_explain_task`) answers "why is this not running?" as a
+`aq task explain --task-id <id>` (`_cmd_explain_task`) answers "why is this not running?" as a
 list of `{code, detail, ref}` reasons, persistent ones first: operator-decision holds,
 recovery incidents, `needs_attention`, terminal blocks, pauses and `hold:*` labels,
 delivery and admission fences, then `blocked_dependency` / `blocked_gate` from the
@@ -449,7 +476,10 @@ picture and a large project loads by viewport tile.
   `layout_version`.
 - **Determinism.** Non-root containers order children by dependency depth, then
   `(created_at, id)`, with no optimiser. The project root places new nodes incrementally
-  and runs a bounded optimiser on tidy (`aq graph tidy` / `graph_tidy`). Budgets are
+  and seeds tidy by phase/activity/creation time/id before a bounded optimiser
+  (`aq graph tidy` / `graph_tidy`). Root dependency chains can fold into serpentine
+  rows. Incremental insertion has a 200-evaluation budget; root tidy has 5,000,
+  with optimisation capped at 500 siblings. Budgets are
   evaluation counts, so the same input yields the same layout; wall-clock limits are only
   safety valves.
 - **Reading it.** `src/api/graph_layout.py` serves extent, tiles, list, node, locate,
@@ -458,7 +488,15 @@ picture and a large project loads by viewport tile.
 
 The [spatial layout design](../../superpowers/specs/2026-09-01-task-graph-spatial-layout-design.md)
 is the background; the code has moved past it in its constants, budgets, the
-rules-version ledger and the on-by-default switch (`graph_layout.enabled`).
+rules-version ledger and the on-by-default switch (`graph_layout.enabled`). Current
+`ENGINE_RULES_VERSION` is 4: card size 1×1, sibling gap 0.15, line gap 0.22, padding
+0.1, header height 0.35, container/root row targets 4.5/7, row aspect 1.3.
+Configuration accepts nested `dashboard.graph_layout` or top-level `graph_layout`
+(nested wins), with `incremental_debounce_ms: 500`,
+`reconcile_interval_seconds: 900`, and `tidy_job_budget_seconds: 60`.
+`aq graph tidy --all` creates durable bulk work; `aq graph reflow-status` reads the
+reflow ledger; `aq graph layout-rebuild --project-id <id>` synchronously rebuilds both
+variants. The latter two commands are unavailable to agent sessions.
 
 #### 3.3.9 Removing work
 
@@ -470,7 +508,11 @@ rules-version ledger and the on-by-default switch (`graph_layout.enabled`).
   operator- or supervisor-only. Without `confirmed` it returns a read-only plan; with it,
   it removes the task (or the subtree with `--recursive`) and keeps or deletes its
   branches (`--branches keep|delete`, default `keep`) synchronously, emitting
-  `task.deleted` ([unified delete](../../superpowers/specs/2026-10-11-unified-task-delete.md)).
+  `task.deleted`. `--task-only` reparents surviving children to the nearest surviving
+  parent or root without renaming their ids. Selected running work is stopped;
+  `--stop-running` acknowledges the warning rather than enabling that stop. CLI
+  `--preview` is read-only and `--yes` confirms; `--cascade` is deprecated in favour
+  of `--recursive` ([unified delete](../../superpowers/specs/2026-10-11-unified-task-delete.md)).
   This supersedes the 2026-09-08 design's refuse-unless-told branch policy and its
   asynchronous discard drain, which now serves only legacy `pending` rows
   (`src/integration/branch_discard.py`).
@@ -485,7 +527,7 @@ other system decides; "reads/writes" means it consumes or produces graph facts.
 | System | Interaction |
 |---|---|
 | **daemon-core** | Owns the schema, migrations and `run_one_cycle` ordering. The graph contributes steps to that cycle (gate sweep, cascade, container backstop, lifecycle sweep, layout step) but does not choose their order. |
-| **scheduling-and-claims** | Owns the frontier *query*, pools and claims (`claim_queries.py`, `src/orchestrator/pools.py`). It reads `is_blocked`, hold labels, `held_batch_id` and the hierarchy predicates the graph defines. The planned single admission view (`stark-willow-95.13`) moves more of this into one shared object. |
+| **scheduling-and-claims** | Owns the frontier *query*, pools and claims (`claim_queries.py`, `src/orchestrator/pools.py`). It reads `is_blocked`, hold labels, `held_batch_id` and the hierarchy predicates the graph defines. The shared `AdmissionView` adds current integration evidence for frontier, claims, explain and readiness. |
 | **routing-and-profiles** | Owns *who* runs a task (profile, intelligence class, route). The graph stores the routing fields and the `routing` gate type but never chooses. |
 | **sessions-and-harnesses** | Owns the agent session. `aq prime` renders the task's description, deliverables and subtasks; the session's `aq task close` lands in this system's close gate. |
 | **projects-workspaces-git** | Owns projects, repositories and worktrees. A task's `repo_id`, `branch_name` and workspace requirements are graph inputs (`repo_id` and `branch_name` feed the projection). |
@@ -507,7 +549,7 @@ other system decides; "reads/writes" means it consumes or produces graph facts.
 1. **Every write goes through `CommandHandler`.** CLI, MCP, API and Discord all call the
    same command, so validation, the projection recompute, events and layout dirtiness
    happen once.
-2. **`is_blocked` is the sole readiness authority, and it is never authored.** It is
+2. **`is_blocked` owns graph/gate blockedness, and it is never authored.** It is
    recomputed in the writer's transaction to a fixpoint; nothing else re-derives edge
    semantics. Explain uses the same per-edge predicate.
 3. **Graph blockedness is not capacity.** Only durable graph facts are persisted;
@@ -533,25 +575,20 @@ other system decides; "reads/writes" means it consumes or produces graph facts.
 
 ## 6. Known gaps
 
-- **The state machine is warn-only by default.** `state_machine.enforce` is false
-  (`src/config.py`, `StateMachineConfig`), so an invalid transition is logged and
-  allowed. The `src/state_machine.py` module docstring still says it is not enforced at
-  all, which is out of date in the other direction: `transition_task` does check, and
-  raises when enforcement is on.
-- **WAITING_INPUT has not collapsed.** The status collapse proposed in
-  [work-graph design §12](../design/work-graph.md) is still future work; nine statuses
-  remain.
+- **Legacy transition enforcement is warn-only by default.**
+  `state_machine.enforce` is false; durable-wait transitions and completion guards
+  are stricter independently of that setting. WAITING_INPUT remains distinct from
+  the three new durable-wait statuses.
 - **Held ingestion has no release path.** Batches proposed by a `spec-ingest` session
   are stored `held`, but no command calls `ingest_batch_queries.release()`. Until the
   release epic lands (`sharp-cascade-53`), a held batch can be checked and reviewed but
   not released through a supported command. The batch editor can
   reshape a batch only while it is held; editing released work goes through the ordinary
   commands.
-- **Two delivery truths for `blocks` edges.** The SQL projection treats a `blocks` edge
-  as satisfied on COMPLETED, while development delivery is checked separately at claim
-  time by the observer. A task can therefore be READY and unblocked yet not claimable
-  (`waiting_on_delivery`). Explain and readiness report this, but it is a second place
-  to look; `stark-willow-95.13` plans one admission view.
+- **Graph readiness and admission answer different questions.** SQL treats a
+  `blocks` edge as satisfied on COMPLETED. Shared admission separately checks current
+  preparation/delivery evidence. A READY, unblocked task can be withheld; explain
+  and readiness report the reason.
 - **Historical design docs disagree with the code.** The work-graph design and
   implementation specs, the spatial layout design and the swarm work model are marked
   historical. Examples: the layout constants and budgets, the layout's default (the
@@ -567,22 +604,21 @@ other system decides; "reads/writes" means it consumes or produces graph facts.
 - **Weak `flag` and `registration` deliverables.** They are satisfied by finding the
   target text anywhere in the repository (`_repo_text_contains` in `src/deliverables.py`),
   not by a structural check.
-- **Stale secondary docs.** `docs/specs/design/formulas.md` omits phase merging and the
-  object-loop guard; `docs/specs/plan-parser.md` describes a deleted module and says no
-  planner profile ships (one does); the `task_proposals.payload` column comment lists
-  only tasks and edges; the feature-pauses design still reads "Draft" though it is built.
-  The 2026-09-08 deletion design's doctor check and dashboard prompt were never built
-  (the unified delete replaced them).
 - **Two depth constants.** `MAX_STRUCTURAL_DEPTH` is defined in both `src/task_names.py`
   and `src/database/hierarchy_migration.py`; they agree (3) but are not one symbol.
 - **`task_commands.py` is very large** (about 6,700 lines) and mixes graph, archive,
   explain and listing concerns, which makes the graph's write surface hard to audit.
 
-## 7. Planned work
+## 7. Historical planning snapshot (2026-10-20)
 
 Snapshot taken 2026-10-20 by a read-only query of the open `agent-queue` tasks and the
 vault specs. Vault specs are not in this repository; their review id and state are
-quoted as they stood that day.
+quoted as they stood that day. These are historical states, not a live queue.
+
+The 2026-10-22 audit confirms that the shared admission view, default retained
+prerequisite stacks, author-assisted close, durable-wait task states and layout
+rules version 4 are shipped in this checkout. The rows below preserve the earlier
+planning snapshot and must not be used to infer current task status.
 
 ### 7.1 Open tasks that change the task graph
 
@@ -623,11 +659,12 @@ Current behaviour:
 - [Scheduling](../../concepts/scheduling.md) and [worker pools](../../guides/worker-pools.md) — the frontier and claims.
 - [Integration](../../concepts/integration.md) and [hierarchical integration trains](../../guides/hierarchical-integration-trains.md) — delivery fences.
 - [Task change sets](../../guides/task-change-sets.md), [generated task templates](../../guides/generated-task-templates.md), [superseded completion](../../guides/superseded-completion.md).
-- [Models and state machine](../models-and-state-machine.md), [database](../database.md), [plan parser](../plan-parser.md), [npm workspace test deliverables](../npm-workspace-test-deliverables.md).
+- [Models and state machine](../models-and-state-machine.md), [database](../database.md), [npm workspace test deliverables](../npm-workspace-test-deliverables.md).
 - Module reference: [docs/reference/modules/tasks.md](../../reference/modules/tasks.md).
 
 Design records (historical; the code wins where they disagree):
 
+- [Plan parser](../plan-parser.md) — deleted automatic plan parsing; use graph documents instead.
 - [Work graph design](../design/work-graph.md) and [implementation](../implementation/work-graph.md) — edges, gates, labels, the projection, explain, hierarchy (§13), phases (§13b), subtasks (§13c), standing parents (§13d), approval ingestion (§15).
 - [Swarm work model](../../superpowers/specs/2026-08-28-swarm-work-model-design.md) — hierarchy, containers, settlement, formulas.
 - [Formulas](../design/formulas.md), [generated task templates](../design/generated-task-templates.md), [feature pauses](../design/feature-pauses.md), [task completion CI](../design/task-completion-ci.md), [review revision completion](../design/review-revision-completion.md).

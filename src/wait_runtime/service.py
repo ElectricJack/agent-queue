@@ -190,6 +190,7 @@ class WaitService:
 
     async def tick(self):
         if await self.processing_enabled():
+            await self.observe_sources_once()
             if self.enabled:
                 await self._bounded_bridge()
             await self.lifecycle.tick()
@@ -206,10 +207,12 @@ class WaitService:
         try:
             async with asyncio.TaskGroup() as group:
                 maintenance = group.create_task(self.maintain())
+                observations = group.create_task(self.observe_sources())
                 try:
                     await self.listener.run()
                 finally:
                     maintenance.cancel()
+                    observations.cancel()
         finally:
             await self.lifecycle.stop()
 
@@ -221,6 +224,23 @@ class WaitService:
                     await self.lifecycle.tick()
             except Exception:
                 logger.exception("Wait continuation maintenance failed")
+            await asyncio.sleep(self.listener.renewal_seconds)
+
+    async def observe_sources_once(self):
+        """Keep remote observations moving even when a train visit is paused."""
+        watcher = getattr(self.orch, "wait_ci_watcher", None)
+        if watcher is not None:
+            await watcher.tick()
+
+    async def observe_sources(self):
+        # Separate from continuation maintenance: slow GitHub calls must not
+        # delay checkpoint/stop/resume recovery. CheckWatcher serializes ticks.
+        while True:
+            try:
+                if await self.processing_enabled():
+                    await self.observe_sources_once()
+            except Exception:
+                logger.exception("Wait source observation failed")
             await asyncio.sleep(self.listener.renewal_seconds)
 
     async def _bounded_bridge(self):

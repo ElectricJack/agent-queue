@@ -15,7 +15,7 @@ from src.git.manager import GitError
 from src.integration.lock import BranchLock, PublishWithdrawn
 from src.integration.manual_control import enabled_train_write
 from src.integration.models import BranchKey
-from src.models import SessionRecord
+from src.models import RepoSourceType, SessionRecord
 from src.sessions.env import session_db_isolation
 from src.sessions.launch import launch_session
 from src.sessions.provider import SessionHandle
@@ -214,6 +214,10 @@ class DaemonFixerRuntime:
                 {"session_id": state["session_id"], "instance_token": state["instance_token"]},
                 state["starting_sha"], released=self._checkout_released, branch=branch,
             )
+            registered = await self.git.aworktree_list(str(store))
+            if (not (path / ".git").is_file()
+                    or not any(Path(w["path"]).resolve() == path.resolve() for w in registered)):
+                raise ValueError("fixer checkout is not a registered linked worktree")
             actual_branch, dirty = await self.git.aread_status_summary(str(path))
             if (actual_branch != branch or dirty
                     or await self.git.arev_parse(str(path), "HEAD") != state["starting_sha"]):
@@ -229,6 +233,7 @@ class DaemonFixerRuntime:
                 work_dir=str(path), session_id=state["session_id"],
                 instance_token=state["instance_token"], epoch=orch.daemon_epoch,
                 api_token=token, prompt=fixer_prompt(state),
+                workspace_source_type=RepoSourceType.WORKTREE,
             )
             env = dict(spec.env)
             for key in ("AQ_TASK_ID", "AQ_CLAIM_EPOCH"):
@@ -250,8 +255,12 @@ class DaemonFixerRuntime:
             current = (await conn.execute(select(integration_batches).where(
                 integration_batches.c.id == state["batch_id"],
             ).with_for_update())).mappings().one()
-            if (current["intent"] != "open" or current["fixer_state"]["status"] != "launching"
-                    or current["fixer_state"]["session_id"] != row.id):
+            binding = current["fixer_state"] or {}
+            if (current["intent"] != "open" or binding.get("status") != "launching"
+                    or binding.get("session_id") != row.id
+                    or binding.get("instance_token") != row.instance_token
+                    or binding.get("launch_started_at")
+                    != state.get("launch_started_at")):
                 raise PublishWithdrawn("fixer registration authority was withdrawn")
             await self.db.create_session(row, conn=conn)
             # Commit the checkout/session binding before the harness can call

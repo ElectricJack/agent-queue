@@ -2819,9 +2819,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
             "decided_at": 100, "decided_by": "supervisor-p",
         })
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if held:
+        args.update(override_hold=True, reason="Owner recovery proved the fence free")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
     assert result["restarted"] == delegate
     assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
@@ -2831,6 +2832,11 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
         incident = await db.get_task_meta(delegate, "supervisor_recovery_incident")
         assert incident["decision"] == "superseded"
         assert incident["decision_history"][-1]["decision_reason"] == "Fence not released"
+        assert incident["decided_by"] == "human:local-operator"
+        assert "Owner recovery proved the fence free" in incident["decision_reason"]
+        comments = (await db.list_task_comments(delegate))["comments"]
+        audit = next(row for row in comments if "overridden by restart" in row["body"])
+        assert audit["author_id"] == "human:local-operator"
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2858,7 +2864,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
 
 
 @pytest.mark.parametrize("fence_state", ["attached", "handoff_pending"])
-async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
+@pytest.mark.parametrize("override_hold", [False, True])
+async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(
+    db, fence_state, override_hold,
+):
     """A fence no handoff can prove free is refused, naming the control to run."""
     service, delegate = await _continuous_parent_stage(db)
     streak = {"cause": "context_thrash", "count": 2}
@@ -2882,12 +2891,19 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
             handoff_state=fence_state, session_id="dead",
         ))
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if override_hold:
+        args.update(override_hold=True, reason="Retry branch recovery after diagnosis")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
-    assert "aq integration reserve-owner --task-id" in result["error"]
-    assert "aq integration release-owner --task-id" in result["error"]
+    assert result["success"] is False
+    if override_hold:
+        assert "aq integration reserve-owner --task-id" in result["error"]
+        assert "aq integration release-owner --task-id" in result["error"]
+    else:
+        assert result["error_code"] == "task_recovery.held"
+        assert result["recovery_hold"] == held
+        assert "--override-hold --reason" in result["error"]
     restored = await db.get_task(delegate)
     assert restored.status is TaskStatus.BLOCKED
     assert (restored.profile_id, restored.intelligence_class, restored.route_source,
@@ -2897,6 +2913,8 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
     )
     assert await db.get_task_meta(delegate, "worker_failure_streak") == streak
     assert await db.get_task_meta(delegate, "supervisor_recovery_incident") == held
+    comments = (await db.list_task_comments(delegate))["comments"]
+    assert not any("overridden by restart" in row["body"] for row in comments)
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -9035,3 +9053,55 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("ordinal", [0, 1])
+async def test_unlimited_stage_has_no_deadline_or_attempt_exhaustion(db, ordinal):
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    for boundary in ("parent", "root"):
+        policy[boundary]["repair"].update(
+            primary_seconds=0, debug_seconds=0, primary_attempts=ordinal, debug_attempts=0,
+        )
+    await _seed_parent_operation(db, policy=policy)
+    service = RepairService(db, clock=lambda: 100.0)
+    started = await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    assert started["deadline_at"] is None
+    if ordinal:
+        escalated = await service.record_result("operation", "failed-check", now=101.0)
+        assert escalated["action"] == "dispatch_debug"
+    for attempt in range(1, 6):
+        evidence_id = f"unlimited-failure-{attempt}"
+        await _add_parent_evidence(db, evidence_id, run_id=evidence_id, conclusion="failure")
+        result = await service.record_result("operation", evidence_id, now=100_000.0 + attempt)
+        assert result == {"outcome": "continue", "action": "repair", "attempts": attempt}
+    stage = await _repair_stage(db, "operation", ordinal)
+    assert stage["deadline_at"] is None and stage["state"] == "active"
+    assert (await service.expire("operation", ordinal, now=1_000_000))["outcome"] == "not_due"
+    assert await service.due_stages(now=1_000_000) == []
+    if not ordinal:
+        replay = await service.start("operation", STARTING_SHA, "failed-check", now=1_000_000)
+        assert replay["deadline_at"] is None
+
+
+@pytest.mark.parametrize("ordinal,reason", [(0, "writer_claimed"), (1, "writer_claimed"),
+                                           (1, "writer_unclaimed")])
+async def test_deferring_a_stage_with_unlimited_duration_removes_its_deadline(db, ordinal, reason):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    stage = await _repair_stage(db, "operation", 0)
+    stage["policy"] = {**stage["policy"], "primary_seconds": 0, "debug_seconds": 0}
+    stage["ordinal"] = ordinal
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            ordinal=ordinal, policy=stage["policy"]))
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        result = await service._defer_expiry_on(conn, dict(operation), stage, {
+            "task_id": "delegate", "task_status": "READY", "claim_epoch": 1,
+        }, reason=reason, now=200.0)
+    assert result["deadline_at"] is None
+    assert (await _repair_stage(db, "operation", ordinal))["deadline_at"] is None

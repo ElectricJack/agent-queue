@@ -82,8 +82,8 @@ async def check():
     shutdown = asyncio.Event()
     errors = []
     served = []
-    # The historical plan viewer is the sole permitted HTML endpoint.
-    allowed_html_routes = {"/plans/{task_id}"}
+    # Plan markdown is data; the daemon declares no HTML endpoint.
+    allowed_html_routes = set()
     html_routes = set()
 
     def effective_routes(app):
@@ -157,13 +157,15 @@ async def check():
                         assert response.status_code == 307, (path, response.status_code)
                         assert response.json()["error"] == "dashboard_not_served_here"
                         assert response.headers["location"].startswith("http://127.0.0.1:8082/")
-                    response = await client.get("/plans/solid-grove.13")
+                    response = await client.get("/api/plans/solid-grove.13")
                     assert response.status_code == 200
-                    assert response.headers["content-type"].startswith("text/html")
-                    assert "Legacy plan" in response.text
+                    assert response.headers["content-type"].startswith("application/json")
+                    assert response.json()["content"] == "# Legacy plan"
                     for path, status in (
                         ("/plans", 404), ("/plans/solid-grove/extra", 404),
-                        ("/plans/solid..grove", 400),
+                        ("/plans/solid..grove", 404),
+                        ("/plans/solid-grove.13", 404),
+                        ("/api/plans/solid..grove", 400),
                     ):
                         response = await client.get(path)
                         assert response.status_code == status, (path, response.status_code)
@@ -201,7 +203,7 @@ asyncio.run(check())
 @asynccontextmanager
 async def daemon_app(
     tmp_path: Path, *, dashboard_server: Any = None, name: str = "dashboard_pointer.db",
-    health_provider: Any = None,
+    health_provider: Any = None, plan_content_provider: Any = None,
 ) -> AsyncIterator[Any]:
     """A real ``create_app()`` application over a PostgreSQL-backed orchestrator.
 
@@ -240,9 +242,13 @@ async def daemon_app(
         deps._require_session_token,
         deps._health_provider,
         deps._health_monitor,
+        deps._plan_content_provider,
     )
     try:
-        yield create_app(orch, config, health_provider=health_provider)
+        yield create_app(
+            orch, config, health_provider=health_provider,
+            plan_content_provider=plan_content_provider,
+        )
     finally:
         (
             deps._orchestrator,
@@ -251,6 +257,7 @@ async def daemon_app(
             deps._require_session_token,
             deps._health_provider,
             deps._health_monitor,
+            deps._plan_content_provider,
         ) = saved
         await db.close()
 
@@ -348,6 +355,43 @@ async def test_daemon_disables_docs_ui_but_still_serves_openapi(live_app):
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
         assert response.json() == app.openapi()
+
+
+async def test_daemon_serves_no_text_html_routes(tmp_path):
+    """Guard the complete app's declarations and the former live HTML endpoint."""
+    async def plan_provider(task_id):
+        return "# A real plan\n<script>alert('untrusted markdown')</script>"
+
+    async with daemon_app(tmp_path, plan_content_provider=plan_provider) as app:
+        def routes(router):
+            for route in router.routes:
+                contexts = getattr(route, "effective_route_contexts", None)
+                if contexts is not None:
+                    yield from contexts()
+                elif isinstance(route, Mount) and hasattr(route.app, "routes"):
+                    yield from routes(route.app)
+                else:
+                    yield route
+
+        for route in routes(app):
+            response_class = getattr(route, "response_class", None)
+            response_class = getattr(response_class, "value", response_class)
+            assert getattr(response_class, "media_type", None) != "text/html", route.path
+        for path, operations in app.openapi()["paths"].items():
+            for operation in operations.values():
+                for response in operation.get("responses", {}).values():
+                    assert "text/html" not in response.get("content", {}), path
+
+        with TestClient(app, follow_redirects=False) as client:
+            for path in ("/plans/solid-grove.13", "/docs", "/redoc"):
+                response = client.get(path, headers={"accept": "text/html"})
+                assert response.status_code == 404, path
+                assert "text/html" not in response.headers.get("content-type", ""), path
+            response = client.get("/api/plans/solid-grove.13", headers={"accept": "text/html"})
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("application/json")
+            assert response.json()["task_id"] == "solid-grove.13"
+            assert response.json()["content"].startswith("# A real plan")
 
 
 async def test_dashboard_paths_redirect_307_to_the_dashboard_server_with_the_pointer_body(
