@@ -498,30 +498,22 @@ class AdmissionSnapshot:
         if lock and (self.lock_ids or task_id):
             try:
                 async with conn.begin_nested():
-                    await conn.execute(
-                        select(tasks.c.id)
-                        .where(tasks.c.id.in_(self.lock_ids | ({task_id} if task_id else set())))
-                        .order_by(tasks.c.id)
-                        .with_for_update(read=True, nowait=True)
-                    )
-                    # Freeze integration configuration until activation commits.
-                    await conn.execute(
-                        select(projects.c.id)
-                        .where(projects.c.id.in_([p[0] for p in self.inputs[5]]))
-                        .order_by(projects.c.id)
-                        .with_for_update(read=True, nowait=True)
-                    )
-                    await conn.execute(
-                        select(repos.c.id)
-                        .where(or_(
+                    # Freeze task inputs and integration configuration until activation commits.
+                    lock_queries = (
+                        (tasks, tasks.c.id.in_(self.lock_ids | ({task_id} if task_id else set()))),
+                        (projects, projects.c.id.in_([p[0] for p in self.inputs[5]])),
+                        (repos, or_(
                             repos.c.id.in_([r[0] for r in self.inputs[6]]),
                             repos.c.id.in_(select(projects.c.integration_repository_id).where(
                                 projects.c.id.in_([p[0] for p in self.inputs[5]]),
                             )),
-                        ))
-                        .order_by(repos.c.id)
-                        .with_for_update(read=True, nowait=True)
+                        )),
                     )
+                    for table, condition in lock_queries:
+                        await conn.execute(
+                            select(table.c.id).where(condition).order_by(table.c.id)
+                            .with_for_update(read=True, nowait=True)
+                        )
             except DBAPIError as exc:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
                     return self.record_change(
@@ -544,11 +536,16 @@ class AdmissionSnapshot:
                 )
         if self.policy_inputs:
             policy, _ = await _frontier_inputs(conn, self.candidate_ids)
-            if policy != self.policy_inputs:
+            # Scope candidate identity to activation; retain every other policy fence.
+            before_policy, policy = (
+                (tuple(row for row in inputs[0] if task_id is None or row[0] == task_id),
+                 *inputs[1:]) for inputs in (self.policy_inputs, policy)
+            )
+            if policy != before_policy:
                 groups = ("candidate routing/parent", "project/repository policy", "edges",
                           "sources", "completions", "metadata")
                 changed = ", ".join(name for name, before, after in zip(
-                    groups, self.policy_inputs, policy, strict=True) if before != after)
+                    groups, before_policy, policy, strict=True) if before != after)
                 return self.record_change(
                     "admission_policy_changed", f"Admission frontier inputs changed: {changed}; retry",
                     task_id,
@@ -745,12 +742,14 @@ async def _observe_sources(
 async def _frontier_inputs(conn, ids):
     """Fence routing, hierarchy policy and graph without fencing our own take.
 
-    READY -> IN_PROGRESS and branch preparation are expected mutations. Route,
-    parent, edges, policy and completion generation are not.
+    READY -> IN_PROGRESS, branch preparation and route evidence refreshes are
+    expected mutations; route identity, parent, edges, policy and generation are not.
+    Candidate tuples stay addressable by task ID to scope activation's route fence.
     """
     rows = (await conn.execute(select(
         tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id, tasks.c.profile_id,
-        tasks.c.route_source, tasks.c.intelligence_class, tasks.c.route,
+        tasks.c.route_source, tasks.c.intelligence_class,
+        tasks.c.route["provider"].as_string(),
         tasks.c.repo_id, tasks.c.integration_mode,
     ).where(tasks.c.id.in_(ids)))).all()
     pids = {r.project_id for r in rows}
@@ -779,9 +778,10 @@ async def _frontier_inputs(conn, ids):
     completions, markers = [(await conn.execute(select(table).where(
         table.c.task_id.in_({row.id for row in sources})))).all() if sources else []
         for table in (task_completion_records, task_metadata)]
-    fingerprint = tuple(tuple(sorted(repr(tuple(row)) for row in group))
-                        for group in (rows, policies, [tuple(e.items()) for e in edges],
-                                      sources, completions, markers))
+    fingerprint = (tuple(tuple(row) for row in sorted(rows, key=lambda row: row.id)),) + tuple(
+        tuple(sorted(repr(tuple(row)) for row in group))
+        for group in (policies, [tuple(e.items()) for e in edges], sources, completions, markers)
+    )
     return fingerprint, required
 
 
