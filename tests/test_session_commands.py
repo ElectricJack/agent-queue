@@ -3830,7 +3830,7 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
         assert (await db.get_task("t1")).pr_url is None
 
-    async def test_managed_parent_close_suspends_owned_branch_without_legacy_integrate(
+    async def test_managed_parent_close_refuses_unresolved_children_without_legacy_integrate(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
         from unittest.mock import AsyncMock
@@ -3897,17 +3897,17 @@ class TestEndToEndOnFakeProvider:
 
         checkpoint = await db.get_integration_checkpoint("t1")
         operation = await db.get_active_parent_integration_operation("t1")
-        assert close["success"] is True
-        assert close["status"] == "PAUSED"
-        assert checkpoint["checkpoint_sha"] == head
-        # The suspension transition recorded this close's identity (smart-cascade).
-        assert await db.get_task_meta("t1", "accepted_close") == {
-            "completion_id": (await db.get_task_completion("t1")).id,
-            "session_id": session.id,
-            "claim_epoch": (await db.get_task("t1")).claim_epoch,
-        }
-        assert checkpoint["episode_id"] == operation["episode_id"]
-        assert operation["state"] == "active"
+        assert close["success"] is False
+        assert "container has unresolved children: t1.1" in close["error"]
+        # The active train admits only a completed container whose children are
+        # settled. Refusal preserves the producer's held branch and checkpoint.
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_session_for_task("t1")).id == session.id
+        assert checkpoint["checkpoint_sha"] == "a" * 40
+        assert await db.get_task_meta("t1", "accepted_close") is None
+        assert await db.get_task_completion("t1") is None
+        assert operation is None
+        assert checkpoint["episode_id"] is None
         assert (await db.get_task_branch_origin_for_promotion("t1", "repo"))["base_sha"] == (
             "a" * 40
         )
