@@ -23,7 +23,9 @@ from typing import Any
 from src.models import AgentState, SessionRecord, Task, TaskStatus
 
 _ACTIVE_SESSIONS = {"starting", "running", "draining"}
-_ACTIVE_TASKS = {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+_ACTIVE_TASKS = {
+    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+}
 
 _NO_EVENTS: dict[str, int] = {"starts": 0, "stops": 0}
 
@@ -107,6 +109,7 @@ async def subagent_counts(
     *,
     native_by_session: Mapping[str, Mapping[str, int]] | None = None,
     index: SubagentIndex | None = None,
+    owned_sessions: Sequence[SessionRecord] | None = None,
 ) -> dict:
     """Count this agent's active children across all of its sessions.
 
@@ -123,13 +126,17 @@ async def subagent_counts(
     *index* is :func:`build_subagent_index` over the same *sessions* and
     *tasks*; the flock view builds it once for every agent. Omitted, it is
     built here.
+
+    *owned_sessions* supplies a named supervisor's executions when it has
+    no durable agent row; delegation still follows authenticated provenance.
     """
     if index is None:
         index = await build_subagent_index(db, sessions, tasks)
     task_by_id = index.task_by_id
     get_agent = index.get_agent
 
-    owned = index.sessions_by_owner.get(agent_id, [])
+    owned = (index.sessions_by_owner.get(agent_id, [])
+             if owned_sessions is None else owned_sessions)
     parent_session_ids = {session.id for session in owned}
     active_holders = index.active_holders
 
@@ -154,7 +161,7 @@ async def subagent_counts(
             [session.id for session in owned]
         )
 
-    parent = await get_agent(agent_id)
+    parent = await get_agent(agent_id) if owned_sessions is None else None
     parent_task = task_by_id.get(parent.current_task_id) if parent is not None else None
     live = [session for session in owned if session.state in _ACTIVE_SESSIONS]
     running = bool(live) or bool(

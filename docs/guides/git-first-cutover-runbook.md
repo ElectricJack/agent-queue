@@ -1,5 +1,11 @@
 # Git-first integration cutover: transfer, upgrade, restart, canary
 
+> Historical cutover procedure: C1 and the 2026-10-12 consumer retirement removed
+> the subject publishers and Development transfer command. The steps below document
+> that earlier rollout; use the [current train runbook](git-first-train-runbook.md)
+> and [consumer audit](../reports/2026-10-12-legacy-consumer-retirement.md) for the
+> retained runtime and safety boundaries.
+
 Operator procedure for selecting `integration.git_first: active`, the
 five-table protocol that replaces the old subject runtime as the delivery path
 for a project. The design is `projects/agent-queue/specs/2026-10-04-git-first-integration-train.md`
