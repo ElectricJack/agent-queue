@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.database import Database
 from src.git.manager import GitManager
 from src.models import (
     Agent,
@@ -27,7 +26,6 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -118,9 +116,8 @@ class TestAcquireWorkspacePreferred:
     """Test that acquire_workspace respects preferred_workspace_id."""
 
     @pytest.fixture
-    async def db(self, tmp_path):
-        db = Database(lease_dsn("test.db"))
-        await db.initialize()
+    async def db(self, reuse_database):
+        db = await reuse_database("test.db")
         # Create a project
         project = Project(
             id="test-proj",
@@ -167,7 +164,6 @@ class TestAcquireWorkspacePreferred:
         await db.create_workspace(ws1)
         await db.create_workspace(ws2)
         yield db
-        await db.close()
 
     @pytest.mark.asyncio
     async def test_preferred_workspace_acquired_first(self, db):
@@ -246,9 +242,8 @@ class TestTaskPreferredWorkspace:
     """Test preferred_workspace_id persists through create/read cycle."""
 
     @pytest.fixture
-    async def db(self, tmp_path):
-        db = Database(lease_dsn("test.db"))
-        await db.initialize()
+    async def db(self, reuse_database):
+        db = await reuse_database("test.db")
         project = Project(
             id="test-proj",
             name="Test",
@@ -266,7 +261,6 @@ class TestTaskPreferredWorkspace:
         )
         await db.create_workspace(ws)
         yield db
-        await db.close()
 
     @pytest.mark.asyncio
     async def test_preferred_workspace_persisted(self, db):
@@ -309,10 +303,9 @@ class TestFindMergeConflictWorkspacesCommand:
     """Test _cmd_find_merge_conflict_workspaces via CommandHandler."""
 
     @pytest.fixture
-    async def handler_and_db(self, tmp_path):
+    async def handler_and_db(self, tmp_path, reuse_database):
         """Create a minimal CommandHandler with real DB and real GitManager."""
-        db = Database(lease_dsn("test.db"))
-        await db.initialize()
+        db = await reuse_database("test.db")
 
         project = Project(
             id="test-proj",
@@ -336,7 +329,6 @@ class TestFindMergeConflictWorkspacesCommand:
         handler = CommandHandler(orchestrator=orchestrator, config=config)
 
         yield handler, db
-        await db.close()
 
     @pytest.mark.asyncio
     async def test_detects_conflict_workspace(self, handler_and_db, git_repo_with_conflict):
@@ -456,9 +448,8 @@ class TestCreateTaskWithPreferredWorkspace:
     """Test that create_task accepts and validates preferred_workspace_id."""
 
     @pytest.fixture
-    async def handler_and_db(self, tmp_path):
-        db = Database(lease_dsn("test.db"))
-        await db.initialize()
+    async def handler_and_db(self, tmp_path, reuse_database):
+        db = await reuse_database("test.db")
 
         project = Project(
             id="test-proj",
@@ -487,7 +478,6 @@ class TestCreateTaskWithPreferredWorkspace:
         handler = CommandHandler(orchestrator=orchestrator, config=config)
 
         yield handler, db
-        await db.close()
 
     @pytest.mark.asyncio
     async def test_create_task_with_preferred_workspace(self, handler_and_db):

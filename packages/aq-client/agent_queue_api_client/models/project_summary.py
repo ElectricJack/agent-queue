@@ -23,6 +23,7 @@ class ProjectSummary:
         workspace (None | str | Unset):
         repo_url (None | str | Unset):
         assignment_playbook_id (None | str | Unset):
+        supervisor_enabled (bool | Unset):  Default: False.
     """
 
     id: str
@@ -33,6 +34,7 @@ class ProjectSummary:
     workspace: None | str | Unset = UNSET
     repo_url: None | str | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
+    supervisor_enabled: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +66,8 @@ class ProjectSummary:
         else:
             assignment_playbook_id = self.assignment_playbook_id
 
+        supervisor_enabled = self.supervisor_enabled
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -84,6 +88,8 @@ class ProjectSummary:
             field_dict["repo_url"] = repo_url
         if assignment_playbook_id is not UNSET:
             field_dict["assignment_playbook_id"] = assignment_playbook_id
+        if supervisor_enabled is not UNSET:
+            field_dict["supervisor_enabled"] = supervisor_enabled
 
         return field_dict
 
@@ -127,6 +133,8 @@ class ProjectSummary:
 
         assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
 
+        supervisor_enabled = d.pop("supervisor_enabled", UNSET)
+
         project_summary = cls(
             id=id,
             name=name,
@@ -136,6 +144,7 @@ class ProjectSummary:
             workspace=workspace,
             repo_url=repo_url,
             assignment_playbook_id=assignment_playbook_id,
+            supervisor_enabled=supervisor_enabled,
         )
 
         project_summary.additional_properties = d
