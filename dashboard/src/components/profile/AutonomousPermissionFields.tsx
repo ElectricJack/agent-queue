@@ -13,7 +13,16 @@ interface Props {
 export default function AutonomousPermissionFields({ form, onChange }: Props) {
   if (form.harness === "codex") {
     const legacyBypass = form.permission_mode === "bypassPermissions";
-    return (
+    return (<div className="space-y-3">
+      <label className="block text-sm text-gray-300">Codex service tier
+        <select aria-label="Codex service tier" value={form.codex_service_tier}
+          onChange={(event) => onChange("codex_service_tier", event.target.value)}
+          className="mt-1 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-200">
+          <option value="">Inherit intelligence class</option>
+          <option value="default">Default</option>
+          <option value="fast">Fast</option>
+        </select>
+      </label>
       <WarningCheckbox
         label="Codex full auto"
         checked={form.codex_full_auto}
@@ -25,7 +34,7 @@ export default function AutonomousPermissionFields({ form, onChange }: Props) {
           ? "Legacy bypassPermissions disables approvals and sandbox restrictions, and takes precedence over full auto. Clear Permission mode to use sandboxed full auto."
           : "Allows Codex to edit files and run commands without asking for approval inside its workspace sandbox. It does not disable sandbox restrictions."}
       </WarningCheckbox>
-    );
+    </div>);
   }
 
   if (form.harness === "claude") {
