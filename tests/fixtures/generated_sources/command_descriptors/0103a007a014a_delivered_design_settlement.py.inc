@@ -6,7 +6,7 @@ def _delivered_design_changes():
 
 def _before_delivered_design_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_supervisor_say_catalogue()
     evidence = _delivered_design_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == "task_batch_propose"]
     assert definition == evidence["definition"]

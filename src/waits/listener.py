@@ -17,6 +17,8 @@ from src.waits.conditions import Condition, Scope, WaitError
 from src.waits.admission import admission_pass
 from src.waits.graph import track_graph_lock
 from src.waits.resource_sources import (
+    RESOURCE_INVALIDATIONS,
+    _invalidation,
     reobserve_resource_candidates,
     resource_invalidation_candidates,
 )
@@ -164,10 +166,33 @@ class WaitSourceListener:
             async with self.db._engine.begin() as conn:
                 from src.waits.loops import prepare_progress
 
-                owners = (await conn.execute(select(wait_records).where(
-                    wait_records.c.owner_kind == "task", wait_records.c.outcome == "pending",
-                ).order_by(wait_records.c.id).limit(self.batch_size))).mappings().all()
-                await prepare_progress(conn, owners)
+                position = await conn.scalar(select(wait_listener_cursors.c.last_seq).where(
+                    wait_listener_cursors.c.listener_key == "source",
+                ))
+                candidate = (await conn.execute(select(wait_source_events).where(
+                    wait_source_events.c.seq > (position or 0),
+                    wait_source_events.c.seq <= watermark,
+                ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
+                if candidate:
+                    if candidate["source_key"].startswith("resource_invalidation:"):
+                        payload = _invalidation(candidate) or {}
+                        matching = (wait_records.c.condition_kind == "resource") & (
+                            wait_records.c.condition["blocker"].astext.in_(
+                                RESOURCE_INVALIDATIONS.get(payload.get("producer"), ()),
+                            )
+                        )
+                        if payload.get("project_id") is not None:
+                            matching &= wait_records.c.project_id == payload["project_id"]
+                    else:
+                        matching = (wait_records.c.source_key == candidate["source_key"]) & (
+                            wait_records.c.source_generation == candidate["source_generation"]
+                        )
+                    owners = (await conn.execute(select(wait_records).where(
+                        wait_records.c.owner_kind == "task", wait_records.c.outcome == "pending",
+                        wait_records.c.verification_state == "verified", matching,
+                        wait_records.c.source_watermark_seq < candidate["seq"],
+                    ).order_by(wait_records.c.id))).mappings().all()
+                    await prepare_progress(conn, owners)
                 # Scheduler reconciliation can hold the graph fence longer than
                 # one renewal interval. Yield without locking the lease row so
                 # renewal stays live; the durable cursor remains replayable.
@@ -177,6 +202,10 @@ class WaitSourceListener:
                     return count
                 track_graph_lock(conn)
                 cursor = await self.locked_lease(conn)
+                # Another drain may have advanced while Git was observed. Do
+                # not dispatch a different event with the wrong progress heads.
+                if cursor["last_seq"] != position:
+                    continue
                 # Commit each event with its cursor before reacquiring the
                 # graph fence. Renewal cadence must never define lock scope.
                 # One slow event retains the lease budget and rolls back whole.

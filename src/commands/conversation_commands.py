@@ -357,6 +357,114 @@ class ConversationCommandsMixin:
             != f"{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}",
         }
 
+    async def _cmd_supervisor_inbox_say(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Initiate a post without requiring or consuming an unanswered input."""
+        if _FORBIDDEN_AUTHORITY_ARGS.intersection(args):
+            return _error("spoofed_identity", "caller identity and destination are server-derived")
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL:
+            live = None
+            if principal.kind is PrincipalKind.SESSION and principal.elevated:
+                live = await self.db.get_session(principal.session_id)
+            if (
+                live is None
+                or live.state not in _LIVE_SESSION_STATES
+                or live.desired_state == "stopped"
+                or live.name != named_session_name("supervisor", principal.project_id or "global")
+                or live.profile_id != "supervisor"
+                or live.lifecycle != "named"
+                or live.project_id != principal.project_id
+                or not matches_session_instance(principal, live.instance_token)
+            ):
+                return _error("out_of_scope", "say requires a live supervisor launch")
+        required = {"conversation_id", "text", "idempotency_key"}
+        if set(args) != required or any(
+            not isinstance(args.get(key), str) or not args[key].strip() for key in required
+        ):
+            return _error("invalid_request", "conversation_id, text and idempotency_key are required")
+        if len(args["text"]) > 16000 or len(args["idempotency_key"]) > 128:
+            return _error("invalid_request", "post text or idempotency key exceeds its limit")
+        outbox = getattr(self.orchestrator, "conversation_outbox", None) or UnboundOutbox()
+        bot = getattr(self.orchestrator, "_discord_bot", None)
+        preconditions = conversation_preconditions(
+            self.config,
+            cutover_status=getattr(getattr(bot, "_cutover_report", None), "status", None),
+            outbox_bound=outbox.bound,
+        )
+        if not preconditions.ok:
+            return _error("preconditions_unmet", "conversation preconditions unmet",
+                          unmet=list(preconditions.unmet))
+        conversation_id = args["conversation_id"]
+        conversation = await self.db.get_conversation(conversation_id)
+        if conversation is None:
+            return _error("conversation_not_found", "conversation does not exist")
+        if conversation["state"] not in {"opening", "open"} or (
+            conversation["kind"] == KIND_THREAD and not conversation["external_thread_id"]
+        ):
+            return _error("conversation_not_open", "conversation has no active delivery destination")
+        settings = self.config.discord
+        direct = conversation["guild_id"] == DM_GUILD
+        if (
+            conversation["transport"] != "discord"
+            or not conversation["audience"]
+            or not set(conversation["audience"]).issubset({str(u) for u in settings.authorized_users})
+            or (direct and not settings.conversation.allow_dm)
+            or (not direct and (
+                conversation["guild_id"] != str(settings.guild_id)
+                or conversation["channel_id"] != str(settings.channel_id)
+            ))
+        ):
+            return _error("visibility_changed", "conversation destination or audience is unauthorized")
+        await self.db.route_queued_conversation_inputs(settings.project_id)
+        recipient = await self.db.get_conversation_recipient(conversation_id)
+        if principal.project_id is not None and (
+            recipient is None
+            or recipient["project_id"] != principal.project_id
+            or recipient["to_id"] != f"supervisor-{principal.project_id}"
+        ):
+            return _error("out_of_scope", "conversation is addressed to another supervisor")
+        sender = f"supervisor-{principal.project_id or 'global'}"
+        digest = hashlib.sha256(f"{conversation_id}:{args['idempotency_key']}".encode()).hexdigest()
+        reply_message_id = f"msg-conv-say-{digest[:32]}"
+        try:
+            recorded = await self.db.record_conversation_say(
+                conversation_id=conversation_id, reply_message_id=reply_message_id,
+                body=args["text"], sender=sender, project_id=principal.project_id,
+                now=getattr(self, "_clock", time.time)(),
+            )
+        except ConversationRateLimited as exc:
+            return _error("rate_limited", "supervisor post rate limit reached", scope=exc.scope)
+        except ConversationNotFound:
+            return _error("conversation_not_found", "conversation does not exist")
+        except ConversationConflict:
+            return _error("idempotency_conflict", "idempotency key belongs to another sender")
+        except ConversationStateError:
+            return _error("conversation_not_open", "conversation must be open before posting")
+        text = recorded["message"]["body"]
+        resolver = getattr(self.orchestrator, "dashboard_links", None)
+        base_url = (await resolver.resolve()).url if resolver is not None else ""
+        dedup_key = f"conv-say:{reply_message_id}"
+        discord_text = render_reply(text, dedup_key=dedup_key, base_url=base_url,
+                                   conversation_id=conversation_id)
+        delivery_id = await outbox.enqueue(
+            owner_id=conversation_id, kind="reply", dedup_key=dedup_key,
+            payload={"conversation_id": conversation_id, "reply_message_id": reply_message_id,
+                     "supervisor_initiated": True, "text": discord_text},
+        )
+        await self.orchestrator.bus.emit("conversation.post_queued.v1", {
+            "conversation_id": conversation_id, "reply_message_id": reply_message_id,
+            "delivery_id": delivery_id, "delivery_dedup_key": dedup_key,
+            "created": recorded["created"],
+        })
+        return {
+            "success": True, "created": recorded["created"],
+            "reply_message_id": reply_message_id, "delivery_id": delivery_id,
+            "delivery_dedup_key": dedup_key, "discord_text_chars": len(discord_text),
+            "truncated": discord_text != (
+                f"{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}"
+            ),
+        }
+
     async def _conversation_notice(
         self,
         outbox: ConversationOutbox,

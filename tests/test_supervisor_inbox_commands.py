@@ -854,7 +854,9 @@ async def test_reply_transcript_tail_and_message_sent_never_enqueue_delivery(env
             "thread_id": f"conversation:{first['conversation_id']}",
         },
     )
-    assert "error" not in sent
+    assert sent["success"] is False
+    assert sent["error_code"] == "unsupported_user_destination"
+    assert "supervisor-inbox say" in sent["error"]
     await engine.run_delivery_pass()
     assert not any(
         r["dedup_key"].startswith("conv-reply:")
