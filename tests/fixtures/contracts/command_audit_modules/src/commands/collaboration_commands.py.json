@@ -1,0 +1,189 @@
+{
+  "collaboration_accept": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/collaboration_commands.py:CollaborationCommandsMixin._cmd_collaboration_accept",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'thread': _thread_view(thread, now), 'next_step': f'Joined for claim epoch {caller['claim_epoch']}. Read with `aq collaboration show {thread['id']}`.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_refusal(exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_invalid(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:57619d6003f1de7fc1264504b6886c91aa2fc464462648e8d85842809141fa34",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "collaboration_close": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/collaboration_commands.py:CollaborationCommandsMixin._cmd_collaboration_close",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'closed_count': len(closed), 'thread_ids': closed}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'thread': _thread_view(thread, now)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_refusal(exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_invalid(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:d48c4345e23def580def83472c3c0658c09de4bc4fc3d68f74ff179c25b01c1b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "collaboration_create": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/collaboration_commands.py:CollaborationCommandsMixin._cmd_collaboration_create",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': MESSAGES_DISABLED_ERROR}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'thread': _thread_view(thread, now), 'replayed': replayed, 'next_step': f'Each member accepts from its own task with `aq collaboration accept {thread['id']}`.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_refusal(exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_invalid(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:c9a18017e576d386e383a14027cce5db73346aaa288ee397cc8079d2d7012897",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "collaboration_get": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/collaboration_commands.py:CollaborationCommandsMixin._cmd_collaboration_get",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'thread': view, 'messages': [_fields(CollaborationMessageRecord, m) for m in page['messages']], 'next_cursor': cursor, 'has_more': page['has_more'], 'capacity_hold': capacity_hold, 'next_step': next_step}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_refusal(exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_invalid(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:5f99abaf0c7e210643179ef979972a0027681ad48d2a8da83c13f3b92bb8d259",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "collaboration_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/collaboration_commands.py:CollaborationCommandsMixin._cmd_collaboration_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'threads': [], 'count': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'threads': threads, 'count': len(threads)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_refusal(exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_invalid(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:314c5894af29629943ec2fc62eaa3244e65fd4ec2d2213ba989456740d7b0cdc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}
