@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { knowledgeCreateTask, knowledgeRetire, knowledgeRestore, knowledgePropose, linkCreate } from "../../api/client";
 import Modal from "../../components/Modal";
 import { KNOWLEDGE_ACTION_LABELS, type KnowledgeAction, type KnowledgeDetailView } from "./model";
+import { randomUUID } from "../../randomUUID";
 
 const FIELD = "w-full rounded border border-gray-700 bg-gray-950 p-2 text-sm";
 export default function KnowledgeWorkflow({ projectId, children }: {
@@ -21,7 +22,7 @@ export default function KnowledgeWorkflow({ projectId, children }: {
   const [receipt, setReceipt] = useState<{ taskId: string; linkId: string; route: string; status: string; gates: string[] } | null>(null);
   const open = (action: KnowledgeAction, detail: KnowledgeDetailView) => {
     if (!detail.allowedActions.includes(action)) return;
-    setOperation({ action, detail, key: crypto.randomUUID() });
+    setOperation({ action, detail, key: randomUUID() });
     setTitle(""); setText(""); setReason(""); setTarget(""); setError(""); setReceipt(null);
   };
   const close = () => { if (!pending) setOperation(null); };

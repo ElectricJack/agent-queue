@@ -91,21 +91,59 @@ _DEFAULT_TIMEOUT = 30.0
 # Per-command read timeouts (seconds) for commands that run an LLM or other
 # long operations server-side. Anything not listed uses _DEFAULT_TIMEOUT.
 _COMMAND_TIMEOUTS: dict[str, float] = {
+    # These diagnostics measure the whole fleet, even when their output is
+    # filtered to one project/task. Each project's cached prerequisite view
+    # has its own 10s bound, so a busy fleet can outlast the default 30s read.
+    "pool_status": 120.0,
+    "explain_task": 120.0,
+    # Fleet-wide failover/spill snapshots, including observational dry runs.
+    "provider_reroute": 120.0,
+    "session_cleanup": 600.0,
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
     "task_claim": 180.0,
-    "task_close": 180.0,
+    # Author close may regenerate a candidate (600s) before returning a wait.
+    "task_close": 900.0,
+    "integration_continue_close": 900.0,
     "message_wait": 90.0,
     # Binding, App token mint and two GitHub reads.
     "integration_trust_manifest": 90.0,
     # Binding, token mint, and a bounded set of reads (variables, workflow files).
     "integration_app_verify": 180.0,
-    # A page stops starting Git batches after 45s (provenance_migration).
+    # A namespace-migration page validates, copies and leases each old head's deletion.
+    "integration_migrate_provenance_refs": 600.0,
     # Doctor runs every check concurrently, each under its own timeout (the
-    # longest, git.stale_branches and integration.legacy_deliveries, allow 300s);
+    # longest, git.stale_branches, integration.legacy_deliveries and
+    # integration.completed_undelivered, allow 300s);
     # the read timeout must outlast them or a
     # full `aq doctor` reports "no complete response" while checks still run.
     "doctor": 330.0,
+    # Train controls observe the root target first: a git fetch plus a PR
+    # check read for every pending root, which on a busy install outlasts 30s
+    # (seal-now's preview, refresh-epic --apply, retire-origin all timed out
+    # live on 2026-10-06). The daemon finishes the command either way, so a
+    # short read timeout only hides the answer from the operator.
+    "integration_seal_now": 300.0,
+    "integration_refresh_epic": 300.0,
+    "integration_retire_origin": 300.0,
+    # Repair adoption and root redrive fetch authenticated remote history and
+    # prove exact heads before either preview or apply can return.
+    "integration_fast_forward_pr": 300.0,
+    "integration_redrive_root": 300.0,
+    # Recovery confirms the provider and verifies remote Git even in dry runs.
+    "integration_release_owner": 300.0,
+    "integration_restore_task_origin": 300.0,
+    "integration_pause_batch": 180.0,
+    "integration_resume_batch": 180.0,
+    "integration_settle_batch": 180.0,
+    "integration_release_withheld_source": 180.0,
+    "integration_abort_batch": 180.0,
+    "integration_eject": 180.0,
+    # Completed-container recovery, preview included, proves the exact head under
+    # the retained repository's transaction lock: a full retained fetch (120s Git
+    # budget, then fsck), two authenticated ls-remote reads and ancestry checks
+    # before the preview or CAS answers. Read-only previews timed out live at 30s.
+    "integration_recover_completed_container": 300.0,
 }
 
 
@@ -300,7 +338,11 @@ class CLIClient:
         except httpx.RequestError as exc:
             # A read/write failure can occur after the daemon committed the
             # command. Do not turn it into the daemon-start-and-retry path.
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(
+                command,
+                failure_kind=type(exc).__name__,
+                read_timeout_seconds=timeout if isinstance(exc, httpx.ReadTimeout) else None,
+            ) from exc
 
         if resp.status_code in (401, 403):
             # aq-surface §4.1 exit code 4: auth/scope denial is not a command
@@ -310,11 +352,11 @@ class CLIClient:
         try:
             data = resp.json()
         except ValueError as exc:
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(command, failure_kind="invalid_json") from exc
         if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="invalid_envelope")
         if resp.status_code >= 400 and data.get("ok"):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="http_status_mismatch")
         if not data.get("ok"):
             raise CommandError(
                 command,
@@ -501,6 +543,19 @@ class CLIClient:
             raise ScopeDeniedError("stream_tail", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("stream_tail", _relay_error(resp))
+        return resp.json()
+
+    async def get_ingest_batch(self, project_id: str, batch_id: str) -> dict:
+        """GET ``/api/projects/{project_id}/batches/{batch_id}`` (held batches)."""
+        assert self._http is not None, "CLIClient not connected"
+        try:
+            resp = await self._http.get(f"/api/projects/{project_id}/batches/{batch_id}")
+        except httpx.TransportError as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("get_ingest_batch", _relay_error(resp))
+        if resp.status_code >= 400:
+            raise CommandError("get_ingest_batch", _relay_error(resp))
         return resp.json()
 
     async def kill_stream(self, stream_id: str) -> dict:
