@@ -125,6 +125,9 @@ class TaskMetrics(BaseModel):
     PAUSED: float = 0
     BLOCKED: float = 0
     WAITING_INPUT: float = 0
+    WAITING: float = 0
+    HIBERNATED: float = 0
+    RESUME_PENDING: float = 0
     other: float = 0
     total: float = 0
 
@@ -174,6 +177,87 @@ class SamplerMetrics(BaseModel):
     """The sampler's own per-tick cost, so its overhead is observable."""
 
     collect_ms: float = 0
+
+
+class WaitSlotSeconds(BaseModel):
+    condition: float | None = None
+    capacity: float | None = None
+
+
+class WaitWakes(BaseModel):
+    outcome: float | None = None
+    decision: float | None = None
+    lift: float | None = None
+    launch_failed: float | None = None
+    other: float | None = None
+
+
+class WaitPriorityMetrics(BaseModel):
+    donors: float | None = None
+    reservations_pending: float | None = None
+    reservations_overdue: float | None = None
+    deadline_breaches_1h: float | None = None
+    unexplained: float | None = None
+
+
+class WaitDurationMetrics(BaseModel):
+    condition_kind: str
+    source_class: str
+    wait_duration_p50: float | None = None
+    expected_duration_seconds: float | None = None
+
+
+class WaitProjectMetrics(BaseModel):
+    resume_cost_p50: float | None = None
+    resume_cost_p95: float | None = None
+    resume_cost_minutes: float | None = None
+    summary_tokens: float | None = None
+    resume_tokens: float | None = None
+    teardown_seconds: float | None = None
+    setup_seconds: float | None = None
+    rebuild_seconds: float | None = None
+    durations: list[WaitDurationMetrics] = []
+
+
+class WaitCounterfactual(BaseModel):
+    """Estimated avoided monitoring tokens, never measured token savings."""
+
+    tokens: float | None = None
+    cohort: str
+    window: str
+
+
+class WaitMetrics(BaseModel):
+    """Observed wait accounting. Missing observations remain null at every tier.
+
+    Resume cost percentiles are seconds; configured resume_cost_minutes stays
+    in minutes. Duration/cost cohorts cover the preceding thirty days.
+    """
+
+    pending_in_place: float | None = None
+    pending_hibernated: float | None = None
+    pending_human: float | None = None
+    escalated: float | None = None
+    scheduler_by_reason: dict[str, float] = {}
+    in_place_slot_seconds_1h: float | None = None
+    released_slot_seconds_1h: WaitSlotSeconds | None = None
+    released_slot_seconds_24h: WaitSlotSeconds | None = None
+    evicted_1h: float | None = None
+    ceiling_1h: float | None = None
+    resume_cost_p50: float | None = None
+    resume_cost_p95: float | None = None
+    by_project: dict[str, WaitProjectMetrics] = {}
+    wakes_1h: WaitWakes | None = None
+    loops_1h: float | None = None
+    escalations_1h: float | None = None
+    decisions_1h: float | None = None
+    decision_seconds_p50: float | None = None
+    human_pending: float | None = None
+    human_age_max_seconds: float | None = None
+    priority: WaitPriorityMetrics | None = None
+    wait_seconds_1h: float | None = None
+    overhead_tokens_1h: float | None = None
+    tokens_saved_counterfactual: WaitCounterfactual | None = None
 
 
 class Histogram(BaseModel):
@@ -327,6 +411,7 @@ class MetricsSample(BaseModel):
     throughput: ThroughputMetrics = ThroughputMetrics()
     merges_per_hour: float = 0
     sampler: SamplerMetrics = SamplerMetrics()
+    waits: WaitMetrics | None = None
     perf: PerfMetrics = PerfMetrics()
 
 

@@ -20,7 +20,7 @@ CRUD and delivery queries.
 
 ```aq-graph
 version: 1
-defaults: { profile: coding }
+defaults: { intelligence_class: standard-high }
 parent: { title: "Messages table" }
 nodes:
   - key: schema

@@ -5,11 +5,9 @@ provides utilities for DAG (directed acyclic graph) validation of task
 dependencies. It is the source of truth for which (TaskStatus, TaskEvent) pairs
 are legal moves in the task lifecycle.
 
-IMPORTANT: As of now, this state machine is used only for validation logging
-and lookups — the orchestrator does NOT enforce transitions through this module.
-All status changes go directly through db.update_task(). This means invalid
-transitions can occur in practice if the orchestrator has bugs. Enforcing
-transitions is a planned improvement.
+Database lifecycle writes validate this table. Invalid suspended-state moves
+are always refused; legacy moves follow the state-machine enforcement flag.
+Guarded administrative controls have explicit overrides.
 
 See specs/models-and-state-machine.md for the full behavioral specification.
 """
@@ -18,7 +16,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from src.models import BLOCKING_DEP_TYPES, DepType, TaskStatus, TaskEvent
+from src.models import BLOCKING_DEP_TYPES, SUSPENDED_TASK_STATUSES, DepType, TaskStatus, TaskEvent
 
 __all__ = [
     "BLOCKING_DEP_TYPES",
@@ -35,6 +33,8 @@ __all__ = [
 
 
 class InvalidTransition(Exception):
+    code = "task.invalid_transition"
+
     def __init__(
         self,
         state: TaskStatus,
@@ -121,7 +121,24 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     # --- Daemon recovery ---
     (TaskStatus.IN_PROGRESS, TaskEvent.RECOVERY): TaskStatus.READY,
     (TaskStatus.ASSIGNED, TaskEvent.RECOVERY): TaskStatus.READY,
+    # Verified waits (hibernation implementation §6). These are vocabulary
+    # only until the v2 wait services are enabled.
+    (TaskStatus.IN_PROGRESS, TaskEvent.WAIT_REGISTERED): TaskStatus.WAITING,
+    (TaskStatus.WAITING, TaskEvent.WAIT_ACKNOWLEDGED): TaskStatus.IN_PROGRESS,
+    (TaskStatus.WAITING, TaskEvent.HIBERNATION_COMMITTED): TaskStatus.HIBERNATED,
+    (TaskStatus.HIBERNATED, TaskEvent.WAIT_RESOLVED): TaskStatus.RESUME_PENDING,
+    (TaskStatus.RESUME_PENDING, TaskEvent.WAIT_ACKNOWLEDGED): TaskStatus.IN_PROGRESS,
+    (TaskStatus.RESUME_PENDING, TaskEvent.RESUME_HELD): TaskStatus.HIBERNATED,
+    (TaskStatus.PAUSED, TaskEvent.UNPAUSE_RESUME): TaskStatus.RESUME_PENDING,
+    (TaskStatus.PAUSED, TaskEvent.UNPAUSE_HIBERNATE): TaskStatus.HIBERNATED,
 }
+for _status in SUSPENDED_TASK_STATUSES:
+    VALID_TASK_TRANSITIONS.update({
+        (_status, TaskEvent.MANUAL_PAUSE): TaskStatus.PAUSED,
+        (_status, TaskEvent.WAIT_REROUTED): TaskStatus.READY,
+        (_status, TaskEvent.AGENT_COMPLETED): TaskStatus.COMPLETED,
+        (_status, TaskEvent.AGENT_FAILED): TaskStatus.FAILED,
+    })
 
 # Derived set of valid (from_status, to_status) pairs for quick validation
 # without requiring a specific event.
