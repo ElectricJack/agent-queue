@@ -5,8 +5,7 @@ is the bulk, project-scoped form of ``release-owner`` for the rows that
 command cannot take: ``reserved`` branch-owner rows, which name no writer,
 left behind when a train run's tasks finished, were archived or were deleted.
 Every ``integration_branch_owners`` row that is not ``released`` counts as
-active integration work, so a requested drain (``aq integration enable
---mode disabled``) never completes while one remains.
+active integration work; disabling delivery preserves these reservations.
 
 A row is released only when it is provably safe:
 
@@ -18,7 +17,7 @@ A row is released only when it is provably safe:
   for it: no live session, workspace lock, in-flight candidate ref mutation
   or running operation, and no hierarchy/train project owns the row
   (:func:`src.integration.finished_owners._blocker`, the questions the
-  ``integration.finished_branch_owners`` doctor check asks);
+  finished-owner maintenance source asks);
 * nothing still relies on its fence: no active integration batch lists the
   branch and no unsettled promotion intent names it.  A promoted batch whose
   cleanup is pending keeps its integration branch's owner, because cleanup of
@@ -302,7 +301,7 @@ class StaleOwnerRelease(OwnerRecovery):
         refs: dict[str, str],
         default_branch: str,
         worktrees: list[dict[str, Any]],
-        live_dirs: set[str],
+        live_dirs: dict[str, str],
     ) -> tuple[str, str]:
         branch = branch_of(row["ref"]) or ""
         origin_sha = refs.get(f"refs/remotes/origin/{branch}")
@@ -313,7 +312,8 @@ class StaleOwnerRelease(OwnerRecovery):
                     continue
                 if os.path.realpath(path) in live_dirs:
                     return CHECKOUT_IN_USE, (
-                        f"{branch} is checked out at {path}, where a live session works"
+                        f"{branch} is checked out at {path}, where live session "
+                        f"{live_dirs[os.path.realpath(path)]} works"
                     )
                 head = entry.get("head")
                 if await self._dirty(path) or (
@@ -581,7 +581,7 @@ async def _owner_status(conn, row: dict[str, Any], *, lock: bool) -> str | None:
     return None if row["owner_role"] == COLLECTOR_ROLE else "deleted"
 
 
-async def _fence_blocker(conn, row: dict[str, Any]) -> None:
+async def _fence_blocker(conn, row: dict[str, Any], *, include_aborted: bool = True) -> None:
     """Refuse while a batch or promotion intent still relies on the row's fence."""
     branch = branch_of(row["ref"])
     batches = (
@@ -590,6 +590,7 @@ async def _fence_blocker(conn, row: dict[str, Any]) -> None:
                 integration_batches.c.id,
                 integration_batches.c.lifecycle,
                 integration_batches.c.cleanup_state,
+                integration_batches.c.intent,
                 integration_batches.c.integration_branch,
             ).where(
                 integration_batches.c.repository_id == row["repository_id"],
@@ -604,6 +605,8 @@ async def _fence_blocker(conn, row: dict[str, Any]) -> None:
         )
     ).all()
     for batch in batches:
+        if not include_aborted and batch.intent == "aborted":
+            continue
         active = batch.lifecycle in ACTIVE_BATCH_LIFECYCLES
         if branch_of(batch.integration_branch) == branch:
             if active:
