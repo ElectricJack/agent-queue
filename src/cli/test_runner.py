@@ -38,10 +38,12 @@ would be worse than no wrapper.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -462,6 +464,176 @@ def _compose_pytest_argv(
     return argv
 
 
+@dataclass(frozen=True)
+class BazelPlan:
+    targets: tuple[str, ...]
+    modules: tuple[str, ...]
+    full_suite: bool
+
+
+def _bazel_plan(args: tuple[str, ...], *, markers: str, all_markers: bool) -> BazelPlan:
+    """Translate only selections whose exact node obligations exist in B1's manifest."""
+    root, testpaths = _pytest_rootdir(Path.cwd())
+    manifest_path = root / "tools/bazel/test_suites.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest["schema_version"] != 1:
+            raise ValueError("unsupported suite manifest version")
+        modules, suites, aliases = (manifest[key] for key in ("modules", "suites", "aliases"))
+        nodes = manifest["collection"]["nodes"]
+        for key, relative in (
+            ("catalogue_sha256", "tests/selection_catalogue.json"),
+            ("workflow_sha256", ".github/workflows/tests.yml"),
+        ):
+            if hashlib.sha256((root / relative).read_bytes()).hexdigest() != manifest[key]:
+                raise ValueError(f"stale manifest: {relative} changed; regenerate the Bazel graph")
+        current_modules = {p.relative_to(root).as_posix() for p in _test_modules(testpaths)}
+        if current_modules != set(modules):
+            raise ValueError("stale manifest: test modules changed; regenerate the Bazel graph")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"cannot read Bazel suite manifest at {manifest_path}: {exc}") from exc
+    selected = []
+    marker = "" if all_markers else markers
+    explicit_marker = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in {"-m", "--markexpr"}:
+            index += 1
+            if index == len(args):
+                raise ValueError(f"{arg} requires a marker expression")
+            marker = args[index]
+            explicit_marker = True
+        elif arg.startswith("--markexpr=") or (arg.startswith("-m") and arg != "-m"):
+            marker = arg.split("=", 1)[1] if "=" in arg else arg[2:]
+            explicit_marker = True
+        elif arg == "--":
+            selected.extend(args[index + 1 :])
+            break
+        elif arg.startswith("-"):
+            raise ValueError(f"unsupported pytest argument {arg!r}")
+        else:
+            selected.append(arg)
+        index += 1
+    if not selected:
+        raise ValueError(
+            "name a module, directory or manifest suite; implicit whole-suite runs refused"
+        )
+    suite_names = [name.removeprefix("//checks:") for name in selected]
+    if any(name in aliases or name in suites for name in suite_names):
+        if not all(name in aliases or name in suites for name in suite_names):
+            raise ValueError("cannot mix manifest suite names with module paths")
+        if explicit_marker or all_markers:
+            raise ValueError(
+                "manifest suites own their marker/exclusion policy; do not override it"
+            )
+        keys = list(dict.fromkeys(k for name in suite_names for k in aliases.get(name, [name])))
+        chosen = tuple(dict.fromkeys(t for key in keys for t in suites[key]["targets"]))
+        paths = tuple(sorted({p for key in keys for p in suites[key]["modules"]}))
+        full = len(paths) >= _FULL_SUITE_SHARE * len(modules)
+    else:
+        paths_set = set()
+        for arg in selected:
+            if "::" in arg:
+                raise ValueError("pytest node IDs are not supported by the Bazel backend")
+            path = (Path.cwd() / arg).resolve()
+            if not path.exists():
+                raise ValueError(f"no such test path: {arg}")
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError as exc:
+                raise ValueError(f"test path outside the Bazel workspace: {arg}") from exc
+            matches = [p for p in modules if p == relative or path in (root / p).parents]
+            if not matches:
+                raise ValueError(f"test path is absent from the Bazel suite manifest: {arg}")
+            paths_set.update(matches)
+        paths = tuple(sorted(paths_set))
+        from _pytest.mark.expression import Expression
+
+        try:
+            expression = Expression.compile(marker) if marker.strip() else None
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"unsupported marker expression: {marker!r}") from exc
+        targets = []
+        executed = []
+        for path in paths:
+            info = modules[path]
+            wanted = {
+                i
+                for i in info["nodes"]
+                if expression is None
+                or expression.evaluate(lambda name: name in nodes[i]["markers"])
+            }
+            if not wanted:
+                # Collection-skipped modules have a deliberate fail-closed focused target.
+                if not info["nodes"] and marker == manifest["default_marker"]:
+                    targets.append(info["target"])
+                    executed.append(path)
+                continue
+            keys = sorted(
+                info["targets"], key=lambda key: (key != "module", key != "all_nodes", key)
+            )
+            matching = [
+                info["targets"][key]
+                for key in keys
+                if set(suites[key]["modules"].get(path, [])) == wanted
+                and not suites[key].get("perf_strict", False)
+            ]
+            if not matching:
+                raise ValueError(f"no exact Bazel target for {path} with marker {marker!r}")
+            targets.append(matching[0])
+            executed.append(path)
+        chosen = tuple(dict.fromkeys(targets))
+        # Apply the same broad-marker rule as the pytest full-suite classifier.
+        full = len(paths) >= _FULL_SUITE_SHARE * len(modules) and _expression_is_broad(marker)
+        paths = tuple(executed)
+    if not chosen:
+        raise ValueError("no tests selected by the Bazel manifest; nothing was verified")
+    return BazelPlan(chosen, paths, full)
+
+
+def _bazel_argv(plan: BazelPlan, *, workers: int) -> list[str]:
+    """Bazel owns parallelism; every target conservatively reserves a PG slot.
+
+    Resource estimates are configurable without adding application schema. Pure
+    targets reserve the same capacity as PG targets, so uncertainty cannot exceed
+    the session's database or memory allocation. The launcher itself runs serially.
+    Batch mode keeps the admitted process responsible for the entire invocation.
+    """
+    db_slots = min(workers, _env_int("AQ_BAZEL_DB_SLOTS") or workers)
+    memory_per_test = _env_int("AQ_BAZEL_TEST_MEMORY_MB") or 1024
+    memory = _env_int("AQ_BAZEL_MEMORY_MB") or workers * memory_per_test
+    if memory < memory_per_test:
+        raise ValueError("AQ_BAZEL_MEMORY_MB is below AQ_BAZEL_TEST_MEMORY_MB")
+    executable = os.environ.get("AQ_BAZEL_EXECUTABLE") or shutil.which("bazel") or "bazel"
+    return [
+        executable,
+        "--batch",
+        "test",
+        "--config=local",
+        f"--jobs={workers}",
+        f"--local_test_jobs={workers}",
+        f"--local_resources=cpu={workers}",
+        f"--local_resources=memory={memory}",
+        f"--local_resources=aq_pg={db_slots}",
+        "--default_test_resources=cpu=1",
+        f"--default_test_resources=memory={memory_per_test}",
+        "--default_test_resources=aq_pg=1",
+        "--test_env=PYTEST_ADDOPTS=",
+        "--test_env=PYTEST_XDIST_AUTO_NUM_WORKERS=1",
+        *plan.targets,
+    ]
+
+
+def _bazel_error(ctx: click.Context, message: str, args: tuple[str, ...]) -> None:
+    click.echo(f"aq test: Bazel backend: {message}. Nothing was run.", err=True)
+    click.echo(
+        "Use the legacy backend: " + shlex.join(["aq", "test", "--aq-backend", "pytest", *args]),
+        err=True,
+    )
+    ctx.exit(2)
+
+
 def _run_forwarding_signals(argv: list[str], *, env: dict[str, str] | None = None) -> int:
     """Run *argv*, passing SIGINT/SIGTERM on to it, and return its code.
 
@@ -837,7 +1009,7 @@ def _smart_recheck(ctx: click.Context, plan: SmartPlan) -> None:
         ctx.exit(4)
 
 
-def _smart_observe(plan: SmartPlan, *, exit_code, duration_ms, executed) -> None:
+def _smart_observe(plan: SmartPlan, *, exit_code, duration_ms, executed, backend="pytest") -> None:
     if not plan.recorded or not plan.selection_id:
         return
     try:
@@ -848,6 +1020,7 @@ def _smart_observe(plan: SmartPlan, *, exit_code, duration_ms, executed) -> None
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
                 "executed_modules": executed,
+                "payload": {"backend": backend},
             },
         )
     except Exception:
@@ -880,6 +1053,13 @@ class _TestCommand(click.Command):
     },
 )
 @click.option("--aq-detach", is_flag=True, help="Submit to the managed queue and return its ID.")
+@click.option(
+    "--aq-backend",
+    type=click.Choice(["pytest", "bazel"]),
+    default="pytest",
+    show_default=True,
+    help="Test backend. Bazel accepts manifest modules/suites and exact marker arms only.",
+)
 @click.option("--aq-wait", is_flag=True, help="With --aq-detach, register a durable job wait.")
 @click.option("--aq-idempotency-key", default=None, help="Replay a detached submission safely.")
 @click.option("--aq-status", is_flag=True, help="Show slot and full-suite lock occupancy and exit.")
@@ -900,7 +1080,7 @@ class _TestCommand(click.Command):
     is_flag=True,
     help="Override the default marker deselects (perf/migration/slow/tmux/integration).",
 )
-@click.option("--aq-dry-run", is_flag=True, help="Print the pytest command and exit.")
+@click.option("--aq-dry-run", is_flag=True, help="Print the test command and exit.")
 @click.option(
     "--aq-smart",
     "aq_smart",
@@ -940,6 +1120,7 @@ class _TestCommand(click.Command):
 def test_command(
     ctx: click.Context,
     aq_detach: bool,
+    aq_backend: str,
     aq_wait: bool,
     aq_idempotency_key: str | None,
     aq_status: bool,
@@ -957,7 +1138,7 @@ def test_command(
     aq_apply: bool,
     pytest_args: tuple[str, ...],
 ) -> None:
-    """Run pytest under the box-wide test semaphore.
+    """Run pytest under the box-wide test semaphore (or opt in to Bazel).
 
     \b
     aq test tests/test_pools.py            one file, still slot-gated
@@ -965,6 +1146,8 @@ def test_command(
     aq test --aq-status                    who is holding the slots
     aq test --aq-no-wait tests/            fail instead of queueing
     aq test --aq-reap-orphans [--aq-apply] free slots held by dead sessions
+    aq test --aq-backend bazel tests/test_env_scrub.py
+    aq test --aq-backend bazel cli       explicit workflow suite from the manifest
 
     Everything that is not an ``--aq-*`` option is passed to pytest
     untouched.  ``-n`` and ``-m`` are added only when you did not supply
@@ -984,12 +1167,26 @@ def test_command(
     ``resources.test_interpreters[<project id>]``, else its ``.venv``
     (the main checkout's, from a worker slot).  Only agent-queue's own
     suite requires ``POSTGRES_TEST_DSN``.
+
+    Bazel is opt-in and uses tools/bazel/test_suites.json. Unsupported pytest
+    arguments (including -k, node IDs and exclusions) and smart enforcement
+    are refused with a legacy command. Targets run pytest serially; Bazel's
+    jobs stay within the session worker share. AQ_BAZEL_DB_SLOTS (default:
+    worker share), AQ_BAZEL_TEST_MEMORY_MB (default: 1024) and
+    AQ_BAZEL_MEMORY_MB (default: share * estimate) bound local test resources.
+    Every target conservatively reserves one database slot. Set
+    AQ_BAZEL_EXECUTABLE to the pinned Bazel binary when it is not on PATH.
+    Target HOME/network/PostgreSQL isolation happens after host lock admission.
     """
     if aq_wait and not aq_detach:
         raise click.UsageError("--aq-wait requires --aq-detach")
     if aq_idempotency_key and not aq_detach:
         raise click.UsageError("--aq-idempotency-key requires --aq-detach")
     if aq_detach:
+        if aq_backend != "pytest":
+            raise click.UsageError(
+                "Bazel requires local resource admission; cannot use --aq-detach"
+            )
         if aq_smart or aq_plan_only or aq_base or aq_no_jev or aq_project:
             raise click.UsageError("Smart selection requires a local run; cannot use --aq-detach")
         if (
@@ -1031,6 +1228,7 @@ def test_command(
     config = _load_config()
     resources = getattr(config, "resources", None)
     slots, workers, markers, poll, timeout = _caps(resources)
+    allocated_workers = workers
     if aq_workers is not None and aq_workers > 0:
         # An escape hatch for an operator running this by hand, clamped to
         # the machine: overriding the share is reasonable, asking for more
@@ -1039,6 +1237,8 @@ def test_command(
         workers = min(aq_workers, cores)
         if workers < aq_workers:
             console.print(f"[yellow]aq test:[/] --aq-workers clamped to {cores} (cores)")
+    if aq_backend == "bazel":
+        workers = min(workers, allocated_workers)
     timeout = _slot_wait_timeout(timeout, aq_timeout)
 
     lock_dir = default_lock_dir(config)
@@ -1058,6 +1258,16 @@ def test_command(
     if aq_reap_orphans:
         ctx.exit(_reap_orphans(lock_dir, apply=aq_apply))
 
+    bazel_plan = None
+    if aq_backend == "bazel":
+        if aq_smart == "enforce" or "--aq-smart-enforce" in pytest_args:
+            _bazel_error(ctx, "smart enforcement has no exact Bazel node mapping", pytest_args)
+        try:
+            bazel_plan = _bazel_plan(pytest_args, markers=markers, all_markers=aq_all_markers)
+            argv = _bazel_argv(bazel_plan, workers=workers)
+        except (ValueError, KeyError, TypeError) as exc:
+            _bazel_error(ctx, str(exc), pytest_args)
+
     plan = None
     if aq_plan_only and aq_smart is None:
         aq_smart = "shadow"
@@ -1072,7 +1282,8 @@ def test_command(
                 err=True,
             )
             ctx.exit(2)
-        targets = _positional_args(pytest_args)
+        smart_args = tuple(bazel_plan.modules) if bazel_plan else pytest_args
+        targets = _positional_args(smart_args)
         plan = _smart_plan(
             ctx,
             mode=aq_smart,
@@ -1080,7 +1291,7 @@ def test_command(
             plan_only=aq_plan_only,
             jev=not aq_no_jev,
             project=aq_project,
-            pytest_args=pytest_args,
+            pytest_args=smart_args,
             marker_policy="all" if aq_all_markers else "default",
         )
         if aq_plan_only or (aq_smart == "shadow" and not targets):
@@ -1111,7 +1322,7 @@ def test_command(
         console.print("[dim]Refusing to run the whole suite implicitly — see --aq-help.[/]")
         ctx.exit(2)
 
-    missing = _missing_paths(pytest_args)
+    missing = [] if bazel_plan else _missing_paths(pytest_args)
     if missing:
         # Fail before taking a slot.  pytest under xdist turns a bad path
         # into "no tests ran", which an agent reads as a pass and closes
@@ -1134,17 +1345,21 @@ def test_command(
         console.print(f"[red]aq test:[/] {escape(str(exc))}")
         console.print("[dim]Nothing was run.[/]")
         ctx.exit(4)
-    xdist = _xdist_disabled(pytest_args) or project_tests.has_xdist(project.python)
-    _report_project(project, xdist=xdist, explicit_n=_has_flag(pytest_args, "-n", "--numprocesses"))
+    xdist = False
+    if bazel_plan is None:
+        xdist = _xdist_disabled(pytest_args) or project_tests.has_xdist(project.python)
+        _report_project(
+            project, xdist=xdist, explicit_n=_has_flag(pytest_args, "-n", "--numprocesses")
+        )
 
-    argv = _compose_pytest_argv(
-        pytest_args,
-        workers=workers,
-        markers=markers,
-        apply_markers=not aq_all_markers,
-        python=project.python,
-        xdist=xdist,
-    )
+        argv = _compose_pytest_argv(
+            pytest_args,
+            workers=workers,
+            markers=markers,
+            apply_markers=not aq_all_markers,
+            python=project.python,
+            xdist=xdist,
+        )
 
     if aq_dry_run:
         # click.echo, not console.print: a pytest command line is full of
@@ -1154,17 +1369,18 @@ def test_command(
         return
 
     # agent-queue's own suite needs PostgreSQL; nobody else's is refused for it.
-    dsn_error = postgres_test_dsn_error() if project.requires_postgres else None
+    dsn_error = postgres_test_dsn_error() if project.requires_postgres and not bazel_plan else None
     if dsn_error:
         console.print(f"[red]aq test:[/] {dsn_error}")
         ctx.exit(4)
 
-    full_suite = _is_full_suite(pytest_args)
+    full_suite = bazel_plan.full_suite if bazel_plan else _is_full_suite(pytest_args)
     test_run_id = _new_test_run_id()
     meta = {
         **_holder_meta(test_run_id),
         "command": shlex.join(argv),
         "scope": "full" if full_suite else "focused",
+        "backend": aq_backend,
     }
 
     # A supervising caller (the development publisher) asks, through the
@@ -1253,7 +1469,9 @@ def test_command(
                     report, "acquired", waited=round(time.monotonic() - queued_at, 3), slot=slot
                 )
             scope = "full-suite lock + " if full_suite else ""
-            spread = f"-n {workers}" if xdist else "serial"
+            spread = (
+                f"Bazel jobs {workers}" if bazel_plan else f"-n {workers}" if xdist else "serial"
+            )
             console.print(f"[dim]aq test: {scope}slot {slot} of {slots}, {spread}[/]")
             click.echo(f"$ {shlex.join(argv)}", err=True)
             child_env = project.child_env(os.environ)
@@ -1265,6 +1483,11 @@ def test_command(
             started_at = time.monotonic()
             try:
                 returncode = _run_forwarding_signals(argv, env=child_env)
+            except OSError as exc:
+                if not bazel_plan:
+                    raise
+                click.echo(f"aq test: could not start Bazel: {exc}", err=True)
+                returncode = 127
             finally:
                 if report:
                     append_event(report, "released")
@@ -1273,9 +1496,10 @@ def test_command(
                 plan,
                 exit_code=returncode,
                 duration_ms=round((time.monotonic() - started_at) * 1000),
-                executed=_positional_args(pytest_args),
+                executed=list(bazel_plan.modules) if bazel_plan else _positional_args(pytest_args),
+                backend=aq_backend,
             )
-        if returncode == 5:
+        if returncode == 5 and bazel_plan is None:
             # pytest's EXIT_NOTESTSCOLLECTED.  Nonzero already, but silent
             # about *why*: say plainly that nothing was verified.
             console.print(

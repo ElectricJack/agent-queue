@@ -4286,6 +4286,93 @@ async def cross_epic_world(world):
     return epic, prerequisite, TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
 
 
+@pytest.mark.parametrize("child_done", [False, True])
+async def test_idle_epic_refreshes_default_delivered_prerequisites_once(world, child_done):
+    db, origin = world.db, world.origin
+    epic, prerequisite, target = await cross_epic_world(world)
+    if child_done:
+        await close(db, "child", [git(origin.url, "rev-parse", "aq/child")], origin=origin)
+    origin.land("prerequisite")
+    train, checks, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+
+    first = await train.visit(target)
+    assert first.state == "blocked"
+    [blocker] = first.detail["blockers"]
+    assert blocker["code"] == "epic_refresh_pending"
+    assert blocker["prerequisite_task_ids"] == ["prerequisite"]
+    refresh = await DatabaseBatches(db).current(target)
+    assert refresh.epic_refresh and blocker["refresh"]["batch_id"] == refresh.id
+    assert git(origin.url, "rev-parse", "aq/epic") == epic
+
+    testing = await train.visit(target)
+    assert testing.state == "testing" and testing.batch_id == refresh.id
+    repeated = await train.visit(target)
+    assert repeated.state == "testing" and repeated.batch_id == refresh.id
+    async with db._engine.connect() as conn:
+        refresh_ids = list((await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.id.like("train-epic-refresh-%")))).scalars())
+    assert refresh_ids == [refresh.id]
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(target)).state == "delivered"
+    git(origin.url, "merge-base", "--is-ancestor", prerequisite,
+        git(origin.url, "rev-parse", "aq/epic"))
+    if child_done:
+        admitted = await train.visit(target)
+        assert admitted.state == "testing" and admitted.batch_id != refresh.id
+        assert [m.task_id for m in await BatchStore(db).members(admitted.batch_id)] == ["child"]
+    else:
+        assert await db.is_hierarchy_task_runnable("child")
+        assert (await train.visit(target)).state == "idle"
+
+
+@pytest.mark.parametrize("child_done", [False, True])
+async def test_idle_epic_keeps_genuinely_undelivered_prerequisite_pending(world, child_done):
+    db, origin = world.db, world.origin
+    _, _, target = await cross_epic_world(world)
+    if child_done:
+        await close(db, "child", [git(origin.url, "rev-parse", "aq/child")], origin=origin)
+    # Main has advanced, but still lacks the prerequisite's source.
+    origin.land("other")
+    train, _, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    for _ in range(2):
+        visit = await train.visit(target)
+        assert visit.state == "blocked"
+        assert {item["code"] for item in visit.detail["blockers"]} == {"prerequisite_pending"}
+        assert await DatabaseBatches(db).current(target) is None
+
+
+async def test_idle_epic_does_not_refreeze_aborted_prerequisite_refresh(world):
+    db, origin = world.db, world.origin
+    _, _, target = await cross_epic_world(world)
+    origin.land("prerequisite")
+    train, _, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    first = await train.visit(target)
+    refresh_id = first.detail["blockers"][0]["refresh"]["batch_id"]
+    await TrainControls(db).abort_batch(refresh_id, dry_run=False,
+        operator_id="operator", reason="retain failed refresh inputs")
+    for _ in range(2):
+        visit = await train.visit(target)
+        [blocker] = visit.detail["blockers"]
+        assert blocker["code"] == "epic_refresh_pending"
+        assert blocker["refresh"]["outcome"] == "settled"
+        assert blocker["refresh"]["batch_id"] == refresh_id
+        assert await DatabaseBatches(db).current(target) is None
+
+
+async def test_idle_epic_needs_all_missing_prerequisites_delivered(world):
+    db, origin = world.db, world.origin
+    _, _, target = await cross_epic_world(world)
+    origin.land("prerequisite")
+    await completed(world, "undelivered")
+    await db.add_dependency("child", "undelivered")
+    train, _, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    visit = await train.visit(target)
+    [blocker] = visit.detail["blockers"]
+    assert blocker["code"] == "prerequisite_pending"
+    assert blocker["prerequisite_task_ids"] == ["prerequisite", "undelivered"]
+    assert await DatabaseBatches(db).current(target) is None
+
+
 @pytest.mark.parametrize("delivery", ["ancestry", "trailer", "patch"])
 async def test_cross_epic_frontier_requires_exact_default_proof(world, delivery):
     db, origin = world.db, world.origin
@@ -8674,7 +8761,9 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
         integration_check_evidence,
         integration_cleanup_items,
     )
+    from src.integration.delivery_branches import train_cleanup_hold
     from src.integration.root_pull_requests import EpicPullRequestService
+    from src.integration.truth_reconciler import GitTruthReconciler
 
     case = collected_epic
     db, origin, train, github = case.db, case.origin, case.train, case.github
@@ -8768,6 +8857,17 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
         git(origin.url, "merge-base", "--is-ancestor", source, repaired)
     train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await db.get_task("epic")).pr_url == url
+
+    # Epic deletion waits for each child's current completion to be retained,
+    # even after the repaired parent has reached main (branch-retirement.md).
+    async with db._engine.connect() as conn:
+        hold = await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref)
+    assert hold and "child" in hold and "has no retained completion witness" in hold
+    assert git(origin.url, "rev-parse", "aq/epic") == head
+    reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
+    await reconciler.tick(case.now[0])
+    async with db._engine.connect() as conn:
+        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])

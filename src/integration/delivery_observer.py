@@ -18,7 +18,7 @@ import time
 import weakref
 from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
-from contextvars import ContextVar
+from contextvars import Context, ContextVar
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -34,6 +34,7 @@ from src.database.tables import (
     repos,
     task_branch_origins,
     task_completion_records,
+    task_dependencies,
     tasks,
 )
 from src.git.manager import GitError, RemoteRefState, within_git_read_budget
@@ -717,6 +718,65 @@ class DeliveryObserver:
         self._stack_ref_cache: dict = {}
         self._refreshes: dict[tuple, asyncio.Task] = {}
         self._refresh_after: dict[tuple, float] = {}
+        self._delivery_refresh_ids: set[str] = set()
+        self._delivery_refresh_task: asyncio.Task | None = None
+
+    def request_delivery_refresh(self, task_ids: Iterable[str]) -> None:
+        """Warm unavailable default-target proofs without waiting for a train visit.
+
+        Diagnostic callers only enqueue work. One worker coalesces sources and
+        backs off on unavailable observations; it never grants admission itself.
+        A fresh context prevents an expired request's Git budget or read-only
+        diagnostic scope from leaking into this independent observation.
+        """
+        self._delivery_refresh_ids.update(task_ids)
+        if self._delivery_refresh_task is None or self._delivery_refresh_task.done():
+            self._delivery_refresh_task = asyncio.create_task(
+                self._refresh_delivery(), name="delivery-prerequisite-refresh", context=Context(),
+            )
+
+    async def stop_delivery_refresh(self) -> None:
+        """Release background readers before the database shuts down."""
+        self._delivery_refresh_ids.clear()
+        if self._delivery_refresh_task is not None:
+            self._delivery_refresh_task.cancel()
+            await asyncio.gather(self._delivery_refresh_task, return_exceptions=True)
+            self._delivery_refresh_task = None
+
+    async def _refresh_delivery(self) -> None:
+        delay = 1.0
+        while self._delivery_refresh_ids:
+            # Failed GitTruth fetches already carry backoff. Never spin on that
+            # cached failure, and bound retry pressure when the remote stays down.
+            await asyncio.sleep(delay)
+            ids = set(self._delivery_refresh_ids)
+            try:
+                async with self.db._engine.connect() as conn:
+                    active = set((await conn.execute(select(
+                        task_dependencies.c.depends_on_task_id,
+                    ).join(tasks, tasks.c.id == task_dependencies.c.task_id).where(
+                        task_dependencies.c.dep_type == "delivery-of",
+                        task_dependencies.c.depends_on_task_id.in_(ids),
+                        tasks.c.status.in_(("READY", "RESUME_PENDING")),
+                    ))).scalars())
+                self._delivery_refresh_ids.difference_update(ids - active)
+                if not active:
+                    continue
+                async with asyncio.timeout(30):
+                    view = await self.observe(active, target_loader=delivery_targets,
+                                              admit_dependents=False)
+                    async with self.db._engine.connect() as conn:
+                        verified = await view.verified_on(conn, active)
+                # Retry only transiently unloaded evidence. Pending ancestry,
+                # unlabelled sources and absent configuration need actual changes.
+                finished = {tid for tid in active if tid not in view.targets or (
+                    tid in verified and not verified[tid].unloaded
+                )}
+                self._delivery_refresh_ids.difference_update(finished)
+            except Exception:
+                logger.warning("delivery prerequisite refresh unavailable for %s", ids,
+                               exc_info=True)
+            delay = min(delay * 2, 30.0)
 
     def store_path(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()[:20]
@@ -740,7 +800,9 @@ class DeliveryObserver:
         same target fetched that recently; it still pins one exact target OID.
         """
         from src.projects.storage_binding import repository_path
+        from src.metrics.operation_profile import profile_repository
 
+        profile_repository(target.project_id, target.repository_id)
         path = await repository_path(self.db, target.repository_id,
                                      self.store_path(target.repository_id))
         recent = self._recent.get(target)
@@ -842,7 +904,10 @@ class DeliveryObserver:
                 if (max_age <= 0 and flight is not None and flight.seq is not None
                         and flight.seq <= arrival):
                     # Its fetch began before this caller asked: no proof for it.
-                    await asyncio.wait((flight.task,))
+                    from src.metrics.operation_profile import profile_timing
+
+                    with profile_timing("wait.shared_observation_previous"):
+                        await asyncio.wait((flight.task,))
                     continue
                 if flight is None:
                     if state.last is not None and state.last.seq > arrival:
@@ -853,7 +918,10 @@ class DeliveryObserver:
                             target, path, state, flight))
                         flight.task.add_done_callback(
                             partial(_flight_landed, flights, key, state, flight))
-                await asyncio.wait((flight.task,))
+                from src.metrics.operation_profile import profile_timing
+
+                with profile_timing("wait.shared_observation_current"):
+                    await asyncio.wait((flight.task,))
                 break
         finally:
             state.readers -= 1
@@ -867,8 +935,10 @@ class DeliveryObserver:
         self, target: DeliveryTarget, path: Path, state: _Flights, flight: _Flight,
     ) -> DeliverySnapshot:
         """Fetch one repository observation; any failure is an unknown one."""
+        from src.metrics.operation_profile import profiled_lock
+
         try:
-            async with _fetch_lock(path):
+            async with profiled_lock(_fetch_lock(path), "wait.observer_store_lock"):
                 state.begun += 1
                 flight.seq = state.begun
                 store = await self._store(target)

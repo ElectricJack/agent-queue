@@ -35,6 +35,7 @@ from src.waits.conditions import Condition, Scope
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.registry import build_registry
 from src.waits.resource_sources import resource_invalidation
+from src.waits.timers import WaitTimerDriver
 from src.wait_runtime.service import WaitService
 from src.waits.sources import record_source_event
 from tests.test_wait_queries import (
@@ -387,6 +388,48 @@ async def test_observation_retries_are_bounded_and_keep_monotonic_cursor(runtime
                for event in await records(runtime_env, wait_source_events))
 
 
+async def test_aged_retry_respects_backoff_and_shares_turns_across_drains(runtime_env):
+    env = runtime_env
+    now = [NOW]
+    service = runtime(env, clock=lambda: now[0])
+    listener = service.listener
+    listener.drain_budget_seconds = 0
+    retained = await env.db.wait_source_commit(source_key="test:retry-fairness", generation=0,
+        revision="1", outcome_ref="retry", payload={})
+    seen = []
+
+    async def unavailable(conn, event):
+        seen.append(event["seq"])
+        return 120 if event["seq"] == retained else 0
+
+    listener._dispatch = unavailable
+    await listener.tick()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).where(
+            wait_source_events.c.seq == retained,
+        ).values(committed_at=NOW))
+    later = [await env.db.wait_source_commit(source_key=f"test:forward:{n}", generation=0,
+        revision="1", outcome_ref="forward", payload={}) for n in range(3)]
+    # It is old enough for a fair turn, but its observation backoff still applies.
+    now[0] += 61
+    await listener.tick()
+    assert seen == [retained, later[0]]
+    # Due retries run without waiting for the forward queue to empty.
+    now[0] += 61
+    await listener.tick()
+    assert seen == [retained, later[0], retained]
+    # Even with backoff expired again, give forward work the next turn.
+    now[0] += 121
+    await listener.tick()
+    assert seen == [retained, later[0], retained, later[1]]
+    await listener.tick()
+    assert seen == [retained, later[0], retained, later[1], retained]
+    sources = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert sources[retained]["dispatched_at"] is None
+    assert sources[later[2]]["dispatched_at"] is None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == later[1]
+
+
 async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_event(runtime_env):
     env = runtime_env
     for n in range(3):
@@ -449,14 +492,15 @@ async def test_irrelevant_batch_rolls_back_on_expired_lease_and_replays(runtime_
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
 
 
-async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
+@pytest.mark.parametrize('kind', ['ci_check', 'message', 'dependency', 'task', 'job', 'batch'])
+async def test_irrelevant_batch_stops_before_subscribed_event(runtime_env, kind):
     env = runtime_env
     receipt = await register(env)
     async with env.db._engine.begin() as conn:
         await conn.execute(update(wait_records).where(
             wait_records.c.id == receipt["wait_id"],
-        ).values(source_key="ci_check:repo:sha:unit", source_generation=0))
-    for key in ("ci_check:other:sha:unit", "ci_check:repo:sha:unit", "ci_check:other:sha:unit"):
+        ).values(source_key=f"{kind}:subscribed", source_generation=0))
+    for key in (f"{kind}:other", f"{kind}:subscribed", f"{kind}:other"):
         await env.db.wait_source_commit(source_key=key, generation=0,
             revision=str(len(await records(env, wait_source_events))), outcome_ref=key, payload={})
     source = sorted(await records(env, wait_source_events), key=lambda event: event["seq"])
@@ -475,6 +519,39 @@ async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
     assert dispatcher.commit.await_count == 1
     assert dispatcher.commit.await_args.args[2]["seq"] == source[1]["seq"]
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
+
+
+async def test_mixed_backlog_batches_preserve_terminal_and_provider_callbacks(runtime_env):
+    env = runtime_env
+    service = runtime(env)
+    ordinary = [
+        ('message:mail', {}), ('dependency:a:b:blocks', {}),
+        ('task:changing', {'status': 'IN_PROGRESS'}), ('ci_run:repo:head', {}),
+        ('batch:batch', {}), ('job:job', {}), ('playbook_condition:run:wait', {}),
+        ('resource_invalidation:workspace:ws', {}), ('resource_invalidation:config:cfg', {}),
+    ]
+    terminal = ('task:gone', {'status': 'COMPLETED'})
+    provider = ('resource_invalidation:provider:fake', {'identity': 'fake'})
+    sequence = ordinary * 25 + [terminal] + ordinary + [provider] + ordinary
+    async with env.db._engine.begin() as conn:
+        for n, (key, payload) in enumerate(sequence):
+            await record_source_event(conn, source_key=key, generation=0,
+                revision=str(n), outcome_ref=f'event:{n}', payload=payload, occurred_at=NOW)
+    dispatch = service.listener._dispatch
+    service.listener._dispatch = AsyncMock(wraps=dispatch)
+    drain_one = service.listener._drain_one
+    service.listener._drain_one = AsyncMock(wraps=drain_one)
+    assert await service.listener.tick()
+    assert [call.args[1]['source_key'] for call in service.listener._dispatch.await_args_list] == [
+        terminal[0], provider[0],
+    ]
+    # Count transactions: prefix planning now runs both before and after the fence.
+    # More than one bounded batch, but no per-event transactions for irrelevant traffic.
+    assert 1 < service.listener._drain_one.await_count < 10
+    source = await records(env, wait_source_events)
+    assert len(source) == len(sequence) and all(event['dispatched_at'] is not None for event in source)
+    assert (await records(env, wait_listener_cursors))[0]['last_seq'] == max(
+        event['seq'] for event in source)
 
 
 async def test_unused_ci_retries_retire_in_batches_during_backoff_without_observation(
@@ -997,6 +1074,11 @@ async def test_poisoned_deadline_is_quarantined_and_later_deadlines_fire_after_r
 @pytest.mark.parametrize("refusal", [
     {"success": False, "error_code": "wait.unavailable"},
     {"success": False, "error": "database temporarily unavailable"},
+    {"success": False, "error_code": "command_runtime_error", "error": "connection lost"},
+    {"success": False, "error_code": "command_runtime_error",
+     "error": "deadline effect failed: not a refusal dictionary"},
+    {"success": False, "error_code": "command_runtime_error",
+     "error": "deadline effect failed: {'success': False, 'error_code': 'wait.unavailable'}"},
 ])
 async def test_transient_deadline_refusal_is_not_quarantined(runtime_env, refusal):
     env = runtime_env
@@ -1013,8 +1095,14 @@ async def test_transient_deadline_refusal_is_not_quarantined(runtime_env, refusa
     assert not await records(env, messages)
 
 
-async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_deadlines(
-    runtime_env,
+@pytest.mark.parametrize("deadline_type,code,wrapped", [
+    ("due", "wait.graph_busy", False),
+    ("reservation", "wait.source_unresolved", False),
+    ("reservation", "wait.source_unresolved", True),
+    ("transition", "wait.effect_refused", False),
+])
+async def test_refused_deadline_retries_with_backoff_without_blocking_later_deadlines(
+    runtime_env, deadline_type, code, wrapped, caplog,
 ):
     from tests.test_wait_queries import owner
 
@@ -1023,15 +1111,29 @@ async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_d
     later_scope = await owner(env.db, "later-owner", "later-session", "later-agent")
     later = await register(env, {"kind": "timer", "due_at": NOW + 11},
                            scope=later_scope, idempotency_key="later")
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_deadlines).where(
+            wait_deadlines.c.wait_id == first["wait_id"], wait_deadlines.c.deadline_type == "due",
+        ).values(deadline_type=deadline_type))
     now = [NOW + 12]
     service = runtime(env, clock=lambda: now[0])
     assert await service.lease()
     original = service.command
     busy = True
 
+    async def effect(conn, deadline, wait, **kwargs):
+        return {"success": True}
+
+    if deadline_type != "due":
+        service.orch.wait_deadline_handlers[deadline_type] = effect
+
     async def command(name, args):
         if busy and args["wait_id"] == first["wait_id"]:
-            return {"success": False, "error_code": "wait.graph_busy", "error": "retry"}
+            refusal = {"success": False, "error_code": code, "error": "retry"}
+            if wrapped:
+                return {"success": False, "error_code": "command_runtime_error",
+                        "error": f"deadline effect failed: {refusal}"}
+            return refusal
         return await original(name, args)
 
     service.command = AsyncMock(side_effect=command)
@@ -1041,7 +1143,7 @@ async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_d
         assert await service.timers.tick() == (1 if attempt == 0 else 0)
         rows = await records(env, wait_deadlines)
         first_due = next(r for r in rows if r["wait_id"] == first["wait_id"]
-                         and r["deadline_type"] == "due")
+                         and r["deadline_type"] == deadline_type)
         assert first_due["fired_at"] is None and first_due["cancelled_at"] is None
         assert next(r for r in rows if r["wait_id"] == later["wait_id"]
                     and r["deadline_type"] == "due")["fired_at"] == NOW + 12
@@ -1057,6 +1159,137 @@ async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_d
     assert await service.timers.tick() == 1
     assert await service.timers.tick() == 0
     assert not await records(env, messages)
+    assert f"wait_id={first['wait_id']} deadline_type={deadline_type} generation=1" in caplog.text
+
+
+@pytest.mark.parametrize("code,deadline_type", [
+    ("wait.out_of_scope", "reservation"),
+    ("wait.invalid", "reservation"),
+    ("wait.condition_required", "reservation"),
+    ("wait.not_escalated", "reservation"),
+    ("wait.source_unresolved", "transition"),
+    ("continuation.stale_generation", "reservation"),
+    ("stale_claim", "reservation"),
+])
+async def test_structured_permanent_deadline_effect_is_quarantined_immediately(
+    runtime_env, code, deadline_type,
+):
+    env = runtime_env
+    receipt = await register(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_deadlines).values(cancelled_at=NOW))
+        await conn.execute(insert(wait_deadlines).values(
+            id="refused-effect", wait_id=receipt["wait_id"], deadline_type=deadline_type,
+            generation=2, due_at=NOW,
+        ))
+    service = runtime(env)
+
+    async def effect(conn, deadline, wait, **kwargs):
+        await conn.execute(update(wait_records).values(decision_reason="must-rollback"))
+        return {"success": False, "error_code": code, "error": "permanent refusal"}
+
+    service.orch.wait_deadline_handlers[deadline_type] = effect
+    assert await service.lease()
+    await service.timers.rearm()
+    assert await service.timers.tick() == 0
+    deadline = next(r for r in await records(env, wait_deadlines) if r["id"] == "refused-effect")
+    assert deadline["fired_at"] is None and deadline["cancelled_at"] == NOW
+    assert (await records(env))[0]["decision_reason"] != "must-rollback"
+    assert not service.timers._retry_deadlines
+    notice = next(r for r in await records(env, messages)
+                  if r["body_kind"] == "wait_deadline_quarantined")
+    assert code in notice["body"]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "cancelled"])
+async def test_interrupted_deadline_retries_with_backoff_and_continues_heap(failure, caplog):
+    now = [NOW + 2]
+    blocked = True
+
+    async def command(name, args):
+        assert name == "wait_deadline_fire"
+        if blocked and args["wait_id"] == "slow-wait":
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+            await asyncio.sleep(60)
+        return {"success": True}
+
+    service = SimpleNamespace(listener=SimpleNamespace(lease_seconds=0.001),
+                              command=AsyncMock(side_effect=command),
+                              quarantine_deadline=AsyncMock())
+    driver = WaitTimerDriver(service, clock=lambda: now[0])
+    slow = {"id": "slow", "wait_id": "slow-wait", "deadline_type": "due", "generation": 3}
+    later = {**slow, "id": "later", "wait_id": "later-wait"}
+    driver.heap = [(NOW, "slow", slow), (NOW + 1, "later", later)]
+
+    for attempt, delay in enumerate((1, 2, 4, 8, 16, 30, 30)):
+        assert await driver.tick() == (1 if attempt == 0 else 0)
+        assert driver._retry_deadlines["slow"] == (now[0] + delay, delay)
+        calls = service.command.await_count
+        now[0] += delay - 0.01
+        assert await driver.tick() == 0
+        assert service.command.await_count == calls
+        now[0] += 0.01
+
+    diagnostic = next(record.getMessage() for record in caplog.records
+                      if record.getMessage().startswith(f"wait.deadline_{failure}"))
+    assert "wait_id=slow-wait deadline_type=due generation=3 elapsed_seconds=" in diagnostic
+    service.quarantine_deadline.assert_not_awaited()
+    blocked = False
+    assert await driver.tick() == 1
+    assert not driver.heap and not driver._retry_deadlines
+
+
+async def test_timer_run_survives_deadline_timeout_until_shutdown():
+    later_fired = asyncio.Event()
+
+    async def command(name, args):
+        if args["wait_id"] == "slow-wait":
+            await asyncio.sleep(60)
+        later_fired.set()
+        return {"success": True}
+
+    listener = SimpleNamespace(lease_seconds=0.001, deadlines_changed=asyncio.Event())
+    driver = WaitTimerDriver(SimpleNamespace(listener=listener, command=command),
+                             clock=lambda: NOW + 2)
+    driver.rearm = AsyncMock()
+    driver.heap = [(NOW + n, str(n), {"wait_id": wait_id, "deadline_type": "due", "generation": 1})
+                   for n, wait_id in enumerate(("slow-wait", "later-wait"))]
+    running = asyncio.create_task(driver.run())
+    try:
+        await asyncio.wait_for(later_fired.wait(), 5)
+        assert not running.done()
+        assert "0" in driver._retry_deadlines
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+
+@pytest.mark.parametrize("method", ["tick", "run"])
+async def test_deadline_timer_shutdown_propagates_cancellation(method, caplog):
+    started = asyncio.Event()
+
+    async def command(name, args):
+        started.set()
+        await asyncio.sleep(60)
+
+    listener = SimpleNamespace(lease_seconds=60, deadlines_changed=asyncio.Event())
+    driver = WaitTimerDriver(SimpleNamespace(listener=listener, command=command), clock=lambda: NOW)
+    driver.rearm = AsyncMock()
+    driver.heap = [(NOW, "slow", {"wait_id": "slow-wait", "deadline_type": "due", "generation": 1})]
+    running = asyncio.create_task(getattr(driver, method)())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert not driver._retry_deadlines
+    assert driver.heap
+    assert "wait.deadline_timeout" not in caplog.text
+    assert "wait.deadline_cancelled" not in caplog.text
+    assert not driver._heap_lock.locked()
 
 
 async def test_deadline_graph_lock_contention_retains_retry_after_transaction_rollback(runtime_env):
@@ -1083,13 +1316,19 @@ async def test_deadline_graph_lock_contention_retains_retry_after_transaction_ro
     assert (await records(env))[0]["id"] == receipt["wait_id"]
 
 
-async def test_graph_busy_deadline_effect_rolls_back_and_retries(runtime_env):
+@pytest.mark.parametrize("deadline_type,code", [
+    ("transition", "wait.graph_busy"),
+    ("reservation", "wait.source_unresolved"),
+])
+async def test_retryable_deadline_effect_rolls_back_and_preserves_code(
+    runtime_env, deadline_type, code,
+):
     env = runtime_env
     receipt = await register(env, {"kind": "timer", "due_at": NOW + 10})
     async with env.db._engine.begin() as conn:
         await conn.execute(update(wait_deadlines).values(cancelled_at=NOW))
         await conn.execute(insert(wait_deadlines).values(
-            id="transition", wait_id=receipt["wait_id"], deadline_type="transition",
+            id="transition", wait_id=receipt["wait_id"], deadline_type=deadline_type,
             generation=2, due_at=NOW + 10,
         ))
     now = [NOW + 11]
@@ -1098,10 +1337,15 @@ async def test_graph_busy_deadline_effect_rolls_back_and_retries(runtime_env):
 
     async def effect(conn, deadline, wait, **kwargs):
         await conn.execute(update(wait_records).values(decision_reason="effect"))
-        return {"success": not busy, "error_code": "wait.graph_busy"}
+        return {"success": not busy, "error_code": code}
 
-    service.orch.wait_deadline_handlers["transition"] = effect
+    service.orch.wait_deadline_handlers[deadline_type] = effect
     assert await service.lease()
+    result = await service.command("wait_deadline_fire", {
+        "wait_id": receipt["wait_id"], "deadline_type": deadline_type, "generation": 2,
+    })
+    assert result["error_code"] == code
+    assert result["effect_refusal"] == {"success": False, "error_code": code}
     await service.timers.rearm()
     assert await service.timers.tick() == 0
     assert (await records(env))[0]["decision_reason"] != "effect"
@@ -1754,6 +1998,107 @@ async def test_sustained_lag_alerts_coalesce_advancing_oldest_per_project_and_bu
     assert len(await records(env, wait_source_events)) == len(source_rows)
 
 
+@pytest.mark.parametrize("source_key", ["task:source", "ci_check:repo:sha:unit"])
+async def test_manual_redispatch_already_dispatched_skips_busy_listener(
+    runtime_env, monkeypatch, source_key,
+):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import events as audit_events
+
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key=source_key, generation=0,
+        revision="1", outcome_ref="test", payload={"project_id": "p"})
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).where(
+            wait_source_events.c.seq == seq,
+        ).values(dispatched_at=NOW))
+    service = runtime(env)
+    lease = AsyncMock(side_effect=AssertionError("already dispatched needs no lease"))
+    dispatch = AsyncMock(side_effect=AssertionError("already dispatched needs no observation"))
+    monkeypatch.setattr(service, "lease", lease)
+    monkeypatch.setattr(service.listener, "_dispatch", dispatch)
+    prepare = AsyncMock(side_effect=AssertionError("already dispatched needs no preparation"))
+    monkeypatch.setattr("src.waits.loops.prepare_progress", prepare)
+    service.listener.event_budget_seconds = 0
+    async with service.listener._tick_lock:
+        with principal_context(TRUSTED_LOCAL):
+            result = await service.orch._command_handler.execute("wait_source_redispatch", {
+                "project_id": "p", "source_seq": seq, "note": "already handled"})
+    assert result == {"success": True, "result": {
+        "source_seq": seq, "project_id": "p", "outcome": "already_dispatched",
+        "dispatched_at": NOW, "redispatched": False, "retired_events": 0,
+    }}
+    lease.assert_not_awaited()
+    dispatch.assert_not_awaited()
+    prepare.assert_not_awaited()
+    assert not await records(env, wait_listener_cursors)
+    assert not [r for r in await records(env, audit_events)
+                if r["event_type"] == "wait.source_redispatched"]
+    assert not service.listener.changed.is_set()
+
+
+@pytest.mark.parametrize("project_id,code", [
+    ("q", "wait.out_of_scope"), ("missing", "wait.out_of_scope"),
+    ("p", "wait.source_unresolved"),
+])
+async def test_manual_redispatch_fast_path_checks_source_scope(runtime_env, project_id, code):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="test:scoped", generation=0,
+        revision="1", outcome_ref="test", payload={"project_id": "p"})
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).where(
+            wait_source_events.c.seq == seq,
+        ).values(dispatched_at=NOW))
+    service = runtime(env)
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute("wait_source_redispatch", {
+            "project_id": project_id, "source_seq": seq + 1 if project_id == "p" else seq,
+            "note": "scope check"})
+    assert not result["success"] and result["error_code"] == code
+    assert not await records(env, wait_listener_cursors)
+
+
+async def test_manual_redispatch_rechecks_after_waiting_for_listener(runtime_env, monkeypatch):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="test:race", generation=0,
+        revision="1", outcome_ref="test", payload={})
+    service = runtime(env)
+    original = service.listener._redispatch_event
+    read = asyncio.Event()
+
+    async def observed(conn, args):
+        event = await original(conn, args)
+        read.set()
+        return event
+
+    monkeypatch.setattr(service.listener, "_redispatch_event", observed)
+    lease = AsyncMock(side_effect=AssertionError("completed source needs no lease"))
+    monkeypatch.setattr(service, "lease", lease)
+    async with service.listener._tick_lock:
+        with principal_context(TRUSTED_LOCAL):
+            request = asyncio.create_task(service.orch._command_handler.execute(
+                "wait_source_redispatch", {
+                    "project_id": "p", "source_seq": seq, "note": "concurrent dispatch"}))
+        try:
+            await read.wait()
+            async with env.db._engine.begin() as conn:
+                await conn.execute(update(wait_source_events).where(
+                    wait_source_events.c.seq == seq,
+                ).values(dispatched_at=NOW))
+        except BaseException:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            raise
+    result = await request
+    assert result["success"], result
+    assert result["result"]["outcome"] == "already_dispatched"
+    lease.assert_not_awaited()
+
+
 async def test_manual_source_redispatch_reobserves_without_moving_cursor(runtime_env):
     from src.commands.principal import TRUSTED_LOCAL
     from src.database.tables import events as audit_events
@@ -1886,18 +2231,30 @@ async def test_drain_yields_between_attempts_and_requests_fresh_watermark(runtim
                for row in await records(runtime_env, wait_source_events)) == 2
 
 
-async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(runtime_env, monkeypatch):
+@pytest.mark.parametrize("failure", ["budget", "observation_timeout"])
+async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(
+    runtime_env, monkeypatch, failure,
+):
+    from unittest.mock import Mock
     from src.commands.principal import TRUSTED_LOCAL
     from src.database.tables import events as audit_events
 
     env = runtime_env
     service = runtime(env)
-    service.listener.event_budget_seconds = 0.2
+    # Expire the budget at dispatch, after real database setup, so this
+    # regression does not measure how busy the shared host happens to be.
+    budget = asyncio.timeout(None)
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.return_value = budget
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
     seq = await env.db.wait_source_commit(source_key="test:manual-timeout", generation=0,
         revision="1", outcome_ref="test", payload={})
 
     async def stalled(conn, event, **kwargs):
         await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+        if failure == "observation_timeout":
+            raise TimeoutError("remote observation timed out")
+        budget.reschedule(asyncio.get_running_loop().time())
         await asyncio.Event().wait()
 
     monkeypatch.setattr(service.listener, "_dispatch", stalled)
@@ -1905,7 +2262,15 @@ async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(runti
         result = await service.orch._command_handler.execute("wait_source_redispatch", {
             "source_seq": seq, "project_id": "p", "note": "recover slow source"})
     assert not result["success"] and result["error_code"] == "wait.unavailable"
+    assert ("exceeded its work budget" in result["error"]) == (failure == "budget")
+    assert result["source_seq"] == seq
+    assert result["phase"] == "dispatch"
+    assert result["dispatch_attempts"] == 1
+    assert result["budget_seconds"] == service.listener.event_budget_seconds
+    assert result["elapsed_seconds"] >= 0
     assert (await env.db.get_task("owner")).title != "abort"
+    assert next(r for r in await records(env, wait_source_events) if r["seq"] == seq)[
+        "dispatched_at"] is None
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
     assert not [r for r in await records(env, audit_events)
                 if r["event_type"] == "wait.source_redispatched"]
@@ -2003,6 +2368,54 @@ async def test_ci_progress_stream_keeps_only_latest_retry_and_terminal_bypasses_
         "outcome"] == "satisfied"
     assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events)
                if r["source_key"] == key)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_aged_ci_retry_self_heals_while_forward_backlog_remains(
+    runtime_env, monkeypatch, restart,
+):
+    env = runtime_env
+    now = [NOW]
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, now=now)
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="initial",
+        outcome_ref="hint", payload={"conclusion": "pending"})
+    await service.listener.tick()
+    now[0] += 1
+    retained = await env.db.wait_source_commit(source_key=key, generation=0, revision="progress",
+        outcome_ref="hint", payload={"conclusion": "pending"})
+    await service.listener.tick()
+    assert reader.await_count == 1
+    assert next(r for r in await records(env, wait_source_events)
+                if r["seq"] == retained)["dispatched_at"] is None
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).where(
+            wait_source_events.c.seq == retained,
+        ).values(committed_at=NOW))
+    if restart:
+        await service.lease(release=True)
+        lock_source = service.orch.wait_ci_lock_source
+        service = runtime(env, registry=service.registry, clock=lambda: now[0])
+        service.orch.wait_dispatcher = service._dispatcher
+        service.orch.wait_ci_lock_source = lock_source
+    # Every pass has forward work and room for exactly one source attempt.
+    # Repeated forward-first passes used to starve this retained CI hint forever.
+    service.listener.drain_budget_seconds = 0
+    now[0] += 121
+    state["value"] = "satisfied"
+    later = await env.db.wait_source_commit(source_key="test:later", generation=0,
+        revision="1", outcome_ref="later", payload={})
+    cursor = (await records(env, wait_listener_cursors))[0]["last_seq"]
+    await service.listener.tick()
+    assert reader.await_count == 2
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    sources = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert sources[retained]["dispatched_at"] is not None
+    assert sources[later]["dispatched_at"] is None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
+    await service.listener.tick()
+    assert next(r for r in await records(env, wait_source_events)
+                if r["seq"] == later)["dispatched_at"] is not None
 
 
 @pytest.mark.parametrize("change", ["repository", "check_cache", "condition", "owner", "subscription"])
@@ -2179,14 +2592,15 @@ async def test_large_prefix_graph_hold_below_one_second(
 
 
 @pytest.mark.parametrize("subscribed_index", [0, 1])
-async def test_forward_prefix_rechecks_new_ci_subscriber_before_advancing(
-    runtime_env, monkeypatch, subscribed_index,
+@pytest.mark.parametrize("kind", ["ci_check", "message", "dependency", "task", "job", "batch"])
+async def test_forward_prefix_rechecks_new_subscriber_before_advancing(
+    runtime_env, monkeypatch, subscribed_index, kind,
 ):
     from src.waits import listener as listener_module
 
     env = runtime_env
     receipt = await register(env)
-    seqs = [await env.db.wait_source_commit(source_key=f"ci_check:unused:{n}", generation=0,
+    seqs = [await env.db.wait_source_commit(source_key=f"{kind}:unused:{n}", generation=0,
                 revision="1", outcome_ref="hint", payload={}) for n in range(3)]
     listener = runtime(env).listener
     assert await listener.service.lease()
@@ -2197,7 +2611,7 @@ async def test_forward_prefix_rechecks_new_ci_subscriber_before_advancing(
             await original_lock(other)
             await other.execute(update(wait_records).where(
                 wait_records.c.id == receipt["wait_id"],
-            ).values(source_key=f"ci_check:unused:{subscribed_index}", source_generation=0))
+            ).values(source_key=f"{kind}:unused:{subscribed_index}", source_generation=0))
         await original_lock(conn, **kwargs)
 
     monkeypatch.setattr(listener_module, "lock_graph", subscribe_before_lock)

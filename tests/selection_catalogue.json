@@ -168,6 +168,7 @@
     "cli-test-runner": {
       "description": "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, signal forwarding and the no-tests-collected exit.",
       "modules": [
+        "tests/test_bazel_cli.py",
         "tests/test_cli_test_runner.py",
         "tests/test_resource_semaphore.py"
       ]
@@ -3329,6 +3330,23 @@
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
     },
+    "tests/test_bazel_cli.py": {
+      "areas": [
+        "cli-test-runner"
+      ],
+      "default_arm": true,
+      "digest": "sha256:44115f6bc7de42464a8bdcc794f8e48fb45baac07b69801ff3dba5c39561c99e",
+      "imports": [
+        "src.cli.app",
+        "src.cli.test_runner",
+        "src.resources.box_lock",
+        "src.resources.semaphore"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bazel CLI selections and real shared admission/cancellation boundaries."
+    },
     "tests/test_bazel_environment.py": {
       "areas": [
         "bazel-environment"
@@ -3767,7 +3785,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:559c750b90172ed33154567ec0b3f032058c5ccc99844687d52f403b17270eed",
+      "digest": "sha256:9ace42c8f337bef0c865d2c66f7a22fa464fe446212c79c3c522e4bdf5bc07f6",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3810,6 +3828,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.workspace_claim_recovery",
         "src.orchestrator.worktree_manager",
         "src.preparation_failure",
@@ -5260,13 +5279,15 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:fb352d2eda1a59d8bf44c0bbd2f0fe74bbc38002f384e722620f2ffb04cde801",
+      "digest": "sha256:c5aa418ec1140f40bf101be6497fd575b8bba605a15dc171ff23fba7ef36e294",
       "imports": [
         "src.conversations.render",
         "src.delivery.message"
       ],
-      "markers": [],
-      "summary": "Explicit replies are bounded, mention-free and link-filtered."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit replies are bounded, mention-free and preserve links."
     },
     "tests/test_conversation_wiring.py": {
       "areas": [
@@ -5397,7 +5418,7 @@
         "messaging-adapters"
       ],
       "default_arm": true,
-      "digest": "sha256:9e95940c2d115da12282aa361dd9315b852c940d29032eebd89373e61e0ea5d4",
+      "digest": "sha256:c71ee1ca9963e84562bc96231db835a5aae2b5b6f3b5e19d0967d71c6a1e1119",
       "imports": [
         "src.dashboard_paths",
         "src.digest",
@@ -5409,7 +5430,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "One link resolver, one path scheme, one link per post (spec §6.1, §6.2)."
+      "summary": "One link resolver, one path scheme, clickable dashboard links (spec §6.1, §6.2)."
     },
     "tests/test_dashboard_perf_kit.py": {
       "areas": [
@@ -6783,10 +6804,11 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:8f19a6bb5f4bcf6285413368abaa7e18e9622ca3880d9f3e2b3bf90cddb5f3a0",
+      "digest": "sha256:b005fadb92441b3413c300433a10e393bb36489e51efb5c954ec273cda467e7e",
       "imports": [
         "src.database",
         "src.database.engine",
+        "src.metrics.operation_profile",
         "src.metrics.perf"
       ],
       "markers": [
@@ -7619,7 +7641,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:50ee475ea282a6d11a5c5edfc80952c8f510fdc621c92ccb72d69eceb96f532d",
+      "digest": "sha256:71ad48995a804f32f2464630ab912db53675f1301b11f7420d02cc81cb870ab0",
       "imports": [
         "src.config",
         "src.git.askpass_broker",
@@ -7629,6 +7651,7 @@
         "src.git.manager",
         "src.integration.service",
         "src.logging_config",
+        "src.metrics.operation_profile",
         "src.orchestrator.worktree_manager"
       ],
       "markers": [
@@ -10500,7 +10523,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:28aa9ec120abd074457aaa16efc43825522b916324f7772ffc6835d18f830222",
+      "digest": "sha256:20c3a39f11588431b3e8bac8f88511d543809761c78773bdb360a4ebde8b3ff5",
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
@@ -10526,6 +10549,7 @@
         "src.integration.child_delivery",
         "src.integration.ci",
         "src.integration.cleanup",
+        "src.integration.delivery_branches",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.epics",
@@ -10558,6 +10582,7 @@
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
+        "src.integration.truth_reconciler",
         "src.models",
         "src.operator_decisions",
         "src.orchestrator.core",
@@ -10634,7 +10659,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4addaa8dcb6795ee0a74ae35839e563e6ecf2de4922e7119eda8cb7949cb2a42",
+      "digest": "sha256:1bf385097c6663d4173b86624dc10de153e3da727eb71fe7d9e52741ee642d2c",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -10651,6 +10676,8 @@
         "src.integration.train",
         "src.integration.truth_reconciler",
         "src.integration.truth_retention",
+        "src.logging_config",
+        "src.metrics.operation_profile",
         "src.models",
         "src.orchestrator.worktree_manager",
         "src.sessions.obsolete"
@@ -12110,13 +12137,14 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:455665410406fc660bfff251c683d7491340cac9197018de8cdf044d456d53e5",
+      "digest": "sha256:6cee76941c2cfe26ba2f2bf2be6c8f5e724716d0e54d4778ef39621433f3c386",
       "imports": [
         "src.config",
         "src.logging_config",
         "src.metrics",
         "src.metrics.histogram",
         "src.metrics.loop_watchdog",
+        "src.metrics.operation_profile",
         "src.metrics.perf",
         "src.metrics.sampler"
       ],
@@ -18059,7 +18087,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:1d64b19548230311ee4c38cea2940ecd774bd9f842e1db6d7da3855c9de4645b",
+      "digest": "sha256:2dc0b363ca991ea9330c466604a9d228375592db52523498be4dbd970c76e5d3",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -18067,6 +18095,7 @@
       ],
       "markers": [
         "integration",
+        "parametrize",
         "timeout"
       ],
       "summary": "Reviewed stuck-task watch acceptance over an isolated daemon and PostgreSQL, no LLM."
@@ -20095,16 +20124,21 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:813511552b04f9e2e49cf64093bd0a02460370eebce1a4fe50152304e8a04f95",
+      "digest": "sha256:db3873c7f8e06770bd8c4ae98f21792f43c03a9d353e00d85f8f1bce05234319",
       "imports": [
         "src.commands.principal",
         "src.config",
         "src.config_editor",
         "src.config_wait_policy",
         "src.database",
+        "src.database.queries",
+        "src.database.queries.claim_queries",
+        "src.database.queries.hierarchy_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.event_bus",
+        "src.git.manager",
+        "src.integration",
         "src.integration.admission",
         "src.integration.stacked_branches",
         "src.models",
@@ -20217,7 +20251,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:ea48167444a746e0165f4d347bdb51d5789123941d0833fbfdb5c97065a96ed2",
+      "digest": "sha256:fa758b7c0e0afee67f6f333448a60d0cf2c70830931cdf50df3f66bd19a00357",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20239,6 +20273,7 @@
         "src.waits.registry",
         "src.waits.resource_sources",
         "src.waits.sources",
+        "src.waits.timers",
         "src.waits.watchers.ci"
       ],
       "markers": [
@@ -20296,11 +20331,12 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:abdd8c48ba8420502e6b1593bda94dd70a3f7ab775f957962f5a1d86cfb00cc3",
+      "digest": "sha256:232c9598c1d2284c5e621bc546d3f7b4f6c7618db45980c07c87f6bd1902e6bf",
       "imports": [
         "src.database",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.metrics.operation_profile",
         "src.models",
         "src.waits",
         "src.waits.conditions",
@@ -20418,14 +20454,15 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:ace1960f57f6b36f4349132aa8dfd50991a7d7b5844acefc26a7c927c64ca4e9",
+      "digest": "sha256:1c32bc5b8b7299bb92e80adf0bd82e3de0024e16d400d4429d762dd69c84f950",
       "imports": [
+        "src.git.manager",
         "src.waits.listener"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."
+      "summary": "Dedicated LISTEN connection arguments and service-loop cleanup safety."
     },
     "tests/test_wait_metrics.py": {
       "areas": [

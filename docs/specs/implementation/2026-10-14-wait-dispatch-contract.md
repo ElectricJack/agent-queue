@@ -1,6 +1,42 @@
 # Wait outcome integration contract
 
+## Resume admission during source backlogs — 2026-10-25
+
+Each resume attempt captures fresh delivery and Git observations for its own
+task before joining the graph-lock queue. It replaces any inherited admission
+pass and revalidates the same task's graph, routing and policy under the fence.
+Unrelated candidates and the source listener's cursor do not participate in
+that snapshot. Expired or changed evidence still refuses admission.
+Stack ref checks under the graph fence use only the existing two-second cache;
+even a freshly prepared writer view cannot perform Git I/O there.
+
+The listener batches contiguous unsubscribed known source events, including
+messages, dependency changes, nonterminal task transitions and resource
+invalidations without resource subscriptions. Terminal task events and provider
+invalidations always retain their retirement and recovery callbacks. Unknown
+source types and subscribed events retain individual dispatch. Prefix selection,
+dispatched stamps and the leased cursor commit under the same graph fence;
+batching never skips a relevant event or changes retry ownership.
+
 ## Recoverable listener failures — 2026-10-25
+
+Deadline commands exceeding the listener lease budget retry locally with the
+same capped exponential backoff as graph contention. They log
+`wait.deadline_timeout` with wait id, deadline type, generation and monotonic
+elapsed seconds, then allow other due deadlines to proceed. Cancellation of an
+individual command also retains its deadline for retry; cancellation of the
+timer task itself propagates for service shutdown. Neither failure marks the
+deadline fired or quarantined, nor restarts the listener TaskGroup.
+
+Deadline effect refusals preserve their structured error code across transaction
+rollback. The timer also recognizes the legacy `command_runtime_error` wrapper
+whose error contains `deadline effect failed: <refusal dict>`. A reservation
+deadline refused with `wait.source_unresolved` retries on the same one-to-thirty
+second exponential cadence as graph contention; other permanent refusals still
+quarantine immediately. Other structured effect refusals retry locally. Each
+refusal is logged with its wait id, deadline type and generation, and later due
+deadlines continue in the same tick. Unavailable infrastructure, transport errors
+and unclassified runtime failures retain listener recovery behavior.
 
 Outcome measurements are idempotent by measurement id. A duplicate preserves
 the existing sample, including any later resume-cost updates, and does not
@@ -27,6 +63,12 @@ cursor backwards. A dispatched hint cannot itself prove success. Pending or
 unavailable observations retain the wait, respect provider retry intervals, and
 remain eligible after restart without a new provider revision. Successful
 settlement uses ordinary outcome delivery and remains idempotent.
+
+Forward dispatch and dispatched-hint reconciliation share the pending-progress
+safety cadence. A fresh unfinished observation during forward dispatch defers
+another observation of that source until the cadence expires; recovery then
+visits sources within its per-pass retry budget. A terminal hint bypasses the
+pending-progress cadence and still requires an authenticated current observation.
 
 ## Temporary CI observation failures — 2026-10-25
 

@@ -67,6 +67,7 @@ from src.claim_timing import timed_claim_git
 
 import asyncio
 import contextvars
+import errno
 import functools
 import logging
 import math
@@ -106,6 +107,7 @@ from src.git.github_contracts import (
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 from src.git.process import ProcessCleanupError, run_owned_process
 from src.git.locks import common_git_dir_from_cwd, remove_stale_locks
+from src.metrics.perf import operation_timing, timed_operation
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -130,6 +132,26 @@ def _zeroized_credential(buffer: bytearray):
         zeroize(buffer)
 
 
+def _cleanup_isolated_git_directory(directory: tempfile.TemporaryDirectory) -> None:
+    """Best-effort removal, called off-loop after the store's writers stop."""
+    for attempt in range(3):
+        try:
+            directory.cleanup()
+            return
+        except Exception as exc:
+            if (isinstance(exc, OSError) and exc.errno in {errno.ENOTEMPTY, errno.EBUSY}
+                    and attempt < 2):
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            # cleanup() detaches TemporaryDirectory's finalizer before removal,
+            # so a retained path will not cause another unhandled cleanup later.
+            logger.warning(
+                "isolated Git temporary directory leaked: path=%s error=%s errno=%s",
+                directory.name, type(exc).__name__, getattr(exc, "errno", None),
+            )
+            return
+
+
 @asynccontextmanager
 async def _isolated_git_directory(**kwargs):
     """Remove large temporary stores off-loop, retaining ownership on cancellation."""
@@ -137,7 +159,7 @@ async def _isolated_git_directory(**kwargs):
     try:
         yield directory.name
     finally:
-        cleanup = asyncio.create_task(asyncio.to_thread(directory.cleanup))
+        cleanup = asyncio.create_task(asyncio.to_thread(_cleanup_isolated_git_directory, directory))
         try:
             await asyncio.shield(cleanup)
         except asyncio.CancelledError:
@@ -715,6 +737,7 @@ def bounded_git_reads(func):
     return bounded
 
 
+@timed_operation("wait.git_read_budget_scope")
 async def within_git_read_budget(func, *args):
     """``await func(*args)`` within the active request budget; None once it lapses.
 
@@ -5141,6 +5164,11 @@ class GitManager:
                 await asyncio.sleep(delay)
         raise AssertionError("authenticated Git retry loop exhausted")
 
+    @timed_operation(
+        lambda self, args, **kw: "git.auth_" + (
+            args[0] if args and args[0] in {"fetch", "push", "clone", "ls-remote"} else "other"
+        )
+    )
     async def _arun_authenticated_git_once(
         self,
         args: list[str],
@@ -5288,15 +5316,18 @@ class GitManager:
                         )
                         broker_channel = None
                     phase = "git_communicate"
-                    output, stderr = await process.communicate()
+                    with operation_timing("git.auth_subprocess"):
+                        output, stderr = await process.communicate()
                     phase = "process_cleanup"
-                    await self._kill_app_git_group(process)
+                    with operation_timing("git.auth_cleanup"):
+                        await self._kill_app_git_group(process)
                     phase = "credential_broker_settle"
-                    served = (
-                        await self._settle_app_credential_broker(broker_task)
-                        if broker_task is not None
-                        else True
-                    )
+                    with operation_timing("wait.auth_credential_settlement"):
+                        served = (
+                            await self._settle_app_credential_broker(broker_task)
+                            if broker_task is not None
+                            else True
+                        )
                     broker_task = None
             except BaseException as exc:
                 failure_time = loop.time()
@@ -5388,12 +5419,28 @@ class GitManager:
             # The child can already be running while asyncio connects its pipes.
             # Finish acquiring its handle before closing inherited credential FDs
             # or returning cancellation to the operation's caller.
-            process = None
-            # Preserve cancellation if startup itself failed.
-            with suppress(Exception):
-                process = await asyncio.shield(spawn)
-            if process is not None:
+            async def stop_spawn():
+                # Preserve cancellation if startup itself failed.
+                try:
+                    process = await spawn
+                except Exception:
+                    return
                 await self._kill_app_git_group(process)
+
+            cleanup = asyncio.create_task(stop_spawn())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    # TaskGroup shutdown or an outer deadline can cancel again
+                    # while startup or process-group reaping is still pending.
+                    pass
+                except Exception:
+                    break
+            try:
+                cleanup.result()
+            except Exception as exc:
+                logger.warning("isolated Git process cleanup failed: error=%s", type(exc).__name__)
             raise
 
     @staticmethod
