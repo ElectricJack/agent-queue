@@ -273,7 +273,9 @@ principal `discord-gateway`:
    reply's outbound receipt in the observed transport/channel. Conversation
    replies continue that conversation, preserve the reference in the input and
    supervisor notice, and bypass inference of a pending ask from words such as
-   “yes”. Destination, thread and conversation audience must still agree.
+   “yes”. Destination and conversation audience must still agree. A reply in
+   the parent channel may continue a conversation that retains a bound thread;
+   a reply inside a thread must match that conversation's bound thread.
    An unresolved reference produces a durable clarification receipt, a supervisor
    notice and a deduplicated public resend request. A correlation failure keeps
    the input queued for reconciliation and records the same visible notice.
