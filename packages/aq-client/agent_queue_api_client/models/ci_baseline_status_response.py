@@ -34,6 +34,10 @@ class CiBaselineStatusResponse:
         escalation_key (None | str | Unset):
         escalation_title (None | str | Unset):
         escalation_question (None | str | Unset):
+        in_flight (list[str] | Unset):
+        repair_signature (None | str | Unset):
+        repair_tests (list[str] | Unset):
+        repair_checks (list[str] | Unset):
         error (None | str | Unset):
     """
 
@@ -56,6 +60,10 @@ class CiBaselineStatusResponse:
     escalation_key: None | str | Unset = UNSET
     escalation_title: None | str | Unset = UNSET
     escalation_question: None | str | Unset = UNSET
+    in_flight: list[str] | Unset = UNSET
+    repair_signature: None | str | Unset = UNSET
+    repair_tests: list[str] | Unset = UNSET
+    repair_checks: list[str] | Unset = UNSET
     error: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -142,6 +150,24 @@ class CiBaselineStatusResponse:
         else:
             escalation_question = self.escalation_question
 
+        in_flight: list[str] | Unset = UNSET
+        if not isinstance(self.in_flight, Unset):
+            in_flight = self.in_flight
+
+        repair_signature: None | str | Unset
+        if isinstance(self.repair_signature, Unset):
+            repair_signature = UNSET
+        else:
+            repair_signature = self.repair_signature
+
+        repair_tests: list[str] | Unset = UNSET
+        if not isinstance(self.repair_tests, Unset):
+            repair_tests = self.repair_tests
+
+        repair_checks: list[str] | Unset = UNSET
+        if not isinstance(self.repair_checks, Unset):
+            repair_checks = self.repair_checks
+
         error: None | str | Unset
         if isinstance(self.error, Unset):
             error = UNSET
@@ -189,6 +215,14 @@ class CiBaselineStatusResponse:
             field_dict["escalation_title"] = escalation_title
         if escalation_question is not UNSET:
             field_dict["escalation_question"] = escalation_question
+        if in_flight is not UNSET:
+            field_dict["in_flight"] = in_flight
+        if repair_signature is not UNSET:
+            field_dict["repair_signature"] = repair_signature
+        if repair_tests is not UNSET:
+            field_dict["repair_tests"] = repair_tests
+        if repair_checks is not UNSET:
+            field_dict["repair_checks"] = repair_checks
         if error is not UNSET:
             field_dict["error"] = error
 
@@ -298,6 +332,21 @@ class CiBaselineStatusResponse:
 
         escalation_question = _parse_escalation_question(d.pop("escalation_question", UNSET))
 
+        in_flight = cast(list[str], d.pop("in_flight", UNSET))
+
+        def _parse_repair_signature(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        repair_signature = _parse_repair_signature(d.pop("repair_signature", UNSET))
+
+        repair_tests = cast(list[str], d.pop("repair_tests", UNSET))
+
+        repair_checks = cast(list[str], d.pop("repair_checks", UNSET))
+
         def _parse_error(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -327,6 +376,10 @@ class CiBaselineStatusResponse:
             escalation_key=escalation_key,
             escalation_title=escalation_title,
             escalation_question=escalation_question,
+            in_flight=in_flight,
+            repair_signature=repair_signature,
+            repair_tests=repair_tests,
+            repair_checks=repair_checks,
             error=error,
         )
 

@@ -6,17 +6,13 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import SYSTEM_KIND_SCOPE, WorkspaceKind
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 def _kind(**overrides) -> WorkspaceKind:
@@ -159,3 +155,10 @@ class TestDelete:
         assert (await db.resolve_workspace_kind("p1", "vault")).description == "override"
         await db.delete_workspace_kind("p1", "vault")
         assert (await db.resolve_workspace_kind("p1", "vault")).description == "sys"
+
+
+async def test_special_slot_limit_roundtrip_and_removal(db):
+    await db.upsert_workspace_kind(_kind(id="native", mode="worktree", max_slots=2))
+    assert (await db.resolve_workspace_kind("p", "native")).max_slots == 2
+    await db.upsert_workspace_kind(_kind(id="native", mode="worktree"))
+    assert (await db.resolve_workspace_kind("p", "native")).max_slots is None
