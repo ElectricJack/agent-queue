@@ -123,16 +123,17 @@ inputs.
 Source admission uses this alternative only when all canonical check names are
 missing from a completed push run. The complete configured audit set must pass
 on the exact source commit under the trusted CI App and workflow attempt.
-Partial canonical evidence and real failures still block the request. The
-private promotion ref, candidate checks and promotion attestation continue to
-use the step's canonical names.
+Partial canonical evidence and real failures still block the request.
+`ci: reuse_source` freezes the actual admitting names, so the promotion gate
+and its attestation can reuse this audit without a second test run. `ci: rerun`
+requires the step's canonical names from the dispatched promotion workflow.
 
 If a completed `aq/batches/` push run on the same commit was cancelled or
 skipped, source admission can retain green checks from another run. This
 requires alternative evidence for each affected name under the trusted App
 and a valid successful workflow attempt. Real failures, pending checks and
-cancellations without coverage still block promotion. Candidate and
-attestation gates continue to require their newest checks.
+cancellations without coverage still block promotion. Reused source evidence
+keeps this rule; rerun evidence requires the latest checks in its dispatch scope.
 
 Activation requires this configuration on the designated default branch and
 the updated source-admission code in the running daemon. After delivery, an
@@ -179,6 +180,8 @@ omit `--file` to check the stored flow. Neither activates it.
 | `promotion_flow` | A list of steps; `null` or an empty list disables promotions. A bare list is also accepted as input. |
 | `id`, `source`, `target` | Required. IDs are unique and match `[a-z0-9][a-z0-9-]{0,31}`. The first source equals the repository default; each later source equals the preceding target. Targets are unique and differ from the default. |
 | `type` | `request` by default, or `continuous`. A request step cannot use `approval: none`. |
+| `ci` | `reuse_source` by default: reuse green source push CI without new runs. `rerun` requires fresh CI for this promotion. Frozen at admission. |
+| `ci_workflow` | Workflow filename, default `tests.yml`. Hosted `rerun` dispatches it on the private promotion ref. |
 | `gate.checks` | `inherit` uses the trust manifest's required checks; `manifest:<name>` uses its named check set. |
 | `gate.attestation` | Defaults to `Agent Queue Promotion Attestation (<id>)`; names must be distinct and trusted by the manifest. |
 | `gate.approval` | `operator` by default, `requester`, or `none` for continuous steps. Optional `operator_logins` narrows eligible human repository administrators. |
@@ -193,6 +196,61 @@ allowed. Schema, chain and manifest errors carry a JSON pointer and validation
 layer; fix the first failing layer before proceeding. Source:
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
 (`FlowSchema`).
+
+### CI policy for each promotion step
+
+The reviewed promotion playbooks consume the project's `promotion_flow` policy.
+Set CI independently for staging and release, for example:
+
+```yaml
+promotion_flow:
+  - id: staging
+    source: dev
+    target: staging
+    type: continuous
+    ci: reuse_source
+    gate: {checks: inherit, approval: none}
+  - id: release
+    source: staging
+    target: main
+    ci: rerun
+    ci_workflow: tests.yml
+    gate: {checks: 'manifest:release', approval: operator}
+```
+
+Both modes require exact-source green push CI before admission. `gate.checks`
+selects committed trust names; it cannot supply arbitrary checks or a producer.
+Reuse freezes the actual source set, including explicitly trusted audit names,
+then re-observes it before publication. It makes no CI request, even when a
+project otherwise uses local promotion validation. Hosted rerun freezes the
+canonical set and accepts only `workflow_dispatch` runs on that request's private
+ref, from `ci_workflow`, on the exact source SHA. A green dev run, another step's
+dispatch, or a PR merge run cannot satisfy it. With the existing local promotion
+runner configured, `rerun` instead uses that runner's fresh validation jobs.
+
+GitHub cannot read AQ's project policy. The repository workflow therefore has
+no `aq/promote/**` push trigger and no PR trigger targeting staging or main.
+Its test jobs also skip same-repository promotion heads. AQ dispatches the
+configured workflow only for hosted `rerun` intents. Dev PRs and train candidate
+pushes keep their existing CI behavior.
+The workflow must enable `workflow_dispatch`, exist on the default branch and
+the pinned source, and the App must have Actions write permission, including
+`integration.github_app.actions_permission: write`. See GitHub's
+[workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
+
+AQ records one dispatch attempt durably before the API call. Repeated visits
+and restarts observe its checks without dispatching again. If a dispatch was
+refused or its response was lost and no run appears, fix the cause and manually
+dispatch the configured workflow on the intent's private ref, for example
+`gh workflow run tests.yml --ref aq/promote/release/1.2.3`. This does not waive
+any gate: missing, pending or failed checks still block publication.
+
+Mode, workflow and check selection are frozen with each intent. Settle or cancel
+active intents before changing these protected fields. Older frozen intents
+without `ci` retain their previous push-check behavior. Agent-queue's delivery
+configuration in [agent-queue-promotion-flow.yaml](../config/agent-queue-promotion-flow.yaml)
+sets both staging and release to `reuse_source`; an authorized operator activates
+that file after deploying the supporting daemon and workflow changes.
 
 ### Request, approve and cancel
 
@@ -261,9 +319,11 @@ checks that both readers observed the same policy. The login must already have
 access to those actors; unavailable access or inconsistent policy still refuses
 the preview. Supervisors gain no cutover-apply or GitHub-write authority.
 
-required test workflows cover `pull_request` to
-the default and every chain target, including `ready_for_review`, and pushes to
-`aq/promote/**` as well as the train's candidate refs. Branch-attestation
+Required test workflows cover `pull_request` to
+the default branch, including `ready_for_review`, and pushes to
+the train's candidate and backmerge refs. Steps with `ci: rerun` also require
+`workflow_dispatch` on their `ci_workflow`; promotion pushes do not start tests.
+Branch-attestation
 workflows cover the whole chain. Apply trigger changes before flipping the
 default branch, and bring them into older source trees: updating main alone
 does not update the workflow at pinned S. Sources:

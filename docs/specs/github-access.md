@@ -269,6 +269,13 @@ Authenticated HTTPS Git uses the existing isolated helper arrangement with
 existing-login mode. These are credential/transfer choices within the common
 Git operation implementation, not duplicate PR or API implementations.
 
+Isolated Git cancellation retains ownership of subprocess startup through repeated
+cancellation, then kills and awaits the process group before removing its temporary
+directory. Directory removal runs off the event loop and retries `ENOTEMPTY` and
+`EBUSY` briefly. If removal still fails (or another removal error occurs), log a
+warning naming the leaked path and preserve the operation's result or original
+cancellation; directory cleanup errors must not restart a caller's service loop.
+
 ### 6.3 Failure and replay
 
 Preserve structured categories for missing CLI, credentials, permission,

@@ -732,8 +732,11 @@ class BatchStore:
             if dry_run:
                 return
             values = {"intent": intent, "updated_at": self.clock()}
-            if operator_id is not None and row["fixer_queue"]:
-                values["fixer_queue"] = {**row["fixer_queue"], "status": "operator_decision"}
+            if intent == "aborted" or (operator_id is not None and row["fixer_queue"]):
+                # Explicit withdrawal is distinct from automatic defer_on(),
+                # even before a fixer or deferred queue has been allocated.
+                values["fixer_queue"] = {**(row["fixer_queue"] or {}),
+                                         "status": "operator_decision"}
             if intent == "aborted":
                 # Compatibility guards still read lifecycle. Commit the terminal
                 # projection with intent so members can be revised immediately.

@@ -256,6 +256,9 @@ Claims, task processes, integration owners and job pins still block detachment;
 the checkout stays at the same commit and retains predecessor task attribution.
 Its sentinel branch is cleared so the detached pool can be reused after the
 shared task branch advances in the destination slot.
+Binding reconciliation accepts that predecessor attribution only for a clean
+detached checkout with no sentinel branch and an otherwise proved taskless
+reservation; it preserves the sentinel for later salvage.
 Failed-preparation reconciliation findings name the recorded task when available.
 
 **Preparation identity and reconciliation.** Preparation requires an enabled

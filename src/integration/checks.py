@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, not_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from src.database.tables import integration_check_evidence
+from src.database.tables import integration_check_evidence, repos
 from src.git.manager import GitError
 from src.integration.ci import IntegrationCITrust, IntegrationTrustManifest
 from src.integration.ci_producers import (
@@ -28,6 +28,22 @@ from src.integration.ci_producers import (
 from src.integration.runtime_contracts import CIState, HeadIdentity
 
 logger = logging.getLogger(__name__)
+
+
+async def lock_check_evidence(conn, repository_id, sha, *, project_id=None):
+    """Fence exact-head cache writers and wait revalidation, including first inserts.
+
+    Repository first, then one head lock, before any check-specific lock or write.
+    A head-wide fence avoids opposite row-id/check-name ordering and phantoms.
+    Callers touching several heads must acquire these fences in sorted order.
+    """
+    repository = select(repos.c.id).where(repos.c.id == repository_id)
+    if project_id is not None:
+        repository = repository.where(repos.c.project_id == project_id)
+    await conn.execute(repository.with_for_update(read=True))
+    await conn.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(
+        "ci-evidence:" + digest([repository_id, sha]), 0,
+    ))))
 
 #: Prefix for local job evidence; the suffix binds its boundary and command plan.
 LOCAL_CHECKS_PRODUCER_ID = "local-jobs"
@@ -236,6 +252,18 @@ class HostedChecks:
             event = "pull_request+push" if producer.observer.allow_push_fallback else "pull_request"
             self.required = self.required.model_copy(update={
                 "producer_id": self.required.producer_id + ":" + event,
+            })
+        if producer.observer.expected_branch is not None:
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":scope:" + digest({
+                    "event": producer.observer.expected_event,
+                    "branch": producer.observer.expected_branch,
+                    "workflow": producer.observer.expected_workflow,
+                }),
+            })
+        elif producer.observer.ignore_cancelled_batches:
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":promotion-source",
             })
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
@@ -473,6 +501,8 @@ class ExactChecks:
         ]
         if rows:
             async with self.db._engine.begin() as conn:
+                for repository_id, sha in sorted({(row.repository_id, row.sha) for row in rows}):
+                    await lock_check_evidence(conn, repository_id, sha)
                 for check in sorted(rows, key=lambda row: row.name):
                     # Serialize the comparison as well as the upsert, including
                     # concurrent first observations where no cache row exists.

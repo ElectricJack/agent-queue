@@ -668,6 +668,7 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | `stop_intent_report_seconds` | `int` | `600` | How long a recorded stop intent may stand before `aq doctor --check sessions.stop_intent_pending` reports the session. A report threshold, not an action: the reconciler owns the stop, and this only says the graceful path is not converging. `0` disables the report. |
 | `stall_max_nudges` | `int` | `3` | Nudges before the ladder escalates to interrupt + restart-with-resume. |
 | `stall_backoff_seconds` | `int` | `300` | Minimum gap between ladder rungs. |
+| `stall_command_grace_seconds` | `int` | `7200` | How long a session running a command of its own counts as active although its pane and transcript are quiet: a process carrying the session's `AQ_INSTANCE_TOKEN` that is an `aq test` run (`AQ_TEST_RUN_ID`) or a shell the harness spawned (a foreground tool call, or a background task the ended turn waits on). Within the grace neither the stall ladder nor the inactivity backstop acts, and no rung is spent. Measured from the session's last own activity, so a hung command still stalls after it. `0` disables the cover. |
 | `max_restarts` | `int` | `3` | Restarts within `restart_window_seconds` before a session is quarantined. Counters persist on the `sessions` row, so the ladder survives a daemon restart. |
 | `restart_window_seconds` | `int` | `600` | Also the rapid-crash window: a death inside it is classified `RAPID_CRASH` rather than `PRODUCTIVE_DEATH`. |
 | `restart_backoff_seconds` | `int` | `30` | Base backoff before a crashed task is re-queued; multiplied by the restart count. |
@@ -733,7 +734,7 @@ fresh each tick/request, there is no restart-required subset.
 | `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all pools (one pool = one profile, fleet-wide). |
 | `max_drains_per_tick` | `int` | `5` | Idle pool sessions `_reconcile_pools` may mark `desired_state='stopped'` in one bulk update per tick. |
 | `scale_down_grace` | `int` | `120` | Seconds a pool's surplus (idle above its sized floor) must persist, tracked in memory, before a drain is issued. |
-| `prepare_timeout` | `int` | `120` | Seconds a claim may stay `claim_phase='preparing'` (the git-reset window) before the reconciler releases it as `prepare_failed`. |
+| `prepare_timeout` | `int` | `120` | Owner/lease acquisition deadline for live claim preparation, and recovery age for abandoned preparations. Timeout unwinds the owning job before fenced release; unproved cleanup retains ownership. Slot reset keeps its configured longer budget. |
 | `max_filings_per_task` | `int` | `20` | Worker-filed tasks (`create_task` from a session holding a task) permitted per held task, across all its claims; reserved atomically, see design §12. |
 
 Validation (`SwarmConfig.validate`): every integer key must be `>= 0`, except
@@ -775,8 +776,10 @@ overrides; for example `{matter-engine-cpp: 1800}` gives that project's reposito
 is scoped to the reset coroutine and restored on success, failure or cancellation;
 concurrent resets and other Git operations keep their own budgets. Authenticated
 network operations retain their transport deadlines. The reconciler's
-`swarm.prepare_timeout` applies to abandoned preparations, and does not release
-an exact preparation still running in the daemon.
+`swarm.prepare_timeout` bounds owner/lease acquisition in the owning preparation
+job. Once reset begins, that job uses the configured slot reset budget plus its
+mutation allowance. The reconciler never releases an exact preparation still
+running in the daemon; interruption must unwind its Git and SQL contexts first.
 
 Git timeout errors report the command and elapsed budget, without attributing
 the timeout to a credential prompt without evidence.

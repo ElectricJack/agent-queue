@@ -83,6 +83,8 @@ def test_defaults_are_filled_including_nested_and_step_dependent_values():
             "source": "dev",
             "target": "main",
             "type": "request",
+            "ci": "reuse_source",
+            "ci_workflow": "tests.yml",
             "gate": {
                 "checks": "inherit",
                 "approval": "operator",
@@ -95,6 +97,27 @@ def test_defaults_are_filled_including_nested_and_step_dependent_values():
         }
     ]
     assert validate([release()]).flow[0]["versioning"]["tag_format"] == "v{version}"
+
+
+def test_ci_policy_is_independent_per_step():
+    steps = two_steps()
+    steps[0]["ci"] = "reuse_source"
+    steps[1].update(ci="rerun", ci_workflow="release-checks.yaml")
+    result = validate(steps)
+    assert result.valid
+    assert [(step["ci"], step["ci_workflow"]) for step in result.flow] == [
+        ("reuse_source", "tests.yml"), ("rerun", "release-checks.yaml"),
+    ]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("ci", "none"), ("ci", False), ("ci", None),
+    ("ci_workflow", "../tests.yml"), ("ci_workflow", "tests.yml?ref=main"),
+    ("ci_workflow", ""),
+])
+def test_ci_policy_refuses_unknown_modes_and_workflow_paths(field, value):
+    result = validate([{**release(), field: value}])
+    assert not result.valid and result.layer == 1
 
 
 @pytest.mark.parametrize("logins", [[], ["operator"], ["Operator", "second-admin"]])
@@ -536,6 +559,8 @@ def filled(document):
         (("source",), "elsewhere"),
         (("target",), "production"),
         (("type",), "continuous"),
+        (("ci",), "rerun"),
+        (("ci_workflow",), "release.yaml"),
         (("gate", "approval"), "requester"),
         (("gate", "checks"), "manifest:release"),
         (("versioning", "kind"), "none"),

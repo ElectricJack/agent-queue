@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 from dataclasses import asdict
 
-from src.dashboard_paths import dashboard_href, report_path
+from src.dashboard_paths import report_path
 from src.delivery.message import operation_marker
 from src.digest.render import sanitise
 from src.digest.schedule import schedule_for
+from src.discord.render_budget import cut, link_line
 
 
 def morning_policy(config) -> dict:
@@ -31,7 +32,7 @@ def visibility_matches(snapshot: dict, policy: dict) -> bool:
 def render_summary(row: dict, *, url: str, notice: str) -> str:
     """One bounded message; links, marker and coverage are server-owned."""
     report = row["report"]
-    footer = dashboard_href(url, report_path(row["id"])) if url else notice
+    footer = link_line(url, report_path(row["id"]), notice=notice)
     heading = f"Morning report · {row['local_date']}"
     coverage = report["coverage"]
     warnings = []
@@ -47,7 +48,7 @@ def render_summary(row: dict, *, url: str, notice: str) -> str:
     summary = sanitise(report["summary"])
     if budget < 1:
         raise ValueError("report link exceeds the delivery budget")
-    summary = summary if len(summary) <= budget else summary[: budget - 1] + "…"
+    summary = cut(summary, budget)
     return f"{heading}\n{summary}\n{tail}"
 
 

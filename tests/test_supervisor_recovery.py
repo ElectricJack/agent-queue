@@ -15,6 +15,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.database.tables import (
+    agents,
     integration_branch_owners,
     integration_batches,
     integration_owner_recoveries,
@@ -551,7 +552,7 @@ async def test_operator_retry_can_review_nonautomatic_session_exit(env):
     held, _ = await supervisor_handoff_hold(env, current)
     assert "error" in await decide(env, current, expected_hold_at=held["decided_at"])
     result = await decide(env, current, operator_release=True, expected_hold_at=held["decided_at"])
-    assert result["status"] == "READY", result
+    assert result.get("status") == "READY", result
 
 
 @pytest.mark.parametrize("guard", ["retry_budget", "recovery_budget", "gate", "routing", "live",
@@ -667,6 +668,101 @@ async def test_hold_release_repairs_only_exact_stopped_assignment(env, guard):
         assert "already_assigned" not in {
             item["code"] for item in await env.db.claim_frontier_exclusions("t")
         }
+
+
+@pytest.mark.parametrize("live", [None, "idle_agent", "agent_holds_task", "agent_session",
+                                  "claim_record"])
+async def test_operator_retry_clears_dangling_assignment_but_refuses_live_one(env, live):
+    """steady-impact-12: a deleted agent's leftover assignment must not block a retry."""
+    await env.db.create_agent(Agent(id="gone", name="Gone", profile_id="worker"))
+    await stopped_attempt(env, reason="claim_binding_stale", agent_id="gone", lifecycle="pool")
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, _ = await supervisor_handoff_hold(env, current)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(assigned_agent_id="gone"))
+        if live == "agent_holds_task":
+            await conn.execute(update(agents).where(agents.c.id == "gone").values(
+                state=AgentState.BUSY.value, current_task_id="t",
+            ))
+        elif live != "idle_agent":
+            await conn.execute(update(agents).where(agents.c.id == "gone").values(
+                enabled=False, deleted_at=9000,
+            ))
+    if live in {"agent_session", "claim_record"}:
+        await env.db.create_session(SessionRecord(
+            id="other-worker", project_id="p", profile_id="worker", harness="fake",
+            provider="fake", name="other-worker", lifecycle="pool", state="sleeping",
+            desired_state="sleeping", agent_id="gone" if live == "agent_session" else None,
+            epoch="test", instance_token="other", work_dir="/never-used", started_at=9000,
+        ))
+    if live == "claim_record":
+        await env.db.set_task_meta("t", "claimed_by_session", "other-worker")
+    result = await decide(env, current, operator_release=True,
+                          expected_hold_at=held["decided_at"])
+    task = await env.db.get_task("t")
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if live in {"agent_holds_task", "agent_session", "claim_record"}:
+        assert result["error"] == "Task still has an active claim or attempt", result
+        assert task.status is TaskStatus.BLOCKED and task.assigned_agent_id == "gone"
+        assert task.retry_count == 0 and recorded["decision"] == "hold"
+        return
+    assert result.get("status") == "READY", result
+    assert task.status is TaskStatus.READY and task.assigned_agent_id is None
+    assert task.retry_count == 1 and recorded["decision"] == "retry"
+    assert "already_assigned" not in {
+        item["code"] for item in await env.db.claim_frontier_exclusions("t")
+    }
+    comments = (await env.handler.execute("task_comments", {"task_id": "t"}))["comments"]
+    assert any("Cleared dangling assignment to agent gone" in c["body"] for c in comments)
+
+
+@pytest.mark.parametrize("bound", ["elsewhere", "working_here", "session_here"])
+async def test_operator_retry_clears_assignment_of_agent_reused_for_another_task(env, bound):
+    """wise-glacier-45: a pool agent busy on another task no longer holds this one."""
+    await env.db.create_agent(Agent(id="reused", name="Reused", profile_id="worker"))
+    await env.db.create_task(Task(
+        id="t2", project_id="p", title="Next", description="", status=TaskStatus.IN_PROGRESS,
+        profile_id="worker", route_source="legacy", created_at=100, updated_at=100,
+    ))
+    await stopped_attempt(env, reason="claim_binding_stale", agent_id="reused", lifecycle="pool")
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, _ = await supervisor_handoff_hold(env, current)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(
+            assigned_agent_id="reused",
+        ))
+        await conn.execute(update(agents).where(agents.c.id == "reused").values(
+            state=AgentState.BUSY.value, current_task_id="t" if bound == "working_here" else "t2",
+        ))
+    # The reused agent's live session works t2, and still names an idle sibling.
+    for sid, task_id in (("live", "t" if bound == "session_here" else "t2"), ("idle", None)):
+        await env.db.create_session(SessionRecord(
+            id=sid, task_id=task_id, project_id="p", profile_id="worker", harness="fake",
+            provider="fake", name=sid, lifecycle="pool", state="running" if task_id else "sleeping",
+            desired_state="running" if task_id else "sleeping", agent_id="reused",
+            epoch="test", instance_token=sid, work_dir="/never-used", started_at=150,
+        ))
+    await env.db.set_task_meta("t", "claimed_by_session", "live")
+    result = await decide(env, current, operator_release=True,
+                          expected_hold_at=held["decided_at"])
+    task = await env.db.get_task("t")
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if bound != "elsewhere":
+        assert result["error"] == "Task still has an active claim or attempt", result
+        assert task.status is TaskStatus.BLOCKED and task.assigned_agent_id == "reused"
+        assert task.retry_count == 0 and recorded["decision"] == "hold"
+        return
+    assert result.get("status") == "READY", result
+    assert task.status is TaskStatus.READY and task.assigned_agent_id is None
+    assert task.retry_count == 1 and recorded["decision"] == "retry"
+    agent = await env.db.get_agent("reused")
+    assert agent.current_task_id == "t2" and (await env.db.get_task("t2")).status is (
+        TaskStatus.IN_PROGRESS
+    )
+    comments = (await env.handler.execute("task_comments", {"task_id": "t"}))["comments"]
+    assert any("Cleared dangling assignment to agent reused" in c["body"] for c in comments)
 
 
 @pytest.mark.parametrize("race", ["historical_release", "during_stop_probe"])
@@ -1258,7 +1354,7 @@ async def test_reclassification_never_relabels_nonautomatic_failure_as_retryable
     assert after["retry_allowed"] is allowed, after
     result = await decide(env, current)
     if allowed:
-        assert result["status"] == "READY", result
+        assert result.get("status") == "READY", result
         assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 1
     else:
         assert "diagnosed as not automatically retryable" in result["error"], result
