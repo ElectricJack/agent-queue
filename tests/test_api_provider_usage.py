@@ -24,18 +24,14 @@ from src.api.providers import (
     series_key,
 )
 from src.config import AppConfig
-from src.database import Database
-from tests.db_fixtures import lease_dsn
 
 NOW = 1_800_000_000.0
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("p.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("p.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture

@@ -15,7 +15,7 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
-from src.integration.parent_engine import parent_engine_guard
+from src.integration.owner_guards import parent_engine_guard
 from src.integration.models import BranchKey, Fence
 from src.integration.outbox import enqueue_integration_event
 
