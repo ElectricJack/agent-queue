@@ -1,8 +1,10 @@
 """Operator mode/repair ports. Live inventory verification belongs to rollout."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 
-from src.asks.delivery import config_fingerprint, destination
+from src.asks.delivery import config_fingerprint, destination, fence_config_modes
 from src.asks.models import AskError
 from src.database.tables import (
     ask_external_bindings,
@@ -10,6 +12,66 @@ from src.database.tables import (
     outbound_deliveries,
 )
 from src.escalations.transport import TransportMissing
+
+
+async def cutover_status(handler, args):
+    project = args["project_id"]
+    configured = destination(handler.config)
+    async with handler.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(
+                        human_communication_modes.c.destination,
+                        human_communication_modes.c.mode,
+                        human_communication_modes.c.generation,
+                        human_communication_modes.c.migrated,
+                        human_communication_modes.c.compatibility_deadline,
+                    ).where(
+                        human_communication_modes.c.project_id == project
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    modes = {row["destination"]: row for row in rows}
+    modes.setdefault(
+        configured,
+        {
+            "mode": "legacy",
+            "generation": 0,
+            "migrated": False,
+            "compatibility_deadline": None,
+        },
+    )
+    destinations = []
+    for dest, row in sorted(modes.items()):
+        deadline = row["compatibility_deadline"]
+        destinations.append(
+            {
+                "destination": dest,
+                "mode": row["mode"],
+                "generation": row["generation"],
+                "migrated": row["migrated"],
+                # The persisted first-channel deadline is never extended by rollback.
+                "first_switch_utc": datetime.fromtimestamp(deadline - 30 * 86400, UTC).isoformat()
+                if deadline is not None
+                else None,
+                "compatibility_deadline": deadline,
+                "compatibility_deadline_utc": datetime.fromtimestamp(deadline, UTC).isoformat()
+                if deadline is not None
+                else None,
+            }
+        )
+    return {
+        "success": True,
+        "result": {
+            "project_id": project,
+            "configured_destination": configured,
+            "destinations": destinations,
+        },
+    }
 
 
 async def cutover(handler, args):
@@ -25,6 +87,7 @@ async def cutover(handler, args):
     db, config = handler.db, handler.config
     project, dest, target = args["project_id"], destination(handler.config), args["mode"]
     async with db.immediate() as conn:
+        await fence_config_modes(config, conn=conn, now=time.time(), exclude=(project, dest))
         # The admission fence commits even with unknown writes. Those writes remain
         # evidence, and block channel ownership until independently reconciled.
         await conn.execute(
@@ -68,50 +131,6 @@ async def cutover(handler, args):
                     "ask.transfer_unverified",
                     "Record the current inventory hash and controls/redirect evidence",
                 )
-        # Global destination/allowlist changes revoke every old ownership row.
-        peers = (
-            (
-                await conn.execute(
-                    select(human_communication_modes)
-                    .where(
-                        human_communication_modes.c.config_fingerprint
-                        != config_fingerprint(config),
-                    )
-                    .order_by(
-                        human_communication_modes.c.project_id,
-                        human_communication_modes.c.destination,
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
-        for peer in peers:
-            if (peer["project_id"], peer["destination"]) == (project, dest):
-                continue
-            await db.advance_ask_mode(
-                {
-                    **dict(peer),
-                    "mode": "delivery_disabled",
-                    "config_fingerprint": config_fingerprint(config),
-                    "updated_at": time.time(),
-                },
-                expected_generation=peer["generation"],
-                conn=conn,
-            )
-            await conn.execute(
-                update(ask_action_tokens)
-                .where(
-                    ask_action_tokens.c.binding_id.in_(
-                        select(ask_external_bindings.c.id).where(
-                            ask_external_bindings.c.project_id == peer["project_id"],
-                            ask_external_bindings.c.destination == peer["destination"],
-                        )
-                    ),
-                    ask_action_tokens.c.revoked_at.is_(None),
-                )
-                .values(revoked_at=time.time())
-            )
         recorded = dict((old or {}).get("inventory") or {})
         recorded.update(
             last_inventory=inventory,

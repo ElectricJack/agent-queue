@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/task_removal.py::_cancel_orphan_on::4a7fbb638515e43da17480fe7820944478db8c2efb95a8500b2507fe5e789d4e": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 66,
+      "owner": "_cancel_orphan_on",
+      "owner_fingerprint": "dc7e8c21ee18224c68d8a13f1fab56a2d7d4c7bd8def89199b52501f66412a7f",
+      "reason": "integration.orphan_cancelled audit records operation identity and the reason after a locked no-runtime/no-writer proof; no ref OIDs, replay instructions or duplicate delivery state."
+    },
+    "src/integration/task_removal.py::remove_subtree::73697ddfc387c53175151dd95f9dbb7b91a34442e6e39a3e63343535ad8e310d": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 248,
+      "owner": "remove_subtree",
+      "owner_fingerprint": "9c17e6735fbdb838ddea616348e1dfecfe64a530b144a0c00eb89c1e43d18467",
+      "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
+    }
+  }
+}
