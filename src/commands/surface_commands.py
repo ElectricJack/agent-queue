@@ -520,7 +520,9 @@ class SurfaceCommandsMixin:
                         result["error"] = (
                             "record.stale_claim: continuation outcome delivered; run "
                             f"`{ack_command}` first, then run `aq prime` again before "
-                            "continuing the task."
+                            "continuing the task. A cancelled wait outcome also requires "
+                            "acknowledgement: cancellation resolves the wait, and you still "
+                            "hold the task claim. Do not stop or exit."
                         )
                     if exc.code == "context.required_over_budget":
                         from src.knowledge.budget import ContextBudget

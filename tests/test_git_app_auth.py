@@ -570,6 +570,44 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
 
 
+@pytest.mark.asyncio
+async def test_isolated_partial_origin_fetch_limits_transport_and_import(tmp_path, monkeypatch):
+    checkout, source, trap, base, tip = _git_push_case(tmp_path)
+    destination = tmp_path / "destination"
+    _git(["clone", str(source), str(destination)], tmp_path)
+    _git(["push", str(source), f"{base}:refs/heads/keep", f"{tip}:refs/heads/changed",
+          f"{tip}:refs/heads/unrelated"], checkout)
+    _git(["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"], destination)
+    _git(["push", str(source), f"{tip}:refs/tags/new"], checkout)
+    provenance = "refs/aq/provenance/completions/subject/generation"
+    _git(["push", str(source), f"{tip}:{provenance}"], checkout)
+    _git(["update-ref", "refs/remotes/origin/changed", base], destination)
+    _git(["update-ref", "refs/remotes/origin/unrelated", base], destination)
+    _git(["config", "remote.origin.url", str(trap)], destination)
+    manager = GitManager()
+    transport = AsyncMock(wraps=manager._arun_authenticated_git)
+    imported = AsyncMock(wraps=manager._run_isolated_import_git)
+    monkeypatch.setattr(manager, "_arun_authenticated_git", transport)
+    monkeypatch.setattr(manager, "_run_isolated_import_git", imported)
+    selected = ["refs/heads/changed", "refs/tags/new", provenance]
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token", refs=selected,
+    )
+    for calls in (transport.await_args_list, imported.await_args_list):
+        fetches = [call.args[0] for call in calls if "fetch" in call.args[0]]
+        assert len(fetches) == 1
+        assert not any("*" in arg for arg in fetches[0])
+        assert "--prune" not in fetches[0]
+        assert "fetch.fsckObjects=true" in fetches[0]
+    assert _git(["rev-parse", "refs/remotes/origin/changed"], destination) == tip
+    assert _git(["rev-parse", "refs/tags/new"], destination) == tip
+    assert _git(["rev-parse", provenance], destination) == tip
+    assert _git(["rev-parse", "refs/remotes/origin/keep"], destination) == base
+    assert _git(["rev-parse", "refs/remotes/origin/unrelated"], destination) == base
+    assert _git(["rev-parse", "HEAD"], destination) == base
+    assert _git(["config", "--get", "remote.origin.url"], destination) == str(trap)
+
+
 @pytest.mark.parametrize("operation", ["origin", "exact", "clone", "push"])
 @pytest.mark.parametrize("exit_kind", ["success", "failure", "cancellation", "cancel_cleanup"])
 async def test_isolated_git_cleanup_runs_off_loop_and_retains_ownership(
@@ -1034,6 +1072,7 @@ async def test_exact_oid_fetch_downloads_everything_for_a_partial_destination(
     assert observed["objects"] > 120
     assert "exact_fetch=full, seeded_tips=0" in caplog.text
     assert _git(["rev-parse", "refs/aq/pr/base"], store) == tip
+    assert _count_objects(store)[0] > 120  # The local import also copies promised blobs.
 
 
 @pytest.mark.asyncio
@@ -3374,6 +3413,93 @@ async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp
     monkeypatch.setattr("src.git.manager._RETAINED_VERIFY_TTL_SECONDS", 0.0)
     await verify()
     assert runs.await_count == 4
+
+
+@pytest.mark.parametrize("operation", ["origin", "exact"])
+async def test_checked_incremental_fetch_preserves_full_check_until_ttl(
+    tmp_path, monkeypatch, operation,
+):
+    work, source, destination = _origin_fetch_case(tmp_path)
+    manager = GitManager()
+    git_dir = str(destination / ".git")
+    original = manager._run_isolated_import_git
+    checks = []
+
+    async def record(args, **kwargs):
+        if "fsck" in args:
+            checks.append(args)
+        if "fetch" in args:
+            assert "fetch.fsckObjects=true" in args
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", record)
+    network = manager._arun_authenticated_git
+
+    async def checked_network(args, **kwargs):
+        assert "fetch.fsckObjects=true" in args
+        return await network(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", checked_network)
+
+    async def fetch(number):
+        tip = _git(["rev-parse", "HEAD"], work)
+        if operation == "origin":
+            await manager._afetch_origin_with_auth_to_url(
+                str(destination), source_url=source.as_uri(), token=None,
+            )
+            assert _git(["rev-parse", "refs/remotes/origin/main"], destination) == tip
+        else:
+            assert await manager._afetch_exact_oid_with_app_auth_to_url(
+                git_dir, destination_url=source.as_uri(), token=None,
+                oid=tip, destination_ref=f"refs/aq/exact/{number}",
+            ) == tip
+
+    await fetch(0)
+    assert len(checks) == 1
+    first_fingerprint, first_at = manager._retained_verified[git_dir]
+    for number in (1, 2):
+        _commit_and_publish(work, source, f"increment {number}\n")
+        await fetch(number)
+        assert manager.retained_store_verified(git_dir)
+        assert manager._retained_verified[git_dir][1] == first_at
+        assert len(checks) == 1
+    assert manager._retained_verified[git_dir][0] != first_fingerprint
+
+    fingerprint, at = manager._retained_verified[git_dir]
+    manager._retained_verified[git_dir] = (
+        fingerprint, at - manager_module._RETAINED_VERIFY_TTL_SECONDS - 1,
+    )
+    _commit_and_publish(work, source, "after ttl\n")
+    await fetch(3)
+    assert len(checks) == 2
+    assert manager.retained_store_verified(git_dir)
+
+
+async def test_retained_verification_has_own_budget_and_preserves_transfer_time(
+    tmp_path, monkeypatch,
+):
+    manager = GitManager()
+    now = 100.0
+    original_deadline = now + 0.01
+
+    async def slow_check(git_dir, *, home, deadline):
+        nonlocal now
+        assert deadline == now + manager_module._RETAINED_VERIFY_TIMEOUT_SECONDS
+        # Verification takes longer than the transfer time left on entry.
+        now += 60
+        assert now < deadline
+
+    check = AsyncMock(side_effect=slow_check)
+    monkeypatch.setattr(manager, "_averify_retained_objects", check)
+    with monkeypatch.context() as clock:
+        clock.setattr(manager_module.asyncio, "get_running_loop",
+                      lambda: SimpleNamespace(time=lambda: now))
+        renewed = await manager._aretained_fetch_deadline(
+            str(tmp_path), home=tmp_path, deadline=original_deadline,
+        )
+    check.assert_awaited_once()
+    assert now > original_deadline
+    assert renewed - now == pytest.approx(0.01)
 
 
 async def test_concurrent_integrity_checks_of_one_store_run_one_fsck(tmp_path, monkeypatch):

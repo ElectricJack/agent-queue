@@ -32,6 +32,12 @@ AQ observed it. This timestamp is explicitly **not** an invented original
 landing time. The witness and receipt are historical evidence; current
 delivery decisions still evaluate Git against the current target.
 
+When that exact receipt already exists and no live origin, checkpoint or
+unreleased owner remains for its task and repository, reconciliation has no
+mutation to make. A single SQL existence probe ends that visit before remote
+freshness and writer-lock checks. Newly created projections are revisited on
+the next pass; every actual repair retains the checks below.
+
 After rechecking task identity, completion, target freshness and writer
 exclusion, the reconciler:
 
