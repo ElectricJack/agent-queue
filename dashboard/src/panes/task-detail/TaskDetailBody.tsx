@@ -31,6 +31,7 @@ import TaskCollaboration from "../../components/TaskCollaboration";
 import TaskComments from "../../components/TaskComments";
 import TaskSubtaskList from "../../components/TaskSubtaskList";
 import TaskSessions from "../../components/TaskSessions";
+import TaskWaitPanel from "../../components/TaskWaitPanel";
 import TaskAttention from "../../components/TaskAttention";
 import TaskProviderRouting, { ProviderIntentChip } from "../../components/TaskProviderRouting";
 import TaskDescription from "../../components/TaskDescription";
@@ -41,6 +42,8 @@ import type { TaskDetailArgs } from "./manifest";
 import { useReviews } from "../../api/reviews";
 import { taskPreview } from "./preview";
 import { prefetchTaskPane } from "./prefetch";
+import { isIngestHeld } from "../../pages/command-center/statusPillModel";
+import IngestionSections, { HeldStatusPill } from "./IngestionSections";
 
 /** One row of the deliverables checklist, verdict included. */
 type DeliverableRow = { id: string; kind: string; target: string; met: boolean; reason: string };
@@ -243,7 +246,9 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
           {task?.title ?? preview?.title ?? "Loading…"}
         </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          {task?.delivery_status && !rolledState(task, task.delivery_status) ? (
+          {task && <TaskWaitPanel key={`wait-${task.id}`} taskId={task.id} projectId={task.project_id ?? ""} />}
+
+          {task && isIngestHeld(task.held_batch) ? <HeldStatusPill task={task} /> : task?.delivery_status && !rolledState(task, task.delivery_status) ? (
             <EpicStatus delivery={task.delivery_status} status={task.status} />
           ) : (
             status && <TaskDisplayStatus task={task ?? { status, display_state: preview?.display_state, display_reason: preview?.display_reason }} />
@@ -279,9 +284,12 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
         {task && <EpicActivitySummary task={task} />}
       </header>
 
+      {task && <IngestionSections task={task} onOpenTask={onOpenTask} />}
       {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={onClose} onOpenTerminal={onLeave} />}
 
       {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
+
+      {task && <TaskWaitPanel key={`wait-${task.id}`} taskId={task.id} projectId={task.project_id ?? ""} />}
 
       {task?.delivery_status && <EpicDeliveryPanel delivery={task.delivery_status} onOpenTask={onOpenTask} />}
 
