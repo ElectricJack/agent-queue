@@ -18,14 +18,26 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import math
+import ipaddress
 import logging
 import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
+
+from src.config_wait_policy import (
+    WaitKindPolicy as WaitKindPolicy,
+    WaitPolicyConfig as WaitPolicyConfig,
+    WaitProjectOverrides as WaitProjectOverrides,
+    parse_wait_policy,
+)
+from src.docs_urls import DEFAULT_DOCS_BASE_URL
+from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +131,46 @@ def is_discord_snowflake(value: object) -> bool:
 
 @dataclass
 class PerProjectChannelsConfig:
-    """Configuration for automatic per-project Discord channel management."""
+    """Removed legacy shape retained only as an import compatibility shim.
+
+    The simplified Discord adapter never constructs or consults this class.
+    Old ``discord.per_project_channels`` YAML is accepted for a non-destructive
+    migration warning, but it cannot re-enable channel creation.
+    """
 
     auto_create: bool = False
     naming_convention: str = "{project_id}"
     category_name: str = ""  # Discord category to group project channels (optional)
     private: bool = True  # Make auto-created channels private (only bot + permitted users)
+
+
+_REPORT_CLOCK = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+@dataclass
+class ReportQuietHoursConfig:
+    """Local wall-clock interval during which an author wake is skipped.
+
+    Shared by the hourly report author (``reports.hourly.quiet_hours``) and the
+    supervisor-authored digest (``discord.digest.quiet_hours``, 2026-10-03 §4.1):
+    both suppress a *wake*, and both are evaluated in the daemon's report
+    timezone rather than UTC.
+    """
+
+    start: str = ""
+    end: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        if (
+            not isinstance(self.start, str)
+            or not isinstance(self.end, str)
+            or not _REPORT_CLOCK.fullmatch(self.start)
+            or not _REPORT_CLOCK.fullmatch(self.end)
+        ):
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "use HH:MM (24-hour)")]
+        if self.start == self.end:
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "must differ")]
+        return []
 
 
 @dataclass
@@ -135,6 +181,14 @@ class DiscordDigestConfig:
     ``project_ids`` empty means every project the configured destination can
     see; a non-empty list is the destination's visibility, applied before any
     activity is read so one project's detail can never leak into another's.
+
+    ``supervisor_authored`` is phase P3 of the Discord-as-chat design
+    (2026-10-03 §4): the same window, written by the supervisor through
+    ``aq digest post`` instead of rendered only by the deterministic renderer.
+    It is off by default, so every field below it is inert until an operator
+    turns the flag on -- rollback is the flag, nothing else.  The cadence and
+    quiet hours are the spec's §8 Q4 proposal (two hours, 22:00-07:00 in the
+    daemon's report timezone), still gated on Jack's answer to that question.
     """
 
     enabled: bool = True
@@ -148,6 +202,19 @@ class DiscordDigestConfig:
     )
     catchup_hours: int = field(
         default=24, metadata={"json_schema": {"minimum": 1, "maximum": 168}}
+    )
+    supervisor_authored: bool = False
+    cadence_minutes: int = field(
+        default=120, metadata={"json_schema": {"minimum": 15, "maximum": 1440}}
+    )
+    quiet_hours: ReportQuietHoursConfig | None = field(
+        default_factory=lambda: ReportQuietHoursConfig(start="22:00", end="07:00")
+    )
+    author_fallback_minutes: int = field(
+        default=10, metadata={"json_schema": {"minimum": 1, "maximum": 60}}
+    )
+    quiet_line_after_skips: int = field(
+        default=3, metadata={"json_schema": {"minimum": 1, "maximum": 24}}
     )
 
     def validate(self) -> list[ConfigError]:
@@ -197,6 +264,118 @@ class DiscordDigestConfig:
                     )
                 )
                 break
+        if not isinstance(self.supervisor_authored, bool):
+            errors.append(
+                ConfigError("discord.digest", "supervisor_authored", "must be a boolean")
+            )
+        if not MIN_DIGEST_INTERVAL_MINUTES <= self.cadence_minutes <= MAX_DIGEST_INTERVAL_MINUTES:
+            errors.append(
+                ConfigError(
+                    "discord.digest",
+                    "cadence_minutes",
+                    f"cadence_minutes must be between {MIN_DIGEST_INTERVAL_MINUTES} and "
+                    f"{MAX_DIGEST_INTERVAL_MINUTES}; got {self.cadence_minutes}",
+                )
+            )
+        for name, upper in (
+            ("author_fallback_minutes", 60),
+            ("quiet_line_after_skips", 24),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= upper:
+                errors.append(ConfigError("discord.digest", name, f"must be 1–{upper}"))
+        if self.quiet_hours is not None:
+            # The quiet-hours shape names the hourly report in its section; a
+            # digest window is the same policy in a different block, so the
+            # message is restated under the digest's own section.
+            errors.extend(
+                ConfigError("discord.digest.quiet_hours", error.field, error.message)
+                for error in self.quiet_hours.validate()
+            )
+        return errors
+
+
+@dataclass
+class HourlyReportsConfig:
+    """Opt-in supervisor authoring policy for the existing digest window."""
+
+    enabled: bool = False
+    full_fleet_visibility: bool = False
+    grace_minutes: int = 5
+    max_requests_per_day: int = 12
+    quiet_hours: ReportQuietHoursConfig | None = None
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not 1 <= self.grace_minutes <= 60:
+            errors.append(ConfigError("reports.hourly", "grace_minutes", "must be 1–60"))
+        if not 1 <= self.max_requests_per_day <= 24:
+            errors.append(ConfigError("reports.hourly", "max_requests_per_day", "must be 1–24"))
+        if self.quiet_hours is not None:
+            errors.extend(self.quiet_hours.validate())
+        return errors
+
+
+@dataclass
+class MorningReportsConfig:
+    """Opt-in zoned daily schedule; identity survives config edits."""
+
+    enabled: bool = False
+    time: str = "07:00"
+    late_cutoff_minutes: int = 120
+    max_lookback_hours: int = 72
+    author_deadline_minutes: int = 15
+    project_ids: list[str] = field(default_factory=list)
+    destination: str = ""
+    full_fleet_visibility: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("reports.morning", "enabled", "must be a boolean"))
+        if not isinstance(self.full_fleet_visibility, bool):
+            errors.append(
+                ConfigError("reports.morning", "full_fleet_visibility", "must be a boolean")
+            )
+        if not isinstance(self.time, str) or not _REPORT_CLOCK.fullmatch(self.time):
+            errors.append(ConfigError("reports.morning", "time", "use HH:MM (24-hour)"))
+        for name, upper in (
+            ("late_cutoff_minutes", 1440),
+            ("max_lookback_hours", 72),
+            ("author_deadline_minutes", 60),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= upper:
+                errors.append(ConfigError("reports.morning", name, f"must be 1–{upper}"))
+        if (
+            not isinstance(self.project_ids, list)
+            or len(self.project_ids) > 100
+            or any(not isinstance(value, str) or not value.strip() for value in self.project_ids)
+        ):
+            errors.append(
+                ConfigError("reports.morning", "project_ids", "use up to 100 project ids")
+            )
+        if not isinstance(self.destination, str) or (
+            self.destination and not re.fullmatch(r"discord:[0-9]{17,20}", self.destination)
+        ):
+            errors.append(ConfigError("reports.morning", "destination", "use discord:<channel id>"))
+        return errors
+
+
+@dataclass
+class ReportsConfig:
+    """Shared report zone and hourly/daily report settings."""
+
+    timezone: str = "UTC"
+    hourly: HourlyReportsConfig = field(default_factory=HourlyReportsConfig)
+    morning: MorningReportsConfig = field(default_factory=MorningReportsConfig)
+
+    def validate(self) -> list[ConfigError]:
+        errors = self.hourly.validate() + self.morning.validate()
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, TypeError, ValueError):
+            errors.append(ConfigError("reports", "timezone", "must be an IANA time zone"))
         return errors
 
 
@@ -261,30 +440,123 @@ class DiscordEscalationConfig:
 
 
 @dataclass
+class DiscordEscalationsConfig:
+    """The §5.2/§5.5 stateful-escalation phase, behind one rollback flag.
+
+    Distinct from :class:`DiscordEscalationConfig`, which holds the older
+    *post-delivery* switches.  This section is the phase the Discord design
+    spec §7.1 calls P1: the escalation state machine, edit-in-place posts and
+    the collapsed one-line form.  With ``stateful`` off, the behaviour is
+    exactly what shipped before the phase -- one root post per incident, edited
+    only when it is closed, no auto-resolution and no collapse bookkeeping.
+
+    There is deliberately **no** retention timer here.  Spec §5.2 sketched an
+    opt-in ``delete_collapsed_after_hours``, and Jack answered §8 Q3 on
+    2026-10-03 with "keep as one-line posts forever": a resolved or obsolete
+    post stays in the channel as the one-line form Discord can express, and
+    nothing in this code deletes it.  ``escalations.collapsed_at`` still
+    records when a post collapsed — that is the audit trail and the idempotency
+    check for a replayed edit, not a countdown.
+    """
+
+    stateful: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        if not isinstance(self.stateful, bool):
+            return [ConfigError("discord.escalations", "stateful", "must be a boolean")]
+        return []
+
+
+@dataclass
+class DiscordConversationConfig:
+    """Opt-in conversations with the addressed supervisor.
+
+    Off by default.  Enabling means the ``discord.authorized_users`` identities
+    are trusted operator correspondents of the *elevated* addressed supervisor;
+    there is no sandboxed chatbot.  Every numeric bound is fixed in
+    :mod:`src.conversations.limits`, not configured here, and the runtime
+    preconditions are :func:`src.conversations.preconditions.conversation_preconditions`.
+
+    ``require_mention`` and ``allow_dm`` are the P2 phase flags of the
+    2026-10-03 chat-extension spec (§7.1).  Both default to the routing the
+    mention-routing spec installed, so rollback is a flag change: setting
+    ``require_mention: true`` restores "only a top-level bot mention opens a
+    conversation", and leaving ``allow_dm`` off keeps direct messages ignored.
+    """
+
+    enabled: bool = False
+    #: Top-level messages open the channel's conversation without an
+    #: ``@agent-queue``.  ``True`` keeps mention-only routing.
+    require_mention: bool = True
+    #: Admit a direct message from an allow-listed user as its own channel
+    #: conversation (``thread_id = dm:<channel>``).  Off until asked.
+    allow_dm: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        if self.allow_dm and not self.enabled:
+            return [
+                ConfigError(
+                    "discord.conversation",
+                    "allow_dm",
+                    "discord.conversation.allow_dm requires discord.conversation.enabled",
+                )
+            ]
+        return []
+
+
+@dataclass
 class DiscordConfig:
-    """Discord bot connection and channel routing settings."""
+    """Discord bot connection and the one shared destination."""
 
     bot_token: str = ""
     guild_id: str = ""
-    channels: dict[str, str] = field(
-        default_factory=lambda: {
-            "channel": "agent-queue",
-            "agent_questions": "agent-questions",
-        }
-    )
     authorized_users: list[str] = field(default_factory=list)
     #: The one configured destination.  A Discord channel ID, not a name: the
     #: single-channel model binds durable delivery to an ID that survives a
     #: rename (§1, §9).  Empty means "not configured yet".
     channel_id: str = ""
+    #: Conversation destination; inferred only when there is exactly one project.
+    project_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
-    per_project_channels: PerProjectChannelsConfig = field(default_factory=PerProjectChannelsConfig)
+    #: §7.1 P1: the stateful escalation phase.  Separate from ``escalation``
+    #: so one rollback flag turns the whole phase off and nothing else.
+    escalations: DiscordEscalationsConfig = field(default_factory=DiscordEscalationsConfig)
+    conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
     rate_guard_warn: int = 1000
     rate_guard_critical: int = 5000
     rate_guard_halt: int = 8000
+
+    @property
+    def legacy_destination_names(self) -> tuple[str, ...]:
+        """Distinct old global channel names captured by :func:`load_config`.
+
+        This is migration input, not an authored setting. Keeping it outside
+        the dataclass fields prevents the removed ``channels`` block from
+        reappearing in the config editor or generated schema.
+        """
+        return tuple(getattr(self, "_legacy_destination_names", ()))
+
+    @property
+    def legacy_inventory_names(self) -> tuple[str, ...]:
+        """Old channel names that may contain pending question/gate cards."""
+        return tuple(getattr(self, "_legacy_inventory_names", ()))
+
+    @property
+    def legacy_destination_conflict(self) -> bool:
+        """Whether old control/notification settings name multiple channels."""
+        return len(self.legacy_destination_names) > 1
+
+    @property
+    def has_allowlist(self) -> bool:
+        """Whether ``authorized_users`` names anyone (blank entries name no one).
+
+        The gateway's legacy check treats an empty list as "everyone"; the
+        conversation route fails closed on it instead.
+        """
+        return any(str(user).strip() for user in self.authorized_users)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -307,6 +579,19 @@ class DiscordConfig:
             )
         errors.extend(self.digest.validate())
         errors.extend(self.escalation.validate())
+        errors.extend(self.escalations.validate())
+        errors.extend(self.conversation.validate())
+        if self.conversation.enabled and not (
+            self.has_allowlist and self.guild_id and self.channel_id
+        ):
+            errors.append(
+                ConfigError(
+                    "discord",
+                    "conversation.enabled",
+                    "discord.conversation.enabled requires a non-empty "
+                    "discord.authorized_users allowlist, a guild_id and a channel_id",
+                )
+            )
         return errors
 
     def warnings(self) -> list[str]:
@@ -325,6 +610,30 @@ class DiscordConfig:
             )
         if not self.digest.enabled:
             notes.append("Hourly digests are disabled; no routine activity message is sent.")
+        if self.digest.enabled and self.digest.supervisor_authored:
+            notes.append(
+                f"The digest is supervisor-authored: one window every "
+                f"{self.digest.cadence_minutes} minutes, each held "
+                f"{self.digest.author_fallback_minutes} minutes for "
+                "`aq digest post` before the deterministic fallback posts."
+            )
+        if self.conversation.enabled:
+            notes.append(
+                "Discord conversations are enabled: an @mention from an authorized_users "
+                "identity reaches the elevated project supervisor or elevated global supervisor. "
+                "This is not a sandboxed "
+                "chatbot; keep it off where chat must be read-only."
+            )
+        if self.legacy_destination_conflict and not self.channel_id:
+            notes.append(
+                "Legacy Discord destinations conflict: choose one explicit channel_id before "
+                "external delivery is enabled. No channel was selected automatically."
+            )
+        if getattr(self, "_legacy_per_project_channels", False):
+            notes.append(
+                "Legacy per_project_channels settings are ignored; simplified Discord never "
+                "creates or routes through project-specific channels."
+            )
         return notes
 
 
@@ -333,7 +642,7 @@ class AgentsDefaultConfig:
     """Default timeouts for agent health monitoring and graceful shutdown."""
 
     heartbeat_interval_seconds: int = 30
-    stuck_timeout_seconds: int = 1800  # 30 min; 0 = no timeout
+    stuck_timeout_seconds: int = 0  # disabled; explicit limits remain honored
     graceful_shutdown_timeout_seconds: int = 30
 
     def validate(self) -> list[ConfigError]:
@@ -359,6 +668,9 @@ class SchedulingConfig:
     rolling_window_hours: int = 24
     min_task_guarantee: bool = True
     affinity_wait_seconds: int = 120  # max seconds to wait for a busy affinity agent
+    cycle_interval_seconds: float = 5.0
+    min_cycle_interval_seconds: float = 1.0
+    config_poll_interval_seconds: float = 30.0
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -366,38 +678,17 @@ class SchedulingConfig:
             errors.append(ConfigError("scheduling", "rolling_window_hours", "must be > 0"))
         if self.affinity_wait_seconds < 0:
             errors.append(ConfigError("scheduling", "affinity_wait_seconds", "must be >= 0"))
-        return errors
-
-
-@dataclass
-class PauseRetryConfig:
-    """Backoff and retry timing for rate-limited and token-exhausted tasks.
-
-    Controls both the in-process exponential backoff (before a task is paused)
-    and the longer pause durations (after a task enters PAUSED state and waits
-    for resume_after to elapse).
-    """
-
-    rate_limit_backoff_seconds: int = 60
-    token_exhaustion_retry_seconds: int = 300
-    # Exponential-backoff retry knobs (in-process, before the task is paused)
-    rate_limit_max_retries: int = 3
-    rate_limit_max_backoff_seconds: int = 300
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.rate_limit_backoff_seconds <= 0:
-            errors.append(ConfigError("pause_retry", "rate_limit_backoff_seconds", "must be > 0"))
-        if self.token_exhaustion_retry_seconds <= 0:
-            errors.append(
-                ConfigError("pause_retry", "token_exhaustion_retry_seconds", "must be > 0")
-            )
-        if self.rate_limit_max_retries < 0:
-            errors.append(ConfigError("pause_retry", "rate_limit_max_retries", "must be >= 0"))
-        if self.rate_limit_max_backoff_seconds <= 0:
-            errors.append(
-                ConfigError("pause_retry", "rate_limit_max_backoff_seconds", "must be > 0")
-            )
+        for key in ("cycle_interval_seconds", "min_cycle_interval_seconds",
+                    "config_poll_interval_seconds"):
+            value = getattr(self, key)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value <= 0):
+                errors.append(ConfigError("scheduling", key, "must be finite and > 0"))
+        if (isinstance(self.min_cycle_interval_seconds, (int, float))
+                and isinstance(self.cycle_interval_seconds, (int, float))
+                and self.min_cycle_interval_seconds > self.cycle_interval_seconds):
+            errors.append(ConfigError("scheduling", "min_cycle_interval_seconds",
+                                      "must be <= cycle_interval_seconds"))
         return errors
 
 
@@ -472,13 +763,137 @@ class MonitoringConfig:
 
 
 @dataclass
+class KnowledgeFeatureConfig:
+    """An independently activated knowledge feature; deployment never enables it."""
+
+    enabled: bool = False
+
+
+@dataclass
+class KnowledgeGenerationConfig(KnowledgeFeatureConfig):
+    """Outbound generation needs an explicit provider and separate daily allowance."""
+
+    provider_id: str = ""
+    allowed_providers: list[str] = field(default_factory=list)
+    daily_microusd: int = 0
+    daily_tokens: int = 0
+    policy_version: str = "1"
+
+
+@dataclass
+class KnowledgeContextConfig(KnowledgeFeatureConfig):
+    # None derives the ceiling from the live model window; integers are operator caps.
+    input_max_tokens: int | None = None
+    output_reserve_tokens: int = 4096
+    wrapper_reserve_tokens: int = 256
+    max_tokens: int = 4096
+    max_bytes: int = 16384
+    discovery_max_tokens: int = 1000
+    discovery_max_items: int = 8
+    bundle_ttl_seconds: int = 300
+    supervisor_query: str = ""
+    supervisor_project_ids: list[str] = field(default_factory=list)
+    supervisor_global_scope: bool = False
+
+
+@dataclass
+class KnowledgeConfig:
+    """Core records are independent of memory and require explicit pilot activation."""
+
+    enabled: bool = False
+    enabled_projects: list[str] = field(default_factory=list)
+    global_enabled: bool = False
+    authority_review_required: bool = True
+    writes_enabled: bool = False
+    ui_enabled: bool = False
+    legacy_memory_mode: str = "disabled"
+    context: KnowledgeContextConfig = field(default_factory=KnowledgeContextConfig)
+    semantic: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    extraction: KnowledgeGenerationConfig = field(default_factory=KnowledgeGenerationConfig)
+    consolidation: KnowledgeGenerationConfig = field(default_factory=KnowledgeGenerationConfig)
+    export: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    import_inventory: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+    import_apply: KnowledgeFeatureConfig = field(default_factory=KnowledgeFeatureConfig)
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        for name in ("enabled", "global_enabled", "writes_enabled", "ui_enabled", "authority_review_required"):
+            if type(getattr(self, name)) is not bool:
+                errors.append(ConfigError("knowledge", name, "must be a boolean"))
+        if (not isinstance(self.enabled_projects, list) or any(
+            not isinstance(project, str) or not project or project == "*"
+            for project in self.enabled_projects
+        )):
+            errors.append(ConfigError("knowledge", "enabled_projects", "must be explicit project IDs"))
+        if self.legacy_memory_mode not in {"disabled", "read_only", "compatibility"}:
+            errors.append(ConfigError("knowledge", "legacy_memory_mode", "unsupported legacy mode"))
+        for name in (
+            "context",
+            "semantic",
+            "extraction",
+            "consolidation",
+            "export",
+            "import_inventory",
+            "import_apply",
+        ):
+            feature = getattr(self, name)
+            if not isinstance(feature, KnowledgeFeatureConfig) or type(feature.enabled) is not bool:
+                errors.append(ConfigError("knowledge", f"{name}.enabled", "must be a boolean"))
+        for name in ("extraction", "consolidation"):
+            feature = getattr(self, name)
+            for counter in ("daily_microusd", "daily_tokens"):
+                value = getattr(feature, counter, None)
+                if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                    errors.append(ConfigError("knowledge", f"{name}.{counter}", "must be nonnegative"))
+            allowed = getattr(feature, "allowed_providers", None)
+            if not isinstance(allowed, list) or any(
+                not isinstance(item, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", item)
+                for item in allowed
+            ):
+                errors.append(ConfigError("knowledge", f"{name}.allowed_providers", "invalid providers"))
+            selected = getattr(feature, "provider_id", None)
+            if not isinstance(selected, str) or (
+                selected and not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", selected)
+            ):
+                errors.append(ConfigError("knowledge", f"{name}.provider_id", "invalid provider"))
+            version = getattr(feature, "policy_version", None)
+            if not isinstance(version, str) or not version.strip() or len(version) > 128:
+                errors.append(ConfigError("knowledge", f"{name}.policy_version", "invalid version"))
+        for name in (
+            "input_max_tokens", "output_reserve_tokens", "wrapper_reserve_tokens",
+            "max_tokens", "max_bytes", "discovery_max_tokens", "discovery_max_items",
+            "bundle_ttl_seconds",
+        ):
+            value = getattr(self.context, name, None)
+            if name == "input_max_tokens" and value is None:
+                continue
+            if type(value) is not int or value < 0:
+                errors.append(ConfigError("knowledge", f"context.{name}", "must be nonnegative"))
+        item_limit = getattr(self.context, "discovery_max_items", None)
+        if type(item_limit) is int and item_limit > 8:
+            errors.append(ConfigError("knowledge", "context.discovery_max_items", "must be <= 8"))
+        query = getattr(self.context, "supervisor_query", None)
+        if not isinstance(query, str) or len(query.encode()) > 4096:
+            errors.append(ConfigError("knowledge", "context.supervisor_query", "must be <= 4096 bytes"))
+        project_ids = getattr(self.context, "supervisor_project_ids", None)
+        if (not isinstance(project_ids, list) or len(project_ids) > 8
+                or any(not isinstance(p, str) or not p or p == "*" for p in project_ids)):
+            errors.append(ConfigError("knowledge", "context.supervisor_project_ids",
+                                      "must be at most eight explicit projects"))
+        if type(getattr(self.context, "supervisor_global_scope", None)) is not bool:
+            errors.append(ConfigError("knowledge", "context.supervisor_global_scope",
+                                      "must be a boolean"))
+        return errors
+
+
+@dataclass
 class MemoryConfig:
     """Configuration for the semantic memory subsystem (memsearch).
 
     Paused by default during the framework overhaul — see
-    docs/specs/design/feature-pauses.md.  Set ``enabled: true`` in the YAML
-    config (restart required) to bring the subsystem back.  See
-    notes/memsearch-integration.md for full documentation.
+    docs/specs/design/feature-pauses.md. This master switch is independent of
+    knowledge storage and its feature controls. Enabling it does not admit a
+    legacy authoritative writer without a versioned adapter handshake.
     """
 
     enabled: bool = False
@@ -504,8 +919,8 @@ class MemoryConfig:
     index_notes: bool = True  # index project notes/ directory
     index_specs: bool = True  # index workspace specs/ directory
     index_docs: bool = True  # index workspace docs/ directory (published documentation)
-    index_project_docs: bool = True  # index individual doc files (CLAUDE.md, README.md)
-    project_docs_files: tuple[str, ...] = ("CLAUDE.md", "README.md")  # files to index individually
+    index_project_docs: bool = True  # index individual doc files (AGENTS.md, CLAUDE.md, README.md)
+    project_docs_files: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md", "README.md")  # files to index individually
     index_sessions: bool = False  # index session transcripts
     # Phase 1: Project Profile
     profile_enabled: bool = True  # toggle project profiles
@@ -592,7 +1007,7 @@ class LoggingConfig:
 
     Controls the structlog-powered logging setup.  Three output modes:
 
-    - ``"dev"`` — Rich-colored console output (default, best for terminals)
+    - ``"dev"`` — colored console output (default; colors only on a terminal)
     - ``"json"`` — Single-line JSON objects for log aggregation / ``jq``
     - ``"plain"`` — Human-readable text without ANSI codes (for piping)
 
@@ -654,11 +1069,32 @@ class SupervisorConfig:
     #: The trailing underscore in the attribute name avoids the Python
     #: keyword ``global``. In YAML the section is written as ``global``.
     global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
+    turn_timeout_seconds: int = 900
+    question_timeout_seconds: int = 900
+    retry_backoff_seconds: int = 60
+    max_turn_retries: int = 2
+    max_session_age_seconds: int = 86400
+    context_ceiling_tokens: int = 160000
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.global_.validate())
+        for key in ("turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
+                    "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens"):
+            value = getattr(self, key)
+            if type(value) is not int or value <= 0:
+                errors.append(ConfigError("supervisor", key, "must be a positive integer"))
         return errors
+
+    @classmethod
+    def from_mapping(cls, section: Mapping) -> SupervisorConfig:
+        """Build from the YAML ``supervisor`` section; ``global`` is the nested section."""
+        global_section = section.get("global", {}) or {}
+        kwargs = _dataclass_kwargs(cls, section)
+        kwargs["global_"] = GlobalSupervisorConfig(
+            idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
+        )
+        return cls(**kwargs)
 
 
 LLM_PROVIDER_IDS = frozenset({"anthropic", "google", "openai"})
@@ -668,6 +1104,68 @@ _LEGACY_LLM_PROVIDER_IDS = {"gemini": "google", "ollama": "openai"}
 def normalize_llm_provider(name: str) -> str:
     """Map legacy chat_provider ids (``gemini``, ``ollama``) to ``llm`` ids."""
     return _LEGACY_LLM_PROVIDER_IDS.get(name, name)
+
+
+def _llm_credential_errors(
+    provider: str, api_key: str, base_url: str, *, prefix: str
+) -> list[ConfigError]:
+    """The provider-id and OpenAI-endpoint checks one direct-path credential needs."""
+    errors: list[ConfigError] = []
+    if provider not in LLM_PROVIDER_IDS:
+        errors.append(
+            ConfigError(
+                "llm",
+                f"{prefix}provider",
+                f"must be one of {sorted(LLM_PROVIDER_IDS)}, got '{provider}'",
+            )
+        )
+    if provider == "openai" and not (base_url or api_key or os.environ.get("OPENAI_API_KEY")):
+        errors.append(
+            ConfigError(
+                "llm",
+                f"{prefix}base_url",
+                "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
+                "or an API key (api_key / OPENAI_API_KEY)",
+            )
+        )
+    return errors
+
+
+@dataclass
+class LLMFallbackConfig:
+    """``llm.fallback`` — an optional second credential for the direct path.
+
+    Provider-failover D13a: while provider availability holds the reserved
+    ``llm`` key unavailable, direct-path calls resolve their intelligence
+    class against this block's provider slice and are made with this block's
+    credential instead of failing fast.  It is a full block of its own — its
+    ``default_class`` and ``model`` stand in for the primary's, and only
+    ``max_tokens`` is shared.  A session harness's login is never borrowed:
+    this credential is the only other one the direct path ever uses.
+    """
+
+    provider: str = ""  # required: "anthropic" | "google" | "openai"
+    model: str = ""  # explicit model id; empty = intelligence class, else provider default
+    api_key: str = ""  # optional; the provider's *_API_KEY variable otherwise
+    base_url: str = ""  # openai only: OpenAI-compatible endpoint
+    default_class: str = ""  # intelligence class used when a call names none
+
+    def __post_init__(self) -> None:
+        if self.model and not isinstance(self.model, str):
+            object.__setattr__(self, "model", str(self.model))
+
+    def validate(self) -> list[ConfigError]:
+        if not self.provider:
+            return [
+                ConfigError(
+                    "llm",
+                    "fallback.provider",
+                    f"is required; one of {sorted(LLM_PROVIDER_IDS)}",
+                )
+            ]
+        return _llm_credential_errors(
+            self.provider, self.api_key, self.base_url, prefix="fallback."
+        )
 
 
 @dataclass
@@ -682,6 +1180,8 @@ class LLMConfig:
     base_url: str = ""  # openai only: OpenAI-compatible endpoint (Ollama: http://localhost:11434/v1)
     max_tokens: int = 4096
     default_class: str = ""  # intelligence class used when a call names none
+    #: Used only while the primary credential is unavailable (provider-failover D13a).
+    fallback: LLMFallbackConfig | None = None
 
     def __post_init__(self) -> None:
         # YAML may parse ``model: 4`` as an int; APIs require a string.
@@ -689,26 +1189,25 @@ class LLMConfig:
             object.__setattr__(self, "model", str(self.model))
 
     def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.provider not in LLM_PROVIDER_IDS:
-            errors.append(
-                ConfigError(
-                    "llm",
-                    "provider",
-                    f"must be one of {sorted(LLM_PROVIDER_IDS)}, got '{self.provider}'",
+        errors = _llm_credential_errors(self.provider, self.api_key, self.base_url, prefix="")
+        fallback = self.fallback
+        if fallback is not None:
+            errors.extend(fallback.validate())
+            if (fallback.provider, fallback.api_key, fallback.base_url) == (
+                self.provider,
+                self.api_key,
+                self.base_url,
+            ):
+                # Same provider, key and endpoint is the same credential: it is
+                # unavailable exactly when the primary is, so it can never help.
+                errors.append(
+                    ConfigError(
+                        "llm",
+                        "fallback",
+                        "names the same credential as llm (provider, api_key and "
+                        "base_url all match); a fallback must differ in at least one",
+                    )
                 )
-            )
-        if self.provider == "openai" and not (
-            self.base_url or self.api_key or os.environ.get("OPENAI_API_KEY")
-        ):
-            errors.append(
-                ConfigError(
-                    "llm",
-                    "base_url",
-                    "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
-                    "or an API key (api_key / OPENAI_API_KEY)",
-                )
-            )
         return errors
 
 
@@ -963,6 +1462,36 @@ def is_postgres_url(url: str) -> bool:
     return str(url or "").startswith(POSTGRES_URL_SCHEMES)
 
 
+#: How the pool establishes that a pooled connection is still alive before
+#: handing it to a caller.  This is a latency knob with a resilience cost, so
+#: the vocabulary is closed and the three points on the curve are named:
+#:
+#: ``wire``
+#:     SQLAlchemy's ``pool_pre_ping=True``.  On the asyncpg dialect that is
+#:     *three* round trips per checkout, not one: ``_async_ping`` opens an
+#:     explicit transaction, runs ``;`` and rolls back so the ping stays
+#:     correct under pgbouncer transaction pooling.  Measured at 1.26-1.56 ms
+#:     per pooled transaction on the reference box (see the guide) — real
+#:     money when ``task_claim`` alone takes eight pooled transactions.
+#: ``local``
+#:     Ask the asyncpg connection whether it already knows it is dead
+#:     (``Connection.is_closed()``) and discard it if so.  Zero round trips:
+#:     when the server closes a connection — a restart, an idle timeout, a
+#:     ``pg_terminate_backend`` — the event loop reads the EOF while the
+#:     connection sits idle in the pool and asyncpg marks it closed, so the
+#:     common staleness cases are caught for free.  What it cannot catch is a
+#:     connection that died so recently the loop has not observed it yet, or
+#:     a half-open socket with no FIN; those still raise to the caller.
+#: ``off``
+#:     No liveness check at all.
+#:
+#: ``local`` is the default: it keeps the failure modes an operator actually
+#: hits (server bounce, idle reaper) transparent while spending nothing on
+#: the hot path.  Behind pgbouncer in transaction mode, or on a link where
+#: half-open sockets are a real concern, ``wire`` is the conservative choice.
+POOL_PRE_PING_MODES: tuple[str, ...] = ("off", "local", "wire")
+
+
 @dataclass
 class DatabaseConfig:
     """Database backend configuration via a single URL/DSN.
@@ -990,6 +1519,19 @@ class DatabaseConfig:
     url: str = ""  # DSN or file path — backend is inferred
     pool_min_size: int = 2
     pool_max_size: int = 10
+    #: One of :data:`POOL_PRE_PING_MODES` — how a pooled connection is checked
+    #: for liveness on checkout.  See that constant for the trade-off.
+    pre_ping: str = "local"
+    #: Retire a pooled connection older than this many seconds at its next
+    #: checkout, so a server-side idle reaper is unlikely to be raced.  The
+    #: check is local (SQLAlchemy compares timestamps), so it costs nothing on
+    #: the wire.  ``0`` disables recycling.
+    pool_recycle_seconds: int = 1800
+
+    #: Directory retained from the newer release for verified code rollbacks.
+    schema_ahead_migrations: str = ""
+    #: Null leaves the revision-distance limit disabled until release cutover.
+    schema_ahead_max_revisions: int | None = None
 
     @property
     def backend(self) -> str:
@@ -998,6 +1540,16 @@ class DatabaseConfig:
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if self.schema_ahead_max_revisions is not None and (
+            type(self.schema_ahead_max_revisions) is not int
+            or self.schema_ahead_max_revisions < 0
+        ):
+            errors.append(
+                ConfigError(
+                    "database", "schema_ahead_max_revisions",
+                    "must be null or a nonnegative integer",
+                )
+            )
         if not self.url:
             errors.append(ConfigError("database", "url", "database url/path is required"))
         if self.backend == "postgresql":
@@ -1014,6 +1566,18 @@ class DatabaseConfig:
                 errors.append(ConfigError("database", "pool_min_size", "must be >= 1"))
             if self.pool_max_size < self.pool_min_size:
                 errors.append(ConfigError("database", "pool_max_size", "must be >= pool_min_size"))
+            if self.pre_ping not in POOL_PRE_PING_MODES:
+                errors.append(
+                    ConfigError(
+                        "database",
+                        "pre_ping",
+                        f"must be one of {', '.join(POOL_PRE_PING_MODES)}",
+                    )
+                )
+            if self.pool_recycle_seconds < 0:
+                errors.append(
+                    ConfigError("database", "pool_recycle_seconds", "must be >= 0 (0 disables)")
+                )
         return errors
 
 
@@ -1044,6 +1608,10 @@ class PlaybooksConfig:
     """
 
     enabled: bool = False
+    # Environment variable names only. Key bytes never enter serialized config,
+    # vault sources or script inputs. Retain old entries for encrypted readback.
+    private_value_active_key_id: str = ""
+    private_value_key_env: dict[str, str] = field(default_factory=dict)
     v2_max_artifact_bytes: int = 1_048_576
     v2_max_result_bytes: int = 262_144
     v2_max_snapshot_bytes: int = 4_194_304
@@ -1185,9 +1753,35 @@ class SessionsConfig:
     #: 60 s, forever.  ``validate()`` also refuses a provider this host
     #: cannot construct, so the failure is a config error at load rather
     #: than a notification loop at runtime.
+    #:
+    #: This is the *unconfigured* floor, not what an installed box runs on:
+    #: ``aq install`` requires tmux and its ``config.defaults`` step writes
+    #: ``sessions.provider: tmux`` once it sees the binary
+    #: (``src.install.onboarding._session_provider_plan``), so attach, peek,
+    #: nudge and re-adoption are on by default after an install.  The check
+    #: below cannot do that job: the registry registers ``tmux`` whenever the
+    #: module *imports*, which is every POSIX host, with or without the
+    #: binary -- so only the installer can tell whether tmux is really there.
     provider: str = "subprocess"  # tmux | subprocess | fake
     tmux_socket: str = "aq"
     lease_ttl_seconds: int = 480
+    #: Bound on a pool holder's explicitly completed, unregistered idle turn.
+    #: Independent of terminal repaints; 0 disables this additional backstop.
+    idle_claim_timeout_seconds: int = 900
+    #: Grace before the reconciler stops a session that has nothing left to
+    #: do -- its task closed, or its claim budget is spent -- even though the
+    #: harness never exited.  ``sessions.last_activity`` cannot measure that
+    #: idle: tmux's ``window_activity`` advances on *any* pane output, so an
+    #: OpenCode TUI sitting at its final summary keeps the stamp fresh for as
+    #: long as it is left alone, and the worker holds its pool slot and
+    #: worktree forever (2026-10-03).  The clock here is the first tick the
+    #: finished shape was *observed*, not the pane.  0 disables the stop and
+    #: leaves the diagnosis to ``sessions.stop_intent_pending``.
+    idle_stop_grace_seconds: int = 60
+    #: How long a recorded stop intent may stand before ``aq doctor`` reports
+    #: the session.  It is a report threshold, not an action: the reconciler
+    #: owns the stop, and this only says the graceful path is not converging.
+    stop_intent_report_seconds: int = 600
     stall_max_nudges: int = 3
     stall_backoff_seconds: int = 300
     max_restarts: int = 3
@@ -1205,14 +1799,35 @@ class SessionsConfig:
     #: Maximum historical usage entries an uncheckpointed watcher may see
     #: before treating the batch as restart replay rather than fresh work.
     transcript_startup_replay_limit: int = 100
+    #: Native compaction at future worker launches only; 0 inherits harness defaults.
+    worker_context_compact_tokens: int = 160000
+    worker_context_checkpoint_tokens: int = 120000
+    #: Tool-turn cadence when fresh context measurements are unavailable, not a token estimate.
+    worker_context_unknown_checkpoint_turns: int = 40
     adopt_on_start: bool = True
     #: Live pane stream (dashboard).  Polling happens only while a
     #: subscriber is attached, so an unwatched daemon pays nothing.
     pane_stream_interval_seconds: float = 1.0
     pane_stream_max_sessions: int = 12
     pane_stream_lines: int = 60
+    #: Test-only: with ``provider: fake``, a JSON file mapping a harness
+    #: command to a scripted mode (``ok``, ``login_required``,
+    #: ``usage_limit``, ``crash``, ``rate_limit_midtask``), re-read on every
+    #: start and answering the login probe for the harnesses it names --
+    #: how the end-to-end kit exhausts and restores a provider mid-run
+    #: (:mod:`src.sessions.fake_script`, provider-failover D23).  Ignored by
+    #: every other provider.
+    fake_script_file: str = ""
+    #: Per-worker Claude plugin overrides, keyed by ``name@marketplace``.  A
+    #: non-empty map is merged as ``enabledPlugins`` into the rendered
+    #: ``.aq/hooks/claude.json`` of worker-lifecycle (``task``/``pool``)
+    #: sessions only; the empty default leaves the file byte-identical.
+    worker_claude_plugin_overrides: dict[str, bool] = field(default_factory=dict)
 
     _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
+    _PLUGIN_ID_RE = re.compile(
+        r"^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -1246,6 +1861,9 @@ class SessionsConfig:
                 pass
         for name in (
             "lease_ttl_seconds",
+            "idle_claim_timeout_seconds",
+            "idle_stop_grace_seconds",
+            "stop_intent_report_seconds",
             "stall_max_nudges",
             "stall_backoff_seconds",
             "max_restarts",
@@ -1267,6 +1885,48 @@ class SessionsConfig:
         ):
             if getattr(self, name) <= 0:
                 errors.append(ConfigError("sessions", name, "must be > 0"))
+        compact = self.worker_context_compact_tokens
+        checkpoint = self.worker_context_checkpoint_tokens
+        if compact != 0 and not 100000 <= compact <= 1000000:
+            errors.append(ConfigError(
+                "sessions", "worker_context_compact_tokens", "must be 0 or 100000..1000000"
+            ))
+        if checkpoint < 0 or (compact > 0 and checkpoint > compact):
+            errors.append(ConfigError(
+                "sessions", "worker_context_checkpoint_tokens",
+                "must be >= 0 and <= an enabled compact window",
+            ))
+        if self.worker_context_unknown_checkpoint_turns <= 0:
+            errors.append(ConfigError(
+                "sessions", "worker_context_unknown_checkpoint_turns", "must be > 0"
+            ))
+        if not isinstance(self.worker_claude_plugin_overrides, dict):
+            errors.append(
+                ConfigError(
+                    "sessions",
+                    "worker_claude_plugin_overrides",
+                    "must be a mapping of plugin id (name@marketplace) to bool",
+                )
+            )
+        else:
+            for plugin_id, enabled in self.worker_claude_plugin_overrides.items():
+                if not isinstance(plugin_id, str) or not self._PLUGIN_ID_RE.fullmatch(plugin_id):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id!r}",
+                            "plugin id must look like name@marketplace "
+                            "(e.g. fast-jev-compaction@fast-jev-compaction)",
+                        )
+                    )
+                elif not isinstance(enabled, bool):
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            f"worker_claude_plugin_overrides.{plugin_id}",
+                            f"must be a bool, got {type(enabled).__name__}",
+                        )
+                    )
         return errors
 
 
@@ -1287,6 +1947,8 @@ class WorktreesConfig:
     merge_slot_ttl_seconds: int = 600
     prune_remote_branches: bool = False
     setup_timeout_seconds: int = 900
+    slot_reset_git_timeout_seconds: int = 600
+    slot_reset_git_timeouts: dict[str, int] = field(default_factory=dict)
     salvage_dirty: bool = True
     # Upper bound on one archived salvage patch, in bytes.  Past it the patch
     # is replaced by its ``--stat`` summary: a slot can hold an arbitrarily
@@ -1307,6 +1969,20 @@ class WorktreesConfig:
             errors.append(ConfigError("worktrees", "merge_slot_ttl_seconds", "must be > 0"))
         if self.setup_timeout_seconds <= 0:
             errors.append(ConfigError("worktrees", "setup_timeout_seconds", "must be > 0"))
+        if (type(self.slot_reset_git_timeout_seconds) is not int
+                or self.slot_reset_git_timeout_seconds <= 0):
+            errors.append(ConfigError(
+                "worktrees", "slot_reset_git_timeout_seconds", "must be a positive integer",
+            ))
+        if not isinstance(self.slot_reset_git_timeouts, dict) or any(
+            not isinstance(key, str) or not key.strip()
+            or type(value) is not int or value <= 0
+            for key, value in self.slot_reset_git_timeouts.items()
+        ):
+            errors.append(ConfigError(
+                "worktrees", "slot_reset_git_timeouts",
+                "must map non-empty project IDs to positive integers",
+            ))
         return errors
 
 
@@ -1361,6 +2037,8 @@ class ModelPricing:
     model: str = ""  # glob, fnmatch-style; entries match in order
     input_per_mtok: float = 0.0  # USD per million input tokens
     output_per_mtok: float = 0.0
+    cache_read_per_mtok: float | None = None
+    cache_write_per_mtok: float | None = None
 
 
 @dataclass
@@ -1397,6 +2075,10 @@ class PricingConfig:
                 errors.append(
                     ConfigError("pricing", f"models[{idx}].output_per_mtok", "must be >= 0")
                 )
+            for name in ("cache_read_per_mtok", "cache_write_per_mtok"):
+                value = getattr(entry, name)
+                if value is not None and value < 0:
+                    errors.append(ConfigError("pricing", f"models[{idx}].{name}", "must be >= 0"))
         return errors
 
 
@@ -1471,6 +2153,13 @@ class MessagesConfig:
     enabled: bool = True  # native supervisor messaging is available by default
     delivery_interval: float = 5.0  # piggybacks the cascade cycle
     reply_timeout: float = 120.0  # transcript-tail fallback trigger
+    #: How many ``reply_timeout``s after delivery a transcript turn may still
+    #: count as that message's answer.  Raise it if your workers routinely
+    #: need longer than the window to speak; lower it to tighten what may be
+    #: claimed as a reply.  A missed recovery is silent (the human sees no
+    #: relayed answer), a too-wide one fabricates one — 2026-10-05, a resumed
+    #: supervisor answered two days of backlog with its next turns.
+    reply_window_multiplier: float = 3.0
     transcript_tail_fallback: bool = True
     max_inject_per_prompt: int = 10
 
@@ -1480,6 +2169,10 @@ class MessagesConfig:
             errors.append(ConfigError("messages", "delivery_interval", "must be > 0"))
         if self.reply_timeout < 0:
             errors.append(ConfigError("messages", "reply_timeout", "must be >= 0"))
+        if self.reply_window_multiplier < 1:
+            errors.append(
+                ConfigError("messages", "reply_window_multiplier", "must be >= 1")
+            )
         if self.max_inject_per_prompt < 0:
             errors.append(ConfigError("messages", "max_inject_per_prompt", "must be >= 0"))
         return errors
@@ -1619,14 +2312,9 @@ class WorkGraphConfig:
     three *independent* rollout stages — deliberately not chained, so that
     flipping one does not silently arm another:
 
-    ``blocked_state_authoritative``
-        ``false`` = shadow mode.  Both the legacy dependency scan and the
-        ``is_blocked`` projection are computed every cycle and compared; the
-        legacy scan still decides.  Flip after an observation window with
-        zero divergence warnings.  Rollback is a config flip.
     ``gate_sweep_interval_seconds``
         Cadence of the cascade's gate sweep; ``0`` disables it entirely.
-        This — not ``blocked_state_authoritative`` — is what gates step 2b.
+        This alone controls the gate-sweep cadence.
     ``conditional_autoclose``
         Whether the cascade disposes of contingency tasks whose
         ``conditional-blocks`` dependency completed.  On by default per
@@ -1635,23 +2323,40 @@ class WorkGraphConfig:
         exist where someone explicitly created one, so this is inert on a
         graph that uses none.
     ``container_sweep_interval_seconds``
-        Backstop cadence for container settlement (swarm-work-model §7);
-        ``0`` disables.
+        Backstop cadence for container settlement (swarm-work-model §7),
+        including the stale-status leg that completes a BLOCKED/PAUSED
+        container whose children are all delivered; ``0`` disables.
+    ``lifecycle_sweep_interval_seconds``
+        Cadence of the lifecycle sweep: the stale-open re-evaluation and the
+        READY frontier rejection check and retry of obsolete-close cleanup left
+        pending behind a publishing batch or a refused owner release; ``0`` disables all.
+    ``stale_open_after_seconds``
+        A BLOCKED or PAUSED task unchanged this long is re-evaluated: unblocked
+        when its recorded blocker is gone, else flagged
+        ``needs_attention=stale_open`` for the supervisor; ``0`` disables.
+    ``frontier_rejected_after_seconds``
+        Continuous READY frontier rejection this long raises an advisory
+        supervisor notice naming the rules; ``0`` disables.
     """
 
-    blocked_state_authoritative: bool = False
     gate_sweep_interval_seconds: int = 30
     conditional_autoclose: bool = True
     container_sweep_interval_seconds: int = 60
+    lifecycle_sweep_interval_seconds: int = 300
+    stale_open_after_seconds: int = 6 * 3600
+    frontier_rejected_after_seconds: int = 600
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        if self.gate_sweep_interval_seconds < 0:
-            errors.append(ConfigError("work_graph", "gate_sweep_interval_seconds", "must be >= 0"))
-        if self.container_sweep_interval_seconds < 0:
-            errors.append(
-                ConfigError("work_graph", "container_sweep_interval_seconds", "must be >= 0")
-            )
+        for key in (
+            "gate_sweep_interval_seconds",
+            "container_sweep_interval_seconds",
+            "lifecycle_sweep_interval_seconds",
+            "stale_open_after_seconds",
+            "frontier_rejected_after_seconds",
+        ):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("work_graph", key, "must be >= 0"))
         return errors
 
 
@@ -1732,9 +2437,17 @@ class GitHubAppConfig:
     app_id: int = field(metadata={"json_schema": {"minimum": 1}})
     installation_id: int = field(metadata={"json_schema": {"minimum": 1}})
     private_key_path: str = field(metadata={"json_schema": _REFERENCE_SCHEMA})
+    actions_permission: str = field(default="read", metadata={"json_schema": {
+        "enum": ["read", "write"],
+    }})
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if not isinstance(self.actions_permission, str) or self.actions_permission not in (
+            "read", "write",
+        ):
+            errors.append(ConfigError("integration", "github_app.actions_permission",
+                                      "must be read or write"))
         if not _is_safe_identity(self.client_id):
             errors.append(
                 ConfigError("integration", "github_app.client_id", "must be a safe identity")
@@ -1759,7 +2472,7 @@ class GitHubAppConfig:
 
 
 _GITHUB_APP_CONFIG_KEYS = frozenset(
-    {"client_id", "app_id", "installation_id", "private_key_path"}
+    {"client_id", "app_id", "installation_id", "private_key_path", "actions_permission"}
 )
 
 _SCRATCH_PROBE_CONFIG_KEYS = frozenset(
@@ -1880,6 +2593,7 @@ def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
                 "app_id": _is_positive_int,
                 "installation_id": _is_positive_int,
                 "private_key_path": _is_safe_path_or_env,
+                "actions_permission": lambda v: isinstance(v, str) and v in ("read", "write"),
             }
             if name == "github_app"
             else {
@@ -1954,11 +2668,55 @@ class IntegrationConfig:
     #: re-runs on a busy queue, which is why it is a separate knob.
     merge_require_up_to_date: bool = True
 
+    #: Whether to periodically release branch owners whose writers are proven gone.
+    #: On by default: stranded-owner recovery is routine, and every release is
+    #: still refused while a writer is live or its branch is not safe on origin.
+    #: An explicit ``false`` keeps the sweep off.
+    owner_recovery_sweep: bool = True
+
+    #: Historical compatibility flag; installs no subject runtime.
+    reconciler_shadow: bool = False
+    #: Historical ownership-transfer guard; does not select a delivery engine.
+    reconciler_active: bool = True
+    #: Compatibility key: the Git-first train is always active. Trial mode was
+    #: removed; old shadow configurations must remove this key or set active.
+    #: Only promotion policy outbox events are dispatched by the train.
+    git_first: str = "active"
+
+    #: Consecutive identical unsuccessful evaluations after which the
+    #: development publisher ends a skipped candidate's attempt as stalled:
+    #: doctor reports ERROR and the project supervisor gets one message.
+    #: Idle ticks and downtime do not count; changed evidence starts over.
+    publisher_stall_after: int = 5
+
+    #: Wall-clock budget, in seconds, for one source callback of the
+    #: integration reconciliation service (one bounded page of one source).
+    #: A source past it is cancelled and the pass moves on to the others; its
+    #: durable work stays retryable.  The slowest sources seen on a busy
+    #: install take about two minutes (GitHub PR reviews, the outbox).
+    service_source_timeout_seconds: float = 300.0
+    #: Budget for one item of a page the service iterates itself (a due
+    #: schedule, a repair deadline, a candidate CI row, an intent, a cleanup).
+    service_item_timeout_seconds: float = 60.0
+    #: Per-source overrides of ``service_source_timeout_seconds``, keyed by the
+    #: source name the daemon logs (``integration slow source=<name>``), e.g.
+    #: ``{"GitHub PR reviews": 600}``.
+    service_source_timeouts: dict[str, float] = field(default_factory=dict)
+
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
 
         errors: list[ConfigError] = []
+        for name in ("reconciler_shadow", "reconciler_active"):
+            if not isinstance(getattr(self, name), bool):
+                errors.append(ConfigError("integration", name, "must be a boolean"))
+        if self.git_first != "active":
+            errors.append(ConfigError(
+                "integration", "git_first",
+                "trial (shadow) mode has been removed; remove integration.git_first "
+                "or set it to active",
+            ))
         if self.default_mode not in INTEGRATION_MODES:
             errors.append(
                 ConfigError(
@@ -1985,11 +2743,41 @@ class IntegrationConfig:
                     "must be a list of non-empty check names",
                 )
             )
+        if (
+            isinstance(self.publisher_stall_after, bool)
+            or not isinstance(self.publisher_stall_after, int)
+            or self.publisher_stall_after < 1
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "publisher_stall_after",
+                    "must be a positive integer",
+                )
+            )
+        for name in ("service_source_timeout_seconds", "service_item_timeout_seconds"):
+            if not _positive_number(getattr(self, name)):
+                errors.append(ConfigError("integration", name, "must be a positive number"))
+        if not isinstance(self.service_source_timeouts, dict) or any(
+            not isinstance(source, str) or not source.strip() or not _positive_number(value)
+            for source, value in self.service_source_timeouts.items()
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "service_source_timeouts",
+                    "must map source names to positive numbers of seconds",
+                )
+            )
         if self.github_app is not None:
             errors.extend(self.github_app.validate())
         if self.scratch_probe is not None:
             errors.extend(self.scratch_probe.validate(self.github_app))
         return errors
+
+
+def _positive_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int | float) and value > 0
 
 
 def _opt_int(value) -> int | None:
@@ -2037,6 +2825,214 @@ class ResourceCgroupConfig:
 
 
 @dataclass
+class ScriptsConfig:
+    """Ordinary script processes, enabled by default; no isolation prerequisites.
+
+    Empty roots resolve under ``{data_dir}/scripts/`` (see :meth:`resolved`).
+    Without ``runtime_manifest`` a program's executable is an ordinary host
+    file found under ``runtime_root`` or ``search_path``; a manifest opts into
+    digest pinning of the declared runtime files instead.
+    """
+
+    enabled: bool = True
+    runtime_root: str = ""
+    runtime_manifest: str = ""
+    input_root: str = ""
+    state_root: str = ""
+    search_path: list[str] = field(
+        default_factory=lambda: ["/usr/local/bin", "/usr/bin", "/bin"]
+    )
+    env_allowlist: list[str] = field(default_factory=list)
+    queue_seconds: int = 300
+    wall_seconds: int = 60
+    stdout_bytes: int = 1024**2
+    stderr_bytes: int = 1024**2
+    input_bytes: int = 64 * 1024**2
+    input_storage_bytes: int = 2 * 1024**3
+    output_storage_bytes: int = 2 * 1024**3
+    per_run_storage_bytes: int = 64 * 1024**2
+    runtime_bytes: int = 1024**3
+
+    def validate(self) -> list[ConfigError]:
+        from src.playbooks.script_policy import ScriptLimits, environment_name
+
+        errors = []
+        def error(name, message):
+            errors.append(ConfigError("resources.scripts", name, message))
+
+        if not isinstance(self.enabled, bool):
+            error("enabled", "must be a boolean")
+        for name in ("runtime_root", "runtime_manifest", "input_root", "state_root"):
+            value = getattr(self, name)
+            if (not isinstance(value, str) or "\0" in value
+                    or (value and not value.startswith("/"))):
+                error(name, "must be an absolute path when supplied")
+        if (not isinstance(self.search_path, list)
+                or any(not isinstance(value, str) or "\0" in value or not value.startswith("/")
+                       or ":" in value for value in self.search_path)):
+            error("search_path", "must be a list of absolute directories")
+        if not isinstance(self.env_allowlist, list):
+            error("env_allowlist", "must be a list of permitted environment names")
+        else:
+            for name in self.env_allowlist:
+                try:
+                    environment_name(name)
+                except (ValueError, TypeError):
+                    error("env_allowlist", "contains a forbidden environment name")
+        try:
+            ScriptLimits(**{name: getattr(self, name) for name in ScriptLimits.model_fields})
+        except ValueError:
+            error("limits", "invalid script resource ceiling (wall maximum 900s)")
+        for name in ("queue_seconds", "input_bytes", "input_storage_bytes", "output_storage_bytes",
+                     "per_run_storage_bytes", "runtime_bytes"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                error(name, "must be a positive integer")
+        return errors
+
+    def resolved(self, data_dir: str) -> ScriptsConfig:
+        """Copy with every empty root filled in under ``{data_dir}/scripts/``.
+
+        The manifest stays optional: an empty ``runtime_manifest`` selects host
+        executables rather than a default manifest path.
+        """
+        base = os.path.join(os.path.abspath(os.path.expanduser(data_dir)), "scripts")
+        return dataclasses.replace(
+            self,
+            runtime_root=self.runtime_root or os.path.join(base, "runtime"),
+            input_root=self.input_root or os.path.join(base, "inputs"),
+            state_root=self.state_root or os.path.join(base, "state"),
+        )
+
+
+@dataclass
+class JobsConfig:
+    """Managed execution rollout; admission remains opt-in during phase 2."""
+
+    enabled: bool = False
+    test_database_url: str = ""
+    max_queued: int = 100
+    per_task_queued: int = 10
+    per_task_active: int = 2
+    shared_queue_seconds: int = 1800
+    exclusive_queue_seconds: int = 5400
+    #: Capacity left for focused work beside a managed full-suite test job.
+    full_suite_reserved_slots: int = 2
+    run_seconds: int = 7200
+    head_bytes: int = 1024 * 1024
+    tail_bytes: int = 63 * 1024 * 1024
+    log_budget_bytes: int = 2 * 1024**3
+    log_days: int = 14
+    result_days: int = 90
+    matter_python: str = ""
+    matter_capture_script: str = ""
+    matter_editor: str = ""
+    matter_gpu_id: str = "default"
+    matter_artifact_bytes: int = 256 * 1024**2
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("resources.jobs", "enabled", "must be a boolean"))
+        for name in ("matter_python", "matter_capture_script", "matter_editor", "matter_gpu_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or "\0" in value or (
+                name == "matter_gpu_id" and not value.strip()
+            ):
+                errors.append(ConfigError("resources.jobs", name, "must be a valid string"))
+        if not isinstance(self.test_database_url, str) or (
+            self.test_database_url and not is_postgres_url(self.test_database_url)
+        ):
+            errors.append(
+                ConfigError(
+                    "resources.jobs", "test_database_url", "must be a disposable PostgreSQL DSN"
+                )
+            )
+        for name in (
+            "max_queued",
+            "per_task_queued",
+            "per_task_active",
+            "shared_queue_seconds",
+            "exclusive_queue_seconds",
+            "full_suite_reserved_slots",
+            "run_seconds",
+            "head_bytes",
+            "tail_bytes",
+            "log_budget_bytes",
+            "log_days",
+            "result_days",
+            "matter_artifact_bytes",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(ConfigError("resources.jobs", name, "must be a positive integer"))
+        if (isinstance(self.head_bytes, int) and self.head_bytes > 1024**2) or (
+            isinstance(self.tail_bytes, int) and self.tail_bytes > 63 * 1024**2
+        ):
+            errors.append(
+                ConfigError("resources.jobs", "head_bytes", "per-job output cap is 64 MiB")
+            )
+        if (
+            isinstance(self.result_days, int)
+            and isinstance(self.log_days, int)
+            and self.result_days < self.log_days
+        ):
+            errors.append(ConfigError("resources.jobs", "result_days", "must cover log retention"))
+        return errors
+
+
+@dataclass
+class TestSelectionConfig:
+    """Smart test selection; selection, network access and enforcement ship off."""
+
+    enabled: bool = False
+    jev_enabled: bool = False
+    enforce_enabled: bool = False
+    model: str = "jev-1.13.0"
+    api_key_env: str = "TYPESAFE_API_KEY"
+    base_url: str | None = None
+    rpc_deadline_seconds: float = 2.0
+    max_requests: int = 4
+    request_concurrency: int = 2
+    max_total_tokens: int = 64000
+    max_state_plus_question_tokens: int = 32000
+    excerpt_lines: int = 40
+    static_timeout_seconds: float = 60.0
+    default_base_ref: str | None = None
+    retention_days: int = 90
+    cache_entries: int = 256
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("enabled", "jev_enabled", "enforce_enabled"):
+            if not isinstance(getattr(self, key), bool):
+                errors.append(ConfigError("test_selection", key, "must be a boolean"))
+        for key in ("max_requests", "request_concurrency", "max_total_tokens",
+                    "max_state_plus_question_tokens", "excerpt_lines", "retention_days",
+                    "cache_entries"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(ConfigError("test_selection", key, "must be a positive integer"))
+        for key in ("rpc_deadline_seconds", "static_timeout_seconds"):
+            value = getattr(self, key)
+            if (isinstance(value, bool) or not isinstance(value, int | float)
+                    or not math.isfinite(value) or value <= 0):
+                errors.append(ConfigError("test_selection", key, "must be finite and positive"))
+        if not isinstance(self.model, str) or not self.model.strip():
+            errors.append(ConfigError("test_selection", "model", "must be non-empty"))
+        if (not isinstance(self.api_key_env, str) or len(self.api_key_env) > 64
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]*", self.api_key_env)):
+            errors.append(ConfigError(
+                "test_selection", "api_key_env", "name the variable, not the key (A-Z, 0-9, _)"
+            ))
+        for key in ("base_url", "default_base_ref"):
+            value = getattr(self, key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                errors.append(ConfigError("test_selection", key, "must be non-empty or null"))
+        return errors
+
+
+@dataclass
 class ResourcesConfig:
     """Resource gating so N concurrent agents cannot saturate one box.
 
@@ -2079,6 +3075,11 @@ class ResourcesConfig:
     test_poll_interval: float = 2.0
     #: ``-m`` expression ``aq test`` applies when the caller passed none.
     test_deselect_markers: str = "not perf and not migration and not slow and not tmux and not integration"
+    #: Interpreter ``aq test`` runs pytest with, per project id, e.g.
+    #: ``{"quilt-trader": "~/dev/quilt-trader/.venv/bin/python"}``.  An
+    #: unlisted project is detected: agent-queue uses ``aq``'s interpreter,
+    #: any other project its ``.venv`` (``src/resources/project_tests.py``).
+    test_interpreters: dict[str, str] = field(default_factory=dict)
     #: doctor ``resources.load`` warns when the 5-minute load average
     #: exceeds ``cores * load_warn_ratio``.
     load_warn_ratio: float = 1.0
@@ -2086,6 +3087,8 @@ class ResourcesConfig:
     #: processes box-wide.
     max_pytest_processes: int = 24
     cgroups: ResourceCgroupConfig = field(default_factory=ResourceCgroupConfig)
+    jobs: JobsConfig = field(default_factory=JobsConfig)
+    scripts: ScriptsConfig = field(default_factory=ScriptsConfig)
 
     def core_count(self) -> int:
         """The core budget: configured ``cores``, else the machine's."""
@@ -2128,7 +3131,27 @@ class ResourcesConfig:
             errors.append(ConfigError("resources", "session_nice", "must be between -20 and 19"))
         if self.load_warn_ratio <= 0:
             errors.append(ConfigError("resources", "load_warn_ratio", "must be positive"))
+        if not isinstance(self.test_interpreters, dict):
+            errors.append(
+                ConfigError(
+                    "resources",
+                    "test_interpreters",
+                    "must be a mapping of project id -> interpreter path",
+                )
+            )
+        else:
+            for project_id, python in self.test_interpreters.items():
+                if not isinstance(python, str) or not python.strip():
+                    errors.append(
+                        ConfigError(
+                            "resources",
+                            f"test_interpreters.{project_id}",
+                            "must be a non-empty interpreter path",
+                        )
+                    )
         errors.extend(self.cgroups.validate())
+        errors.extend(self.jobs.validate())
+        errors.extend(self.scripts.validate())
         return errors
 
 
@@ -2233,6 +3256,21 @@ class MetricsConfig:
     retain_seconds_1s: int = 3600
     retain_seconds_1m: int = 30 * 86400
     retain_seconds_1h: int = 365 * 86400
+    #: Performance probes (spec 2026-09-24 dashboard performance §4.1): the
+    #: loop-drift probe, route latency, pool wait and query duration, the host
+    #: reader's budget and the dashboard-relay poll.  ``perf_enabled: false``
+    #: is the rollback switch: the probes stop recording and the sample's
+    #: ``perf`` block drops to ``{"enabled": false}``.
+    perf_enabled: bool = True
+    #: Period of the event-loop drift probe; each wake-up records how late it was.
+    perf_loop_probe_ms: int = 100
+    #: A query slower than this counts toward ``perf.db.counters.slow_queries``.
+    perf_slow_query_ms: float = 100.0
+    #: Wall-clock budget for one host read (PSI, test slots, ungated load);
+    #: an overrun backs the reader off and marks the host block stale.
+    perf_host_budget_ms: float = 20.0
+    #: How often the sampler polls the dashboard server's relay counters.
+    perf_relay_poll_seconds: float = 5.0
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2266,6 +3304,19 @@ class MetricsConfig:
         for key in ("retain_seconds_1s", "retain_seconds_1m", "retain_seconds_1h"):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("metrics", key, "must be >= 0"))
+        if not 10 <= self.perf_loop_probe_ms <= 1000:
+            errors.append(
+                ConfigError("metrics", "perf_loop_probe_ms", "must be between 10 and 1000")
+            )
+        for key in ("perf_slow_query_ms", "perf_host_budget_ms"):
+            if getattr(self, key) <= 0:
+                errors.append(ConfigError("metrics", key, "must be > 0"))
+        # The poll runs on the sampler's tick, so it cannot be more frequent
+        # than one poll per sample.
+        if self.perf_relay_poll_seconds < self.interval_seconds:
+            errors.append(
+                ConfigError("metrics", "perf_relay_poll_seconds", "must be >= interval_seconds")
+            )
         return errors
 
 
@@ -2317,6 +3368,338 @@ class ProvidersConfig:
         return errors
 
 
+#: ``provider_failover.mode`` values (provider-failover D22).  ``observe``
+#: tracks state, emits events and serves every surface but suppresses no launch.
+PROVIDER_FAILOVER_MODES = ("off", "observe", "enforce")
+#: Per-class failover policies (D12).  v1 has exactly two.
+PROVIDER_FAILOVER_POLICIES = ("same_class", "hold")
+
+
+@dataclass
+class ProviderFailoverUsageConfig:
+    """Percent thresholds read off the provider's own usage snapshots (D3)."""
+
+    exhausted_percent: float = 99.0
+    degraded_percent: float = 85.0
+    hysteresis_percent: float = 2.0
+
+
+@dataclass
+class ProviderFailoverLaunchConfig:
+    """How many startup deaths trip a provider, and inside what window (D3)."""
+
+    strong_failures_to_trip: int = 2
+    generic_failures_to_trip: int = 5
+    window_seconds: int = 600
+    suspect_backoff_seconds: int = 30
+
+
+@dataclass
+class ProviderFailoverRateLimitConfig:
+    """Mid-task ``RATE_LIMIT`` exits as provider evidence (D3)."""
+
+    exits_to_trip: int = 2
+    #: Backoff base used only when the provider gave no ``resets_at``.
+    cooldown_seconds: int = 900
+
+
+@dataclass
+class ProviderFailoverAuthProbeConfig:
+    """The daemon-side ``probe_login`` (D5)."""
+
+    #: While launchable; ``0`` disables the background probe.
+    interval_seconds: int = 600
+    timeout_seconds: int = 10
+
+
+@dataclass
+class ProviderFailoverRecoveryConfig:
+    """Half-open breaker timing (D4)."""
+
+    reset_grace_seconds: int = 60
+    auth_probe_interval_seconds: int = 120
+    failing_backoff_seconds: int = 300
+    backoff_max_seconds: int = 3600
+    flap_window_seconds: int = 3600
+
+
+@dataclass
+class ProviderFailoverOverrideConfig:
+    """Operator override expiry (D6)."""
+
+    default_ttl_seconds: int = 14400
+    max_ttl_seconds: int = 604800
+
+
+@dataclass
+class ProviderFailoverRerouteConfig:
+    """Re-route sweep limits (D14-D15).  Read by the re-route engine."""
+
+    enabled: bool = True
+    max_per_sweep: int = 10
+    target_backlog_factor: float = 1.0
+    allow_degraded_target: bool = False
+    max_priority_value: int | None = None
+    task_cooldown_seconds: int = 1800
+    max_auto_per_task: int = 2
+
+
+@dataclass
+class ProviderFailoverSpillConfig:
+    """Capacity spill (D24): READY work leaves a pool that cannot serve it.
+
+    Runs inside the automatic re-route sweep, so it applies only when
+    failover would (``mode: enforce`` and ``reroute.enabled``).  A spill move
+    counts toward ``reroute.max_auto_per_task`` and
+    ``reroute.task_cooldown_seconds`` like any automatic move.
+    """
+
+    enabled: bool = True
+    #: How long a task must have waited (``now - tasks.updated_at``) first.
+    after_seconds: int = 300
+    max_per_sweep: int = 5
+
+
+@dataclass
+class ProviderFailoverNotifyConfig:
+    """Who hears about a state change, and when a human is paged (D19)."""
+
+    supervisor: bool = True
+    digest: bool = True
+    escalate_unauthenticated: bool = True
+    escalate_failing_after_seconds: int = 1800
+    escalate_all_down_after_seconds: int = 1800
+    flap_threshold: int = 3
+
+
+@dataclass
+class ProviderFailoverDoctorConfig:
+    held_warn_seconds: int = 14400
+
+
+@dataclass
+class ProviderFailoverEvidenceConfig:
+    #: Evidence items kept per provider, newest first.  The trip rules count
+    #: over this ring, so it must hold at least the largest trip count.
+    keep: int = 20
+
+
+@dataclass
+class ProviderFailoverConfig:
+    """Provider availability and failover (``docs/specs/provider-failover.md`` D22).
+
+    Hot-reloadable: the availability service reads this through a getter on
+    every piece of evidence, never a copy taken at startup.
+    """
+
+    mode: str = "enforce"
+    #: Failover target preference; empty means ``WORKER_PROVIDERS`` order.
+    #: A router-routed task moves only among its recorded candidates.
+    order: list[str] = field(default_factory=list)
+    default_policy: str = "same_class"
+    #: Per-class override, e.g. ``{"deep-high": "hold"}``.
+    classes: dict[str, str] = field(default_factory=dict)
+    usage: ProviderFailoverUsageConfig = field(default_factory=ProviderFailoverUsageConfig)
+    launch: ProviderFailoverLaunchConfig = field(default_factory=ProviderFailoverLaunchConfig)
+    rate_limit: ProviderFailoverRateLimitConfig = field(
+        default_factory=ProviderFailoverRateLimitConfig
+    )
+    auth_probe: ProviderFailoverAuthProbeConfig = field(
+        default_factory=ProviderFailoverAuthProbeConfig
+    )
+    recovery: ProviderFailoverRecoveryConfig = field(
+        default_factory=ProviderFailoverRecoveryConfig
+    )
+    override: ProviderFailoverOverrideConfig = field(
+        default_factory=ProviderFailoverOverrideConfig
+    )
+    reroute: ProviderFailoverRerouteConfig = field(default_factory=ProviderFailoverRerouteConfig)
+    spill: ProviderFailoverSpillConfig = field(default_factory=ProviderFailoverSpillConfig)
+    notify: ProviderFailoverNotifyConfig = field(default_factory=ProviderFailoverNotifyConfig)
+    doctor: ProviderFailoverDoctorConfig = field(default_factory=ProviderFailoverDoctorConfig)
+    evidence: ProviderFailoverEvidenceConfig = field(
+        default_factory=ProviderFailoverEvidenceConfig
+    )
+
+    @property
+    def tracking(self) -> bool:
+        """Evidence is collected and state derived (``observe`` or ``enforce``)."""
+        return self.mode in ("observe", "enforce")
+
+    @property
+    def enforcing(self) -> bool:
+        """An unavailable provider is actually not launched against."""
+        return self.mode == "enforce"
+
+    def validate(self) -> list[ConfigError]:
+        section = "provider_failover"
+        errors: list[ConfigError] = []
+        if self.mode not in PROVIDER_FAILOVER_MODES:
+            errors.append(
+                ConfigError(section, "mode", f"must be one of {', '.join(PROVIDER_FAILOVER_MODES)}")
+            )
+        if self.default_policy not in PROVIDER_FAILOVER_POLICIES:
+            errors.append(
+                ConfigError(
+                    section,
+                    "default_policy",
+                    f"must be one of {', '.join(PROVIDER_FAILOVER_POLICIES)}",
+                )
+            )
+        if not isinstance(self.classes, dict):
+            errors.append(ConfigError(section, "classes", "must be a mapping of class -> policy"))
+        else:
+            for class_id, policy in self.classes.items():
+                if policy not in PROVIDER_FAILOVER_POLICIES:
+                    errors.append(
+                        ConfigError(
+                            section,
+                            f"classes.{class_id}",
+                            f"must be one of {', '.join(PROVIDER_FAILOVER_POLICIES)}",
+                        )
+                    )
+        if not isinstance(self.order, list) or not all(isinstance(p, str) for p in self.order):
+            errors.append(ConfigError(section, "order", "must be a list of provider keys"))
+        elif len(set(self.order)) != len(self.order):
+            errors.append(
+                ConfigError(section, "order", "lists a provider twice", severity="warning")
+            )
+
+        usage = self.usage
+        for key in ("exhausted_percent", "degraded_percent"):
+            value = getattr(usage, key)
+            if not 0 < value <= 100:
+                errors.append(ConfigError(section, f"usage.{key}", "must be in (0, 100]"))
+        if usage.degraded_percent >= usage.exhausted_percent:
+            errors.append(
+                ConfigError(
+                    section, "usage.degraded_percent", "must be below usage.exhausted_percent"
+                )
+            )
+        if not 0 <= usage.hysteresis_percent < usage.degraded_percent:
+            errors.append(
+                ConfigError(
+                    section,
+                    "usage.hysteresis_percent",
+                    "must be >= 0 and below usage.degraded_percent",
+                )
+            )
+
+        counts = {
+            "launch.strong_failures_to_trip": self.launch.strong_failures_to_trip,
+            "launch.generic_failures_to_trip": self.launch.generic_failures_to_trip,
+            "rate_limit.exits_to_trip": self.rate_limit.exits_to_trip,
+            "reroute.max_per_sweep": self.reroute.max_per_sweep,
+            "reroute.max_auto_per_task": self.reroute.max_auto_per_task,
+            "spill.max_per_sweep": self.spill.max_per_sweep,
+            "notify.flap_threshold": self.notify.flap_threshold,
+            "evidence.keep": self.evidence.keep,
+        }
+        for key, value in counts.items():
+            if value < 1:
+                errors.append(ConfigError(section, key, "must be >= 1"))
+        largest_trip = max(
+            self.launch.strong_failures_to_trip,
+            self.launch.generic_failures_to_trip,
+            self.rate_limit.exits_to_trip,
+        )
+        if self.evidence.keep < largest_trip + 2:
+            errors.append(
+                ConfigError(
+                    section,
+                    "evidence.keep",
+                    f"must be >= {largest_trip + 2}: the trip rules count over this ring",
+                )
+            )
+
+        durations = {
+            "launch.window_seconds": self.launch.window_seconds,
+            "launch.suspect_backoff_seconds": self.launch.suspect_backoff_seconds,
+            "rate_limit.cooldown_seconds": self.rate_limit.cooldown_seconds,
+            "auth_probe.interval_seconds": self.auth_probe.interval_seconds,
+            "recovery.reset_grace_seconds": self.recovery.reset_grace_seconds,
+            "recovery.auth_probe_interval_seconds": self.recovery.auth_probe_interval_seconds,
+            "recovery.failing_backoff_seconds": self.recovery.failing_backoff_seconds,
+            "recovery.backoff_max_seconds": self.recovery.backoff_max_seconds,
+            "recovery.flap_window_seconds": self.recovery.flap_window_seconds,
+            "override.default_ttl_seconds": self.override.default_ttl_seconds,
+            "override.max_ttl_seconds": self.override.max_ttl_seconds,
+            "reroute.task_cooldown_seconds": self.reroute.task_cooldown_seconds,
+            "spill.after_seconds": self.spill.after_seconds,
+            "notify.escalate_failing_after_seconds": self.notify.escalate_failing_after_seconds,
+            "notify.escalate_all_down_after_seconds": self.notify.escalate_all_down_after_seconds,
+            "doctor.held_warn_seconds": self.doctor.held_warn_seconds,
+        }
+        for key, value in durations.items():
+            if value < 0:
+                errors.append(ConfigError(section, key, "must be >= 0"))
+        for key in ("launch.window_seconds", "recovery.auth_probe_interval_seconds"):
+            if durations[key] <= 0:
+                errors.append(ConfigError(section, key, "must be > 0"))
+        if self.auth_probe.timeout_seconds <= 0:
+            errors.append(ConfigError(section, "auth_probe.timeout_seconds", "must be > 0"))
+        if self.override.default_ttl_seconds > self.override.max_ttl_seconds:
+            errors.append(
+                ConfigError(
+                    section,
+                    "override.default_ttl_seconds",
+                    "must be <= override.max_ttl_seconds",
+                )
+            )
+        if self.reroute.target_backlog_factor <= 0:
+            errors.append(ConfigError(section, "reroute.target_backlog_factor", "must be > 0"))
+        return errors
+
+
+#: ``provider_failover`` sub-blocks, YAML key -> dataclass.  One table so the
+#: loader and the section round-trip test cannot disagree about the shape.
+PROVIDER_FAILOVER_SUBSECTIONS: dict[str, type] = {
+    "usage": ProviderFailoverUsageConfig,
+    "launch": ProviderFailoverLaunchConfig,
+    "rate_limit": ProviderFailoverRateLimitConfig,
+    "auth_probe": ProviderFailoverAuthProbeConfig,
+    "recovery": ProviderFailoverRecoveryConfig,
+    "override": ProviderFailoverOverrideConfig,
+    "reroute": ProviderFailoverRerouteConfig,
+    "spill": ProviderFailoverSpillConfig,
+    "notify": ProviderFailoverNotifyConfig,
+    "doctor": ProviderFailoverDoctorConfig,
+    "evidence": ProviderFailoverEvidenceConfig,
+}
+
+
+def load_provider_failover_config(section: object) -> ProviderFailoverConfig:
+    """Build :class:`ProviderFailoverConfig` from a YAML mapping (absent keys keep defaults)."""
+    raw = section if isinstance(section, Mapping) else {}
+    top = {k: v for k, v in raw.items() if k not in PROVIDER_FAILOVER_SUBSECTIONS}
+    kwargs = _dataclass_kwargs(ProviderFailoverConfig, top)
+    for key, cls in PROVIDER_FAILOVER_SUBSECTIONS.items():
+        kwargs[key] = cls(**_dataclass_kwargs(cls, raw.get(key)))
+    if "order" in kwargs:
+        kwargs["order"] = [str(item) for item in (kwargs["order"] or [])]
+    if "classes" in kwargs and isinstance(kwargs["classes"], Mapping):
+        kwargs["classes"] = {str(k): str(v) for k, v in kwargs["classes"].items()}
+    return ProviderFailoverConfig(**kwargs)
+
+
+@dataclass
+class RoutingConfig:
+    """Mandatory task routing (spec 2026-09-28 §8).
+
+    ``default_router`` is the routing playbook a new project is bound to
+    (``projects.assignment_playbook_id``): project creation and onboarding
+    both write it.  Read per project creation, so an edit applies to the next
+    project without a restart; existing projects keep their binding.
+    """
+
+    default_router: str = DEFAULT_ROUTER_PLAYBOOK_ID
+
+    def validate(self) -> list[ConfigError]:
+        if not isinstance(self.default_router, str) or not self.default_router.strip():
+            return [ConfigError("routing", "default_router", "must be a non-empty playbook id")]
+        return []
+
+
 @dataclass
 class GraphLayoutConfig:
     """Server-side task graph layout (spatial-layout design §8).
@@ -2336,12 +3719,330 @@ class GraphLayoutConfig:
     reconcile_interval_seconds: int = 900
     incremental_debounce_ms: int = 500
     tidy_job_budget_seconds: int = 60
+    row_aspect: float = 1.3
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         for key in ("reconcile_interval_seconds", "incremental_debounce_ms", "tidy_job_budget_seconds"):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("dashboard.graph_layout", key, "must be >= 0"))
+        if (
+            isinstance(self.row_aspect, bool)
+            or not isinstance(self.row_aspect, (int, float))
+            or not math.isfinite(self.row_aspect)
+        ):
+            errors.append(ConfigError("dashboard.graph_layout", "row_aspect", "must be finite"))
+        elif self.row_aspect <= 0:
+            errors.append(ConfigError("dashboard.graph_layout", "row_aspect", "must be > 0"))
+        return errors
+
+
+@dataclass
+class HostShellConfig:
+    """Operator host shells in the dashboard (docs/guides/dashboard.md, Host shell).
+
+    YAML: ``dashboard.host_shell`` **or** a top-level ``host_shell:`` block
+    (the config editor's field-name spelling); the nested one wins. Off by
+    default: an enabled host shell is remote code execution by design, open
+    only to the local operator unless ``allow_remote`` also admits remote
+    dashboard viewers. Read per request, so an edit bites on the next open or
+    attach.
+    """
+
+    enabled: bool = False
+    #: Upper bound on concurrently open host shells.
+    max_shells: int = 4
+    #: Also admit a viewer the dashboard server proxied from another machine
+    #: (its edge verdict ``other``), not only the local operator. A bearer
+    #: token -- a worker or a supervisor -- is refused either way.
+    allow_remote: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("enabled", "allow_remote"):
+            if not isinstance(getattr(self, key), bool):
+                errors.append(ConfigError("dashboard.host_shell", key, "must be true or false"))
+        if isinstance(self.max_shells, bool) or not isinstance(self.max_shells, int) or not (
+            1 <= self.max_shells <= 32
+        ):
+            errors.append(ConfigError(
+                "dashboard.host_shell", "max_shells", "must be between 1 and 32",
+            ))
+        return errors
+
+
+DEFAULT_DASHBOARD_SERVER_PORT = 8082
+#: The default when ``mcp_server.port`` already holds :data:`DEFAULT_DASHBOARD_SERVER_PORT`.
+ALTERNATE_DASHBOARD_SERVER_PORT = 8083
+
+
+def default_dashboard_server_port(raw: Mapping[str, object]) -> int:
+    """The port ``dashboard.server`` listens on when it sets none (spec §3.1).
+
+    8082, unless ``mcp_server.port`` is 8082 -- an install that moved the
+    daemon there before the dashboard server existed -- in which case 8083,
+    so upgrading never leaves a config that no longer loads.  The rule reads
+    the config alone, never what is listening, so the URL stays
+    deterministic; a port the operator set is never moved, and setting it
+    to the daemon's is still a validation error.
+    """
+    section = raw.get("mcp_server")
+    port = section.get("port") if isinstance(section, Mapping) else None
+    try:
+        daemon_port = int(port) if port not in (None, "") else None
+    except (TypeError, ValueError):
+        daemon_port = None
+    if daemon_port == DEFAULT_DASHBOARD_SERVER_PORT:
+        return ALTERNATE_DASHBOARD_SERVER_PORT
+    return DEFAULT_DASHBOARD_SERVER_PORT
+
+
+def is_dashboard_server_host(value: object) -> bool:
+    """An IP literal or ``localhost`` -- never a name that DNS could re-point."""
+    if not isinstance(value, str) or not value:
+        return False
+    if value == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass
+class DashboardServerConfig:
+    """The dashboard server process (docs/specs/dashboard-server.md §3.1).
+
+    YAML: ``dashboard.server`` (the spec's spelling) **or** a top-level
+    ``dashboard_server:`` block, read like :class:`GraphLayoutConfig` so the
+    config editor's field-name writes take effect.  The daemon never serves
+    the dashboard; the settings are read by the dashboard server when it
+    starts, so ``aq dashboard restart`` applies a change and the daemon needs
+    no restart.  A busy port is a startup failure, never an auto-increment:
+    bookmarks and the installer's open step need a deterministic URL.
+    """
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = DEFAULT_DASHBOARD_SERVER_PORT
+    #: The dashboard origin that links sent off this machine name (Discord
+    #: escalations, digests, reviews) -- e.g. the operator's authenticated
+    #: tailnet reverse proxy.  An http(s) origin with no path, query or
+    #: credentials, never loopback.  Empty: links carry an "unavailable"
+    #: notice unless ``host`` is this machine's Tailscale address
+    #: (``src/remote_links.py``).  Also accepted as ``dashboard.public_url``.
+    public_url: str = ""
+    #: The Tailscale CLI used to confirm a tailnet ``host``; empty means ``PATH``.
+    tailscale_path: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("dashboard.server", "enabled", "must be true or false"))
+        if not is_dashboard_server_host(self.host):
+            errors.append(ConfigError(
+                "dashboard.server", "host",
+                f"must be an IP literal or 'localhost', got {self.host!r}",
+            ))
+        if isinstance(self.port, bool) or not isinstance(self.port, int) or not (
+            1 <= self.port <= 65535
+        ):
+            errors.append(ConfigError(
+                "dashboard.server", "port", f"must be between 1 and 65535, got {self.port!r}",
+            ))
+        if not isinstance(self.public_url, str):
+            errors.append(ConfigError("dashboard", "public_url", "must be a string"))
+        elif self.public_url.strip():
+            from src.remote_links import normalise_public_origin
+
+            _origin, why = normalise_public_origin(self.public_url)
+            if why:
+                # A warning, not an error: a bad link origin must not keep the
+                # daemon down.  Links carry the "unavailable" notice instead,
+                # and `aq doctor --check dashboard.remote_link` names it.
+                errors.append(ConfigError(
+                    "dashboard.server", "public_url",
+                    f"{why}; external dashboard links are disabled until it is fixed",
+                    severity="warning",
+                ))
+        if not isinstance(self.tailscale_path, str):
+            errors.append(ConfigError("dashboard.server", "tailscale_path", "must be a string"))
+        return errors
+
+
+def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServerConfig:
+    """Build :class:`DashboardServerConfig` from a parsed config mapping.
+
+    The one parser for the section, shared by :func:`load_config` and the
+    dashboard server process (which reads the YAML itself rather than load
+    the daemon's ``.env``), so both coerce a value the same way.
+    """
+    dashboard = raw.get("dashboard")
+    nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
+    section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
+    kwargs = _dataclass_kwargs(DashboardServerConfig, section)
+    if isinstance(dashboard, Mapping) and dashboard.get("public_url") is not None:
+        # The alias fills in; it never silently replaces a different canonical
+        # value -- load_config refuses that (dashboard_public_url_conflict).
+        kwargs.setdefault("public_url", dashboard["public_url"])
+    kwargs.setdefault("port", default_dashboard_server_port(raw))
+    return DashboardServerConfig(**kwargs)
+
+
+def dashboard_public_url_conflict(raw: Mapping[str, object]) -> str | None:
+    """Why ``dashboard.public_url`` and ``dashboard.server.public_url`` disagree, else ``None``.
+
+    Both spellings stay accepted; two different values are ambiguous, so the
+    daemon's loader rejects them rather than pick one.  Values equal as
+    origins (``https://q.example/`` and ``https://q.example``) agree.
+    """
+    dashboard = raw.get("dashboard")
+    if not isinstance(dashboard, Mapping):
+        return None
+    nested = dashboard.get("server")
+    section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
+    alias = dashboard.get("public_url")
+    canonical = section.get("public_url") if isinstance(section, Mapping) else None
+    if alias is None or canonical is None:
+        return None
+    if not isinstance(alias, str) or not isinstance(canonical, str):
+        return None if alias == canonical else "the two public_url values differ"
+    from src.remote_links import normalise_public_origin
+
+    def _key(value: str) -> str:
+        origin, _why = normalise_public_origin(value)
+        return origin or value.strip()
+
+    if _key(alias) == _key(canonical):
+        return None
+    return "dashboard.public_url and dashboard.server.public_url name different origins; keep one"
+
+
+@dataclass
+class DocsConfig:
+    """Published documentation location used by command help links.
+
+    The default targets this repository's main-branch documentation. Private
+    deployments can point it at their mirrored documentation root instead.
+    """
+
+    base_url: str = DEFAULT_DOCS_BASE_URL
+
+    def validate(self) -> list[ConfigError]:
+        if not isinstance(self.base_url, str) or not self.base_url.strip():
+            return [ConfigError("docs", "base_url", "must be a non-empty URL")]
+        return []
+
+
+@dataclass
+class GitIdentityConfig:
+    """The installation's default Git commit identity (``git_identity:``).
+
+    Every project commits as this pair unless its Project Settings override
+    it; while both fields are empty the install is *unset* and AQ commits as
+    the documented fallback (``src/git/identity.py``).  ``aq install`` asks
+    for it once, suggesting the authenticated ``gh`` account; ``aq system
+    config git-identity`` edits it later.  ``source`` records where the confirmed
+    suggestion came from (``gh:<login>``, ``git-config``, ``manual``) and is
+    informational only.
+    """
+
+    name: str = ""
+    email: str = ""
+    source: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        from src.git.identity import GitIdentityError, validate_git_email, validate_git_name
+
+        if not self.name and not self.email:
+            return []
+        if not self.name or not self.email:
+            return [ConfigError(
+                "git_identity", "name" if not self.name else "email",
+                "set both name and email, or neither (unset uses the fallback identity)",
+            )]
+        errors = []
+        for key, check in (("name", validate_git_name), ("email", validate_git_email)):
+            try:
+                check(getattr(self, key))
+            except GitIdentityError as exc:
+                errors.append(ConfigError("git_identity", key, exc.message))
+        if not isinstance(self.source, str):
+            errors.append(ConfigError("git_identity", "source", "must be a string"))
+        return errors
+
+
+@dataclass
+class DeployConfig:
+    """Optional release selection or automatic tracking of an installed branch."""
+
+    tag_glob: str | None = None
+    target: str = "main"
+    track_branch: str | None = None
+    poll_interval_seconds: float = 300.0
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if self.tag_glob is not None and (
+            not isinstance(self.tag_glob, str) or not self.tag_glob.strip()
+        ):
+            errors.append(ConfigError("deploy", "tag_glob", "must be a non-empty string or null"))
+        if not isinstance(self.target, str) or not self.target.strip():
+            errors.append(ConfigError("deploy", "target", "must be a non-empty branch name"))
+        if self.track_branch is not None and (
+            not isinstance(self.track_branch, str) or not self.track_branch.strip()
+            or self.track_branch.startswith("-") or any(c.isspace() for c in self.track_branch)
+        ):
+            errors.append(ConfigError("deploy", "track_branch", "must be a branch name or null"))
+        if self.track_branch is not None and self.tag_glob is not None:
+            errors.append(ConfigError("deploy", "track_branch", "cannot be combined with tag_glob"))
+        if (
+            isinstance(self.poll_interval_seconds, bool)
+            or not isinstance(self.poll_interval_seconds, (int, float))
+            or not math.isfinite(self.poll_interval_seconds)
+            or self.poll_interval_seconds < 60
+        ):
+            errors.append(ConfigError("deploy", "poll_interval_seconds", "must be finite and >= 60"))
+        return errors
+
+
+@dataclass
+class BuildCacheConfig:
+    """Optional compiler cache on native storage, shared by job checkouts."""
+
+    kind: str = "ccache"
+    dir: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.kind, str) or self.kind not in {"ccache", "sccache"}:
+            errors.append(ConfigError("workspaces", "build_cache.kind", "use ccache or sccache"))
+        if (not isinstance(self.dir, str) or not os.path.isabs(self.dir)
+                or "\x00" in self.dir or self.dir == "/"
+                or re.match(r"^/mnt/[a-z](?:/|$)", os.path.realpath(self.dir))):
+            errors.append(ConfigError(
+                "workspaces", "build_cache.dir", "must be an absolute native Linux directory",
+            ))
+        return errors
+
+
+@dataclass
+class WorkspacesConfig:
+    build_cache: BuildCacheConfig | None = None
+    # Project entries override the installation default, including explicit null.
+    projects: dict[str, BuildCacheConfig | None] = field(default_factory=dict)
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.projects, dict):
+            return [ConfigError("workspaces", "projects", "must be a mapping")]
+        for cache in (self.build_cache, *self.projects.values()):
+            if cache is not None:
+                if isinstance(cache, BuildCacheConfig):
+                    errors.extend(cache.validate())
+                else:
+                    errors.append(ConfigError("workspaces", "build_cache", "must be a mapping"))
         return errors
 
 
@@ -2374,26 +4075,32 @@ class AppConfig:
     validate_events: bool = True
     messaging_platform: str = "discord"  # "discord" or "none"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
+    reports: ReportsConfig = field(default_factory=ReportsConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
-    pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    docs: DocsConfig = field(default_factory=DocsConfig)
+    git_identity: GitIdentityConfig = field(default_factory=GitIdentityConfig)
+    deploy: DeployConfig = field(default_factory=DeployConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     playbooks: PlaybooksConfig = field(default_factory=PlaybooksConfig)
     mcp_server: McpServerConfig = field(default_factory=McpServerConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     # -- Framework-overhaul substrate sections (all flags default off) ------
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     worktrees: WorktreesConfig = field(default_factory=WorktreesConfig)
+    workspaces: WorkspacesConfig = field(default_factory=WorkspacesConfig)
     streams: StreamsConfig = field(default_factory=StreamsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
+    wait_policy: WaitPolicyConfig = field(default_factory=WaitPolicyConfig)
     messages: MessagesConfig = field(default_factory=MessagesConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
@@ -2404,9 +4111,14 @@ class AppConfig:
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+    test_selection: TestSelectionConfig = field(default_factory=TestSelectionConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
+    provider_failover: ProviderFailoverConfig = field(default_factory=ProviderFailoverConfig)
+    routing: RoutingConfig = field(default_factory=RoutingConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
+    dashboard_server: DashboardServerConfig = field(default_factory=DashboardServerConfig)
+    host_shell: HostShellConfig = field(default_factory=HostShellConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -2481,6 +4193,7 @@ class AppConfig:
         errors: list[ConfigError] = []
 
         errors.extend(self._project_roots_errors)
+        errors.extend(self.deploy.validate())
         seen_root_ids: set[str] = set()
         seen_root_paths: set[str] = set()
         for index, root in enumerate(self.project_roots):
@@ -2593,25 +4306,29 @@ class AppConfig:
         # Only validate the active messaging platform's config
         if self.messaging_platform == "discord":
             errors.extend(self.discord.validate())
+        errors.extend(self.reports.validate())
 
         errors.extend(self.agents_config.validate())
         errors.extend(self.scheduling.validate())
-        errors.extend(self.pause_retry.validate())
         errors.extend(self.llm.validate())
         errors.extend(self.supervisor.validate())
+        errors.extend(self.docs.validate())
         errors.extend(self.auto_task.validate())
         errors.extend(self.archive.validate())
         errors.extend(self.llm_logging.validate())
         errors.extend(self.memory.validate())
+        errors.extend(self.knowledge.validate())
         errors.extend(self.mcp_server.validate())
         # -- Framework-overhaul substrate sections --------------------------
         errors.extend(self.playbooks.validate())
         errors.extend(self.sessions.validate())
         errors.extend(self.worktrees.validate())
+        errors.extend(self.workspaces.validate())
         errors.extend(self.streams.validate())
         errors.extend(self.security.validate())
         errors.extend(self.pricing.validate())
         errors.extend(self.messages.validate())
+        errors.extend(self.wait_policy.validate())
         errors.extend(self.supervisor_agent.validate())
         errors.extend(self.api_auth.validate())
         errors.extend(self.surface.validate())
@@ -2620,9 +4337,20 @@ class AppConfig:
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
+        errors.extend(self.test_selection.validate())
         errors.extend(self.metrics.validate())
         errors.extend(self.providers.validate())
+        errors.extend(self.provider_failover.validate())
+        errors.extend(self.routing.validate())
         errors.extend(self.graph_layout.validate())
+        errors.extend(self.git_identity.validate())
+        errors.extend(self.dashboard_server.validate())
+        errors.extend(self.host_shell.validate())
+        if self.dashboard_server.port == self.mcp_server.port:
+            errors.append(ConfigError(
+                "dashboard.server", "port",
+                f"must differ from mcp_server.port ({self.mcp_server.port}), the daemon's own",
+            ))
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
         # work and never starts any of it.  Warn, don't reject: the mode is
@@ -2648,6 +4376,12 @@ class AppConfig:
                     "enabled",
                     "requires messages.enabled and sessions.enabled",
                 )
+            )
+        # A conversation input is delivered as a message to
+        # ``session:supervisor-global`` (mention-routing spec §4.1).
+        if self.discord.conversation.enabled and not self.messages.enabled:
+            errors.append(
+                ConfigError("discord", "conversation.enabled", "requires messages.enabled")
             )
         # Agent profiles
         for profile in self.agent_profiles:
@@ -2688,7 +4422,7 @@ class AppConfig:
         """Return a new AppConfig with non-critical settings refreshed from disk.
 
         Non-critical settings (safe to change at runtime without restart):
-        - scheduling, pause_retry, auto_task, archive, monitoring
+        - scheduling, auto_task, archive, monitoring, provider_failover
         - llm_logging
 
         Critical settings (NOT reloaded — require restart):
@@ -2711,7 +4445,6 @@ class AppConfig:
         # Create a copy of current config and update only non-critical sections
         updated = copy.deepcopy(self)
         updated.scheduling = fresh.scheduling
-        updated.pause_retry = fresh.pause_retry
         updated.auto_task = fresh.auto_task
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
@@ -2724,9 +4457,13 @@ class AppConfig:
         updated.work_graph = fresh.work_graph
         updated.swarm = fresh.swarm
         updated.resources = fresh.resources
+        updated.test_selection = fresh.test_selection
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
         updated.providers = fresh.providers
+        updated.provider_failover = fresh.provider_failover
+        updated.routing = fresh.routing
+        updated.git_identity = fresh.git_identity
 
         return updated
 
@@ -2752,7 +4489,6 @@ HOT_RELOADABLE_SECTIONS = {
     "monitoring",
     "archive",
     "llm_logging",
-    "pause_retry",
     "agents_config",
     "auto_task",
     "logging",
@@ -2766,20 +4502,46 @@ HOT_RELOADABLE_SECTIONS = {
     "work_graph",
     "swarm",
     "resources",
+    "test_selection",  # read per test_select call
     "metrics",
     # Both consumers read it per use -- the API resolves the staleness horizon
     # on each request, the probe resolves its binary on each run -- so an edit
     # takes effect without a restart.
     "providers",
+    # Read per use through ``Orchestrator.provider_availability``, which holds
+    # the config getter rather than a copy, so a threshold edit bites on the
+    # next piece of evidence (provider-failover D22).
+    "provider_failover",
+    # Read when a project is created or onboarded (spec 2026-09-28 §8).
+    "routing",
+    "docs",
     "graph_layout",
+    # Read by the dashboard server process when it starts, never by the
+    # daemon's runtime: `aq dashboard restart` applies an edit.
+    "dashboard_server",
+    # Read per host-shell request (open, list, attach), so an edit bites on
+    # the next request.
+    "host_shell",
     "pricing",
     "surface",
     "project_roots",
+    # Resolved per use (session launch, claim, push, integration commit), so
+    # an edit governs the next launch and retires stale pool sessions at
+    # their next claim (docs/specs/git-identity.md).
+    "git_identity",
+    "workspaces",  # cache settings apply to the next job/session launch
+    "deploy",  # selectors and automatic branch-check cadence are read live
+    # Read per use through lambda getters (``orchestrator.core`` knowledge
+    # reads and ``records`` outbox/export), so an edit bites on the next
+    # access without a restart.
+    "knowledge",
+    "wait_policy",  # read per decision; flags are snapshotted once per registry cycle
 }
 """Config sections that can be safely updated at runtime without restart."""
 
 RESTART_REQUIRED_SECTIONS = {
     "discord",
+    "reports",
     "messaging_platform",
     "data_dir",
     "workspace_dir",
@@ -2928,7 +4690,8 @@ class ConfigWatcher:
             logger.warning("Config reload failed (keeping current config): %s", e)
             return {"error": str(e), "changed_sections": [], "applied": []}
 
-        changed = diff_configs(self._config, new_config)
+        previous_config = copy.deepcopy(self._config)
+        changed = diff_configs(previous_config, new_config)
         if not changed:
             return {"changed_sections": [], "restart_required": [], "applied": []}
 
@@ -2951,6 +4714,11 @@ class ConfigWatcher:
                 {
                     "changed_sections": sorted(hot_reloadable),
                     "config": self._config,
+                    # ``self._config`` is updated in place above. Consumers
+                    # whose mechanism depends on a particular value changing
+                    # (rather than merely on its section being reloaded) need
+                    # the prior typed value to make that distinction.
+                    "previous_config": previous_config,
                 },
             )
             logger.info(
@@ -3128,6 +4896,35 @@ def _llm_config_from_mapping(m: dict, *, legacy: bool) -> LLMConfig:
         base_url=base_url,
         max_tokens=int(m.get("max_tokens", 4096)),
         default_class=str(m.get("default_class", "") or ""),
+        fallback=_llm_fallback_from_mapping(m.get("fallback")),
+    )
+
+
+_LLM_FALLBACK_KEYS = frozenset(f.name for f in dataclasses.fields(LLMFallbackConfig))
+
+
+def _llm_fallback_from_mapping(raw: object) -> LLMFallbackConfig | None:
+    """``llm.fallback``: absent or ``null`` means no fallback (provider-failover D13a)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        keys = ", ".join(sorted(_LLM_FALLBACK_KEYS))
+        raise ConfigValidationError([f"[llm] fallback: must be a mapping of {keys}, or null"])
+    unknown = sorted(str(key) for key in raw if key not in _LLM_FALLBACK_KEYS)
+    if unknown:
+        # Names only: a mistyped key may be holding a pasted credential.
+        logger.warning(
+            "llm.fallback: ignoring unsupported keys %s (supported: %s)",
+            unknown,
+            sorted(_LLM_FALLBACK_KEYS),
+        )
+    raw_model = raw.get("model", "")
+    return LLMFallbackConfig(
+        provider=normalize_llm_provider(str(raw.get("provider", "") or "")),
+        model=str(raw_model) if raw_model else "",
+        api_key=str(raw.get("api_key", "") or ""),
+        base_url=str(raw.get("base_url", "") or ""),
+        default_class=str(raw.get("default_class", "") or ""),
     )
 
 
@@ -3142,6 +4939,17 @@ _SCALAR_COERCIONS: dict[str, Callable[[object], object]] = {
 }
 
 _CONTAINER_ANNOTATION = re.compile(r"(tuple|list)\[(\w+)(?:, \.\.\.)?\]")
+
+
+def _switch(value: object) -> bool:
+    """A boolean setting where an explicit off must stay off.
+
+    ``bool()`` reads the string ``"false"`` -- what a ``${VAR}`` substitution
+    yields -- as true, which would turn an operator's disable into an enable.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
 
 
 def _coerce_field(annotation: str, value: object) -> object:
@@ -3160,6 +4968,24 @@ def _coerce_field(annotation: str, value: object) -> object:
         container = tuple if match.group(1) == "tuple" else list
         return container(item(v) for v in value)
     return value
+
+
+def _test_interpreters(raw: object) -> object:
+    """``resources.test_interpreters`` with string keys; a non-mapping is kept for validate()."""
+    if raw is None:
+        return {}
+    if isinstance(raw, Mapping):
+        return {str(k): v for k, v in raw.items()}
+    return raw
+
+
+def _worker_plugin_overrides(raw: object) -> object:
+    """``sessions.worker_claude_plugin_overrides``; a non-mapping is kept for validate()."""
+    if raw is None:
+        return {}
+    if isinstance(raw, Mapping):
+        return {str(k): v for k, v in raw.items()}
+    return raw
 
 
 def _dataclass_kwargs(cls: type, section: object) -> dict:
@@ -3204,6 +5030,15 @@ def _present_kwargs(section: dict, spec: dict) -> dict:
     Passing only supplied values keeps the dataclass as the source of truth.
     """
     return {name: coerce(section[name]) for name, coerce in spec.items() if name in section}
+
+
+def _load_wait_policy(raw: object) -> WaitPolicyConfig:
+    """Parse and validate the policy before making it visible to runtime consumers."""
+    config = parse_wait_policy(raw)
+    errors = config.validate()
+    if errors:
+        raise ConfigValidationError([str(error) for error in errors])
+    return config
 
 
 def load_config(path: str, profile: str | None = None) -> AppConfig:
@@ -3296,6 +5131,31 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.data_dir = raw["data_dir"]
     if "workspace_dir" in raw:
         config.workspace_dir = raw["workspace_dir"]
+    if "workspaces" in raw:
+        section = raw["workspaces"]
+        if not isinstance(section, dict):
+            raise ConfigValidationError(["[workspaces] must be a mapping"])
+
+        def cache_config(value):
+            if value is None or not isinstance(value, dict):
+                return value
+            return BuildCacheConfig(**_dataclass_kwargs(BuildCacheConfig, value))
+
+        projects = section.get("projects", {})
+        if not isinstance(projects, dict):
+            raise ConfigValidationError(["[workspaces] projects must be a mapping"])
+        config.workspaces = WorkspacesConfig(
+            build_cache=cache_config(section.get("build_cache")),
+            projects={key: cache_config(value) for key, value in projects.items()},
+        )
+    if "docs" in raw and isinstance(raw["docs"], dict):
+        config.docs = DocsConfig(**_dataclass_kwargs(DocsConfig, raw["docs"]))
+    if "deploy" in raw and isinstance(raw["deploy"], dict):
+        config.deploy = DeployConfig(**_dataclass_kwargs(DeployConfig, raw["deploy"]))
+    if "git_identity" in raw and isinstance(raw["git_identity"], dict):
+        config.git_identity = GitIdentityConfig(
+            **_dataclass_kwargs(GitIdentityConfig, raw["git_identity"])
+        )
     if "project_roots" in raw:
         config.project_roots, config._project_roots_errors = _load_project_roots(
             raw["project_roots"]
@@ -3308,6 +5168,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             url=d.get("url", ""),
             pool_min_size=d.get("pool_min_size", 2),
             pool_max_size=d.get("pool_max_size", 10),
+            pre_ping=str(d.get("pre_ping", "local")),
+            pool_recycle_seconds=int(d.get("pool_recycle_seconds", 1800)),
+            schema_ahead_migrations=str(d.get("schema_ahead_migrations", "")),
+            schema_ahead_max_revisions=d.get("schema_ahead_max_revisions"),
         )
     # Backward compat: if no explicit database section, populate from database_path
     if not config.database.url:
@@ -3322,6 +5186,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         pb = raw["playbooks"]
         config.playbooks = PlaybooksConfig(
             enabled=bool(pb.get("enabled", False)),
+            private_value_active_key_id=str(pb.get("private_value_active_key_id", "")),
+            private_value_key_env=dict(pb.get("private_value_key_env") or {}),
             cancellation_grace_seconds=int(pb.get("cancellation_grace_seconds", 30)),
             v2_dry_run_max_paths=int(pb.get("v2_dry_run_max_paths", 32)),
             v2_dry_run_max_step_visits=int(pb.get("v2_dry_run_max_step_visits", 1000)),
@@ -3346,36 +5212,49 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "discord" in raw:
         d = raw["discord"]
-        ppc = PerProjectChannelsConfig()
-        if "per_project_channels" in d:
-            pp = d["per_project_channels"]
-            ppc = PerProjectChannelsConfig(
-                auto_create=pp.get("auto_create", False),
-                naming_convention=pp.get("naming_convention", "{project_id}"),
-                category_name=pp.get("category_name", ""),
-                private=pp.get("private", True),
+        # Preserve old names as migration input without choosing arbitrarily.
+        # ``agent_questions`` is scanned for pending cards, but it is not a
+        # candidate shared destination unless the operator explicitly selects
+        # its ID as ``channel_id``.
+        raw_channels = d.get("channels") if isinstance(d.get("channels"), dict) else {}
+        destination_names = tuple(
+            dict.fromkeys(
+                str(raw_channels[key]).strip()
+                for key in ("channel", "control", "notifications")
+                if raw_channels.get(key) and str(raw_channels[key]).strip()
             )
-        # Backward compat: if old config has separate control/notifications,
-        # merge into single "channel" entry (prefer control since that's where
-        # the bot listens for chat).
-        raw_channels = d.get("channels", config.discord.channels)
-        if "channel" not in raw_channels and (
-            "control" in raw_channels or "notifications" in raw_channels
-        ):
-            merged_name = raw_channels.get("control") or raw_channels.get(
-                "notifications", "agent-queue"
+        )
+        inventory_names = tuple(
+            dict.fromkeys(
+                (*destination_names, str(raw_channels.get("agent_questions") or "").strip())
             )
-            raw_channels = {
-                "channel": merged_name,
-                "agent_questions": raw_channels.get("agent_questions", "agent-questions"),
-            }
+        )
+        inventory_names = tuple(name for name in inventory_names if name)
         dg = d.get("digest", {}) or {}
+        digest_quiet_raw = dg.get("quiet_hours")
+        digest_quiet: ReportQuietHoursConfig | None = None
+        if digest_quiet_raw is not None:
+            if not isinstance(digest_quiet_raw, Mapping):
+                raise ConfigValidationError(["[discord.digest.quiet_hours] must be a mapping"])
+            digest_quiet = ReportQuietHoursConfig(
+                start=str(digest_quiet_raw.get("start", "") or ""),
+                end=str(digest_quiet_raw.get("end", "") or ""),
+            )
         digest_cfg = DiscordDigestConfig(
             enabled=bool(dg.get("enabled", True)),
             interval_minutes=int(dg.get("interval_minutes", 60)),
             project_ids=list(dg.get("project_ids", []) or []),
             categories=list(dg.get("categories", DIGEST_CATEGORIES) or []),
             catchup_hours=int(dg.get("catchup_hours", 24)),
+            supervisor_authored=bool(dg.get("supervisor_authored", False)),
+            cadence_minutes=int(dg.get("cadence_minutes", 120)),
+            quiet_hours=(
+                digest_quiet
+                if digest_quiet_raw is not None
+                else ReportQuietHoursConfig(start="22:00", end="07:00")
+            ),
+            author_fallback_minutes=int(dg.get("author_fallback_minutes", 10)),
+            quiet_line_after_skips=int(dg.get("quiet_line_after_skips", 3)),
         )
         esc = d.get("escalation", {}) or {}
         escalation_cfg = DiscordEscalationConfig(
@@ -3387,18 +5266,66 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 esc.get("supervisor_delivery_timeout_minutes", 15)
             ),
         )
+        conv = d.get("conversation", {}) or {}
+        conversation_cfg = DiscordConversationConfig(
+            enabled=bool(conv.get("enabled", False)),
+            require_mention=bool(conv.get("require_mention", True)),
+            allow_dm=bool(conv.get("allow_dm", False)),
+        )
+        escs = d.get("escalations", {}) or {}
+        escalations_cfg = DiscordEscalationsConfig(stateful=bool(escs.get("stateful", False)))
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
-            channels=raw_channels,
             authorized_users=d.get("authorized_users", []),
             channel_id=str(d.get("channel_id", "") or ""),
+            project_id=str(d.get("project_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
-            per_project_channels=ppc,
+            escalations=escalations_cfg,
+            conversation=conversation_cfg,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),
             rate_guard_halt=int(d.get("rate_guard_halt", 8000)),
+        )
+        config.discord._legacy_destination_names = destination_names
+        config.discord._legacy_inventory_names = inventory_names
+        config.discord._legacy_per_project_channels = bool(d.get("per_project_channels"))
+
+    if "reports" in raw:
+        report_raw = raw["reports"] or {}
+        if not isinstance(report_raw, Mapping):
+            raise ConfigValidationError(["[reports] must be a mapping"])
+        hourly_raw = report_raw.get("hourly") or {}
+        if not isinstance(hourly_raw, Mapping):
+            raise ConfigValidationError(["[reports.hourly] must be a mapping"])
+        morning_raw = report_raw.get("morning") or {}
+        if not isinstance(morning_raw, Mapping):
+            raise ConfigValidationError(["[reports.morning] must be a mapping"])
+        quiet_raw = hourly_raw.get("quiet_hours")
+        quiet = None
+        if quiet_raw is not None:
+            if not isinstance(quiet_raw, Mapping):
+                raise ConfigValidationError(["[reports.hourly.quiet_hours] must be a mapping"])
+            quiet = ReportQuietHoursConfig(
+                start=quiet_raw.get("start", ""), end=quiet_raw.get("end", "")
+            )
+        config.reports = ReportsConfig(
+            timezone=report_raw.get("timezone", "UTC"),
+            morning=MorningReportsConfig(
+                **{
+                    name: morning_raw[name]
+                    for name in MorningReportsConfig.__dataclass_fields__
+                    if name in morning_raw
+                }
+            ),
+            hourly=HourlyReportsConfig(
+                enabled=bool(hourly_raw.get("enabled", False)),
+                full_fleet_visibility=bool(hourly_raw.get("full_fleet_visibility", False)),
+                grace_minutes=int(hourly_raw.get("grace_minutes", 5)),
+                max_requests_per_day=int(hourly_raw.get("max_requests_per_day", 12)),
+                quiet_hours=quiet,
+            ),
         )
 
     if "agents" in raw:
@@ -3415,15 +5342,18 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             rolling_window_hours=s.get("rolling_window_hours", 24),
             min_task_guarantee=s.get("min_task_guarantee", True),
             affinity_wait_seconds=s.get("affinity_wait_seconds", 120),
+            cycle_interval_seconds=s.get("cycle_interval_seconds", 5.0),
+            min_cycle_interval_seconds=s.get("min_cycle_interval_seconds", 1.0),
+            config_poll_interval_seconds=s.get("config_poll_interval_seconds", 30.0),
         )
 
     if "pause_retry" in raw:
-        p = raw["pause_retry"]
-        config.pause_retry = PauseRetryConfig(
-            rate_limit_backoff_seconds=p.get("rate_limit_backoff_seconds", 60),
-            token_exhaustion_retry_seconds=p.get("token_exhaustion_retry_seconds", 300),
-            rate_limit_max_retries=p.get("rate_limit_max_retries", 3),
-            rate_limit_max_backoff_seconds=p.get("rate_limit_max_backoff_seconds", 300),
+        # Retired with the provider-failover design (D7): nothing ever read
+        # it.  Tolerated so an existing config file still loads.
+        logger.warning(
+            "config section 'pause_retry' is deprecated and ignored; provider "
+            "backoff is configured under 'provider_failover' "
+            "(docs/specs/provider-failover.md)"
         )
 
     llm_raw = raw.get("llm")
@@ -3445,13 +5375,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
     if "supervisor" in raw:
-        s = raw["supervisor"]
-        global_section = s.get("global", {}) or {}
-        config.supervisor = SupervisorConfig(
-            global_=GlobalSupervisorConfig(
-                idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
-            ),
-        )
+        config.supervisor = SupervisorConfig.from_mapping(raw["supervisor"])
 
     # hook_engine config section removed (playbooks spec §13 Phase 3).
     # Existing config files with hook_engine section are silently ignored.
@@ -3490,6 +5414,19 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             ),
             max_verification_retries=at.get("max_verification_retries", 2),
         )
+
+    if "knowledge" in raw:
+        values = _dataclass_kwargs(KnowledgeConfig, raw["knowledge"])
+        for name in ("context", "semantic", "extraction", "consolidation", "export",
+                     "import_inventory", "import_apply"):
+            if name in values:
+                feature_type = (
+                    KnowledgeContextConfig if name == "context"
+                    else KnowledgeGenerationConfig if name in ("extraction", "consolidation")
+                    else KnowledgeFeatureConfig
+                )
+                values[name] = feature_type(**_dataclass_kwargs(feature_type, values[name]))
+        config.knowledge = KnowledgeConfig(**values)
 
     if "memory" in raw:
         # Every field is read off ``MemoryConfig`` itself, so a partial
@@ -3537,6 +5474,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "provider": str,
                     "tmux_socket": str,
                     "lease_ttl_seconds": int,
+                    "idle_claim_timeout_seconds": int,
+                    "idle_stop_grace_seconds": int,
+                    "stop_intent_report_seconds": int,
                     "stall_max_nudges": int,
                     "stall_backoff_seconds": int,
                     "max_restarts": int,
@@ -3548,10 +5488,15 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "state_cache_ttl_seconds": int,
                     "transcript_poll_seconds": int,
                     "transcript_startup_replay_limit": int,
+                    "worker_context_compact_tokens": int,
+                    "worker_context_checkpoint_tokens": int,
+                    "worker_context_unknown_checkpoint_turns": int,
                     "adopt_on_start": bool,
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,
                     "pane_stream_lines": int,
+                    "fake_script_file": str,
+                    "worker_claude_plugin_overrides": _worker_plugin_overrides,
                 },
             )
         )
@@ -3566,6 +5511,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "merge_slot_ttl_seconds": int,
                     "prune_remote_branches": bool,
                     "setup_timeout_seconds": int,
+                    "slot_reset_git_timeout_seconds": int,
+                    "slot_reset_git_timeouts": lambda value: value,
                     "salvage_dirty": bool,
                     "salvage_max_bytes": int,
                     "spawn_conflict_continuation": bool,
@@ -3599,9 +5546,20 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     model=str(row.get("model", "")),
                     input_per_mtok=float(row.get("input_per_mtok", 0.0)),
                     output_per_mtok=float(row.get("output_per_mtok", 0.0)),
+                    cache_read_per_mtok=(
+                        float(row["cache_read_per_mtok"])
+                        if row.get("cache_read_per_mtok") is not None else None
+                    ),
+                    cache_write_per_mtok=(
+                        float(row["cache_write_per_mtok"])
+                        if row.get("cache_write_per_mtok") is not None else None
+                    ),
                 )
             )
         config.pricing = PricingConfig(models=entries)
+
+    if "wait_policy" in raw:
+        config.wait_policy = _load_wait_policy(raw["wait_policy"])
 
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]
@@ -3609,6 +5567,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             enabled=bool(ms_cfg.get("enabled", True)),
             delivery_interval=float(ms_cfg.get("delivery_interval", 5.0)),
             reply_timeout=float(ms_cfg.get("reply_timeout", 120.0)),
+            reply_window_multiplier=float(ms_cfg.get("reply_window_multiplier", 3.0)),
             transcript_tail_fallback=bool(ms_cfg.get("transcript_tail_fallback", True)),
             max_inject_per_prompt=int(ms_cfg.get("max_inject_per_prompt", 10)),
         )
@@ -3650,10 +5609,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "work_graph" in raw and isinstance(raw["work_graph"], dict):
         wg = raw["work_graph"]
         config.work_graph = WorkGraphConfig(
-            blocked_state_authoritative=bool(wg.get("blocked_state_authoritative", False)),
             gate_sweep_interval_seconds=int(wg.get("gate_sweep_interval_seconds", 30)),
             conditional_autoclose=bool(wg.get("conditional_autoclose", True)),
             container_sweep_interval_seconds=int(wg.get("container_sweep_interval_seconds", 60)),
+            lifecycle_sweep_interval_seconds=int(
+                wg.get("lifecycle_sweep_interval_seconds", 300)
+            ),
+            stale_open_after_seconds=int(wg.get("stale_open_after_seconds", 6 * 3600)),
+            frontier_rejected_after_seconds=int(wg.get("frontier_rejected_after_seconds", 600)),
         )
 
     if "integration" in raw and isinstance(raw["integration"], dict):
@@ -3667,6 +5630,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 app_id=github_app_raw.get("app_id"),
                 installation_id=github_app_raw.get("installation_id"),
                 private_key_path=github_app_raw.get("private_key_path", ""),
+                actions_permission=github_app_raw.get("actions_permission", "read"),
             )
         scratch_probe_raw = integ.get("scratch_probe")
         scratch_probe = None
@@ -3695,6 +5659,15 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             github_app=github_app,
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
+            reconciler_shadow=integ.get("reconciler_shadow", False),
+            reconciler_active=integ.get("reconciler_active", True),
+            git_first=integ.get("git_first", "active"),
+            owner_recovery_sweep=_switch(integ.get("owner_recovery_sweep", True)),
+            # Passed through as written so ``validate()`` names a bad value.
+            publisher_stall_after=integ.get("publisher_stall_after", 5),
+            service_source_timeout_seconds=integ.get("service_source_timeout_seconds", 300.0),
+            service_item_timeout_seconds=integ.get("service_item_timeout_seconds", 60.0),
+            service_source_timeouts=integ.get("service_source_timeouts") or {},
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):
@@ -3739,7 +5712,15 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             ),
             load_warn_ratio=float(res.get("load_warn_ratio", 1.0)),
             max_pytest_processes=int(res.get("max_pytest_processes", 24)),
+            test_interpreters=_test_interpreters(res.get("test_interpreters")),
             cgroups=cgroups,
+            jobs=JobsConfig(**_dataclass_kwargs(JobsConfig, res.get("jobs"))),
+            scripts=ScriptsConfig(**_dataclass_kwargs(ScriptsConfig, res.get("scripts"))),
+        )
+
+    if "test_selection" in raw:
+        config.test_selection = TestSelectionConfig(
+            **_dataclass_kwargs(TestSelectionConfig, raw["test_selection"])
         )
 
     if "metrics" in raw:
@@ -3752,6 +5733,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             **_dataclass_kwargs(ProvidersConfig, {k: v for k, v in prov.items() if k != "claude"}),
             claude=ClaudeProviderConfig(**claude_kwargs),
         )
+
+    if "provider_failover" in raw:
+        config.provider_failover = load_provider_failover_config(raw["provider_failover"])
+
+    if "routing" in raw:
+        config.routing = RoutingConfig(**_dataclass_kwargs(RoutingConfig, raw["routing"]))
 
     # Both spellings: the spec nests it under ``dashboard``, while
     # ``config_editor``/``update_config`` write AppConfig field names as
@@ -3772,7 +5759,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         tidy_job_budget_seconds=int(
             gl.get("tidy_job_budget_seconds", gl_defaults.tidy_job_budget_seconds)
         ),
+        row_aspect=gl.get("row_aspect", gl_defaults.row_aspect),
     )
+
+    hs = (raw.get("dashboard") or {}).get("host_shell") or raw.get("host_shell") or {}
+    config.host_shell = HostShellConfig(**_dataclass_kwargs(HostShellConfig, hs))
+
+    config.dashboard_server = dashboard_server_config_from_raw(raw)
+    public_url_conflict = dashboard_public_url_conflict(raw)
 
     if "agent_profiles" in raw:
         profiles = []
@@ -3825,6 +5819,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     # validate() returns ConfigError list; convert fatal errors to exception
     # for backward compatibility.
     config_errors = config.validate()
+    if public_url_conflict:
+        config_errors.append(ConfigError("dashboard", "public_url", public_url_conflict))
     fatal_errors = [str(e) for e in config_errors if e.severity == "error"]
     if fatal_errors:
         raise ConfigValidationError(fatal_errors)

@@ -15,7 +15,9 @@ value and the configured allowlist and does no more than compare them.
 The refusals are deliberately silent — §7's channel is shared with humans, and
 answering every unrelated line with "that is not an escalation" would turn the
 one configured channel into a chatbot, which is exactly what the product
-contract forbids.  ``IntakeDecision.reason`` exists for the operator log.
+contract forbids.  ``IntakeDecision.reason`` is the human-readable why, and
+``IntakeDecision.code`` is its stable short form: the one the adapter's single
+INFO line per ignored message carries, and the one an operator greps for.
 """
 
 from __future__ import annotations
@@ -59,25 +61,54 @@ class InboundMessage:
     author_is_bot: bool = False
     is_own_message: bool = False
     received_sequence: int | None = None
+    guild_id: str | None = None
 
 
 @dataclass(frozen=True)
 class IntakeDecision:
-    """What the adapter should do with one inbound message."""
+    """What the adapter should do with one inbound message.
+
+    ``code`` is ``"accepted"``, ``"closed"`` or the :data:`REASON_CODES` entry
+    for an ignore; unlike ``reason`` it never changes wording.
+    """
 
     action: str
     reason: str
     escalation_id: str | None = None
     project_id: str | None = None
     state: str | None = None
+    code: str = ""
 
     @property
     def correlated(self) -> bool:
         return self.action in (ACTION_ACCEPT, ACTION_CLOSED)
 
 
+#: Every refusal :func:`classify_inbound` can return, reason -> stable code,
+#: in gate order.  One entry per ``_ignore(...)`` call; a new gate without a
+#: code fails loudly rather than logging an unnamed refusal.
+REASON_CODES: dict[str, str] = {
+    "escalation intake is disabled": "disabled",
+    "message was authored by this bot": "own_message",
+    "message was authored by a bot": "bot_author",
+    "message is not in a thread": "not_in_thread",
+    "no configured channel": "no_channel",
+    "thread is not in the configured channel": "foreign_channel",
+    "author is not on the escalation reply allowlist": "author_not_allowlisted",
+    "thread is not bound to an escalation": "thread_unbound",
+    "bound channel disagrees with the observed channel": "binding_channel_mismatch",
+    "bound thread disagrees with the observed thread": "binding_thread_mismatch",
+    "reply has no text": "empty_text",
+    f"reply exceeds {MAX_REPLY_CHARS} characters": "oversize",
+    "message has no transport identity": "no_message_id",
+}
+
+#: The one INFO line per ignored message: ids and the code, never content.
+IGNORE_LOG_FORMAT = "discord intake ignored reason=%s guild=%s channel=%s message=%s author=%s"
+
+
 def _ignore(reason: str) -> IntakeDecision:
-    return IntakeDecision(action=ACTION_IGNORE, reason=reason)
+    return IntakeDecision(action=ACTION_IGNORE, reason=reason, code=REASON_CODES[reason])
 
 
 def classify_inbound(
@@ -140,6 +171,7 @@ def classify_inbound(
             escalation_id=escalation_id,
             project_id=project_id,
             state=state,
+            code="closed",
         )
     return IntakeDecision(
         action=ACTION_ACCEPT,
@@ -147,6 +179,7 @@ def classify_inbound(
         escalation_id=escalation_id,
         project_id=project_id,
         state=state,
+        code="accepted",
     )
 
 
@@ -154,7 +187,9 @@ __all__ = [
     "ACTION_ACCEPT",
     "ACTION_CLOSED",
     "ACTION_IGNORE",
+    "IGNORE_LOG_FORMAT",
     "MAX_REPLY_CHARS",
+    "REASON_CODES",
     "InboundMessage",
     "IntakeDecision",
     "classify_inbound",

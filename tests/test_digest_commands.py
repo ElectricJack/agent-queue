@@ -95,6 +95,34 @@ async def progress_note(db, task_id, body, *, project_id="p", at=NOW - 300):
         )
 
 
+def generation(config) -> int:
+    """The generation the commands will actually query for this config."""
+    from src.digest.schedule import config_generation
+
+    return config_generation(config.discord)
+
+
+async def open_escalation(db, escalation_id, *, project_id, with_pending_delivery=False):
+    incident, _created = await db.create_escalation(
+        id=escalation_id,
+        now=NOW,
+        task_id=None,
+        project_id=project_id,
+        source_kind="task_failed",
+        source_identity=f"attempt-{escalation_id}",
+        incident_key=f"incident-{escalation_id}",
+        supervisor_owner=f"supervisor-{project_id}",
+        summary="Blocked",
+        task_title="Restore project work",
+        investigation="looked",
+        decision_requested="retry or hold?",
+        severity="high",
+    )
+    if with_pending_delivery:
+        assert len(await db.list_escalation_deliveries(incident["id"])) == 1
+    return incident
+
+
 def session_principal(project_id: str | None, *, elevated: bool = False) -> ExecutionPrincipal:
     return ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
@@ -136,7 +164,40 @@ class TestPreview:
         inputs = await db.collect_digest_activity(
             DigestWindow(since=NOW - HOUR, until=NOW), now=NOW
         )
-        assert result["text"] == build_digest(inputs).text
+        # The footer comes from the same dashboard-link resolver a delivery uses.
+        link = await handler.orchestrator.dashboard_links.resolve()
+        assert result["text"] == build_digest(
+            inputs, dashboard_url=link.url, dashboard_notice=link.unavailable_notice
+        ).text
+
+    async def test_preview_footer_is_the_dashboard_link_a_delivery_would_carry(self, env):
+        """Link spec §5: preview matches new deliveries; never the health port."""
+        from src.config import DashboardServerConfig, HealthCheckConfig
+        from src.digest import DigestScheduleService
+
+        handler, db, config = env
+        await completed_task(db, "t1", title="Ship the digest")
+        default = await handler.execute("digest_preview", {"now": NOW})
+        assert "Remote dashboard link unavailable" in default["text"]
+
+        config.health_check = HealthCheckConfig(base_url="http://100.99.1.2:8081")
+        config.dashboard_server = DashboardServerConfig(public_url="https://queue.ts.example/")
+        result = await handler.execute("digest_preview", {"now": NOW})
+        # §6.1: the digest's one link is the needs-you inbox, on its own last
+        # line, so it is the same string a delivery carries.
+        assert result["text"].rstrip().endswith("<https://queue.ts.example/focus/inbox>")
+        assert "8081" not in result["text"]
+
+        service = DigestScheduleService(
+            db, None, config=config, lease_owner="t", links=handler.orchestrator.dashboard_links,
+        )
+        from src.digest.schedule import schedule_for
+
+        schedule = schedule_for(config.discord)
+        delivered = await service._evaluate_window(
+            schedule, schedule.window_for(NOW, last_window_end=None), now=NOW
+        )
+        assert delivered.text == result["text"]
 
     async def test_preview_writes_nothing(self, env):
         handler, db, _config = env
@@ -201,7 +262,7 @@ class TestPreview:
         sent = build_digest(inputs)
         window, _created = await db.reserve_digest_window(
             destination=f"discord:{CHANNEL}",
-            config_generation=0,
+            config_generation=generation(_config),
             window_start=NOW - 2 * HOUR,
             window_end=NOW - 1200,
             activity_cursor=None,
@@ -224,6 +285,105 @@ class TestPreview:
         again = await handler.execute("digest_preview", {"now": NOW})
         assert again["would_send"] is False
         assert again["suppression_reason"] == "already_reported"
+
+    async def test_a_scoped_preview_does_not_count_another_projects_escalations(self, env):
+        handler, db, _config = env
+        await open_escalation(db, "esc-mine", project_id="p")
+        await open_escalation(db, "esc-theirs", project_id="other")
+        with principal_context(session_principal("p")):
+            scoped = await handler.execute("digest_preview", {"now": NOW})
+        unscoped = await handler.execute("digest_preview", {"now": NOW})
+        assert scoped["open_escalations"] == 1
+        assert unscoped["open_escalations"] == 2
+
+    async def test_the_configured_selection_bounds_the_escalation_count(self, env):
+        handler, db, config = env
+        await open_escalation(db, "esc-mine", project_id="p")
+        await open_escalation(db, "esc-theirs", project_id="other")
+        config.discord = discord(project_ids=["p"])
+        result = await handler.execute("digest_preview", {"now": NOW})
+        assert result["open_escalations"] == 1
+
+    async def test_answered_escalations_leave_both_preview_and_delivery_attention_counts(self, env):
+        handler, db, config = env
+        await completed_task(db, "t1", title="Shipped")
+        await open_escalation(db, "answered", project_id="p")
+        await open_escalation(db, "unanswered", project_id="p")
+        await db.accept_escalation_reply(
+            "answered", transport="dashboard", external_message_id="human-answer",
+            verified_actor="human:jack", text="Authorization granted", received_at=NOW - 10,
+        )
+        preview = await handler.execute("digest_preview", {"now": NOW})
+        assert preview["open_escalations"] == 1
+        assert "1 open escalation" in preview["text"]
+        from src.digest import DigestScheduleService
+        from src.digest.schedule import schedule_for
+
+        service = DigestScheduleService(db, None, config=config, lease_owner="test")
+        schedule = schedule_for(config.discord)
+        result = await service._evaluate_window(
+            schedule, schedule.window_for(NOW, last_window_end=None), now=NOW,
+        )
+        assert "1 open escalation" in result.text
+        assert "2 open escalations" not in result.text
+
+    async def test_a_new_generation_does_not_inherit_old_window_timing(self, env):
+        handler, db, config = env
+        await db.reserve_digest_window(
+            destination=f"discord:{CHANNEL}",
+            config_generation=generation(config),
+            window_start=NOW - 4 * HOUR,
+            window_end=NOW - 3 * HOUR,
+            activity_cursor=None,
+            due_at=NOW - 3 * HOUR,
+        )
+        inherited = await handler.execute("digest_preview", {"now": NOW})
+        assert inherited["window"]["since"] == NOW - 3 * HOUR
+        assert inherited["window"]["catchup"] is True
+
+        config.discord = discord(interval_minutes=30)
+        fresh = await handler.execute("digest_preview", {"now": NOW})
+        assert fresh["window"]["since"] == NOW - 1800
+        assert fresh["window"]["catchup"] is False
+
+    async def test_a_new_generation_does_not_inherit_reported_history(self, env):
+        handler, db, config = env
+        await completed_task(db, "t1", title="Ship the digest")
+        assert (await handler.execute("digest_preview", {"now": NOW}))["would_send"] is True
+
+        from src.digest import DigestWindow, build_digest
+
+        inputs = await db.collect_digest_activity(
+            DigestWindow(since=NOW - HOUR, until=NOW), now=NOW
+        )
+        sent = build_digest(inputs)
+        window, _created = await db.reserve_digest_window(
+            destination=f"discord:{CHANNEL}",
+            config_generation=generation(config),
+            window_start=NOW - 2 * HOUR,
+            window_end=NOW - 1200,
+            activity_cursor=None,
+            due_at=NOW - 1200,
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(digest_windows)
+                .where(digest_windows.c.id == window["id"])
+                .values(
+                    send_status="sent",
+                    external_receipt_id="receipt",
+                    receipt_confirmed_at=NOW - 1200,
+                    payload={
+                        "reported_keys": sorted(sent.reported_keys),
+                        "reported_highlights": sorted(sent.reported_highlights),
+                    },
+                )
+            )
+        assert (await handler.execute("digest_preview", {"now": NOW}))["would_send"] is False
+
+        config.discord = discord(categories=["work"])
+        fresh = await handler.execute("digest_preview", {"now": NOW})
+        assert fresh["would_send"] is True
 
 
 class TestStatus:
@@ -252,7 +412,7 @@ class TestStatus:
         handler, db, _config = env
         await db.reserve_digest_window(
             destination=f"discord:{CHANNEL}",
-            config_generation=1,
+            config_generation=generation(_config),
             window_start=NOW - HOUR,
             window_end=NOW - 600,
             activity_cursor=None,
@@ -267,7 +427,7 @@ class TestStatus:
         for index, status in enumerate(("pending", "retry", "unknown", "suppressed")):
             window, _ = await db.reserve_digest_window(
                 destination=f"discord:{CHANNEL}",
-                config_generation=1,
+                config_generation=generation(_config),
                 window_start=NOW - HOUR - index * 10,
                 window_end=NOW - index * 10,
                 activity_cursor=None,
@@ -307,20 +467,108 @@ class TestStatus:
             incident_key="incident-1",
             supervisor_owner="supervisor-p",
             summary="Blocked",
+            task_title="Restore project work",
             investigation="looked",
             decision_requested="retry or hold?",
             severity="high",
         )
-        await db.enqueue_escalation_delivery(
-            escalation_id=incident["id"],
-            kind="root",
-            dedup_key="esc-1:root",
-            payload={"text": "blocked"},
-            available_at=NOW,
-        )
+        assert len(await db.list_escalation_deliveries(incident["id"])) == 1
         result = await handler.execute("digest_status", {"now": NOW})
         assert result["open_escalations"] == 1
         assert result["pending_escalation_deliveries"] == 1
+
+    async def test_a_scoped_status_hides_another_projects_escalation_health(self, env):
+        handler, db, _config = env
+        await open_escalation(db, "esc-mine", project_id="p", with_pending_delivery=True)
+        await open_escalation(db, "esc-theirs", project_id="other", with_pending_delivery=True)
+        with principal_context(session_principal("p")):
+            scoped = await handler.execute("digest_status", {"now": NOW})
+        unscoped = await handler.execute("digest_status", {"now": NOW})
+        assert scoped["open_escalations"] == 1
+        assert scoped["pending_escalation_deliveries"] == 1
+        assert unscoped["open_escalations"] == 2
+        assert unscoped["pending_escalation_deliveries"] == 2
+
+    async def test_a_settings_change_starts_a_fresh_schedule(self, env):
+        handler, db, config = env
+        window, _ = await db.reserve_digest_window(
+            destination=f"discord:{CHANNEL}",
+            config_generation=generation(config),
+            window_start=NOW - 2 * HOUR,
+            window_end=NOW - HOUR,
+            activity_cursor=None,
+            due_at=NOW - HOUR,
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(digest_windows)
+                .where(digest_windows.c.id == window["id"])
+                .values(send_status="retry")
+            )
+        before = await handler.execute("digest_status", {"now": NOW})
+        assert before["last_window_end"] == NOW - HOUR
+        assert before["delivery_health"]["retry"] == 1
+        assert len(before["recent_windows"]) == 1
+
+        config.discord = discord(project_ids=["p"])
+        after = await handler.execute("digest_status", {"now": NOW})
+        assert after["config_generation"] != before["config_generation"]
+        assert after["last_window_end"] is None
+        assert after["next_evaluation_at"] == NOW + HOUR
+        assert after["delivery_health"]["retry"] == 0
+        assert after["recent_windows"] == []
+
+    async def test_status_reports_the_intake_ignore_counts(self, env):
+        from types import SimpleNamespace
+
+        from src.discord.intake_diagnostics import IgnoreCounter
+
+        handler, _db, _config = env
+        counter = IgnoreCounter(clock=lambda: 5.0)
+        counter.record("not_in_thread")
+        counter.record("not_in_thread")
+        counter.record("author_not_allowlisted")
+        handler.orchestrator._discord_bot = SimpleNamespace(
+            _cutover_report=None, _intake_diagnostics=counter
+        )
+        result = await handler.execute("digest_status", {"now": NOW})
+        assert result["intake"] == {
+            "available": True,
+            "window_seconds": 3600,
+            "total": 3,
+            "ignored": {"author_not_allowlisted": 1, "not_in_thread": 2},
+        }
+
+    async def test_status_without_a_bot_reports_an_unavailable_intake_block(self, env):
+        handler, _db, _config = env
+        handler.orchestrator._discord_bot = None
+        result = await handler.execute("digest_status", {"now": NOW})
+        assert result["intake"] == {
+            "available": False,
+            "window_seconds": 3600,
+            "total": 0,
+            "ignored": {},
+        }
+        # The fallback is a copy: a caller mutating one result cannot corrupt the next.
+        result["intake"]["ignored"]["x"] = 1
+        again = await handler.execute("digest_status", {"now": NOW})
+        assert again["intake"]["ignored"] == {}
+
+    async def test_the_intake_block_validates_against_the_response_model(self, env):
+        from types import SimpleNamespace
+
+        from src.api.models.digest import DigestStatusResponse
+        from src.discord.intake_diagnostics import IgnoreCounter
+
+        handler, _db, _config = env
+        counter = IgnoreCounter(clock=lambda: 5.0)
+        counter.record("bot_author")
+        handler.orchestrator._discord_bot = SimpleNamespace(
+            _cutover_report=None, _intake_diagnostics=counter
+        )
+        result = await handler.execute("digest_status", {"now": NOW})
+        model = DigestStatusResponse.model_validate(result)
+        assert model.model_dump()["intake"] == result["intake"]
 
 
 class TestSurface:
