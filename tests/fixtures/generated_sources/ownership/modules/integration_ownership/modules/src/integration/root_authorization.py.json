@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/root_authorization.py::RootAuthorization.run::091a3fae2f1956d2dd65f33618996b4c30564bea68130f2a796155424d92df19": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 136,
+      "owner": "RootAuthorization.run",
+      "owner_fingerprint": "ddca69f355ad0f38c5182a9d6f23bd50de5fe7f5728b8aeafa3d363eb8892887",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

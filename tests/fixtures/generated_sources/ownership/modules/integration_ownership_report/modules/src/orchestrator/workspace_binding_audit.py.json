@@ -1,0 +1,10 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/workspace_binding_audit.py::_inspect_binding": {
+      "reason": "Read-only reconciliation of existing registered slot bindings against retained integration owner/job pins, current session instance/claim epoch/acquisition receipt and physical source identity. Reports mismatches or unknown evidence; never clears claims, releases locks, changes retry budgets or writes integration lifecycle/ref replay state."
+    },
+    "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, sessions": {
+      "reason": "Read-only ownership/pin/session evidence for historical workspace reconciliation; charges the integration-owned import and probe separately from generic inventory formatting."
+    }
+  }
+}
