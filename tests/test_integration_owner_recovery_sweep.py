@@ -15,12 +15,12 @@ async def test_tick_isolates_an_owner_recovery_failure_and_runs_other_sources():
     repair = SimpleNamespace(retire_terminal_delegates=AsyncMock(return_value=[]))
     recovery = AsyncMock(side_effect=RuntimeError("temporary Git failure"))
     outbox = SimpleNamespace(dispatch_due=AsyncMock())
+    # Every source observes the service clock, not the tick's argument.
     service = IntegrationService(
         SimpleNamespace(),
-        SimpleNamespace(),
-        repair,
         outbox,
-        owner_recovery_handler=recovery,
+        maintenance={"owner recovery": recovery, "delegate cleanup": repair.retire_terminal_delegates},
+        clock=lambda: 100.0,
     )
 
     await service.tick(100.0)
@@ -44,6 +44,25 @@ async def test_sweep_does_nothing_while_the_switch_is_off(monkeypatch):
 
     recovery.candidates.assert_not_awaited()
     recovery.recover_many.assert_not_awaited()
+
+
+async def test_sweep_runs_under_the_default_configuration(monkeypatch):
+    recovery = SimpleNamespace(
+        candidates=AsyncMock(return_value=[{"id": "stranded"}]),
+        recover_many=AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "src.integration.owner_recovery.owner_recovery_for", lambda _orchestrator: recovery
+    )
+    orchestrator = SimpleNamespace(
+        config=SimpleNamespace(integration=IntegrationConfig()),
+        _owner_recovery_next_due=0.0,
+    )
+
+    await Orchestrator._sweep_stranded_owners(orchestrator, 100.0)
+
+    recovery.candidates.assert_awaited_once_with(quiet_seconds=600, limit=50)
+    recovery.recover_many.assert_awaited_once_with(["stranded"], principal="sweep")
 
 
 async def test_sweep_recovers_quiet_candidates_only_once_per_five_minutes(monkeypatch):
@@ -86,11 +105,15 @@ async def test_delegate_retirement_recovers_the_owner_rows_named_by_cleanup(monk
     monkeypatch.setattr(
         "src.integration.delegate_release.release_delegates", AsyncMock(return_value=released)
     )
+    archive = AsyncMock(return_value={"next_after": None})
+    monkeypatch.setattr("src.integration.delegate_release.archive_obsolete_delegates", archive)
     recovery = SimpleNamespace(recover_many=AsyncMock(return_value=[]))
-    service = RepairService(SimpleNamespace(), owner_recovery=recovery)
+    db = SimpleNamespace()
+    service = RepairService(db, owner_recovery=recovery)
 
     assert await service.retire_terminal_delegates(100.0) == ["delegate"]
 
     recovery.recover_many.assert_awaited_once_with(
         ["owner-a", "owner-b"], principal="delegate_retirement"
     )
+    archive.assert_awaited_once_with(db, limit=100, after=None)

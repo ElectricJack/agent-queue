@@ -1,5 +1,11 @@
 # Development integration
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Subject integration guide](hierarchical-integration-trains.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 Turn on AQ's batched delivery for a project, watch a batch reach your default
 branch, and read the journal it leaves behind.
 
@@ -43,15 +49,15 @@ assumes its vocabulary (batch, manifest, journal, parked).
 ```bash
 aq integration develop demo \
   --validation focused \
-  --command '/path/to/venv/bin/python -m pytest -q' \
+  --command 'aq test tests/test_demo.py' \
   --interval-seconds 300 \
   --reason 'Batched development delivery for demo'
 ```
 
 The command returns `{"outcome": "configured", …}` with the stored policy, and
-the same decision is written into the delivery journal, where it stays. This is
-the real configuration row this repository's own project carries, read back
-with `aq integration status agent-queue`:
+the same decision is written into the delivery journal, where it stays. A
+supported policy for this repository could look like this in
+`aq integration status agent-queue`:
 
 ```text
 {
@@ -62,7 +68,7 @@ with `aq integration status agent-queue`:
     "kind": "configuration",
     "operator_id": "local:-",
     "policy": {"validation": "focused",
-               "commands": ["~/.agent-queue/operator-checks/isolated-tests.py tests/test_development_integration.py"],
+               "commands": ["aq test tests/test_development_integration.py"],
                "timeout_seconds": 300, "interval_seconds": 300, "max_batch_size": 50}
   },
   "reason": "Steady-state development: five-minute batches and focused integration checks; …"
@@ -83,10 +89,10 @@ Options:
 
 | Option | Meaning |
 |---|---|
-| `--validation focused` | Default. Every `--command` must exit 0 or the batch parks. At least one command is required. |
+| `--validation focused` | Default. A reported command failure parks the batch; an infrastructure outcome defers it. At least one command is required. |
 | `--validation advisory` | Runs the commands, records failures, publishes anyway. |
 | `--validation none` | Runs nothing; the journal records `not_run`. |
-| `--command` | Repeatable. Runs under `bash -c` in AQ's retained clone, with the daemon's environment. |
+| `--command` | Repeatable finite command. AQ rejects unsupported syntax at configuration time; see the preset list below. Commands run as detached jobs against the candidate commit. |
 | `--interval-seconds` | Periodic recovery sweep interval. Default 300. Task completion also requests a sweep on the next integration cycle (normally within 5 seconds, once an active batch finishes). |
 | `--timeout-seconds` | Seconds each command may *run*. Default 300, maximum 3600. Time queued for a test slot is not counted. |
 | `--slot-wait-seconds` | Seconds a command may queue for a test slot (via `aq test`) before the batch is deferred to the next tick — never parked, never repaired. Default 600, maximum 3600. |
@@ -94,16 +100,30 @@ Options:
 | `--regenerate-timeout-seconds` | Seconds one regeneration may run before that merge counts as failed. Default 600, maximum 3600. |
 | `--reason` | Required, and kept in the journal. |
 
-> **Note.** Validation commands do not run in a worker's worktree. They run in
-> AQ's own clone under `<data_dir>/development-integration/…`, with whatever
-> is installed for the daemon's user. Point at an absolute interpreter or a
-> small wrapper script rather than assuming a virtualenv is active. Each
-> command may *run* for 300 seconds (`timeout_seconds`, up to 3600); time it
-> spends queued for a test slot under `aq test` is bounded separately
+Supported commands are `aq test …`, `pytest …`, `python[3] -m pytest …`,
+`ruff check …`, `python[3] -m ruff check …`, `npm ci`, `npm test`,
+`npm run build`, `pnpm install --frozen-lockfile`, `pnpm check`,
+`pnpm run build`, and `scripts/e2e-smoke.sh`. The Node and smoke commands
+take no extra arguments. Shell operators, arbitrary scripts, absolute
+interpreter paths, and wrappers such as `isolated-tests.py` are unsupported.
+The Python presets use the daemon's interpreter and its installed packages;
+they cannot select another project's virtualenv. Node and pnpm executables
+are resolved by the server. Configure an install command before a test or
+build command; checks in one validation attempt share a detached snapshot,
+so ignored `node_modules` survives between them. A retry uses a fresh snapshot.
+
+> **Note.** Validation commands do not run in a worker's worktree or under a
+> shell. They run as managed jobs in a detached snapshot of AQ's retained
+> candidate clone. Each command may *run* for 300 seconds
+> (`timeout_seconds`, up to 3600); time it spends queued for a test slot is bounded separately
 > (`slot_wait_seconds`, default 600). A timeout is recorded as exit code 124
 > and, like any validation that verified nothing, defers the batch rather
 > than parking it — see
-> [Validation could not finish](integration-troubleshooting.md#validation-could-not-finish-deferred).
+> [Validation could not finish](integration-troubleshooting.md#a-passed-task-blocked-at-delivery).
+
+Existing policies containing commands outside this list must be reconfigured
+by the local operator. AQ does not rewrite a stored policy during an upgrade;
+an unsupported stored command defers validation until it is replaced.
 
 Policy changes take effect on the next batch. There is no drain to wait for.
 
@@ -185,7 +205,7 @@ cleanup, status, explain and doctor — asks git one question through
 [`src/integration/delivery_truth.py`](../../src/integration/delivery_truth.py):
 is the exact final source of the task's *current* completion generation an
 ancestor of the configured target? A close retains that source in git
-(`refs/heads/aq-provenance/completions/…`, see
+(`refs/aq/provenance/completions/…`, see
 [exact completion provenance](../specs/design/git-completion-provenance.md)), so
 branch cleanup and archive never erase the answer.
 
@@ -196,6 +216,17 @@ never published, never archived and never settles a container. The publisher
 names it with the `missing_provenance` skip reason, and a repeated identical
 skip stalls with one supervisor message, like every other stall. A branchless
 task with no recorded commits is organizational and has no artifact of its own.
+
+The one database answer every reader honours is a **settlement**: a record that
+a generation is *not owed* to one target (task metadata
+`development_delivery_settlement`). Git is still asked first: a settlement only
+turns work the target lacks from `pending` into `settled`, which satisfies
+dependents and settlement like a delivery but never says the work was delivered;
+contained work reads `contained` whatever was settled. It is fenced to its
+repository, its target and, for ordinary work, the exact completion it settled,
+so reopening and closing the task owes the new work again.
+Settlements come only from a [retarget](#when-the-default-branch-changes) and
+from [`settle-parked`](#settle-or-dismiss-a-parked-delivery).
 
 ### Retiring the legacy delivery table
 
@@ -236,13 +267,75 @@ aq integration migrate-provenance demo --apply
 The result names `fallback_generations` (generations that would evaluate
 unknown for lack of retained provenance), `fallback_count`, `zero_fallback`, the
 outstanding legacy actions retained as events in `operations`, and unresolved
-identities in `ambiguous`. Follow `next_offset` through all pages; a zero count
-on one page does not prove the entire project migrated. Exact completion and
+identities in `ambiguous`, with the page's totals in `counts` (generations
+examined, `present`, `written`, `would_write`, `missing_generation`, `ambiguous`,
+`repairs`, `fallback`). Follow `next_offset` through all pages; a zero count
+on one page does not prove the entire project migrated. Each page is bounded in
+time: generations are bound in batches whose new refs are published in one
+transfer, and a page starts no batch after 45 seconds. A page that stops early
+reports `budget_exhausted: true` and a `next_offset` at its first unexamined
+generation, so continue from there (a `--task-id` run is simply repeated).
+Exact completion and
 repair mappings are retained in git. Missing generations, ambiguous sources,
 branchless tasks a retired manifest named without a generation, and incomplete
 equivalence evidence are reported with task ids rather than guessed; an
-operator resolves each (for example by reopening and closing the task again,
-or by an explicit `adopt`). Until then those tasks stay unknown.
+operator resolves each with explicit provenance or adoption. Until then those
+tasks stay unknown. A legacy close
+that recorded no commit and that only a delivery manifest located can instead
+be bound by attesting its exact final source:
+
+```bash
+aq integration migrate-provenance demo --task-id demo.7 --source <40-hex-oid>          # preview
+aq integration migrate-provenance demo --task-id demo.7 --source <40-hex-oid> --apply
+```
+
+The attestation binds only that COMPLETED task's current generation, and is
+refused when the generation's own evidence names another source or a repair
+contract names the task's sources.
+
+Some legacy tasks have no database completion row at all. They can be recovered
+without reopening finished work: supply an audit reason with the exact source,
+or explicitly declare artifact-free research with `--no-artifact`:
+
+```bash
+aq integration migrate-provenance demo --task-id demo.8 --source <40-hex-oid> --reason "legacy work already delivered" --apply
+aq integration migrate-provenance demo --task-id research --no-artifact --reason "research only; no code" --apply
+```
+
+Omit `--apply` to preview either decision. The command retains immutable Git
+evidence under the recorded current generation id, or a legacy generation
+identity fenced to the task version. Missing-row attestations retain that
+version identity too, so archiving preserves the decision. It checks for active
+writers and rechecks the generation before writing; reopening changes the
+generation. It records the operator, reason and result in the audit log and
+does not fabricate a passing worker completion or CI evidence. A no-artifact
+declaration cannot erase source evidence that the generation already recorded.
+
+A COMPLETED task whose latest completion did not pass is attested the same way
+on a `--reason`: a research task closed over a blocked close is finished work,
+not work still owed. Its recorded commits are what it read rather than an
+artifact of its own, so `--no-artifact` replaces them and `--source` may name a
+different commit — but an attested source must already be contained in the
+target, so the decision can only clear work the target holds. The failed close
+is retained verbatim; the audit records `completion_outcome: fail`.
+
+A bare pre-train parent episode uses this same completion provenance, and so
+does an episode whose only parent operation was cancelled before it ever
+verified or completed: neither demands a verification that never existed. Any
+real parent operation or verification history still requires the exact verified
+parent completion, and so does a parent an operator already adopted — a stale
+adoption is a decision to redo, not a legacy episode.
+`invalid_parent_completion` and `parent_provenance_mismatch` name broken
+bindings and require parent verification recovery. They do not mean a branch
+must be pushed again. Neither does `parent_adoption_provenance_mismatch`: an
+adopted parent's retained source disagrees with the head its operator adoption
+recorded, or that record holds no artifact. The adoption is redone through the
+delivered-children recovery (`aq integration adopt … --settle-delivered-children
+--dry-run`, see [integration troubleshooting](integration-troubleshooting.md)),
+never through `migrate-provenance`. `missing_or_ambiguous_source` means git
+could not resolve the retained record itself — unreadable, or naming a commit or
+replacement the repository cannot resolve — so the stall names it rather than a
+missing ref, and only a new completion of the exact commit supersedes it.
 
 ## What a worker sees
 
@@ -347,6 +440,11 @@ parked content under the current policy:
 aq integration sweep demo --retry
 ```
 
+A park holds its source only on the target it parked on; after a
+[retarget](#when-the-default-branch-changes) it holds nothing. When a parked row
+is for work the target does not owe at all, settle it rather than repairing it:
+[settle or dismiss a parked delivery](#settle-or-dismiss-a-parked-delivery).
+
 ### Conflicts confined to generated files
 
 Most conflicts between parallel branches used to be in generated files: two
@@ -399,7 +497,7 @@ recorded in its `development_publisher_skip` task metadata: an undelivered
 dependency, a source ref that is gone before its work reached `main`, a
 dependency cycle, a parked source. A skip is an observation, not a failure —
 but one that repeats forever is a stall, so it has a bounded life
-([`src/integration/development_stalls.py`](../../src/integration/development_stalls.py)):
+(`src/integration/development_stalls.py` (retired)):
 
 * Each evaluation is fingerprinted: task, latest completion, reason, related
   task, the configured target (repository and ref) and the git evidence that
@@ -488,6 +586,73 @@ that omitted the verifier. Once all delegates are terminal or paused, repeating
 the command makes no changes. The verifier's task and audit references are kept;
 cancellation does not claim that verification passed.
 
+## Settle or dismiss a parked delivery
+
+A parked row whose members the target does not owe (work already on another
+branch, superseded, or delivered some other way) needs a decision, not a repair
+and not a hand-moved target branch:
+
+```bash
+aq integration status demo                                   # parked: [<operation-id>]
+aq integration settle-parked demo <operation-id> --reason 'Superseded by demo.9'
+aq integration settle-parked demo <operation-id> --dismiss --reason 'Stale park'
+```
+
+* **Settle** (the default) checks in git that each member's current completion
+  is still the one that parked, then records it, and every repair filed for the
+  row, as not owed to the target. Only a row on the current target can be
+  settled; the next sweep retires a row parked on an old one. The publisher never
+  merges them there, their dependents are released on the next evaluation and no
+  further repair is filed. The result lists `open_repairs`: repairs still being
+  worked on, which you retire with `aq task close <id> --obsolete` once their
+  sessions stop. A member that completed again after it parked owes its new work,
+  so settling it is refused; dismiss the row instead.
+* **Dismiss** only withdraws the row: its members return to the publisher, which
+  merges them again on the next sweep and parks them again, as a new row, if they
+  still conflict. Repairs are left alone.
+
+Either way the row becomes `cancelled`, with the decision (`settled_by` or
+`dismissed`: reason, operator, time) in its evidence. The command takes the
+publisher lock, so it answers `blocked` while a sweep runs; run it again. It
+needs a LOCAL operator or the project's live supervisor
+([`DevelopmentIntegration.settle_parked`](../../src/integration/development.py)).
+
+## When the default branch changes
+
+Retargeting a development project — `aq integration enable --mode disabled`,
+`aq project set … integration-repository` with a new `default_branch`, then
+`aq integration develop` — makes the publisher deliver somewhere new. Three
+things about the old target are not carried over
+(`src/integration/development_settlement.py` (retired)):
+
+* **Work the old target already has.** A generation completed before the
+  retarget whose source the old target contains is settled as not owed to the new
+  one (`delivered_to_previous_target`), instead of being merged — or parked and
+  repaired — into it. Work completed before the retarget that the old target does
+  *not* have is still owed and is delivered to the new target as usual. If the old
+  branch is gone, nothing can be proven there and everything stays owed.
+* **Repairs built for the old target.** A repair starts from the target its park
+  named and carries that branch's history, so it is settled as not owed to any
+  other target (`repair_for_previous_target`); its sources are judged on the new
+  target on their own. A source that conflicts on the new target too gets a repair
+  of its own there (the park records it as `evidence.repair_id`), never the old
+  one. A park on the current target whose members all turn out not to be owed is
+  cancelled, and its repairs are settled with it; if the same content parks there
+  again later, its repair is owed again.
+* **Parks on the old target.** A park is a conflict with one base of one target.
+  Parks are scoped to the current target, so a source parked on the old one is
+  merged into the new one on the next sweep; the stale row is cancelled with
+  `evidence.retired` naming the new target.
+
+Only `aq integration develop` moves the target: its configuration row records
+`retarget: {from_ref, to_ref}` (and its result says so), and the first
+configuration onto the new target fences which completions came before it. An
+`aq integration adopt` onto another ref is not a retarget. The first sweep on the new target writes one
+journal row of kind `settlement` listing what it settled, and sends
+`supervisor-<project>` one message naming each task. If some of that work does
+belong on the new target, merge its source there on a branch that keeps it as an
+ancestor and record it with `aq integration adopt`, or reopen and close the task.
+
 ## Designating the repository
 
 `aq integration develop` needs to know which repository it publishes to. With
@@ -531,6 +696,144 @@ Publisher operation events are deliberately retained: they are history, not
 runtime state. See [switching integration modes](integration-migration.md) for
 what does and does not carry over.
 
+## Operator acceptance: reading delivery truth without changing anything
+
+Everything below is read-only. None of these commands claims, settles,
+repairs, rebinds or restarts anything; they only inspect what git answers.
+The `aq` commands run against the live daemon on its real database — which
+makes them read-only, unlike the `integration adopt` / `develop` / `resume`
+controls elsewhere in this guide; the `git` commands run inside a clone of the
+project's target repository, limited to read-only subcommands. **Never run
+`alembic upgrade`, `aq start` or any migration against the operator database
+from a worker slot** — a worker's `AQ_DB_SCOPE=worker` sentinel refuses local
+upgrades, and that refusal is correct.
+
+Keep the two facts separate in every answer:
+
+* **Source checkpoint** — the exact commit the current completion generation
+  finished at, on the task's source branch. A *closed* task and a *pushed*
+  source branch both prove only this. Checkpoint existence is necessary,
+  never sufficient.
+* **Target containment** — the target ref (usually `refs/heads/main`)
+  actually contains that exact source commit *for the current completion
+  generation*. Only `merge-base --is-ancestor` on the target repository
+  proves it. A stale close, a deleted source ref, or a journal row pointing
+  the wrong way changes nothing here.
+
+### Read-only command checklist
+
+For a completed task `<task>` in project `<project>` with source branch
+`<branch>`:
+
+```bash
+# 1. What the scheduler and settlement wait for, as git answers it now.
+#    Read-only; lists targets, pending work and unknown work with reasons.
+aq integration status <project>
+
+# 2. Why a specific task is (or is not) running right now.
+aq task explain --task-id <task>
+
+# 3. Project-wide publisher health: conflicts still parked without repair,
+#    and any stalled publisher (WARN below the stall bound, ERROR at it).
+aq doctor --check integration.development_conflicts_unrepaired
+aq doctor --check integration.development_publisher_stalled
+
+# 4. Provenance inventory: how many completed generations still lack an
+#    exact git source label. Default is a dry-run — no write.
+aq integration migrate-provenance <project>
+```
+
+In the target repository, for the exact source checkpoint `<sha>`:
+
+```bash
+git log -1 <branch>                                    # source checkpoint, if the ref still exists
+git merge-base --is-ancestor <sha> refs/heads/main && echo contained || echo not-contained
+git rev-parse refs/heads/main                          # current target head, to compare against the status targets
+```
+
+Expected outcomes, by shape:
+
+* **Contained (delivered).** `integration status <project>` lists the task
+  under neither `pending` nor `unknown`; `merge-base --is-ancestor` on the
+  target succeeds; `task explain` shows no `development_dependency_delivery`
+  reason. A deleted source branch changes none of this — ancestry is the
+  proof, not the ref.
+* **Depth-two / depth-three completed source conflicts with advanced main
+  (`agile-torrent.9`, `wise-ember.12` shapes).** The publisher parks the
+  conflicting source, names the source(s), the target and the paths in its
+  conflict evidence, and files exactly one bounded repair child — it does
+  not invent a conflicting sibling pair when the conflict is against
+  `main`. The clean sibling still publishes. Until the repair delivers,
+  the source is not released: `task explain` on a dependent shows
+  `development_dependency_delivery`. `doctor --check
+  integration.development_conflicts_unrepaired` stays WARN/ERROR listing
+  the parked source(s); after the repair delivers, the check goes OK and
+  the stale skip diagnostic clears.
+* **Adopted repair diagnostics.** An adopted repair cycle drops out of
+  candidate evaluation entirely — no skip record, no further repair, no
+  supervisor message. `doctor --check
+  integration.development_publisher_stalled` reports it only if a *fresh*
+  identical failure keeps recurring at the configured threshold (default
+  five consecutive ticks; positive), at which point exactly one supervisor
+  message exists and repeated ticks or a daemon restart do not duplicate it.
+  New source, target or evidence — or an explicit recovery — starts a
+  fresh attempt.
+* **Missing refs and archived tasks.** A missing source ref, an archived
+  task or a source on the wrong repository is *unknown*, never *empty* and
+  never *delivered*: the dependent stays withheld
+  (`missing_git_provenance`), the container stays open, and no repair or
+  cleanup fires. `integration status` shows the task under `unknown` with
+  its reason.
+* **Completed epics (branchless containers).** An epic has no artifact of
+  its own; it settles once *every* child that recorded work has its current
+  generation contained — through the existing settlement transitions, once
+  per container, with an audit event. A live session, an explicit non-stale
+  blocker or train ownership keeps the guard in place even when git
+  otherwise agrees. `claims.container_held` names whatever still holds it:
+  `aq doctor --check claims.container_held`.
+* **Reopened or multi-commit tasks.** An older generation's close — or a
+  cherry-picked copy of its commit — cannot satisfy the current
+  completion generation. `task explain` keeps the dependent withheld until
+  the *current* generation's exact source proves containment.
+* **Misleading legacy rows.** Journal rows are history. Even a row that
+  says `delivered` for the wrong source cannot release a dependent:
+  readiness, pool demand, claim and explanation all agree with the fresh
+  git answer, and an external ancestry-preserving merge releases work on
+  the next snapshot without any adoption.
+* **Zero fallback inventory.** After the provenance migration applies to a
+  fully migrated fixture, `aq integration migrate-provenance <project>`
+  reports `fallback_count == 0` (`zero_fallback: true`). An unlabelled
+  generation is still unknown and is named with its task id rather than
+  guessed; that is the bridge working, not a failure.
+
+### Recorded acceptance evidence (2026-09-27, commit `de5e2a7ee`)
+
+The plan's scenario matrix is covered by the deterministic regressions
+named in [Source and tests](#source-and-tests), run in a disposable
+environment — none of the live tasks above were touched, and the running
+daemon was not restarted or migrated:
+
+* Focused: `aq test tests/test_development_integration.py tests/test_lifecycle_cleanup.py`
+  — 259/259 passed (eleven-way stall; depth-two/depth-three conflict
+  dispatch; adopted repair cycles; missing refs and archived tasks;
+  reopened/partial provenance; fifth-tick escalation with one supervisor
+  message; concurrent adopt/publish under the publisher lock;
+  receipt-free admission; stale container settlement; the
+  `development_deliveries` SQL ratchet).
+* Combined area: `aq test tests/test_development_integration.py tests/test_development_validation.py
+  tests/test_doctor_integration_checks.py tests/test_integration_controls.py
+  tests/test_blocked_state.py tests/test_claim_commands.py tests/test_lifecycle_cleanup.py
+  tests/test_hierarchy_settlement.py` — 607/607 passed, zero failures, no
+  baseline-failure comparison needed.
+* Disposable swarm smoke (side-by-side kit, `AQ_E2E_HOME`/`AQ_E2E_PORT`/
+  `E2E_DB_NAME` overridden; the default kit's home was already owned by
+  another checkout): `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh`
+  — 19/19 scenarios passed, including S15 development delivery with an
+  unlabelled generation withheld until an exact one exists.
+
+No new test module or unowned source path was introduced, so no selection
+catalogue or rule regeneration was required.
+
 ## Related pages
 
 * [Integration](../concepts/integration.md) — the mechanism and its guarantees.
@@ -544,7 +847,9 @@ what does and does not carry over.
 
 [`src/integration/development.py`](../../src/integration/development.py),
 skip stalls in
-[`src/integration/development_stalls.py`](../../src/integration/development_stalls.py),
+`src/integration/development_stalls.py` (retired),
+retargets and settlements in
+`src/integration/development_settlement.py` (retired),
 commands in
 [`src/commands/integration_commands.py`](../../src/commands/integration_commands.py),
 CLI in [`src/cli/integration.py`](../../src/cli/integration.py).
