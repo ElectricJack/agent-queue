@@ -1,0 +1,68 @@
+# Publishes dist/ to GitHub Pages. The Pages site is configured with
+# `build_type: workflow`, so this workflow — not a branch — is the source.
+#
+# The custom domain is controlled by repository Pages settings. GitHub ignores
+# CNAME files for an Actions deployment. Relative URLs also support the default
+# https://electricjack.github.io/jackkern.com/ address while DNS is elsewhere.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a half-finished deploy — let the running one land, then publish
+# the newer commit on top of it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Before the build: `npm run build` captures the static fallback images
+      # into dist/static, and under CI a missing Chromium fails the build
+      # rather than publishing a page whose images do not exist.
+      - name: Install Chromium for the static capture
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run build
+
+      # External URLs are skipped: a rate-limited runner must not block a deploy.
+      - name: Link check
+        run: node tools/link-check.mjs dist
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

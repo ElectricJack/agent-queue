@@ -52,6 +52,7 @@ def _install_fakes(monkeypatch, serve_behaviors):
         "handlers": [],
         "register_calls": {},
         "exclusions": frozenset({"excluded-tool"}),
+        "api_lifecycle": [],
     }
 
     class FakeFastMCP:
@@ -97,7 +98,16 @@ def _install_fakes(monkeypatch, serve_behaviors):
     class _Router:
         def __init__(self):
             self.routes: list = []
-            self.lifespan_context = None
+
+            @asynccontextmanager
+            async def lifespan(app):
+                created["api_lifecycle"].append("start")
+                try:
+                    yield {"api_state": "preserved"}
+                finally:
+                    created["api_lifecycle"].append("stop")
+
+            self.lifespan_context = lifespan
 
     class _App:
         def __init__(self):
@@ -265,3 +275,25 @@ async def test_embedded_server_crash_restarts_with_capped_backoff(monkeypatch):
     assert len(created["apps"]) == 1
     mounts = [r for r in created["apps"][0].router.routes if isinstance(r, Mount)]
     assert len(mounts) == 1
+
+
+async def test_mcp_supervision_preserves_api_lifecycle_on_every_restart(monkeypatch):
+    shutdown = asyncio.Event()
+
+    async def serve(server):
+        app = server.config.app
+        async with app.router.lifespan_context(app) as state:
+            assert state == {"api_state": "preserved"}
+            if server.index == 0:
+                raise RuntimeError("restart")
+            shutdown.set()
+
+    created = _install_fakes(monkeypatch, [serve, serve])
+
+    async def elapse_backoff(awaitable, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", elapse_backoff)
+    await run_mcp_server(_FakeOrchestrator(), _fake_config(), shutdown)
+    assert created["api_lifecycle"] == ["start", "stop", "start", "stop"]

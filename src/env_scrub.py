@@ -123,8 +123,8 @@ BUILTIN_EXEMPT: tuple[str, ...] = (
 # Design decision (trust-and-ops §3): the scrub ships **default-on** with this
 # allowlist rather than default-off.  An agent CLI that cannot authenticate is
 # not a safer agent, it is a broken install — and `ANTHROPIC_API_KEY` is the
-# normal install shape (``src/setup_wizard.py`` writes it into the daemon env
-# file).  Withholding the daemon's *own* secrets — bot token, database DSN,
+# normal install shape (the installer's provider-login step points the human at
+# it, and it lives in the daemon env file).  Withholding the daemon's *own* secrets — bot token, database DSN,
 # embedding keys, the operator's unrelated exports — is where the value is, and
 # that survives intact.  Entries are fnmatch globs, matched case-insensitively.
 #
@@ -181,9 +181,10 @@ def is_harness_session_marker(key: str) -> bool:
     credential allowlist.
     """
     upper = _normalize(key)
-    if upper in {"CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT"}:
-        return True
-    if upper.startswith("CLAUDE_CODE_"):
+    # Claude adds controls outside CLAUDE_CODE_* (notably
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE). Never inherit an enclosing CLI's
+    # policy; launch settings such as the compact window are explicit.
+    if upper.startswith("CLAUDE"):
         return True
     if upper.startswith("ANTHROPIC_"):
         return upper != "ANTHROPIC_API_KEY"
