@@ -1,7 +1,7 @@
 """Shared helper functions for command handler and mixins.
 
 Module-level utilities for time parsing, subprocess execution,
-tree-view formatting, and archive note building.
+tree-view formatting, status/progress display, and archive note building.
 """
 
 from __future__ import annotations
@@ -10,8 +10,47 @@ import asyncio
 import datetime
 import time
 
-from src.discord.embeds import STATUS_EMOJIS
 from src.models import Task, TaskStatus
+
+# ── Status and progress display ───────────────────────────────────────
+# Owned here rather than in a transport module: every consumer is the command
+# layer rendering a result payload.  They moved out of ``src/discord/embeds.py``
+# with the rest of the retired Discord embed factory (Discord-as-a-chat-extension
+# spec §9 row 12).
+
+STATUS_EMOJIS: dict[str, str] = {
+    TaskStatus.DEFINED.value: "⚪",  # white circle
+    TaskStatus.READY.value: "\U0001f535",  # blue circle
+    TaskStatus.ASSIGNED.value: "\U0001f4cb",  # clipboard
+    TaskStatus.IN_PROGRESS.value: "\U0001f7e1",  # yellow circle
+    TaskStatus.WAITING.value: "⏳",
+    TaskStatus.HIBERNATED.value: "💤",
+    TaskStatus.RESUME_PENDING.value: "🔄",
+    TaskStatus.WAITING_INPUT.value: "\U0001f4ac",  # speech balloon
+    TaskStatus.PAUSED.value: "⏸️",  # pause button
+    TaskStatus.COMPLETED.value: "\U0001f7e2",  # green circle
+    TaskStatus.FAILED.value: "\U0001f534",  # red circle
+    TaskStatus.BLOCKED.value: "⛔",  # no entry
+}
+
+
+def progress_bar(
+    completed: int,
+    total: int,
+    *,
+    width: int = 10,
+    filled: str = "█",
+    empty: str = "░",
+) -> str:
+    """Render a text-based progress bar, e.g. ``████░░░░░░ 40% (4/10)``."""
+    if total <= 0:
+        pct = 0.0
+    else:
+        pct = completed / total * 100
+    fill_count = round(pct / 100 * width)
+    bar = filled * fill_count + empty * (width - fill_count)
+    return f"{bar} {pct:.0f}% ({completed}/{total})"
+
 
 # ── Log / event time helpers ──────────────────────────────────────────
 
@@ -250,9 +289,9 @@ def _format_interval(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 # Tree-view text formatting
 # ---------------------------------------------------------------------------
-# Unicode box-drawing characters for task tree rendering.  These match the
-# constants in ``src/discord/embeds.py`` but are duplicated here so the
-# command handler stays self-contained for formatting purposes.
+# Unicode box-drawing characters for task tree rendering.  They were the
+# ``src/discord/embeds.py`` tree constants, kept local so the command handler
+# stays self-contained for formatting purposes.
 
 _TREE_BRANCH = "├── "  # Non-last child connector
 _TREE_LAST = "└── "  # Last child connector
@@ -486,10 +525,15 @@ def _format_status_summary(status_counts: dict[str, int], total: int) -> str:
         ("IN_PROGRESS", "in progress"),
         ("ASSIGNED", "assigned"),
         ("WAITING_INPUT", "waiting input"),
+        ("WAITING", "waiting"),
+        ("HIBERNATED", "hibernated"),
+        ("RESUME_PENDING", "resume pending"),
         ("PAUSED", "paused"),
         ("FAILED", "failed"),
         ("BLOCKED", "blocked"),
         ("READY", "ready"),
+        ("WAITING_ON_DELIVERY", "waiting on delivery"),
+        ("WITHHELD", "withheld"),
         ("DEFINED", "defined"),
     ]
 
@@ -513,6 +557,7 @@ def _render_tree_node(
     prefix: str,
     is_last: bool,
     dep_map: dict[str, dict] | None = None,
+    readiness_map: dict[str, dict] | None = None,
 ) -> list[str]:
     """Render a single tree node and its descendants as lines of text.
 
@@ -544,6 +589,9 @@ def _render_tree_node(
     lines: list[str] = []
     emoji = _status_emoji(task.status)
     dep_suffix = _dep_annotation(task.id, dep_map)
+    readiness = (readiness_map or {}).get(task.id, {}).get("claim_readiness", {})
+    if readiness.get("reason"):
+        dep_suffix += f" — {readiness['label']}: {readiness['reason']}"
 
     # -- Format the current node's line --------------------------------------
     if depth == 0:
@@ -580,6 +628,7 @@ def _render_tree_node(
             prefix=child_prefix,
             is_last=is_last_child,
             dep_map=dep_map,
+            readiness_map=readiness_map,
         )
         lines.extend(child_lines)
 
@@ -594,6 +643,7 @@ def _format_task_tree(
     max_depth: int = 4,
     compact: bool = False,
     dep_map: dict[str, dict] | None = None,
+    readiness_map: dict[str, dict] | None = None,
 ) -> str:
     """Format a task and its subtask tree as readable text with box-drawing chars.
 
@@ -669,6 +719,13 @@ def _format_task_tree(
     if children:
         completed, total = _count_subtree(children)
         status_counts = _count_subtree_by_status(children)
+        for task in _collect_tree_tasks(children):
+            readiness = (readiness_map or {}).get(task.id, {}).get("claim_readiness", {})
+            if task.status == TaskStatus.READY and readiness and not readiness["claimable"]:
+                status_counts["READY"] -= 1
+                key = ("WAITING_ON_DELIVERY" if readiness["state"] == "waiting_on_delivery"
+                       else "WITHHELD")
+                status_counts[key] = status_counts.get(key, 0) + 1
         summary_line = f"  {_format_status_summary(status_counts, total)}"
     else:
         _, total = 0, 0
@@ -683,6 +740,11 @@ def _format_task_tree(
         lines = [f"{emoji} **{root_task.title}** `{root_task.id}`"]
         if summary_line:
             lines.append(summary_line)
+        waits = list(dict.fromkeys(fields["claim_readiness"]["reason"]
+            for fields in (readiness_map or {}).values()
+            if fields.get("claim_readiness", {}).get("state") == "waiting_on_delivery"))
+        if waits:
+            lines.append("  Waiting on delivery: " + waits[0])
         return "\n".join(lines)
 
     # -- Expanded mode: full tree with box-drawing characters ----------------
@@ -695,6 +757,7 @@ def _format_task_tree(
             prefix="",
             is_last=True,
             dep_map=dep_map,
+            readiness_map=readiness_map,
         )
         # Insert summary line right after the root header
         if summary_line:
@@ -716,6 +779,7 @@ def _format_task_tree(
             children,
             depth=depth,
             compact=True,
+            readiness_map=readiness_map,
         )
 
     return result
@@ -754,6 +818,9 @@ def _format_task_dep_line(entry: dict) -> str:
     status = entry.get("status", "DEFINED")
     emoji = STATUS_EMOJIS.get(status, "⚪")
     lines: list[str] = [f"{emoji} #{entry['id']}: {entry['title']} [{status}]"]
+    readiness = entry.get("claim_readiness") or {}
+    if readiness.get("reason"):
+        lines.append(f"   ↳ {readiness['label']}: {readiness['reason']}")
 
     # --- depends_on (upstream) -----------------------------------------------
     depends_on: list[dict] = entry.get("depends_on", [])

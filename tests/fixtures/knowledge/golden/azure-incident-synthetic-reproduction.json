@@ -1,0 +1,170 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 4096,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-azure-incident-synthetic-reproduction",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-azure-incident-synthetic-reproduction",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-azure-incident-synthetic-reproduction:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-azure-incident-synthetic-reproduction",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence",
+      "rec-summary-prior@rev-0001:context"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-azure-incident-synthetic-reproduction",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-azure-incident-synthetic-reproduction:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "azure-incident-synthetic-reproduction",
+  "input_hashes": {
+    "budget": "add3832036e9d5753e793cb2034c7a187eabd0c64ffbbd326c88c0b19838ae07",
+    "delivery_rules": "6f0a0b9923127763f8c61d68c28c162f0f1bae8d7fefec671c4adfe238a086cc",
+    "expected": "ee811317e7dd9d94c54072f8c12c7acba1e356e63b9ca590f44ca32dff69ce10",
+    "fixture_id": "18dfa29718f5800f64beef042634ce76bc0e22084fcdee6edd63274ea3eeab0b",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "edcd6c42ad4a4212ea7c7789f705706d1a7cd627570112715d91c4f215acfae0",
+    "records": "11ecfd8e36b57aeb08b6a1d292304062fa716991be48d37d5650ec3c8af52033",
+    "scenario": "3dc59e981ab619a0df970983ca628140507a7b3d28c27355664c1e4042dd7d37",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [
+      {
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-azure-incident-synthetic-reproduction",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      },
+      {
+        "content_sha256": "f65314e21d075e2948509d2c7767be387b5086cf8ffa7b141e1f2eac382580d6",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-azure-incident-synthetic-reproduction",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-summary-prior",
+        "revision_id": "rev-0001"
+      }
+    ],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-azure-incident-synthetic-reproduction",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-azure-incident-synthetic-reproduction:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-azure-incident-synthetic-reproduction",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "Contextual evidence (synthetic fixture)\n[rec-evidence-log-retained@rev-0002:evidence] synthetic-log-evidence; unverified; current\nObserved log line: the rail rejected the schema change at step three.\n[rec-summary-prior@rev-0001:context] synthetic-agent-assertion; unverified; current\nA prior agent summary said the deploy failed at step three.\n",
+    "rendered_sha256": "0c93afa383c1338f0450cac48dde9e533600f784f234df5b2d10a002e673254c",
+    "selected": [
+      {
+        "authority": "unverified",
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "evidence": "synthetic-log-evidence",
+        "excerpt": "Observed log line: the rail rejected the schema change at step three.",
+        "freshness": "current",
+        "kind": "evidence",
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      },
+      {
+        "authority": "unverified",
+        "content_sha256": "f65314e21d075e2948509d2c7767be387b5086cf8ffa7b141e1f2eac382580d6",
+        "evidence": "synthetic-agent-assertion",
+        "excerpt": "A prior agent summary said the deploy failed at step three.",
+        "freshness": "current",
+        "kind": "context",
+        "record_id": "rec-summary-prior",
+        "revision_id": "rev-0001"
+      }
+    ],
+    "usage": {
+      "bytes": 408,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 408
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    },
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "A prior agent summary said the deploy failed at step three."
+      },
+      "freshness": "current",
+      "kind": "context",
+      "record_id": "rec-summary-prior",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Cite the retained log artifact for observed facts, label summary as assertion, preserve repair/task state outside knowledge",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

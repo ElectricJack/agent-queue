@@ -1,5 +1,11 @@
 # Switching integration modes
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Subject integration guide](hierarchical-integration-trains.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 Moving a project between AQ's delivery modes — into development mode, back out
 of it, or on to one of the optional strict modes — without losing history or
 stranding work in flight.
@@ -147,7 +153,7 @@ A blocked result lists exactly what is missing — repository configuration,
 dependencies the runtime path needs, playbook routes, and historical state the
 new mode cannot interpret
 ([`preflight.py`](../../src/integration/preflight.py),
-[`controls.py`](../../src/integration/controls.py)). Fix the named blocker and
+`controls.py` (retired)). Fix the named blocker and
 try again.
 
 For **historical** blockers only — the ones that describe state left by an
@@ -177,10 +183,12 @@ Tasks created before hierarchy mode was enabled have no reserved branch origin,
 and claiming in hierarchy mode is gated on one:
 
 ```bash
-aq integration reconcile-unmaterialized demo --expected-generation 16 --reason 'Bind pre-rollout tasks'
+aq doctor --check integration.branch_origins          # list tasks with no live origin
+aq doctor --check integration.branch_origins --fix    # backfill through a fenced mode edit
 ```
 
-That binds the safe pre-rollout tasks and reserves their origins;
+The fix re-runs the generation-fenced mode edit, which adopts published
+branches and reserves origins for absent ones;
 [`BranchMaterializationService`](../../src/integration/branch_materialization.py)
 then cuts the branches from the integration loop.
 
@@ -233,7 +241,7 @@ decide explicitly what to do with the journal first.
 
 ## Source and tests
 
-[`src/integration/controls.py`](../../src/integration/controls.py),
+`src/integration/controls.py` (retired),
 [`src/integration/development.py`](../../src/integration/development.py),
 [`src/integration/preflight.py`](../../src/integration/preflight.py),
 [`src/cli/integration.py`](../../src/cli/integration.py).
