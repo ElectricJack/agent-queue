@@ -20,6 +20,7 @@ import ProviderUsageBars from "./ProviderUsageBars";
 import { canFocusTerminal } from "../components/terminalFocus";
 import { useCompactViewport } from "../hooks/useCompactViewport";
 import { useHistoryOverlay } from "../hooks/useHistoryOverlay";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 /**
  * Reads `?openDrawer=events|gates` on route entry, opens the drawer,
@@ -131,9 +132,11 @@ function useSectionJumps() {
  */
 function useShellPreferenceControls() {
   const { prefs, reset } = useShellPreferences();
+  const prefersLight = useMediaQuery("(prefers-color-scheme: light)");
+  const theme = prefs.theme === "system" ? (prefersLight ? "light" : "dark") : prefs.theme;
   useEffect(() => {
-    document.documentElement.dataset.theme = prefs.theme;
-  }, [prefs.theme]);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
   useRegisterAction({
     id: "shell.reset-preferences",
     label: "Reset shell preferences",
