@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -14,12 +15,14 @@ from dataclasses import asdict
 from pathlib import PurePosixPath, PureWindowsPath
 
 from src.commands.helpers import (
+    STATUS_EMOJIS,
     _collect_tree_task_ids,
     _collect_tree_tasks,
     _count_subtree,
     _count_subtree_by_status,
     _format_task_tree,
     format_dependency_list,
+    progress_bar,
 )
 from src.commands.principal import matches_session_instance
 from src.database.queries.hierarchy_queries import PHASE_KEY, STANDING_PARENT_KEY, HierarchyError
@@ -28,15 +31,18 @@ from src.database.queries.task_queries import (
     TaskProjectMoveError,
     task_repository_id,
 )
-from src.discord.embeds import STATUS_EMOJIS, progress_bar
-from src.discord.notifications import classify_error
+from src.deliverables import REVIEW_TARGETS
+from src.notifications.render import classify_error
 from src.models import (
+    SUSPENDED_TASK_STATUSES,
     BLOCKING_DEP_TYPES,
     DEP_TYPE_VALUES,
     INTEGRATION_MODES,
     TASK_TYPE_VALUES,
     WORKSPACE_MODE_VALUES,
+    AgentState,
     DepType,
+    ProjectStatus,
     Task,
     TaskStatus,
     TaskType,
@@ -44,11 +50,19 @@ from src.models import (
     WorkspaceMode,
 )
 from src.review_keys import REVIEW_PROFILE_IDS, is_review_completion, reviewed_task_id
+from src.routing.filing import (
+    REFUSED_ROUTING_ARGS,
+    choice_forbidden,
+    graph_route_refusal,
+    refused_arguments,
+)
+from src.routing.sources import ROLE, UNROUTED
 from src.state_machine import (
     CyclicDependencyError,
     validate_dag_with_new_edge,
     validate_waits_for,
 )
+from src.task_graph.activity import attach_activity, load_activity, task_activity
 from src.task_names import (
     MAX_NAMING_DEPTH,
     MAX_STRUCTURAL_DEPTH,
@@ -67,7 +81,9 @@ logger = logging.getLogger(__name__)
 #: ``build_capacity_reasons`` produces still applies to the pull path: a
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
-_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent"})
+_PUSH_ONLY_REASON_CODES = frozenset({
+    "no_idle_agent", "no_compatible_agent", "project_agent_cap",
+})
 
 #: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
 #: resolver (graph-visibility A2).  Deliberately **not**
@@ -80,6 +96,15 @@ STANDING_PARENT_LOCK_NAMESPACE = 0x4151504B
 _STANDING_PARENT_LOCK_BUDGET_SECONDS = 10.0
 #: Upper bound of the jittered sleep between attempts.
 _STANDING_PARENT_LOCK_POLL_SECONDS = 0.05
+
+#: Non-IN_PROGRESS statuses from which ``aq task restart`` re-establishes an
+#: integration branch reservation before the task becomes READY.  Both are
+#: where a stopped writer leaves its task: an integration repair delegate
+#: (``src/integration/repair.py`` dispatches PAUSED, a died session's claim
+#: reconciliation lands BLOCKED), and a managed producer whose writer was
+#: stopped.  A READY task already holds the frontier; a terminal one is not
+#: restartable work at all.
+_RESTART_RESERVATION_STATUSES = frozenset({TaskStatus.BLOCKED, TaskStatus.PAUSED})
 
 
 class _StandingParentBusy(Exception):
@@ -136,36 +161,27 @@ def parent_key_format_refusal(parent_key: str) -> dict | None:
     }
 
 
-def provider_intent_refusal(value) -> dict | None:
-    """Refuse a ``provider_intent`` outside the three values, or ``None``."""
-    from src.providers.intent import intent_error
+def _role_creator() -> bool:
+    """Whether the caller may create a role task (mandatory-routing spec §4, D3).
 
-    error = intent_error(value)
-    if error is None:
-        return None
-    return {"success": False, "code": "provider_intent.invalid", "error": error}
-
-
-def pin_not_permitted_refusal(scope: dict | None, field: str) -> dict | None:
-    """Refuse a pin from a task-scoped worker token (provider-failover D9).
-
-    ``pinned`` is a human's statement.  It is accepted from human principals,
-    elevated supervisor sessions, vault formulas and reviewed playbooks --
-    every caller except a non-elevated session, which is what a pool or task
-    worker's token is.  *field* names the argument that asked for the pin.
+    A ``SERVICE`` or ``PLAYBOOK`` principal, or an in-process caller that
+    runs under no principal at all (the orchestrator's own reconcilers).
     """
-    scope = scope or {}
-    if scope.get("kind") != "session" or scope.get("elevated"):
-        return None
-    return {
-        "success": False,
-        "code": "provider_intent.pin_not_permitted",
-        "error": (
-            f"'{field}' pins the task to its provider, which only a human, a supervisor, "
-            "a vault formula or a reviewed playbook may do; a worker token may name a "
-            "profile (a preference) but not pin it"
-        ),
-    }
+    from src.commands.principal import PrincipalKind, current_principal
+
+    principal = current_principal()
+    return principal is None or principal.kind in (PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK)
+
+
+def _filing_refusal(command: str, args: dict) -> dict | None:
+    """The routing refusal for a filing handler (mandatory-routing spec §5.1).
+
+    ``CommandHandler.execute`` refuses these arguments before any handler
+    runs; an in-process caller reaches the handler directly, so the handler
+    repeats the check.  Only a role creator's role ``profile_id`` passes.
+    """
+    refused = refused_arguments(command, args, role_creator=_role_creator())
+    return choice_forbidden(command, refused) if refused else None
 
 
 def provider_intent_actor() -> str:
@@ -200,7 +216,7 @@ def _integration_cleanup_reason(blocker: dict, task_id: str):
                 f"{blocker['handoff_state']} (session {blocker['session_id'] or 'none'}, "
                 f"workspace {blocker['workspace_id'] or 'none'}); the checkout is preserved and "
                 "is not released automatically. It is retried by the owner-recovery sweep every "
-                "5 min when `integration.owner_recovery_sweep` is on. Inspect it for unsent work, "
+                "5 min unless `integration.owner_recovery_sweep` is off. Inspect it for unsent work, "
                 f"then run `aq integration release-owner --task-id {task_id}` now"
             ),
             ref=blocker["ref"],
@@ -231,6 +247,9 @@ def _recovery_incident_reason(incident: dict):
 
     owner = incident.get("owner") or {}
     parts = [f"open recovery incident for {incident.get('reason')}"]
+    identity = incident.get("identity_reason")
+    if identity and identity != incident.get("reason"):
+        parts[0] += f" (first diagnosed as {identity})"
     if owner.get("kind") == "integration_operation":
         parts.append(
             f"owned by integration operation {owner.get('operation_id')} "
@@ -274,7 +293,7 @@ def _normalize_label_list(raw) -> list[str]:
     return out
 
 
-_DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration"})
+_DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration", "review"})
 
 
 def _path_target_error(target: str) -> str | None:
@@ -300,6 +319,8 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
     A ``file`` target must be one repo-relative file path. A ``test`` target
     may instead be a command line (which close-time evidence matches against
     ``--test``), but a path-shaped test target must also be repo-relative.
+    A ``review`` target names the kind of document review the task submits
+    (``spec``, ``plan``, ``other``) or ``any``.
     """
     if raw is None:
         return [], None
@@ -323,6 +344,11 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
             )
         if not target:
             return [], f"deliverables[{index}].target is required"
+        if kind == "review" and target not in REVIEW_TARGETS:
+            return [], (
+                f"deliverables[{index}].target must be 'spec', 'plan', 'other' or 'any' "
+                "for a [review] item: the kind of document review the task submits"
+            )
         path_only = kind == "file" or (kind == "test" and not any(ch.isspace() for ch in target))
         if path_only and (why := _path_target_error(target)):
             shape = (
@@ -389,10 +415,14 @@ _PARENT_SCOPE_ERROR = (
     "parent must be the held task, one of its descendants, or the held task's own parent"
 )
 
-#: ``task_metadata`` key naming the worker profile that filed a task without
-#: an explicit ``profile_id``.  Such a task is routed by the assignment
-#: playbook rather than pinned to its filer, and ``task_route`` reads this
-#: marker to keep it on an ordinary worker rung.
+#: How far back ``aq task explain`` looks for the router's run for a task.
+#: The cascade re-asks the router every two minutes while a task is unrouted,
+#: so an older run is not the router's current answer.
+_ROUTER_RUN_LOOKBACK_SECONDS = 6 * 3600.0
+
+#: ``task_metadata`` key naming the worker profile that filed a task: audit
+#: of who filed it.  The router routes it like any other filing, only ever to
+#: a worker candidate (mandatory-routing spec §5.2).
 FILED_BY_PROFILE_META_KEY = "filed_by_profile_id"
 
 
@@ -612,6 +642,17 @@ class TaskCommandsMixin:
             ``depends_on`` and ``blocks`` lists and include a pre-formatted
             ``formatted`` key with the dependency-aware text representation.
         """
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "list_tasks", args)
+        context = await self._fidelity_read_context("list_tasks", args)
+        if context is not None:
+            if "error" in context:
+                return context
+            return await self._fidelity_list_tasks(args, context)
+
         # Normalize show_all → include_completed so all downstream helpers
         # only need to check include_completed.
         if args.get("show_all") and not args.get("include_completed"):
@@ -697,6 +738,10 @@ class TaskCommandsMixin:
         cap = max(0, 200 - len(active))
         capped_tasks = active + finished[:cap]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
+        await attach_activity(self.db, task_dicts)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -765,9 +810,12 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return d
+            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}
 
-        # Group by project_id for readability.
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(t) for t in tasks])
+        activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
             by_project.setdefault(t.project_id, []).append(_entry(t))
@@ -781,6 +829,7 @@ class TaskCommandsMixin:
         flat = [_entry(t, include_project=True) for t in active_tasks + finished_tasks[:cap]]
 
         return {
+            "success": True,
             "by_project": by_project,
             "tasks": flat,
             "total": len(tasks),
@@ -950,6 +999,16 @@ class TaskCommandsMixin:
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for root, children in raw_trees for task in [root, *_collect_tree_tasks(children)]])
+        for entry, (root, children) in zip(trees, raw_trees):
+            entry["root"].update(readiness.get(root.id, {}))
+            entry["formatted"] = _format_task_tree(
+                root, children, compact=compact, readiness_map=readiness,
+            )
+        await attach_activity(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
             root_dicts = [entry["root"] for entry in trees]
@@ -972,6 +1031,7 @@ class TaskCommandsMixin:
                             children,
                             compact=False,
                             dep_map=dep_map,
+                            readiness_map=readiness,
                         )
 
         result: dict = {
@@ -988,24 +1048,35 @@ class TaskCommandsMixin:
     # -- shared helpers ------------------------------------------------------
 
     async def _emit_task_graph_change(
-        self, event_type: str, task: Task, *, project_id: str | None = None
+        self, event_type: str, task: Task, *, project_id: str | None = None, **details
     ) -> None:
         """Publish a committed graph edit; subscriber failures cannot undo it.
 
-        Persist the small identity-only audit row for reconnect replay. The bus
+        Persist the small identity/status audit row for reconnect replay. The bus
         uses the usual task base fields (never description or command arguments).
         This intentionally does not emit task.created, which triggers routing.
         """
         pid = project_id or task.project_id
         seq = None
+        payload = None
+        if event_type == "task.updated":
+            details["status"] = task.status.value
+            payload = json.dumps({"status": task.status.value})
+            if details.get("edited_fields"):
+                payload = json.dumps({"status": task.status.value,
+                                      "edited_fields": details["edited_fields"]})
         try:
-            seq = await self.db.log_event(event_type, project_id=pid, task_id=task.id)
+            seq = await self.db.log_event(
+                event_type, project_id=pid, task_id=task.id, payload=payload,
+            )
         except Exception:
             logger.warning(
                 "Could not persist graph change %s for %s", event_type, task.id, exc_info=True
             )
         try:
-            await self.orchestrator._emit_task_event(event_type, task, project_id=pid, seq=seq)
+            await self.orchestrator._emit_task_event(
+                event_type, task, project_id=pid, seq=seq, **details,
+            )
         except Exception:
             logger.warning(
                 "Could not publish graph change %s for %s", event_type, task.id, exc_info=True
@@ -1217,11 +1288,15 @@ class TaskCommandsMixin:
 
         tree_data = await self.db.get_task_tree(task_id, max_depth=max_depth)
         if tree_data is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         root_task: Task = tree_data["task"]
         children: list[dict] = tree_data.get("children", [])
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for task in [root_task, *_collect_tree_tasks(children)]])
         completed, subtask_total = _count_subtree(children)
         status_counts = _count_subtree_by_status(children)
 
@@ -1240,10 +1315,12 @@ class TaskCommandsMixin:
             compact=compact,
             max_depth=max_depth,
             dep_map=dep_map,
+            readiness_map=readiness,
         )
 
-        result: dict = {
-            "root": self._task_to_dict(root_task),
+        result: dict = {"success": True,
+            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id),
+                     **readiness.get(root_task.id, {})},
             "formatted": formatted,
             "subtask_completed": completed,
             "subtask_total": subtask_total,
@@ -1260,10 +1337,10 @@ class TaskCommandsMixin:
         """Direct or recursive children of a task.  Backs ``aq task children``."""
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         out_of_scope = self._assert_task_in_scope(task)
         if out_of_scope:
             return out_of_scope
@@ -1274,26 +1351,25 @@ class TaskCommandsMixin:
             limit=args.get("limit"),
             offset=int(args.get("offset") or 0),
         )
-        return {
-            "success": True,
-            "task_id": task_id,
-            "count": len(children),
-            "children": [self._task_to_dict(t) for t in children],
-        }
+        from src.task_graph.readiness import attach_readiness
+
+        rows = [self._task_to_dict(t) for t in children]
+        await attach_readiness(self.db, rows)
+        return {"success": True, "task_id": task_id, "count": len(rows), "children": rows}
 
     async def _cmd_task_progress(self, args: dict) -> dict:
         """Computed group progress (counts, waves, max parallelism).  Backs ``aq task progress``."""
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         out_of_scope = self._assert_task_in_scope(task)
         if out_of_scope:
             return out_of_scope
         progress = await self.db.get_group_progress(task_id)
-        return {"success": True, **progress}
+        return {"success": True, **progress, **await task_activity(self.db, task_id)}
 
     async def _cmd_reparent_task(self, args: dict) -> dict:
         """Move a task under another container, or to root.  Backs ``aq task reparent``.
@@ -1313,12 +1389,12 @@ class TaskCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if bool(args.get("root")) == bool(args.get("parent_id")):
-            return {"error": "exactly one of parent_id or root is required"}
+            return {"success": False, "error": "exactly one of parent_id or root is required"}
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         new_parent = None if args.get("root") else args["parent_id"]
         old_parent = task.parent_task_id
         gate_id: str | None = None
@@ -1343,6 +1419,7 @@ class TaskCommandsMixin:
                     "code": "hierarchy.reparent_out_of_scope",
                     "error": _REPARENT_SCOPE_ERROR,
                 }
+        delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
         try:
             async with self.db.immediate() as conn:
                 provenance: str | None = None
@@ -1352,10 +1429,26 @@ class TaskCommandsMixin:
                     )
                     if refusal is not None:
                         return refusal
-                result = await self.db.set_parent(
-                    task_id, new_parent, conn=conn,
-                    reject_live_parent=new_parent != held_id,
-                )
+                from sqlalchemy import select
+                from src.database.tables import projects, tasks
+
+                await self.db.lock_hierarchy_project(conn, task.project_id)
+                mode = await conn.scalar(select(projects.c.hierarchical_integration_mode).where(
+                    projects.c.id == task.project_id,
+                ))
+                old_parent = await conn.scalar(select(tasks.c.parent_task_id).where(
+                    tasks.c.id == task_id,
+                ))
+                if mode in {"hierarchy", "train"} and old_parent != new_parent:
+                    _, result = await self._hierarchy_integration_service().reparent_on(
+                        conn, task_id, new_parent, delivery=delivery,
+                        reject_live_parent=new_parent != held_id,
+                    )
+                else:
+                    result = await self.db.set_parent(
+                        task_id, new_parent, conn=conn,
+                        reject_live_parent=new_parent != held_id,
+                    )
                 if provenance is not None and provenance != new_parent:
                     # The filing's only provenance was the parent-child edge
                     # it just lost (a filing under the held task writes no
@@ -1396,7 +1489,7 @@ class TaskCommandsMixin:
                     )
                     result.flipped |= gate_flipped
         except HierarchyError as exc:
-            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+            return {"success": False, "error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
@@ -1455,7 +1548,7 @@ class TaskCommandsMixin:
                 "error": f"held task '{held_id}' no longer exists",
             }, None
         if task_id not in locked:
-            return {"error": f"Task '{task_id}' not found", "code": "hierarchy.not_found"}, None
+            return {"success": False, "error": f"Task '{task_id}' not found", "code": "hierarchy.not_found"}, None
         held_parent_id = locked[held_id]
         allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=conn))
         moved = await self.db.get_task(task_id)
@@ -1468,6 +1561,7 @@ class TaskCommandsMixin:
         )
         claimed = moved is None or moved.status in (
             TaskStatus.IN_PROGRESS,
+            *SUSPENDED_TASK_STATUSES,
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
         ) or moved.assigned_agent_id is not None
@@ -1793,7 +1887,7 @@ class TaskCommandsMixin:
                 )
             if filed_by_profile_id is not None:
                 # Same transaction as the row: the router may see the task
-                # the moment it commits, and ``task_route`` reads this bound.
+                # the moment it commits.
                 await self.db._upsert_meta(
                     task.id, FILED_BY_PROFILE_META_KEY, filed_by_profile_id, conn=conn
                 )
@@ -1836,156 +1930,6 @@ class TaskCommandsMixin:
         from src.profiles.task_execution import task_execution_profile_error
 
         return task_execution_profile_error(profile)
-
-    async def _worker_filed_route_error(self, task, profile) -> str | None:
-        """Keep a worker's unpinned filing on an ordinary worker rung.
-
-        A worker that names no profile is routed by the assignment playbook
-        instead of inheriting its own route, so the filer no longer bounds the
-        child by pinning it.  The chooser only sees ordinary worker rows, but
-        its answer is model output shaped by the task text a worker wrote;
-        this is the bound that holds regardless.  A strict ``child ⊆ filer``
-        check cannot be it: worker rungs of different harnesses carry
-        disjoint command lists, so it would make whole providers unreachable
-        from each other and leave a reviewer's filings with no route at all.
-
-        Only automatic and worker callers are bound.  The operator, daemon
-        services and an elevated supervisor may still route anywhere a task
-        may run.
-        """
-        from src.commands.principal import current_principal
-        from src.commands.routing_commands import _worker_profile
-
-        if _worker_profile(profile):
-            return None
-        principal = current_principal()
-        if principal is None or not principal.enforced or principal.elevated:
-            return None
-        filed_by = await self.db.get_task_meta(task.id, FILED_BY_PROFILE_META_KEY)
-        if filed_by is None:
-            return None
-        return (
-            f"task '{task.id}' was filed by a worker ({filed_by or 'unknown profile'}) "
-            f"without a profile and may only be routed to an ordinary worker profile; "
-            f"'{profile.id}' is not one"
-        )
-
-    async def _supervisor_default_worker_profile(self, project):
-        """Resolve the worker route for a supervisor's omitted profile."""
-        candidate_id = project.default_profile_id
-        if candidate_id:
-            candidate = await self.db.get_profile(candidate_id)
-            if candidate is None:
-                return None, (
-                    f"project default profile '{candidate_id}' is not defined; configure an "
-                    "eligible worker default before creating work"
-                )
-            if error := self._task_execution_profile_error(candidate):
-                return None, f"project default is invalid: {error}"
-            if not getattr(candidate, "enabled", True):
-                return None, (
-                    f"project default profile '{candidate_id}' is disabled; enable it or select "
-                    "an eligible worker default"
-                )
-            return candidate, None
-
-        from src.profiles.catalog import active_catalog_profile_ids
-        from src.profiles.default_selection import select_default_profile_id
-
-        candidate_id = select_default_profile_id(
-            await self.db.list_profiles(),
-            eligible_profile_ids=active_catalog_profile_ids(self.config.data_dir),
-        )
-        if not candidate_id:
-            return None, (
-                "supervisor cannot create executable work without a configured eligible worker "
-                "default; set the project's default_profile_id or install an active worker profile"
-            )
-        candidate = await self.db.get_profile(candidate_id)
-        if candidate is None or (error := self._task_execution_profile_error(candidate)):
-            return None, error or f"system fallback profile '{candidate_id}' is not defined"
-        return candidate, None
-
-    @staticmethod
-    def _profile_runs_class(profile, class_id: str) -> bool:
-        """Whether *profile*'s own lane already runs *class_id*.
-
-        A profile that states no ``default_class`` has no lane of its own and
-        agrees with any explicit class, as it always has.
-        """
-        default_class = str(getattr(profile, "default_class", "") or "").strip()
-        return not default_class or default_class == class_id
-
-    async def _eligible_worker_profiles(self) -> list:
-        """Enabled profiles that may execute ordinary queued work."""
-        from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
-        from src.profiles.default_selection import SPECIAL_PURPOSE_PROFILE_IDS
-
-        data_dir = getattr(self.config, "data_dir", None)
-        eligible = (
-            active_catalog_profile_ids(data_dir) if isinstance(data_dir, (str, os.PathLike))
-            else None
-        )
-        # Same host-eligibility rule as default selection: a catalog worker
-        # whose provider failed its probe is not a route.
-        ineligible = (
-            {entry.id for entry in shipped_profile_catalog()} - eligible
-            if eligible is not None else set()
-        )
-        return [
-            profile for profile in await self.db.list_profiles()
-            if getattr(profile, "enabled", True)
-            and profile.id not in SPECIAL_PURPOSE_PROFILE_IDS
-            and profile.id not in ineligible
-            and not profile.id.startswith("project:")
-            and self._task_execution_profile_error(profile) is None
-        ]
-
-    async def _resolve_class_route(self, class_id, implicit):
-        """Pick the worker for an explicit class the implicit route does not run.
-
-        *implicit* is the profile creation would otherwise use without being
-        asked for it (project default, supervisor fallback, inherited caller
-        profile).  Returns ``(profile, error)``: ``(None, None)`` when the
-        implicit route already runs *class_id* and should be kept.
-
-        Candidates are enabled worker profiles whose ``default_class`` is the
-        class and whose harness has a model for it, ranked ``lifecycle: pool``
-        first (a pool is what claims READY work), then the implicit route's
-        provider, then Claude, then id.  With no candidate the create fails:
-        storing the class on the implicit route would hand the task to a
-        worker of another tier or provider.
-        """
-        if not class_id or implicit is None or self._profile_runs_class(implicit, class_id):
-            return None, None
-        preferred = _harness_provider(implicit.harness)
-        workers = await self._eligible_worker_profiles()
-        matches = [
-            profile for profile in workers
-            if str(profile.default_class or "").strip() == class_id
-            and self._validate_routing_class(class_id, profile) is None
-        ]
-        if matches:
-            def rank(profile):
-                provider = _harness_provider(profile.harness)
-                return (
-                    profile.lifecycle != "pool",
-                    bool(preferred) and provider != preferred,
-                    provider != "anthropic",
-                    profile.id,
-                )
-
-            return min(matches, key=rank), None
-        available = sorted({
-            str(profile.default_class).strip()
-            for profile in workers if str(profile.default_class or "").strip()
-        })
-        return None, (
-            f"no enabled worker profile runs intelligence class '{class_id}', and the "
-            f"implicit route '{implicit.id}' runs '{implicit.default_class}'; refusing to "
-            "create a task whose profile and class disagree. Pass profile_id explicitly or "
-            f"choose a class an enabled worker runs: {', '.join(available) or '(none)'}"
-        )
 
     # ----- the keyed standing parent (graph-visibility A2) -----------------
     #
@@ -2206,7 +2150,7 @@ class TaskCommandsMixin:
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
         unsupported = await self._parent_key_mode_refusal(str(project_id))
         if unsupported is not None:
             return unsupported
@@ -2238,14 +2182,17 @@ class TaskCommandsMixin:
             }
 
     async def _create_task(self, args: dict) -> dict:
-        # Internal command composition can add durable rows that must commit
-        # with the task itself (phases are the current user).  This hook is
-        # never part of a public command schema: only an in-process command
-        # can supply a callable, and a non-callable value is refused rather
-        # than silently changing a task creation's atomicity.
+        # Internal hooks commit source-owned rows with the task (phases and
+        # review feedback). Public schemas cannot supply callables; refuse
+        # non-callables rather than silently changing creation's atomicity.
+        before_create_on = args.pop("_before_create_on", None)
+        if before_create_on is not None and not callable(before_create_on):
+            return {"success": False, "error": "_before_create_on is internal-only"}
         after_create_on = args.pop("_after_create_on", None)
         if after_create_on is not None and not callable(after_create_on):
             return {"success": False, "error": "_after_create_on is internal-only"}
+        if before_create_on is not None and after_create_on is None:
+            return {"success": False, "error": "A pre-create hook requires its atomic receipt writer"}
         if args.get("container"):
             scope = self._current_scope or {}
             if scope.get("kind") == "session" and not scope.get("elevated"):
@@ -2286,20 +2233,15 @@ class TaskCommandsMixin:
                 "success": False,
                 "error": "--root and parent_id are mutually exclusive",
             }
-        # Provider intent (provider-failover D9).  Validated and permission-
-        # checked before anything else reads the scope, so a worker's pin is
-        # refused however the rest of the request would have gone.
-        requested_intent = args.get("provider_intent")
-        pin_requested = bool(args.get("pin"))
-        refusal = provider_intent_refusal(requested_intent)
+        # A route is never chosen at filing (mandatory-routing spec §5.1).
+        # ``CommandHandler.execute`` refuses the routing arguments before any
+        # handler runs; this is the same refusal for an in-process caller,
+        # which reaches the handler directly.  The one profile admitted is a
+        # role profile named by a role creator (spec §4, D3).
+        refusal = _filing_refusal("create_task", args)
         if refusal is not None:
             return refusal
-        if pin_requested or requested_intent == "pinned":
-            refusal = pin_not_permitted_refusal(
-                self._current_scope, "pin" if pin_requested else "provider_intent"
-            )
-            if refusal is not None:
-                return refusal
+        profile_id = args.get("profile_id") or None
 
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
@@ -2452,16 +2394,19 @@ class TaskCommandsMixin:
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
         project = await self.db.get_project(project_id)
         if project is None:
-            return {"error": f"Project '{project_id}' not found"}
-        hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
+        hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"} or (
+            project.hierarchical_integration_mode == "development"
+            and bool(args.get("_integration_root_ref"))
+        )
         if hierarchy_enabled and not project.integration_repository_id:
-            return {"error": "hierarchical integration requires a designated repository"}
+            return {"success": False, "error": "hierarchical integration requires a designated repository"}
         deliverables, deliverables_error = normalize_deliverables(args.get("deliverables"))
         if deliverables_error:
-            return {"error": deliverables_error}
+            return {"success": False, "error": deliverables_error}
         # ``task_id`` is generated *after* parent_id validation below so
         # hierarchical child ids ({parent}.{n}) can be wired.  Placeholder
         # here keeps the downstream code readable.
@@ -2470,6 +2415,7 @@ class TaskCommandsMixin:
         integration_mode = args.get("integration_mode")
         if integration_mode is not None and integration_mode not in INTEGRATION_MODES:
             return {
+                "success": False,
                 "error": f"Invalid integration_mode '{integration_mode}'. "
                 f"Allowed: {', '.join(sorted(INTEGRATION_MODES))} (omit to inherit "
                 "the project/system policy)"
@@ -2477,134 +2423,98 @@ class TaskCommandsMixin:
         # Resolve optional task_type from string to enum.
         raw_task_type = args.get("task_type")
         task_type: TaskType | None = None
+        if raw_task_type in {"promotion", "backmerge"}:
+            return {"success": False, "error": "Promotion and backmerge tasks are daemon-authored."}
         if raw_task_type:
             if raw_task_type in TASK_TYPE_VALUES:
                 task_type = TaskType(raw_task_type)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid task_type '{raw_task_type}'. "
                     f"Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"
                 }
-        # ----- Profile resolution + capability inheritance ----------------
-        # When the calling context is sandboxed (the playbook runner / a
-        # task adapter set ``self._caller_profile_id``), tasks created
-        # without an explicit ``profile_id`` inherit the caller's profile.
-        # This preserves the capability sandbox by default — a sandboxed
-        # playbook delegating work doesn't accidentally hand the child
-        # task broader permissions than itself.
+        # ----- Routing: hints, never a resolved route ---------------------
+        # Creation does not choose a worker route (mandatory-routing spec
+        # §1-§2, §5.3).  A filer gives hints — an intelligence class, stored
+        # as ``class_hint``, and a kind (``task_type``) — and the project's
+        # bound routing playbook later writes ``profile_id`` and
+        # ``intelligence_class`` (``task_route_apply``).  So a task created
+        # without a profile is stored ``unrouted``: no profile, no class, and
+        # the class the filer gave as its hint.  Nothing is inherited from the
+        # caller, the supervisor or the project default, and no class is
+        # matched to a profile here.
         #
-        # Worker-filed work (``filing_session``) is the exception: the
-        # filer's profile is its *execution route*, not just a bound, and
-        # inheriting it pinned every finding to whatever rung discovered it —
-        # a Fable design worker's bug fixes all ran on Fable.  Such a filing
-        # carries no profile, skips the project-default shortcut, and is
-        # routed by the assignment playbook like any unrouted task.  The
-        # filer's profile is recorded as ``filed_by_profile_id`` and
-        # ``task_route`` keeps the child on an ordinary worker rung
-        # (:func:`_worker_filed_route_error`).
+        # The one caller that still names a profile is a ``SERVICE`` or
+        # ``PLAYBOOK`` principal (or an in-process internal caller) naming a
+        # role profile — ``triage``, ``spec-ingest``, ``reviewer``,
+        # ``final-reviewer``; every other profile was refused above.  A role
+        # task keeps its stage profile with ``route_source='role'`` and runs
+        # the role profile's own class (spec §4, D3).
         #
-        # When ``profile_id`` IS set explicitly, we require it to be a
-        # subset of the caller's capabilities (no upward escalation):
-        # ``child.allowed_tools ⊆ parent.allowed_tools`` AND
-        # ``child.mcp_servers ⊆ parent.mcp_servers``.  This blocks the
-        # confused-deputy attack where prompt-injected text in a
-        # sandboxed playbook says "create a task with profile=admin and
-        # description=`rm -rf`".
-        #
-        # **v1 gap — recursive task→child-task escalation — CLOSED** by
-        # Playbook V2 Package 0 (§1.4, §3.9).  It used to read: when
-        # ``create_task`` is invoked by a task agent over HTTP/MCP there is
-        # no per-task identity on the request, so ``_caller_profile_id`` is
-        # unset and this check never fires.  The stated fallback — the
-        # harness ``--allowedTools`` flag — never applied either, because AQ
-        # command names were dropped from that flag entirely.
-        #
-        # ``_caller_profile_id`` is now a shim over the request-local
+        # A named role profile is still bounded by the caller's capabilities
+        # (no upward escalation): ``child.allowed_tools ⊆
+        # parent.allowed_tools`` AND ``child.mcp_servers ⊆
+        # parent.mcp_servers``.  This blocks the confused-deputy attack where
+        # prompt-injected text in a sandboxed playbook says "create a task
+        # with profile=admin and description=`rm -rf`".
+        # ``_caller_profile_id`` is a shim over the request-local
         # ``ExecutionPrincipal``, which ``CommandHandler.execute`` derives
-        # from the *session row* keyed by the token's ``session_id``.  Every
-        # real tmux session therefore arrives with a resolved profile, and
-        # the subset check below fires on the path that used to bypass it.
-        # See ``docs/specs/design/sandboxed-playbooks.md`` and
-        # ``docs/superpowers/plans/2026-09-01-playbook-v2-phase0-security.md``.
-        profile_id = args.get("profile_id")
+        # from the *session row* keyed by the token's ``session_id``; see
+        # ``docs/specs/design/sandboxed-playbooks.md``.
         caller_profile_id = getattr(self, "_caller_profile_id", None)
         caller_profile = None
         # Both fail-closed branches below are conditioned on ``profile_id``
-        # being **explicitly requested**.  The refusal exists to stop a grant
-        # nobody can bound: without a resolved parent policy there is no
-        # subset to check a named child profile against.  A caller that names
-        # no profile is asking for no grant, so there is nothing to bound and
-        # nothing to widen — it inherits whatever it would have inherited
-        # before this package, which for an unresolvable caller is nothing.
-        #
-        # Refusing that case too would delete a *pre-existing* capability
-        # rather than close a gap: a worker filing discovered work
-        # (``aq task create`` with no ``--profile``) reached this code with
-        # ``caller_profile_id is None`` before Package 0, because
-        # ``_caller_profile_id`` was only ever set by the playbook runner.
-        # Now that the shim resolves it from the session row, an unresolvable
-        # profile row would newly strand every such filing — the exact
-        # fleet-stranding outcome ``audit`` mode exists to prevent (§3.6).
-        # Under ``enforce`` the question does not arise: the dispatch gate
-        # denies an unresolved principal before ``create_task`` runs at all
+        # being **explicitly requested**: the refusal stops a grant nobody can
+        # bound.  A caller that names no profile asks for no grant, so there
+        # is nothing to bound.  Under ``enforce`` the dispatch gate denies an
+        # unresolved principal before ``create_task`` runs at all
         # (``tests/test_delegation_no_widening.py::TestFailClosed``).
         if caller_profile_id is None:
-            # Fail closed: an enforced principal that could not resolve a
-            # profile must not be able to delegate at all.  A trusted local
-            # or service caller has no profile by design and is unaffected.
             from src.commands.principal import current_principal
 
             principal = current_principal()
             if principal is not None and principal.enforced and profile_id:
-                return {"error": "delegation refused: caller has no resolved profile"}
-        if caller_profile_id:
+                return {"success": False, "error": "delegation refused: caller has no resolved profile"}
+        if caller_profile_id and profile_id:
             caller_profile = await self.db.get_profile(caller_profile_id)
-            if caller_profile is None and profile_id:
+            if caller_profile is None:
                 # Caller profile is gone — fail closed.  Leaks of stale
                 # caller_profile_id mid-run shouldn't widen the child's
                 # scope; refuse the create until the situation is sane.
                 return {
+                    "success": False,
                     "error": f"Caller profile '{caller_profile_id}' not "
                     "found — refusing to create task without a resolved "
                     "capability bound."
                 }
-            if caller_profile is None:
-                logger.warning(
-                    "delegation_unbounded_shadow cmd=create_task profile=%s "
-                    "reason=caller-profile-not-found; child task inherits no "
-                    "profile",
-                    caller_profile_id,
-                )
 
-        # A worker names its child's route only with an explicit profile; the
-        # caller's profile still bounds that choice (checked below), but it
-        # never becomes the route or the provider a class is validated for.
-        profile = caller_profile if filing_session is None else None
-        project_default_profile = None
+        profile = None
         class_id = args.get("intelligence_class")
-        # An unknown class must not steer profile selection below.
+        # An unknown class is refused, hint or not: the router ignores a class
+        # missing from its policy, so a typo would silently lose the hint.
         if class_id is not None and (class_error := self._validate_routing_class(class_id)):
             return {"success": False, "error": class_error}
-        # The supervisor is the control plane: it routes work onto worker
-        # lanes rather than delegating its own capabilities, so the subset
-        # check that bounds a worker's or playbook's delegation does not apply
-        # to it.  ``_task_execution_profile_error`` still refuses the
-        # supervisor profile itself as a route.
-        caller_is_control_plane = (
-            caller_profile is not None
-            and self._task_execution_profile_error(caller_profile) is not None
-        )
-        # Which rule chose the route, reported as ``profile_source``.  Every
-        # rule below settles profile and class *before* the row is written, so
-        # a READY task is never claimable on a lane that runs another class.
+        # Which rule chose the route, reported as ``profile_source``:
+        # ``role``, and absent for an unrouted task.
         profile_source: str | None = None
+        route_source: str | None = None
+        stored_class: str | None = None
         filed_by_profile_id: str | None = None
         if profile_id:
             profile = await self.db.get_profile(profile_id)
             if not profile:
-                return {"error": f"Profile '{profile_id}' not found"}
+                return {"success": False, "error": f"Profile '{profile_id}' not found"}
             if error := self._task_execution_profile_error(profile):
-                return {"error": error}
+                return {"success": False, "error": error}
+            # The supervisor is the control plane: the subset check that
+            # bounds a worker's or playbook's delegation does not apply to it.
+            # ``_task_execution_profile_error`` still refuses the supervisor
+            # profile itself as a route.
+            caller_is_control_plane = (
+                caller_profile is not None
+                and self._task_execution_profile_error(caller_profile) is not None
+            )
             if (
                 caller_profile is not None
                 and not caller_is_control_plane
@@ -2613,106 +2523,30 @@ class TaskCommandsMixin:
                 escalation = _check_capability_escalation(caller_profile, profile)
                 if escalation:
                     return {
+                        "success": False,
                         "error": (
                             f"Capability escalation rejected: child profile "
                             f"'{profile.id}' is not a subset of caller profile "
                             f"'{caller_profile.id}'. {escalation}"
                         )
                     }
-            profile_source = "explicit"
-        elif caller_is_control_plane:
-            profile, error = await self._supervisor_default_worker_profile(project)
-            if error:
-                return {"error": error}
-            profile_source = "project_default"
-            routed, error = await self._resolve_class_route(class_id, profile)
-            if error:
-                return {"success": False, "error": error}
-            if routed is not None:
-                profile, profile_source = routed, "class_match"
-            profile_id = profile.id
-        elif caller_profile is not None and filing_session is None:
-            # Default-inherit so the child cannot exceed the caller.  A
-            # worker's filing is routed instead (see the block comment above).
-            profile_id = caller_profile.id
-            profile_source = "inherited"
-            routed, error = await self._resolve_class_route(class_id, caller_profile)
-            if error:
-                return {"success": False, "error": error}
-            if routed is not None:
-                # A class match is a delegation the caller did not inherit, so
-                # it is bounded exactly like an explicitly named profile.
-                escalation = _check_capability_escalation(caller_profile, routed)
-                if escalation:
-                    return {
-                        "error": (
-                            f"Capability escalation rejected: child profile '{routed.id}' "
-                            f"is not a subset of caller profile '{caller_profile.id}'. "
-                            f"{escalation}"
-                        )
-                    }
-                profile, profile_id, profile_source = routed, routed.id, "class_match"
-        elif project.default_profile_id and filing_session is None:
-            # A persisted default normally remains implicit on the task row,
-            # but it is still an execution route. Validate stale/misconfigured
-            # defaults before creating a READY row that no worker may run.
-            default_profile = await self.db.get_profile(project.default_profile_id)
-            if default_profile is None:
-                return {
-                    "error": (
-                        f"project default profile '{project.default_profile_id}' is not defined; "
-                        "configure an eligible worker default before creating work"
-                    )
-                }
-            if error := self._task_execution_profile_error(default_profile):
-                return {"error": f"project default is invalid: {error}"}
-            if not getattr(default_profile, "enabled", True):
-                return {
-                    "error": (
-                        f"project default profile '{project.default_profile_id}' is disabled; "
-                        "enable it or select an eligible worker default before creating work"
-                    )
-                }
-            project_default_profile = default_profile
-            profile_source = "project_default"
-            routed, error = await self._resolve_class_route(class_id, default_profile)
-            if error:
-                return {"success": False, "error": error}
-            if routed is not None:
-                # Pin the matched lane on the row: a NULL profile is claimed by
-                # the project default's pool, which runs another class.
-                profile, profile_id, profile_source = routed, routed.id, "class_match"
-                project_default_profile = None
+            route_source = ROLE
+            profile_source = ROLE
+            stored_class = str(profile.default_class or "").strip() or class_id
+            # A role profile must run the class stored with it.
+            class_error = self._validate_routing_class(stored_class, profile)
+            if class_error:
+                return {"success": False, "error": class_error}
         if filing_session is not None and not profile_id:
-            # Routed, not inherited: see the block comment above.
+            # The filer's profile is provenance, never the child's route.
             filed_by_profile_id = caller_profile_id or filing_session.profile_id or ""
-        # An explicit class paired with an implicit project-default profile
-        # is still a concrete route. Validate the provider mapping against
-        # that default before accepting it without a routing gate.
-        class_error = self._validate_routing_class(
-            args.get("intelligence_class"), profile or project_default_profile
-        )
-        if class_error:
-            return {"success": False, "error": class_error}
-        # D9: a profile the caller supplied is a preference; one a resolver
-        # supplied (class match, project default, inheritance), or none, is
-        # ``class_only``.  A pin or an explicit preference needs a profile.
+        # D9: a role profile is a preference; an unrouted task is
+        # ``class_only`` until the router writes its route.
         from src.providers.intent import CLASS_ONLY, resolve_intent
 
-        if (pin_requested or requested_intent in ("pinned", "preferred")) and not profile_id:
-            return {
-                "success": False,
-                "code": "provider_intent.profile_required",
-                "error": (
-                    f"provider_intent '{'pinned' if pin_requested else requested_intent}' "
-                    "names a provider, so it needs a profile_id; pass profile_id (or omit "
-                    "the intent and let routing place the task)"
-                ),
-            }
         provider_intent = resolve_intent(
-            requested_intent,
-            pin=pin_requested,
-            profile_supplied=profile_source == "explicit",
+            None,
+            profile_supplied=profile_source is not None,
             profile_id=profile_id,
         )
         # Validate optional preferred_workspace_id
@@ -2720,9 +2554,10 @@ class TaskCommandsMixin:
         if preferred_workspace_id:
             ws = await self.db.get_workspace(preferred_workspace_id)
             if not ws:
-                return {"error": f"Workspace '{preferred_workspace_id}' not found"}
+                return {"success": False, "error": f"Workspace '{preferred_workspace_id}' not found"}
             if ws.project_id != project_id:
                 return {
+                    "success": False,
                     "error": f"Workspace '{preferred_workspace_id}' belongs to "
                     f"project '{ws.project_id}', not '{project_id}'"
                 }
@@ -2736,7 +2571,7 @@ class TaskCommandsMixin:
                 if os.path.isfile(path):
                     valid_paths.append(os.path.abspath(path))
                 else:
-                    return {"error": f"Attachment file not found: {path}"}
+                    return {"success": False, "error": f"Attachment file not found: {path}"}
             attachments = valid_paths
 
         # Validate optional affinity_agent_id
@@ -2744,13 +2579,14 @@ class TaskCommandsMixin:
         if affinity_agent_id:
             agent = await self.db.get_agent(affinity_agent_id)
             if not agent:
-                return {"error": f"Agent '{affinity_agent_id}' not found for affinity"}
+                return {"success": False, "error": f"Agent '{affinity_agent_id}' not found for affinity"}
 
         # Validate optional affinity_reason
         affinity_reason = args.get("affinity_reason")
         valid_affinity_reasons = {"context", "workspace", "type"}
         if affinity_reason and affinity_reason not in valid_affinity_reasons:
             return {
+                "success": False,
                 "error": f"Invalid affinity_reason '{affinity_reason}'. "
                 f"Allowed: {', '.join(sorted(valid_affinity_reasons))}"
             }
@@ -2763,6 +2599,7 @@ class TaskCommandsMixin:
                 workspace_mode = WorkspaceMode(raw_workspace_mode)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid workspace_mode '{raw_workspace_mode}'. "
                     f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
                 }
@@ -2787,9 +2624,10 @@ class TaskCommandsMixin:
                 kind_id = entry.get("kind") or entry.get("kind_id")
                 alias = entry.get("alias")
                 if not kind_id:
-                    return {"error": (f"requires_kinds entry {entry!r} is missing 'kind'")}
+                    return {"success": False, "error": (f"requires_kinds entry {entry!r} is missing 'kind'")}
             else:
                 return {
+                    "success": False,
                     "error": (
                         f"requires_kinds entries must be str or dict; got "
                         f"{type(entry).__name__}: {entry!r}"
@@ -2798,6 +2636,7 @@ class TaskCommandsMixin:
             resolved = await self.db.resolve_workspace_kind(project_id, kind_id)
             if resolved is None:
                 return {
+                    "success": False,
                     "error": (
                         f"Kind '{kind_id}' is not defined for project "
                         f"'{project_id}' and no system default exists. "
@@ -2832,15 +2671,17 @@ class TaskCommandsMixin:
                 )
             else:
                 return {
+                    "success": False,
                     "error": (
                         "depends_on entries must be str or dict; got "
                         f"{type(entry).__name__}: {entry!r}"
                     )
                 }
             if not dep_id:
-                return {"error": f"depends_on entry {entry!r} is missing 'task_id'"}
+                return {"success": False, "error": f"depends_on entry {entry!r} is missing 'task_id'"}
             if dep_type not in DEP_TYPE_VALUES:
                 return {
+                    "success": False,
                     "error": f"Invalid dep_type '{dep_type}'. "
                     f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
                 }
@@ -2857,14 +2698,14 @@ class TaskCommandsMixin:
                     ),
                 }
             if await self.db.get_task(dep_id) is None:
-                return {"error": f"Dependency task '{dep_id}' not found"}
+                return {"success": False, "error": f"Dependency task '{dep_id}' not found"}
             edges.append((dep_id, dep_type, dep_reason))
 
         parent_id = args.get("parent_id")
         if parent_id:
             parent = await self.db.get_task(parent_id)
             if parent is None:
-                return {"error": f"Parent task '{parent_id}' not found"}
+                return {"success": False, "error": f"Parent task '{parent_id}' not found"}
         if edges:
             # Membership is already the parent-child edge, and a container
             # settles only after its children: a gating edge onto the new
@@ -2901,7 +2742,7 @@ class TaskCommandsMixin:
             held_task = await self.db.get_task(held_id)
             repo = await self.db.get_repo(project.integration_repository_id or "")
             if held_task is None or repo is None:
-                return {"error": "hierarchical filing writer is no longer configured"}
+                return {"success": False, "error": "hierarchical filing writer is no longer configured"}
             try:
                 repair_filing_head = await resolve_workspace_checkpoint(
                     self.db,
@@ -2936,7 +2777,7 @@ class TaskCommandsMixin:
             try:
                 initial_status = TaskStatus(internal_initial_status)
             except ValueError:
-                return {"error": f"Invalid internal initial status '{internal_initial_status}'"}
+                return {"success": False, "error": f"Invalid internal initial status '{internal_initial_status}'"}
         else:
             initial_status = (
                 TaskStatus.DEFINED
@@ -2945,6 +2786,41 @@ class TaskCommandsMixin:
             )
         skip_verification = args.get("skip_verification", False)
         workflow_id = args.get("workflow_id")
+        created_by_kind = "session" if creator_session_id else None
+        created_by_id = creator_session_id
+        # An internal creator names its origin so the routing policy can match
+        # it (``origins.<created_by_kind>``, mandatory-routing spec §6.3) —
+        # review dispatch files through here, source-CI repair through
+        # ``ensure_task``.  No playbook contract admits underscore arguments,
+        # and a worker session's filing ignores them, so no worker can claim one.
+        if args.get("_created_by_kind") and filing_session is None:
+            created_by_kind = str(args["_created_by_kind"])
+            created_by_id = str(args.get("_created_by_id") or "") or created_by_id
+        # A system constraint on routing, not a choice of model: review
+        # dispatch's ``exclude_providers`` (spec §4).  The router reads it
+        # from ``route.constraints`` and keeps it when it writes the route.
+        constraints = args.get("_route_constraints")
+        route_record = (
+            {"constraints": dict(constraints)}
+            if isinstance(constraints, dict) and constraints and filing_session is None
+            else None
+        )
+        # The filer's routing preference (spec §4): a harness or profile the
+        # router weighs before scoring, in ``soft`` or ``strict`` mode.  It is
+        # an input to the router, never a route, so it is filed on any surface
+        # -- an operator, a supervisor and a worker alike -- and every filer is
+        # held to the same validation (an installed harness or an enabled
+        # worker profile; an unknown name is refused here, before the write).
+        if "prefer" in args or "prefer_mode" in args:
+            from src.commands.routing_commands import validate_route_preference
+
+            (prefer_target, prefer_mode), preference_error = await validate_route_preference(
+                self, project_id, args.get("prefer"), args.get("prefer_mode")
+            )
+            if preference_error is not None:
+                return {"success": False, "error": preference_error}
+        else:
+            prefer_target = prefer_mode = None
         task = Task(
             id="",
             project_id=project_id,
@@ -2965,10 +2841,15 @@ class TaskCommandsMixin:
             workspace_mode=workspace_mode,
             parent_task_id=None,
             dedup_key=args.get("dedup_key"),
-            intelligence_class=args.get("intelligence_class"),
+            intelligence_class=stored_class,
             provider_intent=provider_intent,
-            created_by_kind="session" if creator_session_id else None,
-            created_by_id=creator_session_id,
+            route_source=route_source or UNROUTED,
+            class_hint=class_id,
+            prefer_target=prefer_target,
+            prefer_mode=prefer_mode,
+            route=route_record,
+            created_by_kind=created_by_kind,
+            created_by_id=created_by_id,
             repo_id=task_repository_id(
                 project.hierarchical_integration_mode, project.integration_repository_id
             ),
@@ -2976,15 +2857,11 @@ class TaskCommandsMixin:
         from src.playbooks.routing import requires_routing_gate
         manager = getattr(self.orchestrator, "playbook_manager", None)
         routing_policy = None
-        # A validated project default is already an executable route.  Do not
-        # make ordinary work wait for an assignment LLM/triage task merely to
-        # rediscover that explicit route.  Missing/invalid defaults still use
-        # the durable routing-gate path, and explicit task/profile/class pins
-        # retain their existing behaviour.
+        # Every task without a route goes through routing; a role task keeps
+        # its stage profile and is never routed (spec §4, D3).
         if (
             manager is not None
             and not profile_id
-            and project_default_profile is None
             and not args.get("_suppress_created_event")
         ):
             def routing_policy(created_task: Task) -> bool:
@@ -3003,12 +2880,12 @@ class TaskCommandsMixin:
         if hierarchy_enabled and filing_session is None:
             try:
                 async with self.db.immediate() as conn:
+                    if before_create_on is not None:
+                        await before_create_on(conn)
                     service = self._hierarchy_integration_service()
                     if parent_id:
                         created = await service.file_prepared_child_on(
-                            conn,
-                            parent_id,
-                            task,
+                            conn, parent_id, task,
                             requirements=normalized_requirements,
                             edges=edges,
                             labels=labels,
@@ -3017,18 +2894,16 @@ class TaskCommandsMixin:
                         task.parent_task_id = parent_id
                     else:
                         created = await service.file_root_on(
-                            conn,
-                            task,
+                            conn, task,
                             requirements=normalized_requirements,
                             edges=edges,
                             labels=labels,
                             routing_policy=routing_policy,
+                            target_ref=args.get("_integration_root_ref"),
                         )
-                    # Every other creation path runs the internal post-create
-                    # writer in its own transaction; a hierarchy/train filing
-                    # must too, or its row commits without the metadata the
-                    # writer owns (a review revision task's
-                    # ``review_response``, a review dispatch record).
+                    # Like other paths, hierarchy/train filing must commit the
+                    # post-create metadata (review_response or dispatch record)
+                    # in the same transaction as the task.
                     if after_create_on is not None:
                         await after_create_on(conn, created["task_id"], task.parent_task_id)
                 task_id = created["task_id"]
@@ -3041,6 +2916,8 @@ class TaskCommandsMixin:
                     "code": f"hierarchy.{exc.code}",
                 }
         elif filing_session is not None:
+            if before_create_on is not None:
+                return {"success": False, "error": "Source-owned filing requires a control-plane principal"}
             try:
                 (
                     task_id,
@@ -3100,18 +2977,17 @@ class TaskCommandsMixin:
             try:
                 if after_create_on is None:
                     task_id, depth_cap_fallback = await self.db.create_task_under(
-                        task,
-                        parent_id,
+                        task, parent_id,
                         description=spawn_reason,
                         **({"routing_policy": routing_policy} if routing_policy is not None else {}),
                     )
                 else:
-                    # Keep an internal post-create writer in the same
-                    # transaction as the task, its parent edge and any
-                    # routing gate.  ``create_task_under`` otherwise owns
-                    # that transaction, which is ideal for ordinary calls
-                    # but would expose a phase between its filing and gates.
+                    # Keep the post-create writer, task, parent edge and routing
+                    # gate atomic. create_task_under owns its transaction, which
+                    # would expose a phase between filing and gate creation.
                     async with self.db.immediate() as conn:
+                        if before_create_on is not None:
+                            await before_create_on(conn)
                         await self.db.lock_hierarchy_project(conn, task.project_id)
                         task_id, depth_cap_fallback = await child_task_id(conn, parent_id)
                         task.id = task_id
@@ -3138,6 +3014,7 @@ class TaskCommandsMixin:
                         await after_create_on(conn, task_id, parent_id)
             except HierarchyError as exc:
                 return {
+                    "success": False,
                     "error": f"hierarchy.{exc.code}: {exc.detail}",
                     "code": f"hierarchy.{exc.code}",
                 }
@@ -3151,6 +3028,8 @@ class TaskCommandsMixin:
                 )
             else:
                 async with self.db.immediate() as conn:
+                    if before_create_on is not None:
+                        await before_create_on(conn)
                     await self.db.lock_hierarchy_project(conn, task.project_id)
                     task_id = await fresh_root_id(conn)
                     task.id = task_id
@@ -3171,19 +3050,9 @@ class TaskCommandsMixin:
         # updated atomically.
         after_review = args.get("after_review")
         if after_review is not None:
-            review = await self.db.get_review(str(after_review))
-            if review is None:
-                return {
-                    "success": False,
-                    "error_code": "not_found",
-                    "error": f"review '{after_review}' not found",
-                }
-            if review["state"] == "withdrawn":
-                return {
-                    "success": False,
-                    "error_code": "review_closed",
-                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
-                }
+            review_error, review = await self._review_for_gating(after_review)
+            if review_error is not None:
+                return review_error
             if review["state"] != "approved":
                 async with self.db.immediate() as conn:
                     flipped = await self.db.attach_gate_waiters(
@@ -3193,7 +3062,7 @@ class TaskCommandsMixin:
 
         # D9: who meant the provider, and when.  Only a meaningful intent is
         # audited -- a routed ``class_only`` row is the default and costs no write.
-        if provider_intent != CLASS_ONLY or requested_intent is not None or pin_requested:
+        if provider_intent != CLASS_ONLY:
             await self._record_provider_intent_audit(task_id, provider_intent, previous=None)
 
         # Graph edges and labels, now that the FK target exists.  Each
@@ -3210,6 +3079,7 @@ class TaskCommandsMixin:
                     )
                 except HierarchyError as exc:
                     return {
+                        "success": False,
                         "error": (
                             f"hierarchy.{exc.code}: {exc.detail} "
                             f"(task '{task_id}' was already created; fix the edge with "
@@ -3219,18 +3089,14 @@ class TaskCommandsMixin:
                         "task_created": task_id,
                     }
             await self.db.log_event(
-                "dependency.added",
-                project_id=project_id,
-                task_id=task_id,
+                "dependency.added", project_id=project_id, task_id=task_id,
                 payload=f"{dep_type} -> {dep_id}",
             )
         for label in labels:
             if not hierarchy_created:
                 await self.db.add_task_label(task_id, label)
             await self.db.log_event(
-                "label.added",
-                project_id=project_id,
-                task_id=task_id,
+                "label.added", project_id=project_id, task_id=task_id,
                 payload=label,
             )
 
@@ -3338,6 +3204,16 @@ class TaskCommandsMixin:
             result["profile_source"] = profile_source
         if profile_id:
             result["provider_intent"] = provider_intent
+        # Who wrote the route (``unrouted`` until the router does) and the
+        # filer's class hint (mandatory-routing spec §3 I1, §4).
+        result["route_source"] = task.route_source
+        if task.class_hint:
+            result["class_hint"] = task.class_hint
+        # The preference the router will weigh (§4), echoed so the filer can
+        # see what was stored without re-reading the task.
+        if task.prefer_target:
+            result["prefer_target"] = task.prefer_target
+            result["prefer_mode"] = task.prefer_mode
         if task.intelligence_class:
             result["intelligence_class"] = task.intelligence_class
         if preferred_workspace_id:
@@ -3396,6 +3272,29 @@ class TaskCommandsMixin:
 
         return result
 
+    async def _review_for_gating(self, review_id: str) -> tuple[dict | None, dict | None]:
+        """Resolve the review an ``after_review`` argument names: ``(error, review)``.
+
+        A missing review is ``not_found`` and a withdrawn one ``review_closed``;
+        either way nothing may be attached to its gate.  An approved review is
+        returned like any other — its gate is resolved, so the caller attaches
+        nothing.
+        """
+        review = await self.db.get_review(str(review_id))
+        if review is None:
+            return {
+                "success": False,
+                "error_code": "not_found",
+                "error": f"review '{review_id}' not found",
+            }, None
+        if review["state"] == "withdrawn":
+            return {
+                "success": False,
+                "error_code": "review_closed",
+                "error": f"review '{review_id}' is withdrawn and cannot gate work",
+            }, None
+        return None, review
+
     async def _validate_graph_parent(
         self, project_id: str, parent_id: str | None
     ) -> tuple[dict | None, Task | None]:
@@ -3415,25 +3314,29 @@ class TaskCommandsMixin:
         parent = await self.db.get_task(parent_id)
         if parent is None:
             return {
+                "success": False,
                 "error": f"Parent task '{parent_id}' not found",
                 "code": "hierarchy.not_found",
             }, None
         if parent.project_id != project_id:
             return {
+                "success": False,
                 "error": "parent is in another project",
                 "code": "hierarchy.cross_project",
             }, None
         if parent.status == TaskStatus.COMPLETED:
-            return {"error": "parent is COMPLETED", "code": "hierarchy.container_closed"}, None
+            return {"success": False, "error": "parent is COMPLETED", "code": "hierarchy.container_closed"}, None
         async with self.db._engine.begin() as conn:
             depth = await self.db.structural_depth(parent_id, conn=conn)
         if depth + 1 > MAX_STRUCTURAL_DEPTH:
             return {
+                "success": False,
                 "error": f"parent at structural depth {depth}; cap is {MAX_STRUCTURAL_DEPTH}",
                 "code": "hierarchy.depth",
             }, None
         if naming_depth(parent_id) >= MAX_NAMING_DEPTH:
             return {
+                "success": False,
                 "error": (
                     f"parent '{parent_id}' is at naming depth cap "
                     f"{MAX_NAMING_DEPTH} — a graph cannot mint further dotted children"
@@ -3560,19 +3463,35 @@ class TaskCommandsMixin:
         from src.task_graph.creator import GraphFilingError
         from src.task_graph.validator import resolve_spec_path_checked
 
+        refusal = _filing_refusal("create_task_graph", args)
+        if refusal is not None:
+            return refusal
         scope = self._current_scope or {}
         scoped_session = scope.get("kind") == "session" and not scope.get("elevated")
         project_id = args.get("project_id") or scope.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         raw_graph = args.get("graph")
         spec_path = args.get("spec_path")
         if bool(raw_graph) == bool(spec_path):
-            return {"error": "exactly one of 'graph' or 'spec_path' is required"}
+            return {"success": False, "error": "exactly one of 'graph' or 'spec_path' is required"}
+
+        # ``after_review`` gates every node on a document review, like
+        # ``create_task``'s.  Resolved before anything is parsed or written,
+        # so an unknown or withdrawn review never leaves an ungated graph.
+        after_review = args.get("after_review")
+        review = None
+        if after_review is not None:
+            review_error, review = await self._review_for_gating(after_review)
+            if review_error is not None:
+                return review_error
+        review_gate_id = (
+            review["gate_id"] if review is not None and review["state"] != "approved" else None
+        )
 
         parent_id = args.get("parent_id")
         parent = None
@@ -3600,38 +3519,35 @@ class TaskCommandsMixin:
                 )
                 if reason == "outside_vault":
                     return {
+                        "success": False,
                         "error": (
                             f"Spec '{spec_path}' resolves outside the vault — "
                             "spec paths must stay inside the vault root"
                         )
                     }
                 if resolved is None:
-                    return {"error": f"Spec '{spec_path}' not found in the vault"}
+                    return {"success": False, "error": f"Spec '{spec_path}' not found in the vault"}
                 with open(resolved, encoding="utf-8") as handle:
                     markdown = handle.read()
                 graph = extract_graph_from_spec(markdown, resolved)
             else:
                 graph = parse_graph(raw_graph)
         except GraphParseError as exc:
+            refused = graph_route_refusal("create_task_graph", exc.errors)
+            if refused is not None:
+                return refused
             return {
+                "success": False,
                 "error": "graph document is invalid",
                 "errors": [e.to_dict() for e in exc.errors],
             }
         except OSError as exc:
-            return {"error": f"Could not read spec '{spec_path}': {exc}"}
+            return {"success": False, "error": f"Could not read spec '{spec_path}': {exc}"}
 
         if not scoped_session:
             phases_refusal = self._phases_need_root_refusal(graph, parent_id)
             if phases_refusal is not None:
                 return phases_refusal
-
-        # A session graph is authored by the held worker irrespective of
-        # whether its text arrived inline or through a vault spec.  It may
-        # name profile preferences but cannot pin a provider (D9).
-        if any(node.pin for node in graph.nodes) and (raw_graph or scoped_session):
-            refusal = pin_not_permitted_refusal(self._current_scope, "pin")
-            if refusal is not None:
-                return refusal
 
         filing = None
         container_parent_id = None
@@ -3685,67 +3601,38 @@ class TaskCommandsMixin:
                 return phases_refusal
 
         for node in graph.nodes:
-            if node.profile is None and args.get("profile_id"):
-                node.profile = args["profile_id"]
-                # The caller supplied it, so it is a preference (D9).
-                node.profile_source = "fill_in"
             if node.intelligence_class is None and args.get("intelligence_class"):
                 node.intelligence_class = args["intelligence_class"]
 
-        # A node class without a profile would be written with a NULL profile,
-        # which the project default's pool claims regardless of class.  Resolve
-        # each such node onto its class's own lane the way ``create_task``
-        # does, before validation, so nothing is written with a disagreeing
-        # route and a class no worker runs fails the whole graph.
+        # A node class is a hint: the node is written unrouted with the class
+        # as its ``class_hint``, and the project's router picks the profile
+        # (mandatory-routing spec §5.1, §5.3).  Nothing here resolves a class
+        # onto a profile; an unknown class is still refused, so a typo does
+        # not silently lose the hint.
         from src.task_graph.models import GraphError
-
-        route_findings: list = []
-        class_matched: dict[str, str] = {}
-        if project.default_profile_id and any(
-            node.profile is None and node.intelligence_class for node in graph.nodes
-        ):
-            implicit = await self.db.get_profile(project.default_profile_id)
-            routes: dict[str, tuple] = {}
-            for node in graph.nodes:
-                class_id = node.intelligence_class
-                if implicit is None or node.profile is not None or not class_id:
-                    continue
-                if class_id not in routes:
-                    # An unknown class is reported by the class check below.
-                    routes[class_id] = (
-                        (None, None) if self._validate_routing_class(class_id)
-                        else await self._resolve_class_route(class_id, implicit)
-                    )
-                routed, error = routes[class_id]
-                if error:
-                    route_findings.append(GraphError(
-                        rule="invalid_intelligence_class", detail=error, node=node.key,
-                    ))
-                elif routed is not None:
-                    node.profile = routed.id
-                    node.profile_source = "class_match"
-                    class_matched[node.key] = routed.id
 
         findings = await validate_graph(
             graph, project_id=project_id, db=self.db, vault_root=vault_root,
             parent_id=parent_id, filed_by=filing.held_task_id if filing else None,
         )
-        findings.extend(route_findings)
-        class_errors: dict[tuple[str | None, str], str | None] = {}
+        class_errors: dict[str, str | None] = {}
         for node in graph.nodes:
             if node.intelligence_class is None:
                 continue
-            route = (node.profile, node.intelligence_class)
-            if route not in class_errors:
-                profile = await self.db.get_profile(node.profile) if node.profile else None
-                class_errors[route] = self._validate_routing_class(node.intelligence_class, profile)
-            if class_errors[route]:
+            if node.intelligence_class not in class_errors:
+                class_errors[node.intelligence_class] = self._validate_routing_class(
+                    node.intelligence_class
+                )
+            if class_errors[node.intelligence_class]:
                 findings.append(GraphError(
-                    rule="invalid_intelligence_class", detail=class_errors[route], node=node.key,
+                    rule="invalid_intelligence_class",
+                    detail=class_errors[node.intelligence_class],
+                    node=node.key,
                 ))
         errors, warnings = split_findings(findings)
         if errors:
             return {
+                "success": False,
                 "error": (
                     f"graph validation failed with {len(errors)} error(s) — nothing was created"
                 ),
@@ -3763,6 +3650,7 @@ class TaskCommandsMixin:
                 parent_id=parent_id,
                 filing=filing,
                 container_parent_id=container_parent_id,
+                review_gate_id=review_gate_id,
             )
         except GraphFilingError as exc:
             return {
@@ -3774,6 +3662,7 @@ class TaskCommandsMixin:
             # ``write_plan`` is one transaction, so nothing was created; a
             # dry run performs the same route check and fails the same way.
             return {
+                "success": False,
                 "error": f"hierarchy.{exc.code}: {exc.detail} — nothing was created",
                 "code": f"hierarchy.{exc.code}",
             }
@@ -3783,22 +3672,45 @@ class TaskCommandsMixin:
                 await self._emit_task_graph_change("task.updated", container)
         report["project_id"] = project_id
         report["warnings"] = [w.to_dict() for w in warnings]
-        if class_matched:
-            # node key -> the profile its class selected (profile_source
-            # ``class_match``); other nodes kept their explicit or implicit route.
-            report["class_matched_profiles"] = class_matched
+        if review is not None:
+            report["after_review"] = {
+                "review_id": review["id"],
+                "gate_id": review["gate_id"],
+                # Empty for an approved review, whose gate is already resolved.
+                "gated_task_ids": report["task_ids"] if review_gate_id is not None else [],
+            }
         if parent_id:
             report["parent_title"] = parent.title
         if graph.spec:
             report["spec"] = graph.spec
         return report
 
+    async def _task_dependency_rows(
+        self, task_id: str,
+    ) -> tuple[list[dict], set[str], dict[str, Task]]:
+        """Load related tasks in batches rather than one transaction per edge."""
+        edges = await self.db.get_typed_dependencies_detailed(task_id)
+        dependents = await self.db.get_dependents(task_id)
+        ids = sorted({edge["depends_on_task_id"] for edge in edges} | set(dependents))
+        related = {}
+        for start in range(0, len(ids), 900):
+            related.update({
+                task.id: task
+                for task in await self.db.list_tasks(task_ids=ids[start:start + 900])
+            })
+        return edges, dependents, related
+
     async def _cmd_get_task(self, args: dict) -> dict:
+        context = await self._fidelity_read_context("get_task", args)
+        if context is not None and "error" in context:
+            return context
         task = await self.db.get_task(args["task_id"])
         if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
+            return {"success": False, "error": f"Task '{args['task_id']}' not found"}
+        if context is not None:
+            return await self._fidelity_member_detail(task, context)
         if args.get("clear_needs_attention") and args.get("needs_attention") is not None:
-            return {"error": "--clear-needs-attention and --needs-attention are mutually exclusive"}
+            return {"success": False, "error": "--clear-needs-attention and --needs-attention are mutually exclusive"}
         out_of_scope = self._assert_task_in_scope(task)
         if out_of_scope:
             return out_of_scope
@@ -3833,6 +3745,13 @@ class TaskCommandsMixin:
             # Provider intent and the re-route marker (provider-failover D8, D17).
             "provider_intent": task.provider_intent,
             "rerouted_from": task.rerouted_from,
+            # Who wrote the route, the filer's class hint and the router's
+            # record of it (mandatory-routing spec §3 I1, I6).
+            "route_source": task.route_source,
+            "class_hint": task.class_hint,
+            "prefer_target": task.prefer_target,
+            "prefer_mode": task.prefer_mode,
+            "route": task.route,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,
             "affinity_agent_id": task.affinity_agent_id,
@@ -3848,18 +3767,11 @@ class TaskCommandsMixin:
 
         # Effective integration policy + its source, so surfaces can show
         # where the mode comes from instead of another ambiguous flag.
-        from src.models import resolve_integration_mode_with_source
+        from src.integration.delivery_path import effective_integration_mode
 
-        parent_mode = None
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            parent_mode = parent.integration_mode if parent else None
         project = await self.db.get_project(task.project_id)
-        effective_mode, mode_source = resolve_integration_mode_with_source(
-            task.integration_mode,
-            parent_task_mode=parent_mode,
-            project_mode=project.integration_mode if project else None,
-            default_mode=self.orchestrator.config.integration.default_mode,
+        effective_mode, mode_source = await effective_integration_mode(
+            self.db, task, default_mode=self.orchestrator.config.integration.default_mode
         )
         info["effective_integration_mode"] = effective_mode
         info["integration_mode_source"] = mode_source
@@ -3870,13 +3782,13 @@ class TaskCommandsMixin:
         info["completion"] = asdict(completion) if completion else None
 
         # Dependency visualization: show what this task depends on and blocks
-        typed_edges = await self.db.get_typed_dependencies_detailed(task.id)
+        typed_edges, dependents, related = await self._task_dependency_rows(task.id)
         blocking_edges = [edge for edge in typed_edges if edge["dep_type"] in BLOCKING_DEP_TYPES]
         if blocking_edges:
             dep_details = []
             for edge in blocking_edges:
                 dep_id = edge["depends_on_task_id"]
-                dep_task = await self.db.get_task(dep_id)
+                dep_task = related.get(dep_id)
                 if dep_task:
                     dep_details.append(
                         {
@@ -3889,11 +3801,10 @@ class TaskCommandsMixin:
                     )
             info["depends_on"] = dep_details
 
-        dependents = await self.db.get_dependents(task.id)
         if dependents:
             dep_details = []
-            for dep_id in dependents:
-                dep_task = await self.db.get_task(dep_id)
+            for dep_id in sorted(dependents):
+                dep_task = related.get(dep_id)
                 if dep_task:
                     dep_details.append(
                         {
@@ -3917,6 +3828,20 @@ class TaskCommandsMixin:
             ]
 
         info["children"] = await self.db.get_children_summary(task.id)
+        # Implementation progress kept apart from delivery (a read-only
+        # projection; it never changes the stored status shown above).
+        info.update(await task_activity(self.db, task.id), delivery_status=None)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, [info])
+        if info["children"]:
+            from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
+
+            projection = EpicDeliveryProjection(
+                self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None)),
+                cached_only=True,
+            )
+            info["delivery_status"] = (await projection.for_tasks([task.id])).get(task.id)
 
         return info
 
@@ -3950,20 +3875,20 @@ class TaskCommandsMixin:
         """
         task_id = args.get("task_id", "")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         # Upstream: what this task depends on
         depends_on: list[dict] = []
-        detailed_edges = await self.db.get_typed_dependencies_detailed(task.id)
+        detailed_edges, dependent_ids, related = await self._task_dependency_rows(task.id)
         for edge in detailed_edges:
             if edge["dep_type"] not in BLOCKING_DEP_TYPES:
                 continue
             dep_id = edge["depends_on_task_id"]
-            dep_task = await self.db.get_task(dep_id)
+            dep_task = related.get(dep_id)
             if dep_task:
                 depends_on.append(
                     {
@@ -3976,10 +3901,9 @@ class TaskCommandsMixin:
                 )
 
         # Downstream: what this task blocks
-        dependent_ids = await self.db.get_dependents(task.id)
         blocks: list[dict] = []
         for dep_id in sorted(dependent_ids):
-            dep_task = await self.db.get_task(dep_id)
+            dep_task = related.get(dep_id)
             if dep_task:
                 blocks.append(
                     {
@@ -3997,7 +3921,7 @@ class TaskCommandsMixin:
             dep_type = edge["dep_type"]
             if dep_type in BLOCKING_DEP_TYPES:
                 continue
-            origin = await self.db.get_task(dep_id)
+            origin = related.get(dep_id)
             if origin is None:
                 continue
             provenance.append(
@@ -4011,6 +3935,7 @@ class TaskCommandsMixin:
             )
 
         return {
+            "success": True,
             "task_id": task.id,
             "title": task.title,
             "status": task.status.value,
@@ -4040,16 +3965,17 @@ class TaskCommandsMixin:
         task_id = args.get("task_id", "")
         depends_on = args.get("depends_on", "")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not depends_on:
-            return {"error": "depends_on is required"}
+            return {"success": False, "error": "depends_on is required"}
         if task_id == depends_on:
-            return {"error": "A task cannot depend on itself"}
+            return {"success": False, "error": "A task cannot depend on itself"}
 
         dep_type = args.get("dep_type") or DepType.BLOCKS.value
         reason = str(args.get("reason") or "").strip() or None
         if dep_type not in DEP_TYPE_VALUES:
             return {
+                "success": False,
                 "error": f"Invalid dep_type '{dep_type}'. "
                 f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
             }
@@ -4057,15 +3983,16 @@ class TaskCommandsMixin:
         # Verify both tasks exist.
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         dep_task = await self.db.get_task(depends_on)
         if not dep_task:
-            return {"error": f"Dependency task '{depends_on}' not found"}
+            return {"success": False, "error": f"Dependency task '{depends_on}' not found"}
 
         # Check for a duplicate edge *of this type*.
         existing = await self.db.get_typed_dependencies(task_id)
         if (depends_on, dep_type) in existing:
             return {
+                "success": False,
                 "error": (
                     f"Dependency already exists: '{task_id}' already has a "
                     f"'{dep_type}' edge to '{depends_on}'"
@@ -4078,7 +4005,7 @@ class TaskCommandsMixin:
             try:
                 validate_dag_with_new_edge(all_deps, task_id, depends_on, dep_type)
             except CyclicDependencyError as exc:
-                return {"error": f"Cannot add dependency: {exc}"}
+                return {"success": False, "error": f"Cannot add dependency: {exc}"}
 
         if dep_type == DepType.WAITS_FOR.value:
             # A waiter that is itself a descendant of the container fans in
@@ -4088,6 +4015,7 @@ class TaskCommandsMixin:
                 validate_waits_for(pc_edges, task_id, depends_on)
             except CyclicDependencyError as exc:
                 return {
+                    "success": False,
                     "error": (
                         f"Cannot add waits-for dependency: '{task_id}' is a child of "
                         f"'{depends_on}' and would fan in over itself ({exc})"
@@ -4095,11 +4023,14 @@ class TaskCommandsMixin:
                 }
 
         try:
+            scope = self._current_scope or {}
+            worker = scope.get("kind") == "session" and not scope.get("elevated")
             await self.db.add_dependency(
-                task_id, depends_on, dep_type, description=reason
+                task_id, depends_on, dep_type, description=reason,
+                reject_container_target=worker,
             )
         except HierarchyError as exc:
-            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+            return {"success": False, "error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_event(
             "dependency.added",
             project_id=task.project_id,
@@ -4127,13 +4058,14 @@ class TaskCommandsMixin:
         task_id = args.get("task_id", "")
         depends_on = args.get("depends_on", "")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not depends_on:
-            return {"error": "depends_on is required"}
+            return {"success": False, "error": "depends_on is required"}
 
         dep_type = args.get("dep_type") or None
         if dep_type is not None and dep_type not in DEP_TYPE_VALUES:
             return {
+                "success": False,
                 "error": f"Invalid dep_type '{dep_type}'. "
                 f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
             }
@@ -4141,7 +4073,7 @@ class TaskCommandsMixin:
         # Verify the task exists (the dependency target need not still exist).
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         # Check that a matching edge actually exists.
         existing = await self.db.get_typed_dependencies(task_id)
@@ -4153,6 +4085,7 @@ class TaskCommandsMixin:
         if not matching:
             suffix = f" with dep_type '{dep_type}'" if dep_type else ""
             return {
+                "success": False,
                 "error": (
                     f"No dependency found: '{task_id}' does not depend on '{depends_on}'{suffix}"
                 )
@@ -4168,6 +4101,7 @@ class TaskCommandsMixin:
         await self._emit_task_graph_change("task.updated", task)
 
         return {
+            "success": True,
             "ok": True,
             "task_id": task_id,
             "removed_dependency": depends_on,
@@ -4177,50 +4111,34 @@ class TaskCommandsMixin:
 
     async def _cmd_edit_task(self, args: dict) -> dict:
         if args.get("status") == "PAUSED":
-            return {"error": "Use pause_task to pause safely and stop any running session."}
+            return {"success": False, "error": "Use pause_task to pause safely and stop any running session."}
         task = await self.db.get_task(args["task_id"])
         if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
+            return {"success": False, "error": f"Task '{args['task_id']}' not found"}
 
         after_review = args.get("after_review")
         review = None
         if after_review is not None:
-            review = await self.db.get_review(str(after_review))
-            if review is None:
-                return {
-                    "success": False,
-                    "error_code": "not_found",
-                    "error": f"review '{after_review}' not found",
-                }
-            if review["state"] == "withdrawn":
-                return {
-                    "success": False,
-                    "error_code": "review_closed",
-                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
-                }
+            review_error, review = await self._review_for_gating(after_review)
+            if review_error is not None:
+                return review_error
 
         if "status" in args and task.status == TaskStatus.PAUSED and task.resume_after is None:
-            return {"error": "Task is manually paused; use resume_task."}
+            return {"success": False, "error": "Task is manually paused; use resume_task."}
 
-        routing_fields = {"profile_id", "intelligence_class"} & args.keys()
-        # Provider intent rides the routing guard (provider-failover D8/D9).
-        # ``pin`` counts only when set: a CLI that always sends ``pin: false``
-        # must not make every edit a routing edit.
-        if args.get("provider_intent") is not None:
-            routing_fields.add("provider_intent")
-        if args.get("pin"):
-            routing_fields.add("pin")
-        if routing_fields and (task.status == TaskStatus.IN_PROGRESS or task.assigned_agent_id):
-            return {"error": "Task is running or claimed; stop the task before changing its routing."}
-        refusal = provider_intent_refusal(args.get("provider_intent"))
+        # A route is never edited: the router writes it (mandatory-routing
+        # spec §5.1).  The hints stay editable — the class hint and the kind —
+        # and on a task no worker holds, a hint edit sends the task back to
+        # its router (``_reset_route_for_hint_edit`` below).
+        refusal = _filing_refusal("edit_task", args)
         if refusal is not None:
             return refusal
-        if args.get("pin") or args.get("provider_intent") == "pinned":
-            refusal = pin_not_permitted_refusal(
-                self._current_scope, "pin" if args.get("pin") else "provider_intent"
-            )
-            if refusal is not None:
-                return refusal
+        claimed = (
+            task.status in (TaskStatus.IN_PROGRESS, *SUSPENDED_TASK_STATUSES)
+            or bool(task.assigned_agent_id)
+        )
+        if "intelligence_class" in args and claimed:
+            return {"success": False, "error": "Task is running or claimed; stop the task before changing its class hint."}
 
         VERIFICATION_VALUES = frozenset(v.value for v in VerificationType)
 
@@ -4232,7 +4150,7 @@ class TaskCommandsMixin:
                 new_status = TaskStatus(new_status_raw)
             except ValueError:
                 valid = ", ".join(s.value for s in TaskStatus)
-                return {"error": f"Invalid status '{new_status_raw}'. Valid: {valid}"}
+                return {"success": False, "error": f"Invalid status '{new_status_raw}'. Valid: {valid}"}
             old_status = task.status.value
             status_changed = True
 
@@ -4241,11 +4159,11 @@ class TaskCommandsMixin:
             new_pid = args["project_id"]
             project = await self.db.get_project(new_pid)
             if not project:
-                return {"error": f"Project '{new_pid}' not found"}
+                return {"success": False, "error": f"Project '{new_pid}' not found"}
             if new_pid != task.project_id:
                 blockers = await self.db.get_task_project_move_blockers(task.id)
                 if blockers and any(blockers.values()):
-                    return {"error": str(TaskProjectMoveError(task.id, new_pid, blockers))}
+                    return {"success": False, "error": str(TaskProjectMoveError(task.id, new_pid, blockers))}
             updates["project_id"] = new_pid
         if "title" in args:
             updates["title"] = args["title"]
@@ -4255,12 +4173,15 @@ class TaskCommandsMixin:
             updates["priority"] = args["priority"]
         if "task_type" in args:
             raw_tt = args["task_type"]
+            if raw_tt in {"promotion", "backmerge"} or task.task_type in {TaskType.PROMOTION, TaskType.BACKMERGE}:
+                return {"success": False, "error": "Promotion and backmerge task types are daemon-owned."}
             if raw_tt is None:
                 updates["task_type"] = None  # allow clearing task_type
             elif raw_tt in TASK_TYPE_VALUES:
                 updates["task_type"] = TaskType(raw_tt)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid task_type '{raw_tt}'. Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"
                 }
         if "max_retries" in args:
@@ -4271,67 +4192,21 @@ class TaskCommandsMixin:
                 updates["verification_type"] = VerificationType(raw_vt)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}"
                 }
-        if "profile_id" in args:
-            pid = args["profile_id"]
-            if pid is not None:
-                profile = await self.db.get_profile(pid)
-                if not profile:
-                    return {"error": f"Profile '{pid}' not found"}
-                if error := self._task_execution_profile_error(profile):
-                    return {"error": error}
-            updates["profile_id"] = pid  # None clears the profile
         if "intelligence_class" in args:
-            updates["intelligence_class"] = args["intelligence_class"]
-        # D9: naming a profile is a preference (``pin`` makes it a pin);
-        # clearing it clears the intent; ``provider_intent`` alone sets it.
-        new_intent: str | None = None
-        if {"profile_id", "provider_intent", "pin"} & routing_fields:
-            from src.providers.intent import CLASS_ONLY, resolve_intent
-
-            requested_intent = args.get("provider_intent")
-            pin_requested = bool(args.get("pin"))
-            routed_profile_id = updates.get("profile_id", task.profile_id)
-            if (pin_requested or requested_intent in ("pinned", "preferred")) and not routed_profile_id:
-                return {
-                    "success": False,
-                    "code": "provider_intent.profile_required",
-                    "error": (
-                        f"provider_intent '{'pinned' if pin_requested else requested_intent}' "
-                        "names a provider, so the task needs a profile_id; set one in the "
-                        "same edit"
-                    ),
-                }
-            if "profile_id" in updates and updates["profile_id"] is None:
-                new_intent = CLASS_ONLY
-            elif "profile_id" in updates:
-                new_intent = resolve_intent(
-                    requested_intent,
-                    pin=pin_requested,
-                    profile_supplied=True,
-                    profile_id=updates["profile_id"],
-                )
-            else:
-                new_intent = resolve_intent(
-                    requested_intent,
-                    pin=pin_requested,
-                    profile_supplied=False,
-                    profile_id=task.profile_id,
-                )
-            updates["provider_intent"] = new_intent
-        if routing_fields:
-            routed_profile_id = updates.get("profile_id", task.profile_id)
-            routed_profile = await self.db.get_profile(routed_profile_id) if routed_profile_id else None
-            class_error = self._validate_routing_class(
-                updates.get("intelligence_class", task.intelligence_class), routed_profile
-            )
-            if class_error:
-                return {"error": class_error}
+            class_hint = args["intelligence_class"] or None
+            # An unknown class is refused, as at filing: the router ignores a
+            # class missing from its policy, so a typo would lose the hint.
+            if class_hint is not None and (class_error := self._validate_routing_class(class_hint)):
+                return {"success": False, "error": class_error}
+            updates["class_hint"] = class_hint  # None clears the hint
         if "integration_mode" in args:
             mode = args["integration_mode"]
             if mode is not None and mode not in INTEGRATION_MODES:
                 return {
+                    "success": False,
                     "error": f"Invalid integration_mode '{mode}'. "
                     f"Allowed: {', '.join(sorted(INTEGRATION_MODES))} "
                     "(null clears the override — the task inherits the "
@@ -4347,13 +4222,14 @@ class TaskCommandsMixin:
             if val is not None:
                 agent = await self.db.get_agent(val)
                 if not agent:
-                    return {"error": f"Agent '{val}' not found for affinity"}
+                    return {"success": False, "error": f"Agent '{val}' not found for affinity"}
             updates["affinity_agent_id"] = val  # None clears affinity
         if "affinity_reason" in args:
             val = args["affinity_reason"]
             valid_reasons = {"context", "workspace", "type"}
             if val is not None and val not in valid_reasons:
                 return {
+                    "success": False,
                     "error": f"Invalid affinity_reason '{val}'. "
                     f"Allowed: {', '.join(sorted(valid_reasons))}"
                 }
@@ -4366,37 +4242,23 @@ class TaskCommandsMixin:
                 updates["workspace_mode"] = WorkspaceMode(val)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid workspace_mode '{val}'. "
                     f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
                 }
 
-        if routing_fields:
-            updated = await self.db.update_task_routing(
-                task.id,
-                profile_id=updates.get("profile_id", task.profile_id),
-                intelligence_class=updates.get("intelligence_class", task.intelligence_class),
-                preferred_workspace_id=None,
-                clear_intelligence_class=(
-                    "intelligence_class" in updates and updates["intelligence_class"] is None
-                ),
-                provider_intent=new_intent,
-            )
-            if not updated:
-                return {"error": "Task is running or claimed; stop the task before changing its routing."}
-            if new_intent is not None:
-                await self._record_provider_intent_audit(
-                    task.id, new_intent, previous=task.provider_intent
-                )
+        if {"class_hint", "task_type"} & updates.keys():
+            refusal = await self._reset_route_for_hint_edit(task, updates, claimed=claimed)
+            if refusal is not None:
+                return refusal
         other_updates = {
-            key: value
-            for key, value in updates.items()
-            if key not in routing_fields and key != "provider_intent"
+            key: value for key, value in updates.items() if key != "class_hint"
         }
         if other_updates:
             try:
                 await self.db.update_task(args["task_id"], **other_updates)
             except TaskProjectMoveError as exc:
-                return {"error": str(exc)}
+                return {"success": False, "error": str(exc)}
         if status_changed:
             await self.db.transition_task(args["task_id"], new_status, context="edit_task")
 
@@ -4427,7 +4289,9 @@ class TaskCommandsMixin:
                 args["task_id"], "needs_attention", args["needs_attention"]
             )
 
-        all_fields = list(updates.keys())
+        # The class hint is stored as ``class_hint`` but edited, and
+        # reported, as ``intelligence_class``.
+        all_fields = ["intelligence_class" if key == "class_hint" else key for key in updates]
         if status_changed:
             all_fields.append("status")
         if after_review is not None:
@@ -4439,11 +4303,12 @@ class TaskCommandsMixin:
 
         if not all_fields:
             return {
+                "success": False,
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
-                    "task_type, status, max_retries, verification_type, profile_id, "
-                    "integration_mode, skip_verification, intelligence_class, affinity_agent_id, "
-                    "affinity_reason, workspace_mode, provider_intent, pin, after_review, needs_attention, or "
+                    "task_type, status, max_retries, verification_type, integration_mode, "
+                    "skip_verification, intelligence_class, affinity_agent_id, "
+                    "affinity_reason, workspace_mode, after_review, needs_attention, or "
                     "clear_needs_attention."
                 )
             }
@@ -4460,17 +4325,48 @@ class TaskCommandsMixin:
                 "monorepo support. Use 'exclusive' instead ('branch-isolated' is "
                 "deprecated and now behaves identically to 'exclusive')."
             )
-        await self._emit_task_graph_change("task.updated", task)
+        refreshed = await self.db.get_task(task.id) or task
+        await self._emit_task_graph_change("task.updated", refreshed, edited_fields=all_fields)
         if updates.get("project_id", task.project_id) != task.project_id:
             await self._emit_task_graph_change(
-                "task.updated", task, project_id=updates["project_id"]
+                "task.updated", refreshed, project_id=task.project_id
             )
         return result
+
+    async def _reset_route_for_hint_edit(
+        self, task, updates: dict, *, claimed: bool
+    ) -> dict | None:
+        """Store an edited hint and send a queued task back to its router.
+
+        ``edit_task`` keeps edits to the class hint and the kind
+        (mandatory-routing spec §5.1).  On a queued task no worker holds,
+        such an edit resets the route to ``unrouted``, so the router plans
+        again with the new hints.  A role task keeps its stage profile, an
+        override keeps its pin, and a claimed or finished task keeps the
+        route it ran with: for those only the hint is stored.
+        """
+        from src.routing.sources import LEGACY, ROUTER
+
+        hint = {"class_hint": updates["class_hint"]} if "class_hint" in updates else {}
+        queued = task.status in (
+            TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.PAUSED,
+        )
+        resettable = (task.route_source or UNROUTED) in (UNROUTED, ROUTER, LEGACY)
+        if claimed or not queued or not resettable:
+            if hint:
+                await self.db.update_task(task.id, **hint)
+            return None
+        if not await self.db.reset_task_route(task.id, **hint):
+            return {
+                "success": False,
+                "error": "Task is running or claimed; stop the task before changing its hints."
+            }
+        return None
 
     async def _task_control_scope_error(self, task_id: str) -> dict | None:
         scope = self._current_scope or {}
         if scope.get("kind") == "session" and not scope.get("elevated"):
-            return {"error": "out of scope: task Pause/Resume requires an operator"}
+            return {"success": False, "error": "out of scope: task Pause/Resume requires an operator"}
         task = await self.db.get_task(task_id)
         if task is not None:
             return self._task_findings_scope_error(task)
@@ -4484,37 +4380,312 @@ class TaskCommandsMixin:
         await self.orchestrator.pause_task(task_id)
         task = await self.db.get_task(task_id)
         await self._emit_task_graph_change("task.updated", task)
-        return {"task_id": task_id, "status": task.status.value}
+        return {"success": True, "task_id": task_id, "status": task.status.value}
 
     async def _cmd_resume_task(self, args: dict) -> dict:
         task_id = args["task_id"]
         error = await self._task_control_scope_error(task_id)
         if error:
             return error
-        task = await self.orchestrator.resume_task(task_id)
+        current = await self.db.get_task(task_id)
+        incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
+        if (
+            current is not None
+            and current.status == TaskStatus.BLOCKED
+            and current.route_source == "override"
+            and incident.get("reason") == "session_not_live"
+            and incident.get("end_reason") in {"productive_death", "drained"}
+            and not await self.db.get_task_meta(task_id, "slot_reset_failure")
+        ):
+            from src.commands.supervisor_authority import operator_or_supervisor
+
+            actor, refusal = await operator_or_supervisor(self.db, current.project_id)
+            if refusal:
+                return {"success": False, "error": refusal}
+            stopped = await self._confirm_recovery_worker_stopped(incident)
+            if "error" in stopped:
+                return stopped
+            await self.db.decide_task_recovery(
+                task_id,
+                incident.get("id"),
+                "retry",
+                "Resume the audited stopped-worker handoff",
+                author_kind="user" if actor == "human:local-operator" else "supervisor",
+                author_id=actor,
+                project_id=current.project_id,
+                stopped_session=stopped,
+                operator_handoff=True,
+            )
+            task = await self.db.get_task(task_id)
+            await self._emit_task_graph_change("task.updated", task)
+            return {"success": True, "task_id": task_id, "status": task.status.value}
+        task = await self.orchestrator.resume_task(
+            task_id, recover_stale_pause=bool(args.get("recover_stale_pause")),
+            actor=(self._current_scope or {}).get("session_id") or "local-operator",
+        )
         await self._emit_task_graph_change("task.updated", task)
-        return {"task_id": task_id, "status": task.status.value}
+        return {"success": True, "task_id": task_id, "status": task.status.value}
+
+    async def _cmd_discard_pause_checkpoint(self, args: dict) -> dict:
+        task_id = args["task_id"]
+        reason = (args.get("reason") or "").strip()
+        if not reason:
+            return {"success": False, "error": "reason is required"}
+        error = await self._task_control_scope_error(task_id)
+        if error:
+            return error
+        if await self.db.get_task(task_id) is None:
+            return {"success": False, "error": f"Task '{task_id}' not found"}
+        actor = (self._current_scope or {}).get("session_id") or "local-operator"
+        # Under the pause/resume lock: never race a capture or a resume.
+        async with self.orchestrator._task_control_lock(task_id):
+            discarded = await self.db.discard_task_pause_checkpoint(
+                task_id, reason=reason, actor=actor,
+            )
+        if discarded is None:
+            return {"success": False, "error": f"Task '{task_id}' has no paused checkpoint"}
+        return {
+            "success": True,
+            "task_id": task_id, "discarded": True,
+            "branch": discarded.get("branch"), "ref": discarded.get("ref"),
+            "commit": discarded.get("commit"),
+        }
 
     async def _cmd_stop_task(self, args: dict) -> dict:
         error = await self.orchestrator.stop_task(args["task_id"])
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         return {"stopped": args["task_id"]}
 
-    async def _cmd_task_recover(self, args: dict) -> dict:
+    async def recover_orphaned_integration_task(self, task_id: str, session) -> dict | None:
+        """Preserve and release a stopped pool claim before the orphan fallback.
+
+        None means no retained integration attachment belongs to this session.
+        Every other result retains responsibility here: a refused proof must
+        not fall through to a transition that loses the recoverable assignment.
+        """
+        from sqlalchemy import select
+
+        from src.claim_file import remove_claim_file_if_matches
+        from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
+        from src.database.queries.integration_state_queries import session_attached_clause
+        from src.database.tables import integration_branch_owners, sessions, task_metadata, tasks
+        from src.integration.owner_recovery import RECOVERABLE_STATES, owner_recovery_for
+
+        if session.lifecycle != "pool":
+            return None
+        async with self.db._engine.connect() as conn:
+            owners = (await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == task_id,
+                integration_branch_owners.c.session_id == session.id,
+                integration_branch_owners.c.owner_role.in_(("worker", "repair")),
+                integration_branch_owners.c.handoff_state.in_(RECOVERABLE_STATES),
+            ))).mappings().all()
+        if not owners:
+            return None
+        orch = self.orchestrator
+        retained = {"success": False, "outcome": "retained"}
+        if (
+            not self.config.integration.owner_recovery_sweep
+            or task_id in orch._running_tasks or orch._task_control_held(task_id)
+        ):
+            return retained
+        async with orch._task_control_lock(task_id):
+            task = await self.db.get_task(task_id)
+            current = await self.db.get_session(session.id)
+            if (
+                task is None or task.status is not TaskStatus.IN_PROGRESS
+                or current is None or current.instance_token != session.instance_token
+                or current.state != "stopped" or current.desired_state != "stopped"
+                or current.task_id != task_id or current.claim_phase != "active"
+                or current.last_claim_epoch != task.claim_epoch
+                or task.assigned_agent_id != current.agent_id
+                or not current.agent_id or task.resume_after is not None
+            ):
+                return retained
+            project = await self.db.get_project(task.project_id)
+            constraint = await self.db.get_project_constraint(task.project_id)
+            agent = await self.db.get_agent(current.agent_id)
+            workspace = await self.db.get_workspace_for_agent(current.agent_id)
+            if (
+                project is None or project.status is not ProjectStatus.ACTIVE
+                or constraint is not None and constraint.pause_scheduling
+                or agent is None or agent.current_task_id != task_id
+                or agent.state not in {AgentState.BUSY, AgentState.RETIRED}
+                or project.hierarchical_integration_mode not in {"train", "hierarchy"}
+                or task.repo_id != project.integration_repository_id
+                or workspace is None or await self.db.workspace_has_job_pin(workspace.id)
+                or workspace.locked_by_task_id != task_id
+                or workspace.locked_by_agent_id != current.agent_id
+                or os.path.realpath(workspace.workspace_path) != os.path.realpath(current.work_dir)
+                or len(owners) != 1 or owners[0]["workspace_id"] != workspace.id
+                or owners[0]["repository_id"] != task.repo_id
+                or owners[0]["ref"].removeprefix("refs/heads/") != (
+                    task.branch_name or ""
+                ).removeprefix("refs/heads/")
+            ):
+                return retained
+            async with self.db._engine.connect() as conn:
+                if (await conn.execute(select(sessions.c.id).where(
+                    sessions.c.agent_id == current.agent_id,
+                    sessions.c.id != current.id, session_attached_clause(),
+                ))).first() is not None:
+                    return retained
+                if await self.db.is_container(task_id, conn=conn):
+                    return retained
+                eligible = apply_label_filters(select(tasks.c.id).where(
+                    tasks.c.id == task_id, ~blocked_predicate(),
+                ), exclude_hold=True)
+                if (await conn.execute(eligible)).first() is None:
+                    return retained
+                if (await conn.execute(select(task_metadata.c.key).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == "manual_pause",
+                ))).first() is not None:
+                    return retained
+                owner = await self.db._recovery_owner(conn, {
+                    "id": task_id, "project_id": task.project_id,
+                })
+                if owner["kind"] != "supervisor":
+                    return retained
+            recovery = owner_recovery_for(orch)
+            if recovery is None:
+                return retained
+            result = await recovery.recover(owners[0]["id"], principal="session-reconciler")
+            if result.outcome not in {"released", "preserved_and_released"}:
+                return {**retained, "recovery": result.to_dict()}
+            remove_claim_file_if_matches(current.work_dir, task_id, task.claim_epoch)
+            await self.db.add_task_comment(
+                task_id,
+                f"Orphan sweep recovered stopped pool writer {current.id}, claim epoch "
+                f"{task.claim_epoch}; owner recovery preserved its branch and released the "
+                "retained claim to READY without a manual session kill or restart.",
+                author_kind="supervisor", author_id="session-reconciler",
+            )
+            await self._emit_task_graph_change(
+                "task.restarted", await self.db.get_task(task_id), reason="integration_owner_recovery",
+            )
+            return {"success": True, "outcome": "recovered", "recovery": result.to_dict()}
+
+    async def recover_missing_session_task(self, task_id: str, *, now: float) -> dict:
+        """Internal orphan-sweep command; never use operator restart's budget reset.
+
+        The task lock excludes preparation/close/pause while Git is checkpointed.
+        Database revalidation then fences every observed assignment and resource.
+        """
+        from src.git.manager import commit_identity
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+        from src.sessions.provider import SessionHandle
+
+        orch = self.orchestrator
+        if task_id in orch._running_tasks or orch._task_control_held(task_id):
+            return {"success": True, "outcome": "launch_in_flight"}
+        grace = max(120.0, float(self.config.sessions.lease_ttl_seconds))
+        async with orch._task_control_lock(task_id):
+            observed = await self.db.missing_session_recovery_candidate(
+                task_id, now=now, grace=grace,
+            )
+            if observed is None:
+                return {"success": True, "outcome": "not_orphaned"}
+            task = await self.db.get_task(task_id)
+            if task.assigned_agent_id in orch._adapters:
+                return {"success": True, "outcome": "adapter_present"}
+            previous = observed["session"]
+            if previous:
+                provider = orch.session_providers.create(previous["provider"], self.config)
+                stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                    previous["name"], previous["provider"], previous["instance_token"],
+                )), timeout=10)
+                if stopped is not True:
+                    return {"success": False, "outcome": "writer_unproven"}
+            workspace = observed["workspace"]
+            if workspace:
+                path = workspace["workspace_path"]
+                if await orch.git.avalidate_checkout(path):
+                    branch = await orch.git.aget_current_branch(path, strict=True)
+                    if not task.branch_name or branch != task.branch_name.removeprefix("refs/heads/"):
+                        return {"success": False, "outcome": "workspace_branch_changed"}
+                project = await self.db.get_project(task.project_id)
+                with commit_identity(orch.git.resolve_commit_identity(project)):
+                    await capture_checkpoint(self.db, orch.git, task_id, path)
+            status = await self.db.recover_missing_session_task(observed, now=now, grace=grace)
+            if status is None:
+                return {"success": True, "outcome": "changed"}
+            orch._task_exec_start.pop(task_id, None)
+            orch._task_pre_exec_sha.pop(task_id, None)
+            orch._task_attachments.pop(task_id, None)
+            current = await self.db.get_task(task_id)
+            await self._emit_task_graph_change(
+                "task.restarted" if status is TaskStatus.READY else "task.failed", current,
+                **({"reason": "session_missing"} if status is TaskStatus.READY
+                   else {"context": "session_missing"}),
+            )
+            if status is TaskStatus.FAILED:
+                await self.db.notify_task_recovery(task_id, project_id=task.project_id)
+            return {"success": True, "outcome": "recovered", "status": status.value}
+
+    async def _confirm_recovery_worker_stopped(self, incident: dict) -> dict:
+        from src.sessions.provider import SessionHandle
+
+        row = (
+            await self.db.get_session(incident.get("session_id"))
+            if incident.get("session_id")
+            else None
+        )
+        if row is None:
+            return {"success": False, "error": "Cannot confirm the old worker has stopped; operator review required"}
+        try:
+            provider = self.orchestrator.session_providers.create(row.provider, self.config)
+            stopped = await asyncio.wait_for(
+                provider.confirm_stopped(SessionHandle(row.name, row.provider, row.instance_token)),
+                timeout=10,
+            )
+        except Exception:
+            return {"success": False, "error": "Worker liveness check unavailable; recovery was not accepted"}
+        if stopped is not True:
+            return {"success": False, "error": "The old worker may still be running; recovery was not accepted"}
+        return {"id": row.id, "instance_token": row.instance_token}
+
+    async def _cmd_task_recover(self, args: dict, *, ask_decision=None) -> dict:
         task_id = args.get("task_id")
         error = await self._task_control_scope_error(task_id)
         if error:
             return error
         decision = args.get("decision")
         reason = args.get("reason")
-        if decision not in ("retry", "hold") or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
-            return {"error": "Provide decision retry|hold and a reason of 1 to 4000 characters"}
+        if (
+            decision not in ("retry", "hold", "release")
+            or not isinstance(reason, str)
+            or not 1 <= len(reason.strip()) <= 4000
+        ):
+            return {"success": False, "error": "Provide decision retry|hold|release and a reason of 1 to 4000 characters"}
+        operator_release = args.get("operator_release", False)
+        if not isinstance(operator_release, bool):
+            return {"success": False, "error": "operator_release must be a boolean"}
+        expected_hold_at = args.get("expected_hold_at")
+        if expected_hold_at is not None and (
+            decision not in ("retry", "release")
+            or isinstance(expected_hold_at, bool)
+            or not isinstance(expected_hold_at, (int, float))
+        ):
+            return {"success": False, "error": "expected_hold_at requires retry|release and the prior hold's decided_at"}
+        actor = None
+        if operator_release:
+            if decision not in ("retry", "release") or expected_hold_at is None:
+                return {"success": False, "error": "operator_release requires retry|release and expected_hold_at"}
+            from src.commands.supervisor_authority import operator_or_global_supervisor
+
+            actor, refusal = await operator_or_global_supervisor(self.db)
+            if refusal:
+                return {"success": False, "error": refusal}
+        elif decision == "release":
+            return {"success": False, "error": "decision release requires operator_release"}
         repair_operation = await self.db.get_active_integration_repair_for_task(task_id)
         verifier_operation = await self.db.get_active_integration_verifier_for_task(task_id)
-        if repair_operation is not None or verifier_operation is not None:
+        if decision != "release" and (repair_operation is not None or verifier_operation is not None):
             operation = repair_operation or verifier_operation
             return {
+                "success": False,
                 "error": (
                     "Task recovery is owned by integration operation "
                     f"{operation['id']}; use the integration operation's existing controls and budgets"
@@ -4522,31 +4693,57 @@ class TaskCommandsMixin:
             }
         scope = self._current_scope or {}
         stopped_session = None
+        operator_handoff = False
         if decision == "retry":
-            from src.sessions.provider import SessionHandle
-
             incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
             if incident.get("id") != args.get("incident_id"):
-                return {"error": "Incident is stale or not found"}
-            row = await self.db.get_session(incident["session_id"])
-            if row is None:
-                return {"error": "Cannot confirm the old worker has stopped; operator review required"}
-            try:
-                provider = self.orchestrator.session_providers.create(row.provider, self.config)
-                stopped = await asyncio.wait_for(provider.confirm_stopped(
-                    SessionHandle(row.name, row.provider, row.instance_token)
-                ), timeout=10)
-            except Exception:
-                return {"error": "Worker liveness check unavailable; recovery was not accepted"}
-            if stopped is not True:
-                return {"error": "The old worker may still be running; recovery was not accepted"}
-            stopped_session = {"id": row.id, "instance_token": row.instance_token}
-        result = await self.db.decide_task_recovery(
-            task_id, args.get("incident_id"), decision, reason.strip(),
-            author_kind="supervisor" if scope.get("kind") == "session" else "user",
-            author_id=scope.get("session_id") or "operator",
-            project_id=scope.get("project_id"), stopped_session=stopped_session,
-        )
+                return {"success": False, "error": "Incident is stale or not found"}
+            current = await self.db.get_task(task_id)
+            operator_handoff = bool(
+                expected_hold_at is not None
+                and current is not None
+                and current.route_source == "override"
+                and incident.get("reason") == "session_not_live"
+                and incident.get("end_reason") in {"productive_death", "drained"}
+            )
+            if operator_handoff:
+                from src.commands.supervisor_authority import operator_or_supervisor
+
+                actor, refusal = await operator_or_supervisor(self.db, current.project_id)
+                if refusal:
+                    return {"success": False, "error": refusal}
+            stopped_session = await self._confirm_recovery_worker_stopped(incident)
+            if "error" in stopped_session:
+                return stopped_session
+        elif decision == "release":
+            current = await self.db.get_task(task_id)
+            if current is not None and current.assigned_agent_id:
+                incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
+                if incident.get("id") != args.get("incident_id"):
+                    return {"success": False, "error": "Incident is stale or not found"}
+                stopped_session = await self._confirm_recovery_worker_stopped(incident)
+        try:
+            result = await self.db.decide_task_recovery(
+                task_id,
+                args.get("incident_id"),
+                decision,
+                reason.strip(),
+                author_kind="supervisor" if scope.get("kind") == "session" else "user",
+                author_id=actor or scope.get("session_id") or "operator",
+                project_id=scope.get("project_id"),
+                stopped_session=stopped_session,
+                expected_hold_at=expected_hold_at,
+                operator_handoff=operator_handoff,
+                operator_release=operator_release,
+                ask_decision_id=ask_decision["id"] if ask_decision else None,
+                ask_evidence_entry_id=ask_decision["evidence_entry_id"] if ask_decision else None,
+                ask_expected_meaning=ask_decision["packet"]["domain"]["meaning"] if ask_decision else None,
+            )
+        except ValueError as exc:
+            if ask_decision:
+                raise  # The ask operation reconciles its own application failures.
+            # The fenced transaction refused (stale incident, closed task); nothing changed.
+            return {"success": False, "error_code": "task_recovery.refused", "error": str(exc)}
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
 
@@ -4568,46 +4765,185 @@ class TaskCommandsMixin:
             return disabled
         task_id = args.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         error = await self._task_control_scope_error(task_id)
         if error:
             return error
         result = await self.db.notify_task_recovery(task_id, project_id=args.get("project_id"))
         if result["outcome"] == "not_found":
-            return {"error": f"Task '{task_id}' not found in this project"}
+            return {"success": False, "error": f"Task '{task_id}' not found in this project"}
         return result
 
-    async def _cmd_restart_task(self, args: dict) -> dict:
-        task = await self.db.get_task(args["task_id"])
-        if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
-        if task.status == TaskStatus.IN_PROGRESS:
-            return {"error": "Task is currently in progress. Stop it first."}
-        project = await self.db.get_project(task.project_id)
-        if (
-            task.status == TaskStatus.BLOCKED
-            and project is not None
-            and project.hierarchical_integration_mode in {"hierarchy", "train"}
-            and await self.db.get_integration_checkpoint(task.id)
-        ):
-            from src.integration.canonical_reservation import reserve_canonical_task_branch
+    async def _resume_manual_pause(self, task_id: str) -> dict | None:
+        """Clear a manual pause through Resume before Restart, or return its refusal.
 
-            reservation = await reserve_canonical_task_branch(self.db, task.id)
-            if reservation["outcome"] not in {"acquired", "already_reserved"}:
-                return {"error": f"Cannot restart integration task: {reservation['reason']}"}
-        old_status = task.status.value
+        A manual pause refuses every lifecycle write but its own resume: same
+        scope check, same stop proofs. The control lock is not reentrant, so
+        this runs before restart takes it.
+        """
+        paused = await self.db.get_task(task_id)
+        if (paused is None or paused.status != TaskStatus.PAUSED
+                or await self.db.get_task_meta(task_id, "manual_pause") is None):
+            return None
+        resumed = await self._cmd_resume_task({"task_id": task_id})
+        return None if resumed.get("success") else resumed
+
+    async def _cmd_restart_task(self, args: dict) -> dict:
+        from src.integration.repair import OrdinaryRepairService
+        from src.wait_runtime.restart import readmit, release_continuations, restart_lock
+        from src.waits.conditions import WaitError
+
+        if (refused := await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])) is not None:
+            return refused
+        # Resume's task-control lock covers continuation cleanup and readmission.
+        async with restart_lock(self, args["task_id"]):
+            task = await self.db.get_task(args["task_id"])
+            if not task:
+                return {"success": False, "error": f"Task '{args['task_id']}' not found"}
+            if task.status == TaskStatus.IN_PROGRESS:
+                return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            if stale := await OrdinaryRepairService(self.db).stale(task):
+                return {"success": False, "error": stale, "error_code": "stale_repair"}
+            try:
+                released = await release_continuations(self, task)
+            except WaitError as exc:
+                return {"success": False, "error": str(exc), "error_code": exc.code}
+            project = await self.db.get_project(task.project_id)
+            from src.integration.train_policy import worker_integration_enabled
+
+            managed = await worker_integration_enabled(self.db, project)
+            if managed and task.status in _RESTART_RESERVATION_STATUSES:
+                # Repair delegates restart through their operation's reserved branch fence.
+                if task.created_by_kind == "integration_repair":
+                    return await self._restart_repair_delegate(task)
+                if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
+                    task.id
+                ):
+                    from src.integration.canonical_reservation import reserve_canonical_task_branch
+
+                    reservation = await reserve_canonical_task_branch(self.db, task.id)
+                    if reservation["outcome"] not in {"acquired", "already_reserved"}:
+                        return {"success": False, "error": (
+                            f"Cannot restart integration task: {reservation['reason']}. "
+                            "For a stopped writer, preview "
+                            f"aq integration release-owner --task-id {task.id} --dry-run; "
+                            "apply only after its provider-backed proof succeeds, then retry restart."
+                        )}
+            old_status = task.status.value
+            if not await readmit(self, task, released):
+                return {"success": False, "error": "Task changed during cold restart; retry."}
+            return {
+                "success": True,
+                "restarted": args["task_id"],
+                "title": task.title,
+                "previous_status": old_status,
+            }
+
+    async def _restart_repair_delegate(self, task) -> dict:
+        """Restart an integration repair delegate through its own reservation.
+
+        The pool claim frontier admits a repair delegate only on the exact
+        reserved ``repair`` fence its operation holds on the operation's
+        branch (:func:`src.database.queries.hierarchy_queries._reserved_repair_branch`),
+        never through a branch origin of its own, so a restart that only moved
+        the row to READY stranded a task no worker could ever claim. The fence
+        is re-established here with the same fenced handoff ``aq integration
+        reserve-owner`` uses -- which also restores the operation's preserved
+        repair progress -- and a handoff that cannot prove the branch is back
+        leaves the task exactly as the restart found it.
+
+        The READY write comes first because the fenced handoff only admits a
+        dispatchable writer, so a refused handoff is undone rather than left
+        behind. A claim waiter woken by that READY re-reads the row and skips
+        it; nothing claims a READY delegate whose fence was never restored.
+        """
+        previous = (task.status, task.retry_count, task.assigned_agent_id)
+        previous_streak = await self.db.get_task_meta(task.id, "worker_failure_streak")
+        previous_incident = await self.db.get_task_meta(task.id, "supervisor_recovery_incident")
         await self.db.transition_task(
-            args["task_id"],
+            task.id,
             TaskStatus.READY,
             context="restart_task",
             retry_count=0,
             assigned_agent_id=None,
+            _defer_recovery_supersession=True,
         )
+        reservation = await self._integration_repair_service().reserve_delegate(task.id)
+        if reservation["outcome"] in {"acquired", "already_reserved"}:
+            if previous_incident and previous_incident.get("decision") in (None, "hold"):
+                from src.database.tables import tasks
+
+                # The preparatory READY write cannot release a supervisor hold:
+                # only an accepted branch handoff authorizes the new attempt.
+                accepted = await self.db.transition_task_with_meta(
+                    task.id,
+                    TaskStatus.READY,
+                    meta={},
+                    context="restart_task",
+                    from_statuses=(TaskStatus.READY,),
+                    extra_where=(
+                        tasks.c.assigned_agent_id.is_(None)
+                        & (tasks.c.claim_epoch == task.claim_epoch)
+                    ),
+                )
+                if not accepted:
+                    return {"error": (
+                        f"Task {task.id} changed during its restart handoff; retry restart."
+                    )}
+            return {
+                "success": True,
+                "restarted": task.id,
+                "title": task.title,
+                "previous_status": previous[0].value,
+                "reservation": reservation["outcome"],
+            }
+        await self._undo_refused_restart(task, previous)
+        if previous_streak is not None:
+            await self.db.set_task_meta(task.id, "worker_failure_streak", previous_streak)
+        detail = reservation.get("dispatch", {}).get("reason") or reservation.get("reason")
         return {
-            "restarted": args["task_id"],
-            "title": task.title,
-            "previous_status": old_status,
+            "success": False,
+            "error": (
+                f"Cannot restart integration task {task.id}: its repair operation "
+                f"did not hand the branch back to this delegate ({detail}). Run "
+                f"`aq integration reserve-owner --task-id {task.id}`; if the fence is "
+                f"still held by the stopped writer, free it first with "
+                f"`aq integration release-owner --task-id {task.id}`."
+            )
         }
+
+    async def _undo_refused_restart(self, task, previous) -> None:
+        """Put a refused repair restart back where it found *task*.
+
+        ``READY -> BLOCKED`` is not a state-machine edge, so the restore is
+        forced: it is a rollback, not a new disposition, and it must not stamp
+        ``blocked_terminal``. A manual pause taken while the handoff ran keeps
+        its hold and refuses the write; the task is then PAUSED, which is
+        equally off the claim frontier, so a refusal never strands it.
+        """
+        from src.database.queries.task_queries import StaleClaim
+
+        try:
+            await self.db.transition_task(
+                task.id,
+                previous[0],
+                context="restart_task_refused",
+                force=True,
+                retry_count=previous[1],
+                assigned_agent_id=previous[2],
+                profile_id=task.profile_id,
+                intelligence_class=task.intelligence_class,
+                provider_intent=task.provider_intent,
+                route_source=task.route_source,
+                route=task.route,
+            )
+        except StaleClaim as exc:
+            logger.warning(
+                "restart_task: could not restore %s after a refused repair "
+                "restart (%s); it is held, not claimable",
+                task.id,
+                exc,
+            )
 
     async def _cmd_reopen_with_feedback(self, args: dict) -> dict:
         """Reopen a completed/failed task with feedback appended to its description.
@@ -4625,15 +4961,15 @@ class TaskCommandsMixin:
         task_id = args.get("task_id")
         feedback = args.get("feedback", "").strip()
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not feedback:
-            return {"error": "feedback text is required"}
+            return {"success": False, "error": "feedback text is required"}
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
-            return {"error": "Task is currently in progress. Stop it first."}
+            return {"success": False, "error": "Task is currently in progress. Stop it first."}
 
         review_evidence_snapshot = None
         caller_scope = self._current_scope or {}
@@ -4643,12 +4979,11 @@ class TaskCommandsMixin:
             review_task = await self.db.get_task(review_task_id) if review_task_id else None
             session = await self.db.get_session(session_id) if session_id else None
             if review_task is not None and review_task.profile_id in REVIEW_PROFILE_IDS:
-                from src.database.queries.hierarchy_queries import HierarchyError
-                from src.integration.review_evidence import ReviewEvidenceProducer
+                from src.integration.reviews import ReviewEvidenceProducer
 
                 try:
                     review_evidence_snapshot = await ReviewEvidenceProducer(
-                        self.db, self._integration_promotion_service()
+                        self.db, self._integration_repository_git()
                     ).snapshot(
                         review_task,
                         session,
@@ -4657,7 +4992,7 @@ class TaskCommandsMixin:
                         requested_subject_id=task_id,
                     )
                 except HierarchyError as exc:
-                    return {"error": f"integration review evidence refused: {exc}"}
+                    return {"success": False, "error": f"integration review evidence refused: {exc}"}
 
         old_status = task.status.value
 
@@ -4676,24 +5011,39 @@ class TaskCommandsMixin:
             "assigned_agent_id": None,
             "pr_url": None,
         }
-        if review_evidence_snapshot is None:
-            await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
-        else:
-            from src.integration.review_evidence import ReviewEvidenceProducer
+        # Missing provenance is recoverable only through an explicit operator
+        # control. Ordinary lifecycle writes and reviewer rejections retain the
+        # unknown-delivery fence.
+        from src.commands.supervisor_authority import operator_or_supervisor
 
-            async with self.db.immediate() as conn:
-                transition = await ReviewEvidenceProducer(
-                    self.db, None
-                ).reject_and_reopen_on(
-                    conn,
-                    task_id,
-                    review_evidence_snapshot["reviewer_task_id"],
-                    review_evidence_snapshot,
-                    **transition_values,
+        _, recovery_refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="task reopen"
+        )
+        transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
+        try:
+            if review_evidence_snapshot is None:
+                await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
+            else:
+                from src.integration.reviews import ReviewEvidenceProducer
+
+                transition_values["integration_delivery"] = await self.db.observe_removal_delivery(
+                    [task_id], for_mutation=True,
                 )
-            await self.db.log_blocked_flips(transition.flipped)
-            await self.db._notify_settled(transition.settled)
-            await self.db._notify_ready(transition.ready)
+                async with self.db.immediate() as conn:
+                    transition = await ReviewEvidenceProducer(
+                        self.db, None
+                    ).reject_and_reopen_on(
+                        conn,
+                        task_id,
+                        review_evidence_snapshot["reviewer_task_id"],
+                        review_evidence_snapshot,
+                        **transition_values,
+                    )
+                await self.db.log_blocked_flips(transition.flipped)
+                await self.db._notify_settled(transition.settled)
+                await self.db._notify_ready(transition.ready)
+        except HierarchyError as exc:
+            return self._hierarchy_failure(exc)
 
         # Store feedback as a structured task_context entry so agents and
         # tooling can access individual reopen comments programmatically.
@@ -4772,6 +5122,7 @@ class TaskCommandsMixin:
                     )
 
         return {
+            "success": True,
             "reopened": task_id,
             "title": task.title,
             "previous_status": old_status,
@@ -4781,89 +5132,60 @@ class TaskCommandsMixin:
             "cancelled_reviews": cancelled_reviews,
         }
 
+    async def _cmd_remove_task(self, args: dict) -> dict:
+        """Deprecated alias for the unified delete action."""
+        result = await self._cmd_delete_task(args)
+        return {**result, "deprecated_alias": "remove_task", "removed": result.get("deleted")}
+
     async def _cmd_delete_task(self, args: dict) -> dict:
+        from src.commands.supervisor_authority import operator_or_supervisor
+        from src.integration.task_deletion import deletion_actor, deletion_plan, execute_deletion
+
         task_id = args["task_id"]
         task = await self.db.get_task(task_id)
-        if not task:
-            return {"error": f"Task '{task_id}' not found"}
-        if task.status == TaskStatus.IN_PROGRESS:
-            error = await self.orchestrator.stop_task(task_id)
-            if error:
-                return {"error": f"Could not stop task before deleting: {error}"}
-        cascade = bool(args.get("cascade", False))
-        branch_policy = args.get("branches")
-        if branch_policy not in (None, "keep", "delete"):
+        if task is None:
+            return {"success": False, "error": f"Task '{task_id}' not found"}
+        actor, refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="task deletion"
+        )
+        if refusal:
+            return {"success": False, "code": "deletion.forbidden", "error": refusal}
+        branches = args.get("branches") or "keep"
+        if branches not in {"keep", "delete"}:
             return {
                 "success": False,
                 "code": "invalid_branches",
                 "error": "branches must be 'keep' or 'delete'",
             }
-        # The wire word is "delete" — it reads correctly next to the task being
-        # deleted.  The guard's vocabulary is "discard", because it is naming
-        # what happens to the origin rather than to the task.
-        guard_policy = {"keep": "keep", "delete": "discard"}.get(branch_policy)
-        discarded: list[dict] = []
-        if guard_policy == "discard":
-            discarded = await self._materialized_branches_under(task_id)
-
-        if cascade:
-            # A cascade delete removes the whole subtree; refuse rather than
-            # pull a live session out from under a grandchild (spec §7).
-            # Check and delete in the same transaction so no session can
-            # start holding a descendant between the check and the delete.
-            # Both the refusal and the HierarchyError are handled OUTSIDE the
-            # transaction: returning from inside ``async with`` would commit
-            # it, and swallowing the error inside would commit a half-done
-            # cascade instead of rolling it back.
-            live: list = []
-            result = None
-            try:
-                async with self.db.immediate() as conn:
-                    live = await self.db.live_descendant_sessions(task_id, conn=conn)
-                    if not live:
-                        result = await self.db.delete_task(
-                            task_id, cascade=True, conn=conn, branch_policy=guard_policy
-                        )
-            except HierarchyError as exc:
-                return self._hierarchy_failure(exc)
-            if live:
-                return {
-                    "success": False,
-                    "code": "hierarchy.live_descendants",
-                    "error": (
-                        f"Cannot delete task '{task_id}': "
-                        f"{len(live)} live descendant session(s) must stop first"
-                    ),
-                    "sessions": [{"session_id": s, "task_id": t} for s, t in live],
-                }
-            # Post-commit, same sequencing as delete_task's own single-
-            # transaction path — a listener failure must not roll back the
-            # delete.
-            await self.db.log_blocked_flips(result.flipped)
-            await self.db._notify_settled(result.settled)
-            await self.db._notify_ready(result.ready)
-        else:
-            try:
-                await self.db.delete_task(
-                    task_id, cascade=False, branch_policy=guard_policy
-                )
-            except HierarchyError as exc:
-                return self._hierarchy_failure(exc)
-        await self._emit_task_graph_change("task.deleted", task)
-        return {
-            "deleted": task_id,
-            "title": task.title,
-            "discarded_branches": discarded,
-        }
+        plan, captured = await deletion_plan(
+            self.db,
+            self.orchestrator,
+            task_id,
+            recursive=bool(args.get("recursive") or args.get("cascade")),
+            branches=branches,
+            stop_running=bool(args.get("stop_running", False)),
+        )
+        if not args.get("confirmed", False):
+            return plan
+        result = await execute_deletion(
+            self.db,
+            self.orchestrator,
+            plan,
+            captured,
+            actor=deletion_actor.get() or actor,
+            reason=args.get("reason"),
+        )
+        try:
+            await self.orchestrator._emit_task_event(
+                "task.deleted", task, seq=captured["deletion_event_id"]
+            )
+        except Exception as exc:
+            result["warnings"].append({"code": "notification_failed", "message": str(exc)})
+        return result
 
     @staticmethod
     def _hierarchy_failure(exc: HierarchyError) -> dict:
-        """Render a HierarchyError, carrying any structured context it holds.
-
-        ``branch_discard_required`` is the one refusal a surface is expected to
-        act on rather than just report, so its branch list has to survive the
-        trip out.
-        """
+        """Render a hierarchy refusal with its structured context."""
         failure = {
             "success": False,
             "error": f"hierarchy.{exc.code}: {exc.detail}",
@@ -4871,44 +5193,6 @@ class TaskCommandsMixin:
         }
         failure.update(getattr(exc, "context", {}) or {})
         return failure
-
-    async def _materialized_branches_under(self, task_id: str) -> list[dict]:
-        """The branches a discard is about to queue, read before the rows go.
-
-        Snapshotted for the response only: the delete transaction is what
-        actually marks them, and it re-reads under its own lock.
-        """
-        from sqlalchemy import select
-
-        from src.database.tables import task_branch_origins
-
-        async with self.db._engine.connect() as conn:
-            ids = await self.db.subtree_ids(task_id, conn=conn)
-            if not ids:
-                return []
-            rows = (
-                (
-                    await conn.execute(
-                        select(task_branch_origins)
-                        .where(
-                            task_branch_origins.c.task_id.in_(ids),
-                            task_branch_origins.c.retired_at.is_(None),
-                            task_branch_origins.c.materialized.is_(True),
-                        )
-                        .order_by(task_branch_origins.c.task_id)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [
-            {
-                "task_id": row["task_id"],
-                "branch": row["branch_name"],
-                "base_sha": row["base_sha"],
-            }
-            for row in rows
-        ]
 
     # -- Archive commands -----------------------------------------------------
     # Archive moves completed tasks out of the active view into the
@@ -4919,8 +5203,8 @@ class TaskCommandsMixin:
     async def _cmd_archive_task(self, args: dict) -> dict:
         """Archive tasks — single task by ID or bulk by project.
 
-        **Single mode** (``task_id``): archives one task.  Must be in a
-        terminal status (COMPLETED, FAILED, or BLOCKED).
+        **Single mode** (``task_id``): archives the subtree. Terminal tasks
+        need no reason; DEFINED/READY/PAUSED tasks require a reason.
 
         **Bulk mode** (``project_id``): archives all completed tasks in a
         project.  Set ``include_failed=True`` to also archive FAILED and
@@ -4932,13 +5216,41 @@ class TaskCommandsMixin:
             ``task_id`` – archive a single task by ID.
             ``project_id`` – bulk-archive completed tasks in this project.
             ``include_failed`` – (bulk only) also archive FAILED/BLOCKED.
+            ``disposition`` – (single only) ``deliver``, ``obsolete`` or
+            ``retire``: the decision for completed work that has not reached
+            the default branch. ``obsolete`` and ``retire`` abandon it and
+            archive; ``deliver`` keeps the task and reports its delivery.
+            ``replacement`` / ``satisfied_by`` – (obsolete only) retirement
+            evidence. A replacement redirects all dependent edges; evidence
+            alone requires an explicit ``rewire`` edge plan.
         """
+        from src.integration.removal_guard import DELIVERY_DISPOSITIONS
+
         task_id = args.get("task_id")
         project_id = args.get("project_id")
         abandon_undelivered = bool(args.get("abandon_undelivered"))
         abandon_reason = args.get("reason")
+        disposition = args.get("disposition") or None
+        replacement_task_id = args.get("replacement", args.get("replacement_task_id"))
+        satisfied_by = args.get("satisfied_by")
+        rewire = args.get("rewire")
+        if any(value is not None for value in (replacement_task_id, satisfied_by, rewire)):
+            if not task_id or disposition != "obsolete":
+                return {
+                    "success": False, "code": "obsolete.invalid_disposition",
+                    "error": "Replacement, satisfied-by and rewire require a single obsolete archive.",
+                }
+        if disposition is not None and disposition not in DELIVERY_DISPOSITIONS:
+            return {
+                "success": False,
+                "error": f"--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.",
+            }
+        if disposition == "deliver" and abandon_undelivered:
+            return {"success": False, "error": "--disposition deliver keeps the work; drop --abandon-undelivered."}
+        if disposition in {"obsolete", "retire"}:
+            abandon_undelivered = True
 
-        if abandon_undelivered:
+        if abandon_undelivered or disposition:
             scope = self._current_scope or {}
             if scope.get("kind") == "session" and not scope.get("elevated"):
                 return {
@@ -4947,22 +5259,41 @@ class TaskCommandsMixin:
                     "error": "--abandon-undelivered is an operator decision; a worker session cannot make it.",
                 }
             if not task_id:
-                return {"error": "--abandon-undelivered is available only with task_id."}
+                return {"success": False, "error": "--abandon-undelivered is available only with task_id."}
+        if abandon_undelivered:
             if not isinstance(abandon_reason, str) or not abandon_reason.strip():
-                return {"error": "--abandon-undelivered requires --reason."}
+                return {"success": False, "error": "--abandon-undelivered requires --reason."}
+            if disposition is None:
+                return {
+                    "success": False,
+                    "code": "hierarchy.disposition_required",
+                    "error": (
+                        "Abandoning undelivered work needs a disposition: "
+                        "`--disposition deliver` keeps it for the train, "
+                        "`--disposition obsolete` archives it with --reason as the note, "
+                        "`--disposition retire` archives it; both retire its branches "
+                        "after a backup bundle."
+                    ),
+                }
+        if disposition == "deliver":
+            return await self._keep_for_delivery(task_id, reason=abandon_reason)
 
         if task_id:
             # --- Single-task mode ---
             task = await self.db.get_task(task_id)
             if not task:
-                return {"error": f"Task '{task_id}' not found"}
+                return {"success": False, "error": f"Task '{task_id}' not found"}
 
             terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+            if isinstance(abandon_reason, str) and abandon_reason.strip():
+                terminal.update({TaskStatus.PAUSED, TaskStatus.DEFINED, TaskStatus.READY})
             if task.status not in terminal:
                 return {
+                    "success": False,
                     "error": (
                         f"Cannot archive task in {task.status.value} status. "
-                        "Only COMPLETED, FAILED, or BLOCKED tasks can be archived."
+                        "Archive PAUSED, DEFINED, or READY tasks with --reason, "
+                        "or stop running work with Remove."
                     ),
                 }
 
@@ -4976,6 +5307,11 @@ class TaskCommandsMixin:
                     abandon_undelivered=abandon_undelivered,
                     abandon_reason=abandon_reason,
                     abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
+                    archive_reason=abandon_reason,
+                    disposition=disposition,
+                    replacement_task_id=replacement_task_id,
+                    satisfied_by=satisfied_by,
+                    rewire=rewire,
                 )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal
@@ -4983,28 +5319,24 @@ class TaskCommandsMixin:
                 # instead of just printing a code.
                 return self._hierarchy_failure(exc)
             if not success:
-                return {"error": f"Failed to archive task '{task_id}'"}
+                return {"success": False, "error": f"Failed to archive task '{task_id}'"}
 
             await self.db.log_event(
                 "task_archived",
                 project_id=task.project_id,
                 task_id=task_id,
             )
-            if abandon_undelivered:
-                await self.db.log_event(
-                    "task.delivery_abandoned",
-                    project_id=task.project_id,
-                    task_id=task_id,
-                )
             await self._emit_task_graph_change("task.archived", task)
             return {
+                "success": True,
                 "archived": task_id,
                 "title": task.title,
                 "status": task.status.value,
+                "disposition": disposition or "",
             }
 
         if not project_id and not task_id:
-            return {"error": "Provide task_id or project_id."}
+            return {"success": False, "error": "Provide task_id or project_id."}
 
         # --- Bulk mode ---
         include_failed = args.get("include_failed", False)
@@ -5018,7 +5350,7 @@ class TaskCommandsMixin:
 
         if not tasks_to_archive:
             scope = f" in project `{project_id}`" if project_id else ""
-            return {"message": f"No completed tasks to archive{scope}."}
+            return {"success": True, "message": f"No completed tasks to archive{scope}."}
 
         # Phase 1 — gather results and dependencies before any deletions.
         task_data: list[tuple] = []
@@ -5080,6 +5412,7 @@ class TaskCommandsMixin:
                 break
 
         return {
+            "success": True,
             "archived_count": len(archived),
             "archived_ids": [a["id"] for a in archived],
             "archived": archived,
@@ -5105,6 +5438,7 @@ class TaskCommandsMixin:
         )
         total = await self.db.count_archived_tasks(project_id=project_id)
         return {
+            "success": True,
             "tasks": tasks,
             "count": len(tasks),
             "total": total,
@@ -5142,6 +5476,7 @@ class TaskCommandsMixin:
             blocked_total, blocked = report.total, report.roots
 
         return {
+            "success": True,
             "enabled": cfg.enabled,
             "after_hours": cfg.after_hours,
             "statuses": cfg.statuses,
@@ -5163,15 +5498,15 @@ class TaskCommandsMixin:
         task_id = args.get("task_id")
         input_text = args.get("input", "").strip()
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not input_text:
-            return {"error": "input text is required"}
+            return {"success": False, "error": "input text is required"}
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         if task.status != TaskStatus.WAITING_INPUT:
-            return {"error": f"Task is not waiting for input (status: {task.status.value})"}
+            return {"success": False, "error": f"Task is not waiting for input (status: {task.status.value})"}
 
         # Append the human reply to the task description so the agent sees it
         # when the task is re-executed.
@@ -5192,6 +5527,7 @@ class TaskCommandsMixin:
             payload=input_text[:500],
         )
         return {
+            "success": True,
             "task_id": task_id,
             "title": task.title,
             "status": "READY",
@@ -5199,23 +5535,39 @@ class TaskCommandsMixin:
 
     async def _cmd_set_task_status(self, args: dict) -> dict:
         if args.get("status") == "PAUSED":
-            return {"error": "Use pause_task to pause safely and stop any running session."}
+            return {"success": False, "error": "Use pause_task to pause safely and stop any running session."}
         task_id = args["task_id"]
         new_status = args["status"]
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         old_status = task.status.value
         if new_status == TaskStatus.COMPLETED.value:
             open_children = await self.db.open_children(task_id)
             if open_children:
                 return {
+                    "success": False,
                     "error": f"task {task_id} has open children: {', '.join(open_children)}",
                     "code": "hierarchy.open_children",
                     "open_children": open_children,
                 }
+            project = await self.db.get_project(task.project_id)
+            repo_id = task.repo_id or (project.integration_repository_id if project else None)
+            origin = await self.db.get_task_branch_origin_for_promotion(task.id, repo_id or "")
+            if task.branch_name or origin:
+                return {
+                    "success": False,
+                    "error": "A task with a Git branch or origin needs completion provenance. "
+                    "Use task close for held work, or integration record-root-noop for an "
+                    "unheld no-change root whose published head equals its recorded base.",
+                    "code": "integration.completion_provenance_required",
+                }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
+        refreshed = await self.db.get_task(task_id)
+        if refreshed:
+            await self._emit_task_graph_change("task.updated", refreshed)
         return {
+            "success": True,
             "task_id": task_id,
             "old_status": old_status,
             "new_status": new_status,
@@ -5226,11 +5578,68 @@ class TaskCommandsMixin:
         """Skip a BLOCKED/FAILED task to unblock its dependency chain."""
         error, unblocked = await self.orchestrator.skip_task(args["task_id"])
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         return {
+            "success": True,
             "skipped": args["task_id"],
             "unblocked_count": len(unblocked),
             "unblocked": [{"id": t.id, "title": t.title} for t in unblocked],
+        }
+
+    async def _keep_for_delivery(self, task_id: str, *, reason: str | None) -> dict:
+        """Record the ``deliver`` disposition: keep the task and say what delivers it.
+
+        Nothing is archived or retired. The decision is written on the task as a
+        comment and a ``task.delivery_disposition`` event; a root also gets its
+        authorize-root dry run, which names what its delivery waits on.
+        """
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"success": False, "error": f"Task '{task_id}' not found"}
+        if task.status != TaskStatus.COMPLETED:
+            return {
+                "success": False,
+                "error": (
+                    f"--disposition deliver applies to completed work; {task_id} is "
+                    f"{task.status.value}."
+                ),
+            }
+        _branch, undelivered = await self.db.undelivered_holders(task_id)
+        delivery = None
+        if task.parent_task_id is None:
+            delivery = await self._cmd_integration_authorize_root(
+                {"task_id": task_id, "dry_run": True}
+            )
+        actor = (self._current_scope or {}).get("session_id") or "operator"
+        holders = ", ".join(
+            f"{row['task_id']} ({row['holder']})" for row in undelivered
+        ) or "none"
+        note = f": {reason.strip()}" if isinstance(reason, str) and reason.strip() else ""
+        waits = ""
+        if delivery is not None:
+            waits = f"\nRoot delivery: {delivery.get('outcome')}: {delivery.get('reason', '')}"
+        await self.db.add_task_comment(
+            task_id,
+            f"Delivery disposition by {actor}: deliver{note}\n"
+            f"Kept for the train; undelivered holders: {holders}{waits}",
+            author_kind="supervisor",
+            author_id=actor,
+        )
+        await self.db.log_event(
+            "task.delivery_disposition",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=json.dumps({"disposition": "deliver", "undelivered": len(undelivered)}),
+        )
+        return {
+            "success": True,
+            "archived": "",
+            "kept": task_id,
+            "title": task.title,
+            "status": task.status.value,
+            "disposition": "deliver",
+            "undelivered": undelivered,
+            "delivery": delivery,
         }
 
     async def _write_archive_note(
@@ -5259,9 +5668,10 @@ class TaskCommandsMixin:
         if task_id:
             task = await self.db.get_task(task_id)
             if not task:
-                return {"error": f"Task '{task_id}' not found"}
+                return {"success": False, "error": f"Task '{task_id}' not found"}
             if task.status != TaskStatus.BLOCKED:
                 return {
+                    "success": True,
                     "task_id": task_id,
                     "status": task.status.value,
                     "stuck_downstream": [],
@@ -5269,6 +5679,7 @@ class TaskCommandsMixin:
                 }
             stuck = await self.orchestrator._find_stuck_downstream(task_id)
             return {
+                "success": True,
                 "task_id": task_id,
                 "title": task.title,
                 "status": task.status.value,
@@ -5294,6 +5705,7 @@ class TaskCommandsMixin:
                     }
                 )
         return {
+            "success": True,
             "project_id": pid,
             "stuck_chains": chains,
             "total_stuck_chains": len(chains),
@@ -5302,18 +5714,18 @@ class TaskCommandsMixin:
     async def _cmd_get_task_result(self, args: dict) -> dict:
         result = await self.db.get_task_result(args["task_id"])
         if not result:
-            return {"error": f"No results found for task '{args['task_id']}'"}
-        return result
+            return {"success": False, "error": f"No results found for task '{args['task_id']}'"}
+        return {**result, "success": True}
 
     async def _cmd_get_agent_error(self, args: dict) -> dict:
         task_id = args["task_id"]
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         result = await self.db.get_task_result(task_id)
 
-        info = {
+        info = {"success": True,
             "task_id": task_id,
             "title": task.title,
             "status": task.status.value,
@@ -5361,6 +5773,11 @@ class TaskCommandsMixin:
         if out_of_scope:
             return out_of_scope
         reasons: list[Reason] = []
+        from src.operator_decisions import OperatorDecisions
+
+        operator_decisions = await OperatorDecisions(self.db).history("task", str(task_id))
+        reasons.extend(Reason(code="operator_decision_hold", detail=row["decision"], ref=row["id"])
+                       for row in operator_decisions if row["active"])
         retirement = await self.db.get_task_meta(str(task_id), "integration_retirement")
         if not retirement:
             operation = await self.db.get_terminal_integration_delegate_operation(str(task_id))
@@ -5392,10 +5809,28 @@ class TaskCommandsMixin:
             if needs_attention == "slot_reset_failed":
                 failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
                 if isinstance(failure, dict):
-                    detail += (f": {failure.get('reason', 'unknown reset error')} "
+                    # A record written before reasons were described can
+                    # hold an empty string; say so rather than print nothing.
+                    detail += (f": {failure.get('reason') or 'no reason recorded'} "
                                f"(attempt {failure.get('attempt')}; "
                                f"{failure.get('retry', 'automatic')} retry). "
                                f"After fixing the cause: aq task resume --task-id {task_id}")
+            elif needs_attention == "branch_fenced":
+                fenced = await self.db.get_task_meta(str(task_id), "branch_fenced")
+                if isinstance(fenced, dict):
+                    detail += (f": {fenced.get('reason', 'branch is fenced')} on "
+                               f"{fenced.get('branch')}. The claim retries on its own; "
+                               f"aq integration release-owner releases the writer if it "
+                               f"is gone")
+            elif needs_attention in {
+                "integration_prepare_failed", "integration_prepare_failed_attached",
+                "repair_target_unpublished", "child_preparation_conflict",
+            }:
+                prepared = await self.db.get_task_meta(str(task_id), "prepare_failure")
+                if isinstance(prepared, dict) and prepared.get("reason"):
+                    detail += (f": {prepared['reason']} "
+                               f"({prepared.get('disposition', 'unknown')}; "
+                               f"claim epoch {prepared.get('claim_epoch')})")
             reasons.append(Reason(
                 code="needs_attention", detail=detail, ref=str(task_id),
             ))
@@ -5410,6 +5845,28 @@ class TaskCommandsMixin:
                 detail=f"{blocked_terminal}; not auto-recovered, restart or reopen to retry",
                 ref=str(task_id),
             ))
+        # BLOCKED with no attention, terminal mark, open incident or graph
+        # blocker: nothing recovers it (the promotion cascade only lifts
+        # BLOCKED work that has a graph blocker), and pools count only READY.
+        # Without this explain answered with route/pool waits for an hour
+        # while the task could never be claimed (swift-crest-94).
+        open_incident = isinstance(recovery, dict) and recovery.get("id") and not recovery.get(
+            "decision"
+        )
+        if (task.status is TaskStatus.BLOCKED and not retirement and not needs_attention
+                and not blocked_terminal and not open_incident
+                and not await self.db.tasks_with_graph_blockers([str(task_id)])):
+            failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
+            if isinstance(failure, dict):
+                detail = (f"BLOCKED by a failed slot reset: "
+                          f"{failure.get('reason') or 'no reason recorded'} "
+                          f"(attempt {failure.get('attempt')}). After fixing the cause: "
+                          f"aq task resume --task-id {task_id}")
+            else:
+                detail = ("BLOCKED with no recorded blocker: no dependency, gate, attention "
+                          "flag or terminal close holds it, and nothing requeues it. "
+                          f"aq task set-status --task-id {task_id} --status READY")
+            reasons.append(Reason(code="blocked_unheld", detail=detail, ref=str(task_id)))
 
         # A cooling-down PAUSED task is not blocked by anything in the graph
         # — it is waiting out a backoff (rate limit, rapid crash, stalled
@@ -5437,14 +5894,71 @@ class TaskCommandsMixin:
         try:
             labels = await self.db.get_task_labels(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("task_labels_unavailable", task.project_id)
             labels = []
         for lbl in labels:
             if lbl.startswith("hold:"):
                 reasons.append(Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl))
 
         # Evaluate the claim query itself: graph blockedness and capacity
-        # snapshots do not include hierarchy receipt/origin fences.
-        reasons.extend(await self.db.claim_frontier_exclusions(str(task_id)))
+        # snapshots do not include hierarchy receipt/origin fences, and the
+        # route filter depends on the project's router readiness (§9.1).
+        from src.routing.readiness import orchestrator_router_ready
+
+        from src.integration.admission import observe_admission
+
+        admission = await observe_admission(
+            self.db,
+            [str(task_id)],
+            self._development_integration(),
+            cached_only=True,
+            default_mode=self.config.integration.default_mode,
+            router_ready_projects=({task.project_id} if await orchestrator_router_ready(
+                self.orchestrator, task.project_id) else set()),
+        )
+        from src.integration.delivery_engine import project_delivery_issue
+
+        delivery_issues = {}
+        project = await self.db.get_project(task.project_id)
+        if project is not None:
+            delivery_issues[project.id] = await project_delivery_issue(
+                self.db, project, self.config, orchestrator=self.orchestrator,
+            )
+        for delivery_reason in admission.reasons.get(str(task_id), []):
+            prerequisite = await self.db.get_task(delivery_reason["ref"])
+            prerequisite_project_id = prerequisite.project_id if prerequisite else None
+            if prerequisite is None:
+                archived = await self.db.get_archived_task(delivery_reason["ref"])
+                prerequisite_project_id = archived["project_id"] if archived else None
+            if prerequisite_project_id and prerequisite_project_id not in delivery_issues:
+                prerequisite_project = await self.db.get_project(prerequisite_project_id)
+                delivery_issues[prerequisite_project_id] = (
+                    await project_delivery_issue(
+                        self.db, prerequisite_project, self.config, orchestrator=self.orchestrator,
+                    ) if prerequisite_project is not None else None
+                )
+            issue = delivery_issues.get(prerequisite_project_id)
+            engine_reason = issue and (
+                delivery_reason["code"].startswith(("development_", "pr_"))
+                or (delivery_reason["code"] == "delivery_evidence_unavailable"
+                    and delivery_reason["ref"] != str(task_id))
+            )
+            reasons.append(
+                Reason(code="delivery_engine_unavailable", detail=issue["detail"],
+                       ref=delivery_reason["ref"]) if engine_reason else dict(delivery_reason)
+            )
+        issue = delivery_issues.get(task.project_id)
+        if issue and not any(reason.get("code") == "delivery_engine_unavailable" for reason in reasons):
+            reasons.append(Reason(code="delivery_engine_unavailable", detail=issue["detail"],
+                                  ref=task.project_id))
+        if str(task_id) not in admission.allowed and not admission.reasons.get(str(task_id)):
+            reasons.append(Reason(
+                code="development_snapshot_changed",
+                detail="Development git/graph snapshot changed; admission will retry",
+                ref=str(task_id),
+            ))
 
         # A phase is deliberately stricter than a normal container: a failed
         # direct child never settles it, and every later phase stays closed.
@@ -5505,9 +6019,23 @@ class TaskCommandsMixin:
         try:
             blockers = await self.db.get_blocking_dependencies(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("blocking_dependencies_unavailable", task.project_id)
             blockers = []
+        delivery_targets = [b[0] for b in blockers if b[3] == DepType.DELIVERY_OF.value]
+        try:
+            delivery_failures = await self.db.delivery_failures(delivery_targets)
+        except Exception:
+            delivery_failures = {}
         for dep_id, dep_title, dep_status, dep_type, dep_project in blockers:
-            if dep_project and dep_project != task.project_id:
+            if dep_type == DepType.DELIVERY_OF.value:
+                # Unknown delivery (no receipt yet) and failed delivery both
+                # hold the root; a failure names its reason.
+                detail = f"waiting_for: delivery-of {dep_id}"
+                if dep_id in delivery_failures:
+                    detail += f" (delivery failed: {delivery_failures[dep_id]})"
+            elif dep_project and dep_project != task.project_id:
                 detail = (
                     f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) "
                     f"status={dep_status} in project '{dep_project}'"
@@ -5520,6 +6048,9 @@ class TaskCommandsMixin:
         try:
             gates = await self.db.get_gates_for_task(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("task_gates_unavailable", task.project_id)
             gates = []
         for g in gates:
             if g["status"] != "resolved":
@@ -5535,9 +6066,9 @@ class TaskCommandsMixin:
                 )
 
         # 4. Assignment route state.  The task row is the route: the
-        # ``default-assignment-routing`` playbook writes ``intelligence_class``
-        # and ``profile_id`` through ``task_route``; until it has, the cascade
-        # keeps emitting ``task.route_needed``.
+        # project's bound router writes it through ``task_route_apply`` (or
+        # an operator overrides it); until then the cascade keeps emitting
+        # ``task.route_needed`` and this names what the router answered.
         assignment_route, route_reason = await self._assignment_route_state(task)
         if route_reason is not None:
             reasons.append(route_reason)
@@ -5549,7 +6080,18 @@ class TaskCommandsMixin:
         provider_hold = None
         availability = getattr(self.orchestrator, "provider_availability", None)
         if availability is not None and not retirement:
-            provider_hold = await availability.hold_for(task)
+            from src.doctor.models import observation_context
+
+            observation = observation_context.get()
+            if observation is not None:
+                # Supply these reads explicitly: hold_for's human diagnostic
+                # fallback swallows their failures and cannot prove absence.
+                profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+                if project is None or (task.profile_id and task.profile_id not in profiles):
+                    observation.incomplete("provider_context_unavailable", project_id=task.project_id)
+                provider_hold = await availability.hold_for(task, project=project, profiles=profiles)
+            else:
+                provider_hold = await availability.hold_for(task)
         if provider_hold is not None:
             until = provider_hold.get("until")
             reasons.append(Reason(
@@ -5567,8 +6109,23 @@ class TaskCommandsMixin:
         # 5. Pool-routed work never reaches the push scheduler at all, so the
         # capacity reasons below (which describe *that* path) would answer a
         # question this task never asks. Say what it is actually waiting on.
-        pool_reason = await self._pool_wait_reason(task)
+        measurement = None
+
+        async def measure_pools():
+            nonlocal measurement
+            if measurement is None:
+                measurement = await self.orchestrator._measure_pools(for_display=True)
+            return measurement
+
+        pool_reason = await self._pool_wait_reason(task, measure_pools=measure_pools)
         if pool_reason is not None:
+            reroute = getattr(self.orchestrator, "provider_reroute", None)
+            if pool_reason["code"] == "awaiting_pool_session" and reroute is not None:
+                spill = await reroute.spill_state(task, pool_measure=measure_pools)
+                if spill is not None:
+                    pool_reason["detail"] += (
+                        f"; capacity spill: {spill['kind']} — {spill['detail']}"
+                    )
             reasons.append(pool_reason)
 
         # 6. Capacity reasons — only relevant when a scheduler snapshot exists.
@@ -5605,100 +6162,195 @@ class TaskCommandsMixin:
         # first so enabling observation cannot hide why work is unscheduled.
         from src.integration.status import IntegrationStatusService
 
-        integration = await IntegrationStatusService(self.db).task_blockers(str(task_id))
+        integration = await IntegrationStatusService(
+            self.db,
+            git_first=getattr(self.config.integration, "git_first", "shadow"),
+            train=getattr(self.orchestrator, "integration_train", None),
+            cached_only=True,
+        ).task_blockers(str(task_id))
         if integration is not None and integration["integration_active"]:
             reasons.extend(
-                Reason(code=item["code"], detail=item["detail"], ref=item.get("ref"))
+                Reason(code=item["code"], ref=item.get("ref"), detail=item["detail"] + (
+                    f"; next: {item['action']}" if item.get("action") else ""))
                 for item in integration["blockers"]
             )
+
+        # Give the supervisor's timed patrol the same distinct capacity alarm
+        # as doctor. Resolve the current durable stage, never a title heuristic.
+        if (task.status is TaskStatus.READY and time.time() - task.updated_at > 30 * 60
+                and reasons and all(r["code"] in {
+                    "route_waiting_for_compatible_agent", "awaiting_pool_session"
+                } for r in reasons)
+                and not any(
+                    text in r["detail"] for r in reasons
+                    for text in ("quarantined", "swarm.enabled is false", "is not what pool")
+                )):
+            repair = await self.db.get_active_integration_repair_for_task(str(task_id))
+            if repair is not None and repair["target_kind"] == "batch":
+                reasons.append(Reason(
+                    code="train_repair_capacity_wait",
+                    detail=(f"active train repair for batch {repair['batch_id']} "
+                            f"(operation {repair['id']}) has waited "
+                            f"{int((time.time() - task.updated_at) / 60)}m "
+                            f"for worker capacity on {task.profile_id}"),
+                    ref=repair["id"],
+                ))
+
+        live_timing = getattr(self.orchestrator, "claim_timings", {}).get(str(task_id))
+        claim_timing = (live_timing.snapshot() if live_timing is not None else
+                        await self.db.get_task_meta(str(task_id), "claim_timing"))
 
         return {
             "success": True,
             "reasons": reasons,
             "reason_codes": [reason["code"] for reason in reasons],
+            "operator_decisions": operator_decisions,
             "assignment_route": assignment_route,
             "provider_hold": provider_hold,
             "phase_hold": phase_hold,
+            "claim_timing": claim_timing,
         }
 
     async def _assignment_route_state(self, task):
-        """Route audit detail plus one actionable reason, from the task row alone."""
-        from src.explain import Reason
+        """The task's route and, when it waits on routing, the one reason why.
 
-        if error := self._task_execution_profile_error(task.profile_id):
+        Returns ``(assignment_route, reason)``.  ``assignment_route`` is the
+        route a task carries -- its source, profile, class, intent, and the
+        router's lane, rule and reason (mandatory routing §10) -- and ``None``
+        when it has none.  ``reason`` is set only for queued, unassigned
+        work: ``preferred_provider_unavailable`` when the project prefers a
+        provider with no worker for the task's class (the planner's
+        ``no_candidates`` reason, answered live), else, for work still owed a
+        route (``unrouted``, or ``legacy`` in a project whose router is
+        ready), one of the six codes of :mod:`src.routing.explain`.  A
+        container is never routed (work-graph §13a), so it has no reason.
+        """
+        import time
+
+        from src.explain import Reason
+        from src.routing import explain as route_explain
+        from src.routing.readiness import orchestrator_router_ready
+        from src.routing.sources import LEGACY, UNROUTED
+
+        if task.profile_id and (error := self._task_execution_profile_error(task.profile_id)):
             return None, Reason(
                 code="supervisor_profile",
-                detail=(error + "; reroute the legacy task to an eligible worker profile"),
+                detail=error + "; route the task again with `aq task route`",
                 ref=task.profile_id,
             )
 
-        if task.profile_id is None:
-            project = await self.db.get_project(task.project_id)
-            if project is not None and (
-                error := self._task_execution_profile_error(project.default_profile_id)
-            ):
-                return None, Reason(
-                    code="supervisor_profile",
-                    detail=(error + "; set an eligible project worker default before rerunning"),
-                    ref=project.default_profile_id,
-                )
-
-        explicit = (task.intelligence_class or "").strip()
-        reason_text = None
-        try:
-            async with self.db._engine.connect() as conn:
-                from sqlalchemy import select
-
-                from src.database.tables import task_metadata
-
-                row = (await conn.execute(
-                    select(task_metadata.c.value).where(
-                        task_metadata.c.task_id == task.id,
-                        task_metadata.c.key == "route_reason",
-                    )
-                )).fetchone()
-            if row is not None:
-                import json
-
-                reason_text = json.loads(row[0])
-        except Exception:  # pragma: no cover - diagnostics only
-            reason_text = None
+        source = (getattr(task, "route_source", None) or UNROUTED).strip()
+        route = task.route if isinstance(getattr(task, "route", None), dict) else {}
         detail = None
-        if explicit:
+        if task.profile_id and (task.intelligence_class or "").strip():
             detail = {
-                "source": "explicit",
-                "intelligence_class": explicit,
-                "provider": None,
-                "reason": reason_text,
-                "playbook_id": None,
+                "source": source,
+                "intelligence_class": task.intelligence_class.strip(),
+                "provider": route.get("provider"),
+                "reason": route.get("reason"),
+                "playbook_id": route.get("playbook_id"),
                 "playbook_version": None,
-                "playbook_run_id": None,
+                "playbook_run_id": route.get("run_id"),
                 "freshness": "fresh",
+                "profile_id": task.profile_id,
+                "provider_intent": getattr(task, "provider_intent", None),
+                "lane": route.get("lane"),
+                "rule": route.get("rule"),
+                "override": route.get("override")
+                if isinstance(route.get("override"), dict) else None,
             }
         if task.assigned_agent_id is not None or task.status not in (
             TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED
         ):
             return detail, None
-        if not explicit:
-            return None, Reason(
-                code="awaiting_intelligence_route",
-                detail=(
-                    "task has no intelligence class yet; the assignment routing playbook "
-                    "answers task.route_needed and writes one (check `aq playbook runs`)"
-                ),
-                ref=task.id,
-            )
-        return detail, Reason(
-            code="route_waiting_for_compatible_agent",
-            detail=(
-                f"route selects intelligence class '{explicit}'"
-                + (f" on profile '{task.profile_id}'" if task.profile_id else "")
-                + "; waiting for existing scheduling constraints"
-            ),
-            ref=task.profile_id or task.id,
-        )
+        if await self.db.task_is_container(task.id):
+            return detail, None
+        from src.providers.intent import narrows_catalog
 
-    async def _pool_wait_reason(self, task):
+        project = await self.db.get_project(task.project_id)
+        preferred_provider = getattr(project, "preferred_provider", None)
+        if preferred_provider and not narrows_catalog(task):
+            wanted = (
+                (task.intelligence_class or "").strip()
+                or (getattr(task, "class_hint", None) or "").strip()
+                or None
+            )
+            if not await self._preferred_provider_serves(
+                task.project_id, preferred_provider, wanted
+            ):
+                return detail, Reason(
+                    code="preferred_provider_unavailable",
+                    detail=(
+                        f"project prefers provider '{preferred_provider}', which has no "
+                        "enabled, launchable worker option for "
+                        + (f"intelligence class '{wanted}'" if wanted else "any class")
+                        + "; waiting for that provider or a change to the project preference"
+                    ),
+                    ref=preferred_provider,
+                )
+        if source not in (UNROUTED, LEGACY):
+            return detail, Reason(
+                code="route_waiting_for_compatible_agent",
+                detail=(
+                    f"routed ({source}) to profile '{task.profile_id}' at intelligence "
+                    f"class '{task.intelligence_class}'; waiting for existing scheduling "
+                    "constraints"
+                ),
+                ref=task.profile_id or task.id,
+            )
+        router = (getattr(project, "assignment_playbook_id", None) or "").strip()
+        ready = await orchestrator_router_ready(self.orchestrator, task.project_id)
+        if source == LEGACY and not ready:
+            # Legacy work stays claimable until the router is ready (§9.1).
+            return detail, Reason(
+                code="route_waiting_for_compatible_agent",
+                detail=(
+                    f"legacy route to profile '{task.profile_id}' at intelligence class "
+                    f"'{task.intelligence_class}', claimable until the project's router is "
+                    "ready; waiting for existing scheduling constraints"
+                ),
+                ref=task.profile_id or task.id,
+            )
+        if not ready:
+            # The same binding verdict ``aq doctor --check routing.bypassed``
+            # gives (spec §10): no router, or a missing or non-routing
+            # playbook, is unbound; a router without an enabled activation
+            # that grants task_route_apply is not ready.
+            from src.routing.readiness import (
+                BINDING_MISSING,
+                BINDING_NOT_ROUTER,
+                BINDING_UNBOUND,
+                artifact_grants,
+                binding_state,
+            )
+
+            state, why = binding_state(
+                task.project_id, router, await self.db.list_playbook_activations(),
+                artifact_grants(self.orchestrator, self.config),
+            )
+            default = str(getattr(getattr(self.config, "routing", None), "default_router", ""))
+            if state in (BINDING_UNBOUND, BINDING_MISSING, BINDING_NOT_ROUTER) and (
+                router != default or state == BINDING_UNBOUND
+            ):
+                return detail, Reason(**route_explain.unbound_reason(task.project_id, why))
+            return detail, Reason(**route_explain.not_ready_reason(task.project_id, router, why))
+        now = time.time()
+        try:
+            run = await self.db.latest_router_run_for_task(
+                router, task.id, since=now - _ROUTER_RUN_LOOKBACK_SECONDS
+            )
+        except Exception:  # diagnostics only: no run is "awaiting"
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("router_run_unavailable", task.project_id)
+            logger.debug("explain: router run lookup failed for %s", task.id, exc_info=True)
+            run = None
+        emitted = getattr(self.orchestrator, "__dict__", {}).get("_route_needed_emitted") or {}
+        return detail, Reason(**route_explain.router_reason(
+            task.id, router=router, run=run, emitted_at=emitted.get(task.id), now=now,
+        ))
+
+    async def _pool_wait_reason(self, task, *, measure_pools=None):
         """``awaiting_pool_session`` for a task routed to a ``lifecycle: pool`` profile.
 
         ``Orchestrator._schedule`` filters these tasks out and
@@ -5730,12 +6382,9 @@ class TaskCommandsMixin:
             return None
         if not pool_ids:
             return None
+        # The task's own route: an unrouted task waits on its router, not on
+        # a pool (mandatory routing §8: no project default).
         profile_id = task.profile_id
-        if not profile_id:
-            project = await self.db.get_project(task.project_id)
-            if project is None:
-                return None
-            profile_id = await orchestrator._effective_default_profile_id(project)
         if profile_id not in pool_ids:
             return None
 
@@ -5798,7 +6447,8 @@ class TaskCommandsMixin:
                 detail += f": {quarantine_reason}"
             return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
-        measurement = await orchestrator._measure_pools()
+        measurement = await (measure_pools() if measure_pools is not None
+                             else orchestrator._measure_pools(for_display=True))
         from src.scheduler import PoolKey
 
         # The cap is fleet-wide. Keep the project slice for context, but
@@ -5838,11 +6488,10 @@ class TaskCommandsMixin:
         out of the frontier.
 
         Args:
-            profile_id: Restrict the frontier to tasks this profile would be
-                offered.  Uses the same widening as the §10 work query
-                (``select_ready_for_profile``): when *profile_id* is the
-                project's ``default_profile_id``, unassigned tasks
-                (``profile_id IS NULL``) count as its work too.
+            profile_id: Restrict the frontier to tasks routed to this
+                profile.  There is no project-default widening: an unrouted
+                task is no profile's work until its router routes it
+                (mandatory routing §8).
             brief: Project each ready task to
                 ``id,title,status,priority,is_blocked,profile_id`` instead of
                 the default ``task_id,title,priority`` shape.
@@ -5855,6 +6504,14 @@ class TaskCommandsMixin:
         profile_id = args.get("profile_id")
         brief = bool(args.get("brief"))
 
+        from src.integration.admission import observe_admission, structural_candidates
+
+        admission = await observe_admission(
+            self.db,
+            await structural_candidates(self.db, str(project_id)),
+            self._development_integration(),
+            default_mode=self.config.integration.default_mode,
+        )
         try:
             frontier = await self.db.get_ready_frontier(
                 str(project_id), labels=labels, any_label=any_label
@@ -5862,15 +6519,11 @@ class TaskCommandsMixin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+        delivery_withheld = {task.id for task in frontier if task.id not in admission.allowed}
+        frontier = [task for task in frontier if task.id in admission.allowed]
+
         if profile_id:
-            project = await self.db.get_project(str(project_id))
-            default_profile_id = getattr(project, "default_profile_id", None) if project else None
-            frontier = [
-                t
-                for t in frontier
-                if t.profile_id == profile_id
-                or (t.profile_id is None and default_profile_id == profile_id)
-            ]
+            frontier = [t for t in frontier if t.profile_id == profile_id]
 
         if brief:
             ready = [
@@ -5900,7 +6553,10 @@ class TaskCommandsMixin:
         withheld: list[dict] = []
         for status in (TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.READY):
             for task in await self.db.list_tasks(project_id=str(project_id), status=status):
-                if status == TaskStatus.READY and not task.is_blocked:
+                if (
+                    status == TaskStatus.READY and not task.is_blocked
+                    and task.id not in delivery_withheld
+                ):
                     # Might still be withheld by a hold:* label.
                     lbls = await self.db.get_task_labels(task.id)
                     if not any(x.startswith("hold:") for x in lbls):
@@ -5918,9 +6574,11 @@ class TaskCommandsMixin:
         with the same key are returned as-is; terminal tasks (COMPLETED,
         FAILED) are ignored so the key can be reused.
 
-        ``profile_id`` and ``intelligence_class`` are create-time routing
-        intent only: an existing task is returned untouched, so re-running the
-        node never re-routes work that is already in flight.
+        ``intelligence_class`` (a hint) and a role creator's role
+        ``profile_id`` are create-time only: an existing task is returned
+        untouched, so re-running the node never re-routes work that is
+        already in flight.  Every other routing argument is refused
+        (mandatory-routing spec §5.1).
         """
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
@@ -5928,9 +6586,16 @@ class TaskCommandsMixin:
         dedup_key = args.get("dedup_key")
         if not dedup_key:
             return {"success": False, "error": "dedup_key is required"}
+        if args.get("task_type") in {"promotion", "backmerge"}:
+            return {"success": False, "error": "Promotion and backmerge task types are daemon-owned."}
         title = args.get("title")
         if not title:
             return {"success": False, "error": "title is required"}
+        # Refused before the dedup lookup, so a replay cannot slip a route
+        # past the create path below.
+        refusal = _filing_refusal("ensure_task", args)
+        if refusal is not None:
+            return refusal
 
         # Placement refusals are re-stated here rather than left to
         # ``_cmd_create_task`` at the bottom: the triage branch below writes,
@@ -5948,22 +6613,18 @@ class TaskCommandsMixin:
             if unsupported is not None:
                 return unsupported
 
-        # Explicit route intent (routing design §2): a task's class comes from
-        # explicit intent or a fresh assignment-playbook decision, never from a
-        # profile default.  Pinning ``profile_id`` alone is therefore *not* a
-        # route, so an ensuring pipeline that knows the class it wants must be
-        # able to say so; dropping this argument left every ensured task
-        # waiting on the router and, until it decided, refused at launch with
-        # "awaiting intelligence route".
+        # The class is a hint for the router (mandatory-routing spec §5.1).
+        # A role task (``triage``, ``spec-ingest``, …) named by a service or
+        # playbook runs its role profile's own class instead (§4, D3).
         intelligence_class = args.get("intelligence_class") or None
 
         if args.get("profile_id") == "triage" and dedup_key == "triage-open":
             from src.database.queries.triage_queries import ensure_triage_task
 
+            # The triage task runs its role's own class; a caller's class is
+            # only its hint, so it need not run on the triage profile.
             if intelligence_class:
-                class_error = self._validate_routing_class(
-                    intelligence_class, await self.db.get_profile("triage")
-                )
+                class_error = self._validate_routing_class(intelligence_class)
                 if class_error:
                     return {"success": False, "error": class_error}
             result = await ensure_triage_task(
@@ -6018,12 +6679,15 @@ class TaskCommandsMixin:
             "priority": args.get("priority", 100),
             "dedup_key": dedup_key,
             # Control-plane bookkeeping: suppress task.created emission so the
-            # default pipeline is not re-triggered against this task itself
-            # (would attach a routing gate to a task only the triage agent
-            # can resolve — self-deadlock).  Routing of tasks created via
-            # ensure_task is the ensuring pipeline's responsibility.
+            # default pipeline is not re-triggered against this task itself.
+            # Routing needs no event from here: the orchestrator emits
+            # ``task.route_needed`` for any unrouted task, and a role task
+            # arrives with its stage route.
             "_suppress_created_event": True,
         }
+        for key in ("repo_id", "task_type", "integration_mode"):
+            if key in args:
+                create_args[key] = args[key]
         # Do not recreate placement from truthy values: playbook and API
         # callers need omitted, selected, and explicit-null parent choices to
         # reach ``_cmd_create_task`` unchanged.  A dedup replay returns above
@@ -6034,6 +6698,12 @@ class TaskCommandsMixin:
         # touches (or revives) a container.
         for key in ("parent_id", "root", "reason", "discovered_from", "parent_key",
                     "parent_title"):
+            if key in args:
+                create_args[key] = args[key]
+        # An internal filer's origin (source-CI repair) reaches the creation
+        # that applies ``_cmd_create_task``'s own worker-session guard, so it
+        # admits no origin that command would refuse.
+        for key in ("_created_by_kind", "_created_by_id"):
             if key in args:
                 create_args[key] = args[key]
         # Presentation tasks such as playbook-run roots must be born in their
@@ -6053,20 +6723,16 @@ class TaskCommandsMixin:
                     "error": f"Invalid playbook-run initial status '{args['initial_status']}'",
                 }
             create_args["_initial_status"] = args["initial_status"]
-        # Optional pre-routing: control-plane tasks skip triage, so the
-        # ensuring pipeline may pin the executing profile directly (e.g.
-        # the default pipeline pins 'triage' on the triage task).
-        if args.get("profile_id"):
-            create_args["profile_id"] = args["profile_id"]
-        # Provider intent is create-time routing intent like the profile
-        # (provider-failover D9); ``_create_task`` validates and permission-checks it.
-        if args.get("provider_intent") is not None:
-            create_args["provider_intent"] = args["provider_intent"]
-        if args.get("pin"):
-            create_args["pin"] = True
-        # Validated by ``_cmd_create_task`` against the pinned profile, so an
-        # unknown class or one with no model mapping fails the node loudly
-        # instead of silently producing an unroutable task.
+        # A role creator may name a role profile (the default pipeline's
+        # ``spec-ingest``, the triage reconciler's ``triage``); every other
+        # routing argument, and any other profile, is refused by
+        # ``_create_task`` (mandatory-routing spec §4, §5.1).
+        for key in REFUSED_ROUTING_ARGS:
+            if key in args:
+                create_args[key] = args[key]
+        # Validated by ``_cmd_create_task``, so an unknown class (or, on a
+        # role profile, one with no model mapping) fails the node loudly
+        # instead of silently losing the hint.
         if intelligence_class:
             create_args["intelligence_class"] = intelligence_class
         result = await self._cmd_create_task(create_args)
@@ -6095,6 +6761,9 @@ class TaskCommandsMixin:
         ``src/database/queries/blocked_state.py``). Returns ``[]`` if the
         task has no dependents.
         """
+        context = await self._fidelity_read_context("get_downstream_tasks", args)
+        if context is not None and "error" in context:
+            return context
         task_id = args.get("task_id")
         if not task_id:
             return {"success": False, "error": "task_id is required"}
@@ -6110,8 +6779,10 @@ class TaskCommandsMixin:
         ids = await self.db.get_transitive_dependents(str(task_id), edge_types)
         out = []
         for tid in ids:
+            if context is not None and tid not in context["task_ids"]:
+                continue
             t = await self.db.get_task(tid)
-            if t is None:
+            if t is None or (context is not None and t.project_id != context["batch"]["project_id"]):
                 continue
             out.append({"id": t.id, "title": t.title, "status": t.status.value})
         return {"success": True, "tasks": out}
@@ -6139,168 +6810,6 @@ class TaskCommandsMixin:
             )
         except Exception:
             logger.warning("could not record provider_intent_audit for %s", task_id, exc_info=True)
-
-    def _profile_provider_key(self, profile, project_id: str | None = None) -> str:
-        """The availability provider key *profile*'s harness draws on (D0)."""
-        from src.providers.availability import provider_key
-
-        harness_id = str(getattr(profile, "harness", "") or "").strip()
-        if not harness_id:
-            return ""
-        registry = getattr(getattr(self, "orchestrator", None), "harness_registry", None)
-        harness = None
-        if registry is not None:
-            try:
-                harness = registry.get(harness_id, project_id)
-            except Exception:  # noqa: BLE001 - an unreadable registry falls back to the bare id
-                harness = None
-        return provider_key(harness) if harness is not None else harness_id
-
-    async def _cmd_task_route(self, args: dict) -> dict:
-        """Route a task: assign profile + intelligence class (+ workspace).
-
-        Compatibility command and the only manual resolver for ``routing``
-        gates. Writes ``profile_id``, an explicit ``intelligence_class``, and optional
-        ``preferred_workspace_id`` onto the task, then resolves every open
-        ``routing`` gate attached to the task via the orchestrator helper
-        (so ``gate.resolved`` + blocked-flip bus events fire the same way
-        the sweep path emits them).
-
-        Args:
-            task_id: Target task id (required).
-            profile_id: AgentProfile id (required).
-            intelligence_class: Vault class id. May be omitted only when the
-                task already has an explicit class. Profile defaults never
-                establish assignment eligibility. Routing a running or
-                claimed task is refused.
-            workspace_id: Optional workspace id.  When supplied, must belong
-                to the task's project (deadlock-safe & scope-safe).
-
-        Returns:
-            ``{"success": True, "task_id", "resolved_gate_ids": [str]}`` or
-            ``{"success": False, "error": str}`` on validation failure
-            (unknown task/profile/class/workspace, wrong project, or a
-            class with no mapping for the profile's harness provider).
-        """
-        task_id = args.get("task_id")
-        profile_id = args.get("profile_id")
-        if not task_id or not profile_id:
-            return {"success": False, "error": "task_id and profile_id are required"}
-        task = await self.db.get_task(str(task_id))
-        if task is None:
-            return {"success": False, "error": f"task '{task_id}' not found"}
-        profile = await self.db.get_profile(str(profile_id))
-        if profile is None:
-            return {"success": False, "error": f"profile '{profile_id}' not found"}
-        if error := self._task_execution_profile_error(profile):
-            return {"success": False, "error": error}
-        if error := await self._worker_filed_route_error(task, profile):
-            return {"success": False, "error": error}
-
-        cls_id = args.get("intelligence_class") or task.intelligence_class or None
-        if not cls_id:
-            return {
-                "success": False,
-                "error": (
-                    "intelligence_class is required when the task has no explicit class"
-                ),
-            }
-        class_error = self._validate_routing_class(cls_id, profile)
-        if class_error:
-            return {"success": False, "error": class_error}
-
-        workspace_id = args.get("workspace_id")
-        if workspace_id:
-            ws = await self.db.get_workspace(str(workspace_id))
-            if ws is None:
-                return {
-                    "success": False,
-                    "error": f"workspace '{workspace_id}' not found",
-                }
-            if ws.project_id != task.project_id:
-                return {
-                    "success": False,
-                    "error": (
-                        f"workspace '{workspace_id}' belongs to project "
-                        f"'{ws.project_id}', not '{task.project_id}'"
-                    ),
-                }
-
-        # Provider intent (provider-failover D9).  A caller naming the profile
-        # means it as a preference unless it says otherwise; the routing
-        # playbook passes ``class_only`` explicitly.  ``task_route`` never
-        # downgrades: a row already pinned/preferred keeps its intent when the
-        # routed profile is on the same provider.
-        from src.providers.intent import (
-            CLASS_ONLY,
-            PINNED,
-            PREFERRED,
-            effective_intent,
-            resolve_intent,
-        )
-
-        requested_intent = args.get("provider_intent")
-        pin_requested = bool(args.get("pin"))
-        refusal = provider_intent_refusal(requested_intent)
-        if refusal is not None:
-            return refusal
-        if pin_requested or requested_intent == PINNED:
-            refusal = pin_not_permitted_refusal(
-                self._current_scope, "pin" if pin_requested else "provider_intent"
-            )
-            if refusal is not None:
-                return refusal
-        provider_intent = resolve_intent(
-            requested_intent, pin=pin_requested, profile_supplied=True, profile_id=str(profile_id)
-        )
-        current_intent = effective_intent(task)
-        rank = {CLASS_ONLY: 0, PREFERRED: 1, PINNED: 2}
-        if rank[provider_intent] < rank[current_intent]:
-            current_profile = await self.db.get_profile(task.profile_id)
-            if current_profile is not None and self._profile_provider_key(
-                current_profile, task.project_id
-            ) == self._profile_provider_key(profile, task.project_id):
-                provider_intent = current_intent
-
-        updated = await self.db.update_task_routing(
-            str(task_id),
-            profile_id=str(profile_id),
-            intelligence_class=cls_id,
-            preferred_workspace_id=str(workspace_id) if workspace_id else None,
-            provider_intent=provider_intent,
-        )
-        if not updated:
-            return {
-                "success": False,
-                "error": "Task is running or claimed; stop the task before changing its routing.",
-            }
-        if provider_intent != task.provider_intent or provider_intent != CLASS_ONLY:
-            await self._record_provider_intent_audit(
-                str(task_id), provider_intent, previous=task.provider_intent
-            )
-
-        reason = args.get("reason")
-        if reason:
-            async with self.db.immediate() as conn:
-                await self.db._upsert_meta(
-                    str(task_id), "route_reason", str(reason)[:400], conn=conn
-                )
-
-        resolved: list[str] = []
-        for gate in await self.db.get_gates_for_task(str(task_id)):
-            if gate["gate_type"] == "routing" and gate["status"] == "open":
-                await self.orchestrator._resolve_gate_and_emit(
-                    gate["id"],
-                    resolved_by="task_route",
-                    resolution=f"routed to {profile_id}",
-                )
-                resolved.append(gate["id"])
-        return {
-            "success": True,
-            "task_id": str(task_id),
-            "provider_intent": provider_intent,
-            "resolved_gate_ids": resolved,
-        }
 
 
 def _harness_provider(harness: str | None) -> str:
