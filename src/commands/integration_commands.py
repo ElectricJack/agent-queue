@@ -162,6 +162,37 @@ class IntegrationCommandsMixin:
 
         return await record_incident(self, state, load=load)
 
+    async def retained_store_maintenance_tick(self, now):
+        """Internal background port; acquisition never performs pack maintenance."""
+        from src.integration.repository_maintenance import maintenance_for
+
+        return await maintenance_for(self.orchestrator).tick(now)
+
+    async def _cmd_integration_store_maintenance(self, args: dict) -> dict:
+        """Preview or consolidate only the project's configured retained stores."""
+        from src.commands.contracts.integration import IntegrationStoreMaintenanceArgs
+        from src.integration.repository_maintenance import maintenance_for
+
+        request = IntegrationStoreMaintenanceArgs.model_validate(args)
+        _, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        if await self.db.get_project(request.project_id) is None:
+            return _failure("not_found", "project is not configured")
+        service = maintenance_for(self.orchestrator)
+
+        async def run():
+            result = await service.run(request.project_id, apply=not request.dry_run)
+            return {"success": result["outcome"] != "unavailable",
+                    "project_id": request.project_id, **result}
+
+        if request.dry_run:
+            return await run()
+        return await detached_operations(self.orchestrator).run(
+            f"store-maintenance:{request.project_id}", run,
+            poll=f"aq integration store-maintenance --project-id {request.project_id} --apply",
+        )
+
     async def _cmd_integration_clear_retained_recovery(self, args: dict) -> dict:
         """Lift a retained-cache admission hold after the store passes a full fsck."""
 
@@ -275,16 +306,16 @@ class IntegrationCommandsMixin:
 
     async def refresh_root_pr(self, observation, gitops, snapshot) -> dict:
         """Daemon-only port: mechanically refresh, then reopen the original author."""
-        from sqlalchemy import text
-
+        from src.database.advisory_locks import session_advisory_lock
         from src.integration.root_pr_refresh import RootPRConflict, refresh_root_pr
 
         try:
             if not isinstance(observation, RootPRConflict):
                 return _failure("invalid", "root conflict must be server-observed")
-            async with self.db._engine.begin() as conn:
-                await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                    {"key": f"root-pr-refresh:{observation.request.task_id}"})
+            # The refresh is Git and GitHub I/O, so a session lock: an open
+            # transaction would sit idle holding the lock across it.
+            async with session_advisory_lock(self.db._engine,
+                                             f"root-pr-refresh:{observation.request.task_id}"):
                 return await refresh_root_pr(self, observation, gitops, snapshot)
         except (HierarchyError, BranchBusy, GitError, ValueError) as exc:
             return _failure("refresh_deferred", str(exc))
@@ -753,17 +784,16 @@ class IntegrationCommandsMixin:
 
     async def _cmd_observe_integration_source_ci(self, observation) -> dict:
         """Daemon-only adapter for trusted CI observations, never a raw tool input."""
-        from sqlalchemy import text
+        from src.database.advisory_locks import session_advisory_lock
         from src.integration.source_ci import SourceCIObservation
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
         identity = self._integration_source_ci_identity(observation)
         # Serialize the complete observe/reopen sequence across daemons.
-        # A restart releases this transaction lock; the reopen and its
-        # durable budget commit together, so replay cannot spend it twice.
-        async with self.db._engine.begin() as conn:
-            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                               {"key": identity})
+        # A restart releases this session lock; the reopen and its durable
+        # budget commit together, so replay cannot spend it twice.  The
+        # delivery proof is Git I/O, so no transaction stays open across it.
+        async with session_advisory_lock(self.db._engine, identity):
             return await self._record_integration_source_ci(observation)
 
     @staticmethod
@@ -1191,16 +1221,15 @@ class IntegrationCommandsMixin:
         takes a server-observed proof, so it is deliberately not a ``_cmd_``
         command that an agent, the CLI or MCP could reach.
         """
-        from sqlalchemy import text
-
+        from src.database.advisory_locks import session_advisory_lock
         from src.integration.source_ancestry import SourceAncestryObservation
 
         if not isinstance(observation, SourceAncestryObservation):
             return _failure("invalid", "source ancestry must be server-observed")
         identity = "source-ancestry:" + ":".join(str(part) for part in observation.identity())
-        async with self.db._engine.begin() as conn:
-            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                               {"key": identity})
+        # A session lock, as for source CI: the repair awaits Git, and an
+        # open transaction would sit idle holding the lock across it.
+        async with session_advisory_lock(self.db._engine, identity):
             return await self._repair_integration_source_ancestry(observation)
 
     async def _repair_integration_source_ancestry(self, observation) -> dict:

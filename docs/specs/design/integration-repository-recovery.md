@@ -17,16 +17,51 @@ isolated import set `gc.auto=0`, `gc.autoDetach=false` and `maintenance.auto=fal
 under git 2.43 a detached auto-gc ran in a temporary HOME that was deleted under it,
 died, and left a `gc.log` whose `fatal:` lines every later `gc --auto` repeated on
 stderr with exit status zero, which the integrity check read as a failed fetch and
-wedged the cache. Maintenance instead runs explicitly in the foreground under the
-repository transaction after a successful acquisition (`gc --auto` with a real
-threshold, never detached); a successful run removes a stale `gc.log`. Only the
+wedged the cache. Maintenance instead runs explicitly as its own background task,
+started by the service pass and never inside acquisition or detached by Git. Only the
 stale-report block itself is forgiven on a zero exit; any other `error:`/`fatal:` line
 still fails.
 
-Foreground maintenance has its own bounded fifteen-minute command budget,
-including verifier-exclusion waits. It is best effort: failure preserves a stale
-`gc.log` and does not invalidate the successful acquisition. Cancellation still
-terminates and reaps Git before repository exclusion is released.
+Every five minutes the service considers one configured retained store, rotating
+through development `repository`/`observer` clones, bare repository readers and
+registered repository checkout/source paths, including durable storage bindings.
+Two or more packs, 1,024 loose objects or 256 MiB of loose objects trigger
+`git repack -a -d -k` (keep unreachable objects); one attempt per store per hour
+limits rewrite churn, including after failures and restarts. Busy stores, open
+recovery incidents and stores whose full-fsck verification flight is running are
+skipped; repack and that flight also share one per-common-store exclusion, so they
+never overlap. Inspection, the origin check, the attempt marker and temporary-pack
+cleanup run under the repository transaction (a 50 ms wait, else `busy`); the repack
+itself runs after releasing it, under that exclusion only. Checkout/source stores share
+the worker-slot base mutex, on which claim preparation waits five seconds, and a
+nonpruning `repack -a -d -k` is safe beside fetch and readers; recovery starts from a
+full check, which waits on the exclusion. The visit is its own task, so the service's
+300-second source budget and serial pass never wait on it; daemon shutdown cancels it.
+Repack runs at reduced CPU priority where `nice` is available, with one compression
+thread and a 64 MiB window. Its budget (`repack_budget_seconds` in the preview) scales
+with the bytes Git reads: 90 s per GiB of packs plus 1,000 s per GiB of loose objects,
+at least 240 s and at most one hour. Measured on the live 1.5–4 GB stores, a
+1.4 GB, all-packed bare reader took 59 s and the delivery observer (1.3 GiB packed,
+2.2 GiB loose) 19 minutes on a loaded host, so the former flat 240 seconds timed out
+and retried hourly without converging. Cancellation reaps Git before releasing exclusion. Maintenance preserves
+refs, loose unreachable objects, packed unreachable objects and recovery backups;
+it never prunes Git objects by age or clears an incident. Under the same exclusion,
+maintenance removes regular `objects/pack/tmp_pack_*` files at least one hour old,
+even below the repack threshold; recent files, symlinks and directories remain.
+A successful repack removes stale `gc.log`. Maintenance alone proves nothing about
+integrity. A repack of an exactly verified store keeps that clean result, with
+its original age, only after a connectivity check of the repacked store passes
+under the same exclusion and nothing but the repack's own pack was added meanwhile.
+Every other repack invalidates the fingerprint, and the
+store then needs the existing full-body check
+([retained object integrity](retained-object-integrity.md#background-full-verification)).
+
+`aq integration store-maintenance --project-id <p>` previews existing stores,
+pack and loose-object counts/bytes, stale temporary-pack counts and cooldown/recovery
+status. A local operator or live scoped supervisor may use `--apply` to run eligible
+repacks with the same guards and
+budgets. Long controls return a running handle; repeating the command joins that
+operation. No command accepts arbitrary filesystem paths or creates a store.
 
 The approved `rev-swift-flare` revision 2 recovery runs through the existing
 integration acquisition seam and CommandHandler. Full `fsck` diagnoses the actual

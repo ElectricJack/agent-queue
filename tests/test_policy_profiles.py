@@ -1287,6 +1287,31 @@ Local personal reflection
     assert not result["success"] and not (vault / "agent-types/invalid/profile.md").exists()
 
 
+async def test_policy_export_skips_vault_hub_and_retired_class_siblings(env):
+    handler, vault, _ = env
+    put(vault, "intelligence-classes/portable.md", """---
+id: portable
+name: Portable
+---
+```json
+{"codex":{"model":"operator-model"}}
+```
+""")
+    hub = "---\ntags: [hub, vault-structure]\ntype: hub\n---\n\n# Intelligence Classes\n"
+    # The vault index generator's hub, and a copy of it moved aside as a stop-gap.
+    put(vault, "intelligence-classes/intelligence-classes.md", hub)
+    put(vault, "intelligence-classes/old-hub.md", hub)
+    put(vault, "intelligence-classes/portable.md.bak", "stale backup")
+    put(vault, "intelligence-classes/retired.md.retired", "no json here")
+
+    result = await handler.execute("policy_export", {"project_id": "source"})
+
+    assert result["success"], result
+    classes = {entry["name"] for entry in result["bundle"]["items"]
+               if entry["type"] == "intelligence_class"}
+    assert classes == {"portable"}
+
+
 async def test_policy_roundtrip_includes_classes_and_live_derived_pool_settings(env):
     from src.profiles.catalog import CatalogProfile, render_rung_stub
     from src.profiles.parser import update_config_keys

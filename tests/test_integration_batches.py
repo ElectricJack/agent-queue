@@ -1,5 +1,6 @@
 """Real Git retries of the shared root/child batch path; disposable PostgreSQL."""
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,6 +15,7 @@ from src.database.tables import (
 from src.integration.batches import Batch, BatchMember, BatchService, BatchStore, candidate_ref, ordered_members
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import branch
+from src.integration.visit_carry import StageCarries, stage_carries
 from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 
@@ -319,6 +321,31 @@ async def test_crash_before_candidate_push_rebuilds_same_commit_without_allocati
     result = await service.visit(batch, members, await snapshot())
     assert result.state == "testing" and result.candidate_sha == failed.candidate_sha
     assert (await store.get(batch.id)).repair_attempt_count == 0
+
+
+async def test_timed_out_visit_hands_its_assembly_to_the_next_visit(batch_env, monkeypatch):
+    _, ops, _, _, _, _, batch, members, _, _, snapshot, service = batch_env
+    merge, started, release = ops.merge_sources, asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def slow_merge(*args, **kwargs):
+        calls.append(args)
+        started.set()
+        await release.wait()
+        return await merge(*args, **kwargs)
+
+    monkeypatch.setattr(ops, "merge_sources", slow_merge)
+    carries = StageCarries(limit_seconds=60, fresh_seconds=60)
+    with stage_carries(carries):
+        first = asyncio.create_task(service.visit(batch, members, await snapshot()))
+        await asyncio.wait_for(started.wait(), 30)
+        first.cancel()  # the visit deadline, mid-assembly
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert carries.live() == ("build_candidate",)
+        release.set()
+        result = await service.visit(batch, members, await snapshot())
+    assert result.state == "testing" and len(calls) == 1 and carries.live() == ()
 
 
 @pytest.mark.parametrize("fail_push", [False, True])

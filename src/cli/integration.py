@@ -664,6 +664,16 @@ def integration_revoke_publication(ctx: click.Context, **args) -> None:
     _execute(ctx, "integration_revoke_publication", args)
 
 
+@integration.command("store-maintenance")
+@click.option("--project-id", required=True)
+@click.option("--apply", is_flag=True, help="Consolidate eligible packs, keeping unreachable objects.")
+@click.pass_context
+@_handle_errors
+def integration_store_maintenance(ctx: click.Context, project_id: str, apply: bool) -> None:
+    """Preview retained pack counts and cooldowns; use --apply to repack."""
+    _execute(ctx, "integration_store_maintenance", {"project_id": project_id, "dry_run": not apply})
+
+
 @integration.command("clear-retained-recovery")
 @click.option("--project-id", required=True)
 @click.option("--incident-id", default=None, help="Clear only this incident.")

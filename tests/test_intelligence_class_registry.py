@@ -119,6 +119,19 @@ def test_reload_clears_a_previous_error_once_the_file_parses(registry, data_dir)
     assert "spark-low" in registry
 
 
+HUB = "---\ntags: [hub, vault-structure]\ntype: hub\n---\n\n# Intelligence Classes\n"
+
+
+def test_generated_hub_is_not_a_class(registry, data_dir):
+    (classes_dir(data_dir) / "intelligence-classes.md").write_text(HUB, encoding="utf-8")
+    (classes_dir(data_dir) / "moved-hub.md").write_text(HUB, encoding="utf-8")
+
+    assert registry.reload(data_dir) == []
+    assert registry.errors == {}
+    loaded = load_intelligence_classes(data_dir)
+    assert set(loaded) == set(registry) and "intelligence-classes" not in loaded
+
+
 # ---------------------------------------------------------------------------
 # Vault watcher wiring
 # ---------------------------------------------------------------------------
@@ -147,6 +160,20 @@ async def test_watcher_adds_modifies_and_removes_classes(registry, data_dir, tmp
     path.unlink()
     await _dispatch(watcher)
     assert "spark-low" not in registry
+
+
+@pytest.mark.asyncio
+async def test_watcher_ignores_the_generated_hub(registry, data_dir):
+    vault_root = str(Path(data_dir) / "vault")
+    watcher = VaultWatcher(vault_root=vault_root, poll_interval=0.0, debounce_seconds=0.0)
+    register_intelligence_class_handlers(watcher, registry)
+    await _dispatch(watcher)
+
+    (classes_dir(data_dir) / "intelligence-classes.md").write_text(HUB, encoding="utf-8")
+    await _dispatch(watcher)
+
+    assert registry.errors == {}
+    assert "intelligence-classes" not in registry
 
 
 @pytest.mark.asyncio
