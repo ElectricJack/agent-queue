@@ -7,8 +7,6 @@ from src.database.tables import sessions, tasks, wait_records
 async def evictable_sessions(db, config):
     from src.waits.holding import execution_waits
 
-    if getattr(getattr(config, "wait_policy", None), "v2_enabled", False) is not True:
-        return frozenset()
     async with db._engine.connect() as conn:
         return frozenset((await conn.execute(execution_waits().with_only_columns(
             sessions.c.id, maintain_column_froms=True,
@@ -19,7 +17,7 @@ async def evictable_sessions(db, config):
         ))).scalars())
 
 
-async def continuation_occupancy(db, config):
+async def continuation_occupancy(db, config, *, conn=None):
     """Count a reserved launch before it has a session, and fence its new session.
 
     Resume owns the reservation scope and new_session_id. Never count the stopped
@@ -28,10 +26,10 @@ async def continuation_occupancy(db, config):
     """
     from src.database.tables import admission_reservations, continuations
 
-    if getattr(getattr(config, "wait_policy", None), "v2_enabled", False) is not True:
-        return frozenset(), {}
-    async with db._engine.connect() as conn:
-        rows = (await conn.execute(select(
+    if conn is None:
+        async with db._engine.connect() as owned:
+            return await continuation_occupancy(db, config, conn=owned)
+    rows = (await conn.execute(select(
             tasks.c.project_id, admission_reservations.c.scope,
             continuations.c.new_session_id, sessions.c.state,
         ).select_from(continuations.join(
@@ -42,7 +40,7 @@ async def continuation_occupancy(db, config):
         )).where(
             continuations.c.resume_state.in_(("reserved", "launching", "delivered", "acknowledged")),
             admission_reservations.c.state.in_(("pending", "overdue", "granted", "consumed")),
-        ))).mappings().all()
+    ))).mappings().all()
     resuming, pending = set(), {}
     for row in rows:
         if row["new_session_id"] and row["state"] in {"starting", "running", "draining"}:

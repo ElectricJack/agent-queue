@@ -15,7 +15,6 @@ from sqlalchemy import (
     and_,
     any_,
     bindparam,
-    case,
     delete,
     func,
     insert,
@@ -37,7 +36,6 @@ from src.database.queries.blocked_state import (
 )
 from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
-    admission_reservations,
     agents,
     archived_tasks,
     continuations,
@@ -64,7 +62,6 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
-    wait_priority_projection,
     wait_records,
     workspaces,
 )
@@ -113,6 +110,25 @@ _PAUSE_OWNER_FIELDS = (
     "id", "owner_id", "session_id", "workspace_id", "fence_token", "handoff_state",
     "repository_id", "ref", "holder", "fence", "owner_role", "confirmed_workspace_id",
 )
+
+
+def settled_preparation_proved(record, identity: dict, claim_epoch) -> bool:
+    """Whether a durable ``prepare_failure`` record proves this exact attempt unwound.
+
+    The claim handler writes it only after the preparation's exception left
+    every owned git process group (``run_owned_process`` stops each group or
+    raises ``ProcessCleanupError``, which also writes the cleanup hold the
+    caller must check). A same-epoch retry stamps ``retried_at``: a later
+    attempt that died without a record is never proved by an earlier one.
+    """
+    return (
+        isinstance(record, dict) and "retried_at" not in record
+        and record.get("session_id") == identity["id"]
+        and record.get("instance_token") == identity["instance_token"]
+        and record.get("claim_epoch") == claim_epoch
+    )
+
+
 # The provider probe runs outside SQL; these fields must still match under locks.
 _SLOT_RESET_STOP_PROOF_FIELDS = (
     "id", "name", "provider", "instance_token", "state", "desired_state",
@@ -599,7 +615,8 @@ class TaskQueryMixin:
                     tasks.c.created_at.asc(),
                 )
             )
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def count_tasks_by_status(
         self,
@@ -1118,6 +1135,9 @@ class TaskQueryMixin:
                               "instance_token": identity["instance_token"],
                               "claim_epoch": snapshot["claim_epoch"]}
                     for proof in snapshot.get("preparations_stopped", [])
+                ) and not settled_preparation_proved(
+                    await self._read_prepare_failure(conn, task_id), identity,
+                    snapshot["claim_epoch"],
                 ):
                     raise PauseFenceError("Interrupted preparation termination is unproved")
             current_workspaces = [dict(ws) for ws in (await conn.execute(select(*(
@@ -1274,6 +1294,36 @@ class TaskQueryMixin:
                     "reason": "Checkpoint or preparation child termination is unproved",
                 }, conn=conn)
 
+    async def record_task_pause_cleanup_retained(
+        self, task_id: str, snapshot: dict, reason: str,
+    ) -> bool:
+        """Record one fence refusal without validating or releasing changed resources."""
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.id == task_id,
+            ).with_for_update())).first()
+            encoded = await self._read_manual_pause(conn, task_id)
+            if row is None or encoded is None or json.loads(encoded) != snapshot:
+                return False  # Never suppress cleanup of a newer pause.
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_cleanup_retained",
+            ))
+            if raw is not None and json.loads(raw).get("snapshot") == snapshot:
+                return False
+            await self._upsert_meta(task_id, "manual_pause_cleanup_retained", {
+                "snapshot": snapshot, "reason": reason, "recorded_at": time.time(),
+            }, conn=conn)
+            await self.add_task_comment(
+                task_id,
+                f"Pause cleanup retained for recovery: {reason}. "
+                "Automatic cleanup is suspended for this pause snapshot; resources and "
+                "the manual hold remain intact. Review ownership before repeating Pause "
+                "or using guarded Resume recovery.",
+                author_kind="supervisor", author_id="pause-cleanup", conn=conn,
+            )
+            return True
+
     async def finish_task_pause(self, task_id: str, snapshot: dict, *, before_release=None) -> None:
         """Release only this stopped claim's resources, never a reused worker's."""
         async with self.immediate() as conn:
@@ -1329,6 +1379,10 @@ class TaskQueryMixin:
             ).values(assigned_agent_id=None))
             saved = {**snapshot, "cleanup_pending": False}
             await self._upsert_meta(task_id, "manual_pause", saved, conn=conn)
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_cleanup_retained",
+            ))
 
     async def _slot_reset_claim_sessions(self, conn, task_id: str, *, lock: bool) -> list[dict]:
         record_query = select(task_metadata.c.value).where(
@@ -1430,7 +1484,10 @@ class TaskQueryMixin:
                 task_metadata.c.value == json.dumps(holder["id"]),
             ))
 
-    async def resume_task(self, task_id: str, *, stopped_sessions: Sequence[dict] = ()) -> Task:
+    async def resume_task(
+        self, task_id: str, *, stopped_sessions: Sequence[dict] = (),
+        defer_recovery_supersession: bool = False,
+    ) -> Task:
         """Remove only the explicit hold; keep approval and dependency state."""
         async with self.immediate() as conn:
             row = await self._lock_task_row(conn, task_id)
@@ -1441,7 +1498,9 @@ class TaskQueryMixin:
                 task_metadata.c.key == "slot_reset_failure",
             ))).scalar_one_or_none()
             if row["status"] in {"READY", "BLOCKED"} and failure:
-                result = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
+                result = await self._retry_slot_reset_locked(
+                    conn, row, stopped_sessions, defer_recovery_supersession=defer_recovery_supersession,
+                )
             else:
                 if row["status"] != TaskStatus.PAUSED.value:
                     # "Task is not paused (status: FAILED)" is true and useless
@@ -1460,7 +1519,9 @@ class TaskQueryMixin:
                         )
                     raise ValueError(f"Task is not paused (status: {row['status']})")
                 encoded = await self._read_manual_pause(conn, task_id)
-                result = await self._resume_locked(conn, task_id, encoded)
+                result = await self._resume_locked(
+                    conn, task_id, encoded, defer_recovery_supersession=defer_recovery_supersession,
+                )
                 # A hold placed over a failed slot reset restores the parked
                 # status, and the restore clears its attention: a BLOCKED row
                 # with no blocker the promotion cascade or explain can see
@@ -1468,7 +1529,9 @@ class TaskQueryMixin:
                 # resuming the unpaused task, so apply it in this transaction.
                 row = await self._lock_task_row(conn, task_id)
                 if failure and row["status"] in {"READY", "BLOCKED"}:
-                    retried = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
+                    retried = await self._retry_slot_reset_locked(
+                        conn, row, stopped_sessions, defer_recovery_supersession=defer_recovery_supersession,
+                    )
                     seen = {ready_id for ready_id, _ in result.ready}
                     result.flipped |= retried.flipped
                     result.ready += [entry for entry in retried.ready if entry[0] not in seen]
@@ -1477,7 +1540,7 @@ class TaskQueryMixin:
         return await self.get_task(task_id)
 
     async def _retry_slot_reset_locked(
-        self, conn, row, stopped_sessions: Sequence[dict]
+        self, conn, row, stopped_sessions: Sequence[dict], *, defer_recovery_supersession=False,
     ) -> TransitionResult:
         """Requeue a failed slot reset; the caller holds the row lock."""
         task_id = row["id"]
@@ -1492,6 +1555,7 @@ class TaskQueryMixin:
         return await self._apply_transition(
             conn, task_id, TaskStatus.READY, force=True,
             context="slot_reset_retry", returning=True, assigned_agent_id=None,
+            _defer_recovery_supersession=defer_recovery_supersession,
         )
 
     async def recover_orphaned_pause(self, task_id: str) -> Task | None:
@@ -1575,8 +1639,27 @@ class TaskQueryMixin:
             task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
         ))).scalar_one_or_none()
 
+    async def _read_prepare_failure(self, conn, task_id: str) -> dict | None:
+        """The decoded ``prepare_failure`` record on *conn*, or ``None``."""
+        encoded = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "prepare_failure"
+        ))).scalar_one_or_none()
+        return json.loads(encoded) if encoded is not None else None
+
+    async def settled_task_preparation(self, task_id: str) -> dict | None:
+        """The last preparation failure record, unless its cleanup is unproved."""
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        async with self._engine.begin() as conn:
+            if await conn.scalar(select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+            )):
+                return None
+            return await self._read_prepare_failure(conn, task_id)
+
     async def _resume_locked(
         self, conn, task_id: str, encoded: str | None, *, defer_projection=False,
+        defer_recovery_supersession=False,
     ) -> TransitionResult:
         """Restore a PAUSED task from its hold snapshot; the caller holds the row lock."""
         saved = json.loads(encoded) if encoded is not None else {}
@@ -1629,6 +1712,7 @@ class TaskQueryMixin:
             conn, task_id, prior, context="manual_resume", force=True,
             _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
             _defer_projection=defer_projection,
+            _defer_recovery_supersession=defer_recovery_supersession,
         )
         # Resuming is an operator decision that the paused incident has been
         # addressed.  Do this in the same transaction as the status write so
@@ -1766,7 +1850,9 @@ class TaskQueryMixin:
         accepted_close: dict | None = None,
         integration_delivery=None,
         allow_missing_provenance_reopen: bool = False,
+        _preserve_collected_children: bool = False,
         _defer_recovery_supersession: bool = False,
+        _recovery_hold_override: dict | None = None,
         pr_merge_gate: str | None = None,
         **kwargs,
     ) -> TransitionResult:
@@ -1827,6 +1913,8 @@ class TaskQueryMixin:
         explicit_restart = new_status == TaskStatus.READY and context in {
             "restart_task", "reopen_with_feedback",
         }
+        await self._guard_restart_recovery_hold_on(conn, task_id, _recovery_hold_override,
+                                                   new_status == TaskStatus.READY and context)
 
         if assume_pre_state is not None:
             current_status, pre_blocked = assume_pre_state
@@ -1897,6 +1985,10 @@ class TaskQueryMixin:
                 task_id, "reopen", conn=conn, delivery=integration_delivery,
                 allow_missing_provenance_reopen=(
                     allow_missing_provenance_reopen and context == "reopen_with_feedback"
+                    and new_status == TaskStatus.READY
+                ),
+                preserve_collected_children=(
+                    _preserve_collected_children and context == "reopen_with_feedback"
                     and new_status == TaskStatus.READY
                 ),
             )
@@ -2309,7 +2401,7 @@ class TaskQueryMixin:
             explicit_restart or context in {"manual_resume", "slot_reset_retry"}
         ) and not _defer_recovery_supersession:
             released_hold = await self._supersede_restarted_task_recovery_on(
-                conn, task_id, context=context,
+                conn, task_id, context=context, hold_override=_recovery_hold_override,
             )
             if (
                 released_hold and not _defer_projection
@@ -2606,6 +2698,9 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
+        await lock_component_tasks(conn, {
+            f"task:{tid}" for tid in await self.subtree_ids(task_id, conn=conn)
+        })
         await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy,
             delivery=delivery,
@@ -2697,6 +2792,9 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
+        from src.database.queries.continuation_queries import retire_task_waits
+
+        await lock_component_tasks(conn, {f"task:{task_id}"})
         if operator_delete:
             # FK writers take KEY SHARE on the task. Keep them behind the
             # deletion until every owned row (including layouts) has gone.
@@ -2706,6 +2804,10 @@ class TaskQueryMixin:
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()
+        await retire_task_waits(
+            conn, task_id, reason="task_archived" if preserve_completion else "task_deleted",
+            now=time.time(),
+        )
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         if not preserve_completion:
             await conn.execute(
@@ -2800,23 +2902,6 @@ class TaskQueryMixin:
             .values(handoff_state="released", updated_at=time.time())
         )
 
-        # Suspension history survives removal, but may never launch again.
-        await conn.execute(update(continuations).where(
-            continuations.c.task_id == task_id,
-            continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
-        ).values(resume_state="cancelled", version=continuations.c.version + 1))
-        await conn.execute(update(admission_reservations).where(
-            (admission_reservations.c.task_id == task_id)
-            | admission_reservations.c.continuation_id.in_(
-                select(continuations.c.id).where(continuations.c.task_id == task_id)),
-        ).values(
-            task_id=None,
-            state=case((admission_reservations.c.state.in_(("pending", "overdue", "granted")),
-                        "cancelled"), else_=admission_reservations.c.state),
-        ))
-        await conn.execute(delete(wait_priority_projection).where(
-            wait_priority_projection.c.task_id == task_id,
-        ))
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
         # The parent DELETE waits for an accepted comment's UPDATE lock.
         # Cleanup afterwards cannot miss a concurrently committed append.
@@ -3185,7 +3270,8 @@ class TaskQueryMixin:
             result = await conn.execute(
                 select(tasks).where(tasks.c.parent_task_id == parent_task_id)
             )
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def get_parent_tasks(
         self,
@@ -3208,7 +3294,8 @@ class TaskQueryMixin:
         stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def find_task_by_dedup_key(self, project_id: str, dedup_key: str) -> "Task | None":
         """Return the non-terminal task with (project_id, dedup_key), or None.
