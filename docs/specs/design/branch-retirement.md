@@ -141,6 +141,23 @@ refuses retention, and later target rewinds still fail ordinary containment.
 Admission tracks each snapshot's evaluated task IDs itself when checking
 freshness, so this fence works with the shared Git truth snapshot API.
 
+The same strict recovery includes completed epic children whose parent branch
+has disappeared, even when they retain filing origins. Backfill inventories
+these children against the fetched default target and retains only the current
+passing completion's final reported source under exact ancestry. An old legacy
+delivery row cannot replace this binding. Deleted child refs are harmless when
+the exact commit is reachable from the default target; missing or equivalent
+sources remain unproven.
+
+Epic cleanup refuses deletion while a completed code-bearing child lacks a
+retained delivery witness for its current completion and task version. This
+fence applies to retirement, sweep and train cleanup, including archived task
+identities. Normal Git truth reconciliation retains the source, target and
+completion identity before recording the witness used by this deletion fence.
+A reclose restores the hold. Audited lifecycle dispositions and organizational
+children carry no source obligation. The witness permits cleanup only; admission
+continues to prove containment against the current target.
+
 Salvage, repair and squash re-landings put a task's content on the default
 branch under different SHAs, so neither ancestry nor patch-id proves the source
 branch merged. `scripts/backfill-legacy-deliveries.py PROJECT --relanded

@@ -535,11 +535,12 @@ class TrainControls:
     async def abort_batch(self, batch_id, *, dry_run, operator_id, reason):
         if not dry_run and not reason.strip():
             raise ValueError("abort requires a nonblank reason")
-        batch, snapshot, candidate, unchanged = await self._abort_observation(batch_id)
+        batch, snapshot, candidate, unchanged = await self._abort_observation(
+            batch_id, allow_missing=True)
         store = BatchStore(self.db, clock=self.clock)
         await store.set_intent(
             batch_id, "aborted", dry_run=dry_run, authorize=unchanged,
-            operator_id=operator_id, reason=reason,
+            operator_id=operator_id, reason=reason, expected_batch=batch,
         )
         return {
             "outcome": "preview" if dry_run else "aborted",
@@ -548,6 +549,7 @@ class TrainControls:
             "target_ref": batch.target_ref,
             "candidate_sha": candidate,
             "target_sha": snapshot.target_oid,
+            "target_missing": snapshot.error == "target_ref_missing",
             "intent": batch.intent if dry_run else "aborted",
             "dry_run": dry_run,
         }
@@ -665,14 +667,17 @@ class TrainControls:
             await batches.cleanup_settled(batch)
         return result
 
-    async def _abort_observation(self, batch_id):
+    async def _abort_observation(self, batch_id, *, allow_missing=False):
         store = BatchStore(self.db, clock=self.clock)
         batch = await store.get(batch_id)
         if batch is None:
             raise ValueError("Git-first batch is missing")
         target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
         snapshot = await self.snapshot(self.db, target)
-        if snapshot is None or snapshot.error or not snapshot.target_oid:
+        missing = (snapshot is not None and snapshot.error == "target_ref_missing"
+                   and snapshot.target_oid is None)
+        if (snapshot is None or ((snapshot.error or not snapshot.target_oid)
+                                 and not (allow_missing and missing))):
             raise ValueError("batch target cannot be observed")
         ref = candidate_ref(batch.id)
         candidate = snapshot.observation.source_heads.get(
@@ -685,18 +690,28 @@ class TrainControls:
         # A refresh member is the frozen default head, which a refresh repair
         # publishes into the epic itself. Containment is not this batch's
         # promotion: only the train's own refresh delivery rule refuses abort.
-        proofs = (await _refresh_contains(snapshot, members, same_tree=True)
-                  if batch.epic_refresh else [
-            await snapshot.contains_source(member.task_id, member.source_sha, member.base_sha)
-            for member in members
-        ])
+        proofs = []
+        if not missing:
+            proofs = (await _refresh_contains(snapshot, members, same_tree=True)
+                      if batch.epic_refresh else [
+                await snapshot.contains_source(member.task_id, member.source_sha, member.base_sha)
+                for member in members
+            ])
         if any(proof is None for proof in proofs):
             raise ValueError("batch promotion cannot be observed")
-        if members and all(proof is True for proof in proofs):
+        if proofs and all(proof is True for proof in proofs):
             raise ValueError("promoted batch cannot be aborted")
 
         async def unchanged():
-            if not await snapshot.is_fresh():
+            if missing:
+                observed = snapshot.observation
+                remote = await observed.git.als_remote_ref(
+                    observed.store, batch.target_ref.removeprefix("refs/heads/"),
+                    repository_url=observed.repository_url,
+                )
+                if remote.state is not RemoteRefState.ABSENT:
+                    return False
+            elif not await snapshot.is_fresh():
                 return False
             if candidate:
                 return await snapshot.for_target(ref).is_fresh()

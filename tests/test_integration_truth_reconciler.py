@@ -249,7 +249,7 @@ async def test_reconciliation_stages_reuse_one_repository_snapshot(db, repositor
 async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
     db, repository, tmp_path, monkeypatch, budgeted,
 ):
-    from src.git.manager import bounded_git_reads
+    from src.git.manager import _REQUEST_GIT_READ_DEADLINE, bounded_git_reads
 
     repo = repository
     service = GitTruthReconciler(db, repo.git, data_dir=tmp_path)
@@ -257,6 +257,7 @@ async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
     service.observer.store_path = lambda _repository: repo.path
     service.observer._store = AsyncMock(side_effect=AssertionError("redundant store open"))
     entered, release, joined = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    expire = asyncio.Event()
     fetch = repo.git.afetch_origin
 
     async def blocked(*args, **kwargs):
@@ -269,6 +270,13 @@ async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
 
     async def joining(*args, **kwargs):
         joined.set()
+        if budgeted:
+            await expire.wait()
+            # Expire both the active timer and the shared deadline in this reader's context.
+            deadline = asyncio.get_running_loop().time()
+            _REQUEST_GIT_READ_DEADLINE.set(deadline)
+            [read_timeout] = read_timeouts
+            read_timeout.reschedule(deadline)
         return await join(*args, **kwargs)
 
     repo.truth.tick_snapshot = joining
@@ -278,16 +286,28 @@ async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
         # Exercise timeout while joining the fetch, independently of database lookup latency.
         monkeypatch.setattr("src.projects.storage_binding.repository_path",
                             AsyncMock(return_value=repo.path))
-        monkeypatch.setattr("src.git.manager.REQUEST_GIT_READ_SECONDS", 0.01)
+        monkeypatch.setattr("src.git.manager.REQUEST_GIT_READ_SECONDS", 60)
         observe = bounded_git_reads(observe)
     with snapshot_scope():
         train = asyncio.create_task(repo.snapshot())
         await entered.wait()
+        if budgeted:
+            read_timeouts = []
+            timeout_at = asyncio.timeout_at
+
+            def capture_read_timeout(deadline):
+                timeout = timeout_at(deadline)
+                read_timeouts.append(timeout)
+                return timeout
+
+            monkeypatch.setattr(asyncio, "timeout_at", capture_read_timeout)
         reconciliation = asyncio.create_task(observe(target))
         try:
             await asyncio.wait_for(joined.wait(), 2)
             assert not reconciliation.done()
             if budgeted:
+                # Expire after joining, independently of database lookup latency.
+                expire.set()
                 unavailable = await asyncio.wait_for(reconciliation, 2)
                 assert unavailable.error == "snapshot_unavailable"
                 assert not train.done()  # The timed-out reader cannot cancel the acquisition.
@@ -472,6 +492,40 @@ async def test_failed_delivery_source_does_not_prevent_other_repairs(db, tmp_pat
     result = await service.tick(100.0)
     assert result["sentinels"] == 1
     assert result["origins"] == 2
+
+
+async def test_phase_profile_preserves_failure_rotation_and_cancellation(tmp_path, monkeypatch):
+    from src.logging_config import get_correlation_context
+    from src.metrics.operation_profile import profile_duration, profile_repository
+
+    service = GitTruthReconciler(SimpleNamespace(), SimpleNamespace(), data_dir=tmp_path)
+    logged = []
+    monkeypatch.setattr(truth_module.logger, "info", lambda message: logged.append(
+        get_correlation_context()["git_truth_timing"],
+    ))
+
+    async def fail(now, counts):
+        profile_duration("db.query", 0.25)
+        profile_repository("p", "r")
+        raise RuntimeError("original failure")
+
+    service._completed = fail
+    for name in ("owners", "sentinels", "orphans", "origins", "repairs"):
+        monkeypatch.setattr(service, "_" + name, AsyncMock(return_value=0))
+    assert (await service.tick(1))["origins"] == 0
+    phases = logged[0]["phases"]
+    assert list(phases) == ["delivery", "owners", "sentinels", "orphans", "origins", "repairs"]
+    assert phases["delivery"]["outcome"] == "error"
+    assert phases["delivery"]["operations"]["db.query"]["seconds"] == 0.25
+    assert phases["delivery"]["repositories"] == [["p", "r"]]
+    assert phases["origins"]["operations"] == {}
+
+    service._owners.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await service.tick(2)
+    assert list(logged[1]["phases"]) == ["owners"]
+    assert logged[1]["phases"]["owners"]["outcome"] == "cancelled"
+    assert not service._lock.locked()
 
 
 async def test_reconcile_command_requires_daemon_principal():

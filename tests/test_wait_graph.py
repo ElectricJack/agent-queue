@@ -468,6 +468,23 @@ async def test_busy_graph_lock_refuses_within_bound_then_admits(env):
         await lock_graph(waiter, timeout=0.2)
 
 
+async def test_graph_profile_separates_wait_and_hold_and_counts_one_hold_per_transaction(env):
+    from src.metrics.operation_profile import operation_profile
+    from src.waits.graph import lock_graph
+
+    with operation_profile() as profile:
+        async with env.db._engine.begin() as holder:
+            await lock_graph(holder)
+            await lock_graph(holder)
+            async with env.db._engine.begin() as waiter:
+                with pytest.raises(WaitError):
+                    await lock_graph(waiter, timeout=0.01)
+    operations = profile.as_dict()["operations"]
+    assert operations["db.wait_graph_lock"]["calls"] == 3
+    assert operations["db.hold_graph_lock"]["calls"] == 1
+    assert operations["db.hold_graph_lock"]["seconds"] > 0
+
+
 @pytest.mark.parametrize("end", ["commit", "rollback"])
 @pytest.mark.parametrize("queued", [False, True])
 async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(

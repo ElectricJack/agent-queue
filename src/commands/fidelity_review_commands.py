@@ -304,6 +304,12 @@ class FidelityReviewCommandsMixin:
         key = fidelity_review_dedup_key(batch_id)
 
         async def before(conn):
+            # Graph writers take the hierarchy lock before the task-table and
+            # batch locks. Dispatch must do the same before locking the batch:
+            # task creation later needs the hierarchy lock and writes tasks.
+            # Otherwise a materialization replay can hold the graph locks
+            # while waiting for this batch, deadlocking reviewer creation.
+            await self.db.lock_hierarchy_project(conn, project_id)
             batch = await get_batch(conn, batch_id, lock=True)
             if batch is None or batch["project_id"] != project_id:
                 raise AskError("ask.not_found", f"Batch '{batch_id}' not found in project")

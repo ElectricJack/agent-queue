@@ -10,8 +10,8 @@ The train already honours one database answer for such work, an
 ``integration_legacy_deliveries`` row (:func:`src.integration.train_sources.project_delivered`).
 This backfill writes that row only after git proves the work is on the root
 target tip. It never moves a task branch or edits a task. For originless passing
-completions, it also retains the exact final reported source when ancestry proves
-that source on the target, so ordinary dependency admission can read it. Each
+completions and children whose epic ref is absent, it also retains the exact final
+reported source when ancestry proves it on the target, so admission can read it. Each
 completed task in the root inventory (including legacy tasks without
 any recorded branch origin), with no legacy row and no retained completion
 record, goes through four steps:
@@ -213,7 +213,21 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
                 task_branch_origins.c.task_id == tasks.c.id).exists(),
         ))).scalars().all()
         originless = set(originless)
-        ids = sorted(set(ids) | originless)
+        # Hand-landed children keep their origins after their epic ref goes
+        # away. They are not root train inputs, but still owe default delivery.
+        parent = tasks.alias("legacy_parent")
+        children = (await conn.execute(select(tasks.c.id, parent.c.branch_name).join(
+            parent, parent.c.id == tasks.c.parent_task_id,
+        ).where(
+            tasks.c.project_id == project_id, parent.c.project_id == project_id,
+            tasks.c.status == "COMPLETED", parent.c.branch_name.is_not(None),
+            or_(tasks.c.repo_id.is_(None), tasks.c.repo_id == target.repository_id),
+            or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+        ))).all()
+        absent_parent = {tid for tid, branch in children if
+                         "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
+                         not in observation.source_heads}
+        ids = sorted(set(ids) | originless | absent_parent)
     delivered = await project_delivered(
         db, ids, project_id=project_id, repository_id=target.repository_id,
         target_ref=target.target_ref, snapshot=snap,
@@ -238,7 +252,7 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
                 parents.discard(parent_id)
     requests = await load_delivery_requests(
         db, [task_id for task_id in ids if task_id not in parents
-             and (task_id not in delivered or task_id in originless)],
+             and (task_id not in delivered or task_id in originless | absent_parent)],
         repository_id=target.repository_id, target_ref=target.target_ref, reduced=True,
     )
     provenance = GitProvenance(observation.git, observation.store,
@@ -270,15 +284,27 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
             async with db._engine.connect() as conn:
                 candidates = await _candidates(conn, task_id, request.branch_name,
                                                observation.source_heads)
-            if task_id in delivered:
+            if task_id in absent_parent:
+                # Only the current passing final source can repair missing
+                # parent delivery. Earlier commits, branch tips and equivalent
+                # trees must never invent a completion's provenance.
+                if (request.completion_outcome == "pass"
+                        and is_valid_git_oid(request.reported_source or "")
+                        and await snap.strictly_contains_source(request.reported_source) is True):
+                    verdict.outcome, verdict.proof, verdict.via, verdict.delivered_sha = (
+                        "proven", CONTAINED_PROOF, "completion_commit", request.reported_source)
+                else:
+                    verdict.tried.append(("completion_commit", "final_source_not_contained"))
+            elif task_id in delivered:
                 candidates = [("completion_commit", request.reported_source)]
-            await _prove(observation, snap.target_oid, target_tree, verdict, candidates)
+            if task_id not in absent_parent:
+                await _prove(observation, snap.target_oid, target_tree, verdict, candidates)
             if task_id in delivered and verdict.proof != CONTAINED_PROOF:
                 continue  # the old row cannot prove the final source or authorize retention
             if verdict.outcome != "proven" and task_id not in delivered:
                 await _prove_on_open_epic(db, observation, task_id, verdict, candidates)
             retain_root = (
-                task_id in originless and verdict.proof == CONTAINED_PROOF
+                task_id in originless | absent_parent and verdict.proof == CONTAINED_PROOF
                 and request.completion_outcome == "pass"
                 and verdict.delivered_sha == request.reported_source
                 and await snap.strictly_contains_source(request.reported_source) is True

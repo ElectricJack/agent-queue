@@ -121,6 +121,14 @@ not authorize this source binding. Preview writes nothing; apply does not move
 task branches or edit tasks. Anything unproven is listed and left alone for an
 explicit decision. A reopened task's new completion is not covered by the old row.
 
+Completed children whose epic branch was deleted are also inventoried, including
+children with recorded origins. They require strict ancestry of the current
+passing completion's exact final source on the default target. Apply retains
+that source independently of the deleted refs, so dependency admission can
+recheck it normally. An earlier commit, an equivalent tree or an old row cannot
+authorize the binding. Epic cleanup holds the parent ref until reconciliation
+records retained child witnesses; a new child completion restores the hold.
+
 A child of a still-open epic whose exact source is already on the epic branch
 gets retained provenance instead (`epic_branch_provenance`), because the epic's
 readiness reads provenance, not rows. For the rest — a completion git can no
