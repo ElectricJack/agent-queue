@@ -4,6 +4,7 @@ This catalog is the `scheduler` shard of the [module catalog](README.md). The pr
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
+| [src/jobs/pytest_output.py](../../../src/jobs/pytest_output.py) | Parses pytest summaries and failure details for managed jobs and integration validation. | [Managed jobs](../../specs/implementation/managed-jobs.md) | `tests/test_jobs_output.py`, `tests/test_development_result_parser.py`. |
 | [src/orchestrator/__init__.py](../../../src/orchestrator/__init__.py) | Exports the composed `Orchestrator` and its public callback types. | [Scheduling](../../concepts/scheduling.md) | Package entry point. |
 | [src/orchestrator/agent_reconciler.py](../../../src/orchestrator/agent_reconciler.py) | Reconciles durable push-agent supply with dispatchable work before scheduling. | [Scheduling](../../concepts/scheduling.md) | `tests/test_orchestrator.py`. |
 | [src/orchestrator/context.py](../../../src/orchestrator/context.py) | Builds task-specific execution rules and prompt context for a launched worker. | [Scheduling](../../concepts/scheduling.md) | Execution context, not capacity policy. |

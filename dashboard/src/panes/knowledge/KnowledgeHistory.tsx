@@ -38,7 +38,7 @@ export default function KnowledgeHistory({
           const previous = entries[index + 1];
           const isViewed = viewedRevisionId === null ? entry.isCurrent : entry.revisionId === viewedRevisionId;
           const compareReason = !previous
-            ? "First revision"
+            ? nextCursor ? "Load more history to compare" : "First revision"
             : entry.redacted || previous.redacted
               ? "A redacted revision cannot be compared"
               : null;
@@ -60,6 +60,7 @@ export default function KnowledgeHistory({
                 )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 text-gray-400">
+                <span className="font-mono [overflow-wrap:anywhere]">{entry.revisionId}</span>
                 <span>{entry.actorId}</span>
                 <span>{formatKnowledgeTimestamp(entry.createdAt)}</span>
               </div>

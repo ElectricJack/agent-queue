@@ -18,10 +18,10 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitManager
-from src.integration.models import BranchKey, Fence
+from src.integration.models import INTEGRATION_REPAIR_PRIORITY, BranchKey, Fence
 from src.integration.owner_recovery import OwnerRecovery
 from src.integration.ownership import BranchOwnership, StaleFence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PolicyArtifactPin,
     Primitive,
     PrimitivePorts,
@@ -158,6 +158,47 @@ async def file_and_lease(env, subject):
     return await current(env, subject), Fence.model_validate(result.detail["fence"])
 
 
+async def test_managed_writer_expiry_allows_successor_without_stop_or_workspace_proof(env):
+    from src.integration.lock import BranchLock
+
+    env.writers.managed_leases = True
+    subject, fence = await file_and_lease(env, await make_subject(env))
+    async with env.db.immediate() as conn:
+        # Stranded compatibility bindings are not managed eligibility proofs.
+        await conn.execute(
+            update(integration_branch_owners).values(
+                handoff_state="handoff_pending", workspace_id="stranded", session_id="dead"
+            )
+        )
+    env.now += 61
+    assert (await env.writers.lease(subject, leasing(subject))).outcome == "stale"
+    successor = await BranchLock(env.db, clock=lambda: env.now).acquire(
+        fence.target, "successor", role="repair"
+    )
+    assert successor.token > fence.token
+    with pytest.raises(StaleFence):
+        await env.writers.ownership.assert_current(fence)
+    env.probe.assert_not_awaited()
+
+
+async def test_managed_writer_refuses_legacy_stop_saga_and_releases_by_identity(env):
+    from src.integration.lock import BranchLock
+
+    env.writers.managed_leases = True
+    subject, fence = await file_and_lease(env, await make_subject(env))
+    result = await env.writers.stop_proof(
+        subject, WriterStopProofArgs(task_id=fence.owner_id, fence_token=fence.token)
+    )
+    assert result.outcome == "unknown"
+    assert result.reason == "managed_ref_uses_lease_release"
+    env.probe.assert_not_awaited()
+    lock = BranchLock(env.db, clock=lambda: env.now)
+    assert await lock.release(fence)
+    successor = await lock.acquire(fence.target, "successor")
+    assert not await lock.release(fence)
+    assert (await lock.get(fence.target)).grant() == successor
+
+
 @pytest.mark.parametrize(
     "kind,role",
     [
@@ -196,6 +237,10 @@ async def test_concurrent_filing_and_restart_keep_one_task_and_budget(env, kind,
     assert task.status is TaskStatus.BLOCKED
     assert task.profile_id is None and task.class_hint == "standard-high"
     assert task.branch_name == "candidate" and task.repo_id == "r"
+    # Repair writers hold the subject's branch, so they run ahead of ordinary work.
+    assert task.priority == (
+        100 if role is WriterRole.VERIFIER else INTEGRATION_REPAIR_PRIORITY
+    )
     # The class is a routing hint; retries cannot change it or refresh a clock.
     changed = args.model_copy(update={"budget_seconds": 900})
     assert (await restarted.file(subject, changed)).reason == "ordinal_request_changed"
@@ -510,7 +555,7 @@ async def test_changed_stop_identity_during_preservation_keeps_lease(
     assert result.outcome == expected
     owner = await BranchOwnership(env.db).get_owner(fence.target)
     assert owner["handoff_state"] == "attached"
-    assert remote_sha(env.origin, f"aq/preserved/{owner['id']}")
+    assert remote_sha(env.origin, owner["ref"])
     async with env.db._engine.connect() as conn:
         assert (
             await conn.scalar(

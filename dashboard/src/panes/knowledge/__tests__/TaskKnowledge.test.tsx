@@ -1,3 +1,4 @@
+import { sdk, resetSDK } from "../../../pages/knowledge/__tests__/liveMocks";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -106,4 +107,49 @@ describe("TaskKnowledgePanel", () => {
       expect(screen.queryByRole("button", { name: new RegExp(`^${name}`) })).toBeNull();
     }
   });
+});
+
+import { MemoryRouter } from "react-router-dom";
+import TaskKnowledgeSection from "../../../pages/knowledge/TaskKnowledgeSection";
+import { waitFor } from "@testing-library/react";
+
+describe("live Save finding", () => {
+  it("retries the selected text with the original key and link guard", async () => {
+    resetSDK(); sdk.knowledgeCreate.mockRejectedValueOnce(new Error("Response lost"))
+      .mockResolvedValueOnce({ data: { record_id: "new-knowledge" } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter>
+      <TaskKnowledgeSection projectId="p" taskId="t" selectedText="Only my selection">Whole task description</TaskKnowledgeSection>
+    </MemoryRouter></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Save finding" }));
+    fireEvent.change(screen.getByLabelText("Finding title"), { target: { value: "Observation" } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save finding" }));
+    await screen.findByRole("alert");
+    sdk.recordShow.mockResolvedValue({ data: { link_token: "new-token" } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save finding" }));
+    await waitFor(() => expect(sdk.knowledgeCreate).toHaveBeenCalledTimes(2));
+    const first = sdk.knowledgeCreate.mock.calls[0]![0].body;
+    expect(first).toMatchObject({ body: "Only my selection", source_task_id: "t", if_link_token: "original-token" });
+    expect(sdk.knowledgeCreate.mock.calls[1]![0].body).toEqual(first);
+    expect(sdk.recordShow).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("captures a range inside the task description before Save finding", async () => {
+  resetSDK(); sdk.knowledgeCreate.mockResolvedValue({ data: { record_id: "new-knowledge" } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter>
+    <TaskKnowledgeSection projectId="p" taskId="t"><p>Selected words plus unselected description</p></TaskKnowledgeSection>
+  </MemoryRouter></QueryClientProvider>);
+  const button = await screen.findByRole("button", { name: "Save finding" });
+  expect(button).toBeDisabled();
+  const description = screen.getByText("Selected words plus unselected description");
+  const range = document.createRange(); range.setStart(description.firstChild!, 0); range.setEnd(description.firstChild!, 14);
+  window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+  fireEvent.mouseUp(description); fireEvent.click(button);
+  fireEvent.change(screen.getByLabelText("Finding title"), { target: { value: "Selection" } });
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save finding" }));
+  await waitFor(() => expect(sdk.knowledgeCreate).toHaveBeenCalled());
+  expect(sdk.knowledgeCreate.mock.calls[0]![0].body?.body).toBe("Selected words");
+  window.getSelection()!.removeAllRanges();
 });

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import InteractiveTerminal from "../InteractiveTerminal";
+import { TERMINAL_FONT_FAMILY, TERMINAL_THEME } from "../terminalSetup";
 import { TerminalMock, FitAddonMock, TerminalSocketMock, ResizeObserverMock } from "../../testUtils/terminal";
 
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
@@ -228,6 +229,11 @@ describe("Interactive live terminal", () => {
     expect(handlers.every(([, handler]) => handler())).toBe(true);
     expect(term.options.logLevel).toBe("off");
     expect(term.options.theme?.foreground).not.toBe("#bbf7d0");
+  });
+
+  it("draws with the theme the phone terminal shares", () => {
+    const { term } = terminal();
+    expect(term.options).toMatchObject({ theme: TERMINAL_THEME, fontFamily: TERMINAL_FONT_FAMILY });
   });
 
   it("leaves only one live viewer after StrictMode re-mount and closes it on unmount", () => {

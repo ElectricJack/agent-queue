@@ -26,11 +26,15 @@ from src.commands.principal import principal_context
 class RecordShowArgs(RecordScopeArgs):
     identity: str = Field(min_length=4)
     revision_id: str | None = None
+    include_edges: bool = False
 
 
 class RecordSearchArgs(RecordScopeArgs):
+    kind: Literal["task", "knowledge", "all"] = "knowledge"
     query: str = Field(default="", max_length=512)
     category: str | None = None
+    lifecycle: Literal["active", "retired"] | None = None
+    verification: Literal["unverified", "verified", "disputed"] | None = None
     include_retired: bool = False
     include_disputed: bool = False
     limit: int = Field(default=25, ge=1, le=100)
@@ -85,6 +89,7 @@ class RecordValue(CommandValue):
     items: list[dict[str, Any]] | None = None
     next_cursor: str | None = None
     links: list[dict[str, Any]] | None = None
+    edges: list[dict[str, Any]] | None = None
     links_out: list[dict[str, Any]] | None = None
     links_in: list[dict[str, Any]] | None = None
     changed: list[str] | None = None
