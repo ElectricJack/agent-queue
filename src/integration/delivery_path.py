@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any
 
 from src.models import (
-    INTEGRATION_MODE_PULL_REQUEST,
     resolve_integration_mode_with_source,
 )
 
@@ -90,44 +89,3 @@ async def effective_integration_mode(
         default_mode=default_mode,
         pull_requests_available=local_repository_path(repository_url) is None,
     )
-
-
-async def delivery_path_problems(db: Any, project: Any, *, default_mode: str) -> list[str]:
-    """Why *project* has no working delivery path; empty when it has one.
-
-    Only facts readable without the network are judged: which publisher owns
-    delivery, whether it has a repository, whether a pull request can exist
-    there, and whether a repository on disk is still there.  Credentials and
-    remote reachability are other checks' business.
-    """
-    problems: list[str] = []
-    mode = getattr(project, "hierarchical_integration_mode", None) or "disabled"
-    if mode in MANAGED_MODES:
-        repository_id = getattr(project, "integration_repository_id", None)
-        repo = await db.get_repo(repository_id) if repository_id else None
-        if repo is None:
-            return [f"{mode} integration has no integration repository"]
-        url = repo.url or ""
-        if mode != "development" and lacks_pull_request_host(url):
-            # docs/guides/hierarchical-integration-trains.md "Release limits".
-            problems.append(
-                f"{mode} integration supports only github.com, but {url} is not a GitHub "
-                "repository"
-            )
-    else:
-        url = getattr(project, "repo_url", "") or ""
-        effective, source = resolve_integration_mode_with_source(
-            None,
-            project_mode=getattr(project, "integration_mode", None),
-            default_mode=default_mode,
-            pull_requests_available=local_repository_path(url) is None,
-        )
-        if effective == INTEGRATION_MODE_PULL_REQUEST and lacks_pull_request_host(url):
-            problems.append(
-                f"integration mode pull_request (from {source}) needs a GitHub repository, "
-                f"but {url} cannot host a pull request"
-            )
-    local = local_repository_path(url)
-    if local is not None and not local.exists():
-        problems.append(f"repository {url} does not exist on disk")
-    return problems

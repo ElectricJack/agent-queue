@@ -1,0 +1,9 @@
+{
+  "shared_definitions": {
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_workspace_cutover": {
+      "baseline_span": null,
+      "landing_span": null,
+      "reason": "Command adapter for the reviewed workspace cutover transaction, including integration-owner guards; no independent mutation authority."
+    }
+  }
+}
