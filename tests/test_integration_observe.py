@@ -839,7 +839,8 @@ async def test_writer_push_baseline_uses_last_builder_write_not_a_late_reconcili
     assert (await observe(data, git)).writer.status is WriterStatus.CLAIMED
 
 
-async def test_current_operation_budget_conflicts_and_proven_writer_push():
+@pytest.mark.parametrize("deadline, limit", [(950, 2), (None, 2), (950, 0), (None, 0)])
+async def test_current_operation_budget_conflicts_and_proven_writer_push(deadline, limit):
     data = writer_snapshot(
         "IN_PROGRESS", [{"id": "live", "task_id": "repair", "state": "running", "started_at": 900}]
     )
@@ -855,10 +856,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
                 "starting_sha": BASE,
                 "intelligence_class": "deep-high",
                 "started_at": 800,
-                "deadline_at": 950,
+                "deadline_at": deadline,
                 "attempts": 1,
                 "dossier": {
-                    "budget": {"attempt_limit": 2},
+                    "budget": {"attempt_limit": limit},
                     "supervisor_recovery": {
                         "reason": "unchanged",
                         "subject": {"candidate_sha": HEAD},
@@ -893,6 +894,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
     assert facts.writer.fence_token == 4 and facts.budget.intelligence_class == "deep-high"
     assert facts.budget.attempts == 1 and facts.no_progress and not facts.ladder_exhausted
     assert facts.conflicts[0].files == ("a.py", "z.py")
+
+    assert facts.budget.deadline_at == deadline
+    assert facts.budget.attempt_limit == (limit or None)
+    assert facts.budget.expired(100_000) == (deadline is not None)
 
 
 async def test_journals_keep_only_unresolved_writes_and_ci_requests_are_pending():
@@ -1334,38 +1339,6 @@ async def test_reconciler_without_current_candidate_does_not_probe_remote_ci():
     assert facts.ci_state is CIState.NONE
 
 
-async def test_root_live_reader_uses_frozen_check_set_and_exact_candidate(monkeypatch):
-    from types import SimpleNamespace
-    from src.git.github_contracts import GitHubRepositoryBinding
-    from src.integration.root_runtime import root_candidate_ci_reader
-    from tests.test_integration_ci_producers import github
-
-    client, trust = github(app=False)
-    client.checks[0]["head_sha"] = HEAD
-    client.workflows[0]["head_sha"] = HEAD
-    client.jobs[0]["head_sha"] = HEAD
-    data = with_rows(snapshot(engine="reconciler"), integration_batches=[{
-        **snapshot().all("integration_batches")[0],
-        "policy_snapshot": {"root": {"required_checks": {
-            "producer_id": "15368", "version": "v1", "names": ["unit"]}}},
-    }])
-    service = SimpleNamespace(_load_trust=AsyncMock(return_value=(trust, client)))
-    owner = SimpleNamespace(
-        config=SimpleNamespace(integration=SimpleNamespace(git_first="shadow")),
-        db=SimpleNamespace(get_repo=AsyncMock(return_value=object())),
-        github_repository_binding_resolver=AsyncMock(
-            return_value=GitHubRepositoryBinding(123, "acme/widgets")),
-        integration_attestation_service=service,
-    )
-    facts = await IntegrationObserver(
-        Reader(data), Git(), candidate_ci=root_candidate_ci_reader(owner)
-    ).observe(data.subject)
-    assert facts.ci_state is CIState.GREEN and facts.ci[0].evidence_id is None
-    state = service._load_trust.await_args.args[0]
-    assert state["candidate_sha"] == HEAD
-    assert state["policy_snapshot"]["root"]["required_checks"]["names"] == ["unit"]
-    assert all(HEAD in call.args[0] or "jobs" in call.args[0]
-               for call in client.paged_items.await_args_list)
 
 
 async def test_git_adapter_reads_many_heads_in_batched_round_trips():

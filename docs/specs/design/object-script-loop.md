@@ -1,9 +1,10 @@
 # Object-script loop contracts (AQ-2)
 
 AQ coordinates bounded evaluation rounds for an external object generator and
-scorer. Matter owns rendering and image metrics. A reviewed V2 playbook (AQ-3)
-will call these commands; this change does not activate a playbook or run a
-capture. The approved source is Matter review `rev-amber-zenith`, revision 2.
+scorer. Matter owns rendering and image metrics. The optional reviewed V2
+`object-loop` playbook calls these commands; its presence does not activate policy
+or run a capture. See the [review and activation handoff](../../guides/object-loop.md).
+The approved source is Matter review `rev-amber-zenith`, revision 2.
 
 ## Commands
 
@@ -190,6 +191,15 @@ loop checkpoint exists; the stored job origin and live task ownership supply
 that authority.
 Supervisors may read checkpoints and evidence in their project; the global
 supervisor may read all projects. Both commands require explicit profile grants.
+`object_checkpoint_read` also admits a live PLAYBOOK invocation whose run and
+step match its server-derived principal, with an explicit project restriction
+and the command granted by both principal and artifact. It may read only the
+named object-loop row in that project. Unscoped runs, mismatched invocation pins,
+session-origin runs and authored task/session selectors are refused. Session-origin
+runs use the direct session read instead: switching principal kind must never
+bypass a worker's claim, epoch, instance-token or object-provenance fences.
+This exception applies only to checkpoint reads; every other held-work command,
+including `artifact_verify`, remains unavailable to PLAYBOOK callers.
 Existing worker templates need an operator grants-only reseed; the supervisor
 receives these grants through its existing additive capability sync.
 
@@ -310,6 +320,23 @@ the current completed scorer's latest packet is eligible. The bridge parses
 the entire JSON document (never prose extraction), verifies scope/identity,
 and leaves measurement validation and version fencing to `object_score_record`.
 Workers receive no loop-mutator or sibling-task authority.
+
+The reviewed sweep uses the V2 `collections_v1` feature: a lexical `filter`
+selects approved starts bound to the running artifact and another selects
+registered loops bound to it, before each bounded `foreach`. The producer's
+32-object ceiling applies before selection. Filters preserve order; the
+typed input bridge supplies every eligibility field. All five event rules
+remain independent closed graphs with the same recovery timer. Selection
+does not migrate another policy's objects or grant approval. The ordered
+decision table remains stopped, deadline, failed scorer, checkpoint, score,
+then reconciliation; command calls and continuation fallbacks are unchanged.
+
+The $100 operating budget is the approved start packet's whole-attempt
+`limits.usd`, not a new per-round budget or a hard-coded replacement for
+other approved budgets. Forward that packet and its round ceiling unchanged;
+the existing reservation commands enforce them. Script execution, additional
+human waits, and integration-only policy primitives are not substitutes for
+the object's atomic validation and settlement commands.
 
 The artifact chooses continuation, checkpoint, defect and deadline stops.
 Rejected continuation is retried once as a score-bearing stop, preserving a

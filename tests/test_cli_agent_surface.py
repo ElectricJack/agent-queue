@@ -734,7 +734,7 @@ def pool_handoff_api(tmp_path, monkeypatch):
     from fastapi import FastAPI
 
     from src.api import dependencies
-    from src.api.auth import RequestScope
+    from src.api.auth import RequestScope, SessionTokenStore
     from src.api.execute import router
     from src.api.middleware import TokenAuthMiddleware
     from src.cli.client import CLIClient
@@ -773,7 +773,8 @@ def pool_handoff_api(tmp_path, monkeypatch):
     scope = RequestScope(
         kind="session", session_id=session.id, project_id=session.project_id, task_id=None,
     )
-    token_store = SimpleNamespace(validate=AsyncMock(return_value=scope))
+    token_store = SessionTokenStore(db)
+    monkeypatch.setattr(token_store, "validate", AsyncMock(return_value=scope))
     monkeypatch.setattr(dependencies, "_token_store", token_store)
     monkeypatch.setattr(dependencies, "_command_handler", handler)
     monkeypatch.setattr(dependencies, "_require_session_token", True)
