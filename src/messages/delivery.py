@@ -12,7 +12,9 @@ Owns the delivery policy in supervisor-agent §5/§7:
   ``messages.reply_timeout`` and, if the recipient's transcript shows a
   completed assistant **prose** turn inside
   ``reply_window_multiplier x reply_timeout`` of ``delivered_at``,
-  materialise it as a reply (``via="transcript_tail"``).
+  materialise it as a reply (``via="transcript_tail"``) — only for a human
+  sender, and only when no other conversation reached that recipient inside
+  the window, because a transcript turn names no message it answers.
 
 Kept intentionally small: the engine reads/writes only through the
 public :class:`~src.database.queries.message_queries.MessageQueriesMixin`
@@ -48,6 +50,13 @@ PARK_AFTER_SECONDS: float = 86_400.0
 # Includes a supervisor cold start. A broken recipient cannot hold every
 # other mailbox indefinitely; cancellation leaves its messages pending.
 RECIPIENT_TIMEOUT_SECONDS: float = 120.0
+NOTIFICATION_RETRY_SECONDS: float = 60.0
+NOTIFICATION_MAX_RETRY_SECONDS: float = 300.0
+
+
+def _retry_delay(msg: Message) -> float:
+    return min(NOTIFICATION_MAX_RETRY_SECONDS,
+               NOTIFICATION_RETRY_SECONDS * 2 ** min(max(msg.notification_attempts - 1, 0), 3))
 
 COLLABORATION_BODY_KINDS = {"collaboration", "collaboration_invite", "collaboration_closed"}
 _TASK_NOTIFICATION_KINDS = {"wait_result", "job_result"} | COLLABORATION_BODY_KINDS
@@ -100,7 +109,11 @@ class MessageDeliveryEngine:
         if self._delivery_lock.locked():
             return result
         async with self._delivery_lock:
+            await self._db.expire_finished_task_notices()
             await self._db.redirect_disabled_supervisor_messages()
+            alert = await self._db.alert_global_supervisor_backlog()
+            if alert is not None:
+                result["delivered"] += await self._deliver_to_user([alert])
             recipients = await self._db.get_pending_recipients()
             seen = set()
             for to_kind, to_id, _project_id in recipients:
@@ -124,8 +137,15 @@ class MessageDeliveryEngine:
 
     async def _deliver_recipient(self, to_kind: str, to_id: str) -> dict[str, int]:
         result = {"delivered": 0, "skipped_busy": 0, "parked": 0}
+        now = time.time()
         pending = await self._db.get_pending_messages(
-            to_kind, to_id, limit=self._config.max_inject_per_prompt
+            to_kind, to_id, limit=self._config.max_inject_per_prompt,
+            notification_at=now if to_kind in {"session", "task"} else None,
+            notification_delays=tuple(
+                min(NOTIFICATION_MAX_RETRY_SECONDS, NOTIFICATION_RETRY_SECONDS * 2**index)
+                for index in range(4)
+            ),
+            newest_first=to_kind in {"session", "task"},
         )
         # Offline turns stay durable until supervisor start routes them.
         # They must neither cold-start a supervisor nor park.
@@ -148,6 +168,22 @@ class MessageDeliveryEngine:
             # particular live session. They are never cold-started or parked.
             return result
 
+        for msg in pending:
+            if (msg.notification_attempts >= 3 and msg.last_notified_at is not None
+                    and now >= msg.last_notified_at + _retry_delay(msg)
+                    and msg.body_kind != "delivery_alert"):
+                alert = await self._db.escalate_unread_message(msg.id)
+                if alert is not None:
+                    if alert.to_kind == "user":
+                        result["delivered"] += await self._deliver_to_user([alert])
+                    else:
+                        await self._emit("message.sent", _message_sent_payload(alert))
+        pending = [msg for msg in pending if msg.body_kind == "schedule_prompt"
+                   or msg.last_notified_at is None
+                   or now >= msg.last_notified_at + _retry_delay(msg)]
+        if not pending:
+            return result
+
         kind, target_id, resolved_project = _target_from_recipient(
             to_kind, to_id, pending[0].project_id
         )
@@ -164,17 +200,9 @@ class MessageDeliveryEngine:
         if activity == "sleeping":
             if pending[0].body_kind == "schedule_prompt":
                 return result
-            if all(msg.body_kind == "conversation_input" for msg in pending):
+            if all(msg.body_kind in {"conversation_input", "ask_input"} for msg in pending):
                 return result
             if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
-                return result
-            if not await self._sessions.ensure_started(
-                kind=kind, target_id=target_id, project_id=resolved_project
-            ):
-                logger.warning(
-                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
-                    pending[0].id, to_kind, to_id,
-                )
                 return result
 
         if activity == "absent":
@@ -192,6 +220,26 @@ class MessageDeliveryEngine:
             or not await self.cron_service.begin_delivery(msg.id)
         ):
             return result
+        if not await self._db.claim_message_notification(
+            msg.id, now=now, retry_delay=0 if scheduled else _retry_delay(msg),
+        ):
+            if scheduled:
+                await self.cron_service.finish_delivery(msg.id, delivered=False)
+            return result
+        # Recheck durable eligibility before a cold start as well as a nudge.
+        if activity == "sleeping":
+            if not await self._sessions.ensure_started(
+                kind=kind, target_id=target_id, project_id=resolved_project
+            ):
+                if scheduled:
+                    await self.cron_service.finish_delivery(msg.id, delivered=False)
+                logger.warning(
+                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
+                    msg.id, to_kind, to_id,
+                )
+                return result
+            if not await self._db.message_notification_is_pending(msg.id):
+                return result
         try:
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project,
@@ -215,12 +263,8 @@ class MessageDeliveryEngine:
             "Message wake submitted message_id=%s recipient=%s:%s",
             msg.id, to_kind, to_id,
         )
-        if await self._db.mark_delivered(msg.id, via="nudge"):
-            result["delivered"] = 1
-            await self._emit(
-                "message.delivered",
-                {"message_id": msg.id, "project_id": msg.project_id, "method": "nudge"},
-            )
+        if msg.body_kind in {"wait_outcome", "wait_decision"}:
+            await self._db.mark_wait_wake_delivered(msg.id, now=now)
         if scheduled:
             await self.cron_service.finish_delivery(msg.id, delivered=True)
         return result
@@ -239,6 +283,11 @@ class MessageDeliveryEngine:
         qualified forever, so a supervisor resuming after a restart
         fabricated a reply per backlog message from whatever it said next —
         tool calls included (2026-10-05).
+
+        A transcript turn names no message it answers, so the fallback fails
+        closed wherever attribution is a guess: an agent sender (its waits
+        would clear on the fabricated reply) and a request whose window
+        overlaps another conversation's delivery to the same recipient.
         """
         if not self._config.transcript_tail_fallback:
             return 0
@@ -261,6 +310,8 @@ class MessageDeliveryEngine:
         # when older queued feedback is injected by prime later.
         candidates.sort(key=lambda msg: (msg.delivered_at or 0, msg.created_at, msg.id), reverse=True)
         for msg in candidates:
+            if await self._db.message_held_by_wait(msg.id) is True:
+                continue
             # Internal question handoffs use explicit question commands;
             # never fabricate a user reply from the supervisor's transcript.
             if msg.body_kind in (
@@ -274,7 +325,18 @@ class MessageDeliveryEngine:
             # invented.
             if _is_system_sender(msg):
                 continue
+            # Only a human's chat is recovered. A reply addressed to an agent
+            # lands in a mailbox that satisfies its durable message waits and
+            # reads as the supervisor's answer, so a supervisor's prose about
+            # other work cleared a worker's wait (2026-10-12). Agents get an
+            # explicit reply (`aq message reply`, `aq agent message --reply-to`).
+            if msg.from_kind != "user":
+                continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
+                continue
+            resumed = await self._db.message_reply_window_start(msg.id)
+            baseline = resumed if isinstance(resumed, (int, float)) else msg.delivered_at
+            if baseline > cutoff:
                 continue
             if msg.reply_to_id is not None:
                 # Already a reply; not the message under sweep.
@@ -282,7 +344,7 @@ class MessageDeliveryEngine:
             # Once the window has closed no answering turn can still arrive,
             # so the backlog is never answered — and the transcript need not
             # be read to learn that.
-            window = self._reply_window(msg.delivered_at)
+            window = self._reply_window(baseline)
             if window <= now:
                 continue
             if await self._has_reply(msg):
@@ -303,26 +365,20 @@ class MessageDeliveryEngine:
                 kind=kind,
                 target_id=target_id,
                 project_id=project_id,
-                since=msg.delivered_at,
+                since=baseline,
                 until=window,
             )
             if not is_model_prose(tail):
                 continue
             seen_threads.add(thread_key)
-            reply = await self._db.create_message(
-                project_id=msg.project_id,
-                from_kind="session",
-                from_id=msg.to_id,
-                to_kind=msg.from_kind,
-                to_id=msg.from_id,
-                body=tail,
-                thread_id=msg.thread_id,
-                reply_to_id=msg.id,
+            # The insert re-checks under the request's row lock: a native
+            # reply that won the race, and any other conversation delivered
+            # to this recipient inside the window, leave the turn unbound.
+            reply = await self._db.create_transcript_tail_reply(
+                msg, body=tail, attribution_window=window - baseline,
+                **({"window_start": baseline} if baseline != msg.delivered_at else {}),
             )
-            claimed = await self._db.mark_delivered(reply.id, via="transcript_tail")
-            if not claimed:
-                # CAS lost — another actor already delivered this reply row.
-                # Skip both events; don't count as resolved.
+            if reply is None:
                 continue
             await self._emit(
                 "message.replied",
@@ -337,10 +393,9 @@ class MessageDeliveryEngine:
             )
             # Platform renderers (e.g. Discord's _on_message_sent) subscribe
             # to message.sent, not message.replied — so tail-recovered
-            # replies addressed to a user must fan out the same envelope
-            # _deliver_to_user emits, otherwise Discord never posts them.
-            if reply.to_kind == "user":
-                await self._emit("message.sent", _message_sent_payload(reply))
+            # replies, which are always addressed to a user, must fan out the
+            # same envelope _deliver_to_user emits, or Discord never posts them.
+            await self._emit("message.sent", _message_sent_payload(reply))
             resolved += 1
         return resolved
 
@@ -368,7 +423,7 @@ class MessageDeliveryEngine:
         now = time.time()
         parked = 0
         for msg in pending:
-            if msg.to_kind != "session" or msg.body_kind == "conversation_input":
+            if msg.to_kind != "session" or msg.body_kind in {"conversation_input", "ask_input"}:
                 continue
             if (now - msg.created_at) < PARK_AFTER_SECONDS:
                 continue
@@ -496,18 +551,25 @@ def _render_nudge(batch: list[Message]) -> str:
     to ``[Pasted text #N +M lines]``, and taller than the composer's row window
     it shows only its last rows.  Unconfirmable, it sat unsubmitted and every
     later nudge to the worker deferred behind it (2026-10-01).
+
+    A message pointer says that running it is the acknowledgment.  Bare, a
+    supervisor that had peeked at the bodies with ``aq message inbox``
+    answered each retry from memory, never ran status, and was re-nudged
+    until it did (2026-10-20).  The text is the same on every attempt: a
+    retry that matches a pasted-but-unsubmitted pointer only submits it.
     """
     if batch[0].body_kind == "schedule_prompt":
         schedule_id = batch[0].id.split(":")[1]
         return f"Handle `aq cron show {shlex.quote(schedule_id)} --consume --json`."
-    if batch[0].body_kind == "wait_result":
+    if batch[0].body_kind in {"wait_result", "wait_outcome", "wait_decision"}:
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.
-        wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result")
+        wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result").removesuffix(":outcome")
         return f"Handle `aq wait show {shlex.quote(wait_id)} --consume --json`."
     if batch[0].body_kind == "job_result":
         job_id = batch[0].id.removeprefix("job:").removesuffix(":terminal")
         return f"Handle `aq job result {shlex.quote(job_id)} --json`."
     if batch[0].body_kind in COLLABORATION_BODY_KINDS:
         return f"Handle `aq collaboration show {shlex.quote(batch[0].thread_id)} --json`."
-    return f"Handle `aq message status {shlex.quote(batch[0].id)} --json`."
+    return (f"Handle `aq message status {shlex.quote(batch[0].id)} --json` "
+            "(running it marks the message read).")

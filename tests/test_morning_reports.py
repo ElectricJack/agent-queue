@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ from src.cli.app import cli
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.report_commands import ReportCommandsMixin
 from src.config import AppConfig
-from src.database import Database, tables
+from src.database import tables
 from src.delivery.message import operation_marker
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -29,6 +30,7 @@ from src.reports.hourly import MAX_BRIEF_BYTES
 from src.reports.morning import collect_morning_evidence, preview_until, report_window
 from src.reports.morning_due import EVENT_TYPE as MORNING_DUE
 from src.reports.morning_due import MorningDueEmitter, morning_due_event_id
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures/reports/morning"
@@ -43,6 +45,7 @@ def frozen(name):
 
 def snapshot():
     return {
+        "needs_you": {"count": 0, "source_health": "healthy", "identity_hash": "empty"},
         "projects": [{"id": "p", "name": "Project P", "repo_default_branch": "main"}],
         "sources": {
             name: frozen(name)
@@ -465,9 +468,8 @@ def test_cli_preview_requires_dry_run_and_forwards_window(monkeypatch):
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("morning_reports"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("morning_reports")
     await database.create_project(Project(id="p", name="Project P"))
     await database.create_project(Project(id="q", name="Private Project Q"))
     for task_id in ("t1", "t2", "t3"):
@@ -508,7 +510,6 @@ async def db():
             .values(status="FAILED", updated_at=incident["updated_at"])
         )
     yield database
-    await database.close()
 
 
 async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds(db):
@@ -530,7 +531,7 @@ async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds
     assert statements[0] == "SET TRANSACTION READ ONLY"
     assert len(connections) == 1
     assert all(
-        sql.startswith(("SELECT", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
+        sql.startswith(("SELECT", "WITH", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
         for sql in statements
     )
     for source in ("completions", "deliveries", "incidents", "escalations", "attempts", "reroutes"):
@@ -1817,6 +1818,7 @@ async def test_project_scoped_read_uses_fallback_instead_of_global_authored_pros
 # The reviewed artifact end to end: engine, executor round-trip, contract, handler.
 
 REVIEWED_MORNING = Path("src/prompts/reviewed_playbooks/morning-report/artifact.json")
+MORNING_PORT_FIXTURES = FIXTURES / "building-blocks"
 LOS_ANGELES = ZoneInfo("America/Los_Angeles")
 
 
@@ -1832,7 +1834,7 @@ def morning_due(now):
 
 
 @pytest.fixture
-async def morning_playbook(command_handler_factory, monkeypatch):
+async def morning_playbook(command_handler_factory, monkeypatch, request):
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.builtin import set_handler_provider
     from src.playbooks.definition import load_definition_json
@@ -1862,7 +1864,8 @@ async def morning_playbook(command_handler_factory, monkeypatch):
     monkeypatch.setattr(
         "src.commands.report_commands.time", SimpleNamespace(time=lambda: clock.now)
     )
-    artifact = load_definition_json(REVIEWED_MORNING.read_text(encoding="utf-8"))
+    artifact_path = getattr(request, "param", REVIEWED_MORNING)
+    artifact = load_definition_json(artifact_path.read_text(encoding="utf-8"))
     runs = RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
@@ -1871,6 +1874,7 @@ async def morning_playbook(command_handler_factory, monkeypatch):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler.db,
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,
@@ -2071,6 +2075,92 @@ async def test_reviewed_morning_playbook_recovers_a_transient_failure(morning_pl
     assert snapshot.bindings["retried"]["state"] == "waiting" and len(calls) == 2
 
 
+def test_morning_building_blocks_preserve_recorded_graph_and_contract():
+    """Compare with the actual pre-port recording, never regenerated expectations."""
+    recorded = (MORNING_PORT_FIXTURES / "legacy-artifact.json").read_bytes()
+    assert hashlib.sha256(recorded).hexdigest() == (
+        "584735bfad6aa6df0da33f112e62e176b61e039c3071deca86aba6f1c2021195"
+    )
+    old = json.loads(recorded)
+    new = json.loads(REVIEWED_MORNING.read_bytes())
+    for artifact in (old, new):
+        for metadata in ("compiled_at", "source_hash"):
+            artifact.pop(metadata)
+        for node in [*artifact["rules"], *artifact["steps"].values()]:
+            node.pop("source")
+    assert new == old
+
+
+@pytest.mark.parametrize(
+    "morning_playbook",
+    [MORNING_PORT_FIXTURES / "legacy-artifact.json", REVIEWED_MORNING],
+    ids=["legacy", "building-blocks"],
+    indirect=True,
+)
+@pytest.mark.parametrize(
+    "scenario",
+    json.loads((MORNING_PORT_FIXTURES / "scenarios.json").read_text()),
+    ids=lambda scenario: scenario["name"],
+)
+async def test_morning_building_blocks_scenarios(morning_playbook, scenario, monkeypatch):
+    """Run both recordings through the real engine, typed contract and timer path."""
+    calls = []
+
+    async def tick(args):
+        response = scenario["responses"][len(calls)]
+        calls.append(args)
+        if response.get("failure") == "rejected":
+            return {"success": False, "error_code": "report.invalid", "error": "refused"}
+        return {
+            "success": True,
+            "report_id": "morning-2026-09-27",
+            "reason": None,
+            "next_due_at": None,
+            "cancelled": 0,
+            **response,
+        }
+
+    monkeypatch.setattr(morning_playbook.handler, "_cmd_morning_report_tick", tick)
+    execute = morning_playbook.handler.execute
+
+    async def execute_with_failure(name, args, **kwargs):
+        # Handler exceptions become typed rejections. A runtime failure must be
+        # injected at the invocation boundary to exercise the runtime_error edge.
+        if (
+            name == "morning_report_tick"
+            and scenario["responses"][len(calls)].get("failure") == "runtime_error"
+        ):
+            calls.append(args)
+            raise RuntimeError("scenario invocation failure")
+        return await execute(name, args, **kwargs)
+
+    monkeypatch.setattr(morning_playbook.handler, "execute", execute_with_failure)
+    now = utc("2026-09-27T14:00:00")
+    snapshot, receipt = await morning_playbook.run(now)
+    outcomes = []
+    for index, checkpoint in enumerate(scenario["checkpoints"]):
+        if index:
+            assert snapshot.wait.deadline_at == now + 60
+            now += 60
+            snapshot, receipt = await morning_playbook.fire(now)
+        step = snapshot.current_step_id.removeprefix("reconcile-morning--")
+        assert f"{snapshot.lifecycle.value}:{step}" == checkpoint
+        command = receipt.step_id.removeprefix("reconcile-morning--")
+        outcome = receipt.selected_transition.rsplit("::", 1)[-1]
+        outcomes.append(f"{command}:{outcome}")
+        assert receipt.error_code != "contract_violation"
+
+        # Duplicate daily delivery cannot issue another command, even while paused.
+        call_count = len(calls)
+        replay = await morning_playbook.dispatch(now)
+        assert replay.deduplicated == ("reconcile-morning",)
+        assert len(calls) == call_count
+
+    assert outcomes == scenario["outcomes"]
+    assert calls == [{}] * len(scenario["responses"])
+    assert len(morning_playbook.runs.snapshots) == 1
+
+
 # The once-per-local-day trigger.
 
 
@@ -2201,3 +2291,20 @@ async def test_the_orchestrator_cycle_emits_morning_due_from_the_live_config(tmp
         assert [event["local_date"] for event in events] == ["2026-09-27"]
     finally:
         await orch.shutdown()
+
+
+async def test_morning_human_reminders_survive_empty_days_and_fit_the_brief():
+    data = snapshot()
+    data["waiting_on_you"] = [
+        dict(wait_id=f"w-{i}", task_id="human-owner", project_id="p", subject="task_comment",
+             title="Question", created_at=1000 + i, age_seconds=200000)
+        for i in range(12)
+    ]
+    for key in data["sources"]:
+        if key not in {"repos", "workspaces"}:
+            data["sources"][key] = []
+    result, _, _ = await build(data, observed={**frozen("git")[0], "commits": []})
+    reminder = result["brief"]["waiting_on_you"]
+    assert reminder["count"] == 12 and reminder["more"] == 2 and len(reminder["items"]) == 10
+    assert not result["would_suppress"]
+    assert len(json.dumps(result["brief"], ensure_ascii=False).encode()) <= MAX_BRIEF_BYTES

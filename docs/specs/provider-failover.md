@@ -7,8 +7,9 @@
 > Start at [the documentation home](../README.md) for what AQ does today.
 
 **Date:** 2026-09-20
-**Status:** proposed — the design the `bold-rapids` implementation tasks are held
-to; written ahead of the code, and nothing here has shipped
+**Status:** implemented historical design record (`bold-rapids` complete). For current
+commands, defaults and recovery behaviour, use the [operator guide](../guides/provider-outage.md)
+and [providers system spec](systems/providers.md).
 **Epic:** `bold-rapids` — *Provider failover: re-route work when a provider runs
 out of usage or loses its login*
 **Implemented by:** `bold-rapids.2` (availability state), `.3` (pin semantics and
@@ -596,8 +597,9 @@ else in this section is active:
 1. **Launch suppression.** Nothing starts against an unavailable provider:
    `idle_workers` (`src/scheduler.py`) drops workers whose profile resolves to
    it, `AgentReconciler` grows none for it, `_measure_pools` sizes its pools to
-   zero, the pre-launch check in `src/orchestrator/execution.py` refuses, and a
-   claim from one of its sessions answers `drain_requested`.
+   zero, the pre-launch check in `src/orchestrator/execution.py` refuses,
+   `SessionLens` refuses cold supervisor starts (including message-triggered
+   starts), and a claim from one of its sessions answers `drain_requested`.
 2. **The derived hold.** A queued task whose effective profile is on an
    unavailable provider is *held*. It keeps its status — `READY` stays `READY` —
    and `aq task explain`, `task show` and the API report a computed
@@ -682,6 +684,7 @@ policy == "same_class":
 | Work | `class_only` / `preferred` | `pinned` |
 |---|---|---|
 | **Queued** (`DEFINED`/`READY`/`BLOCKED`, unassigned) on an unavailable provider | Re-routed by the sweep under D12 and the capacity rules (D14–D15). Until its turn comes it is held with `awaiting_failover_capacity`. | Held. Released automatically on recovery. |
+| **Continuation awaiting resume** (`RESUME_PENDING`, unassigned, no starting/running/draining session) on an unavailable provider | Included in provider reroute previews and sweeps under D12–D15. The move preserves `RESUME_PENDING`, the branch and the durable continuation; ordinary continuation admission launches it on the new profile. A concurrent resume reservation or live writer prevents the move. Manual `aq task route` refuses this state with the supported sequence: `aq task pause --task-id ID`, `aq task route --task-id ID --prefer TARGET`, then `aq task resume --task-id ID`. | Listed as held with `provider_pinned`; the continuation stays pending. |
 | **Unrouted** (`profile_id` NULL, or missing a class) | `_effective_default_profile_id` becomes availability-aware: when the project default's provider is unavailable it resolves to the default's equivalent rung on the next `available` provider. **Derived per call, never persisted** — `projects.default_profile_id` is not rewritten, so recovery needs no undo. The same resolver feeds pool demand, the routing catalog's `prefer_provider` and the claim path's default-profile widening (which today reads the raw column and must switch). | n/a |
 | **PAUSED by a provider failure** | New pauses carry the cause (D17). Once the provider has tripped there is nothing left to wait out, so the sweep returns the task `PAUSED → READY` at once instead of at `resume_after`, and the queued rule above applies: re-route. | The same `PAUSED → READY`, after which it is an ordinary held task. Launch suppression is what keeps it from starting, so no special paused-and-pinned state exists. |
 | **PAUSED before this shipped** (the seven tasks of 2026-09-20) | No recorded cause, so never touched automatically. `aq provider reroute --provider codex --include-paused` handles them by hand, listing what it will move first. | same |
@@ -809,8 +812,8 @@ detail) into `_fail_session_launch`; the exit path is
   take) and `unknown`, because none of them proves the work is safe.
 * **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
   system comment (`system:provider-failover`), and `aq prime` renders it in
-  the task-context section on its own, so a later re-route comment cannot push
-  it out of the five recent comments. It names the saved commit, tells the next
+  the task-context section on its own with terminal context, alongside the full
+  comment history. It names the saved commit, tells the next
   worker to continue from the branch tip rather than restart, and keeps the
   stopped session's last ~80 screen lines (`screen_tail`, captured before the
   stop, at most 8 KiB of UTF-8). Prime quotes only the last whole lines within
@@ -1070,6 +1073,11 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   `tasks.route.candidates`, in the router's order, so a spill never breaks a lane (an
   integration repair never spills to OpenCode, art design never leaves Codex); only a
   legacy task with no candidates keeps the same-class search above.
+  Supply, demand and workspace room are matched to the task's primary repository
+  kind, using the claim path's `pool_primary_kind`. An idle worker or free
+  workspace of another kind cannot serve it. Per-kind placement rows must not
+  overwrite each other; profile, project and global launch limits remain shared
+  across kinds, including moves planned by either pass of the sweep.
 * **S6 — a project's preferred provider.** When `projects.preferred_provider` is set,
   only rungs on that provider are targets. Spill never moves a task off it: a task whose
   source is on the preferred provider with no other same-class pool on that provider
@@ -1199,6 +1207,9 @@ replay and the five-minute timer never notify twice:
 | Project supervisors | `message_send` to `session:supervisor-<pid>` | first sweep of a batch that moved or held a task **in that project** | that project's moved and held tasks by id. One per batch per project — never one per task, never one per top-up. |
 | Discord, passively | the hourly digest | any half change or batch in the window | `collect_digest_activity` gains a producer over `provider_availability_transitions` and `task_reroutes`, emitting `WorkFact`s in the already-declared, producer-less `system` category with stable keys `provider:<key>:<generation>` / `reroute:<batch_id>`. A system fact makes a window eligible on its own: an outage in a quiet hour is exactly what the digest is for. |
 | Discord, actively | a durable escalation (the `escalation_create` row, written by the daemon), `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>:<generation>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
+
+Half-change notifications run in the availability service's tracked background work.
+Draining awaits them; closing cancels and awaits them before database teardown.
 
 Project supervisors are opt-in. A disabled project's notice routes to
 `session:supervisor-global` while retaining its project context and

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/install/prerequisites.py::STEP_DATA_DIR": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

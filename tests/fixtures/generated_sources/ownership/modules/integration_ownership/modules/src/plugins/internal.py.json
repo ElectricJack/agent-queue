@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/plugins/internal.py::collect_internal_formatters": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
