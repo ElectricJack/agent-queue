@@ -1,0 +1,306 @@
+{
+  "cli_catalogue_sha256": "5eb568f689a5bdf4abf1198e9a94320593f9823b878efe9de4feba8b8c756a24",
+  "contracts": {
+    "integration_redrive_child": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "adopt_source": {
+              "default": false,
+              "type": "boolean"
+            },
+            "dry_run": {
+              "default": true,
+              "type": "boolean"
+            },
+            "expected_head_sha": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "capability": "integration_redrive_child",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "integration_redrive_child",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "advanced"
+          },
+          {
+            "classification": "failure",
+            "name": "blocked"
+          },
+          {
+            "classification": "failure",
+            "name": "changed"
+          },
+          {
+            "classification": "failure",
+            "name": "invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "not_eligible"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "success",
+            "name": "nothing_to_redrive"
+          },
+          {
+            "classification": "success",
+            "name": "would_advance"
+          }
+        ],
+        "receipt_projection": [
+          "task_id",
+          "project_id",
+          "parent_task_id",
+          "branch",
+          "parent_branch",
+          "head_sha",
+          "base_sha",
+          "remote_head_sha",
+          "tree_sha",
+          "evidence_id",
+          "completion_id",
+          "collection",
+          "checkpoint",
+          "reason"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "base_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "branch": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "checkpoint": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "collection": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "completion_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "parent_branch": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "parent_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "remote_head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tree_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [
+          "reason"
+        ],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:d1c67fe0f8a46e453b371a36a853e61cb5d9349de568dca0d21450a4af3558b1",
+      "previous_fingerprint": "sha256:ea6ce787d76e63c19fdd77671e35c562cf45b7f7c8407db8c878f6806f926d23"
+    }
+  },
+  "previous_cli_catalogue_sha256": "44dae078fafb7ce50e997f5461e5fa7f79978a2e79078793d0399df918b6b60f",
+  "review_notes": [
+    "Dev merge b17f5d8ad brings source adoption from d5d2cc94c: integration_redrive_child adds explicit adopt_source (default false), optional completion_id result and its receipt field. Dry-run, exact-head, operator and reason fences remain intact.",
+    "The producer forwards adopt_source to ChildDelivery.run. Its invalid, unauthorized and explicit boolean return branches are unchanged; existing source-adoption tests cover forwarding, preview/apply, retries and refusal of unproven or live bindings.",
+    "Preserve the original gen1 and frozen-main recordings; record only this reviewed command and the resulting CLI catalogue delta."
+  ],
+  "source_base": "b17f5d8adb9bc2c15ddeaef8260812f281ee055b",
+  "transport_definitions": {
+    "integration_redrive_child": {
+      "previous_sha256": "0028a182d7c5fc5f998d50a4d70e6ea917b6c2cee780f68e50444f0143a80c6a",
+      "sha256": "2e33e879b276d95a4018ab05d0307ff739fef47e3a5f78a865cb9ee14b506854"
+    }
+  }
+}
