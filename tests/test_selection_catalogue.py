@@ -7,6 +7,7 @@ the loaders' refusals on small synthetic trees.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -225,6 +226,59 @@ def test_load_catalogue_refuses_another_generator_version(tmp_path):
     (root / cat.CATALOGUE_PATH).write_text(json.dumps(data))
     with pytest.raises(cat.CatalogueError, match="generator_version"):
         cat.load_catalogue(root / cat.CATALOGUE_PATH)
+
+
+def test_catalogue_identity_is_computed_without_a_committed_global_digest(tmp_path):
+    root = _project(tmp_path, {"tests/test_a.py": '"""Alpha."""\n'})
+    areas = [cat.AreaSpec("alpha", "A.", ("tests/*.py",))]
+    original = _write_catalogue(root, areas)
+    data = json.loads(cat.render_catalogue(original))
+    assert "digest" not in data
+    assert data["modules"]["tests/test_a.py"]["digest"].startswith("sha256:")
+    assert cat.load_catalogue(root / cat.CATALOGUE_PATH).digest == original.digest
+    assert original.digest == cat.file_digest(root / cat.CATALOGUE_PATH)
+
+    (root / "tests/test_b.py").write_text('"""Beta."""\n')
+    added = _write_catalogue(root, areas)
+    assert added.digest != original.digest
+    assert json.loads(cat.render_catalogue(added))["modules"]["tests/test_a.py"] == (
+        data["modules"]["tests/test_a.py"]
+    )
+
+
+@pytest.mark.parametrize("edited", ["description", "roots", "record_digest"])
+def test_local_digests_protect_catalogue_context(tmp_path, edited):
+    root = _project(tmp_path, {"tests/test_a.py": ""})
+    catalogue = _write_catalogue(root, [cat.AreaSpec("alpha", "A.", ("tests/*.py",))])
+    data = json.loads(cat.render_catalogue(catalogue))
+    if edited == "description":
+        data["areas"]["alpha"]["description"] = "Edited."
+    elif edited == "roots":
+        data["roots"] = ["other"]
+    else:
+        del data["modules"]["tests/test_a.py"]["digest"]
+    with pytest.raises(cat.CatalogueError, match="digest mismatch"):
+        cat.load_catalogue_text(json.dumps(data), source="edited catalogue")
+
+
+def test_historical_v1_catalogue_retains_its_identity_and_integrity_checks(tmp_path):
+    root = _project(tmp_path, {"tests/test_a.py": '"""Alpha."""\n'})
+    catalogue = _write_catalogue(root, [cat.AreaSpec("alpha", "A.", ("tests/*.py",))])
+    data = json.loads(cat.render_catalogue(catalogue))
+    data.update(schema_version=1, generator_version=1, digest="")
+    for body in data["modules"].values():
+        del body["digest"]
+    canonical = json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    data["digest"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    historical = json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+
+    loaded = cat.load_catalogue_text(historical, source="base catalogue")
+    assert loaded.digest == data["digest"]
+    assert loaded.modules == catalogue.modules and loaded.areas == catalogue.areas
+    assert cat.render_catalogue(loaded) == historical
+    data["modules"]["tests/test_a.py"]["summary"] = "Edited."
+    with pytest.raises(cat.CatalogueError, match="digest mismatch"):
+        cat.load_catalogue_text(json.dumps(data), source="base catalogue")
 
 
 @pytest.mark.parametrize(
