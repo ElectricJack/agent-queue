@@ -18,7 +18,12 @@ SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
 #: One generic worker per harness.  The tier x level x provider ladder was
 #: retired: a task's ``intelligence_class`` picks the model and reasoning level
 #: for the run, so profiles that differ only in ``default_class`` bought nothing.
-WORKER_PROFILE_IDS = ("worker-claude", "worker-codex")
+WORKER_PROFILE_IDS = tuple(sorted(
+    path.parent.name
+    for path in (Path(__file__).resolve().parents[1] / "src/profiles/defaults").glob(
+        "worker-*/profile.md"
+    )
+))
 
 
 def _vault_profile_path(root: Path, profile_id: str) -> Path:
@@ -64,6 +69,18 @@ def test_seeded_profiles_parse_without_errors(tmp_path):
         assert parsed.frontmatter.id == pid
 
 
+def test_spec_ingest_display_name_is_seeded_and_operator_rename_survives(tmp_path):
+    ensure_default_profiles(str(tmp_path))
+    path = _vault_profile_path(tmp_path, "spec-ingest")
+    shipped = path.read_text(encoding="utf-8")
+    assert parse_profile(shipped).frontmatter.name == "Review Spec Ingest"
+    renamed = shipped.replace("name: Review Spec Ingest", "name: My Spec Review")
+    path.write_text(renamed, encoding="utf-8")
+
+    assert "spec-ingest" in ensure_default_profiles(str(tmp_path))["skipped"]
+    assert path.read_text(encoding="utf-8") == renamed
+
+
 def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
     """Shipped worker instructions must make in-progress enrichment explicit."""
     ensure_default_profiles(str(tmp_path))
@@ -76,6 +93,41 @@ def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
         assert "material findings" in prompt, profile_id
         assert "decisions" in prompt, profile_id
         assert "while working" in prompt, profile_id
+
+
+def test_seeded_worker_profiles_authorize_local_commits_and_guard_publication(tmp_path):
+    """An expected git_commit scope refusal must not strand finished worker changes."""
+    from src.prime.sections import _extract_profile_prompt
+
+    ensure_default_profiles(str(tmp_path))
+    for profile_id in WORKER_PROFILE_IDS:
+        text = _vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8")
+        parsed = parse_profile(text)
+        assert parsed.is_valid, (profile_id, parsed.errors)
+        prompt = " ".join(_extract_profile_prompt(text).split())
+        for required in (
+            "Commit with plain `git` in your own worktree",
+            "`aq git commit` is a daemon-side command unavailable to worker scope",
+            "`out of scope: git_commit` is expected",
+            "A local `git commit` is authorized and is not a bypass",
+            "For a first publication of a new task branch or a later fast-forward update",
+            "`aq git push --expected-remote-oid <your-last-observed-remote-oid>`",
+            "must name the remote OID you last observed for your own branch, never another",
+            "never guess a lease or use plain `git push`",
+            "Never bypass any other AQ rejection",
+            "project override, else installation default, else",
+            "`Agent Queue <agent-queue@localhost>` (`src/git/identity.py`)",
+            "do not set an identity yourself or change Git config",
+            "If they are absent, report the launch bug",
+            "Never pass `--no-verify` or amend a pushed commit",
+        ):
+            assert required in prompt, (profile_id, required)
+        for variable in (
+            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"
+        ):
+            assert variable in prompt, (profile_id, variable)
+        for grants in (parsed.capabilities or {}).values():
+            assert "git_commit" not in grants, profile_id
 
 
 def test_seeded_worker_profiles_carry_test_scope_and_baseline_policy(tmp_path):
@@ -124,25 +176,29 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
 
     for instruction in (
         "First action on a cold start: establish the patrol",
-        "harness's scheduled jobs",
-        "about every 15 minutes, off the :00 and :30 marks",
+        "aq cron list --json",
+        "aq cron register --every 900 --offset 120",
+        "--idempotency-key supervisor-patrol-v1",
         "stall sweep",
         "aq --json message inbox --inject",
         "profile:supervisor",
         "session:<your supervisor session id>",
         "fixes",
         "Never create a second patrol",
-        "Re-establish it after every session restart",
-        "scheduler job is not",
-        "run the sweep at the start of every turn",
+        "does not run the prompt immediately",
+        "Daemon restart preserves",
+        "owner-session replacement expires it",
+        "aq cron show ID --consume --json",
+        "aq cron cancel ID",
+        "Do not also register a native harness patrol",
+        "Authentication failure stops the patrol",
+        "SWEEP-AUTH",
+        "report the single error and its recovery command",
+        "aq session token <session-id> --json",
         "never hand the human a command to run",
         "Retry up to three times",
         "equivalent authorized route",
         "Confirm first only for",
-        "aq integration abort",
-        "aq integration cancel-preserving",
-        "aq integration waive-history",
-        "aq integration adopt-legacy-deliveries --accept",
         "aq agent delete",
         "destroying work that cannot be recovered",
         "publishing outside the user's own repositories",
@@ -150,7 +206,7 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
         assert instruction in rules, instruction
 
     for repair in (
-        "Reroute to an eligible pool with live sessions",
+        "send the task back to its router",
         "Remove that satisfied dependency edge",
         "recover-child sweep",
         "deploy a newer fix",
@@ -159,7 +215,7 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
     ):
         assert repair in rules, repair
 
-    assert "~/.agent-queue/operator-checks/" not in rules
+    assert "~/.agent-queue/operator-checks/stall-sweep.py" in rules
     assert "supervisor-agent-queue" not in rules
 
 
@@ -194,38 +250,21 @@ def test_seeded_workers_have_publication_grants_without_supervisor_grants(tmp_pa
         assert not supervisor.allows_plugin_tool(command)
     for profile_id in WORKER_PROFILE_IDS:
         worker = policy_for(profile_id)
-        for command in ("git_create_pr", "git_push"):
+        for command in (
+            "git_create_pr", "git_push", "git_pull", "get_git_status", "git_log",
+            "git_diff", "git_branch", "git_changed_files",
+        ):
             assert worker.allows_plugin_tool(command), (profile_id, command)
-
-
-def test_seeded_supervisor_can_run_integration_status_and_enable_and_workers_cannot(tmp_path):
-    """The supervisor drives an integration cutover; a worker never controls one."""
-    ensure_default_profiles(str(tmp_path))
-
-    def policy_for(profile_id):
-        parsed = parse_profile(_vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8"))
-        assert parsed.capabilities is not None
-        return CapabilityPolicy.from_namespaces(**parsed.capabilities)
-
-    supervisor = policy_for("supervisor")
-    commands = ("integration_status", "integration_enable")
-    for command in commands:
-        assert supervisor.allows_aq_command(command), command
-    for profile_id in WORKER_PROFILE_IDS:
-        worker = policy_for(profile_id)
-        for command in commands:
+        for command in ("dry_run_playbook", "task_children", "task_progress"):
+            assert worker.allows_aq_command(command), (profile_id, command)
+        for command in ("run_playbook", "resume_playbook", "set_playbook_enabled"):
             assert not worker.allows_aq_command(command), (profile_id, command)
 
 
-def test_seeded_supervisor_holds_every_operator_integration_control(tmp_path):
-    """Scope admits an elevated supervisor to every operator control; so must its grants.
 
-    ``integration_retry_cleanup`` and ``integration_eject`` were admitted by
-    ``OPERATOR_INTEGRATION_CONTROLS`` yet missing from the shipped grants, so a
-    supervisor finishing a drain got ``capability denied``.  Abort,
-    cancel-preserving and waive-history stay granted: they are gated by the
-    profile's confirm-first rule, not by capability.
-    """
+
+def test_seeded_supervisor_holds_every_operator_integration_control(tmp_path):
+    """Current operator controls remain admitted by scope and shipped grants."""
     from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
 
     ensure_default_profiles(str(tmp_path))
@@ -413,3 +452,20 @@ def test_reviewer_profile_does_not_reject_solely_for_a_missing_pr():
     # The reviewer is told how to tell the two cases apart with tools it has.
     assert "task_show" in prompt
     assert "task_comments" in prompt
+
+
+def test_worker_template_maintenance_is_not_agent_visible_and_rules_are_verbatim(tmp_path):
+    from src.prime.sections import _extract_profile_prompt
+    from src.prompt_builder import extract_section
+
+    ensure_default_profiles(str(tmp_path))
+    for profile_id in WORKER_PROFILE_IDS:
+        text = _vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8")
+        visible = _extract_profile_prompt(text)
+        assert "generic coding worker" in visible
+        assert "Nothing is routed to it" not in visible
+        assert "## Template maintenance" in text
+        assert extract_section(text, "Rules") in visible
+        assert "Never migrate the operator's database" in visible
+        assert "No independent merges" in visible
+        assert "Escalate material scope changes" in visible

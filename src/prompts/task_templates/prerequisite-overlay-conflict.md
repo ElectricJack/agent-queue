@@ -1,0 +1,2 @@
+
+Exact child {{child_head}} conflicts with overlay {{overlay_head}}. The retained input store will be fetched into your checkout during preparation. Merge that exact overlay and retain both heads; do not substitute current branch tips.
