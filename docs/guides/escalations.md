@@ -66,7 +66,17 @@ discord:
 | `digest.catchup_hours` | `24` | How far back one labelled catch-up window may reach after an outage, 1–168. A window older than this is dropped rather than posted as stale news. |
 | `escalation.mention_user_ids` / `mention_role_ids` | empty | The **only** source of a ping. Applied to the first post of an incident and nowhere else. |
 | `escalation.reminder_minutes` | `0` (off) | Optional nag interval for an unanswered incident, 5–1440 when set. |
-| `escalation.supervisor_delivery_timeout_minutes` | `15` | How long an internal supervisor notice may stay undelivered before the watchdog raises an operational incident about it. |
+| `escalation.supervisor_delivery_timeout_minutes` | `15` | How long an internal supervisor notice may stay undelivered before the watchdog raises an operational incident. Also the interval for reminding the owner about an answered, unresolved escalation. |
+
+Once a verified reply is recorded, routine human notifications stop. The
+escalation remains open until a supervisor records the action or decision;
+answered incidents do not appear in the digest's human attention count. If the
+answer remains unresolved after the configured timeout, the owning supervisor
+receives an internal reminder. Reminders survive daemon restarts and never
+stack behind an undelivered notice. The authenticated global supervisor can
+resolve or cancel escalations in any project; a project supervisor can act only
+within its own project. Resolving still requires a verified answer and revision
+checks; cancelling an unanswered question withdraws it without inventing one.
 
 Settings → Messaging in the dashboard edits the same values and shows a live
 preview; the config file is the source of truth either way.
@@ -209,6 +219,26 @@ worker parked on a human answer are all correctly counted as *not* active
 
 ## Answering an escalation
 
+New human escalations require a subject title, a project, and a plain-language
+explanation of why a person must decide. `escalation_create` uses the task's title
+when `task_id` is supplied; otherwise the caller supplies `task_title` (the subject
+title also applies to project-level decisions). `investigation` holds the reason
+and what was checked; `decision_requested` states the choice. Blank or whitespace-only
+fields are refused. The returned `deep_link` is the incident's canonical dashboard
+path, `/focus/escalations/<id>`; external posts join it to the configured dashboard origin.
+
+Creation commits the incident and its initial delivery together, even when Discord
+is disabled. The outbox keeps the request until delivery can run. Internal
+supervisor-delivery notices stay in the supervisor inbox. Replay reuses the existing
+delivery and repairs a legacy open incident with no root; it preserves confirmed
+receipts and ambiguous sends.
+
+`aq doctor --check escalations.undelivered` and `aq doctor --check stall.sweep`
+flag open human incidents with no confirmed root delivery after five minutes.
+Findings include the incident link, age, outbox status (including `missing`), and
+last error. Disabled delivery and paused projects retain their queued requests;
+the dedicated check reports those too, while the stall sweep checks active projects.
+
 When a supervisor escalates, the channel gets two body lines and one link: the
 decision needed, the context behind it, and the incident's page on the
 dashboard. What did not fit — what was already tried, the options — waits in
@@ -260,6 +290,12 @@ aq escalation get --escalation-id escalation-abc123
 aq escalation resolve --escalation-id escalation-abc123 --outcome "Shipped from main."
 ```
 
+Pausing a project holds its escalation and review notifications silently, including
+human gate pings. The dashboard labels open requests **held while paused**. Existing
+workers receive a notice to stop at the next safe point and preserve their progress.
+Resuming the project releases pending notifications; withdrawn reviews stay silent.
+See [the project-pause contract](../specs/messaging/project-pauses.md).
+
 `escalation_resolve` is the supervisor's way to close what a human answered,
 whether the answer arrived as a thread reply, a tap on one of the post's choice
 buttons, or an answer on the escalation page. `--expected-revision` is optional
@@ -294,12 +330,13 @@ returns the receipt and never repeats the action.
 Three sources, all of them a supervisor's judgement rather than an automatic
 reflex:
 
-* **A blocked task.** The shipped system playbook
-  [`blocked-task-escalation`](../../src/prompts/default_playbooks/blocked-task-escalation.md)
-  turns every `task.failed` event whose status is `BLOCKED` into exactly one
-  message to `session:supervisor-<project>`, telling it to read the session
-  log tail with `aq session logs` and decide: retry, hold, follow up, or ask
-  the human. The playbook itself repairs nothing.
+* **A failed task.** The shipped system playbook
+  [`supervisor-failure-triage`](../../src/prompts/default_playbooks/supervisor-failure-triage.md)
+  reconciles every `task.failed` event with the task's durable failure incident.
+  Only a new actionable incident wakes the project supervisor to read the
+  evidence and decide: retry, hold, follow up, or ask the human. The retired
+  `blocked-task-escalation` recording remains available for audit, but its
+  source is no longer installed at startup.
 * **A worker question.** A question a supervisor cannot answer is escalated
   with `aq question escalate <question-id> --reason "…"`, which creates or
   reuses a durable escalation with the question as its source. A human
@@ -353,14 +390,25 @@ aq doctor --check escalations.pile --fix
 What the sweep does, in order:
 
 1. resolve incidents whose gate has already resolved;
+   retire unanswered review notices only when the exact bound review is withdrawn
+   and its open gate has no waiters. The gate stays open and no document is approved;
 2. obsolete `supervisor_delivery` notices (the delivery backlog behind one has
    drained, or it never reached a decision point);
 3. obsolete questions whose task reached `COMPLETED`;
+   read archived tasks as well. A supervisor request bound to an archived task
+   is retired as historical, with its actual archived status recorded. An active
+   failed or blocked task continues to need its decision;
 4. obsolete the two provable cases among the task-less questions — an incident
    in a project that is not `ACTIVE`, and one whose own source record (a gate
    row) no longer exists — and send the rest to the supervisor's inbox for
    triage. Every remaining question keeps its `sweep: triage` audit row, so a
    second run lists nothing twice.
+
+The legacy missing-worker-knowledge-grants incident can also retire after both
+installed worker templates parse successfully and contain the exact missing
+knowledge commands and harness tools. Unknown supervisor sources still require
+triage. These additional proofs are read again before the closing write; a new
+waiter, restored task, changed review revision or removed grant prevents closure.
 
 It never guesses. A source kind it cannot resolve (`core`,
 `provider_availability`) is listed for triage rather than called retired, because
