@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -51,31 +51,6 @@ class IntegrationScheduleQueriesMixin:
                     select(project_integration_schedules)
                     .where(project_integration_schedules.c.project_id == project_id)
                     .with_for_update()
-                )
-            )
-            .mappings()
-            .one()
-        )
-        return dict(row)
-
-    async def update_integration_schedule_on(
-        self,
-        conn: AsyncConnection,
-        *,
-        project_id: str,
-        values: dict[str, Any],
-    ) -> dict[str, Any]:
-        await conn.execute(
-            update(project_integration_schedules)
-            .where(project_integration_schedules.c.project_id == project_id)
-            .values(**values)
-        )
-        row = (
-            (
-                await conn.execute(
-                    select(project_integration_schedules).where(
-                        project_integration_schedules.c.project_id == project_id
-                    )
                 )
             )
             .mappings()

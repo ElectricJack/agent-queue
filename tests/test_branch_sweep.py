@@ -121,19 +121,15 @@ async def test_sweep_deletes_proven_refs_and_keeps_held_unique_and_stashed_work(
 
 
 @pytest.mark.asyncio
-async def test_daily_sweep_scheduler_runs_only_when_git_first_is_active(tmp_path):
+async def test_daily_sweep_scheduler_runs_once_per_day_by_default(tmp_path):
     orchestrator = object.__new__(Orchestrator)
     orchestrator.config = SimpleNamespace(
-        data_dir=str(tmp_path), integration=SimpleNamespace(git_first="shadow")
+        data_dir=str(tmp_path), integration=SimpleNamespace()
     )
     orchestrator._last_git_branch_sweep_date = None
     orchestrator._git_branch_sweep_task = None
     orchestrator._run_daily_git_branch_sweep = AsyncMock()
 
-    orchestrator._schedule_daily_git_branch_sweep()
-    assert orchestrator._git_branch_sweep_task is None
-
-    orchestrator.config.integration.git_first = "active"
     orchestrator._schedule_daily_git_branch_sweep()
     await orchestrator._git_branch_sweep_task
     orchestrator._run_daily_git_branch_sweep.assert_awaited_once()
