@@ -1,5 +1,5 @@
 // The focus task view: long Unicode title, primary controls, a dotted child id
-// through in-app navigation, and watch-only terminal links.
+// through in-app navigation, and terminal links that stay in focus mode.
 import assert from "node:assert/strict";
 import { expectLayout, waitForText } from "../probes.mjs";
 import { CHILD_TASK_ID, TASK_IDS } from "../fixtures/base.mjs";
@@ -14,7 +14,7 @@ export async function run(t) {
   await expectLayout(t, { primary: PRIMARY });
   await t.shot("task");
 
-  // Watch-only: the terminal link leads to the focus session, never /agents.
+  // The terminal link leads to the focus session, never /agents.
   const watch = await t.page.$eval("a[href^='/focus/sessions/']", (a) => a.getAttribute("href"));
   assert.match(watch, /^\/focus\/sessions\//);
   assert.equal(await t.page.$("a[href^='/agents']"), null);
