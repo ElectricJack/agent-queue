@@ -1,0 +1,12 @@
+{
+  "generic_dependencies": {
+    "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority.",
+    "src/preparation_failure.py::preparation_identity": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/preparation_failure.py::safe_text": "Generic bounded diagnostic scrubber, with no ref/owner or lifecycle authority."
+  },
+  "shared": {
+    "src/preparation_failure.py::preparation_identity": {
+      "reason": "Builds an allowlisted diagnostic snapshot of integration origin base SHA, checkpoint generation and branch owner fence; integration-specific evidence fields make the full helper shared-owned despite its non-authoritative output."
+    }
+  }
+}

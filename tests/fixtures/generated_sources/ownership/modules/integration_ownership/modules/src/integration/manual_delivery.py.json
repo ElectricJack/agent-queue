@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/manual_delivery.py::ManualDelivery._deliver_in::47baff6bf2caa763a07b674d808f80e1924007d32ad269d4b938f8e734497a3a": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 295,
+      "owner": "ManualDelivery._deliver_in",
+      "owner_fingerprint": "5927ff60196aedd754fc99e8d0f09cf399c585badd9978cafa39b0a20d3af9a7",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
