@@ -8,12 +8,16 @@ object ids; these reads never fetch, checkout, or update the repository.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any
 
 from src.git.manager import GitManager
+
+logger = logging.getLogger(__name__)
 
 _SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 MAX_COMMITS = 200
@@ -42,6 +46,9 @@ async def read_git_evidence(
         "gaps": [],
         "warnings": [],
     }
+    if not await asyncio.to_thread(os.path.isdir, checkout):
+        result["gaps"].append("checkout_unavailable")
+        return result
     deadline = time.monotonic() + 30
 
     async def run(args: list[str]):
@@ -168,6 +175,9 @@ async def read_git_evidence(
                 else "unknown"
             )
     except Exception:
+        # The gap is all the brief carries; the cause (a checkout that moved, a
+        # budget overrun) is otherwise lost.
+        logger.warning("morning git evidence read failed in %s", checkout, exc_info=True)
         result["gaps"].append("git_read_failed")
     result["gaps"] = sorted(set(result["gaps"]))
     return result

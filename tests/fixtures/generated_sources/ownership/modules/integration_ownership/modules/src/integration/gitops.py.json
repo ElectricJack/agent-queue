@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/gitops.py::SubjectGitJournal.append::159ce2f2f03560ed982a4214eec932adddaa718bf0a28e5c0fcb975d3d5b0cc4": {
+      "call": "append_integration_subject_journal",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 92,
+      "owner": "SubjectGitJournal.append",
+      "owner_fingerprint": "058cad326165ebe8e2e2d7a718951eb99134a322d31aa7e71e994c6078fd09ad",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}
