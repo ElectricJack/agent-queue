@@ -8,8 +8,8 @@ import {
   type GithubRepository,
 } from "../../../api/client";
 
-export async function githubAuthStatus(): Promise<GithubAuthStatusResponse> {
-  return (await getGithubAuthStatus({ body: {}, throwOnError: true })).data;
+export async function githubAuthStatus(repositoryUrl?: string): Promise<GithubAuthStatusResponse> {
+  return (await getGithubAuthStatus({ body: { repository_url: repositoryUrl }, throwOnError: true })).data;
 }
 
 export async function githubOwners(): Promise<GithubOwner[]> {

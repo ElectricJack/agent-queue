@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from unittest.mock import AsyncMock, patch
 
 import click
@@ -42,8 +43,23 @@ def _text_value(param_type: click.ParamType) -> str:
     return "value"
 
 
-def _required_argv(command: click.Command) -> list[str]:
+def _required_argv(command: click.Command) -> tuple[list[str], set[str]]:
+    """Build argv covering every required option.
+
+    Returns (argv, supplied) where supplied names click-optional parameters
+    that the callback enforces as alternatives and that we chose anyway.
+    """
+    supplied: set[str] = set()
     argv: list[str] = []
+    if getattr(command, "_aq_backend_command", None) == "supervisor_inbox_reply":
+        # --text and --file are both click-optional, but the callback requires
+        # exactly one; satisfy the alternative through the file input.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as reply_file:
+            reply_file.write("value")
+        argv.extend(["--file", reply_file.name])
+        supplied.add("text")
     for param in command.params:
         if not param.required:
             continue
@@ -52,7 +68,7 @@ def _required_argv(command: click.Command) -> list[str]:
             argv.append(param.opts[0])
         else:
             argv.extend([param.opts[0], _text_value(param.type)])
-    return argv
+    return argv, supplied
 
 
 def _client(result: dict | Exception):
@@ -93,6 +109,14 @@ SUCCESS_PAYLOAD = {
     "samples": [],
     "classes": [],
     "triggers": [],
+    "count": 0,
+    "source_health": "complete",
+    "snapshot_at": 0,
+    "next_cursor": None,
+    "ask": {"id": "x", "context": {}},
+    "expected": {},
+    "actions": [],
+    "preview": {"id": "x", "packet": {}, "packet_sha256": "sha"},
 }
 
 
@@ -100,17 +124,55 @@ SUCCESS_PAYLOAD = {
 def test_every_generated_leaf_dispatches_required_and_omits_optional(path, command):
     """The historical help-only audit now executes every generated callback."""
     client = _client(SUCCESS_PAYLOAD)
-    argv = _required_argv(command)
-    with patch("src.cli.app._get_client", return_value=client):
+    argv, supplied = _required_argv(command)
+    # This case exercises omitted options without a worker claim. Cover the
+    # knowledge proposal's inferred worker fence separately below.
+    with (
+        patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.claim_epoch.read_claim_epoch", return_value=None),
+    ):
         result = CliRunner().invoke(command, argv, obj={})
     assert result.exit_code == 0, f"{path}: {result.output}\n{result.exception!r}"
     client.execute.assert_awaited_once()
     backend, payload = client.execute.await_args.args
-    assert backend == getattr(command, "_aq_backend_command")
+    assert backend == command._aq_backend_command
     required = {param.name for param in command.params if param.required}
     optional = {param.name for param in command.params if not param.required}
     assert required <= set(payload)
-    assert optional.isdisjoint(payload)
+    assert supplied <= set(payload)
+    assert optional.isdisjoint(set(payload) - supplied)
+
+
+@pytest.mark.parametrize("ambient_epoch", [None, 37])
+@pytest.mark.parametrize("explicit_epoch", [None, 42])
+def test_knowledge_propose_infers_worker_claim_and_prefers_explicit_epoch(
+    ambient_epoch, explicit_epoch
+):
+    from src.cli.app import cli
+
+    command = cli.commands["knowledge"].commands["propose"]
+    argv, _supplied = _required_argv(command)
+    if explicit_epoch is not None:
+        argv.extend(["--claim-epoch", str(explicit_epoch)])
+    client = _client(SUCCESS_PAYLOAD)
+    with (
+        patch("src.cli.app._get_client", return_value=client),
+        patch("src.cli.claim_epoch.read_claim_epoch", return_value=ambient_epoch) as infer,
+    ):
+        result = CliRunner().invoke(command, argv, obj={})
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once()
+    backend, payload = client.execute.await_args.args
+    assert backend == "knowledge_propose"
+    expected = explicit_epoch if explicit_epoch is not None else ambient_epoch
+    if expected is None:
+        assert "claim_epoch" not in payload
+    else:
+        assert payload["claim_epoch"] == expected
+    if explicit_epoch is None:
+        infer.assert_called_once_with()
+    else:
+        infer.assert_not_called()
 
 
 def test_required_structured_optional_and_explicit_null_reach_the_transport():
@@ -155,19 +217,11 @@ def test_required_and_malformed_structured_values_are_usage_errors_without_dispa
         malformed = CliRunner().invoke(
             cli,
             [
-                "system",
-                "delivery-promote",
-                "--operation-key",
-                "op",
-                "--source-task-id",
-                "t1",
-                "--source-head",
-                "abc",
-                "--source-base",
-                "def",
-                "--expected-target",
-                "ghi",
-                "--fence",
+                "playbook",
+                "dry-run",
+                "--playbook-id",
+                "example",
+                "--event",
                 "{bad",
             ],
         )
