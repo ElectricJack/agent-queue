@@ -1,4 +1,18 @@
 {
+  "reconciliation_definitions": {
+    "src/waits/admission.py::AdmissionReader.prepared": {
+      "fingerprint": "979594f8b9b7e5ee0c1e1d4f0556a7bc40253c6b427e93656beae656432a280d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/admission.py::admission_pass": {
+      "fingerprint": "5d64f167699b59b411f53338b5c0b06dae09b82e505563023ae3eaec8c643b39",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records, workspaces": {
+      "fingerprint": "0035a527537bb1f9c0ba5fc1955f8211f37fffd094cc14d39ed67b0a0d5b0bc8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/waits/admission.py::AdmissionReader.observe_task": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
     "src/waits/admission.py::branch_holders": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",

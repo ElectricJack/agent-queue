@@ -210,6 +210,42 @@ class TaskDisplayFields(BaseModel):
     claim_readiness: ClaimReadiness | None = None
 
 
+class HeldBatchSummary(BaseModel):
+    """Ingestion membership survives release; ``state`` says whether it still holds work."""
+
+    batch_id: str
+    state: Literal["held", "reviewing", "needs_scope", "released", "retired"]
+    structure_revision: int
+    reviewer_task_id: str | None = None
+    source: str
+    lineage: dict[str, Any]
+
+
+class IngestBatchDetail(HeldBatchSummary):
+    """Durable review evidence, including receipts superseded by a graph edit."""
+
+    project_id: str
+    structure_digest: str
+    source_review_id: str
+    source_revision: int
+    source_content_sha256: str
+    decision_id: str
+    members: dict[str, str]
+    membership: list[dict[str, Any]]
+    check_results: dict[str, Any] | None = None
+    section_verdicts: dict[str, Any] = Field(default_factory=dict)
+    reverse_coverage_verdict: str | None = None
+    walkthrough_verdict: str | None = None
+    structural_findings: list[dict[str, Any]] = Field(default_factory=list)
+    diff: dict[str, Any] | None = None
+    receipts: list[dict[str, Any]] = Field(default_factory=list)
+    release_receipt: dict[str, Any] | None = None
+    release_actor: str | None = None
+    release_revision: int | None = None
+    release_digest: str | None = None
+    released_at: float | None = None
+
+
 class TaskDetail(TaskDisplayFields):
     id: str
     project_id: str
@@ -256,6 +292,8 @@ class TaskDetail(TaskDisplayFields):
     rerouted_from: str | None = None
     reroute: TaskReroute | None = None
     provider_hold: ProviderHoldDetail | None = None
+    held_batch: HeldBatchSummary | None = None
+    delivery_condition: dict[str, Any] | None = None
     # Mandatory routing (spec 2026-09-28 §3): who wrote ``profile_id``
     # (unrouted | router | override | role | legacy), the filer's
     # intelligence-class hint, and the router's record of the route.  Set by
@@ -1091,12 +1129,10 @@ class SpecIngestLegacyInventoryResponse(BaseModel):
 
 
 class TaskBatchProposeResponse(BaseModel):
-    """A proposal is created, not applied — unless ingestion applies it live.
+    """Ordinary proposals stage for approval; ingestion materializes held work.
 
-    A batch carrying a live spec-ingest role's approved-document authority is
-    applied in the same call: ``committed`` is then true and ``task_ids`` is
-    that batch's receipt, exactly as a commit's would be. Every other proposal
-    stages in ``ready`` and waits for approval.
+    Design-kind ingestion returns a released batch with a server receipt.
+    Implementation ingestion returns held members pending fidelity review.
     """
 
     success: bool = True
@@ -1106,6 +1142,17 @@ class TaskBatchProposeResponse(BaseModel):
     already_committed: bool = False
     task_ids: list[str] | None = None
     diff: dict[str, Any] | None = None
+    status: Literal["draft", "ready", "held", "reviewing", "needs_scope", "released", "retired",
+                    "committed", "discarded"] | None = None
+    batch_id: str | None = None
+    state: str | None = None
+    structure_revision: int | None = None
+    structure_digest: str | None = None
+    members: dict[str, str] | None = None
+    lineage: dict[str, Any] | None = None
+    release_receipt: dict[str, Any] | None = None
+    reviewer_task_id: str | None = None
+    replayed: bool | None = None
 
 
 class TaskBatchAckResponse(BaseModel):
@@ -1138,6 +1185,34 @@ class TaskBatchValidateResponse(BaseModel):
     hard: list[dict[str, Any]] = Field(default_factory=list)
     advisory: list[dict[str, Any]] = Field(default_factory=list)
     gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TaskBatchReviewRecordResponse(BaseModel):
+    """The durable fidelity receipt, including a scope ask when one was raised."""
+
+    success: bool = True
+    batch_id: str
+    state: Literal["reviewing", "needs_scope"]
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
+
+
+class TaskBatchReleaseResponse(BaseModel):
+    """The original atomic release receipt is returned on every successful replay."""
+
+    success: bool = True
+    batch_id: str
+    already_released: bool
+    release_receipt: dict[str, Any]
+
+
+class TaskBatchRetireResponse(BaseModel):
+    success: bool = True
+    batch_id: str
+    state: Literal["retired"]
+    already_retired: bool
 
 
 class SpecIngestLegacyAdoptResponse(TaskBatchAckResponse):
@@ -1530,6 +1605,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
     "task_batch_validate": TaskBatchValidateResponse,
+    "task_batch_review_record": TaskBatchReviewRecordResponse,
+    "task_batch_release": TaskBatchReleaseResponse,
+    "task_batch_retire": TaskBatchRetireResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,

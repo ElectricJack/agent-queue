@@ -72,6 +72,7 @@ A blocking edge contributes to `is_blocked` until its **satisfaction rule** hold
 | `parent-child` | task is a child of dep (its container) | `dep.status ≠ DEFINED` — the container has been *released* (the rule originally also excluded the since-removed `AWAITING_PLAN_APPROVAL` status) |
 | `waits-for` | task fans in over dep's children | every task with a `parent-child` edge to dep has `status = COMPLETED` (vacuously true with zero children; children added later **re-block** the waiter) |
 | `conditional-blocks` | task runs only if dep failed | `dep.status = BLOCKED`, or `dep.status = FAILED` with `retry_count ≥ max_retries` (terminal failure only — a transiently FAILED task about to be retried does not satisfy it) |
+| `delivery-of` | task runs after dep's delivery lands | a durable root landing receipt in `task_delivery_receipts` names dep or one of its ancestors, on the integration repository's default branch with a delivering disposition, recorded at or after dep's latest completion. Git is never read directly; unknown, absent or failed delivery keeps the task blocked |
 
 Notes:
 
@@ -91,6 +92,18 @@ Notes:
   candidates for retargeting or confirmation of intentional operator fan-in;
   diagnostics never rewrite edges and omit container sequencing and finished
   dependents.
+- **`delivery-of` gates operational roots.** Deploys, production cutovers,
+  post-landing observation and soak periods depend on landed code, not on a
+  completed task. Spec ingestion creates them as **operational roots**: a task
+  with no parent, proposed with `placement: operational_root` and
+  `delivery_targets`, gets `task_metadata.delivery_condition = {"kind":
+  "delivery-of", "targets": [...]}` (shown by `aq task show` and the API) and
+  one `delivery-of` edge per target. An operational root is never a child of a
+  delivery epic, which would then wait on it forever
+  (`post_landing_inside_delivery_epic`), and a target cannot itself wait on the
+  operation (`delivery_condition_cycle`). Completing an epic or elapsed time
+  never satisfies the edge. See
+  [systems/task-graph](../systems/task-graph.md) for the satisfaction query.
 - **`conditional-blocks` has a disposal rule.** When the dependency reaches COMPLETED the edge is permanently unsatisfiable. A cascade step auto-closes dependents whose *only* remaining unsatisfied blocking edges are conditional edges on COMPLETED deps: they transition to COMPLETED with `work_outcome=no-op` metadata and a `task.skipped_conditional` event. Contingency tasks never rot in the queue.
 
 ### 3.2 Non-blocking edge types
@@ -536,7 +549,7 @@ branch without requiring a delivery receipt or a PAUSED parent. A live successfu
 code close must verify its exact task-branch head on origin before releasing its
 claim, including projects outside the train modes.
 
-`aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
+`aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label ∧ held_batch_id IS NULL`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
 
 ## 10. Events: replay and payload registry
 
@@ -871,3 +884,35 @@ there is no automatic replay of historical approvals. New decisions cannot use
 this compatibility branch. Inventory rows are operator evidence, not authority.
 The operator reconciles installed profile grants (`approved_spec_packet`) and
 activates the reviewed pipeline bundle; workers never reseed or activate it.
+
+## 15a. Held ingestion batches (2026-10-22)
+
+The approved design `2026-10-13-spec-ingestion-with-task-structure-review-before-release.md`
+and its implementation spec replace §15's immediate application for
+implementation documents. Ingestion still commits the whole graph in one
+transaction, but **held**: each row carries `tasks.held_batch_id`, the batch's
+`task_proposals` id. The hold is a separate axis from status, gates, labels and
+routing. `not_ingest_held()` is the one predicate, used by the claim frontier,
+pool demand, explicit claims, claim activation, launch, restart, push
+scheduling, container settlement, integration and the blocked-state projection.
+`aq task explain` reports "member of ingestion batch <id> awaiting fidelity
+review". Resolving a gate, resuming a task or moving a member never sheds the
+hold.
+
+One fidelity-reviewer task per batch, filed as an ordinary root task outside
+the held graph, edits the held members (`task_batch_update` operations) and
+records a receipt fenced by the batch's structure revision and digest.
+`task_batch_release` then clears every member's hold in one transaction, after
+it re-checks the source, membership, hard structural checks and the receipt.
+Only ingestion policy, the project supervisor or the operator may release. A
+scope question parks the batch in `needs_scope` with one ask; it never releases.
+`task_batch_retire` finalizes a batch whose members were already retired
+through the obsolete lifecycle. Design documents still produce only an epic and
+an implementation-spec authoring child, released at creation by the server's
+`design_authoring_shape` receipt.
+
+After release the graph is ordinary work. The supervisor repairs structure
+with `aq task reparent --root` (queued, unmaterialized work) and `aq task archive
+--disposition obsolete` with a replacement, satisfying evidence or rewire plan.
+Splitting a started task and a `needs_quiescence` answer are not built yet. The
+contract and rollout are in [spec-ingestion](../implementation/spec-ingestion.md).

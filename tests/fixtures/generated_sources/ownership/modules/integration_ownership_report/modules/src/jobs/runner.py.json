@@ -2,6 +2,12 @@
   "exclusions": {
     "src/jobs/runner.py::supervise": "Generic resource-job process supervision; integration result parser is independently charged."
   },
+  "reconciliation_definitions": {
+    "src/jobs/runner.py::import from src.resources.semaphore import SlotSemaphore, SlotTimeout, full_suite_lock_dir": {
+      "fingerprint": "6f7cdd8bc111e943af6312f06a2331bea326a37ee34a7eadd4ffcd191f739a7d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/jobs/runner.py::fingerprint": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."

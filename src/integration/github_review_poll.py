@@ -230,11 +230,8 @@ class RootPullRequestGate:
                              reason=mismatch)
             if pull.get("draft"):
                 return defer("pr_draft")
-            if (pull_request_conflicts(pull) or pull.get("mergeable") == "CONFLICTING"
-                    or pull.get("mergeStateStatus") == "DIRTY"):
-                return defer("pr_conflicting")
-            if pull.get("mergeable") is None:
-                return computing()
+            conflicting = (pull_request_conflicts(pull) or pull.get("mergeable_state") == "dirty"
+                or pull.get("mergeable") == "CONFLICTING" or pull.get("mergeStateStatus") == "DIRTY")
             from src.integration.models import integration_ci_policy
 
             ci = integration_ci_policy(policy)
@@ -259,13 +256,23 @@ class RootPullRequestGate:
                 raise ValueError("PR required checks observer is unavailable")
             result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,
                 ref="refs/heads/" + pull["head"]["ref"], sha=checked_sha, generation=0))
-            if not result.green and result.state.value != "red":
+            from src.integration.checks import Conclusion
+
+            # GitHub suppresses PR workflows on dirty merge refs. Absence of a
+            # run must reach conflict recovery, while an observed running, red,
+            # cancelled or unavailable run retains its normal admission gate.
+            suppressed_conflict = conflicting and not local and all(
+                check.conclusion is Conclusion.PENDING
+                and (check.classification == "none" or check.detail.get("missing_pr_run") is True)
+                for check in result.checks
+            )
+            if not conflicting and not result.green and result.state.value != "red":
                 if result.state.value != "unknown" and pull.get("mergeable") is None:
                     return computing()
             if result.state.value == "unknown":
                 return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
             repaired_red = repaired_source and result.state.value == "red"
-            if not result.green and not repaired_red:
+            if not result.green and not repaired_red and not suppressed_conflict:
                 recovery = {}
                 if (result.state.value == "red" and request is not None
                         and self.failure_handler is not None and checked_sha == member.source_sha):
@@ -289,6 +296,12 @@ class RootPullRequestGate:
                 state = await review_state()
                 if state != "approved":
                     return defer(state)
+            # A conflict cannot conceal a failed check, unavailable observation,
+            # or missing authorization. Only an otherwise eligible PR reaches
+            # conflict recovery; exact green checks also settle a transient null
+            # mergeability observation.
+            if conflicting:
+                return defer("pr_conflicting")
             self._deferred.pop(key, None)
             if not repaired_source and scoped and target_sha and result.green:
                 self._admitted[root] = (key, self.clock() + PR_GATE_CACHE_SECONDS)

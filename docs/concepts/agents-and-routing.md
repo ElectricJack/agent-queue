@@ -487,9 +487,9 @@ routes may suppress duplicate rung creation, and retired ids stay tombstoned.
 Use `aq agent profile-drift` and `aq doctor --check profiles.system_drift`
 to inspect semantic drift.
 
-Capability sync is additive on daemon start and reload: the supervisor and
-all shipped `worker-*` templates sync by default, and other shipped profiles
-can opt in with frontmatter `capability_sync: true` (as operator templates do).
+Capability sync is additive on daemon start and reload: all shipped system
+profiles sync by default, including the supervisor, worker templates and
+spec-ingest, planning and review roles.
 `capability_sync: false` opts out. Only missing shipped grants are appended;
 other content stays operator-owned.
 

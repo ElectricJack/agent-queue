@@ -8,6 +8,15 @@
       "owner": "HierarchyIntegration._reacquire_expired_reservation",
       "owner_fingerprint": "3e2a34e2c8fad01cd9fdb1a3d34779df68adc731b9944d1b9bd8994bd60e1f98",
       "reason": "Audit event for re-leasing a detached task's own expired origin reservation before its drain cut (sound-willow-55); ordinary audit storage, no ref replay authority."
+    },
+    "src/integration/hierarchy.py::HierarchyIntegration.reparent_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1597,
+      "owner": "HierarchyIntegration.reparent_on",
+      "owner_fingerprint": "a19c53fe93f9050df74159dfcf2cb25fd7caf354c3d87e31c5fccf0ca3fd44a2",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
     }
   }
 }
