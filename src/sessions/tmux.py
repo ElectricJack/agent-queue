@@ -37,6 +37,7 @@ if os.name != "posix":  # pragma: no cover - the registry's gate
     raise ImportError("the tmux session provider requires a POSIX host")
 
 from src.sessions import proctable
+from src.metrics.perf import timed_operation
 from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal
 from src.sessions.provider import (
     Cap,
@@ -248,6 +249,7 @@ class TmuxProvider(SessionProvider):
 
     # -- plumbing ----------------------------------------------------------
 
+    @timed_operation("session.tmux")
     async def _tmux(self, *args: str, timeout: float = 30.0, stdin: bytes | None = None) -> str:
         """Run ``tmux -u -L <socket> <args…>`` and return stdout.
 
@@ -322,6 +324,7 @@ class TmuxProvider(SessionProvider):
 
     # -- lifecycle ---------------------------------------------------------
 
+    @timed_operation("provider.tmux.start")
     async def start(self, spec: SessionSpec) -> SessionHandle:
         require_session_executable(spec)
         work_dir = Path(spec.work_dir)
@@ -550,6 +553,7 @@ class TmuxProvider(SessionProvider):
             # since, so look for it again on the remaining budget.
             ready_deadline = max(ready_deadline, time.monotonic() + dialog_budget.remaining())
 
+    @timed_operation("provider.tmux.stop")
     async def stop(self, h: SessionHandle, *, grace: float = 2.0) -> None:
         if await self._fenced(h):
             pid = await self._pane_pid(h.name)
@@ -751,6 +755,7 @@ class TmuxProvider(SessionProvider):
                             await self._tmux("delete-buffer", "-b", buffer)
             self._last_input_at[h.name] = time.monotonic()
 
+    @timed_operation("provider.tmux.nudge")
     async def nudge(self, h: SessionHandle, text: str) -> None:
         lock = self._nudge_locks[h.name]
         async with lock:

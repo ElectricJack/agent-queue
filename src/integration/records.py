@@ -1286,8 +1286,14 @@ class PolicyActivation:
                     policy = HierarchicalIntegrationPolicy.model_validate(raw_policy or {})
                     deprecated = deprecated_route_fields(policy)
                     if deprecated:
-                        raise ValueError("integration route profile fields are deprecated: "
-                                         + ", ".join(deprecated))
+                        return {
+                            "success": False, "outcome": "invalid", "project_id": project_id,
+                            "generation": generation,
+                            "error_code": "deprecated_integration_route_fields",
+                            "fields": deprecated,
+                            "error": "integration route profile fields are deprecated: "
+                                     + ", ".join(deprecated),
+                        }
                     for boundary in (policy.parent, policy.root):
                         if (boundary.route is not None
                                 and not boundary.route.is_available_to_project(project_id)):
