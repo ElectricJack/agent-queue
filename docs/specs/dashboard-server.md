@@ -4,6 +4,59 @@ tags: [spec, dashboard, daemon, api, installer, security]
 
 # Dashboard server process and API-only daemon
 
+## Current process boundary (2026-10-23)
+
+The dashboard is a separate OS process, with its own event loop and PID. The
+daemon must not import `src.dashboard_server` or `src.dashboard_assets.runtime`,
+mount the SPA/static assets, build the bundle, or start an in-process UI server.
+`aq start` and `aq restart` may launch both services from the **CLI process**;
+`aq dashboard serve` owns its foreground process. Installed serving defaults to
+8082; 5173 is the separate Vite development server. Neither runs on the daemon's
+API listener (8081 by default).
+
+Asset verification, static reads, SPA fallback, proxy relays and relay counters
+belong to the dashboard server. React rendering, query timers, query caches and
+viewer state belong to the browser. The daemon exposes ordinary authenticated
+APIs and the compatibility JSON redirect at `/dashboard`; it must not acquire
+browser polling or rendering jobs as part of installation or startup.
+
+The sole legacy HTML exception is `GET /plans/{task_id}` in `src/api/health.py`.
+It renders a plan document on demand, has no runtime caller in the audited
+checkout, and is not part of the dashboard host. Preserve that existing
+contract: the standalone server still rejects `/plans`. The guard allows this
+exact route and tests that neighboring paths do not gain HTML serving. This
+exception does not permit a dashboard mount or additional HTML endpoints.
+
+**API work still costs resources.** Process separation does not make dashboard
+API calls free. The following shared services deliberately remain in the daemon:
+
+* The durable graph projection and viewport API (`src/task_graph/layout/`,
+  `src/orchestrator/layout_step.py`, `src/api/graph_layout.py`) publish consistent,
+  versioned coordinates for all clients. CLI/MCP graph rebuild, tidy and reflow
+  commands use the same projection. Dirty-mark consumption, job recovery and
+  atomic publication must continue with no dashboard process or browser open.
+  The bounded geometry cache is an API response optimization, keyed by the
+  published version and request parameters; it holds no browser session state.
+* Fleet sampling, history rollups and relay telemetry (`src/metrics/`) support
+  operational diagnosis through `/api/metrics/series` and `metrics.tick`.
+  The sampler reads cumulative counters from the separate server over HTTP;
+  it does not host the relay or import its implementation. Monitoring an absent
+  server records an unavailable observation, rather than starting it.
+* Health/readiness, event streams and session pane/terminal streams are general
+  CLI/MCP/REST services. Pane capture is shared per subscribed session and ends
+  when its subscribers leave. Roaming dashboard-state commands persist opaque
+  client state; they run no UI timer or renderer.
+
+These are the explicit general-API justifications for retained aggregation and
+layout work, not a claim of zero daemon CPU. Browser-only computation must stay
+outside the daemon. The [source audit](../reports/2026-10-23-dashboard-process-boundary.md)
+records the lifecycle, installer and service-unit paths. The fresh-process guard
+in `tests/test_api_dashboard_pointer.py` exercises real API/MCP assembly and
+lifespans, rejects dashboard imports (including caught attempts), inspects mounts
+and requests static paths without starting a daemon or opening a database.
+
+## Original design record
+
 <!-- aq:historical -->
 > **Design record — implemented 2026-09-21.** Written on 2026-09-20 against
 > `main` `0ad341dfa`, before the code. It is not revised to track the code
@@ -20,6 +73,26 @@ tags: [spec, dashboard, daemon, api, installer, security]
 nothing else, and the one-command install keeps ending at an open dashboard.
 This spec decides how; the implementation tasks follow it.
 
+## Plan viewer follow-up (2026-10-23)
+
+The plan viewer now follows the same process boundary as the dashboard. The
+standalone dashboard serves `/plans/{task_id}` through its SPA fallback, and the
+browser renders markdown with the bundled `MarkdownPreview` component. It reads
+`GET /api/plans/{task_id}` through the existing same-origin JSON relay; no renderer
+or CDN script belongs to the daemon. The response is
+`{"task_id": "<id>", "content": "<markdown>"}`. Hierarchical task IDs remain valid;
+malformed IDs return `400`, and missing plans or an unconfigured provider return
+`404`. Markdown is returned unchanged as data, including empty content.
+
+The daemon's old `/plans/{task_id}` HTML route and unused `get_plan_url` helper
+are removed. Direct requests to that daemon path return `404`; plan bookmarks
+must use the dashboard server's origin. `/plans` is no longer a reserved prefix
+at the dashboard server. All other reserved prefixes and import boundaries remain
+as specified below. The JSON endpoint is included in OpenAPI and both clients
+are regenerated. Tests guard the daemon's response declarations and live plan
+responses against `text/html`, and cover SPA plan deep links, JSON errors,
+hierarchical IDs, markdown rendering and failures to load a plan.
+
 ## 0. Summary
 
 Since 2026-09-16 the daemon mounts a verified dashboard bundle at `/dashboard`
@@ -34,8 +107,8 @@ same-origin, nothing gains CORS, and the daemon stops serving browser content.
 WebSockets — including the binary terminal with its subprotocol and credit-based
 flow control — all relay cleanly, on one condition: the WebSocket handshake is
 opened upstream *first* (§2.4). Two findings changed the brief: a proxy hides the
-browser's address from the daemon, so two loopback-only rules are re-applied at
-the dashboard server (§3.3); and a pre-change `aq update` validates new code with
+browser's address from the daemon, so terminal origin and bearer peer rules are
+enforced at the dashboard server (§3.3); and a pre-change `aq update` validates new code with
 its old in-memory logic, which decides what the daemon may answer on
 `/dashboard` (§5, §6.2).
 
@@ -128,11 +201,11 @@ the generated client's base URL.
 | `/api` | generated client (`api/client.ts`), `api/legacy-fetch.ts`, `api/chat.ts`, `pages/settings/ProjectRoots.tsx`, `panes/console-stream/` | JSON; multipart upload (task attachments, 10 MiB daemon cap); **SSE** on `/api/sessions/{id}/stream`, `/api/sessions/{id}/pane`, `/api/streams/{id}/subscribe` |
 | `/health` | `api/hooks.ts` | JSON |
 | `/ready` | none today; kept for parity with [`dashboard/vite.config.ts`](../../dashboard/vite.config.ts) and for probes | JSON |
-| `/ws` | `/ws/events?after_seq=` (`ws/useEventStream.ts`), `/ws/terminal/{session}?cols=&rows=` and the phone's input-only `/ws/terminal/{session}/input` (`ws/terminalSocket.ts`) | WebSocket |
+| `/ws` | `/ws/events?after_seq=` (`ws/useEventStream.ts`), `/ws/terminal/{session}?cols=&rows=`, with `&history=&restore_size=1` from a phone (`ws/terminalSocket.ts`); the daemon's input-only `/ws/terminal/{session}/input` is proxied the same way | WebSocket |
 
 A prefix matches on a segment boundary (`/api` and `/api/…`, never `/apix`).
 Nothing else is forwarded. The daemon's non-dashboard prefixes and retired
-documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json`, `/plans` and
+documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json` and
 `/dashboard` — answer `404` at the dashboard server and never fall back to
 `index.html`, so a client pointed at the wrong port gets an error, not HTML; no
 SPA route uses them. A proxied path whose percent-decoded form contains a `.` or
@@ -266,17 +339,31 @@ the daemon's parser.
 
 ### 3.3 The address a proxy hides
 
-Behind any proxy the daemon sees every connection arrive from `127.0.0.1`. Two
-daemon rules key on the peer address and would silently stop meaning anything:
-terminals are loopback-only
-([`src/api/terminal_stream.py`](../../src/api/terminal_stream.py)), and
-global-admin bearer tokens are loopback-only
-([`src/api/middleware.py`](../../src/api/middleware.py)). The same hole exists
-today behind `vite --host`. The dashboard server sees the real peer, so it
-re-applies both: from a **non-loopback peer**, `/ws/terminal/*` is denied and any
-request carrying `Authorization` or an `aq-bearer.*` subprotocol is denied, both
-`403` `loopback_only`. The daemon is not changed and no forwarding header is
-invented.
+Behind a local proxy the daemon sees connections arrive from `127.0.0.1`.
+The dashboard server therefore checks the browser's peer and origin before
+relaying a terminal connection. Local connections keep their existing behavior.
+A **non-loopback terminal WebSocket** is allowed only when its single valid
+`Origin` is explicitly listed in `api_auth.trusted_dashboard_origins`, after
+the Host and Origin gates pass. A concrete LAN bind or a same-origin request
+alone is insufficient; missing origins and unlisted origins retain `403
+loopback_only`. This preserves the trusted-origin LAN workflow that worked
+through `vite --host`, which the initial serve-mode implementation rejected
+unconditionally. The upstream daemon still checks terminal authorization,
+trusted origins and session availability.
+
+Requests carrying `Authorization` or an `aq-bearer.*` subprotocol remain
+loopback-only, including terminal requests from trusted origins. Origin trust
+does not grant remote bearer use. The daemon is not changed and no forwarding
+header is invented.
+
+The read-only `GET /ws/terminal/{session_id}` reconnect diagnostic follows the
+same trusted-origin policy. For a GET without an Origin header, resolve the
+origin from the single `browser_origin` query parameter, falling back to the
+request scheme and Host only when that parameter is absent. This matches the
+daemon's probe behavior and supports same-origin browser GETs and TLS proxies.
+Other HTTP methods and terminal paths retain the loopback-only gate. A temporary
+WebSocket failure must not become a permanent access denial merely because the
+diagnostic uses HTTP instead of a WebSocket.
 
 ### 3.4 Exposure statement
 
@@ -294,7 +381,11 @@ login. The Host and Origin gates stop other websites' scripts; they do not stop
 a person on that network with `curl`. **A LAN bind hands the operator console to
 that network.**
 
-**Not reachable:** interactive terminals and bearer-token requests (§3.3);
+**Interactive terminals:** reachable from browser origins explicitly listed in
+`api_auth.trusted_dashboard_origins` (§3.3). As with the API, this is an operator
+console on a trusted network, not network-client authentication.
+
+**Not reachable:** terminals from unlisted or missing origins and bearer-token requests (§3.3);
 `/mcp`, `/docs`, `/redoc`, `/openapi.json`, `/plans/*`; port 8081 itself, which
 stays on `mcp_server.host`; PostgreSQL; any file not listed in the bundle
 manifest. With `require_session_token: true` a LAN peer gets `401` on everything
@@ -448,7 +539,7 @@ starts both, and validates `/health` on the daemon plus `/__aq/health` and
 | Bundle | `tests/test_dashboard_server_bundle.py`; the verifier and mount cases leave [`tests/test_release_artifact.py`](../../tests/test_release_artifact.py), whose staging and metadata cases stay | digest mismatch, unsafe path, missing `index.html` and missing `base` fail closed; a file outside the manifest is not served; SPA fallback and the reserved prefixes; cache and security headers |
 | HTTP proxy | `tests/test_dashboard_server_proxy.py`, against a fake upstream ASGI app on an ephemeral port | the path table (`/apix`, `/mcp`, dot segments); headers passed and dropped; an SSE chunk delivered before upstream finishes, asserted with events, not wall-clock; disconnect cancels upstream; streamed upload; `503` and `504` bodies |
 | WebSocket proxy | same file | the subprotocol selected upstream is the one accepted; an upstream refusal denies the handshake; text/binary and frame boundaries; close code and reason both ways; a stalled consumer blocks the upstream sender with bounded proxy memory; upstream down denies `503` |
-| Edge gates | `tests/test_dashboard_server_edge.py` | Host `421`; Origin `403`; trusted origin admitted; a non-loopback peer is refused terminals, `Authorization` and `aq-bearer.*` |
+| Edge gates | `tests/test_dashboard_server_edge.py` | Host `421`; Origin `403`; trusted-origin LAN terminal admitted; missing/unlisted terminal origins, `Authorization` and `aq-bearer.*` refused for non-loopback peers |
 | Daemon | `tests/test_api_dashboard_pointer.py` and the existing [`tests/test_api_client_contract.py`](../../tests/test_api_client_contract.py) | `307` with `Location` and body; `404` when disabled; precedence over the MCP mount; unchanged `openapi.json`; **the import boundary in both directions**, from a subprocess inspecting `sys.modules`; the real `TerminalStreamService` accepts an `Origin`/`Host` pair relayed unchanged and refuses an untrusted LAN host `4403` |
 | CLI / process | `tests/test_cli_dashboard_server.py` | idempotent start, stale PID, `port_conflict`, `SIGTERM` then `SIGKILL`, `aq start` / `stop` / `restart` ordering, both flags, `aq status --json` with the daemon down |
 | Doctor | `tests/test_doctor_dashboard_server.py` | each check's pass, warn and fix text; no import of `src.dashboard_server` |
