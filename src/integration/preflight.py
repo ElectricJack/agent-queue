@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import base64
 import inspect
-from typing import Any
-from urllib.parse import quote
+from collections.abc import Iterable
+from typing import Any, Self
 
 from pydantic import ValidationError
 
@@ -14,15 +13,26 @@ from src.git.github_contracts import (
     GitHubCredentialMode,
     credential_identity_from_client,
 )
-from src.integration.attestation import _parse_trust_manifest
-from src.integration.ci import TRUST_MANIFEST_PATH, is_numeric_producer_id
+from src.integration import app_mode
+from src.integration.ci import TRUST_MANIFEST_PATH
 from src.integration.models import HierarchicalIntegrationPolicy
 
 
-_HOSTED_VARIABLES = (
-    "AQ_INTEGRATION_ATTESTATION_APP_ID",
-    "AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
-)
+class FunctionalPreflight(tuple):
+    """Blocker codes, plus the ``warnings`` that never block readiness.
+
+    A tuple of blocker codes, so every caller that reads codes keeps working;
+    App mode adds its non-blocking warnings (spec §6.2) alongside.
+    """
+
+    warnings: tuple[str, ...]
+
+    def __new__(
+        cls, blockers: Iterable[str] = (), warnings: Iterable[str] = ()
+    ) -> Self:
+        value = super().__new__(cls, dict.fromkeys(blockers))
+        value.warnings = tuple(dict.fromkeys(warnings))
+        return value
 
 
 async def _resolve(value: Any) -> Any:
@@ -55,35 +65,31 @@ def _artifact_matches(definition: Any, route: Any) -> bool:
         return False
 
 
-async def _read_trust(client: Any, binding: Any, default_branch: str) -> Any:
-    path = quote(TRUST_MANIFEST_PATH, safe="/")
-    ref = quote(default_branch, safe="")
-    payload = await client.request_json(
-        "GET", f"/repos/{binding.full_name}/contents/{path}?ref={ref}"
-    )
-    if payload.get("encoding") != "base64" or not isinstance(payload.get("content"), str):
-        raise ValueError("trust content response is malformed")
-    encoded = "".join(payload["content"].split())
-    raw = base64.b64decode(encoded, validate=True)
-    return _parse_trust_manifest(raw)
+async def read_committed_trust_manifest(
+    client: Any, binding: Any, default_branch: str
+) -> tuple[str, bytes | None]:
+    """``(default-branch SHA, raw manifest bytes)`` read through the App client.
 
-
-async def _read_hosted_variables(client: Any, binding: Any) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for name in _HOSTED_VARIABLES:
-        payload = await client.request_json(
-            "GET", f"/repos/{binding.full_name}/actions/variables/{name}"
-        )
-        if payload.get("name") != name or not isinstance(payload.get("value"), str):
-            raise ValueError("hosted variable response is malformed")
-        values[name] = payload["value"]
-    return values
+    The file is read at the SHA, not the branch name, so the bytes are the
+    ones that SHA carries even if the branch moves between the two reads.
+    ``None`` means the file is absent there; any other failure raises.
+    """
+    sha = await client.exact_head_ref(default_branch)
+    if sha is None:
+        raise ValueError(f"default branch {default_branch!r} does not exist")
+    return sha, await app_mode.read_file_at(client, binding, TRUST_MANIFEST_PATH, sha)
 
 
 async def daemon_functional_preflight(
     orchestrator: Any, project_id: str, repository_id: str
-) -> tuple[str, ...]:
-    """Read only the dependencies and repository configuration used at runtime."""
+) -> FunctionalPreflight:
+    """Read only the dependencies and repository configuration used at runtime.
+
+    Under App credentials the repository half is the App-mode item report
+    (:func:`src.integration.app_mode.evaluate`), the one ``aq integration
+    app-verify`` returns: every ``fail`` code is a blocker of the same name and
+    every ``warn`` code a warning.
+    """
     blockers: list[str] = []
     factory = getattr(orchestrator, "github_client_factory", None)
     resolver = getattr(orchestrator, "github_repository_binding_resolver", None)
@@ -105,6 +111,14 @@ async def daemon_functional_preflight(
 
     project = await orchestrator.db.get_project(project_id)
     repository = await orchestrator.db.get_repo(repository_id)
+    missing_origins = ()
+    if getattr(orchestrator.db, "_engine", None) is not None:
+        from src.integration.hierarchy import missing_origin_tasks_on
+
+        async with orchestrator.db._engine.connect() as conn:
+            missing_origins = tuple(await missing_origin_tasks_on(conn, project_id, repository_id))
+        if missing_origins:
+            blockers.append("branch_origins_missing")
     binding = None
     if project is None or repository is None or repository.project_id != project_id:
         blockers.append("repository_mismatch")
@@ -126,24 +140,22 @@ async def daemon_functional_preflight(
 
     if policy is not None:
         class_ids = set(getattr(orchestrator, "intelligence_classes", None) or ())
-        profile_ids = {profile.id for profile in await orchestrator.db.list_profiles()}
         store = getattr(runtime, "_store", None)
         for boundary in (policy.parent, policy.root):
+            # Repairs and verifiers are filed with class hints and routed later,
+            # so only the classes gate the boundary; the deprecated
+            # ``*_profile_id`` fields are ignored.
             required_classes = {
                 boundary.primary_intelligence_class,
                 boundary.repair.debug_intelligence_class,
             }
-            required_profiles = {
-                boundary.primary_profile_id,
-                boundary.repair.debug_profile_id,
-            }
             if policy.branchless_parent == "verifier":
                 required_classes.add(boundary.verifier_intelligence_class)
-                required_profiles.add(boundary.verifier_profile_id)
             if None in required_classes or not required_classes.issubset(class_ids):
                 blockers.append("intelligence_route_unavailable")
-            if None in required_profiles or not required_profiles.issubset(profile_ids):
-                blockers.append("profile_route_unavailable")
+            if boundary.route is None:
+                # Route-free (git-first train) policy: no playbook to check.
+                continue
             try:
                 definition = store.load(boundary.route.artifact.artifact_sha256)
             except Exception:
@@ -202,79 +214,33 @@ async def daemon_functional_preflight(
                     )
             except (TypeError, ValueError):
                 blockers.append("ci_policy_invalid")
-        return tuple(dict.fromkeys(blockers))
+        return FunctionalPreflight(blockers)
 
-    # App credentials compare the policy producer with the manifest's numeric
-    # ``ci_producer_app_id``. A slug there is a policy fault, named as such,
-    # never a manifest mismatch.
-    producers_numeric = True
-    if credential_identity is not None and policy is not None:
-        producers_numeric = all(
-            is_numeric_producer_id(boundary.required_checks.producer_id)
-            for boundary in (policy.parent, policy.root)
+    if client is None or credential_identity is None:
+        # Nothing App-mode can be read without a bound client; the binding
+        # blocker above names the cause.
+        return FunctionalPreflight(blockers)
+
+    from src.integration.promotion_steps import read_stored_promotion_flow
+
+    report = await app_mode.evaluate(
+        app_mode.AppModeContext(
+            project_id=project_id,
+            repository_id=repository_id,
+            default_branch=repository.default_branch,
+            binding=binding,
+            client=client,
+            identity=credential_identity,
+            policy=policy,
+            promotion_flow=await read_stored_promotion_flow(orchestrator.db, project_id),
+            missing_origins=missing_origins,
         )
-        if not producers_numeric:
-            blockers.append("ci_producer_not_numeric")
-
-    trust = None
-    if client is not None and repository is not None and repository.default_branch:
-        try:
-            trust = await _read_trust(client, binding, repository.default_branch)
-        except Exception:
-            blockers.append("trust_manifest_unavailable")
-        if trust is not None and policy is not None:
-            root_checks = policy.root.required_checks
-            producer_ids = {
-                policy.parent.required_checks.producer_id,
-                policy.root.required_checks.producer_id,
-            }
-            app_id = credential_identity.app_id if credential_identity is not None else None
-            if (
-                trust.canonical_repository_id != repository_id
-                or trust.repository_id != binding.repository_id
-                or trust.full_name != binding.full_name
-                or trust.attestation_app_id != app_id
-                or (producers_numeric and producer_ids != {str(trust.ci_producer_app_id)})
-                or trust.required_checks.version != root_checks.version
-                or trust.required_checks.names != root_checks.names
-            ):
-                blockers.append("trust_manifest_mismatch")
-
-        try:
-            variables = await _read_hosted_variables(client, binding)
-        except Exception:
-            blockers.append("hosted_workflow_variables_unavailable")
-        else:
-            app_id = credential_identity.app_id if credential_identity is not None else None
-            required_version = (
-                policy.root.required_checks.version if policy is not None else None
-            )
-            if (
-                variables
-                != {
-                    "AQ_INTEGRATION_ATTESTATION_APP_ID": str(app_id),
-                    "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": required_version,
-                }
-                or (
-                    trust is not None
-                    and variables
-                    != {
-                        "AQ_INTEGRATION_ATTESTATION_APP_ID": str(
-                            trust.attestation_app_id
-                        ),
-                        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": (
-                            trust.required_checks.version
-                        ),
-                    }
-                )
-            ):
-                blockers.append("hosted_workflow_variables_mismatch")
-    elif binding is not None and repository is not None:
-        blockers.extend(
-            ("trust_manifest_unavailable", "hosted_workflow_variables_unavailable")
-        )
-
-    return tuple(dict.fromkeys(blockers))
+    )
+    return FunctionalPreflight([*blockers, *report.blockers], report.warnings)
 
 
-__all__ = ["daemon_functional_preflight"]
+__all__ = [
+    "FunctionalPreflight",
+    "daemon_functional_preflight",
+    "read_committed_trust_manifest",
+]

@@ -400,3 +400,153 @@ def _print_machine(machine) -> None:
         f"{machine.size_class}: {machine.concurrent_agents} concurrent agent(s), "
         f"{machine.cpu_share} core(s) each, {machine.test_slots} test slot(s)\n"
     )
+
+
+def _stdin_is_interactive() -> bool:
+    """Whether a person is at the terminal (a seam for tests)."""
+    import sys
+
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _render_git_identity(data: dict) -> None:
+    from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+    installation = data.get("installation")
+    if installation:
+        source = data.get("installation_source")
+        origin = f" [dim]({source})[/]" if source else ""
+        console.print(
+            f"Installation default: [cyan]{installation['name']} <{installation['email']}>[/]"
+            f"{origin}"
+        )
+    else:
+        console.print(f"[yellow]{NOT_CONFIGURED_NOTE}[/]")
+    effective = data.get("effective")
+    if effective:
+        console.print(
+            f"Project {data.get('project_id')}: [cyan]{effective['name']} <{effective['email']}>[/]"
+            f" [dim]({effective.get('source')})[/]"
+        )
+
+
+@system_config.command("git-identity")
+@click.option("--name", help="Commit name (with --email).")
+@click.option("--email", help="Commit email (with --name).")
+@click.option(
+    "--source",
+    default=None,
+    help="Where the identity came from, recorded with it (default: manual).",
+)
+@click.option("--clear", is_flag=True, help="Unset the default; AQ commits as the fallback.")
+@click.option("--show", is_flag=True, help="Print the current default and exit.")
+@click.option(
+    "--project",
+    "project_id",
+    default=None,
+    help="With --show: also print the identity this project's commits resolve to.",
+)
+@click.option(
+    "--host",
+    default="github.com",
+    show_default=True,
+    help="GitHub host whose gh account is suggested (interactive mode).",
+)
+@click.pass_context
+@_handle_errors
+def config_git_identity(
+    ctx: click.Context,
+    name: str | None,
+    email: str | None,
+    source: str | None,
+    clear: bool,
+    show: bool,
+    project_id: str | None,
+    host: str,
+) -> None:
+    """Show or set the Git commit identity AQ's commits use (``git_identity:``).
+
+    \b
+    aq system config git-identity                 # interactive: suggest, confirm or edit
+    aq system config git-identity --show          # print it (the default without a terminal)
+    aq system config git-identity --name "Ada Lovelace" --email ada@example.com
+    aq system config git-identity --clear         # back to the fallback identity
+
+    On a terminal with no options it shows the current default, suggests one
+    from your authenticated `gh` account (public, verified or noreply email)
+    and your global git config, and lets you confirm or edit it.  A project
+    can override the default in its settings.
+    """
+    from src.git.identity import GitIdentity, GitIdentityError
+
+    if (name is None) != (email is None):
+        raise click.UsageError("--name and --email must be given together.")
+    setting = name is not None
+    if sum((setting, clear, show)) > 1:
+        raise click.UsageError("Use one of --name/--email, --clear or --show.")
+    if project_id and not show:
+        raise click.UsageError("--project only applies to --show.")
+    if setting:
+        try:
+            GitIdentity.parse(name, email)
+        except GitIdentityError as error:
+            raise click.BadParameter(error.message, param_hint=f"--{error.field}") from error
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    json_mode = bool((ctx.obj or {}).get("json"))
+
+    async def _execute(command: str, args: dict) -> dict:
+        async with _get_client(api_url) as client:
+            return await client.execute(command, args)
+
+    def _set(args: dict) -> None:
+        result = _run(_execute("set_git_identity", args))
+
+        def _render(data: dict) -> None:
+            installation = data.get("installation")
+            if installation:
+                verb = "Saved" if data.get("changed", True) else "Unchanged"
+                console.print(
+                    f"[green]{verb}[/] AQ commits as "
+                    f"[cyan]{installation['name']} <{installation['email']}>[/]"
+                )
+                if data.get("applies_to"):
+                    console.print(f"[dim]{data['applies_to']}[/]")
+            else:
+                from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+                console.print(f"[yellow]Cleared.[/] {NOT_CONFIGURED_NOTE}")
+
+        emit(ctx, result, render=_render)
+
+    if setting:
+        _set({"name": name, "email": email, "source": source or "manual"})
+        return
+    if clear:
+        _set({"clear": True})
+        return
+
+    current = _run(_execute("get_git_identity", {"project_id": project_id} if project_id else {}))
+    if show or json_mode or not _stdin_is_interactive():
+        emit(ctx, current, render=_render_git_identity)
+        return
+
+    from src.install.git_identity import discover, interview
+
+    installation = current.get("installation") or None
+    present = (
+        GitIdentity(installation["name"], installation["email"]) if installation else None
+    )
+    click.echo("  (looking up your GitHub account with gh...)", err=True)
+    choice = interview(
+        discover(host=host),
+        current=present,
+        current_source=str(current.get("installation_source") or ""),
+    )
+    if choice is None:
+        console.print("[dim]No change.[/]")
+        return
+    _set({"name": choice.name, "email": choice.email, "source": choice.source})

@@ -32,6 +32,7 @@ from src.models import Agent, AgentProfile, AgentState, SessionRecord, Task, Tas
 from src.providers.allocation import aggregate_ceiling
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
 
 ALPHA = "alpha"
 BRAVO = "bravo"
@@ -73,7 +74,7 @@ async def orch(tmp_path):
     for project_id in (ALPHA, BRAVO):
         await create_session_project(
             orch, project_id=project_id,
-            default_profile_id="standard-high-claude", create_profile=False,
+            profile_id="standard-high-claude", create_profile=False,
         )
     await _fleet(orch)
     yield orch
@@ -129,7 +130,8 @@ async def _fleet(orch) -> None:
                 title=f"title of {task_id}",
                 description="d",
                 status=status,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
+                intelligence_class=(await db.get_profile(profile_id)).default_class,
                 provider_intent=intent,
                 assigned_agent_id=agent_id,
             )
@@ -251,6 +253,10 @@ async def test_non_workers_are_diagnostics_never_selected(orch):
     for role in ("reviewer", "final-reviewer", "triage", "spec-ingest", "playbook-compiler",
                  "planner", "pr-merger"):
         assert diagnostics[role] == "role", role
+    # Operator rungs are scoped setup capacity, never ordinary worker supply.
+    for operator in ("operator-standard-high-claude", "operator-deep-high-claude",
+                     "operator-standard-high-codex", "operator-deep-high-codex"):
+        assert diagnostics[operator] == "role", operator
     assert diagnostics["classless-worker"] == "malformed"
     assert diagnostics["mystery-worker"] == "unknown_provider"
     selected = {
@@ -262,6 +268,37 @@ async def test_non_workers_are_diagnostics_never_selected(orch):
 
 
 # -- counts ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("task_id,session_id,provider,profile_id", [
+    ("task-alpha-busy", "sess-alpha-busy", "claude", "standard-high-claude"),
+    ("task-alpha-task", "sess-alpha-task", "codex", "deep-high-codex"),
+])
+@pytest.mark.parametrize("status,state,live", [
+    (TaskStatus.WAITING, "running", True),
+    (TaskStatus.HIBERNATED, "running", False),
+    (TaskStatus.HIBERNATED, "starting", False),
+    (TaskStatus.RESUME_PENDING, "running", False),
+    (TaskStatus.RESUME_PENDING, "starting", True),
+])
+async def test_provider_sessions_respect_continuation_ownership(
+    orch, task_id, session_id, provider, profile_id, status, state, live,
+):
+    await orch.db.update_task(task_id, status=status, provider_intent=PINNED)
+    if state != "running":
+        from dataclasses import replace
+
+        previous = await orch.db.get_session(session_id)
+        await orch.db.update_session(session_id, state="stopped")
+        session_id += "-launch"
+        await orch.db.create_session(replace(previous, id=session_id, state=state))
+    result = await _handler(orch).execute("provider_allocation_status", {})
+    assert result["success"], result
+    profile = _profiles(_providers(result)[provider])[profile_id]
+    assert (session_id in {s["session_id"] for s in profile["sessions"]}) is live
+    assert task_id in profile["pinned"]["task_ids"]
+    if profile_id == "deep-high-codex":
+        assert sum(profile["supply"][key] for key in ("busy", "starting")) == int(live)
 
 
 async def test_supply_sessions_and_ceiling_are_exact(orch):
@@ -365,7 +402,8 @@ async def test_projects_carry_preference_and_limits(orch):
     projects = {row["project_id"]: row for row in result["projects"]}
     assert list(projects) == [ALPHA, BRAVO]
     assert projects[ALPHA]["preferred_provider"] is None
-    assert projects[ALPHA]["default_profile_id"] == "standard-high-claude"
+    assert projects[ALPHA]["assignment_playbook_id"] == "default-assignment-routing"
+    assert "default_profile_id" not in projects[ALPHA]
     assert projects[ALPHA]["max_concurrent_agents"] == 2
     assert result["redacted"] is False and result["project_id"] is None
 
@@ -1158,6 +1196,34 @@ async def test_api_previews_and_maps_refusals(orch):
     assert allowed.json()["preference"]["after"] == "claude"
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"receive_new_work": {"project_id": BRAVO, "mode": "prefer"}},
+        {
+            "receive_new_work": {"project_id": ALPHA, "mode": "prefer"},
+            "participation": "task",
+        },
+        {
+            "receive_new_work": {"project_id": ALPHA, "mode": "prefer"},
+            "bounds": {"max": 1},
+        },
+        {
+            "receive_new_work": {"project_id": ALPHA, "mode": "prefer"},
+            "drain": "interrupt-busy",
+        },
+    ],
+)
+async def test_api_project_preference_target_does_not_grant_global_allocation(orch, fields):
+    supervisor = RequestScope(kind="session", session_id="sup", project_id=ALPHA, elevated=True)
+    async with _client(orch, supervisor) as client:
+        response = await client.post(
+            "/api/providers/allocation/preview", json={"provider": "claude", **fields}
+        )
+    assert response.status_code == 403, response.text
+    assert "out of scope" in response.json()["error"]
+
+
 async def test_the_preview_contract_is_a_read(orch):
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.builtin import (
@@ -1336,9 +1402,9 @@ async def test_graceful_drain_never_interrupts_busy_work_or_admits_a_claim(orch,
         assert session.desired_state == "stopped", sid
         assert session.state != "stopped", sid
         # A stopped pool admits no further claim.
-        refusal = _handler(orch)._claim_precondition_refusal(
-            session, {"project_id": session.project_id}, None, {"next": True}
-        )
+        refusal = await _handler(orch).execute("task_claim", {
+            "session_id": sid, "next": True,
+        })
         assert refusal is not None and refusal["result"] == "drain_requested", sid
     busy = await orch.db.get_task("task-alpha-busy")
     assert busy.status == TaskStatus.IN_PROGRESS and busy.assigned_agent_id == "ag-pool-2"
@@ -1605,21 +1671,29 @@ async def test_a_lifecycle_change_is_restored_with_every_pool_key(orch, stops, m
 # -- the project preference -------------------------------------------------------
 
 
-async def test_preference_replaces_only_queued_class_only_work(orch, stops):
+async def test_preference_returns_queued_class_only_router_routes_to_the_router(orch, stops):
+    """Mandatory routing §6.8: the preference is a router input, so re-placing
+    queued work resets it to ``unrouted`` instead of moving it to a rung."""
     orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
-    for task_id, project_id, status, intent in (
-        ("task-alpha-free", ALPHA, TaskStatus.READY, CLASS_ONLY),
-        ("task-alpha-free-busy", ALPHA, TaskStatus.IN_PROGRESS, CLASS_ONLY),
+    constraints = {"constraints": {"exclude_providers": ["gemini"]}}
+    for task_id, project_id, status, intent, source in (
+        ("task-alpha-free", ALPHA, TaskStatus.READY, CLASS_ONLY, "router"),
+        ("task-alpha-defined", ALPHA, TaskStatus.DEFINED, CLASS_ONLY, "router"),
+        ("task-alpha-free-busy", ALPHA, TaskStatus.IN_PROGRESS, CLASS_ONLY, "router"),
+        ("task-alpha-legacy", ALPHA, TaskStatus.READY, CLASS_ONLY, "legacy"),
+        ("task-alpha-override", ALPHA, TaskStatus.READY, CLASS_ONLY, "override"),
     ):
         await orch.db.create_task(
             Task(id=task_id, project_id=project_id, title=task_id, description="d",
-                 status=status, profile_id="standard-high-claude",
-                 intelligence_class="standard-high", provider_intent=intent)
+                 status=status, profile_id="standard-high-claude", route_source=source,
+                 intelligence_class="standard-high", provider_intent=intent,
+                 route=constraints)
         )
     before = {
         task_id: (await orch.db.get_task(task_id)).profile_id
         for task_id in ("task-alpha-pin", "task-alpha-pref", "task-alpha-free-busy",
-                        "task-bravo-free", "task-alpha-busy")
+                        "task-bravo-free", "task-alpha-busy", "task-alpha-legacy",
+                        "task-alpha-override")
     }
     preview = await _preview(orch, provider="codex",
                              receive_new_work={"project_id": ALPHA, "mode": "prefer"})
@@ -1628,10 +1702,18 @@ async def test_preference_replaces_only_queued_class_only_work(orch, stops):
     assert (await orch.db.get_project(ALPHA)).preferred_provider == "codex"
     assert (await orch.db.get_project(BRAVO)).preferred_provider is None
     placement = applied["preference"]["placement"]
-    assert [row["task_id"] for row in placement["moved"]] == ["task-alpha-free"]
-    assert placement["batch_ids"]
-    assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-codex"
-    # Pins, preferred intent, other projects and running work stay where they were.
+    assert sorted(row["task_id"] for row in placement["moved"]) == [
+        "task-alpha-defined", "task-alpha-free",
+    ]
+    assert {row["kind"] for row in placement["moved"]} == {"returned_to_router"}
+    assert placement["batch_ids"] == [] and placement["held"] == []
+    for task_id in ("task-alpha-free", "task-alpha-defined"):
+        task = await orch.db.get_task(task_id)
+        assert (task.profile_id, task.route_source, task.intelligence_class) == (
+            None, "unrouted", None,
+        )
+        assert task.route == constraints  # the router re-plans under them
+    # Pins, preferred intent, other sources and projects, running work stay put.
     for task_id, profile_id in before.items():
         assert (await orch.db.get_task(task_id)).profile_id == profile_id, task_id
     # No profile and no session changed.
@@ -1645,27 +1727,28 @@ async def test_preference_replaces_only_queued_class_only_work(orch, stops):
     assert "placement" not in applied["preference"]
 
 
-async def test_preference_holds_a_class_the_provider_cannot_serve(orch, stops):
-    # No ``openai`` slice: codex has no launchable standard-high rung.
-    orch.session_spec_builder._intelligence_classes = {
-        "standard-high": IntelligenceClass(
-            "standard-high", "Standard high", "", {"anthropic": {"model": "claude-opus-5"}}
-        ),
-    }
-    await orch.db.create_task(
-        Task(id="task-alpha-free", project_id=ALPHA, title="t", description="d",
-             status=TaskStatus.READY, profile_id="standard-high-claude",
-             intelligence_class="standard-high", provider_intent=CLASS_ONLY)
-    )
+async def test_preference_leaves_pins_and_routes_already_on_the_provider(orch, stops):
+    orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
+    for task_id, profile_id, intent in (
+        ("task-alpha-on-codex", "standard-high-codex", CLASS_ONLY),
+        ("task-alpha-lane", "standard-high-claude", PINNED),
+    ):
+        await orch.db.create_task(
+            Task(id=task_id, project_id=ALPHA, title="t", description="d",
+                 status=TaskStatus.READY, profile_id=profile_id, route_source="router",
+                 intelligence_class="standard-high", provider_intent=intent)
+        )
     preview = await _preview(orch, provider="codex",
                              receive_new_work={"project_id": ALPHA, "mode": "prefer"})
     applied = await _apply(orch, preview["preview_token"])
     assert applied["success"] is True, applied
-    held = applied["preference"]["placement"]["held"]
-    assert [(row["task_id"], row["kind"]) for row in held] == [
-        ("task-alpha-free", "preferred_provider_unavailable")
+    placement = applied["preference"]["placement"]
+    assert placement["moved"] == []
+    assert [(row["task_id"], row["kind"]) for row in placement["skipped"]] == [
+        ("task-alpha-lane", "provider_intent")
     ]
-    assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-claude"
+    assert (await orch.db.get_task("task-alpha-on-codex")).profile_id == "standard-high-codex"
+    assert (await orch.db.get_task("task-alpha-lane")).profile_id == "standard-high-claude"
 
 
 async def test_a_failed_move_leaves_the_preference_and_reports_partial(orch, stops,
@@ -1673,19 +1756,19 @@ async def test_a_failed_move_leaves_the_preference_and_reports_partial(orch, sto
     orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
     await orch.db.create_task(
         Task(id="task-alpha-free", project_id=ALPHA, title="t", description="d",
-             status=TaskStatus.READY, profile_id="standard-high-claude",
+             status=TaskStatus.READY, profile_id="standard-high-claude", route_source="router",
              intelligence_class="standard-high", provider_intent=CLASS_ONLY)
     )
 
-    async def broken(**kwargs):
-        raise RuntimeError("reroute lock poisoned")
+    async def broken(*args, **kwargs):
+        raise RuntimeError("routing write poisoned")
 
-    monkeypatch.setattr(orch.provider_reroute, "sweep", broken)
+    monkeypatch.setattr(orch.db, "reset_task_route", broken)
     preview = await _preview(orch, provider="codex",
                              receive_new_work={"project_id": ALPHA, "mode": "prefer"})
     result = await _apply(orch, preview["preview_token"])
     assert result["success"] is False and result["status"] == "partial"
-    assert "reroute lock poisoned" in result["error"]
+    assert "routing write poisoned" in result["error"]
     assert result["preference"]["applied"] is True
     assert (await orch.db.get_project(ALPHA)).preferred_provider == "codex"
     assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-claude"
@@ -1791,4 +1874,3 @@ async def test_api_applies_and_returns_refusals_with_their_data(orch, stops):
     assert applied.status_code == 200, applied.text
     assert applied.json()["status"] == "applied"
     assert replay.status_code == 409 and replay.json()["error_code"] == "preview_unknown"
-
