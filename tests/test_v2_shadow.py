@@ -104,7 +104,7 @@ async def test_shadow_never_touches_command_llm_task_gate_preview_or_bus(entry_s
 
 
 @pytest.mark.asyncio
-async def test_shadow_records_ordered_canonical_command_args() -> None:
+async def test_shadow_records_ordered_canonical_redacted_command_args() -> None:
     engine, _adapter = build()
 
     result = await engine.dispatch_event(
@@ -115,7 +115,7 @@ async def test_shadow_records_ordered_canonical_command_args() -> None:
         (
             "ensure-review-task",
             "ensure_task",
-            '{"dedup_key":"review-of-task-1","project_id":"proj-1","title":"Review: Add the widget"}',
+            '{"dedup_key":"(redacted)","project_id":"(redacted)","title":"(redacted)"}',
         ),
     )
 

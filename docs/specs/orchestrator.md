@@ -362,8 +362,9 @@ Collects all state needed by `Scheduler.schedule` and delegates to it:
 2. For each project, compute token usage in the rolling window:
    `window_start = now - (config.scheduling.rolling_window_hours * 3600)`
    `project_usage[p.id] = db.get_project_token_usage(p.id, since=window_start)`
-3. Count active agents per project by iterating agents whose state is `BUSY` or `STARTING`
-   and looking up their `current_task_id`.
+3. Count live sessions (`starting`, `running`, `draining`) by `session.project_id`,
+   including idle pool workers and unconfirmed stops. Historical agent task pointers
+   do not consume project capacity. The agent reconciler uses the same count.
 4. Sum all per-project usage to get `total_used`.
 5. Build a `SchedulerState` dataclass and call `Scheduler.schedule(state)`.
 
@@ -1062,6 +1063,26 @@ No counter, gate or origin is reset.
 Incident `retry_allowed` and its next action reflect the execution-end and routing
 guards as well as the attention reason and remaining budgets. Provider liveness
 is always freshly confirmed when executing a recovery decision.
+
+A recovery incident identifies one failure generation: the stopped attempt (or,
+with no attempt, the durable failure transition) of one claim epoch. A later
+diagnosis of the **same** stopped attempt, such as a vetoed stale-binding unwind
+relabelling `context_thrash` as `claim_binding_stale`, is a *reclassification*,
+not a new failure. The scan keeps the incident id (hashed from the stored
+`identity_reason`), its pending or `hold` decision, `decided_at` and the
+provenance comment that proves it, and every budget and counter. It updates
+`reason`, appends one `{from, to, at}` entry to `reason_history`, writes one
+audit comment, and sends no new notification. Repeated scans of an unchanged
+diagnosis are idempotent. Automatic retry requires every diagnosis the incident
+ever recorded to be retryable, so a non-retryable failure is never relabelled as
+automatically recoverable. A recovery decision against a diagnosis the scan has
+not yet recorded is refused, and a prepared human packet pins the live diagnosis,
+so it goes stale (`ask.stale_source`) instead of transferring approval. An
+incident whose `retry` or `release` decision is already recorded is closed; a
+later diagnosis opens a new, undecided incident rather than inheriting it. A new
+attempt, a new claim epoch or a new no-attempt failure transition opens a new
+incident. Legacy incidents without `identity_reason` use their `reason`; no
+migration or hold clearing is needed.
 
 A recovery incident whose current decision is `hold` excludes its task from
 the pool claim frontier, named claims, and pool demand even if the task is
