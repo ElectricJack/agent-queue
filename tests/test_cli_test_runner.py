@@ -1553,6 +1553,19 @@ class TestOneFullSuiteRunAtATime:
         assert "Full-suite lock: held by task first-run, cwd /w/slot-9" in _flat(held.output)
         assert "busy (full suite)" in _flat(held.output)
 
+    def test_status_attributes_managed_slots_to_job_and_project(self, runner, box):
+        from src.resources.box_lock import BoxLock
+
+        with BoxLock(box.slots_dir, 2).acquire(timeout=0, meta={
+            "task_id": "full-task", "project_id": "agent-queue", "job_id": "managed-123",
+            "scope": "full",
+        }):
+            held = runner.invoke(cli, ["test", "--aq-status"])
+        assert held.exit_code == 0, held.output
+        output = _flat(held.output)
+        assert "Managed job managed-123: project agent-queue, task full-task, shared, slots 0" in output
+        assert "busy (full suite)" in output
+
 
 class TestFullSuiteLockReleasedOnSignals:
     """The full-suite lock is an ``flock`` like the slots: death releases it.

@@ -64,6 +64,19 @@ CODEX_TRUST = """\
   2. No, exit
 """
 
+#: Codex 0.162 renamed the screen; the old rule missed it and the "› 1." row
+#: passed for the composer (nimble-harbor-12).
+CODEX_TRUST_FOLDER = """\
+>_ OpenAI Codex (v0.162.1)
+
+  Trust this folder? Codex can read, edit, and run files here, subject to your
+  permission settings.
+
+› 1. Trust and continue
+  2. Back to Agent Command Center
+"""
+
+
 
 def _shipped_rule(harness_id: str, name: str) -> DialogRule:
     """The rule the daemon actually ships, not a hand-built stand-in.
@@ -88,6 +101,7 @@ CODEX_RULE = _shipped_rule("codex", "trust-directory")
 HARNESSES = [
     pytest.param(CLAUDE_COMPOSER, CLAUDE_TRUST, CLAUDE_RULE, id="claude"),
     pytest.param(CODEX_COMPOSER, CODEX_TRUST, CODEX_RULE, id="codex"),
+    pytest.param(CODEX_COMPOSER, CODEX_TRUST_FOLDER, CODEX_RULE, id="codex-0.162"),
 ]
 
 

@@ -1674,6 +1674,8 @@ class TestEndToEndOnFakeProvider:
         from sqlalchemy import insert
         from src.database.tables import task_branch_origins
         from src.integration.batches import BatchService, BatchStore
+        from src.integration.delivery_observer import DeliveryObserver
+        from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
         from src.integration.git_truth import GitTruth
         from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -1684,6 +1686,10 @@ class TestEndToEndOnFakeProvider:
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
         real_orch.config.integration.git_first = "active"
+        db.set_prerequisite_observer(DeliveryObserver(
+            db, git=git, data_dir=tmp_path / "observer",
+            truth=GitTruth(git, contract_version=CONTAINMENT_CONTRACT_VERSION),
+        ))
         await db.update_project("p1", hierarchical_integration_mode=mode)
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_branch_origins).values(
@@ -2623,8 +2629,9 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_agent("a1")).state is AgentState.IDLE
         assert (await db.get_workspace("ws1")).locked_by_task_id is None
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_fixable_verification_refuses_the_close_and_keeps_the_session(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """The close/verification loop must not kill the worker it needs.
 
@@ -2636,11 +2643,75 @@ class TestEndToEndOnFakeProvider:
         claim, the agent gets the issue list back, and a second close after
         fixing them succeeds.
         """
-        import asyncio
+        await self._assert_fixable_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            cancel_caller=cancel_caller,
+        )
 
+    @pytest.mark.perf
+    async def test_fixable_verification_refusal_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Retain the two-second budget for both closes on an opted-in quiet box."""
+        await self._assert_fixable_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
+        )
+
+    async def _assert_fixable_verification_refusal(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
+    ):
+        from src.api.auth import SessionTokenStore
+
+        real_orch.token_store = SessionTokenStore(db)
         wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
         git = await self._setup_task_publication(db, real_orch, tmp_path, wd, publish=False)
+        before_task = await db.get_task("t1")
+        before_workspace = await db.get_workspace_for_task("t1")
+        token = provider.starts[0].env["AQ_API_TOKEN"]
+
+        async def close_at_checkpoint(pipeline, *, cancel=False):
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            attempts = []
+            if not synchronize:
+                release.set()
+
+            async def held_pipeline(ctx):
+                attempts.append(asyncio.current_task())
+                entered.set()
+                await release.wait()
+                return await pipeline(ctx)
+
+            monkeypatch.setattr(real_orch, "_run_completion_pipeline", held_pipeline)
+            caller = asyncio.create_task(real_handler.execute("task_close", args))
+            try:
+                if synchronize:
+                    # Observe the real close after its admission/database work.
+                    # Functional correctness must not depend on cold dispatch
+                    # and PostgreSQL fitting a two-second wall-clock budget.
+                    await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                    assert not caller.done()
+                    assert await db.get_task_meta("t1", "pending_completion") is not None
+                    assert await db.get_task_meta("t1", "accepted_close") is None
+                    if cancel:
+                        caller.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await caller
+                        assert not attempts[0].done(), "the shielded close must survive"
+                    release.set()
+                return await asyncio.wait_for(
+                    asyncio.shield(attempts[0] if cancel else caller), timeout=close_timeout
+                )
+            finally:
+                # Even a deadline before pipeline entry must drain the caller
+                # and its shielded close before the database fixture is torn down.
+                release.set()
+                await asyncio.wait_for(
+                    asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+                )
 
         async def _stop_with_feedback(ctx):
             assert ctx.close_session_live is True, "the live session must be visible here"
@@ -2649,7 +2720,6 @@ class TestEndToEndOnFakeProvider:
             ctx.verification_feedback = "push and open a PR, then close again"
             return None, False
 
-        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _stop_with_feedback)
         args = {
             "task_id": "t1",
             "session_id": session.id,
@@ -2657,7 +2727,7 @@ class TestEndToEndOnFakeProvider:
             "work_outcome": "shipped",
             "summary": "Work done.",
         }
-        close = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
+        close = await close_at_checkpoint(_stop_with_feedback, cancel=cancel_caller)
 
         assert close["success"] is False
         assert close["result"] == "verification_failed"
@@ -2668,14 +2738,25 @@ class TestEndToEndOnFakeProvider:
         task = await db.get_task("t1")
         assert task.status is TaskStatus.IN_PROGRESS
         assert task.assigned_agent_id == "a1"
+        assert (task.claim_epoch, task.retry_count) == (
+            before_task.claim_epoch, before_task.retry_count,
+        )
         assert (await db.get_agent("a1")).state is AgentState.BUSY
         ws = await db.get_workspace("ws1")
         assert ws.locked_by_task_id == "t1" and ws.locked_by_agent_id == "a1"
+        assert await db.get_workspace_for_task("t1") == before_workspace
+        assert await real_orch.token_store.validate(token) is not None
+        assert await db.get_task_completion("t1") is None
+        assert await db.get_task_meta("t1", "pending_completion") is None
+        assert await db.get_task_meta("t1", "accepted_close") is None
 
         # The orphan sweep drained the worker in the original bug.  With the
         # task still IN_PROGRESS it leaves the session alone.
         await real_orch.session_reconciler.tick(now=time.time())
-        assert (await db.get_session(session.id)).state == "running"
+        after_session = await db.get_session(session.id)
+        assert (after_session.state, after_session.instance_token) == (
+            "running", session.instance_token,
+        )
 
         # Second close, after the agent published the exact branch, completes.
         await git.apush_branch(wd, "aq/t1")
@@ -2683,9 +2764,11 @@ class TestEndToEndOnFakeProvider:
         async def _ok(ctx):
             return "https://github.com/org/repo/pull/7", True
 
-        monkeypatch.setattr(real_orch, "_run_completion_pipeline", _ok)
-        again = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
+        again = await close_at_checkpoint(_ok)
         assert again["success"] is True and again["status"] == "COMPLETED", again
+        assert await db.get_task_completion("t1") is not None
+        assert (await db.get_agent("a1")).state is AgentState.IDLE
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
 
     @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_escalated_verification_refusal_does_not_blame_the_workspace(
@@ -2807,27 +2890,53 @@ class TestEndToEndOnFakeProvider:
         )
         assert await db.get_workspace_for_task("t1") == before_workspace
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_verification_reopen_returns_ready_and_releases_resources(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """A verification retry must return READY and release its old worker."""
-        import asyncio
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch, cancel_caller=cancel_caller
+        )
 
+    @pytest.mark.perf
+    async def test_verification_reopen_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
+    ):
+        """Keep the two-second close budget on an opted-in quiet box."""
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
+        )
+
+    async def _assert_verification_reopen(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
+    ):
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        attempts = []
+        if not synchronize:
+            release.set()
 
         async def reopen(ctx):
+            attempts.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
             await db.transition_task(
                 ctx.task.id,
                 TaskStatus.READY,
                 context="verification_reopen",
                 assigned_agent_id=None,
+                accepted_close=ctx.accepted_close,
             )
             ctx.verification_reopened = True
             return None, False
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", reopen)
-        close = await asyncio.wait_for(
+        caller = asyncio.create_task(
             real_handler.execute(
                 "task_close",
                 {
@@ -2837,9 +2946,36 @@ class TestEndToEndOnFakeProvider:
                     "work_outcome": "shipped",
                     "summary": "Work completed; git verification requested a retry.",
                 },
-            ),
-            timeout=2,
+            )
         )
+        try:
+            if synchronize:
+                # Observe the close before verification reopens the task. The
+                # default arm checks state and cancellation, while the perf arm
+                # retains the cold-close latency budget on a quiet box.
+                await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                assert not caller.done()
+                assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+                assert (await db.get_agent("a1")).state is AgentState.BUSY
+                assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+                assert await db.get_task_meta("t1", "pending_completion") is not None
+                assert await db.get_task_meta("t1", "accepted_close") is None
+                if cancel_caller:
+                    caller.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await caller
+                    assert not attempts[0].done(), "the shielded close must survive"
+                release.set()
+            close = await asyncio.wait_for(
+                asyncio.shield(attempts[0] if cancel_caller else caller), timeout=close_timeout
+            )
+        finally:
+            # Drain the shielded close even if a checkpoint assertion fails,
+            # before the database fixture is torn down.
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+            )
 
         assert close["success"] is True and close["status"] == "READY"
         task = await db.get_task("t1")
