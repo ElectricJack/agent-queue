@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/job.py`](../../../src/commands/contracts/job.py) |
-| Contract fingerprint | `sha256:8114f836f814ec65f56f45a067c6f8a45dacf15aed706a05a9b871ed088fa625` |
+| Contract fingerprint | `sha256:e887c519df805d19caf5bdac4ec7691b432fc08f2ae8cf5605dbad49cbabb6ab` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `job_id` | `string` | yes | — | — |
+| `stream` | `"stdout" \| "stderr"` | no | `"stdout"` | — |
 | `after` | `integer` | no | `0` | — |
 | `limit` | `integer` | no | `65536` | — |
 
@@ -46,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using job_id, after, limit | — | always |
+| Read using job_id, stream, after, limit | — | always |
 
 <!-- aq:generated:end -->
 
