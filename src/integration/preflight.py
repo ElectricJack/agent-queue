@@ -111,6 +111,14 @@ async def daemon_functional_preflight(
 
     project = await orchestrator.db.get_project(project_id)
     repository = await orchestrator.db.get_repo(repository_id)
+    missing_origins = ()
+    if getattr(orchestrator.db, "_engine", None) is not None:
+        from src.integration.hierarchy import missing_origin_tasks_on
+
+        async with orchestrator.db._engine.connect() as conn:
+            missing_origins = tuple(await missing_origin_tasks_on(conn, project_id, repository_id))
+        if missing_origins:
+            blockers.append("branch_origins_missing")
     binding = None
     if project is None or repository is None or repository.project_id != project_id:
         blockers.append("repository_mismatch")
@@ -132,24 +140,22 @@ async def daemon_functional_preflight(
 
     if policy is not None:
         class_ids = set(getattr(orchestrator, "intelligence_classes", None) or ())
-        profile_ids = {profile.id for profile in await orchestrator.db.list_profiles()}
         store = getattr(runtime, "_store", None)
         for boundary in (policy.parent, policy.root):
+            # Repairs and verifiers are filed with class hints and routed later,
+            # so only the classes gate the boundary; the deprecated
+            # ``*_profile_id`` fields are ignored.
             required_classes = {
                 boundary.primary_intelligence_class,
                 boundary.repair.debug_intelligence_class,
             }
-            required_profiles = {
-                boundary.primary_profile_id,
-                boundary.repair.debug_profile_id,
-            }
             if policy.branchless_parent == "verifier":
                 required_classes.add(boundary.verifier_intelligence_class)
-                required_profiles.add(boundary.verifier_profile_id)
             if None in required_classes or not required_classes.issubset(class_ids):
                 blockers.append("intelligence_route_unavailable")
-            if None in required_profiles or not required_profiles.issubset(profile_ids):
-                blockers.append("profile_route_unavailable")
+            if boundary.route is None:
+                # Route-free (git-first train) policy: no playbook to check.
+                continue
             try:
                 definition = store.load(boundary.route.artifact.artifact_sha256)
             except Exception:
@@ -215,6 +221,8 @@ async def daemon_functional_preflight(
         # blocker above names the cause.
         return FunctionalPreflight(blockers)
 
+    from src.integration.promotion_steps import read_stored_promotion_flow
+
     report = await app_mode.evaluate(
         app_mode.AppModeContext(
             project_id=project_id,
@@ -224,6 +232,8 @@ async def daemon_functional_preflight(
             client=client,
             identity=credential_identity,
             policy=policy,
+            promotion_flow=await read_stored_promotion_flow(orchestrator.db, project_id),
+            missing_origins=missing_origins,
         )
     )
     return FunctionalPreflight([*blockers, *report.blockers], report.warnings)

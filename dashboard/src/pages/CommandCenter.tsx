@@ -15,6 +15,10 @@ function tabClass(active: boolean): string {
 
 /** The same workspace serves all projects and the selected project's resources. */
 export default function CommandCenter() {
+  return <TaskWorkspaceProvider><CommandCenterViews /></TaskWorkspaceProvider>;
+}
+
+function CommandCenterViews() {
   const { projectId } = useParams();
   const location = useLocation();
   const { tab } = projectNavigation(location.pathname);
@@ -22,7 +26,6 @@ export default function CommandCenter() {
   const tabs = projectId ? [...TASK_TABS, ...PROJECT_TABS] : TASK_TABS;
   const tabRef = useListNav<HTMLElement>({ axis: "horizontal" });
   return (
-    <TaskWorkspaceProvider>
       <div className="flex h-full min-h-0 flex-col">
         {projectId ? <ProjectHeader key={`header:${projectId}`} /> : (
           <header className="shrink-0 px-4 py-3">
@@ -42,12 +45,11 @@ export default function CommandCenter() {
         </nav>
         {showTasks && <TaskToolbar />}
         {/* Keep URL filters in the provider; reset project-owned dialogs/forms. */}
-        <div key={`content:${projectId ?? "all"}`} className={showTasks
+        <div key={`content:${projectId ?? "all"}`} className={showTasks || tab === "tasks-knowledge"
           ? "min-h-0 flex-1 overflow-hidden"
           : "min-h-0 flex-1 overflow-y-auto p-6"}>
           <Outlet />
         </div>
       </div>
-    </TaskWorkspaceProvider>
   );
 }

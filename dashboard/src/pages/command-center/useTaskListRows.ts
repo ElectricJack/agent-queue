@@ -5,6 +5,7 @@ import { useRecentActivity, type TaskActivityItem } from "../../api/activity";
 import { useProviderHeldTasks, type ProviderHeldTask } from "../../api/providers";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { activityWindowHours, matchesTask } from "./taskFilters";
+import { displayedTaskStatus } from "../../components/epicActivityFormat";
 
 /** Render an activity row through the same table as a graph task row. */
 export function activityToTask(item: TaskActivityItem): Task {
@@ -28,6 +29,8 @@ export function activityToTask(item: TaskActivityItem): Task {
 
 export interface TaskListRows {
   rows: Task[];
+  /** Counts ignore the status selector, retaining search, time and provider scope. */
+  statusCounts: Record<string, number>;
   isLoading: boolean;
   error: boolean;
   inWindow: boolean;
@@ -70,18 +73,39 @@ export function useTaskListRows(): TaskListRows {
   const activityById = useMemo(() => new Map(
     (activity.data?.items ?? []).map((item) => [item.task_id, item] as const)), [activity.data]);
   const tasks = useMemo<Task[]>(() => {
-    if (inWindow) return (activity.data?.items ?? []).map(activityToTask);
+    if (inWindow) {
+      const current = new Map(graph.tasks.map((task) => [task.id, task]));
+      return (activity.data?.items ?? []).map((item) => {
+        const task = activityToTask(item);
+        const display = current.get(item.task_id);
+        return display ? { ...task, claim_readiness: display.claim_readiness, display_state: display.display_state, display_reason: display.display_reason,
+          child_state_counts: display.child_state_counts, descendant_state_counts: display.descendant_state_counts } : task;
+      });
+    }
     return graph.tasks.map((task) => ({
       ...task, project_id: graph.taskProject[task.id] ?? "",
       assigned_agent: task.assigned_agent_id, priority: task.priority ?? undefined,
     }));
   }, [graph, inWindow, activity.data]);
   const names = useMemo(() => new Map(projects.map((p) => [p.id, p.name || p.id])), [projects]);
-  const rows = useMemo(
-    () => tasks.filter((task) => (!projectId || task.project_id === projectId)
+  const scopedTasks = useMemo(() => {
+    // An explicit status still reaches finished history, including legacy URLs
+    // without completed=1. The shortcuts themselves only count unfinished states.
+    const countFilters = { ...filters, status: "", showCompleted: filters.showCompleted || !!filters.status };
+    return tasks.filter((task) => (!projectId || task.project_id === projectId)
       && (!filters.held || heldById.has(task.id))
-      && matchesTask(task, filters, names.get(task.project_id ?? "") ?? "")),
-    [tasks, projectId, filters, names, heldById],
-  );
-  return { rows, isLoading, error: !!error, inWindow, activity, activityById, held, heldById, names };
+      && matchesTask(task, countFilters, names.get(task.project_id ?? "") ?? ""));
+  }, [tasks, projectId, filters, names, heldById]);
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const task of scopedTasks) {
+      const status = displayedTaskStatus(task);
+      counts[status] = (counts[status] ?? 0) + 1;
+    }
+    return counts;
+  }, [scopedTasks]);
+  const rows = useMemo(() => scopedTasks.filter((task) =>
+    !filters.status || displayedTaskStatus(task) === filters.status),
+  [scopedTasks, filters.status]);
+  return { rows, statusCounts, isLoading, error: !!error, inWindow, activity, activityById, held, heldById, names };
 }
