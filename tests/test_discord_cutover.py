@@ -134,7 +134,7 @@ async def test_pending_conversations_migrate_once_and_old_state_is_unchanged(db)
     assert "Project p" in gate_incident["summary"]
     assert "Proceed?" in gate_incident["investigation"]
     assert "blocks 1 task(s): Needs a decision" in gate_incident["investigation"]
-    assert gate_incident["deep_link"] == f"/focus/escalations/escalation-gate-{gate_id}"
+    assert gate_incident["deep_link"] == f"/escalations/escalation-gate-{gate_id}"
     [gate_root] = await db.list_escalation_deliveries(gate_incident["id"])
     assert gate_root["status"] == "pending"
     assert gate_root["attempt_count"] == 0

@@ -1,0 +1,41 @@
+{
+  "source_base": "00b7a51cf46b78df466eca8ee989acfbe8cd0b67",
+  "reason": "brisk-cascade-95 adds the scoped supervisor source re-dispatch command; preserve all previous catalogue evidence.",
+  "previous_cli_catalogue_sha256": "e688cbb6b101db3bf624cf268b9727727163554a5b7786d3af2afad4f2ad91c9",
+  "cli_catalogue_sha256": "d472edb7b1bcfb9e4a03999e00e9208fccd24e32d9e3edb07211235e7064317d",
+  "command": "wait_source_redispatch",
+  "explicit_entry": {
+    "name": "wait_source_redispatch",
+    "description": "Reobserve one durable source event in a supervisor project.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "minLength": 1,
+          "title": "Project Id",
+          "type": "string"
+        },
+        "source_seq": {
+          "minimum": 1,
+          "title": "Source Seq",
+          "type": "integer"
+        },
+        "note": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "source_seq",
+        "note"
+      ],
+      "title": "WaitSourceRedispatchArgs",
+      "type": "object"
+    }
+  },
+  "tool_category": "wait",
+  "contract_fingerprint": "sha256:6e6aac332f396ca3a135c98848201f62d5df8bbe3e41bb5f45789c0008700225"
+}

@@ -5,6 +5,15 @@ completion until its required child sources are contained and its exact head
 passes the current checks and tree review. Legacy checkpoint verification fields
 and a released branch owner do not schedule or authorize that completion.
 
+Automatic container settlement also waits for every open Git-first batch targeting
+its branch in the same project and repository, including paused or failed batches.
+Promotion or abort releases that ownership; a completed child alone does not.
+Both event-driven settlement and the stale-container backstop enforce this rule.
+The stuck-delivery watchdog rechecks incoming batch ownership under the hierarchy
+fence before filing a landing task, even if inventory observed an unowned epic.
+Its recovery inventory fetches current remote heads; a historical completion head
+or cached pre-collection tip must not become the landing task's source head.
+
 Every idle epic visit, and every successful child publication, must observe
 aggregate readiness. A bounded selection-window deferral with no active batch
 must not suppress this observation. Other admission refusals retain authority.

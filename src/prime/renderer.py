@@ -323,9 +323,25 @@ def _fit_worker_previews(doc, budget, override_template, project):
                 return doc
             overflow = accounting["total_tokens"] - budget.input_tokens
             limit = max(0, limit - max(1, overflow))
-            section = replace(section, body=preview.render(doc.task_id, limit))
+            preview = replace(preview, max_bytes=limit)
+            section = replace(section, body=preview.render(doc.task_id, limit), preview=preview)
             doc = replace(doc, sections=tuple(
                 section if s.key == key else s for s in doc.sections
+            ), override_markdown=None)
+            if override_template:
+                doc = replace(doc, override_markdown=apply_override(override_template, doc))
+            doc = _with_pause_notice(doc, project)
+    # Historical comments are losslessly retrievable through task comments.
+    # Keep complete bodies and drop the oldest retained entry on each pass.
+    section = next((s for s in doc.sections if s.key == "task_context"), None)
+    if section is not None and section.preview is not None:
+        preview = section.preview
+        while preview.comments and not budget.account(doc.to_markdown())["fits"]:
+            preview = replace(preview, comments=preview.comments[:-1])
+            section = replace(section, body=preview.render(doc.task_id, preview.max_bytes),
+                              preview=preview)
+            doc = replace(doc, sections=tuple(
+                section if s.key == section.key else s for s in doc.sections
             ), override_markdown=None)
             if override_template:
                 doc = replace(doc, override_markdown=apply_override(override_template, doc))

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from src.commands import CommandHandler
 from src.commands.principal import TRUSTED_LOCAL, principal_context
@@ -17,6 +17,7 @@ from src.integration.checks import CommitCheck, Conclusion, ExactChecks, Require
 from src.integration.dispatch_waits import DispatchWaits
 from src.integration.outbox import IntegrationOutbox
 from src.wait_runtime.service import WaitService
+from src.waits.conditions import WaitError
 from tests.test_integration_gitops import LocalGit, git
 from tests.test_integration_train_sources import MAIN, completed, lane, world as world
 
@@ -170,6 +171,163 @@ async def test_ci_wait_observer_recovers_after_quota_without_a_train_visit(world
                for row in await rows(world, integration_batches))
 
 
+async def test_train_visit_preserves_wait_when_ci_observation_is_unavailable(world):
+    from src.waits.conditions import WaitError
+
+    case = await runtime(world)
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    wait = (await rows(world))[0]
+    adapter = case.service.registry.adapter("ci_check")
+    reader = adapter.reader
+    adapter.reader = AsyncMock(side_effect=WaitError(
+        "wait.unavailable", "CI observation temporarily unavailable", retry_after=60,
+    ))
+    case.provider.green.add(first.candidate_sha)
+    case.now[0] += 61
+    visit = await case.train.visit(MAIN)
+    assert visit.state == "delivered", visit
+    assert visit.detail["dispatch"]["wait_ids"] == [wait["id"]]
+    error = visit.detail["dispatch"]["wait_errors"][0]
+    assert error["wait_id"] == wait["id"] and error["code"] == "wait.unavailable"
+    assert (await rows(world))[0]["outcome"] == "pending"
+
+    adapter.reader = reader
+    await case.service.listener.tick()
+    assert (await rows(world))[0]["outcome"] == "satisfied"
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("previously_dispatched", [False, True])
+async def test_skipped_ci_event_retries_unchanged_success_without_blocking_cursor(
+    world, restart, previously_dispatched,
+):
+    from src.database.tables import wait_listener_cursors, wait_measurements
+    from src.waits.conditions import Condition, WaitError
+    from src.waits.listener import WaitSourceListener
+
+    case = await runtime(world)
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    case.provider.green.add(first.candidate_sha)
+    case.now[0] += 61
+    head = case.orch.wait_ci_watcher.head(Condition.from_record(
+        (await rows(world))[0]["condition"]))
+    await case.exact.refresh(head)
+    success = next(event for event in await rows(world, wait_source_events)
+                   if event["payload"].get("conclusion") == "success")
+    later = await world.db.wait_source_commit(
+        source_key="test:later", generation=0, revision="1", outcome_ref="later", payload={},
+    )
+    observe = case.service.registry.observe
+    case.service.registry.observe = AsyncMock(side_effect=WaitError(
+        "wait.unavailable", "CI observation temporarily unavailable", retry_after=300,
+    ))
+    await case.service.listener.tick()
+    assert (await rows(world))[0]["outcome"] == "pending"
+    outbox = {event["seq"]: event for event in await rows(world, wait_source_events)}
+    assert outbox[success["seq"]]["dispatched_at"] is None
+    retry_at = outbox[success["seq"]]["dispatch_retry_at"]
+    assert retry_at == case.now[0] + 300
+    assert outbox[later]["dispatched_at"] is not None
+    cursor = (await rows(world, wait_listener_cursors))[0]["last_seq"]
+    if previously_dispatched:
+        # Reproduce the durable state left by older daemons: the failed
+        # observation was stamped dispatched and the cursor already passed it.
+        async with world.db._engine.begin() as conn:
+            await conn.execute(update(wait_source_events).where(
+                wait_source_events.c.seq == success["seq"],
+            ).values(dispatched_at=case.now[0]))
+    case.service.registry.observe.assert_awaited_once()
+    # A normal listener tick respects provider backoff even though its cursor
+    # has passed the failed event. No new source revision is needed to retry.
+    await case.service.listener.tick()
+    case.service.registry.observe.assert_awaited_once()
+    case.service.registry.observe = observe
+    if restart:
+        case.now[0] += case.service.listener.lease_seconds + 1
+        case.service.listener = WaitSourceListener(case.service, clock=lambda: case.now[0])
+        await case.service.listener.tick()
+        assert (await rows(world))[0]["outcome"] == "pending"
+    case.now[0] = retry_at + 1
+    await case.service.listener.tick()
+    assert (await rows(world))[0]["outcome"] == "satisfied"
+    outbox = {event["seq"]: event for event in await rows(world, wait_source_events)}
+    assert outbox[success["seq"]]["dispatched_at"] is not None
+    assert len([event for event in outbox.values()
+                if event["source_key"] == success["source_key"]]) == 2  # pending, success
+    assert (await rows(world, wait_listener_cursors))[0]["last_seq"] == cursor
+    measurements = await rows(world, wait_measurements)
+    await case.service.listener.tick()
+    assert await rows(world, wait_measurements) == measurements
+
+
+async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_state(world):
+    from src.waits.conditions import Condition
+
+    case = await runtime(world)
+    case.provider.required = case.provider.required.model_copy(update={
+        "names": ("linux", "windows"),
+    })
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    assert len(first.detail["dispatch"]["wait_ids"]) == 2
+    for wait in await rows(world):
+        await world.db.wait_source_commit(
+            source_key=wait["source_key"], generation=wait["source_generation"],
+            revision="pending-hint", outcome_ref="pending", payload={"conclusion": "pending"},
+        )
+    # Dispatch the pending hints normally. Reconciliation must not treat these
+    # already dispatched hints as success, nor repeatedly replay one per pass.
+    observe = AsyncMock(wraps=case.service.registry.observe)
+    case.service.registry.observe = observe
+    await case.service.listener.tick()
+    assert observe.await_count == 2
+    assert {call.args[1].parameters["check_name"] for call in observe.await_args_list} == {
+        "linux", "windows",
+    }
+    observe.reset_mock()
+    case.service.listener.retry_batch_size = 1
+    # Forward dispatch already observed both pending conditions. Recovery shares
+    # the progress cadence and must not immediately repeat those provider reads.
+    await case.service.listener.tick()
+    observe.assert_not_awaited()
+    case.now[0] += case.service.listener.safety_seconds - 1
+    await case.service.listener.tick()
+    observe.assert_not_awaited()
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    # Cross the same deadline once; recovery now gets one bounded source read.
+    case.now[0] += 2
+    await case.service.listener.tick()
+    assert observe.await_count == 1
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    await case.service.listener.tick()
+    assert observe.await_count == 2  # the other source gets its bounded turn
+    assert {call.args[1].parameters["check_name"] for call in observe.await_args_list} == {
+        "linux", "windows",
+    }
+    await case.service.listener.tick()
+    assert observe.await_count == 2  # no hammering unchanged pending sources
+
+    case.provider.green.add(first.candidate_sha)
+    case.now[0] += 61
+    head = case.orch.wait_ci_watcher.head(Condition.from_record((await rows(world))[0]["condition"]))
+    await case.exact.refresh(head)
+    # Simulate the old daemon consuming terminal events without applying them.
+    dispatch = case.service.listener._dispatch
+    case.service.listener._dispatch = AsyncMock(return_value=0)
+    await case.service.listener.tick()
+    case.service.listener._dispatch = AsyncMock(wraps=dispatch)
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    await case.service.listener.tick()
+    assert sum(row["outcome"] == "satisfied" for row in await rows(world)) == 1
+    await case.service.listener.tick()
+    assert all(row["outcome"] == "satisfied" for row in await rows(world))
+    dispatched = case.service.listener._dispatch.await_args_list
+    assert len(dispatched) == 2
+    assert all(call.args[1]["payload"]["conclusion"] == "success" for call in dispatched)
+
+
 async def test_train_ci_deadline_stays_in_supervisor_inbox_during_discord_reconcile(world):
     from src.database.tables import messages, wait_escalations
     from src.escalations import SinkTransport
@@ -273,6 +431,99 @@ async def test_moved_delivery_tip_replaces_exact_candidate_wait(world):
     assert pending[0]["condition"]["head_sha"] == replacement.candidate_sha
 
 
+async def test_unobservable_superseded_candidate_wait_is_cancelled_without_remote_read(world):
+    case = await runtime(world)
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    old_id = first.detail["dispatch"]["wait_ids"][0]
+    await completed(world, "outside")
+    world.origin.land("outside")
+    case.service.registry.observe = AsyncMock(side_effect=WaitError(
+        "wait.unavailable", "CI observation temporarily unavailable"))
+    for _ in range(3):
+        replacement = await case.train.visit(MAIN)
+        if replacement.state == "testing" and replacement.candidate_sha != first.candidate_sha:
+            break
+    assert replacement.candidate_sha != first.candidate_sha
+    assert next(w for w in await rows(world) if w["id"] == old_id)["outcome"] == "cancelled"
+
+
+async def test_ci_observer_reuses_resolved_candidate_policy(world):
+    from src.waits.conditions import Condition
+
+    case = await runtime(world)
+    await completed(world, "first")
+    await case.train.visit(MAIN)
+    checks = (await case.train.lane_for(MAIN)).checks
+    checks.resolve.reset_mock()
+    case.train.waits.lanes = AsyncMock(side_effect=AssertionError("fresh lane resolution"))
+    wait = (await rows(world))[0]
+    async with world.db._engine.connect() as conn:
+        await case.orch.wait_ci_watcher.read(conn, Condition.from_record(wait["condition"]))
+    checks.resolve.assert_not_awaited()
+
+
+@pytest.mark.parametrize("decision", ["abort", "supersede"])
+async def test_aborted_batch_source_retires_ci_waits_without_remote_observation(world, decision):
+    from src.database.tables import wait_deadlines, wait_edges
+
+    case = await runtime(world)
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    wait = (await rows(world))[0]
+    store = BatchStore(world.db)
+    if decision == "abort":
+        await store.set_intent(first.batch_id, "aborted", reason="obsolete candidate")
+    else:
+        assert await store.supersede(await store.get(first.batch_id), "first",
+                                    reason="candidate superseded")
+    # No new train visit and no CI observation are needed for the cleanup.
+    case.service.registry.observe = AsyncMock(side_effect=AssertionError("remote CI read"))
+    await case.service.listener.tick()
+    retired = next(row for row in await rows(world) if row["id"] == wait["id"])
+    assert retired["outcome"] == "cancelled" and retired["cleared_at"] is not None
+    assert all(row["cancelled_at"] is not None for row in await rows(world, wait_deadlines)
+               if row["wait_id"] == wait["id"] and row["fired_at"] is None)
+    assert not any(row["active"] for row in await rows(world, wait_edges)
+                   if row["wait_id"] == wait["id"])
+    case.service.registry.observe.assert_not_awaited()
+
+
+async def test_supervisor_inspects_and_retires_ci_blocker_without_remote_observation(world):
+    from src.database.tables import events, wait_listener_cursors
+
+    case = await runtime(world)
+    await completed(world, "first")
+    await case.train.visit(MAIN)
+    wait = (await rows(world))[0]
+    seq = await world.db.wait_source_commit(source_key=wait["source_key"], generation=0,
+        revision="blocked", outcome_ref="check", payload={"repository_id": MAIN.repository_id})
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).where(wait_source_events.c.seq == seq).values(
+            dispatch_failures=3, quarantined_at=case.now[0], dispatch_retry_at=case.now[0] + 300))
+    case.service.registry.observe = AsyncMock(side_effect=AssertionError("remote CI read"))
+    with principal_context(TRUSTED_LOCAL):
+        blockers = await case.handler.execute("wait_source_redispatch", {
+            "action": "blockers", "project_id": "p"})
+        assert blockers["success"], blockers
+        blocker = next(row for row in blockers["result"]["blockers"] if row["seq"] == seq)
+        assert blocker["dispatch_failures"] == 3
+        assert blocker["subscribers"][0]["id"] == wait["id"]
+        retired = await case.handler.execute("wait_source_redispatch", {
+            "action": "retire", "source_seq": seq, "project_id": "p", "note": "obsolete CI"})
+    assert retired["success"], retired
+    assert retired["result"]["cancelled_wait_ids"] == [wait["id"]]
+    assert retired["result"]["retired"]
+    assert next(row for row in await rows(world) if row["id"] == wait["id"])[
+        "outcome"] == "cancelled"
+    assert next(row for row in await rows(world, wait_source_events) if row["seq"] == seq)[
+        "dispatched_at"] is not None
+    assert (await rows(world, wait_listener_cursors))[0]["last_seq"] == 0
+    assert len([row for row in await rows(world, events)
+                if row["event_type"] == "wait.source_retired"]) == 1
+    case.service.registry.observe.assert_not_awaited()
+
+
 async def test_local_checks_register_only_the_exact_pending_job_and_replace_hosted_wait(world):
     from sqlalchemy import insert
 
@@ -362,3 +613,62 @@ async def test_speculative_ci_run_wait_is_exact_and_cancelled_when_base_splits(w
     await case.train.visit(MAIN)
     assert next(row for row in await rows(world) if row["id"] == run["id"])["outcome"] == "cancelled"
     await case.train.stop()
+
+
+@pytest.mark.parametrize("subscriber", ["foreign_project", "task"])
+async def test_source_retirement_preserves_subscribers_outside_integration_scope(world, subscriber):
+    from sqlalchemy import insert
+    from src.database.tables import projects
+
+    case = await runtime(world)
+    await completed(world, "first")
+    await case.train.visit(MAIN)
+    wait = (await rows(world))[0]
+    seq = await world.db.wait_source_commit(source_key=wait["source_key"], generation=0,
+        revision="blocked", outcome_ref="check", payload={"repository_id": MAIN.repository_id})
+    async with world.db._engine.begin() as conn:
+        if subscriber == "foreign_project":
+            await conn.execute(insert(projects).values(id="q", name="Other", created_at=0))
+            await conn.execute(insert(wait_records).values(**{
+                **wait, "id": "foreign-wait", "project_id": "q", "owner_id": "foreign"}))
+        else:
+            await conn.execute(update(wait_records).where(wait_records.c.id == wait["id"]).values(
+                owner_kind="task", owner_id="first"))
+    with principal_context(TRUSTED_LOCAL):
+        result = await case.handler.execute("wait_source_redispatch", {
+            "action": "retire", "source_seq": seq, "project_id": "p", "note": "scoped cleanup"})
+    waits = {row["id"]: row for row in await rows(world)}
+    if subscriber == "foreign_project":
+        assert result["success"], result
+        assert not result["result"]["retired"]
+        assert waits[wait["id"]]["outcome"] == "cancelled"
+        assert waits["foreign-wait"]["outcome"] == "pending"
+    else:
+        assert not result["success"] and result["error_code"] == "wait.out_of_scope"
+        assert waits[wait["id"]]["outcome"] == "pending"
+    assert next(row for row in await rows(world, wait_source_events) if row["seq"] == seq)[
+        "dispatched_at"] is None
+
+
+async def test_aborted_batch_preserves_head_reused_by_active_batch(world):
+    from sqlalchemy import insert
+    from src.waits.conditions import Condition
+
+    case = await runtime(world)
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    wait = (await rows(world))[0]
+    batch = (await rows(world, integration_batches))[0]
+    # A newer aborted batch must not shadow an active candidate with the same SHA.
+    async with world.db._engine.begin() as conn:
+        await conn.execute(insert(integration_batches).values(**{
+            **batch, "id": "aborted-reuse", "request_id": "aborted-reuse", "intent": "aborted",
+            "lifecycle": "aborted", "created_at": batch["created_at"] + 1}))
+    await world.db.wait_source_commit(source_key="batch:aborted-reuse", generation=0,
+        revision="aborted", outcome_ref="batch", payload={"project_id": "p"})
+    await case.service.listener.tick()
+    assert next(row for row in await rows(world) if row["id"] == wait["id"])[
+        "outcome"] == "pending"
+    repo = {"id": MAIN.repository_id, "project_id": MAIN.project_id}
+    assert await case.train.waits.checks(repo, Condition.from_record(wait["condition"])) is case.exact
+    assert (await BatchStore(world.db).get(first.batch_id)).intent == "open"

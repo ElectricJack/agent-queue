@@ -98,6 +98,33 @@ class IntegrationCommandsMixin:
             return await service.command(current_principal(), action=args.get("action", "status"))
         except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
             return _failure("refused", str(exc))
+
+    async def _cmd_integration_rebind_batch_authority(self, args: dict) -> dict:
+        """An owning supervisor may refresh evidence, never override a withdrawal."""
+        from src.commands.contracts.integration import IntegrationAbortBatchArgs
+        from src.integration.fixers import BatchFixerService
+        from src.integration.lock import PublishWithdrawn
+
+        request = IntegrationAbortBatchArgs.model_validate(args)
+        batch = await self.db.get_integration_batch(request.batch_id)
+        if batch is None:
+            return _failure("refused", "unknown batch")
+        operator, refusal = await integration_operator(self.db, batch["project_id"])
+        if refusal:
+            return _failure("refused", refusal)
+        if not request.dry_run and not request.reason.strip():
+            return _failure("refused", "apply requires a nonblank reason")
+        train = getattr(self.orchestrator, "integration_train", None)
+        service = getattr(getattr(train, "train", train), "repair", None)
+        if not isinstance(service, BatchFixerService):
+            return _failure("refused", "the in-place batch fixer is not active")
+        try:
+            return await service.runtime.rebind_authority(
+                batch, operator_id=operator, reason=request.reason, dry_run=request.dry_run,
+            )
+        except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
+            return _failure("refused", str(exc))
+
     async def _cmd_integration_delegate_publication(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationDelegatePublicationArgs
         from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
@@ -134,6 +161,37 @@ class IntegrationCommandsMixin:
         from src.integration.repository_incidents import record_incident
 
         return await record_incident(self, state, load=load)
+
+    async def retained_store_maintenance_tick(self, now):
+        """Internal background port; acquisition never performs pack maintenance."""
+        from src.integration.repository_maintenance import maintenance_for
+
+        return await maintenance_for(self.orchestrator).tick(now)
+
+    async def _cmd_integration_store_maintenance(self, args: dict) -> dict:
+        """Preview or consolidate only the project's configured retained stores."""
+        from src.commands.contracts.integration import IntegrationStoreMaintenanceArgs
+        from src.integration.repository_maintenance import maintenance_for
+
+        request = IntegrationStoreMaintenanceArgs.model_validate(args)
+        _, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        if await self.db.get_project(request.project_id) is None:
+            return _failure("not_found", "project is not configured")
+        service = maintenance_for(self.orchestrator)
+
+        async def run():
+            result = await service.run(request.project_id, apply=not request.dry_run)
+            return {"success": result["outcome"] != "unavailable",
+                    "project_id": request.project_id, **result}
+
+        if request.dry_run:
+            return await run()
+        return await detached_operations(self.orchestrator).run(
+            f"store-maintenance:{request.project_id}", run,
+            poll=f"aq integration store-maintenance --project-id {request.project_id} --apply",
+        )
 
     async def _cmd_integration_clear_retained_recovery(self, args: dict) -> dict:
         """Lift a retained-cache admission hold after the store passes a full fsck."""
@@ -248,16 +306,16 @@ class IntegrationCommandsMixin:
 
     async def refresh_root_pr(self, observation, gitops, snapshot) -> dict:
         """Daemon-only port: mechanically refresh, then reopen the original author."""
-        from sqlalchemy import text
-
+        from src.database.advisory_locks import session_advisory_lock
         from src.integration.root_pr_refresh import RootPRConflict, refresh_root_pr
 
         try:
             if not isinstance(observation, RootPRConflict):
                 return _failure("invalid", "root conflict must be server-observed")
-            async with self.db._engine.begin() as conn:
-                await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                    {"key": f"root-pr-refresh:{observation.request.task_id}"})
+            # The refresh is Git and GitHub I/O, so a session lock: an open
+            # transaction would sit idle holding the lock across it.
+            async with session_advisory_lock(self.db._engine,
+                                             f"root-pr-refresh:{observation.request.task_id}"):
                 return await refresh_root_pr(self, observation, gitops, snapshot)
         except (HierarchyError, BranchBusy, GitError, ValueError) as exc:
             return _failure("refresh_deferred", str(exc))
@@ -390,7 +448,7 @@ class IntegrationCommandsMixin:
             if inspect.isawaitable(client):
                 client = await client
             admin_reader = None
-            if (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
+            if read_only or (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
                 admin_reader = LocalRulesetReader(self._promotion_user_client(binding))
             service = Cutover(self.db, CutoverGit(
                 self.db, client, ruleset_admin_reader=admin_reader,
@@ -655,12 +713,7 @@ class IntegrationCommandsMixin:
         return {"success": True, **await reconciler.tick(time.time() if now is None else now)}
 
     async def _cmd_integration_train_tick(self, args: dict) -> dict:
-        """Start one level-triggered visit per idle target (git_first: active).
-
-        Daemon-only: the integration service drives it under a service
-        principal.  The visits run in the background, so a slow target never
-        holds this command; it reports which targets started or still run.
-        """
+        """Start one level-triggered visit per idle target (git_first: active)."""
         principal = current_principal()
         if principal is None or principal.kind is not PrincipalKind.SERVICE:
             return _failure("unauthorized", "only the daemon may tick the integration train")
@@ -669,28 +722,29 @@ class IntegrationCommandsMixin:
             return _failure("unavailable", "the integration train is not active")
         visit_now = args.get("now")
         now = time.time() if visit_now is None else visit_now
-        # Durable batches expose stalls even when snapshots fail before selection;
-        # this check runs independently of lane errors and retry scheduling.
+        # Durable stall evidence remains independent of lane errors and retry scheduling.
         checked_at = getattr(self, "_train_stall_checked_at", None)
         if (getattr(self, "db", None) is not None
+                and not getattr(self, "_train_stall_checking", False)
                 and (checked_at is None or now < checked_at or now - checked_at >= 60)):
             from src.integration.stall_alerts import alert_stalled_batches
 
-            await alert_stalled_batches(self, now=now)
-            observer = getattr(self.orchestrator, "delivery_observer", None)
-            if observer is not None:
-                import logging
-
-                from src.integration.delivery_watchdog import scan_stuck_deliveries
-
-                try:
-                    await scan_stuck_deliveries(self.db, observer=observer, now=now,
-                                              hierarchy=self._hierarchy_integration_service())
-                except Exception:
-                    logging.getLogger(__name__).exception("delivery watchdog scan failed")
-            self._train_stall_checked_at = now
-        result = await train.tick(visit_now)
-        return {"success": True, **result}
+            # Reserve cadence and ownership before yielding, including scans over a minute.
+            self._train_stall_checked_at, self._train_stall_checking = now, True
+            try:
+                await alert_stalled_batches(self, now=now)
+                observer = getattr(self.orchestrator, "delivery_observer", None)
+                if observer is not None:
+                    from src.integration.delivery_watchdog import scan_stuck_deliveries
+                    try:
+                        await scan_stuck_deliveries(self.db, observer=observer, now=now,
+                                                  hierarchy=self._hierarchy_integration_service())
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception("delivery watchdog scan failed")
+            finally:
+                self._train_stall_checking = False
+        return {"success": True, **await train.tick(visit_now)}
 
     async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
 
@@ -730,17 +784,16 @@ class IntegrationCommandsMixin:
 
     async def _cmd_observe_integration_source_ci(self, observation) -> dict:
         """Daemon-only adapter for trusted CI observations, never a raw tool input."""
-        from sqlalchemy import text
+        from src.database.advisory_locks import session_advisory_lock
         from src.integration.source_ci import SourceCIObservation
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
         identity = self._integration_source_ci_identity(observation)
         # Serialize the complete observe/reopen sequence across daemons.
-        # A restart releases this transaction lock; the reopen and its
-        # durable budget commit together, so replay cannot spend it twice.
-        async with self.db._engine.begin() as conn:
-            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                               {"key": identity})
+        # A restart releases this session lock; the reopen and its durable
+        # budget commit together, so replay cannot spend it twice.  The
+        # delivery proof is Git I/O, so no transaction stays open across it.
+        async with session_advisory_lock(self.db._engine, identity):
             return await self._record_integration_source_ci(observation)
 
     @staticmethod
@@ -1168,16 +1221,15 @@ class IntegrationCommandsMixin:
         takes a server-observed proof, so it is deliberately not a ``_cmd_``
         command that an agent, the CLI or MCP could reach.
         """
-        from sqlalchemy import text
-
+        from src.database.advisory_locks import session_advisory_lock
         from src.integration.source_ancestry import SourceAncestryObservation
 
         if not isinstance(observation, SourceAncestryObservation):
             return _failure("invalid", "source ancestry must be server-observed")
         identity = "source-ancestry:" + ":".join(str(part) for part in observation.identity())
-        async with self.db._engine.begin() as conn:
-            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                               {"key": identity})
+        # A session lock, as for source CI: the repair awaits Git, and an
+        # open transaction would sit idle holding the lock across it.
+        async with session_advisory_lock(self.db._engine, identity):
             return await self._repair_integration_source_ancestry(observation)
 
     async def _repair_integration_source_ancestry(self, observation) -> dict:
@@ -1944,7 +1996,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationReleaseOwnerArgs
         from src.database.tables import integration_branch_owners
-        from src.integration.owner_recovery import RECOVERABLE_STATES, owner_recovery_for
+        from src.integration.owner_recovery import owner_recovery_for, recoverable_owner_clause
 
         try:
             request = IntegrationReleaseOwnerArgs.model_validate(args)
@@ -1958,7 +2010,7 @@ class IntegrationCommandsMixin:
             else:
                 statement = statement.where(
                     integration_branch_owners.c.owner_id == request.task_id,
-                    integration_branch_owners.c.handoff_state.in_(RECOVERABLE_STATES),
+                    recoverable_owner_clause(),
                 )
             rows = [dict(row) for row in (await conn.execute(statement)).mappings().all()]
 
@@ -2204,12 +2256,12 @@ class IntegrationCommandsMixin:
             async def collect(parent_id: str) -> str | None:
                 return await collection.collect_parent(parent_id, time.time())
 
+        train = getattr(self.orchestrator, "integration_train", None)
         result = await ChildDelivery(
             self.db, self._integration_repository_git(), collect=collect,
             train_blockers=IntegrationStatusService(
-                self.db, git_first="active",
-                train=getattr(self.orchestrator, "integration_train", None),
-            ).train_task_blockers,
+                self.db, git_first="active", train=train,
+            ).train_task_blockers, request_visit=getattr(train, "wake", None),
         ).run(
             request.task_id,
             dry_run=request.dry_run,

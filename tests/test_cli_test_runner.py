@@ -289,7 +289,7 @@ class TestCommand:
     def test_present_dsn_has_no_preflight_error(self):
         assert postgres_test_dsn_error({"POSTGRES_TEST_DSN": "postgresql://host/base"}) is None
 
-    def test_bare_pytest_aborts_collection_once_when_dsn_is_missing(self):
+    def test_bare_pytest_collects_without_a_dsn(self):
         import os
         import subprocess
         import sys
@@ -317,9 +317,9 @@ class TestCommand:
             check=False,
         )
         output = proc.stdout + proc.stderr
-        assert proc.returncode == 4
-        assert output.count("POSTGRES_TEST_DSN is not set") == 1
-        assert "docker compose up -d postgres-test" in output
+        assert proc.returncode == 0, output
+        assert "POSTGRES_TEST_DSN is not set" not in output
+        assert "tests collected" in output
 
     def test_dry_run_prints_the_command(self, runner, monkeypatch, tmp_path):
         monkeypatch.setenv("AQ_TEST_WORKERS", "4")

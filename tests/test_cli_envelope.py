@@ -482,6 +482,40 @@ class TestCrossFamilySuccessContract:
 
 
 class TestTaskShowSetListDetailsCLI:
+    @pytest.mark.parametrize("project_args, expected_project", [
+        (["--all-projects"], {}),
+        (["--project", "proj"], {"project_id": "proj"}),
+    ])
+    def test_list_limit_and_project_scope(self, runner, project_args, expected_project):
+        from src.cli.app import cli
+
+        mock = _mock_client({"list_tasks": {"tasks": [{
+            "id": "t1", "project_id": "proj", "title": "Ready", "status": "READY",
+        }], "total": 3}})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, [
+                "task", "list", *project_args, "--status", "READY", "--limit", "1", "--json",
+            ])
+        assert result.exit_code == 0, result.output
+        mock.execute.assert_awaited_once_with(
+            "list_tasks", {**expected_project, "status": "READY", "limit": 1},
+        )
+        assert json.loads(result.output)["pagination"] == {
+            "returned": 1, "total": 3, "truncated": True,
+        }
+
+    @pytest.mark.parametrize("options", [
+        ["--project", "proj", "--all-projects"],
+        ["--limit", "0"], ["--limit", "-1"], ["--limit", "abc"],
+    ])
+    def test_list_rejects_invalid_options_without_connecting(self, runner, options):
+        from src.cli.app import cli
+
+        with patch("src.cli.tasks._get_client") as client:
+            result = runner.invoke(cli, ["task", "list", *options])
+        assert result.exit_code != 0
+        client.assert_not_called()
+
     def test_list_json_envelope_shape(self, runner):
         from src.cli.app import cli
 

@@ -7,6 +7,7 @@ class WaitDecideArgsDecision(str, Enum):
     EXTEND = "extend"
     REQUEUE = "requeue"
     REROUTE = "reroute"
+    RETIRE = "retire"
     WAKE = "wake"
 
     def __str__(self) -> str:

@@ -21,6 +21,7 @@ def test_wait_policy_cutover_defaults_and_approved_policy():
     assert policy.transition_budget_seconds == 120
     assert policy.resume_launch_attempts == 2
     assert policy.resume_stall_seconds == 300
+    assert policy.listener_lag_alert_minutes == 15
     assert {
         kind: (row.escalate_after_seconds, row.expected_duration_seconds)
         for kind, row in policy.kinds.items()
@@ -97,6 +98,7 @@ def test_wait_policy_config_and_runtime_share_models_and_preserve_metrics(tmp_pa
     assert WaitKindPolicy is RuntimeKindPolicy
     assert WaitProjectOverrides is RuntimeProjectOverrides
     values = {
+        "listener_lag_alert_minutes": 7,
         "metrics": {
             "pre_rollout_turn_rate": 2.5,
             "pre_rollout_tokens_per_turn": 100,
@@ -116,6 +118,7 @@ def test_wait_policy_config_and_runtime_share_models_and_preserve_metrics(tmp_pa
     }))
     loaded = load_config(str(path)).wait_policy
     assert loaded == parse_wait_policy(values)
+    assert loaded.listener_lag_alert_minutes == 7
     resolved = loaded.resolve_project("canary")
     assert resolved.v2_enabled
     assert resolved.escalation_seconds("job") == 9000

@@ -108,7 +108,7 @@ class CheckReconciliation:
 
     async def run(self, batch, head, checks, *, authorize, names=None, dry_run=False,
                   actor="ci-owner", reason="stuck_required_check"):
-        from src.integration.checks import Conclusion, HostedChecks
+        from src.integration.checks import Conclusion, HostedChecks, lock_check_evidence
         from src.integration.repair import ordinary_repair_id
         from src.operator_decisions import history_on, related_on
 
@@ -134,6 +134,7 @@ class CheckReconciliation:
                 results.append({**evidence, "outcome": "refused", "reason": "candidate_moved"})
                 continue
             async with self.db.immediate() as conn:
+                await lock_check_evidence(conn, head.repository_id, head.sha)
                 current = await select_row(conn, integration_batches,
                                            integration_batches.c.id == batch.id, lock=True)
                 if (current is None or current["intent"] != "open"
@@ -191,6 +192,7 @@ class CheckReconciliation:
                         "This head/check has consumed its automatic request."
                     )
             async with self.db._engine.begin() as conn:
+                await lock_check_evidence(conn, head.repository_id, head.sha)
                 await conn.execute(update(table).where(*key).values(
                     check_reconciliation={**reservation, "outcome": outcome,
                                           **evidence, "updated_at": self.clock()}))

@@ -187,6 +187,13 @@ statistics between fixtures, including column distributions left by an earlier
 Statistics setup remains outside the explained statements, and neither the
 sort prohibition nor the 64-buffer budget is relaxed.
 
+Lease reset must also reclaim storage and clear relation statistics for tables
+that a fixture already emptied itself. A table with no live rows can still
+contain hundreds of pages of dead tuples; an empty repair-stage probe then
+exceeds the buffer budget before it examines any frontier task. Vacuum every
+public heap with allocated pages or recorded relation statistics, including
+already-empty heaps, while retaining the existing relation files.
+
 ### Recovery-attempt ordering (2026-10-19)
 
 Recovery holds fence the latest attempt for the task's current project and

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import time
 
 logger = logging.getLogger(__name__)
@@ -477,8 +478,9 @@ class SurfaceCommandsMixin:
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
 
+        resume_ack_args = None
         if any(section.key == "wait_outcome" for section in doc.sections):
-            await self._record_continuation_prime_delivery(
+            resume_ack_args = await self._record_continuation_prime_delivery(
                 scope.get("session_id") or args.get("session_id"),
             )
 
@@ -506,6 +508,22 @@ class SurfaceCommandsMixin:
             except RecordError as exc:
                 if exc.code not in ACCESS_REFUSAL_CODES:
                     result = exc.result()
+                    if (exc.code == "record.stale_claim" and task.status.value == "RESUME_PENDING"
+                            and resume_ack_args):
+                        # Prime delivered the bound outcome above. Knowledge writes
+                        # still require IN_PROGRESS, which only wait_ack restores.
+                        ack_command = shlex.join([
+                            'aq', 'wait', 'ack', '--wait-id', resume_ack_args['wait_id'],
+                            '--continuation-id', resume_ack_args['continuation_id'],
+                            '--generation', str(resume_ack_args['generation']),
+                        ])
+                        result["error"] = (
+                            "record.stale_claim: continuation outcome delivered; run "
+                            f"`{ack_command}` first, then run `aq prime` again before "
+                            "continuing the task. A cancelled wait outcome also requires "
+                            "acknowledgement: cancellation resolves the wait, and you still "
+                            "hold the task claim. Do not stop or exit."
+                        )
                     if exc.code == "context.required_over_budget":
                         from src.knowledge.budget import ContextBudget
 

@@ -315,7 +315,10 @@ class TestFullPullLoop:
         assert not claim_file.exists()
 
         # -- drain ----------------------------------------------------------
-        await orch.session_reconciler._step_drain_ack([after], time.time())
+        drain_at = time.time()
+        await orch.session_reconciler._step_drain_ack([after], drain_at)
+        assert (await db.get_session(session.id)).state == "running"
+        await orch.session_reconciler._step_drain_ack([after], drain_at + 61)
         drained = await db.get_session(session.id)
         assert (drained.state, drained.desired_state) == ("stopped", "stopped")
         # Confirmed-stop teardown returns the worker definition to the reuse
@@ -341,7 +344,11 @@ class TestFullPullLoop:
         await handler._cmd_task_close(
             {"outcome": "pass", "summary": "s", "claim_epoch": res["claim_epoch"]}
         )
-        await orch.session_reconciler._step_drain_ack([await db.get_session(first.id)], time.time())
+        after = await db.get_session(first.id)
+        drain_at = time.time()
+        await orch.session_reconciler._step_drain_ack([after], drain_at)
+        assert (await db.get_session(first.id)).state == "running"
+        await orch.session_reconciler._step_drain_ack([after], drain_at + 61)
         assert (await db.get_session(first.id)).state == "stopped"
 
         # Next tick: the stopped row is no longer supply, so the pool

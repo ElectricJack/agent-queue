@@ -922,22 +922,127 @@ async def test_cutover_refuses_saved_baseline_with_hidden_actors(cutover_world, 
                           dry_run=False, operator_id="operator", baseline=baseline)
 
 
+@pytest.mark.parametrize("scope", ["local", "project", "global"])
+@pytest.mark.parametrize("problem", [None, "hidden", "changed", "unavailable"])
+async def test_authorized_cutover_plan_reads_admin_rulesets(
+    cutover_world, monkeypatch, scope, problem,
+):
+    from unittest.mock import AsyncMock, Mock
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import (
+        ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL, principal_context,
+    )
+    from src.git.github_contracts import (
+        GitHubAccessError, GitHubCredentialIdentity, GitHubRepositoryBinding,
+    )
+    from src.integration.cutover import CutoverGit
+
+    db, _service, port = cutover_world
+    binding = GitHubRepositoryBinding(123, "acme/widgets")
+    hidden = {"id": 3, "name": "tag creation", "target": "tag", "enforcement": "active",
+              "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+              "rules": [{"type": "creation"}], "current_user_can_bypass": "always"}
+    actors = [{"actor_id": 22, "actor_type": "Integration", "bypass_mode": "always"}]
+    detail = {**hidden, "bypass_actors": actors, "current_user_can_bypass": "never"}
+    if problem == "hidden":
+        detail.pop("bypass_actors")
+    elif problem == "changed":
+        detail["enforcement"] = "disabled"
+
+    async def app_read(method, path):
+        assert method == "GET", "cutover-plan must never write GitHub"
+        if path == "/repositories/123":
+            return {"default_branch": "main"}
+        if path == "/repositories/123/rulesets/3":
+            return hidden
+        assert "/branches/" in path and path.endswith("/protection")
+        raise GitHubAccessError("not_found_or_hidden", "no classic protection")
+
+    app = SimpleNamespace(repository=binding, request_json=AsyncMock(side_effect=app_read),
+                          paged_list=AsyncMock(return_value=[{"id": 3}]))
+    admin = SimpleNamespace(repository=binding,
+        credential_identity=GitHubCredentialIdentity.existing_login(),
+        request_json=AsyncMock(return_value=detail))
+    if problem == "unavailable":
+        admin.request_json.side_effect = GitHubAccessError("permission_denied", "admin unavailable")
+
+    # Keep the actual plan/database and ruleset readers; substitute only Git observation.
+    async def observe(self, project_id, repository, default_branch, *, branches):
+        return {**port.observe.return_value, "remote_state": await self.remote_state(branches)}
+
+    monkeypatch.setattr(CutoverGit, "observe", observe)
+    monkeypatch.setattr(CutoverGit, "retained", port.retained)
+    prepare = AsyncMock(side_effect=AssertionError("a plan must not prepare branches"))
+    monkeypatch.setattr(CutoverGit, "prepare", prepare)
+    monkeypatch.setattr(CutoverGit, "prepare_flow", prepare)
+    session_project = None if scope == "global" else "p"
+    monkeypatch.setattr(db, "get_session", AsyncMock(return_value=SimpleNamespace(
+        id="supervisor", profile_id="supervisor", lifecycle="named", state="running",
+        desired_state="running", project_id=session_project)))
+    handler = SimpleNamespace(db=db, _promotion_user_client=Mock(return_value=admin),
+        orchestrator=SimpleNamespace(
+            github_repository_binding_resolver=Mock(return_value=binding),
+            github_client_factory=Mock(return_value=app)))
+    principal = TRUSTED_LOCAL if scope == "local" else ExecutionPrincipal(
+        PrincipalKind.SESSION, TRUSTED_LOCAL.policy, project_id=session_project,
+        session_id="supervisor", elevated=True)
+    before = await cutover_rows(db)
+    with principal_context(principal):
+        result = await IntegrationCommandsMixin._integration_cutover(
+            handler, {"project_id": "p", "flow": FLOW}, read_only=True)
+    if problem:
+        assert result["success"] is False and result["outcome"] == "refused"
+        assert ("admin unavailable" if problem == "unavailable" else
+                "github_ruleset_unverifiable") in result["error"]
+    else:
+        assert result["success"] and result["outcome"] == "planned"
+        assert result["plan"]["remote_state"]["rulesets"][0]["bypass_actors"] == actors
+    admin.request_json.assert_awaited_once_with("GET", "/repositories/123/rulesets/3")
+    assert "bypass_actors" not in hidden
+    assert await cutover_rows(db) == before
+    prepare.assert_not_awaited()
+
+
 @pytest.mark.parametrize("read_only", [False, True])
-async def test_worker_cannot_run_cutover_or_read_its_operator_plan(read_only):
-    from unittest.mock import AsyncMock
+@pytest.mark.parametrize("problem", [
+    "worker", "wrong_profile", "stopped", "draining", "pool", "missing",
+    "foreign_token", "foreign_session", "service", "playbook",
+])
+async def test_unauthorized_caller_cannot_run_cutover_or_read_admin_plan(read_only, problem):
+    from unittest.mock import AsyncMock, Mock
     from src.commands.integration_commands import IntegrationCommandsMixin
     from src.commands.principal import (
         ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL, principal_context,
     )
 
-    db = SimpleNamespace(get_project=AsyncMock())
-    handler = SimpleNamespace(db=db)
-    with principal_context(ExecutionPrincipal(PrincipalKind.SESSION, TRUSTED_LOCAL.policy,
-                                              project_id="p", session_id="worker")):
+    session = SimpleNamespace(id="supervisor", profile_id="supervisor", lifecycle="named",
+                              state="running", desired_state="running", project_id="p")
+    if problem == "wrong_profile":
+        session.profile_id = "worker"
+    elif problem == "stopped":
+        session.state = "stopped"
+    elif problem == "draining":
+        session.desired_state = "stopped"
+    elif problem == "pool":
+        session.lifecycle = "pool"
+    elif problem == "foreign_session":
+        session.project_id = "other"
+    db = SimpleNamespace(get_project=AsyncMock(),
+        get_session=AsyncMock(return_value=None if problem == "missing" else session))
+    handler = SimpleNamespace(db=db, _promotion_user_client=Mock(),
+        orchestrator=SimpleNamespace(github_repository_binding_resolver=Mock(),
+                                     github_client_factory=Mock()))
+    kind = PrincipalKind(problem) if problem in {"service", "playbook"} else PrincipalKind.SESSION
+    with principal_context(ExecutionPrincipal(kind, TRUSTED_LOCAL.policy,
+        project_id="other" if problem == "foreign_token" else "p",
+        session_id="supervisor", elevated=problem != "worker")):
         result = await IntegrationCommandsMixin._integration_cutover(
             handler, {"project_id": "p", "flow": FLOW}, read_only=read_only)
     assert result["success"] is False and result["outcome"] == "unauthorized"
     db.get_project.assert_not_awaited()
+    handler._promotion_user_client.assert_not_called()
+    handler.orchestrator.github_repository_binding_resolver.assert_not_called()
+    handler.orchestrator.github_client_factory.assert_not_called()
 
 
 @pytest.mark.parametrize("apply", [False, True])

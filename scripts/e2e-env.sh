@@ -41,7 +41,7 @@ done
 # both find `e2e` and `other` already registered.  Idempotent.
 
 register_projects() {
-    if ! curl -fsS --max-time 3 "$AQ_E2E_API_URL/api/health" >/dev/null 2>&1; then
+    if ! e2e_health_answers 3; then
         echo "no daemon at $AQ_E2E_API_URL — start it first" >&2
         return 1
     fi
@@ -120,7 +120,7 @@ assert_safe_to_reset() {
 # empty schema (task vivid-rapids).  So: stop the daemon this home owns, and
 # refuse when something we do not own holds the port.
 e2e_port_answers() {
-    curl -fsS --max-time 10 "$AQ_E2E_API_URL/api/health" >/dev/null 2>&1
+    e2e_health_answers 10
 }
 
 assert_no_live_daemon() {
