@@ -76,7 +76,7 @@ export function useWorkspaceFile(workspaceId: string, path: string, enabled: boo
 }
 
 // Deliberate exception to "never call fetch directly for daemon endpoints"
-// (dashboard/CLAUDE.md): this isn't a daemon command, it's an arbitrary
+// (dashboard/AGENTS.md): this isn't a daemon command, it's an arbitrary
 // same-origin doc route with no SDK binding — see spec §7.2.
 export function useHostedDoc(url: string, enabled: boolean) {
   return useQuery({

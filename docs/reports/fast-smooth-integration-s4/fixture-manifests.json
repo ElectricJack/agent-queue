@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "scope": "disposable Git/PostgreSQL fixtures; controlled CI; no live activation",
+  "source_base": "3e60b49c6ec251d91862e31f6eb3c16a61e3dd44",
+  "test_sha256": "794158cb81e500e796d4a6e44ad65477309d8f485a497e543c26475c18837b90",
+  "scenarios": [
+    {
+      "test": "tests.test_fast_smooth_integration_e2e::test_standalone_then_queued_stack_and_parallel_sources_reach_dev_after_restart",
+      "result": "pass",
+      "target_ref": "refs/heads/dev",
+      "target_oid": "285c966de14d6beb77f95b57fa1096d767efb399",
+      "sources": {
+        "standalone": "b00c17340f5886201868b602758501128ab673e7",
+        "prerequisite": "686c32717d5d40ec18c38ee8738da225d7b339e5",
+        "dependent": "0af90fbfbe239c1017e80d10413c42595d95a4ee",
+        "parallel": "aea86628269f8a120d6f17aebe1bb8be2671ed01"
+      },
+      "batches": [
+        "train-e17a5b135667d0f4a1f617c2de25f842",
+        "train-9a70501d12500f6b437c0b58b10bf9d1"
+      ],
+      "process_stalls": [],
+      "checks": "controlled exact-candidate green",
+      "receipts": 0
+    },
+    {
+      "test": "tests.test_fast_smooth_integration_e2e::test_red_split_lands_healthy_then_all_deferred_sources_and_companion_after_restart",
+      "result": "pass",
+      "target_ref": "refs/heads/dev",
+      "target_oid": "bbf8b2d8906acaca584ab23fafa3d42d5e85bb3c",
+      "sources": {
+        "task": "b0fa6d59a1dc03d10301d7ddddb374c846802d87",
+        "bad": "cf00464795ceb3d5cbb6f067e0a01e875f49eaf5",
+        "dependent": "5a5ece4aa0323b26c6049f4d8a7704464d8354aa"
+      },
+      "companion_oid": "bd127adc04c123425fbef3e59b4e1c2d988c512f",
+      "batches": [
+        "split-source",
+        "split-source-split-504ed91dcf2e",
+        "split-source-resume-982afa2dedad"
+      ],
+      "process_stalls": [],
+      "checks": "controlled attributed red, then exact-candidate green",
+      "deferred": [
+        "bad",
+        "dependent"
+      ],
+      "original_preserved": true
+    },
+    {
+      "test": "tests.test_fast_smooth_integration_e2e::test_closing_siblings_race_and_lost_publication_reply_preserve_both_authors",
+      "result": "pass",
+      "target_ref": "refs/heads/parent",
+      "target_oid": "3905214313f10327769942210b6f7af7e091c039",
+      "sources": {
+        "child": "bc9e8fd77f835c224e7887e9ce1b95484df8bd7b",
+        "sibling": "a8c9c0e0ac4fb2cc88ae33a3266b5deb4649f385"
+      },
+      "process_stalls": [],
+      "checks": "controlled exact-candidate green",
+      "replay_extra_pushes": 0
+    },
+    {
+      "test": "tests.test_fast_smooth_integration_e2e::test_conflicted_author_restart_rechecks_fix_against_moved_parent",
+      "result": "pass",
+      "target_ref": "refs/heads/parent",
+      "target_oid": "8c0fcee89f8819c065f818868ebe6107954ad1b6",
+      "sources": {
+        "child": "0973b0132b8ccfa7e3fe94b229865ad86a507c28",
+        "advanced_parent": "8b7570a99a6798f58cbb3da5c79ff2a1a8977649"
+      },
+      "companion_oid": "9f96d381224dabdbae5ba80afb72d9cd78373105",
+      "checks": "controlled exact-candidate green after restart and target advance",
+      "process_stalls": []
+    },
+    {
+      "test": "tests.test_fast_smooth_integration_e2e::test_fixer_budget_restart_escalates_once_without_refiling_or_waking[time]",
+      "result": "pass",
+      "budget": "time",
+      "batch_id": "real",
+      "session_id": "b891c72682464824bee5df459c03c9bc",
+      "sources": {
+        "round_0": "5c934e2dbd8e32b202122fec7de0890d71d5aaf5",
+        "round_1": "c006d6367081b37c24f91a8a97e67754d774200e"
+      },
+      "candidate_oid": "c006d6367081b37c24f91a8a97e67754d774200e",
+      "supervisor_incidents": 1,
+      "fixer_wakes_on_exhaustion": 0,
+      "session_launches": 1,
+      "task_refilings": 0,
+      "process_stalls": [],
+      "checks": "controlled red rounds / deadline, then exact green settlement; no dev publish"
+    },
+    {
+      "test": "tests.test_fast_smooth_integration_e2e::test_fixer_budget_restart_escalates_once_without_refiling_or_waking[rounds]",
+      "result": "pass",
+      "budget": "rounds",
+      "batch_id": "real",
+      "session_id": "83b9c353640947bab71e946355997d06",
+      "sources": {
+        "round_0": "dedbe8e351b487ce171f2ac507b8ac77ecbb2dd4",
+        "round_1": "6ed390f7593812c4adeb6786b74abd477cbf2b99",
+        "round_2": "d15d60127820cf058fef0eb48b50943991d316bf",
+        "round_3": "a1bf19bd4177255865d3c8a6d03f9a93de65d79b"
+      },
+      "candidate_oid": "a1bf19bd4177255865d3c8a6d03f9a93de65d79b",
+      "supervisor_incidents": 1,
+      "fixer_wakes_on_exhaustion": 0,
+      "session_launches": 1,
+      "task_refilings": 0,
+      "process_stalls": [],
+      "checks": "controlled red rounds / deadline, then exact green settlement; no dev publish"
+    }
+  ],
+  "approved_specification": {
+    "review_id": "rev-fair-lantern",
+    "revision": 2,
+    "sha256": "4518d9296649ddc2f0192ff73dd682864fb938e3d9687069282b4f6b0a86453f",
+    "verified_snapshot": "/tmp/aq-approved-fast-smooth-rev2.md",
+    "snapshot_retention": "worker-local; SHA pins native approved review revision, not current divergent vault file",
+    "source_key": "validation",
+    "governing_sections": [
+      11,
+      12,
+      14
+    ],
+    "acceptance_rows": 12,
+    "supervisor_disposition": "msg-6ea46b7503da4e408cbff30726d9ff4b",
+    "wait_reply": "msg-168f1f67262e443bb39249c768d3f22e",
+    "vault_state": "diverged",
+    "proposed_revision_3": "document-only / in_review; review reconciliation belongs to global/human owner"
+  }
+}

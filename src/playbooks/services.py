@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.outbox import PROMOTION_EVENT_TYPES as PROMOTION_POLICY_EVENTS
 
 if TYPE_CHECKING:
     from src.commands.handler import CommandHandler
@@ -24,12 +25,16 @@ _EXCLUDED_TOOLS = frozenset({"load_tools", "reply_to_user"})
 #: system-scoped by nature and a project-scoped playbook may trigger on them.
 GLOBAL_EVENT_PREFIXES = ("timer.", "cron.")
 
-# These two definitions are the command-bearing integration lifecycle.  They
-# are shared at system scope, but their authority always comes from a project's
-# frozen policy route.  Other system playbooks (default review, notifications,
-# observers) retain normal event-to-scope fanout.
+# These definitions are the command-bearing integration lifecycle.  They are
+# shared at system scope, but their authority always comes from a project's
+# frozen policy route: a ready system activation of ``parent-integration`` or
+# ``root-train`` (the shipped shared routes) runs only for a project whose
+# policy names it, never for every project's ``task.completed``.  The first two
+# are the retired 2026-09-11 bundles, kept so a surviving activation stays
+# fenced.  Other system playbooks (default review, notifications, observers)
+# retain normal event-to-scope fanout.
 INTEGRATION_LIFECYCLE_PLAYBOOK_IDS = frozenset(
-    {"hierarchical-delivery", "root-integration-train"}
+    {"hierarchical-delivery", "root-integration-train", "parent-integration", "root-train", "promotion-request", "promotion-continuous"}
 )
 _PARENT_INTEGRATION_EVENTS = frozenset(
     {
@@ -89,7 +94,7 @@ class IntegrationRouteTarget:
 
 
 def is_integration_route_event(event_type: str) -> bool:
-    return event_type in _PARENT_INTEGRATION_EVENTS | _ROOT_INTEGRATION_EVENTS
+    return event_type in _PARENT_INTEGRATION_EVENTS | _ROOT_INTEGRATION_EVENTS | PROMOTION_POLICY_EVENTS
 
 
 async def resolve_integration_route(
@@ -112,9 +117,12 @@ async def resolve_integration_route(
     project = await db.get_project(project_id)
     if (
         project is None
-        or project.hierarchical_integration_mode not in {"hierarchy", "train"}
+        or project.hierarchical_integration_mode not in ({"hierarchy", "train", "development"}
+            if event_type in PROMOTION_POLICY_EVENTS else {"hierarchy", "train"})
     ):
         return None
+    if event_type in PROMOTION_POLICY_EVENTS:
+        return await _promotion_route(db, project, event)
     try:
         policy = HierarchicalIntegrationPolicy.model_validate(
             project.hierarchical_integration_policy
@@ -134,8 +142,10 @@ async def resolve_integration_route(
             if (
                 isinstance(playbook_id, str)
                 and playbook_id
-                and isinstance(activation_id, str)
-                and activation_id
+                # The historical activation is optional audit metadata. The
+                # runtime admits the pinned artifact through the currently
+                # enabled activation at this stable playbook/scope address.
+                and (activation_id is None or isinstance(activation_id, str))
                 and isinstance(sha, str)
                 and sha
                 and (
@@ -162,7 +172,7 @@ async def resolve_integration_route(
 
     boundary = policy.root if event_type == "integration.sweep_due" else policy.parent
     route = boundary.route
-    if not route.is_available_to_project(project_id):
+    if route is None or not route.is_available_to_project(project_id):
         return None
     return IntegrationRouteTarget(
         activation_id=route.activation_id,
@@ -171,6 +181,47 @@ async def resolve_integration_route(
         scope_identifier=route.scope_identifier,
         artifact_sha256=route.artifact.artifact_sha256,
     )
+
+
+async def _promotion_route(db, project, event):
+    """Bind the stored step type to an enabled reviewed activation, never event authority."""
+    from sqlalchemy import select
+
+    from src.database.tables import integration_batches, projects, repos
+    from src.integration.promotion_steps import FlowSchema
+
+    async with db._engine.connect() as conn:
+        flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project.id))
+        default = await conn.scalar(select(repos.c.default_branch).where(
+            repos.c.id == project.integration_repository_id, repos.c.project_id == project.id))
+        validated = FlowSchema.validate(flow, default_branch=default or "main")
+        if validated.layer < 3:
+            return None
+        step = next((item for item in validated.flow or [] if item["id"] == event.get("step_id")), None)
+        if event.get("batch_id"):
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == event["batch_id"],
+                integration_batches.c.project_id == project.id,
+                integration_batches.c.repository_id == project.integration_repository_id,
+                integration_batches.c.trigger == "promotion",
+            ))).mappings().first()
+            if row is None:
+                return None
+            step = (row["policy_snapshot"] or {}).get("promotion_step")
+        if not isinstance(step, dict) or step.get("type") not in {"request", "continuous"}:
+            return None
+    playbook_id = "promotion-" + step["type"]
+    rows = await db.list_playbook_activations(enabled_only=True)
+    candidates = [row for row in rows if row.get("playbook_id") == playbook_id
+                  and row.get("scope") == "project" and row.get("scope_identifier") == project.id
+                  and getattr(row.get("health"), "value", row.get("health")) == "ready"
+                  and row.get("active_artifact_sha256")]
+    if not candidates:
+        return None
+    row = candidates[0]
+    event["step_id"] = step["id"]
+    return IntegrationRouteTarget(row.get("id"), playbook_id, row["scope"],
+                                  row.get("scope_identifier") or "", row["active_artifact_sha256"])
 
 
 def is_global_event(event_type: str) -> bool:
@@ -224,7 +275,7 @@ class DatabaseActivationSource:
             # per-project legacy merge sweep.
             if scope == "project" and row.get("playbook_id") == "pr-merge-sweep":
                 suppression = await self._db.get_integration_legacy_suppression(identifier)
-                if suppression and suppression.get("merge_sweep_suppressed"):
+                if (suppression and suppression.get("merge_sweep_suppressed")) or await self.development_reviews_suppressed(identifier):
                     continue
             if scope == "project" and identifier != project_id and not global_event:
                 continue
@@ -243,7 +294,13 @@ class DatabaseActivationSource:
         """Resolve an immutable artifact independently of current activation."""
         return await self._db.get_playbook_artifact(artifact_sha256)
 
+    async def development_reviews_suppressed(self, project_id: str) -> bool:
+        project = await self._db.get_project(project_id)
+        return getattr(project, "hierarchical_integration_mode", "disabled") == "development"
+
     async def legacy_final_review_suppressed(self, project_id: str) -> bool:
+        if await self.development_reviews_suppressed(project_id):
+            return True
         suppression = await self._db.get_integration_legacy_suppression(project_id)
         return bool(suppression and suppression.get("final_review_route_suppressed"))
 
@@ -310,6 +367,7 @@ def build_v2_engine(
     from src.playbooks.artifact_store import ArtifactStore
     from src.playbooks.engine import PlaybookEngine
     from src.playbooks.executors.base import EngineServices
+    from src.playbooks.private_values import PrivateValueService
 
     cached = getattr(handler, "__dict__", {}).get("_v2_playbook_engine")
     if cached is not None:
@@ -317,6 +375,8 @@ def build_v2_engine(
 
     playbooks = config.playbooks
     bind_pending_event_policy(db, playbooks)
+    private_values = PrivateValueService.from_config(getattr(db, "_engine", None), playbooks)
+    db.set_playbook_private_values(private_values)
     services = EngineServices(
         contracts=CONTRACTS,
         clock=time.time,
@@ -332,6 +392,7 @@ def build_v2_engine(
         authorization_mode=getattr(
             getattr(config, "security", None), "capability_enforcement", "audit"
         ),
+        private_values=private_values,
     )
     engine = PlaybookEngine(
         services=services,
@@ -359,6 +420,28 @@ async def load_v2_snapshot(db: Any, run_id: str) -> Any | None:
     except (AttributeError, TypeError):
         return None
     return snapshot if isinstance(snapshot, RunSnapshot) else None
+
+
+async def run_project_id(db: Any, snapshot: Any, *, conn: Any = None) -> str:
+    """Read only a run's routing identifier; callers must still authorize its source.
+
+    Bound results protect derived event fields too. This daemon-owned lookup
+    never decrypts the run's bindings or returns private data in a projection.
+    """
+    from src.commands.principal import ExecutionPrincipal
+    from src.playbooks.private_values import PrivateValueError, is_reference
+
+    project = snapshot.event.get("project_id")
+    if is_reference(project):
+        project = await db.playbook_private_values().read(
+            project, owner=await db.private_run_owner(snapshot),
+            principal=ExecutionPrincipal.service("playbook-run-routing"), conn=conn,
+        )
+    if project is None:
+        return ""
+    if not isinstance(project, str):
+        raise PrivateValueError("private_run_project_invalid")
+    return project
 
 
 @dataclass

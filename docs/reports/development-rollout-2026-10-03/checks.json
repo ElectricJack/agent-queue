@@ -1,0 +1,54 @@
+{
+  "checks": [
+    {
+      "command": "aq test tests/test_development_scenarios.py -q -p no:xdist",
+      "kind": "focused",
+      "result": "5 passed (includes the concurrent-publisher and unresolved-intent regressions)"
+    },
+    {
+      "command": "aq test tests/test_development_*.py tests/test_integration_reconciler.py tests/test_integration_root_scenarios.py tests/test_integration_ci_producers.py tests/test_integration_gitops.py tests/test_playbook_v2_integration_policy.py tests/test_selection_catalogue.py -q",
+      "kind": "affected area",
+      "result": "533 passed"
+    },
+    {
+      "command": "ruff check src/integration/development_runtime.py src/integration/service.py tests/test_development_scenarios.py",
+      "kind": "lint",
+      "result": "pass"
+    },
+    {
+      "command": "python scripts/generate-selection-catalogue.py && aq test tests/test_selection_catalogue.py",
+      "kind": "catalogue",
+      "result": "37 passed"
+    },
+    {
+      "command": "scripts/regenerate-generated.sh --check",
+      "kind": "generated",
+      "result": "pass"
+    }
+  ],
+  "code": [
+    "src/integration/development_runtime.py",
+    "src/integration/service.py (development_subject_runtime source, default off)",
+    "src/orchestrator/core.py (default-off construction and wiring)"
+  ],
+  "design": {
+    "revision": "rev-agile-ridge revision 2",
+    "section": "6 phase 3",
+    "sha256": "5a3ef472bebf25cf4d308842488837646defdb26994cc87990158717fb5fb928"
+  },
+  "docs": [
+    "docs/superpowers/specs/2026-10-03-development-scenarios-and-rollout.md"
+  ],
+  "evidence_kind": "disposable test evidence; no production authorization",
+  "not_performed": [
+    "production cutover or per-project transfer on a real installation",
+    "operator database migration",
+    "reconciler flag change",
+    "daemon restart",
+    "whole-suite run"
+  ],
+  "task": "agile-harbor-62.4",
+  "tests": [
+    "tests/test_development_scenarios.py"
+  ]
+}

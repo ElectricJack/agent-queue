@@ -4,11 +4,19 @@ tags: [spec, logging, llm, observability]
 
 # LLM Logging Spec
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## Source Files
 - `src/llm_logger.py`
 - `src/llm/client.py` (the direct LLM path — `LLMClient`)
 
-**Related config:** `LLMLoggingConfig` in `src/config.py` (see [[specs/config]])
+**Related config:** `LLMLoggingConfig` in `src/config.py` (see [specs/config](config.md))
 **Related spec:** `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`
 
 ## 1. Overview

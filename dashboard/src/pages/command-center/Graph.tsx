@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { usePlaybooks } from "../../api/hooks";
 import { useShellPaneStore } from "../../panes/store";
 import { projectPlaybooks } from "./playbooks";
-import { useLayoutExtents } from "../../api/graphLayout";
+import { useLayoutExtents, useRunningTarget } from "../../api/graphLayout";
 import LayoutCanvas from "./layout-v2/LayoutCanvas";
 import { MobileLayoutLists } from "./layout-v2/MobileLayoutList";
-import { useExpandedTaskIds } from "./useGraphHierarchy";
 import { useJumpTarget } from "./layout-v2/useJumpToResult";
+import { useRunningWorkJump } from "./layout-v2/runningWork";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { useTaskSelection } from "./useTaskSelection";
 import type { SelectableTask } from "./types";
@@ -75,8 +75,6 @@ function GraphShell(props: ShellProps) {
         <span>{totalCount} {totalCount === 1 ? "task" : "tasks"} total</span>
         <span>{playbookCount} playbooks · recurring definitions stay visible</span>
         {loadingPlaybooks && <span role="status">Loading playbooks…</span>}
-        <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t-2 border-indigo-400" /> Dependency</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t border-dashed border-gray-400" /> Child task</span>
         {loading && <span role="status">Loading tasks…</span>}
       </div>
       <div className="relative min-h-0 flex-1" aria-busy={loading}>
@@ -88,7 +86,7 @@ function GraphShell(props: ShellProps) {
 
 /** The graph tab: server-laid-out tiles on demand, so no full snapshot is fetched. */
 export default function CommandCenterGraph() {
-  const { projectId, projectIds, projects, filters, focusId, setFocus, isLoadingProjects, projectsError } = useTaskWorkspace();
+  const { projectId, projectIds, projects, filters, focusId, setFocus, setShowCompleted, isLoadingProjects, projectsError } = useTaskWorkspace();
   const chrome = useGraphChrome();
   const { selectTask } = chrome;
   // The tiled canvas hands back the clicked card's payload, so a task that
@@ -98,8 +96,9 @@ export default function CommandCenterGraph() {
     [selectTask],
   );
   const mobile = usePortraitMobile();
-  const { expandedTaskIds, expandedFinishedIds, toggleExpanded } = useExpandedTaskIds();
-  const variant = filters.showCompleted || focusId || expandedFinishedIds.size > 0 ? "all" : "active";
+  // Entering a container does not imply finished work: the daemon promotes a
+  // focused request to the full layout by itself when it has to.
+  const variant = filters.showCompleted ? "all" : "active";
   const extents = useLayoutExtents(projectIds, variant);
   const nodeCount = extents.reduce(
     (total, extent) => total + (extent && !("pending" in extent) ? extent.node_count : 0), 0,
@@ -110,6 +109,13 @@ export default function CommandCenterGraph() {
     [projects],
   );
   const jumpTarget = useJumpTarget();
+  const manualRunningTarget = useRunningWorkJump();
+  const { data: initialRunningTarget } = useRunningTarget(projectId);
+  // A filter is an explicit reader intent.  The default root viewport may
+  // follow live work, but it must not pan away from a searched result.
+  const runningTarget = manualRunningTarget ?? (
+    !focusId && !filters.query.trim() && !filters.status ? initialRunningTarget : null
+  );
 
   return (
     <GraphShell clearSelection={chrome.clearSelection}
@@ -119,10 +125,11 @@ export default function CommandCenterGraph() {
       loadingPlaybooks={chrome.loadingPlaybooks} loading={loading}>
       {mobile
         ? <MobileLayoutLists projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
-            expanded={expandedTaskIds} toggleExpanded={toggleExpanded} onFocus={setFocus}
+            focusId={focusId} onFocus={setFocus} setShowCompleted={setShowCompleted}
             onTaskClick={selectTaskById} selectedTaskId={chrome.selectedTaskId} />
         : <LayoutCanvas projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
-            focusId={focusId} setFocus={setFocus} jumpTarget={jumpTarget}
+            focusId={focusId} setFocus={setFocus} setShowCompleted={setShowCompleted} jumpTarget={jumpTarget}
+            runningTarget={runningTarget} manualRunningTarget={!!manualRunningTarget}
             selectedTaskId={chrome.selectedTaskId} onTaskClick={selectTaskById} onBackgroundClick={chrome.clearSelection}
             playbooks={chrome.playbooks} selectedPlaybookId={chrome.selectedPlaybookId}
             onPlaybookClick={chrome.openPlaybook} />}

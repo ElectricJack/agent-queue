@@ -16,7 +16,7 @@ class TaskCloseRequest:
     """
     Attributes:
         task_id (str): Task ID
-        outcome (str): Overall task outcome
+        outcome (None | str | Unset): Overall task outcome
         failure_class (None | str | Unset): Failure classification, when outcome is 'fail' (optional)
         work_outcome (None | str | Unset): What actually happened to the work (optional)
         commit (None | str | Unset): Commit SHA (optional)
@@ -29,16 +29,25 @@ class TaskCloseRequest:
         summary (None | str | Unset): Summary of what happened, for the reviewer/dashboard/vault note. Required for
             tasks whose profile has needs_workspace: true (Dv2 Phase 2 §7 close contract).
         abandon_children (bool | Unset):  Default: False.
+        skip_open_subtasks (bool | Unset): Flip any still-open subtasks (pending/in_progress) to skipped (note 'skipped
+            at close') instead of refusing the close. Default: False.
         claim_epoch (int | None | Unset): Current claim epoch for a pool-session caller (optional — the CLI reads it
             from .aq/claim.json).
         claim_next (bool | None | Unset): After closing, immediately claim the next ready task matching this session's
             profile (pool worker loop, swarm-work-model §10).
         wait (int | None | Unset): Seconds to long-poll for the next claim when claim_next is set (optional, clamped to
             swarm.claim_wait_max).
+        obsolete (bool | Unset): Close the task as obsolete/superseded instead of with an outcome (operator or
+            supervisor only; needs task_id and reason, not outcome). Default: False.
+        no_change (bool | Unset): One-shot operator close: nothing needed doing (work_outcome no-op). Works from any
+            state; operator or supervisor only; needs task_id and reason, not outcome. Default: False.
+        done (bool | Unset): One-shot operator close: the work already landed (work_outcome shipped). Works from any
+            state; operator or supervisor only; needs task_id and reason, not outcome. Default: False.
+        reason (None | str | Unset): Why the task is closed (required with obsolete, no_change or done).
     """
 
     task_id: str
-    outcome: str
+    outcome: None | str | Unset = UNSET
     failure_class: None | str | Unset = UNSET
     work_outcome: None | str | Unset = UNSET
     commit: None | str | Unset = UNSET
@@ -50,15 +59,24 @@ class TaskCloseRequest:
     deliverable_unmet: list[Any] | None | Unset = UNSET
     summary: None | str | Unset = UNSET
     abandon_children: bool | Unset = False
+    skip_open_subtasks: bool | Unset = False
     claim_epoch: int | None | Unset = UNSET
     claim_next: bool | None | Unset = UNSET
     wait: int | None | Unset = UNSET
+    obsolete: bool | Unset = False
+    no_change: bool | Unset = False
+    done: bool | Unset = False
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
 
-        outcome = self.outcome
+        outcome: None | str | Unset
+        if isinstance(self.outcome, Unset):
+            outcome = UNSET
+        else:
+            outcome = self.outcome
 
         failure_class: None | str | Unset
         if isinstance(self.failure_class, Unset):
@@ -131,6 +149,8 @@ class TaskCloseRequest:
 
         abandon_children = self.abandon_children
 
+        skip_open_subtasks = self.skip_open_subtasks
+
         claim_epoch: int | None | Unset
         if isinstance(self.claim_epoch, Unset):
             claim_epoch = UNSET
@@ -149,14 +169,27 @@ class TaskCloseRequest:
         else:
             wait = self.wait
 
+        obsolete = self.obsolete
+
+        no_change = self.no_change
+
+        done = self.done
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "task_id": task_id,
-                "outcome": outcome,
             }
         )
+        if outcome is not UNSET:
+            field_dict["outcome"] = outcome
         if failure_class is not UNSET:
             field_dict["failure_class"] = failure_class
         if work_outcome is not UNSET:
@@ -179,12 +212,22 @@ class TaskCloseRequest:
             field_dict["summary"] = summary
         if abandon_children is not UNSET:
             field_dict["abandon_children"] = abandon_children
+        if skip_open_subtasks is not UNSET:
+            field_dict["skip_open_subtasks"] = skip_open_subtasks
         if claim_epoch is not UNSET:
             field_dict["claim_epoch"] = claim_epoch
         if claim_next is not UNSET:
             field_dict["claim_next"] = claim_next
         if wait is not UNSET:
             field_dict["wait"] = wait
+        if obsolete is not UNSET:
+            field_dict["obsolete"] = obsolete
+        if no_change is not UNSET:
+            field_dict["no_change"] = no_change
+        if done is not UNSET:
+            field_dict["done"] = done
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -193,7 +236,14 @@ class TaskCloseRequest:
         d = dict(src_dict)
         task_id = d.pop("task_id")
 
-        outcome = d.pop("outcome")
+        def _parse_outcome(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        outcome = _parse_outcome(d.pop("outcome", UNSET))
 
         def _parse_failure_class(data: object) -> None | str | Unset:
             if data is None:
@@ -311,6 +361,8 @@ class TaskCloseRequest:
 
         abandon_children = d.pop("abandon_children", UNSET)
 
+        skip_open_subtasks = d.pop("skip_open_subtasks", UNSET)
+
         def _parse_claim_epoch(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -338,6 +390,21 @@ class TaskCloseRequest:
 
         wait = _parse_wait(d.pop("wait", UNSET))
 
+        obsolete = d.pop("obsolete", UNSET)
+
+        no_change = d.pop("no_change", UNSET)
+
+        done = d.pop("done", UNSET)
+
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         task_close_request = cls(
             task_id=task_id,
             outcome=outcome,
@@ -352,9 +419,14 @@ class TaskCloseRequest:
             deliverable_unmet=deliverable_unmet,
             summary=summary,
             abandon_children=abandon_children,
+            skip_open_subtasks=skip_open_subtasks,
             claim_epoch=claim_epoch,
             claim_next=claim_next,
             wait=wait,
+            obsolete=obsolete,
+            no_change=no_change,
+            done=done,
+            reason=reason,
         )
 
         task_close_request.additional_properties = d
