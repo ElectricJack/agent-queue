@@ -1242,12 +1242,17 @@ async def test_missing_provenance_reopen_requires_operator_control(
         if caller in {"operator", "supervisor"}:
             assert (await reopen_command(db, "missing"))["status"] == "READY"
         else:
-            with pytest.raises(HierarchyError, match="delivery_unknown"):
-                await reopen_command(db, "missing")
+            refused = await reopen_command(db, "missing")
+            assert refused["success"] is False
+            assert refused["code"] == "hierarchy.delivery_unknown"
+            assert "delivery_unknown" in refused["error"]
     task = await db.get_task("missing")
     assert task.status is (TaskStatus.READY if caller in {"operator", "supervisor"}
                            else TaskStatus.COMPLETED)
     assert task.branch_name == before.branch_name
+    if caller not in {"operator", "supervisor"}:
+        assert task.description == before.description
+        assert task.retry_count == before.retry_count
     assert git(origin.url, "rev-parse", "aq/missing") == head
     assert (await db.get_task_completion("missing")).id == "close-missing"
 
@@ -1372,8 +1377,7 @@ async def test_git_first_child_redrive_reads_parent_without_receipts(active_git_
     assert result["outcome"] == "nothing_to_redrive"
     assert ("already delivered" if contained else "train owns delivery") in result["reason"]
     delivery.collect.assert_not_awaited()
-    with pytest.raises(HierarchyError, match="never reissues receipts"):
-        await delivery._reissue_receipt({}, "old")
+    assert not hasattr(delivery, "_reissue_receipt")
 
 
 async def _make_delivered_root(db, origin):
@@ -1539,9 +1543,14 @@ async def settle() -> None:
 @pytest.fixture
 def shared_store(tmp_path, monkeypatch):
     from src.integration import delivery_observer as module
+    from src.projects import storage_binding
 
     fetches = ControlledFetches()
     monkeypatch.setattr(module, "delivery_snapshot", fetches)
+    # These concurrency tests isolate store acquisition and use no database.
+    monkeypatch.setattr(storage_binding, "repository_path", AsyncMock(
+        side_effect=lambda db, repository_id, fallback: fallback,
+    ))
 
     def make(git=None, data_dir=None):
         observer = DeliveryObserver(None, git=git or object(),
@@ -2031,3 +2040,120 @@ async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp
     assert "unknown or pending" in await service._delivery_hold(row, batch)
     db.set_prerequisite_observer(None)
     assert "requires current Git" in await service._delivery_hold(row, batch)
+@pytest.mark.parametrize("prerequisite_policy", [None, "wait-for-parent"])
+@pytest.mark.parametrize("cross_epic", [False, True])
+@pytest.mark.parametrize("proof", ["current", "missing", "reopened", "held"])
+async def test_resume_uses_git_prerequisites_without_legacy_receipts(
+    world, tmp_path, proof, cross_epic, prerequisite_policy, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from src.config import AppConfig
+    from src.database.tables import continuations, task_branch_origins, wait_records
+    from src.integration.git_truth import GitTruth
+    from src.models import AgentProfile, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    import src.integration.stacked_branches as stacks
+    import src.wait_runtime.resume as resume
+
+    # This verifies Git admission, not whether shared CI finishes inside the
+    # two-second advisory cache TTL. Exercise expiry separately below.
+    cache_now = time.monotonic()
+    monkeypatch.setattr(stacks, "time", SimpleNamespace(monotonic=lambda: cache_now))
+    if proof == "expired":
+        locked = resume.locked_suspension
+
+        async def after_observation_expires(*args, **kwargs):
+            nonlocal cache_now
+            cache_now += 3
+            return await locked(*args, **kwargs)
+
+        monkeypatch.setattr(resume, "locked_suspension", after_observation_expires)
+    db, origin, _, _ = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "resume-proof",
+                                truth=GitTruth(transport))
+    db._prerequisite_observer = observer
+    await db.create_profile(AgentProfile(id="worker", name="Worker", lifecycle="pool"))
+    await db.create_workspace(Workspace(id="free", project_id="p", kind_id="project-repo",
+                                        source_type=RepoSourceType.CLONE,
+                                        workspace_path=str(tmp_path / "free")))
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", branch_name="aq/dependent",
+                              profile_id="worker", route_source="override"))
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("dependent", "done")
+    if cross_epic:
+        await db.create_task(Task(id="upstream-epic", project_id="p", title="Upstream",
+                                  description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent("done", "upstream-epic", conn=conn)
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy",
+        hierarchical_integration_policy={"prerequisite_branches": prerequisite_policy}
+        if prerequisite_policy else {},
+    )
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    head = git(origin.clone, "rev-parse", "main")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(
+            branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status="RESUME_PENDING", held_batch_id="held" if proof == "held" else None))
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=head, creation_generation=0,
+            reserved=True, materialized=True, created_at=now,
+        ))
+        await conn.execute(insert(wait_records).values(
+            id="finished-wait", project_id="p", owner_kind="task", owner_id="dependent",
+            origin="agent", condition_kind="message", condition={}, source_key="message:reply",
+            source_generation=0, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="message:reply", verified_at=now, created_at=now,
+            request_hash="test", outcome="satisfied", sleep_decision="hibernate",
+        ))
+        await conn.execute(insert(continuations).values(
+            id="resume", task_id="dependent", wait_id="finished-wait",
+            suspension_generation=1, facts={"workspace_released_at": now},
+            branch="aq/dependent", saved_head=head, stopped_at=now,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="queued", created_at=now,
+        ))
+    if proof in {"missing", "expired"}:
+        # The source exists, but is absent from the parent delivery target.
+        base = git(origin.clone, "rev-list", "--max-parents=0", "main")
+        git(origin.clone, "push", "--force", "origin", f"{base}:aq/epic")
+    elif proof == "reopened":
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "done").values(
+                status="IN_PROGRESS", claim_epoch=tasks.c.claim_epoch + 1))
+            await db.recompute_blocked({"done", "dependent"}, conn=conn)
+    config = AppConfig()
+    orch = SimpleNamespace(db=db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch))
+    action = await ResumeTransaction(service).reserve("resume", 1)
+    async with db._engine.connect() as conn:
+        observed = await service.scheduler.reader.observe_task(
+            conn, "dependent", continuation_id="resume")
+    # The saved continuation already contains the completed source. Stacking
+    # permits that source before parent delivery; the authored opt-out does not.
+    admitted = proof == "current" or (proof == "missing" and prerequisite_policy is None)
+    assert (action is not None) == admitted, observed
+    if proof == "expired":
+        assert "epic_refresh_pending" in observed.constraints["batch_hold"]["reasons"]
+    async with db._engine.connect() as conn:
+        state = await conn.scalar(select(continuations.c.resume_state).where(
+            continuations.c.id == "resume"))
+    assert state == ("reserved" if admitted else "queued")
+
+
+async def test_resume_withholds_expired_stack_observation(world, tmp_path, monkeypatch):
+    await test_resume_uses_git_prerequisites_without_legacy_receipts(
+        world, tmp_path, "expired", True, None, monkeypatch,
+    )

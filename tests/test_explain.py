@@ -754,12 +754,44 @@ class TestExplainAfterASessionExitedWithoutClose:
 
 
 class TestBuildCapacityReasons:
+    @pytest.mark.parametrize("active,blocked", [(0, False), (1, False), (2, True), (3, True)])
+    def test_project_agent_cap_names_live_count_and_config(self, active, blocked):
+        project = Project(id=PROJECT_ID, name="p", max_concurrent_agents=2)
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(projects=[project], project_active_agent_counts={PROJECT_ID: active})
+
+        reasons = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})
+
+        cap_reasons = [reason for reason in reasons if reason["code"] == "project_agent_cap"]
+        assert bool(cap_reasons) == blocked
+        if blocked:
+            assert reasons[0] == cap_reasons[0]
+            assert f"{active}/2 live sessions" in cap_reasons[0]["detail"]
+            assert "max_concurrent_agents=2" in cap_reasons[0]["detail"]
+            assert cap_reasons[0]["ref"] == PROJECT_ID
+
     def test_no_idle_agent(self):
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
         state = make_state(projects=[proj], project_available_workspaces={PROJECT_ID: 1})
         codes = [r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})]
         assert "no_idle_agent" in codes
+
+    def test_exclusive_constraint_lowers_effective_agent_cap(self):
+        from src.models import ProjectConstraint
+
+        project = Project(id=PROJECT_ID, name="p", max_concurrent_agents=8)
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(
+            projects=[project], project_active_agent_counts={PROJECT_ID: 1},
+            project_constraints={PROJECT_ID: ProjectConstraint(project_id=PROJECT_ID, exclusive=True)},
+        )
+
+        reason = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})[0]
+
+        assert reason["code"] == "project_agent_cap"
+        assert "1/1 live sessions" in reason["detail"]
+        assert "max_concurrent_agents=8, exclusive=True" in reason["detail"]
 
     def test_workspace_locked(self):
         proj = Project(id=PROJECT_ID, name="p")
@@ -948,6 +980,29 @@ class TestProjectReady:
 
 
 class TestBetweenTicks:
+    async def test_project_agent_cap_is_visible_in_command_and_blocker_log(self, handler, db, caplog):
+        await mktask(db, "capped", status=TaskStatus.READY, profile_id="worker")
+        project = await db.get_project(PROJECT_ID)
+        task = await db.get_task("capped")
+        state = make_state(
+            projects=[project], tasks=[task],
+            project_active_agent_counts={PROJECT_ID: project.max_concurrent_agents},
+        )
+        handler.orchestrator._last_scheduler_state = state
+        handler.orchestrator._last_scheduler_workspace_counts = {PROJECT_ID: 1}
+        handler.orchestrator._last_scheduler_idle_by_project = {}
+
+        result = await handler._cmd_explain_task({"task_id": task.id})
+
+        reason = next(r for r in result["reasons"] if r["code"] == "project_agent_cap")
+        assert "2/2 live sessions" in reason["detail"]
+        assert handler.orchestrator._describe_task_blocker(task, state, {PROJECT_ID: 1}, {}) == (
+            reason["detail"]
+        )
+        caplog.set_level("INFO", logger="src.orchestrator.core")
+        handler.orchestrator._log_scheduler_blockers(state, [], {PROJECT_ID: 1})
+        assert f"scheduler blocked task=capped reason={reason['detail']}" in caplog.messages
+
     async def test_uses_cached_scheduler_state(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)
         # No tick has run — cached snapshot is None; explain should still

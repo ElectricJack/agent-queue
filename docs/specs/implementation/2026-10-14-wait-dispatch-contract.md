@@ -1,5 +1,58 @@
 # Wait outcome integration contract
 
+## Terminal owners and refused deadlines — 2026-10-22
+
+Terminal task source events retire the owner's waits through the shared
+archive/deletion retirement path: cancel pending outcomes and outstanding
+deadlines, clear edges, withdraw incidents, and cancel continuations and
+reservations without sending a wake. This includes scheduler waits and retracts
+the terminal owner's downstream priority donations. The listener reobserves the
+current task under graph/component locks, so a delayed terminal event cannot cancel a reopened
+attempt. Deadline firing repeats this retirement check to recover old terminal
+owners even when their source event has already been consumed.
+
+A permanent owner/request refusal quarantines only that deadline by setting
+`cancelled_at`. The service records `wait.deadline_quarantined` with the exact
+refusal and sends one durable project-supervisor notice in the same leased
+transaction. It then removes the heap entry and processes later deadlines.
+Unavailable infrastructure, lost leases and unknown errors remain retryable and
+must not be marked fired or permanently cancelled.
+
+`aq wait cancel <wait-id>` also lets a live project supervisor or local operator
+cancel an orphaned task wait before escalation. A failed owner fence is required;
+the transaction retires only that wait, its deadlines, edges, incidents and
+continuations. It preserves resolved outcomes, any replacement claim and its
+task-level reservations, and never pauses or wakes the task. Worker cancellation
+continues to require the exact live holder.
+
+## Resume recovery correction — 2026-10-21
+
+Continuation maintenance runs independently of the source listener and main
+orchestration cycle. Each queued/reserved/launching continuation has at most one
+local dispatch attempt in flight; a slow or refused attempt must not prevent
+other continuations from requesting admission. Failed commands are logged and
+retried through the existing admission, generation and task-control fences.
+Service shutdown cancels and joins outstanding attempts, retaining durable
+reservation and launch state for restart recovery.
+
+The listener renewal cadence is not a query timeout. Source batches and deadline
+commands may use the full lease budget; cursor locking, expiration checks and
+transaction rollback still fence expired leaders. Queries exceeding that budget
+remain failures rather than authorizing stale writes.
+
+`wait_policy.resume_stall_seconds` defaults to 300 seconds and supports project
+overrides. A resolved, uncleared wait whose task remains RESUME_PENDING past that
+age creates one durable project-supervisor notice per continuation generation.
+The notice survives daemon restarts and does not reset the wait's age, cancel its
+outcome, force admission or acknowledge delivery. Ordinary retries continue;
+paused and acknowledged tasks do not generate notices.
+
+An IN_PROGRESS owner or producer is not itself unavailable. Task sources retain
+the published claim-generation fence; a changed generation or missing source can
+still resolve an active owner's wait as source_unavailable. Dispatcher outcomes
+record the unavailable observation's reason and revision for diagnosis, without
+turning that outcome into producer success.
+
 This dormant dispatcher slice consumes graph owner commit
 `debbec299fc82a41c342315f816634cbe0be9871` and checkpoint owner commit
 `7e1402dabd831d6096378ccf61ba7df233fb2350` by ancestry-preserving merges.

@@ -64,7 +64,6 @@ from src.database.tables import (
     integration_history_waiver_consumptions,
     integration_history_waivers,
     integration_legacy_deliveries,
-    integration_legacy_gate_applicability,
     integration_legacy_suppression,
     integration_operation_artifact_pins,
     integration_outbox,
@@ -191,6 +190,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Reconciler subjects and their journal shipped in revision 57.
         "integration_subjects",
         "integration_subject_journal",
+        # Author-assisted close attempts shipped in PostgreSQL revision 117.
+        "integration_close_attempts",
         # Shared operator decisions shipped in PostgreSQL revision 77.
         "operator_decisions",
         # Session-owned recurring prompts shipped in PostgreSQL revision 86;
@@ -493,8 +494,6 @@ _ORDERED_TABLES = [
     integration_child_dispositions,
     # FK → integration_history_waivers, integration_rollout_transitions, projects
     integration_history_waiver_consumptions,
-    # FK → gates, integration_history_waivers, integration_rollout_transitions, projects
-    integration_legacy_gate_applicability,
     # FK → integration_repair_operations, playbook_artifacts
     integration_operation_artifact_pins,
     # FK → integration_parent_episodes, integration_repair_operations, tasks

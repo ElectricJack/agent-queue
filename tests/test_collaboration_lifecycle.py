@@ -37,6 +37,7 @@ from tests.test_collaboration_queries import NOW, accept, count, create, env as 
 
 @pytest.fixture
 def commands(env):
+    # The wait reconciler reads scheduler policy from the orchestrator's config.
     config = AppConfig()
     return CommandHandler(
         SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None,

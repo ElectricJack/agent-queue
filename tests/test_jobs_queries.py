@@ -272,8 +272,9 @@ async def test_configured_test_database_cannot_alias_daemon_database(db, tmp_pat
 
 
 @pytest.mark.parametrize("project_name", ["agent-queue", "quilt-trader"])
+@pytest.mark.parametrize("workers", [[], ["-n", "0"]], ids=["default", "serial"])
 async def test_managed_test_job_uses_project_interpreter_and_preconditions(
-    db, tmp_path, monkeypatch, project_name
+    db, tmp_path, monkeypatch, project_name, workers
 ):
     (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "{project_name}"\n')
     config = AppConfig(data_dir=str(tmp_path / "data"))
@@ -298,11 +299,17 @@ async def test_managed_test_job_uses_project_interpreter_and_preconditions(
     )
     job = await JobService(db, config).submit(
         project_id="p", task_id="t", session_id="s", claim_epoch=1,
-        workspace_id="w", generation=0, preset="test", args=["tests/test_example.py"],
+        workspace_id="w", generation=0, preset="test", args=["tests/test_example.py", *workers],
         idempotency_key=f"test-{project_name}",
     )
     assert job["argv"][:3] == [str(python), "-m", "pytest"]
     assert ("-n" in job["argv"]) == (project_name == "agent-queue")
+    if project_name == "agent-queue":
+        assert job["argv"][job["argv"].index("-n") + 1] == ("0" if workers else "3")
+    assert job["state"] == "queued" and job["owner_kind"] == "task"
+    assert job["weight"] == 1 and job["job_class"] == "shared"
+    assert await db.workspace_has_job_pin("w")
+    assert (await db.get_job(job["id"]))["argv"] == job["argv"]
     assert ("POSTGRES_TEST_DSN" in job["contract"]["env"]) == (
         project_name == "agent-queue"
     )
