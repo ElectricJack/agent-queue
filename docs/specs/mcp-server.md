@@ -12,6 +12,22 @@ tags: [spec, mcp, api]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+> **Superseded implementation details (audit 2026-10-23).** The current
+> endpoint is the embedded streamable-HTTP `/mcp` on the daemon API port;
+> there is no standalone stdio AQ server, separate orchestrator, or
+> `agent-queue-mcp` entry point. The tool tables below are historical and
+> include removed hooks, archive restore and profile operations. Current
+> registration uses shared command descriptors in `src/commands/` and
+> `src/tools/definitions.py`. The exclusion variable is
+> `AGENT_QUEUE_MCP_EXCLUDED`, not `AQ_MCP_EXCLUDED_COMMANDS`.
+> Profiles and the synthetic registry entry do not currently configure
+> launched harnesses. MCP handlers do not forward authenticated scope;
+> this is an operator surface, not a worker capability boundary.
+> `/mcp-task` remains unserved. Set `mcp_server.enabled` explicitly because
+> a present YAML section without that key loads false, despite the true
+> dataclass default. See the [current guide](../guides/plugins-and-mcp.md)
+> and [system spec](systems/plugins-mcp-and-tools.md) for behavior and gaps.
+
 The MCP server exposes all [CommandHandler](command-handler.md) commands as MCP tools via the
 [Model Context Protocol](https://modelcontextprotocol.io). Claude agents
 (or any MCP-compatible client) connect over stdio to the operational command
