@@ -939,10 +939,10 @@ async def test_active_train_replaces_the_runtimes_and_never_dispatches_legacy_ev
         await service.stop()
         train.stop.assert_awaited_once()
     assert calls == [("train", 100), ("maintenance", 100)] * 2
-    from src.integration.outbox import PROMOTION_EVENT_TYPES
+    from src.integration.outbox import ACTIVE_OUTBOX_EVENT_TYPES
 
     assert outbox.dispatch_due.await_count == 2
-    outbox.dispatch_due.assert_awaited_with(100, event_types=PROMOTION_EVENT_TYPES)
+    outbox.dispatch_due.assert_awaited_with(100, event_types=ACTIVE_OUTBOX_EVENT_TYPES)
 
 
 @pytest.mark.parametrize(

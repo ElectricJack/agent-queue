@@ -14,6 +14,8 @@ from sqlalchemy import insert, select, update
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
+    integration_batch_members,
+    integration_batches,
     integration_branch_owners,
     integration_outbox,
     integration_parent_episodes,
@@ -46,6 +48,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import (
+    Agent,
     AgentProfile,
     Project,
     RepoConfig,
@@ -565,6 +568,163 @@ async def test_canonical_set_parent_cannot_bypass_origin_guard(db, hierarchy):
     assert exc.value.code == "delivery_target_fixed"
 
 
+@pytest.mark.parametrize("materialized", [False, True])
+async def test_ordinary_reparent_moves_unused_train_child_to_root(
+    db, hierarchy, internal_plugins_handler, materialized,
+):
+    await db.update_project("p", hierarchical_integration_mode="train")
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "ops child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    old_origin = filed["origins"][0]
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.id == old_origin["id"],
+        ).values(materialized=materialized))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent",
+        ).values(verified_sha=BASE, verified_generation=1))
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+
+    result = await handler.execute("reparent_task", {"task_id": child_id, "root": True})
+
+    assert result["success"] is True, result
+    assert result["old_parent"] == "parent"
+    assert result["new_parent"] is None
+    assert (await db.get_task(child_id)).parent_task_id is None
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["generation"] == 2
+    assert checkpoint["verified_sha"] is None
+    async with db._engine.connect() as conn:
+        origins = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == child_id,
+        ).order_by(task_branch_origins.c.created_at))).mappings().all()
+    assert len(origins) == 2
+    assert origins[0]["retired_at"] is not None
+    assert origins[1]["retired_at"] is None
+    assert origins[1]["parent_task_id"] is None
+    assert origins[1]["parent_ref"] == "main"
+    assert origins[1]["materialized"] is materialized
+    assert origins[1]["base_sha"] == BASE
+
+
+async def test_no_commit_root_move_preserves_materialized_base_when_default_advanced(
+    db, hierarchy,
+):
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == child_id,
+        ).values(materialized=True))
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, branch: NEXT if branch == "main" else BASE,
+    )
+
+    result = await service.mutate_hierarchy(
+        child_id, "reparent", {"parent_id": None, "expected_old_generation": 1},
+    )
+
+    assert result["outcome"] == "updated"
+    origin = await db.get_task_branch_origin_for_promotion(child_id, "repo")
+    assert origin["base_sha"] == BASE
+    assert origin["materialized"] is True
+    assert (await db.get_integration_checkpoint(child_id))["checkpoint_sha"] == BASE
+
+
+@pytest.mark.parametrize("sealed_parent", ["old", "new"])
+async def test_ordinary_reparent_refuses_sealed_source_or_destination(
+    db, hierarchy, internal_plugins_handler, sealed_parent,
+):
+    await _create(db, "old")
+    await _create(db, "new")
+    filed = await hierarchy.file_children("old", [{"title": "child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="batch", project_id="p", repository_id="repo", request_id="request",
+            source_manifest_digest="digest", base_sha=BASE, lifecycle="sealing",
+            integration_branch="aq/integration/batch", policy_snapshot={}, artifact_snapshot={},
+            cleanup_state="pending", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_batch_members).values(
+            batch_id="batch", ordinal=0, task_id=sealed_parent, repository_id="repo",
+            source_sha=BASE, source_base_sha=BASE, reviewed_head_sha=BASE, reviewed_tree_sha=BASE,
+            review_evidence={},
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch",
+        ).values(lifecycle="sealed"))
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+
+    result = await handler.execute("reparent_task", {"task_id": child_id, "parent_id": "new"})
+
+    assert result["code"] == "hierarchy.sealed", result
+    assert (await db.get_task(child_id)).parent_task_id == "old"
+    assert (await db.get_integration_checkpoint("old"))["generation"] == 1
+    assert len([row for row in await _origins(db) if row["task_id"] == child_id]) == 1
+
+
+@pytest.mark.parametrize("blocker", [
+    "commits", "attached_owner", "locked_workspace", "delivered", "completed", "holder",
+])
+async def test_ordinary_train_reparent_uses_current_work_fences_atomically(
+    db, hierarchy, internal_plugins_handler, tmp_path, blocker,
+):
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    if blocker == "holder":
+        await db.create_agent(Agent(id="claimed-agent", name="writer", profile_id="worker"))
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == child_id,
+        ).values(materialized=True))
+        if blocker == "attached_owner":
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == child_id,
+            ).values(handoff_state="attached", workspace_id="old-slot"))
+        if blocker == "delivered":
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="receipt", domain_key="receipt", source_task_id=child_id,
+                target_task_id="parent", repository_id="repo", target_branch="aq/parent",
+                disposition="code", created_at=1.0,
+            ))
+        if blocker == "completed":
+            await conn.execute(update(tasks).where(tasks.c.id == child_id).values(
+                status="COMPLETED",
+            ))
+        if blocker == "holder":
+            await conn.execute(update(tasks).where(tasks.c.id == child_id).values(
+                assigned_agent_id="claimed-agent",
+            ))
+    if blocker == "locked_workspace":
+        await db.create_workspace(Workspace(
+            id="busy", project_id="p", workspace_path=str(tmp_path / "busy"),
+            locked_by_task_id=child_id, source_type=RepoSourceType.WORKTREE,
+        ))
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: NEXT if blocker == "commits" else BASE,
+    )
+
+    result = await handler.execute("reparent_task", {"task_id": child_id, "root": True})
+
+    if blocker == "delivered":
+        # A historical receipt does not fix the identity of this unfinished
+        # child. The current branch and ownership fences above still apply.
+        assert result["success"], result
+        assert (await db.get_task(child_id)).parent_task_id is None
+        return
+    assert result["code"] == "hierarchy.delivery_target_fixed", result
+    assert (await db.get_task(child_id)).parent_task_id == "parent"
+    assert (await db.get_integration_checkpoint("parent"))["generation"] == 1
+    assert len([row for row in await _origins(db) if row["task_id"] == child_id]) == 1
+
+
 async def test_delete_unmaterialized_child_retires_origin_and_invalidates_parent(db, hierarchy):
     await _create(db, "parent")
     filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
@@ -693,8 +853,9 @@ async def test_deleting_a_materialized_child_advances_the_parent_generation(db, 
     assert (await db.get_integration_checkpoint("parent"))["generation"] == before + 1
 
 
-async def test_delivered_identity_refuses_under_every_branch_policy(db, hierarchy):
-    """The relaxation is scoped to materialization; delivery is still fixed."""
+@pytest.mark.parametrize("policy", [None, "keep", "discard"])
+async def test_historical_receipt_cannot_fix_failed_identity(db, hierarchy, policy):
+    """An old receipt cannot establish current delivery of a failed child."""
     await _create(db, "parent")
     child_id = await _materialized_child(db, hierarchy)
     async with db.immediate() as conn:
@@ -711,10 +872,13 @@ async def test_delivered_identity_refuses_under_every_branch_policy(db, hierarch
             )
         )
 
-    for policy in (None, "keep", "discard"):
+    if policy is None:
         with pytest.raises(HierarchyError) as refused:
             await db.delete_task(child_id, branch_policy=policy)
-        assert refused.value.code == "delivery_target_fixed"
+        assert refused.value.code == "branch_discard_required"
+    else:
+        await db.delete_task(child_id, branch_policy=policy)
+        assert await db.get_task(child_id) is None
 
 
 async def test_unknown_branch_policy_is_rejected(db, hierarchy):
@@ -724,7 +888,7 @@ async def test_unknown_branch_policy_is_rejected(db, hierarchy):
         await db.delete_task(child_id, branch_policy="nuke")
 
 
-async def test_delivered_task_cannot_be_reopened(db, hierarchy):
+async def test_completed_task_with_only_a_receipt_cannot_be_reopened(db, hierarchy):
     await _create(db, "parent")
     filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
     child_id = filed["children"][0]["task_id"]
@@ -747,7 +911,7 @@ async def test_delivered_task_cannot_be_reopened(db, hierarchy):
 
     with pytest.raises(HierarchyError) as reopened:
         await db.transition_task(child_id, TaskStatus.READY)
-    assert reopened.value.code == "delivery_target_fixed"
+    assert reopened.value.code == "delivery_unknown"
 
 
 async def test_undelivered_reopen_invalidates_parent_generation(db, hierarchy):
@@ -1615,7 +1779,8 @@ async def test_hoisted_project_mode_admits_exactly_what_the_correlated_form_does
 
     correlated = await _frontier_ids(db)
     assert await _hoisted_ids(db) == correlated
-    assert correlated == ({"loose", second} if mode_value == "disabled" else {second})
+    # A matching receipt adds no positive eligibility without current Git.
+    assert correlated == ({"loose", second} if mode_value == "disabled" else set())
 
 
 async def test_hoisted_hierarchy_mode_without_a_repository_admits_nothing(db, hierarchy):
@@ -1753,8 +1918,45 @@ def test_hoisted_frontier_never_names_the_projects_table(mode_value):
     assert "projects" in str(select(tasks.c.id).where(_frontier_where("p")))
 
 
+@pytest.mark.parametrize("playbook_id", ["fast-smooth-train", "custom-train"])
+async def test_hoisted_frontier_reads_current_train_switch_without_project_lookups(
+    db, hierarchy, playbook_id,
+):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    project = await db.get_project("p")
+    policy = {**project.hierarchical_integration_policy, "train": {"playbook_id": playbook_id}}
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "first"}, {"title": "second"}], 0)
+    first, second = [row["task_id"] for row in filed["children"]]
+    await db.add_dependency(second, first, "blocks")
+    await _create(db, "loose")
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).values(materialized=True))
+        await conn.execute(update(tasks).where(tasks.c.id == first).values(status="COMPLETED"))
+        await conn.execute(update(tasks).where(tasks.c.id.in_((second, "loose"))).values(
+            status="READY", is_blocked=False))
+    # Reuse the same project snapshot across toggles: activation is not hoisted.
+    mode = ProjectIntegrationMode.of(await db.get_project("p"))
+    assert "projects" not in str(select(tasks.c.id).where(_frontier_where("p", mode)))
+    assert await _frontier_ids(db, mode) == await _frontier_ids(db) == set()
+    for selected, enabled, expected in (
+        ("unrelated-playbook", False, set()),
+        (playbook_id, False, {"loose", second}),
+        (playbook_id, True, set()),
+    ):
+        await db.set_playbook_activation(
+            playbook_id=selected, scope="project", scope_identifier="p",
+            artifact_sha256=None, enabled=enabled, activated_by="test",
+            health="unavailable" if enabled else "disabled", reasons="[]",
+        )
+        assert await _frontier_ids(db, mode) == await _frontier_ids(db) == expected
+
+
 @pytest.mark.parametrize("unrelated_reworks", [0, 1, 2])
-async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
+async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
     db, hierarchy, unrelated_reworks
 ):
     await db.create_profile(AgentProfile(id="worker", name="worker"))
@@ -1775,14 +1977,13 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
     assert not await db.is_hierarchy_task_runnable(second)
     assert await db.count_ready_by_profile("p") == {}
     [exclusion] = await db.claim_frontier_exclusions(second)
-    assert exclusion["code"] == "frontier_sibling_prerequisite_not_delivered"
-    assert "delivered_same_parent_prerequisites_when_hierarchical()" in exclusion["detail"]
+    assert exclusion["code"] == "delivery_evidence_unavailable"
+    assert "sibling_prerequisite_not_delivered is unknown" in exclusion["detail"]
 
     source = await db.get_integration_checkpoint(first)
     delivered_at = time.time()
-    # Train parents wait for children while unrelated tasks may be reopened
-    # after this sibling's receipt. Their rework boundaries must not leak
-    # into the sibling prerequisite's nested freshness subquery.
+    # Unrelated rework boundaries must not change the candidate's own
+    # prerequisite set or make a historical receipt authoritative.
     await db.update_project("p", hierarchical_integration_mode="train")
     await db.update_task("parent", status=TaskStatus.PAUSED)
     await db.set_task_meta("parent", "needs_attention", "awaiting_children")
@@ -1805,20 +2006,31 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
             disposition="code",
             created_at=delivered_at,
         ))
-    assert await db.is_hierarchy_task_runnable(second)
-    assert await db.count_ready_by_profile("p") == {"worker": 1}
-    assert second in await _frontier_ids(db)
-    assert second in await _hoisted_ids(db)
+    assert not await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {}
+    assert second not in await _frontier_ids(db)
+    assert second not in await _hoisted_ids(db)
+    from dataclasses import replace
+
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 
+    # The SQL projection accepts an explicit request-scoped Git overlay.
+    # Its freshness and generation fences are exercised with real Git in
+    # test_delivery_consumers and test_pool_reconciler.
+    mode = replace(ProjectIntegrationMode.of(await db.get_project("p")),
+                   delivered_prerequisite_ids=frozenset({first}))
+    assert second in await _frontier_ids(db, mode)
+    assert await db.count_ready_by_profile("p", hierarchy_mode=mode) == {"worker": 1}
     async with db.immediate() as conn:
         assert await db.select_ready_for_profile(
             conn, project_id="p", profile_id="worker",
             agent_id="worker", task_id=second, router_ready=True,
-            hierarchy_mode=ProjectIntegrationMode.of(await db.get_project("p")),
+            hierarchy_mode=mode,
         ) == second
-    assert await db.hierarchy_prerequisite_delivery_head(second) == NEXT
-    assert await db.claim_frontier_exclusions(second) == []
+    assert await db.hierarchy_prerequisite_delivery_head(second) is None
+    assert [reason["code"] for reason in await db.claim_frontier_exclusions(second)] == [
+        "delivery_evidence_unavailable",
+    ]
 
     # Closing and metadata bookkeeping can update the task row after its
     # receipt; they do not represent a new completion.
@@ -1830,9 +2042,9 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
             id="late-close-record", task_id=first, outcome="pass",
             completed_at=delivered_at + 2,
         ))
-    assert await db.is_hierarchy_task_runnable(second)
-    assert await db.count_ready_by_profile("p") == {"worker": 1}
-    assert await db.hierarchy_prerequisite_delivery_head(second) == NEXT
+    assert not await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {}
+    assert await db.hierarchy_prerequisite_delivery_head(second) is None
 
     # A reopened prerequisite invalidates the former receipt even when its
     # task id and checkpoint happen to be unchanged.
@@ -1841,7 +2053,7 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
     await db.update_task(first, status=TaskStatus.COMPLETED)
     assert not await db.is_hierarchy_task_runnable(second)
     assert [reason["code"] for reason in await db.claim_frontier_exclusions(second)] == [
-        "frontier_sibling_prerequisite_not_delivered"
+        "delivery_evidence_unavailable"
     ]
 
 
@@ -2384,3 +2596,82 @@ def test_route_free_policy_dump_omits_route_and_round_trips():
     dumped = policy.model_dump(mode="json")
     assert "route" not in dumped["parent"] and "route" not in dumped["root"]
     assert HierarchicalIntegrationPolicy.model_validate(dumped) == policy
+
+
+async def test_read_projection_names_cross_epic_landing_and_refresh(db, hierarchy, monkeypatch):
+    from dataclasses import replace
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.task_graph.readiness import load_readiness
+
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
+    for parent in ("upstream", "downstream"):
+        await _create(db, parent)
+    source = (await hierarchy.file_children("upstream", [{"title": "source"}], 0))["children"][0]["task_id"]
+    dependent = (await hierarchy.file_children("downstream", [{"title": "consumer"}], 0))["children"][0]["task_id"]
+    await db.add_dependency(dependent, source, "blocks")
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == dependent,
+        ).values(materialized=True, materialized_at=1.0))
+        await conn.execute(update(tasks).where(tasks.c.id == source).values(status="COMPLETED"))
+        await conn.execute(update(tasks).where(tasks.c.id == dependent).values(
+            status="READY", is_blocked=False, profile_id="worker", route_source="router",
+        ))
+    mode = ProjectIntegrationMode(hierarchical=True, integration_repository_id="repo")
+
+    async def modes(*args, **kwargs):
+        assert kwargs["cached_only"] is True
+        return {"p": mode}
+
+    monkeypatch.setattr("src.integration.delivery_observer.hierarchy_frontier_modes", modes)
+    # This fixture supplies an observed Git overlay; the missing-observer
+    # unknown path is covered separately.
+    monkeypatch.setattr("src.integration.delivery_observer.prerequisite_observer",
+                        lambda _db: object())
+    rows = [{"id": dependent, "status": "READY", "project_id": "p"}]
+    readiness = (await load_readiness(db, rows))[dependent]["claim_readiness"]
+    assert readiness["state"] == "waiting_on_delivery"
+    assert source in readiness["reason"] and "main" in readiness["reason"]
+    assert "downstream" in readiness["reason"] and "Epic refresh" in readiness["reason"]
+    assert not readiness["claimable"]
+    mode = replace(mode, default_prerequisite_ids=frozenset({source}))
+    refresh = (await load_readiness(db, rows))[dependent]["claim_readiness"]
+    assert [r["code"] for r in refresh["reasons"]] == ["frontier_epic_refresh_pending"]
+    assert source in refresh["reason"] and "aq/downstream" in refresh["reason"]
+    mode = replace(mode, parent_contained_task_ids=frozenset({dependent}))
+    assert (await load_readiness(db, rows))[dependent]["claim_readiness"]["claimable"]
+    assert (await db.get_task(dependent)).status == TaskStatus.READY
+
+
+async def test_reopen_feedback_reports_sealed_refusal_without_mutating_epic(
+    db, internal_plugins_handler,
+):
+    await _create(db, "epic")
+    await db.update_task("epic", status=TaskStatus.COMPLETED)
+    before = await db.get_task("epic")
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="sealed-feedback", project_id="p", repository_id="repo", request_id="request",
+            source_manifest_digest="digest", base_sha=BASE, lifecycle="sealing",
+            integration_branch="aq/integration/feedback", policy_snapshot={}, artifact_snapshot={},
+            cleanup_state="pending", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_batch_members).values(
+            batch_id="sealed-feedback", ordinal=0, task_id="epic", repository_id="repo",
+            source_sha=BASE, source_base_sha=BASE, reviewed_head_sha=BASE, reviewed_tree_sha=BASE,
+            review_evidence={},
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "sealed-feedback",
+        ).values(lifecycle="sealed"))
+    handler = await internal_plugins_handler(db=db)
+    result = await handler.execute("reopen_with_feedback", {
+        "task_id": "epic", "feedback": "Repair inherited target failures",
+    })
+    assert result["success"] is False
+    assert result["code"] == "hierarchy.sealed", result
+    assert "sealed subtree" in result["error"]
+    after = await db.get_task("epic")
+    assert after.status == before.status == TaskStatus.COMPLETED
+    assert after.description == before.description
+    assert await db.get_task_contexts("epic") == []
