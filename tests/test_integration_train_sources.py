@@ -3521,6 +3521,126 @@ async def test_retire_origin_preserves_base_and_filters_delivered_pending_work(w
     assert "delivered" in audit
 
 
+@pytest.mark.parametrize("delivery", ["ancestor", "squashed", "empty"])
+@pytest.mark.parametrize("retired_branch", [False, True])
+async def test_legacy_epic_completion_uses_git_without_marker(world, delivery, retired_branch):
+    from src.integration.stacked_branches import EpicRefresh
+
+    db, origin = world.db, world.origin
+    source = await completed(world, "epic", done=False, pr=False)
+    await db.set_task_meta("epic", "container", True)
+    if delivery == "empty":
+        base = git(origin.clone, "rev-parse", f"{source}^")
+        source = git(origin.clone, "commit-tree", f"{base}^{{tree}}", "-p", base,
+                     "-m", "legacy empty epic")
+        git(origin.clone, "push", "origin", f"+{source}:aq/epic")
+    await close(db, "epic", [source])  # passing current row, no retained marker
+    completion = await db.get_task_completion("epic")
+    if delivery == "ancestor":
+        origin.land("epic")
+    elif delivery == "squashed":
+        git(origin.clone, "checkout", "-q", "-B", "main", "origin/main")
+        git(origin.clone, "merge", "--squash", "origin/aq/epic")
+        git(origin.clone, "commit", "-qm", "legacy squash delivery")
+        git(origin.clone, "push", "-q", "origin", "main")
+    # Force a stale epic and prove against the designated development ref.
+    default = origin.work("default-move")
+    git(origin.clone, "push", "origin", f"{default}:refs/heads/dev")
+    await db.update_repo("r", default_branch="dev")
+    if retired_branch:
+        git(origin.clone, "push", "origin", "--delete", "aq/epic")
+    else:
+        refreshed = await EpicRefresh(db).start("epic")
+        assert (refreshed["outcome"], refreshed["reason"]) == ("skipped", "delivered")
+    root = TrainTarget("p", "r", "refs/heads/dev")
+    assert await DatabaseTargets(db).targets(time.time()) == [root]
+    assert await fixture_batches(db)._candidate_ids(root, await snapshot(world, root)) == []
+    train, github, _ = await hosted_train(world)
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    visit = await train.visit(epic)
+    assert visit.state == "delivered" and visit.batch_id is None, visit
+    assert not github.records
+    controls = TrainControls(db)
+    preview = await controls.retire_origin("epic", dry_run=True, origin_id=None,
+                                          operator_id="operator", reason="")
+    retired = await controls.retire_origin("epic", dry_run=False,
+        origin_id=preview["origin_id"], operator_id="operator", reason="Git proves delivery")
+    assert retired["outcome"] == "retired" and retired["target_ref"] == "refs/heads/dev"
+    assert await db.get_task_completion("epic") == completion
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+
+
+@pytest.mark.parametrize("guard", [
+    "leaf", "missing_source", "failed", "newer_completion", "unique", "missing_object",
+    "invalid_marker", "pending_generation",
+])
+async def test_legacy_epic_git_fallback_preserves_unproven_work(world, guard):
+    from src.database.tables import task_completion_records
+    from src.integration.provenance import CompletionIdentity
+
+    db, origin = world.db, world.origin
+    source = await completed(world, "epic", done=False, pr=False)
+    if guard != "leaf":
+        await db.set_task_meta("epic", "container", True)
+    if guard != "unique":
+        origin.land("epic")
+    await close(db, "epic", [] if guard == "missing_source" else [source])
+    if guard == "newer_completion":
+        newer = origin.work("epic", "not-delivered")
+        await close(db, "epic", [newer], close_id="newer-close")
+    elif guard in {"failed", "missing_object"}:
+        changes = {"outcome": "fail"} if guard == "failed" else {"commits": json.dumps(["f" * 40])}
+        async with db._engine.begin() as conn:
+            await conn.execute(update(task_completion_records).where(
+                task_completion_records.c.task_id == "epic",
+            ).values(**changes))
+    elif guard == "invalid_marker":
+        identity = CompletionIdentity("p", "r", "epic", "close-epic")
+        git(origin.url, "update-ref", identity.ref, source)
+    elif guard == "pending_generation":
+        await db.set_task_meta("epic", "development_completion_id", "close-not-recorded-yet")
+    # A contained live branch cannot replace a missing/invalid current source.
+    with pytest.raises(ValueError, match="not proven delivered"):
+        await TrainControls(db).retire_origin("epic", dry_run=True, origin_id=None,
+                                              operator_id="operator", reason="")
+    assert "epic" in await fixture_batches(db)._candidate_ids(MAIN, await snapshot(world))
+
+
+@pytest.mark.parametrize("changed", ["completion", "target"])
+async def test_retire_legacy_epic_rechecks_completion_and_target(world, monkeypatch, changed):
+    from src.integration import train_controls
+
+    db, origin = world.db, world.origin
+    source = await completed(world, "epic", done=False, pr=False)
+    await db.set_task_meta("epic", "container", True)
+    await close(db, "epic", [source])
+    origin.land("epic")
+    prove = train_controls.project_delivered
+
+    async def change_after_proof(*args, **kwargs):
+        delivered = await prove(*args, **kwargs)
+        assert delivered == {"epic"}
+        if changed == "completion":
+            await close(db, "epic", [origin.work("epic", "new-close")], close_id="new-close")
+        else:
+            moved = origin.work("root-moved")
+            git(origin.clone, "push", "origin", f"{moved}:main")
+        return delivered
+
+    monkeypatch.setattr(train_controls, "project_delivered", change_after_proof)
+    with pytest.raises(ValueError, match="delivery or origin changed"):
+        await TrainControls(db).retire_origin("epic", dry_run=False, origin_id="epic-origin",
+                                              operator_id="operator", reason="Git proof")
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(task_branch_origins.c.retired_at).where(
+            task_branch_origins.c.task_id == "epic",
+        )) is None
+        assert not (await conn.execute(select(events).where(
+            events.c.event_type == "integration.origin_retired",
+        ))).first()
+
+
 @pytest.mark.parametrize("unknown_ancestry", [True, False])
 @pytest.mark.parametrize("candidate_present", [False, True])
 async def test_abort_requires_observed_promotion_and_unchanged_refs(
