@@ -33,6 +33,8 @@ def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
 
 def _validate_frontmatter(frontmatter: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    if not isinstance(frontmatter, dict):
+        return ["Frontmatter must be a mapping"]
     if not frontmatter:
         return ["Missing YAML frontmatter (file must start with '---')"]
     if not frontmatter.get("id"):
@@ -42,7 +44,7 @@ def _validate_frontmatter(frontmatter: dict[str, Any]) -> list[str]:
         errors.append("Frontmatter 'triggers' must be a non-empty list")
     if not frontmatter.get("scope"):
         errors.append("Frontmatter missing required field: 'scope'")
-    return errors
+    return errors + execution_source_errors(frontmatter)
 
 
 _BACKTICK = re.compile(r"`([^`\n]{1,128})`")
@@ -151,3 +153,44 @@ def _inventory(
     return IdentifierInventory(
         MappingProxyType({name: tuple(refs) for name, refs in found.items()})
     )
+
+
+# Source declares policy, never an execution principal or resolved identity.
+_SOURCE_AUTHORITY_FIELDS = frozenset({
+    "principal", "execution_principal", "namespace", "namespace_id", "namespace_owner",
+    "scope_owner", "owner", "_scope", "_principal", "execution_context", "trusted_execution", "required_features", "compiled_against",
+    "resolved_digest", "program_sha256", "runtime_sha256", "executable_sha256",
+})
+
+
+def execution_source_errors(frontmatter: Mapping[str, Any]) -> list[str]:
+    """Validate the same boundary for loaded sources and programmatic proposals."""
+    from pydantic import ValidationError
+    from src.playbooks.script_policy import ScriptProgram
+
+    errors = [f"Source field {key!r} is server-owned" for key in
+              sorted(_SOURCE_AUTHORITY_FIELDS.intersection(frontmatter))]
+    if "state_schema_version" in frontmatter:
+        version = frontmatter["state_schema_version"]
+        if type(version) is not int or version < 1:
+            errors.append("state_schema_version must be a positive integer")
+    capabilities = frontmatter.get("required_capabilities", [])
+    if (not isinstance(capabilities, list) or len(capabilities) > 500
+            or any(not isinstance(name, str) or re.fullmatch(
+                r"[a-z0-9][a-z0-9._-]{0,127}", name
+            ) is None for name in capabilities)
+            or len(set(capabilities)) != len(capabilities)):
+        errors.append("required_capabilities must be a unique list of command names")
+    programs = frontmatter.get("scripts", {})
+    if not isinstance(programs, dict) or len(programs) > 500:
+        errors.append("scripts must be a mapping of at most 500 step programs")
+    else:
+        for step_id, program in programs.items():
+            if not isinstance(step_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", step_id) is None:
+                errors.append("scripts keys must be step identifiers")
+                continue
+            try:
+                ScriptProgram.model_validate(program)
+            except ValidationError:
+                errors.append(f"scripts.{step_id} is not a valid source program/dependency/policy manifest")
+    return errors
