@@ -25,6 +25,8 @@ async def setup(tmp_path):
     await db.initialize()
     await db.create_project(Project(id="p1", name="test"))
     await db.create_project(Project(id="p2", name="other"))
+    # Formulas name no profiles (mandatory routing); the profiles only give
+    # the project a realistic catalogue.
     for pid in ("coding", "reviewer"):
         await db.create_profile(AgentProfile(id=pid, name=pid))
     vault_root = tmp_path / "vault"
@@ -134,7 +136,12 @@ class TestCook:
         kids = await db.get_children(cid)
         assert {k.title for k in kids} == {"Review branch feat/x (strict)", "Fix findings on feat/x"}
         fix = next(k for k in kids if k.title.startswith("Fix"))
-        assert fix.profile_id == "coding" and fix.is_blocked is True
+        assert fix.is_blocked is True
+        # A formula node carries hints, never a route: the class is the
+        # router's hint and the fixer var lands in a label.
+        assert (fix.profile_id, fix.intelligence_class, fix.route_source, fix.class_hint) == (
+            None, None, "unrouted", "standard-high")
+        assert "fixer:coding" in await db.get_task_labels(fix.id)
         emitted = [c.args for c in h.orchestrator.bus.emit.await_args_list if c.args[0] == "formula.cooked"]
         assert emitted and emitted[0][1]["container_id"] == cid
 
@@ -206,7 +213,7 @@ class TestCook:
         await db.create_task(Task(id="epic", project_id="p1", title="e", description="e",
                                   status=TaskStatus.IN_PROGRESS))
         at_root = await h._cmd_formula_cook({"name": "phases-invalid", "project_id": "p1"})
-        assert [e["rule"] for e in at_root["errors"]] == ["unknown_profile"]
+        assert [e["rule"] for e in at_root["errors"]] == ["unresolved_need"]
 
         res = await h._cmd_formula_cook({"name": "phases-invalid", "project_id": "p1",
                                          "parent_id": "epic"})
@@ -395,3 +402,39 @@ class TestAsCooked:
         }
         res = await h._cmd_formula_show({"as_cooked": other_p1["container_id"]})
         assert res["success"] is True
+
+
+class TestRoutingChoices:
+    """A formula carries hints, never a route (mandatory-routing spec §5.1)."""
+
+    async def test_a_formula_naming_a_profile_does_not_load(self, setup):
+        _h, _db, vault_root, _registry = setup
+        (vault_root / "formulas" / "pinned.md").write_text(
+            "---\nname: pinned\n---\n"
+            "```aq-graph\nversion: 1\n"
+            "nodes:\n  - key: x\n    title: x\n    profile: coding\n    pin: true\n```\n",
+            encoding="utf-8",
+        )
+        registry = FormulaRegistry()
+        errors = load_from_vault(registry, str(vault_root))
+        assert len(errors) == 1 and "formula.graph_parse" in errors[0]
+        assert "chooses a route" in errors[0]
+        assert registry.get("pinned") is None
+
+    async def test_a_formula_loaded_before_the_refusal_cannot_cook_a_route(self, setup):
+        """A registry entry that predates the refusal is refused at cook."""
+        import dataclasses
+
+        h, db, _vault, registry = setup
+        stale = registry.get("base-review")
+        doc = json.loads(json.dumps(stale.graph_doc))
+        doc["defaults"] = {**doc.get("defaults", {}), "profile": "{reviewer}"}
+        registry.upsert(dataclasses.replace(stale, graph_doc=doc))
+
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                         "vars": {"branch": "b"}})
+        assert res["success"] is False
+        assert res["code"] == "routing.choice_forbidden"
+        assert res["refused"] == ["defaults.profile"]
+        assert "routing_choice_forbidden" in {e["rule"] for e in res["errors"]}
+        assert await db.list_tasks("p1") == []

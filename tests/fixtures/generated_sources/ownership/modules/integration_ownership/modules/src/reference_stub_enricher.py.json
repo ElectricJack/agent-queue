@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/reference_stub_enricher.py::ReferenceStubEnricher": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

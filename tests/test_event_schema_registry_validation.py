@@ -72,6 +72,16 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    "ask.input_received": {
+        "ask_id": "ask-1",
+        "project_id": "proj-1",
+        "input_id": "cinput-1",
+    },
+    "ask.discussion_replied": {
+        "ask_id": "ask-1",
+        "project_id": "proj-1",
+        "input_id": "cinput-1",
+    },
     "conversation.reply_queued.v1": {
         "conversation_id": "conv-1",
         "input_id": "cinput-1",
@@ -90,6 +100,10 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
     "digest.window_ready": {
         "window_id": "digest-window-1",
         "request_id": "report-hourly-digest-window-1",
+    },
+    "report.morning_due": {
+        "local_date": "2026-10-10",
+        "report_id": "morning-2026-10-10",
     },
     "assignment.route.requested": {
         "project_id": "proj-1",
@@ -501,6 +515,41 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "path": "/repos/myrepo/.aq/worktrees/slot-3",
         "reason": "cap_shrunk",
     },
+    "worktree.stale_claim_retired": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-5",
+        "path": "/repos/myrepo/.aq/worktrees/slot-5",
+        "holder_task_id": "steady-harbor-62",
+        "holder_claim_epoch": 1,
+        "holder_session_id": "sess-old",
+        "reason": "holder task is COMPLETED",
+        "actor": "claim",
+        "claimant_task_id": "task-new",
+    },
+    "worktree.sentinel_cleared": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-4",
+        "path": "/repos/myrepo/.aq/worktrees/slot-4",
+        "holder_task_id": "brisk-quest-34",
+        "branch": "aq/brisk-quest-34",
+        "reason": "task brisk-quest-34 is COMPLETED",
+    },
+    "worktree.restored": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-2",
+        "slot": "slot-2",
+        "path": "/repos/myrepo/.aq/worktrees/slot-2",
+        "action": "recreated",
+        "previous_reason": "worktree_removed: deleting task t-1 removed it",
+    },
+    "worktree.quarantined": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-3",
+        "slot": "slot-3",
+        "path": "/repos/myrepo/.aq/worktrees/slot-3",
+        "reason": "quarantined_dirty: 2 uncommitted path(s)",
+        "dirty_paths": ["src/a.py", "notes.txt"],
+    },
     # Playbook
     "playbook.run.completed": {
         "playbook_id": "code-quality-gate",
@@ -737,6 +786,39 @@ _CANONICAL_PAYLOADS["integration.resolution_push_observed"][
 # ``cleanup_requested``) and the cascade's ``route_needed.py``.
 _CANONICAL_PAYLOADS.update(
     {
+        "integration.publication_verified": {
+            "project_id": "proj-1",
+            "batch_id": "batch-1",
+            "revision": 1,
+            "repository_id": "repo-1",
+            "target_ref": "refs/heads/main",
+            "head_sha": "a" * 40,
+            "candidate_sha": "a" * 40,
+            "publication_verified": True,
+        },
+        # TrainLaneFactory._checks_changed invalidates exact-head readiness.
+        "integration.readiness_changed": {
+            "project_id": "proj-1",
+            "repository_id": "repo-1",
+            "head_sha": "a" * 40,
+            "reason": "checks_changed",
+        },
+        "integration.completed_container_checkpoint_recovered": {
+            "id": "recovery-1", "operator_id": "human:local-operator",
+            "reason": "repair accepted final source", "task_id": "container-1",
+            "project_id": "proj-1", "repository_id": "repo-1", "branch": "aq/container-1",
+            "head_sha": "a" * 40, "completion_id": "completion-1",
+            "origin_sha256": "b" * 64, "snapshot_sha256": "c" * 64,
+            "generation": 3, "version": 4, "old_head_sha": "d" * 40,
+            "tree_sha": "e" * 40, "remote_head_sha": "a" * 40,
+            "before": {"checkpoint_sha": "d" * 40, "version": 4},
+            "after": {"checkpoint_sha": "a" * 40, "version": 5},
+            "before_snapshot_sha256": "c" * 64, "after_snapshot_sha256": "f" * 64,
+            "owner": {"owner_id": "container-1", "handoff_state": "reserved", "fence": 1},
+            "origin_id": "origin-1",
+            "children": [{"task_id": "child-1", "completion_id": "completion-2", "head_sha": "d" * 40}],
+            "observed_at": 123.0, "delivery": False,
+        },
         "integration.candidate_green": {
             "project_id": "proj-1",
             "operation_id": "op-1",
@@ -784,6 +866,36 @@ _CANONICAL_PAYLOADS.update(
             "task_type": "feature",
             "intelligence_class": None,
             "profile_id": None,
+            "router": "default-assignment-routing",
+            "class_hint": "standard-high",
+        },
+        "task.routed": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "intelligence_class": "standard-high",
+            "profile_id": "standard-high-codex",
+            "provider": "codex",
+            "provider_intent": "class_only",
+            "lane": None,
+            "rule": "kinds.feature",
+            "reason": "kind feature, class standard-high; lowest pressure standard-high-codex",
+            "candidates": [{"profile_id": "standard-high-codex"}],
+            "policy_sha256": "sha256:" + "0" * 64,
+            "run_id": "run-1",
+            "adjusted_at_apply": False,
+        },
+        "task.route_overridden": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "profile_id": "standard-high-claude",
+            "intelligence_class": "standard-high",
+            "provider": "anthropic",
+            "by": "human:local-operator",
+            "reason": "codex keeps failing this build; pin it while we look",
+            "previous_profile_id": "standard-high-codex",
+            "previous_route_source": "router",
         },
     }
 )
@@ -854,6 +966,7 @@ _CANONICAL_PAYLOADS["task.claim_conflict"] = {
     "session_id": "sess-1",
 }
 _CANONICAL_PAYLOADS["snapshot.refreshed"] = {"tick": 1234567890.0}
+_CANONICAL_PAYLOADS["project.paused"] = {"project_id": "proj-1"}
 _CANONICAL_PAYLOADS["project.resumed"] = {"project_id": "proj-1"}
 _CANONICAL_PAYLOADS["project.created"] = {
     "project_id": "proj-1",
@@ -870,6 +983,14 @@ _CANONICAL_PAYLOADS["pool.scaled"] = {
     "profile_id": "worker",
     "kind": "start",
     "count": 1,
+}
+_CANONICAL_PAYLOADS["pool.scaler_stalled"] = {
+    "profile_id": "worker",
+    "desired": 1,
+    "live": 0,
+    "ready": 1,
+    "ticks": 3,
+    "recovery": "reconcile",
 }
 _CANONICAL_PAYLOADS["pool.session_started"] = {
     "project_id": "proj-1",
@@ -924,6 +1045,18 @@ _CANONICAL_PAYLOADS["pool.enabled_changed"] = {
     "project_id": "proj-1",
     "profile_id": "worker",
     "enabled": False,
+}
+_CANONICAL_PAYLOADS["pool.renamed"] = {
+    "profile_id": "worker",
+    "old_name": "Worker",
+    "name": "Space Bunny",
+    "backup_path": "/vault/agent-types/worker/profile.md.bak-1",
+}
+_CANONICAL_PAYLOADS["pool.deleted"] = {
+    "profile_id": "worker",
+    "depth": "profile",
+    "sessions": ["session-1"],
+    "warnings": [],
 }
 # This switch event is also the wake-up contract for already-parked pool claims.
 # Global worker pools §6.3 / §4 — emitted by ``_emit_placement_starved`` and
@@ -990,6 +1123,17 @@ _CANONICAL_PAYLOADS["formula.cooked"] = {
 # -- session-runtime (lane 2A) -------------------------------------------
 _CANONICAL_PAYLOADS.update(
     {
+        "session.registered": {
+            "session_id": "sess-1", "name": "s-t-1",
+            "task_id": "t-1", "project_id": "proj-1",
+        },
+        "session.launch_failed": {
+            "session_id": "sess-1", "name": "s-t-1",
+            "task_id": None, "project_id": None,
+        },
+        "session.pruned": {
+            "session_id": "sess-1", "project_id": "proj-1",
+        },
         "session.started": {
             "session_id": "sess-1",
             "name": "s-t-1",
@@ -1016,8 +1160,24 @@ _CANONICAL_PAYLOADS.update(
         "session.premature_drain": {
             "session_id": "sess-1",
         },
+        "session.retired_delegate_stopped": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "task_id": "t-1",
+        },
+        "session.settled_claim_stopped": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "task_id": "t-1",
+        },
         "session.claim_timeout": {
             "session_id": "sess-1",
+        },
+        "session.stop_intent_stopped": {
+            "session_id": "sess-1",
+            "name": "p-worker--p1--abc",
+            "lifecycle": "pool",
+            "idle_seconds": 61,
         },
         "session.sleeping": {
             "session_id": "sess-1",
@@ -1097,6 +1257,19 @@ _CANONICAL_PAYLOADS.update(
             "title": "Implement feature X",
             "reason": "session_exited_without_close",
         },
+        "task.handoff": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "reason": "usage-limit screen on a stalled session: Free usage exceeded",
+            "disposition": "requeued",
+            "checkpoint": "pushed",
+            "session_id": "s-1",
+            "provider": "opencode",
+            "harness": "opencode",
+            "branch": "aq/fresh-rapids-73",
+            "head": "0123456789abcdef0123456789abcdef01234567",
+        },
         "task.closed": {
             "task_id": "t-1",
             "project_id": "proj-1",
@@ -1114,6 +1287,11 @@ _CANONICAL_PAYLOADS.update(
 _CANONICAL_PAYLOADS.update(
     {
         "spec.approved": {
+            "decision_id": "decision-1",
+            "packet_sha256": "a" * 64,
+            "review_id": "review-1",
+            "revision": 1,
+            "spec_kind": "implementation",
             "project_id": "my-app",
             "spec_path": "/vault/projects/my-app/specs/feature-x.md",
         },
@@ -1128,6 +1306,15 @@ _CANONICAL_PAYLOADS.update(
         },
     }
 )
+
+# Batch payloads mirror the transactional outbox envelope, including a missing
+# reviewer before dispatch has assigned the initial review task.
+_CANONICAL_PAYLOADS.update({
+    event: {"project_id": "my-app", "batch_id": "batch-1", "structure_revision": 1,
+            "structure_digest": "a" * 64,
+            "reviewer_task_id": None if event == "batch.held" else "reviewer-1"}
+    for event in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released")
+})
 
 # -- test-selection lifecycle events ---------------------------------------
 # Payloads mirror the literal dicts passed to ``bus.emit`` in
@@ -1161,6 +1348,12 @@ _CANONICAL_PAYLOADS.update(
 # ═══════════════════════════════════════════════════════════════════════════
 # (a) Valid payloads pass validation silently
 # ═══════════════════════════════════════════════════════════════════════════
+
+_CANONICAL_PAYLOADS.update({
+    event: {"project_id": "my-app", "step_id": "release"}
+    for event in ("promotion.source_settled", "promotion.request_due",
+                  "promotion.hotfix_completed", "promotion.intent_due", "promotion.delivered")
+})
 
 
 class TestValidPayloadPassesSilently:
@@ -1764,6 +1957,28 @@ class TestAllEventTypesHaveSchemas:
     def test_timer_common_intervals_registered(self):
         for interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):
             assert f"timer.{interval}" in EVENT_SCHEMAS
+
+
+# Independent canonical payloads for implementation §7.5 (not generated from schemas).
+_CANONICAL_PAYLOADS.update({
+    name: {"wait_id": "wait-1", "project_id": "p-1", "generation": 1}
+    for name in (
+        "wait.registered", "wait.satisfied", "wait.cancelled", "wait.source_unavailable",
+        "wait.escalated",
+        "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
+    )
+})
+_CANONICAL_PAYLOADS.update({
+    name: {"continuation_id": "cont-1", "project_id": "p-1", "task_id": "t-1", "generation": 1}
+    for name in (
+        "continuation.suspended", "continuation.queued", "continuation.launched",
+        "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
+    )
+})
+_CANONICAL_PAYLOADS["continuation.loop_detected"] = {
+    "wait_id": "wait-1", "project_id": "p-1", "task_id": "t-1",
+    "registrations": [{"wait_id": "wait-1", "registered_at": 1800000000.0}],
+}
 
 
 class TestAllCanonicalPayloadsPassValidation:
