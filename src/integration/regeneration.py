@@ -8,6 +8,7 @@ their original diagnostics and remain the caller's responsibility.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -18,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
+from src.integration.bookkeeping_guard import LegacyBookkeepingConflict, check_merge
 from src.integration.development import GENERATED_MERGE_DRIVER
 from src.sessions.env import SCRATCH_DB_SENTINEL
 
@@ -161,6 +163,12 @@ async def merge_generated_tree(
         if result.returncode:
             raise GitError(result.stderr or "could not inspect merge inputs")
         changed.append(set(result.stdout.split("\0")) - {""})
+    # Fence every source side before restoring or deferring any generated file.
+    # This also catches clean, single-sided legacy edits that invoke no driver.
+    try:
+        await check_merge(git, store, base, current, other)
+    except LegacyBookkeepingConflict as exc:
+        raise GeneratedMergeConflict(merged, str(exc), files=exc.paths) from exc
     candidates = ((changed[0] | changed[1]) if regenerate else (changed[0] & changed[1]))
     candidates |= conflicts
     if not candidates:
@@ -185,6 +193,7 @@ async def merge_generated_tree(
             git, store, tree, command=command, timeout_seconds=timeout_seconds,
             restore_from=current, restore_paths=tuple(sorted(generated)),
             restore_only=defer_regeneration,
+            verified_merges=((base, current, other),),
         )
     except MissingRegenerator:
         # A configuration gap is never a member's conflict, however the merge
@@ -209,7 +218,7 @@ async def merge_generated_tree(
     return rebuilt
 
 
-def _subprocess_env() -> dict[str, str]:
+def _subprocess_env(verified_merges=()) -> dict[str, str]:
     """The minimal, worker-scoped environment the regenerator sees.
 
     Resolve installed CLI tools from the daemon's interpreter ``bin``, then
@@ -224,7 +233,7 @@ def _subprocess_env() -> dict[str, str]:
         str(Path(sys.executable).parent), str(home / ".local" / "bin"),
         "/usr/local/bin", "/usr/bin", "/bin",
     ))
-    return {
+    env = {
         "PATH": os.pathsep.join(tool_dirs),
         "HOME": str(home),
         "LANG": "C.UTF-8",
@@ -234,6 +243,9 @@ def _subprocess_env() -> dict[str, str]:
         "AQ_DATABASE_URL": SCRATCH_DB_SENTINEL,
         "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
     }
+    if verified_merges:
+        env["AQ_GENERATED_MERGE_INPUTS"] = json.dumps(verified_merges)
+    return env
 
 
 async def regenerated_tree(
@@ -246,6 +258,7 @@ async def regenerated_tree(
     restore_from: str | None = None,
     restore_paths: tuple[str, ...] = (),
     restore_only: bool = False,
+    verified_merges: tuple[tuple[str, str, str], ...] = (),
 ) -> str:
     """Materialize *merge_tree_sha* in a scratch worktree, run *command* there,
     commit the sweep into a fresh tree, and return that tree SHA.
@@ -269,6 +282,7 @@ async def regenerated_tree(
             git, store, worktree, merge_tree_sha, command, timeout_seconds,
             restore_from, restore_paths,
             restore_only,
+            verified_merges,
         )
     finally:
         await _remove_worktree(git, store, worktree)
@@ -284,6 +298,7 @@ async def _run(
     restore_from: str | None,
     restore_paths: tuple[str, ...],
     restore_only: bool,
+    verified_merges: tuple[tuple[str, str, str], ...],
 ) -> str:
     # ``git worktree add`` needs a commit, not a tree SHA; wrap the merge tree
     # in a placeholder commit first.
@@ -326,7 +341,7 @@ async def _run(
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(worktree),
-            env=_subprocess_env(),
+            env=_subprocess_env(verified_merges),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,

@@ -21,13 +21,13 @@ from src.jobs.artifacts import atomic_json, job_directory, read_json
 from src.jobs.playbook import (ScriptSubmission, private_service, protect_result, encode_rows,
                                owner, read_stream)
 from src.jobs.policy import JobError, next_admission
-from src.jobs.script_sandbox import SandboxResult
+from src.jobs.script_runner import ScriptResult
 from src.jobs.service import JobService
 from src.playbooks.private_values import PrivateValueService, PrivateValueError
 from src.playbooks.run_state import RunLifecycle
 from tests.db_fixtures import lease_dsn
 from tests.test_playbook_run_repository import ARTIFACT, make_snapshot, seed_artifact
-from tests.test_playbook_script_sandbox import process_host as process_host_fixture, local_request
+from tests.test_playbook_script_runner import process_host as process_host_fixture, local_request
 
 
 process_host = process_host_fixture
@@ -133,7 +133,7 @@ async def test_ambiguous_execution_pauses_without_terminal_result_or_replay(setu
     job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time() - 31)
     if artifact != "absent":
         directory = job_directory(Path(svc.config.data_dir), job["id"])
-        result, rows = protect_result(private_service(svc), job, SandboxResult(
+        result, rows = protect_result(private_service(svc), job, ScriptResult(
             job["contract"]["execution_id"], "runtime_error", cleanup_complete=False))
         atomic_json(directory / "completion.json", {
             "job_id": job["id"], "nonce": "wrong" if artifact == "wrong_nonce" else job["runner_nonce"],
@@ -280,7 +280,7 @@ async def test_submission_requires_the_actual_pinned_script_step(variant):
     from src.profiles.capabilities import CapabilityPolicy
     from tests.playbook_v2_engine_helpers import minimal_artifact, artifact_ref_for
     from tests.test_command_executor import context
-    from tests.test_playbook_script_sandbox import pin
+    from tests.test_playbook_script_runner import pin
 
     artifact = minimal_artifact()
     pinned = pin()
@@ -367,7 +367,7 @@ async def test_oversized_private_input_rejected_before_storage(setup):
 def test_script_model_is_enabled_with_engine_integration():
     from src.playbooks.definition import PlaybookDefinition
     from tests.playbook_v2_engine_helpers import minimal_artifact
-    from tests.test_playbook_script_sandbox import program
+    from tests.test_playbook_script_runner import program
 
     body = minimal_artifact().model_dump(mode="json")
     body["steps"]["ensure-review-task"] = {
