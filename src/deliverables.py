@@ -105,6 +105,8 @@ def review_submit_guidance(task_id: str, items: list[dict[str, Any]]) -> str:
         "document in your checkout, do not commit it, and run "
         f"`aq review submit --task-id {task_id} --file <draft.md> --kind {kind} "
         '--title "<title>"`; put the review id in your close summary. '
+        "After submission, move the local draft outside the source checkout so "
+        "the unchanged source branch can close without a PR or source CI. "
         f"Only when the task produced no document, close with {waiver}."
     )
 
