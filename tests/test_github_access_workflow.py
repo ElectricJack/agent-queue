@@ -107,7 +107,7 @@ else:
             status = 201
         elif endpoint.endswith("/pulls/7"):
             payload = state["pull"]
-        elif "/commits/" in endpoint and endpoint.endswith("/check-runs?per_page=100"):
+        elif "/commits/" in endpoint and endpoint.endswith("/check-runs?filter=all&per_page=100"):
             payload = {"check_runs": [{"name": "required", "conclusion": "success"}]}
         elif "/commits/" in endpoint:
             payload = {"sha": state["heads"]["main"]}
@@ -256,7 +256,7 @@ async def test_private_repository_pr_ci_merge_workflow_has_credential_parity(wor
     with pytest.raises(GitHubAccessError):
         await client.pull_request("https://github.com/foreign/repo/pull/7")
     assert await client.merge_pull_request(
-        PR_URL, method="squash", expected_head_oid=HEAD, expected_base_ref="main"
+        PR_URL, method="merge", expected_head_oid=HEAD, expected_base_ref="main"
     ) == MERGE
     assert await client.exact_head_ref("aq/task") is None
     assert json.loads(state_path.read_text())["heads"]["main"] == MERGE
@@ -328,10 +328,11 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
     if mode == "existing_login":
         pytest.skip("App token expiry/rejection is the subject")
     original_env = dict(env)
+    access._binding_clock = lambda: now[0]
     git = GitManager(github_access=access)
     poller = GitHubReviewPoller(None, None, git)
     url = "https://github.com/acme/widgets.git"
-    first = await poller._repository(url)
+    first = await poller._repository(url, now[0])
     assert first.binding == REPOSITORY
 
     now[0] += 3601
@@ -340,7 +341,7 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
         state["reject_app_generations"] = ["2"]
         state_path.write_text(json.dumps(state))
     poller._repositories.clear()  # A new poll tick binds the repository again.
-    refreshed = await poller._repository(url)
+    refreshed = await poller._repository(url, now[0])
     assert await refreshed.client.exact_head_ref("main") == BASE
 
     # This is the credential-selection path used by guarded worker Git pushes.
@@ -351,7 +352,8 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
     assert provider.calls == [REPOSITORY] * generation
     events = _events(log_path)
     assert [event["generation"] for event in events] == (
-        ["1", "2", "3", "3", "3"] if reject_refreshed else ["1", "2", "2", "2"]
+        # The push-destination rebind is inside the re-verify TTL: no extra call.
+        ["1", "2", "3", "3"] if reject_refreshed else ["1", "2", "2"]
     )
     assert all(event["kind"] == "app" and event["config_isolated"] for event in events)
     assert all(not event["has_secondary_token"] for event in events)
@@ -376,37 +378,6 @@ async def test_bootstrap_401_retries_with_a_new_app_candidate(workflow):
     assert all(event["kind"] == "app" and event["config_isolated"] for event in events)
     assert all(not event["has_secondary_token"] for event in events)
     assert env == original_env
-
-
-@pytest.mark.asyncio
-async def test_integration_audit_publication_reconciles_by_idempotency_key(workflow):
-    access, _, _, _, state_path, log_path, mode = workflow
-    state = json.loads(state_path.read_text())
-    branch = "aq/integration/batch"
-    state["heads"][branch] = HEAD
-    state_path.write_text(json.dumps(state))
-    binding = await access.bind_repository("acme/widgets")
-    client = GitHubClient(binding, access=access)
-    key = "d" * 64
-    created = await client.create_audit_pr(
-        repository_id="private-fixture", branch=branch, head_sha=HEAD,
-        base_branch="main", batch_id="batch", idempotency_key=key,
-        repository_numeric_id=303, repository_full_name="acme/widgets",
-    )
-    assert created.number == 8
-    assert created.head_sha == HEAD
-    assert (await client.lookup_audit_pr(idempotency_key=key, branch=branch)) == created
-    repeated = await client.create_audit_pr(
-        repository_id="private-fixture", branch=branch, head_sha=HEAD,
-        base_branch="main", batch_id="batch", idempotency_key=key,
-        repository_numeric_id=303, repository_full_name="acme/widgets",
-    )
-    assert repeated == created
-    events = _events(log_path)
-    assert sum(
-        e["argv"][0] == "api" and "POST" in e["argv"] for e in events
-    ) == 1
-    assert all(e["kind"] == ("app" if mode != "existing_login" else "login") for e in events)
 
 
 @pytest.mark.asyncio

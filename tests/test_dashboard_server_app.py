@@ -90,6 +90,7 @@ class StubProxy:
         self.http_paths: list[str] = []
         self.http_headers: list[list[tuple[bytes, bytes]]] = []
         self.ws_paths: list[str] = []
+        self.ws_headers: list[list[tuple[bytes, bytes]]] = []
         self.started = 0
         self.closed = 0
         self._upstream_ok = upstream_ok
@@ -111,6 +112,7 @@ class StubProxy:
 
     async def websocket(self, scope, receive, send) -> None:
         self.ws_paths.append(scope["path"])
+        self.ws_headers.append(list(scope["headers"]))
         await receive()
         await send({"type": "websocket.accept"})
         await send({"type": "websocket.send", "text": "proxied"})
@@ -152,7 +154,7 @@ def _client(app: DashboardServerApp, peer: str = "127.0.0.1") -> httpx.AsyncClie
         ("/docs", "not_served"),
         ("/redoc", "not_served"),
         ("/openapi.json", "not_served"),
-        ("/plans/abc", "not_served"),
+        ("/plans/abc", "static"),
         ("/dashboard", "not_served"),
         ("/dashboard/tasks", "not_served"),
         ("/", "static"),
@@ -166,7 +168,7 @@ def test_the_path_table_matches_on_segment_boundaries(path, kind):
 async def test_the_bundle_and_every_deep_route_answer_the_same_index(tmp_path):
     app, proxy = _app(tmp_path)
     async with _client(app) as client:
-        pages = [await client.get(path) for path in ("/", "/tasks", "/projects/p/graph", "/apix")]
+        pages = [await client.get(path) for path in ("/", "/tasks", "/projects/p/graph", "/plans/solid-grove.13", "/apix")]
         asset = await client.get("/assets/app.js")
         missing = await client.get("/nope.js")
     for page in pages:
@@ -181,7 +183,7 @@ async def test_the_bundle_and_every_deep_route_answer_the_same_index(tmp_path):
 
 @pytest.mark.parametrize(
     "path",
-    ["/mcp", "/mcp/x", "/docs", "/redoc", "/openapi.json", "/plans/p", "/dashboard", "/dashboard/",
+    ["/mcp", "/mcp/x", "/docs", "/redoc", "/openapi.json", "/dashboard", "/dashboard/",
      "/dashboard/tasks", "/__aq", "/__aq/nope"],
 )
 async def test_the_daemons_other_surfaces_are_a_json_404_never_html(tmp_path, path):
@@ -195,7 +197,7 @@ async def test_the_daemons_other_surfaces_are_a_json_404_never_html(tmp_path, pa
     assert proxy.http_paths == []
 
 
-@pytest.mark.parametrize("path", ["/api", "/api/tasks?x=1", "/health", "/ready", "/ws/events"])
+@pytest.mark.parametrize("path", ["/api", "/api/tasks?x=1", "/api/plans/solid-grove.13", "/health", "/ready", "/ws/events"])
 async def test_the_proxied_prefixes_reach_the_proxy(tmp_path, path):
     app, proxy = _app(tmp_path)
     async with _client(app) as client:
@@ -274,6 +276,45 @@ async def test_proxy_overwrites_client_viewer_assertion(tmp_path):
     viewer_headers = [value for name, value in proxy.http_headers[-1]
                       if name.lower() == b"x-aq-dashboard-viewer"]
     assert viewer_headers == [b"other"]
+
+
+def _stamped(headers: list[tuple[bytes, bytes]]) -> dict[bytes, list[bytes]]:
+    names = (b"x-aq-dashboard-viewer", b"x-aq-dashboard-peer")
+    return {name: [v for k, v in headers if k.lower() == name] for name in names}
+
+
+async def test_a_lan_host_shell_reaches_the_daemon_as_a_remote_viewer(tmp_path):
+    """The daemon's ``allow_remote`` gate reads this verdict and the real peer."""
+    app, proxy = _app(tmp_path, host="192.168.1.5")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.168.1.9", 50000)),
+        base_url="http://192.168.1.5:8082",
+    ) as client:
+        forged = {"x-aq-dashboard-viewer": "operator", "x-aq-dashboard-peer": "127.0.0.1"}
+        opened = await client.post("/api/host-shell", headers={
+            "origin": "http://192.168.1.5:8082", **forged,
+        })
+        bearer = await client.post("/api/host-shell", headers={
+            "authorization": "Bearer aqs_supervisor",
+        })
+    assert opened.status_code == 299
+    assert (bearer.status_code, bearer.json()["error"]) == (403, "loopback_only")
+    assert proxy.http_paths == ["/api/host-shell"]
+    assert _stamped(proxy.http_headers[-1]) == {
+        b"x-aq-dashboard-viewer": [b"other"], b"x-aq-dashboard-peer": [b"192.168.1.9"],
+    }
+
+    ws_headers = {"host": "192.168.1.5:8082", "origin": "http://192.168.1.5:8082", **forged}
+    with (
+        TestClient(app, base_url="http://192.168.1.5:8082",
+                   client=("192.168.1.9", 50000)) as ws_client,
+        ws_client.websocket_connect("/ws/terminal/aq-host-shell-1", headers=ws_headers) as ws,
+    ):
+        assert ws.receive_text() == "proxied"
+    assert proxy.ws_paths == ["/ws/terminal/aq-host-shell-1"]
+    assert _stamped(proxy.ws_headers[-1]) == {
+        b"x-aq-dashboard-viewer": [b"other"], b"x-aq-dashboard-peer": [b"192.168.1.9"],
+    }
 
 
 async def test_the_identity_endpoint_names_the_process_and_its_bundle(tmp_path):
