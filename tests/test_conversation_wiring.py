@@ -884,7 +884,6 @@ async def test_channel_message_without_a_mention_reaches_the_supervisor_tmux(
 
 
 @pytest.mark.parametrize("state", ["running", "stopped", "sleeping"])
-@pytest.mark.timeout(120)
 async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state):
     handler, db = env
     await db.create_project(Project(id="agent-queue", name="AQ", supervisor_enabled=True))
@@ -929,21 +928,22 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
         # Synchronize on complete passes, including the real database work.
         # The test timeout guards deadlock; the 3600s routine interval cannot
         # satisfy this test without the committed input's immediate wake.
-        await completed_passes.get()
-        assert seen == []
-        accepted = await post(handler)
-        await completed_passes.get()
-        assert seen == [accepted["supervisor_message_id"]]
-        if state != "running":
-            lens.ensure_started.assert_awaited_once_with(
-                kind="session", target_id="supervisor-global", project_id=None
-            )
-        else:
-            lens.ensure_started.assert_not_awaited()
-        # A gateway replay repairs the event without duplicating the notice/nudge.
-        assert not (await post(handler))["created"]
-        await run_pass()
-        assert len(seen) == 1
+        async with asyncio.timeout(120):
+            await completed_passes.get()
+            assert seen == []
+            accepted = await post(handler)
+            await completed_passes.get()
+            assert seen == [accepted["supervisor_message_id"]]
+            if state != "running":
+                lens.ensure_started.assert_awaited_once_with(
+                    kind="session", target_id="supervisor-global", project_id=None
+                )
+            else:
+                lens.ensure_started.assert_not_awaited()
+            # A gateway replay repairs the event without duplicating the notice/nudge.
+            assert not (await post(handler))["created"]
+            await run_pass()
+            assert len(seen) == 1
     finally:
         await service.stop()
 

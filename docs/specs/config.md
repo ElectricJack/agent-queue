@@ -1003,6 +1003,13 @@ Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
 `transition_budget_seconds: 120`, `resume_launch_attempts: 2`, and
 `resume_stall_seconds: 300`.
 
+The listener alerts when undispatched events exceed `listener_lag_events: 500`
+or the oldest commit is over 120 seconds old. `listener_lag_alert_minutes: 15`
+sets the global alert bucket duration in positive integer minutes. Each project
+with pending verified waits receives at most one notice per bucket, including
+across restarts and changes to the oldest sequence. These diagnostic notices do
+not create wait source events.
+
 `kinds` maps each wait kind to `WaitKindPolicy`, with
 `escalate_after_seconds` and `expected_duration_seconds`. Partial global
 kind entries preserve the omitted defaults. Escalation defaults are 14400
