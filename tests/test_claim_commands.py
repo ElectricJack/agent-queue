@@ -3944,28 +3944,85 @@ class TestClaim:
         assert await db.get_task_meta("t1", "slot_reset_failure") is None
         assert session.task_id == "t1"
 
+    @pytest.mark.parametrize("failure", ["write_error", "missing_after_write", "foreign_after_write"])
     async def test_claim_file_write_failure_releases_and_reports(
-        self, handler, db, tmp_path, monkeypatch
+        self, handler, db, tmp_path, monkeypatch, failure
     ):
-        """Any failure after ``record_holder`` committed — including an OSError
-        writing the claim file — must release the claim and leave no claim
-        file behind, same as a slot-reset failure (review finding #1)."""
+        """A marker failure releases preparation and stops the unusable worker.
+
+        A foreign marker observed on readback remains available for recovery.
+        """
         await mktask(db, "t1", profile_id="worker")
         sid, wd = await pool_session(db, tmp_path)
         import src.commands.claim_commands as claim_commands
+        from src.sessions.fake import FakeProvider
+        from src.sessions.provider import SessionSpec
+        from src.claim_file import read_claim_file, write_claim_file
+
+        provider = FakeProvider()
+        handler.orchestrator.session_providers = SimpleNamespace(create=lambda *_: provider)
+        row = await db.get_session(sid)
+        await provider.start(SessionSpec(
+            session_name=row.name, work_dir=str(wd), command=("claude",), instance_token="t",
+        ))
+
+        def write_marker(path, marker):
+            if failure == "write_error":
+                raise OSError("disk full")
+            if failure == "foreign_after_write":
+                write_claim_file(path, {**marker, "session_id": "foreign-session"})
 
         monkeypatch.setattr(
             claim_commands,
             "write_claim_file",
-            MagicMock(side_effect=OSError("disk full")),
+            write_marker,
         )
         res = await settled_claim(scoped(handler, sid), {"next": True})
-        assert res["result"] == "prepare_failed"
-        assert not (wd / ".aq" / "claim.json").exists()
+        assert res["result"] == "drain_requested"
+        if failure == "foreign_after_write":
+            assert read_claim_file(wd)["session_id"] == "foreign-session"
+        else:
+            assert not (wd / ".aq" / "claim.json").exists()
         t = await db.get_task("t1")
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
         s = await db.get_session(sid)
         assert (s.claims, s.last_claim_result, s.claim_phase) == (0, "prepare_failed", None)
+        assert (s.state, s.desired_state) == ("stopped", "stopped")
+        assert row.name not in provider.sessions
+        assert await db.get_workspace_for_agent("agent-1") is None
+
+    async def test_claim_file_failure_stops_retained_attached_preparation(
+        self, handler, db, tmp_path, monkeypatch,
+    ):
+        from src.sessions.fake import FakeProvider
+        from src.sessions.provider import SessionSpec
+
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, wd = await pool_session(db, tmp_path)
+        provider = FakeProvider()
+        handler.orchestrator.session_providers = SimpleNamespace(create=lambda *_: provider)
+        row = await db.get_session(sid)
+        await provider.start(SessionSpec(
+            session_name=row.name, work_dir=str(wd), command=("claude",), instance_token="t",
+        ))
+        handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "src.commands.claim_commands.write_claim_file",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+
+        assert result["result"] == "drain_requested"
+        row = await db.get_session(sid)
+        assert (row.state, row.desired_state, row.claim_phase, row.task_id) == (
+            "stopped", "stopped", "preparing", "child",
+        )
+        assert row.name not in provider.sessions
+        assert (await db.get_task("child")).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "child"
+        owner = await ownership.get_owner(fence.target)
+        assert (owner["handoff_state"], owner["session_id"]) == ("attached", sid)
 
     async def test_pool_close_restores_its_slot_before_releasing_claim(
         self, handler, db, tmp_path

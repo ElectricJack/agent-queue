@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import insert
 
-from src.commands.claim_commands import write_claim_file
+from src.claim_file import write_claim_file
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
@@ -215,6 +215,135 @@ class TestPrepareTimeout:
         assert failures == [], [r.message for r in failures]
         s = await db.get_session(sid)
         assert s.claim_phase is None
+
+
+class TestMissingPoolClaimFile:
+    @pytest.fixture
+    async def bound(self, db, provider, tmp_path):
+        sid = await held_pool_session(db)
+        await db.update_session(sid, work_dir=str(tmp_path))
+        await db.update_workspace("ws-agent-1", workspace_path=str(tmp_path))
+        await provider.start(SessionSpec(
+            session_name=sid, work_dir=str(tmp_path), command=("claude",), instance_token="t",
+        ))
+        return await db.get_session(sid)
+
+    async def test_full_tick_stops_and_requeues_missing_active_claim(
+        self, db, reconciler, provider, orch, bound, caplog,
+    ):
+        with caplog.at_level(logging.ERROR, logger="src.sessions.reconciler"):
+            await reconciler.tick()
+        assert not [r for r in caplog.records if "step" in r.message and "failed" in r.message]
+        row = await db.get_session(bound.id)
+        assert (row.state, row.desired_state, row.task_id, row.claim_phase) == (
+            "stopped", "stopped", None, None,
+        )
+        assert row.last_claim_result == "prepare_failed"
+        assert bound.name not in provider.sessions
+        task = await db.get_task(bound.task_id)
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert await db.get_task_meta(task.id, "needs_attention") == "claim_file_missing"
+        assert await db.get_task_meta(task.id, "claim_prepare_backoff_until") > time.time()
+        assert (await db.get_agent(bound.agent_id)).state == AgentState.IDLE
+        assert await db.get_workspace_for_agent(bound.agent_id) is None
+        assert any(c.args[0] == "session.claim_file_missing" for c in orch.bus.emit.await_args_list)
+
+    @pytest.mark.parametrize("shape", [
+        "valid", "foreign", "malformed", "unavailable_checkout", "preparing", "task_session",
+        "sleeping", "terminal", "paused", "epoch_changed", "instance_changed", "released",
+        "wait", "control_lock", "live_preparation", "deferred", "disabled",
+    ])
+    async def test_preserves_other_claims_and_unknown_evidence(
+        self, db, reconciler, provider, orch, bound, tmp_path, shape,
+    ):
+        if shape in {"valid", "foreign"}:
+            write_claim_file(bound.work_dir, {
+                "task_id": bound.task_id if shape == "valid" else "successor",
+                "claim_epoch": bound.last_claim_epoch, "session_id": bound.id,
+            })
+        elif shape == "malformed":
+            (tmp_path / ".aq").mkdir()
+            (tmp_path / ".aq" / "claim.json").write_text("{broken")
+        elif shape == "unavailable_checkout":
+            tmp_path.rmdir()
+        elif shape in {"preparing", "task_session", "sleeping", "instance_changed", "released"}:
+            fields = {
+                "preparing": {"claim_phase": "preparing"},
+                "task_session": {"lifecycle": "task"},
+                "sleeping": {"desired_state": "sleeping"},
+                "instance_changed": {"instance_token": "successor"},
+                "released": {"task_id": None, "claim_phase": None},
+            }
+            await db.update_session(bound.id, **fields[shape])
+        elif shape in {"terminal", "paused", "epoch_changed"}:
+            fields = {
+                "terminal": {"status": TaskStatus.COMPLETED},
+                "paused": {"status": TaskStatus.PAUSED},
+                "epoch_changed": {"claim_epoch": 2},
+            }
+            await db.update_task(bound.task_id, **fields[shape])
+        elif shape == "wait":
+            reconciler._wait_lease = AsyncMock(return_value=(True, 0))
+        elif shape == "control_lock":
+            orch._task_control_held = lambda _: True
+        elif shape == "live_preparation":
+            orch.claim_preparations = {
+                (bound.id, bound.task_id, bound.last_claim_epoch): SimpleNamespace(done=lambda: False),
+            }
+        elif shape == "deferred":
+            reconciler._deferred_prefixes.add(bound.name)
+        elif shape == "disabled":
+            orch.config.swarm.enabled = False
+        before = await db.get_task(bound.task_id)
+        await reconciler._step_missing_pool_claim_file([bound], time.time())
+        after = await db.get_task(bound.task_id)
+        assert (after.status, after.assigned_agent_id, after.claim_epoch) == (
+            before.status, before.assigned_agent_id, before.claim_epoch,
+        )
+        assert provider.sessions[bound.name].alive
+
+    async def test_marker_restored_during_recheck_is_preserved(
+        self, db, reconciler, provider, bound,
+    ):
+        async def restored(*_):
+            write_claim_file(bound.work_dir, {
+                "task_id": bound.task_id, "session_id": bound.id,
+                "claim_epoch": bound.last_claim_epoch,
+            })
+            return False, 0
+
+        reconciler._wait_lease = restored
+        await reconciler._step_missing_pool_claim_file([bound], time.time())
+        assert provider.sessions[bound.name].alive
+        assert (await db.get_task(bound.task_id)).status == TaskStatus.IN_PROGRESS
+
+    async def test_unconfirmed_stop_retains_claim_then_retries(
+        self, db, reconciler, provider, bound,
+    ):
+        stop = provider.stop
+        provider.stop = AsyncMock(side_effect=RuntimeError("stop unconfirmed"))
+        await reconciler._step_missing_pool_claim_file([bound], time.time())
+        row = await db.get_session(bound.id)
+        assert (row.desired_state, row.task_id, row.claim_phase) == (
+            "stopped", bound.task_id, "active",
+        )
+        assert (await db.get_task(bound.task_id)).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_workspace_for_agent(bound.agent_id)).locked_by_task_id == bound.task_id
+        provider.stop = stop
+        await reconciler._step_missing_pool_claim_file([row], time.time())
+        assert (await db.get_session(bound.id)).state == "stopped"
+        assert (await db.get_task(bound.task_id)).status == TaskStatus.READY
+
+    async def test_attached_owner_retains_stopped_writer_bindings(
+        self, db, reconciler, provider, bound,
+    ):
+        await _attached_owner(db, bound.id)
+        await reconciler._step_missing_pool_claim_file([bound], time.time())
+        row = await db.get_session(bound.id)
+        assert (row.state, row.task_id, row.claim_phase) == ("stopped", bound.task_id, "active")
+        assert bound.name not in provider.sessions
+        assert (await db.get_task(bound.task_id)).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_workspace_for_agent(bound.agent_id)).locked_by_task_id == bound.task_id
 
 
 class TestExits:

@@ -36,6 +36,15 @@ Regeneration constructs a tree; it grants no publication authority. Existing
 source review, branch fences, exact remote leases, ancestry, receipts and CI
 checks still apply to the resulting commit. Both merge parents are retained.
 
+The legacy bookkeeping guard measures new aggregate evidence against the
+source sides' shared history, even when the requested source merge uses an
+older explicit base. A single proven merge base supplies that evidence
+baseline; ambiguous merge bases retain the requested baseline. Deltas already
+represented in the other side's current shards also introduce no unported
+evidence. This changes only evidence validation, never the requested Git merge
+base. Refreshes carrying an older dev tree or an earlier dev merge must pass;
+pre-migration branches with unique aggregate deltas still refuse.
+
 Claim-time prerequisite stacks use this same mechanism. Generated-only overlaps
 are rebuilt from all merged sources. The stack snapshot records prerequisite
 proofs and each regeneration's files, input trees and resulting merge commit.

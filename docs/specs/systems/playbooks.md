@@ -354,6 +354,12 @@ reactivates. Repair is explicit: `aq doctor --check playbooks.required --fix` re
 and re-enables the three required ids, and `aq doctor --check playbooks.reviewed_bundles
 --fix` refreshes drifted copies of bundles that are already installed (the old copy moves
 to `<id>.bak-<epoch>`). Everything else is a manual `aq playbook import … --activate`.
+The reviewed-bundle check also compares enabled activations with installed shipped
+bundles at the same scope. A different active hash is reported with both hashes and
+an explicit import/activation command, even when the vault bundle already matches
+the release. It may be an operator customization; doctor never replaces optional
+activations. After refreshing files, `--fix` still reports any pending activation
+difference. Missing or disabled optional activations remain an operator choice.
 The [isolated acceptance kit](../../guides/e2e-swarm.md) exercises these boundaries.
 
 **Projects.** Project create offers a policy: `default`, `exported` or `none`
