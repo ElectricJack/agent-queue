@@ -60,8 +60,11 @@ from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.doctor.runner import apply_fix
 from src.git.manager import GitManager
 from src.models import AgentState, ProjectStatus, TaskStatus
+from src.orchestrator.agent_reconciler import reset_stale_busy_agent
 from src.orchestrator.worktree_manager import BRANCH_PREFIX
-from src.pool_claims import is_live_pool_claim_task_status
+from src.pool_claims import is_live_pool_claim_task_status, pool_claim_loop_stall_seconds
+from src.profiles.catalog import worker_route
+from src.sessions.input_prompts import find_awaiting_input_sessions
 
 OWNER = "swarm-work-model"
 
@@ -397,6 +400,11 @@ async def _find_preparing_stuck(ctx: DoctorContext):
     bad = []
     for phase in ("claiming", "preparing"):
         for s in await ctx.db.list_sessions(lifecycle="pool", claim_phase=phase):
+            orchestrator = getattr(ctx.handler, "orchestrator", None)
+            preparations = getattr(orchestrator, "claim_preparations", {})
+            preparation = preparations.get((s.id, s.task_id, s.last_claim_epoch))
+            if preparation is not None and not preparation.done():
+                continue
             if (s.claim_phase_at or 0.0) <= threshold:
                 bad.append(s)
     return bad
@@ -423,23 +431,25 @@ async def _fix_preparing_stuck(ctx: DoctorContext) -> CheckResult:
         return _no_db_result("pools.preparing_stuck")
     bad = await _find_preparing_stuck(ctx)
     now = time.time()
+    released_count = 0
     for s in bad:
-        if s.task_id:
-            await ctx.db.release_claim(
-                s.id,
-                task_status=TaskStatus.READY,
-                context="doctor_prepare_timeout",
-                now=now,
-                result="prepare_failed",
-                needs_attention="prepare_timeout",
-                prepare_backoff=True,
-            )
-        else:
-            await ctx.db.update_session(s.id, claim_phase=None, claim_phase_at=None)
+        result = await ctx.db.release_claim(
+            s.id,
+            task_status=TaskStatus.READY,
+            context="doctor_prepare_timeout",
+            now=now,
+            expected_task_id=s.task_id,
+            expected_claim_epoch=s.last_claim_epoch,
+            preparation_expired_before=now - 2 * _prepare_timeout(ctx),
+            result="prepare_failed",
+            needs_attention="prepare_timeout",
+            prepare_backoff=True,
+        )
+        released_count += int(result.released)
     return CheckResult(
         id="pools.preparing_stuck",
         severity=Severity.OK,
-        detail=f"released {len(bad)} claim/prepare session(s) stuck past timeout",
+        detail=f"released {released_count} claim/prepare session(s) stuck past timeout",
     )
 
 
@@ -487,6 +497,113 @@ async def _check_pools_disabled(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# pools.task_lifecycle_shadow (report-only — no fix)
+# ---------------------------------------------------------------------------
+
+
+async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
+    """Expose push profiles that duplicate a durable pool execution route.
+
+    A task-lifecycle *worker* profile with the same harness and intelligence
+    class as a pool starts an unpooled session.  That session consumes a
+    worktree slot while pool supply remains zero, which is operationally
+    misleading even though both profile definitions parse and launch
+    correctly.
+
+    Only worker routes are compared (:func:`src.profiles.catalog.worker_route`
+    — the same answer rung seeding uses).  The shipped stages run at some
+    class a pool also runs at on every fresh install — ``reviewer`` at
+    ``standard-high``, ``spec-ingest`` and the supervisor at ``deep-high``,
+    ``triage`` at ``fast-low`` — and a read-only or named profile cannot be
+    the generic worker at all, so none of those is a duplicate route.
+    """
+    if ctx.db is None:
+        return _no_db_result("pools.task_lifecycle_shadow")
+    profiles = await ctx.db.list_profiles()
+    from src.commands.operator_authority import is_operator_profile
+
+    pool_routes: dict[tuple[str, str, bool], list[str]] = {}
+    for profile in profiles:
+        if getattr(profile, "lifecycle", "task") != "pool":
+            continue
+        harness = str(getattr(profile, "harness", "") or "").strip()
+        default_class = str(getattr(profile, "default_class", "") or "").strip()
+        if harness and default_class:
+            pool_routes.setdefault((harness, default_class, is_operator_profile(profile)), []).append(profile.id)
+
+    duplicates: list[dict] = []
+    duplicate_ids: set[str] = set()
+    for profile in profiles:
+        lifecycle = getattr(profile, "lifecycle", "task") or "task"
+        if lifecycle != "task":
+            continue
+        route = worker_route(
+            profile.id,
+            harness=getattr(profile, "harness", ""),
+            default_class=getattr(profile, "default_class", ""),
+            lifecycle=lifecycle,
+            template=bool(getattr(profile, "template", False)),
+            read_only=bool(getattr(profile, "read_only", False)),
+        )
+        key = (*route, is_operator_profile(profile)) if route is not None else None
+        matches = sorted(pool_routes.get(key, [])) if key is not None else []
+        if matches:
+            duplicate_ids.add(profile.id)
+            duplicates.append(
+                {
+                    "profile_id": profile.id,
+                    "harness": route[0],
+                    "default_class": route[1],
+                    "pool_profile_ids": matches,
+                }
+            )
+
+    affected_tasks: list[dict] = []
+    for status in (TaskStatus.READY, TaskStatus.IN_PROGRESS):
+        for task in await ctx.db.list_tasks(status=status):
+            profile_id = task.profile_id
+            if profile_id and profile_id not in duplicate_ids:
+                continue
+            affected_tasks.append(
+                {
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "status": task.status.value,
+                    "profile_id": profile_id,
+                    "reason": "missing_profile" if not profile_id else "duplicate_pool_route",
+                    "pool_profile_ids": (
+                        next(
+                            (row["pool_profile_ids"] for row in duplicates if row["profile_id"] == profile_id),
+                            [],
+                        )
+                    ),
+                }
+            )
+
+    if not duplicates and not affected_tasks:
+        return CheckResult(
+            id="pools.task_lifecycle_shadow",
+            severity=Severity.OK,
+            detail="no task-lifecycle profile shadows a pool route and active tasks are explicitly routed",
+            data={"profiles": [], "tasks": [], "count": 0},
+        )
+    detail = (
+        f"{len(duplicates)} task-lifecycle profile(s) duplicate a pool harness/class route; "
+        f"{len(affected_tasks)} READY/IN_PROGRESS task(s) have a missing or duplicate profile route"
+    )
+    return CheckResult(
+        id="pools.task_lifecycle_shadow",
+        severity=Severity.WARN,
+        detail=detail,
+        data={
+            "count": len(duplicates) + len(affected_tasks),
+            "profiles": duplicates[:50],
+            "tasks": affected_tasks[:100],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # claims.holder_consistency (report-only — no fix)
 # ---------------------------------------------------------------------------
 
@@ -510,17 +627,35 @@ async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
     holders a missing ``claimed_by_session`` is still an anomaly, not a
     free pass.
     """
+    from collections import Counter
+    import json
+
+    from src.doctor.observations import MAX_PRODUCER_BYTES, MAX_ROWS, partition
+
+    check_id = "claims.holder_consistency"
     if ctx.db is None:
-        return _no_db_result("claims.holder_consistency")
+        return CheckResult(check_id, Severity.INFO, "database required",
+                           execution_status="unavailable", reasons=["dependency_unavailable"])
     sessions_by_task: dict[str, list[str]] = {}
     pool_session_ids: set[str] = set()
-    for s in await ctx.db.list_sessions():
-        if getattr(s, "lifecycle", "task") == "pool":
-            pool_session_ids.add(s.id)
-        if s.task_id:
-            sessions_by_task.setdefault(s.task_id, []).append(s.id)
-    bad = []
-    for task in await ctx.db.list_tasks(status=TaskStatus.IN_PROGRESS):
+    for session in await ctx.db.list_sessions():
+        if getattr(session, "lifecycle", "task") == "pool":
+            pool_session_ids.add(session.id)
+        if session.task_id:
+            sessions_by_task.setdefault(session.task_id, []).append(session.id)
+    tasks = await ctx.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+    projects = ({project.id for project in await ctx.db.list_projects()}
+                if ctx.read_only else {task.project_id for task in tasks})
+    totals = Counter(task.project_id for task in tasks)
+    observed = Counter()
+    bad, identities = [], []
+    size = 0
+    capped = False
+    for index, task in enumerate(tasks):
+        if ctx.read_only and (index >= MAX_ROWS or size >= MAX_PRODUCER_BYTES):
+            capped = True
+            break
+        observed[task.project_id] += 1
         if not task.assigned_agent_id:
             continue
         holders = sessions_by_task.get(task.id, [])
@@ -528,25 +663,43 @@ async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
             continue
         agent = await ctx.db.get_agent(task.assigned_agent_id)
         meta = await ctx.db.get_task_meta(task.id, "claimed_by_session")
-        ok = (
-            agent is not None
-            and agent.current_task_id == task.id
-            and len(holders) == 1
-            and meta is not None
-            and meta == holders[0]
-        )
+        ok = (agent is not None and agent.current_task_id == task.id
+              and len(holders) == 1 and meta is not None and meta == holders[0])
         if not ok:
             bad.append(task.id)
-    if not bad:
-        return CheckResult(
-            id="claims.holder_consistency", severity=Severity.OK, detail="holders consistent"
-        )
+            item = {"task_id": task.id, "project_id": task.project_id}
+            item_size = len(json.dumps(item).encode())
+            if len(identities) < MAX_ROWS and size + item_size <= MAX_PRODUCER_BYTES:
+                identities.append(item)
+                size += item_size
+            else:
+                capped = True
+    coverage = [partition(check_id, "holder_inconsistency", pid,
+                          complete=not capped and observed[pid] == totals[pid],
+                          observed=observed[pid], total=totals[pid],
+                          reasons=["producer_limit"] if capped else [])
+                for pid in sorted(projects | set(totals), key=lambda pid: pid or "")]
+    if not coverage:
+        coverage = [partition(check_id, "holder_inconsistency", None,
+                              complete=True, observed=0, total=0)]
     return CheckResult(
-        id="claims.holder_consistency",
-        severity=Severity.WARN,
-        detail=f"{len(bad)} IN_PROGRESS task(s) with an inconsistent claim holder (report-only)",
-        data={"count": len(bad), "tasks": bad[:50]},
+        id=check_id, severity=Severity.WARN if bad else Severity.OK,
+        detail=(f"{len(bad)} IN_PROGRESS task(s) with an inconsistent claim holder (report-only)"
+                if bad else "holders consistent"),
+        data={"count": len(bad), "tasks": bad[:50]} if bad else {},
+        execution_status="partial" if capped else "succeeded", complete=not capped,
+        coverage=coverage, reasons=["producer_limit"] if capped else [],
+        observation_data=identities,
     )
+
+
+def _holder_observations(result: CheckResult) -> list[dict]:
+    from src.doctor.observations import finding
+
+    return [finding("claims.holder_consistency", "holder_inconsistency",
+                    row["project_id"], "task", row["task_id"],
+                    "IN_PROGRESS task has an inconsistent claim holder", row)
+            for row in result.observation_data]
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +715,9 @@ _MAX_BRANCH_PROBES = 40
 async def _project_checkouts(ctx: DoctorContext) -> list[tuple[str, str, str]]:
     """``(project_id, checkout_path, default_branch)`` per project, best-effort."""
     out: list[tuple[str, str, str]] = []
-    git = GitManager()
+    from src.git.github import GitHubAccess
+
+    git = GitManager(GitHubAccess.from_config(ctx.config.integration.github_app))
     for project in await ctx.db.list_projects():
         checkout = await ctx.db.get_project_workspace_path(project.id)
         if not checkout or not Path(checkout).is_dir():
@@ -570,7 +725,9 @@ async def _project_checkouts(ctx: DoctorContext) -> list[tuple[str, str, str]]:
         default = project.repo_default_branch
         if not default:
             try:
-                default = await git.aget_default_branch(checkout)
+                default = await git.aget_default_branch(
+                    checkout, repository_url=project.repo_url
+                )
             except Exception:
                 continue
         out.append((project.id, checkout, default))
@@ -601,15 +758,25 @@ async def _find_stranded_feature_branches(ctx: DoctorContext) -> dict:
     "unknown" and is counted, never reported as a finding — an offline
     doctor run must not accuse every branch in the repository.
     """
-    git = GitManager()
+    from src.git.github import GitHubAccess
+
+    git = GitManager(GitHubAccess.from_config(ctx.config.integration.github_app))
     stranded: list[dict] = []
     stale: list[dict] = []
     unknown = 0
     probes = 0
 
     for project_id, checkout, default in await _project_checkouts(ctx):
+        project = await ctx.db.get_project(project_id)
         try:
-            await git._arun(["fetch", "origin", "--prune"], cwd=checkout)
+            repository = await git.bind_github_repository(project.repo_url)
+        except Exception:
+            unknown += 1
+            continue
+        try:
+            await git.afetch_origin(
+                checkout, repository_url=project.repo_url, all_heads=True
+            )
         except Exception:
             # Stale remote-tracking refs still answer the question, just
             # less freshly.  Never fatal: doctor runs offline too.
@@ -629,10 +796,12 @@ async def _find_stranded_feature_branches(ctx: DoctorContext) -> dict:
                 continue
             probes += 1
             open_to_default = await git.alist_prs(
-                checkout, state="open", head=branch, base=default, limit=1
+                checkout, state="open", head=branch, base=default, limit=1,
+                repository=repository,
             )
             merged_into = await git.alist_prs(
-                checkout, state="merged", base=branch, limit=5
+                checkout, state="merged", base=branch, limit=5,
+                repository=repository,
             )
             if open_to_default is None or merged_into is None:
                 unknown += 1
@@ -1076,6 +1245,263 @@ async def _check_placement_starved(ctx: DoctorContext) -> CheckResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# pools.session_awaiting_input
+# ---------------------------------------------------------------------------
+
+
+def _input_prompt_runtime(ctx: DoctorContext):
+    orchestrator = getattr(ctx.handler, "orchestrator", None)
+    harnesses = getattr(orchestrator, "harness_registry", None)
+    providers = getattr(orchestrator, "session_providers", None)
+    swarm = getattr(ctx.config, "swarm", None)
+    if harnesses is None or providers is None or swarm is None:
+        return None
+    return harnesses, providers, swarm
+
+
+async def _find_sessions_awaiting_input(ctx: DoctorContext, *, now: float | None = None):
+    runtime = _input_prompt_runtime(ctx)
+    if runtime is None:
+        return []
+    harnesses, providers, swarm = runtime
+    return await find_awaiting_input_sessions(
+        await ctx.db.list_sessions(lifecycle="pool", state="running"),
+        now=time.time() if now is None else now,
+        stall_seconds=pool_claim_loop_stall_seconds(swarm),
+        harness_registry=harnesses,
+        providers=providers,
+        config=ctx.config,
+    )
+
+
+async def _check_session_awaiting_input(ctx: DoctorContext) -> CheckResult:
+    check_id = "pools.session_awaiting_input"
+    if ctx.db is None:
+        return _no_db_result(check_id)
+    if _input_prompt_runtime(ctx) is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="live session providers or harness registry unavailable — panes not inspected",
+        )
+
+    findings = await _find_sessions_awaiting_input(ctx)
+    if not findings:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.OK,
+            detail="no idle pool session is awaiting interactive input",
+        )
+
+    counts_by_project: dict[str, dict[str | None, int]] = {}
+    rows: list[dict] = []
+    for finding in findings:
+        session = finding.session
+        project_id = session.project_id or ""
+        if project_id not in counts_by_project:
+            counts_by_project[project_id] = (
+                await ctx.db.count_ready_by_profile(project_id) if project_id else {}
+            )
+        counts = counts_by_project[project_id]
+        ready = counts.get(session.profile_id, 0)
+        rows.append(
+            {
+                "session_id": session.id,
+                "name": session.name,
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "harness": session.harness,
+                "signature": finding.signature.name,
+                "unchanged_seconds": round(finding.unchanged_seconds, 1),
+                "ready_tasks": ready,
+            }
+        )
+
+    examples = "; ".join(
+        f"{row['name']} ({row['profile_id']}, {row['signature']}, "
+        f"unchanged {row['unchanged_seconds']:.0f}s, {row['ready_tasks']} READY)"
+        for row in rows[:3]
+    )
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN,
+        detail=f"{len(rows)} idle pool session(s) blocked on input: {examples}",
+        data={"count": len(rows), "sessions": rows},
+    )
+
+
+# ---------------------------------------------------------------------------
+# agents.dangling_current_task
+# ---------------------------------------------------------------------------
+
+
+async def _find_dangling_current_task(ctx: DoctorContext):
+    """Every agent whose ``current_task_id`` no longer names live work.
+
+    Broader than the reconciler's own rescue rule on purpose: *any* agent
+    with a ``current_task_id`` set, not only ``BUSY`` ones, is a candidate --
+    the dashboard's agent markers read ``current_task_id`` regardless of
+    ``state``, so a stale pointer on an IDLE row still dangles a marker.  An
+    agent is flagged when its task is missing, or is not ``ASSIGNED``/
+    ``IN_PROGRESS``, *and* it has no live attempt (``live_attempt_predicate``,
+    B1) -- an agent still mid-write-up on a task that just transitioned to
+    COMPLETED is a race, not a dangling pointer.
+
+    Returns a list of ``(agent, task)`` pairs, ``task`` being ``None`` when
+    the row is missing entirely. ``agents.current_task_id`` carries
+    ``ON DELETE SET NULL`` (``fk_agents_current_task``), so a task's row
+    vanishing from ``tasks`` clears the pointer atomically in the same
+    transaction -- the ``task is None`` branch below is therefore
+    unreachable through any normal delete path today, but kept so the check
+    still reports honestly if that guarantee is ever relaxed or a row is
+    written around it.
+    """
+    live_agent_ids = await ctx.db.list_live_attempt_agent_ids()
+    bad: list[tuple] = []
+    for agent in await ctx.db.list_agents():
+        if not agent.current_task_id:
+            continue
+        if agent.id in live_agent_ids:
+            continue
+        task = await ctx.db.get_task(agent.current_task_id)
+        if task is not None and task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+            continue
+        bad.append((agent, task))
+    return bad
+
+
+async def _check_agents_dangling_current_task(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("agents.dangling_current_task")
+    bad = await _find_dangling_current_task(ctx)
+    if not bad:
+        return CheckResult(
+            id="agents.dangling_current_task",
+            severity=Severity.OK,
+            detail="no agent has a dangling current_task_id",
+        )
+    return CheckResult(
+        id="agents.dangling_current_task",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(bad)} agent(s) have a current_task_id naming a task that is missing or "
+            "not ASSIGNED/IN_PROGRESS, with no live attempt"
+        ),
+        data={
+            "count": len(bad),
+            "agents": [
+                {
+                    "agent_id": agent.id,
+                    "task_id": agent.current_task_id,
+                    "task_status": task.status.value if task is not None else None,
+                }
+                for agent, task in bad[:50]
+            ],
+        },
+    )
+
+
+async def _fix_agents_dangling_current_task(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("agents.dangling_current_task")
+    bad = await _find_dangling_current_task(ctx)
+    bus = getattr(getattr(ctx.handler, "orchestrator", None), "bus", None)
+    for agent, _task in bad:
+        # The check is deliberately broader than the reconciler's rescue rule
+        # (any state, not just BUSY), so the repair has to be narrower than
+        # the reconciler's reset: only a BUSY agent is meant to land IDLE.
+        # ERROR and RETIRED are set *without* clearing ``current_task_id``
+        # upstream, and RETIRED gates workspace reclaim -- rewriting either to
+        # IDLE would un-retire an agent as a side effect of tidying a pointer.
+        await reset_stale_busy_agent(
+            ctx.db, agent, bus=bus, reset_state=agent.state == AgentState.BUSY
+        )
+    return CheckResult(
+        id="agents.dangling_current_task",
+        severity=Severity.OK,
+        detail=f"cleared {len(bad)} dangling current_task_id pointer(s)",
+        data={"cleared": [agent.id for agent, _task in bad[:50]]},
+    )
+
+
+# ---------------------------------------------------------------------------
+# claims.container_held
+# ---------------------------------------------------------------------------
+
+
+async def _check_claims_container_held(ctx: DoctorContext) -> CheckResult:
+    """Agents whose current task is a container they did not fill (bold-flare-35).
+
+    ``list_container_claims`` owns the rule: the task has children and none
+    of them was filed by the session holding it, so a worker's own emergent
+    filings never count.  The pool reconcile step releases pool holders on
+    its own; this reports every holder (a push-launched session, an agent
+    row BUSY with no session behind it) and ``--fix`` releases them all.
+    """
+    if ctx.db is None:
+        return _no_db_result("claims.container_held")
+    held = await ctx.db.list_container_claims()
+    if not held:
+        return CheckResult(
+            id="claims.container_held",
+            severity=Severity.OK,
+            detail="no agent holds a container",
+        )
+    return CheckResult(
+        id="claims.container_held",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(held)} agent(s) hold a container whose children they did not file; "
+            "the work is in the children, so the holder can only wait"
+        ),
+        data={
+            "count": len(held),
+            "agents": [
+                {
+                    "agent_id": claim["agent_id"],
+                    "task_id": claim["task_id"],
+                    "session_id": claim["session_id"],
+                    "lifecycle": claim["lifecycle"],
+                }
+                for claim in held[:50]
+            ],
+        },
+    )
+
+
+async def _fix_claims_container_held(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("claims.container_held")
+    held = await ctx.db.list_container_claims()
+    kept = []
+    for claim in held:
+        out = await ctx.db.release_container_claim(claim, now=time.time())
+        if not out.released:
+            kept.append(claim)
+    if kept:
+        # ``release_claim`` leaves a holder with an attached integration
+        # owner (hierarchy/train) alone, and a claim may have moved on.
+        return CheckResult(
+            id="claims.container_held",
+            severity=Severity.WARN,
+            detail=(
+                f"released {len(held) - len(kept)} of {len(held)} container claim(s); "
+                "the rest moved on or are protected by an attached integration owner"
+            ),
+            data={"kept": [
+                {"agent_id": c["agent_id"], "task_id": c["task_id"],
+                 "session_id": c["session_id"]}
+                for c in kept[:50]
+            ]},
+        )
+    return CheckResult(
+        id="claims.container_held",
+        severity=Severity.OK,
+        detail=f"released {len(held)} container claim(s)",
+    )
+
+
 def pool_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -1111,9 +1537,23 @@ def pool_checks() -> list[DoctorCheck]:
         # Report-only: no ``fix`` — flipping ``swarm.enabled`` is an operator
         # decision, not a repair (they may have disabled it deliberately).
         DoctorCheck(id="pools.disabled", run=_check_pools_disabled, owner=OWNER),
+        # Report-only: either changing a profile lifecycle or rerouting active
+        # work is an operator decision; doctor must not disrupt live sessions.
+        DoctorCheck(
+            id="pools.task_lifecycle_shadow",
+            run=_check_task_lifecycle_shadow,
+            owner=OWNER,
+        ),
         # Report-only: no ``fix`` — a claim/holder mismatch needs a human to
         # decide which side (agent, session, or task) is authoritative.
-        DoctorCheck(id="claims.holder_consistency", run=_check_holder_consistency, owner=OWNER),
+        DoctorCheck(
+            id="claims.holder_consistency", run=_check_holder_consistency, owner=OWNER,
+            supported_scopes=("system",), read_only_audited=True,
+            finding_schema={"version": 1, "kinds": ["holder_inconsistency"]},
+            identity_adapter=_holder_observations,
+            completeness_contract="per-project holder inventory v1",
+            groups=("task_observations_v1",),
+        ),
         # Report-only by design (global-worker-pools §4): picking a fleet size
         # is an operator decision, so this one states the arithmetic and stops.
         DoctorCheck(
@@ -1127,6 +1567,29 @@ def pool_checks() -> list[DoctorCheck]:
         # Report-only: every repair (free a workspace, raise a project cap,
         # fix the harness behind a quarantine) is outside doctor's reach.
         DoctorCheck(id="pools.placement_starved", run=_check_placement_starved, owner=OWNER),
+        # Report-only: model selection, login and trust/permission prompts
+        # require a human or supervisor decision. Doctor never sends keys.
+        DoctorCheck(
+            id="pools.session_awaiting_input",
+            run=_check_session_awaiting_input,
+            owner=OWNER,
+            timeout_s=15.0,
+        ),
+        # Fixable: the reset is the same safe rescue the reconciler performs
+        # on its own rescue rule, just broader (any agent with a
+        # ``current_task_id``, not only ``BUSY``) and offline-triggerable.
+        DoctorCheck(
+            id="agents.dangling_current_task",
+            run=_check_agents_dangling_current_task,
+            fix=_fix_agents_dangling_current_task,
+            owner=OWNER,
+        ),
+        DoctorCheck(
+            id="claims.container_held",
+            run=_check_claims_container_held,
+            fix=_fix_claims_container_held,
+            owner=OWNER,
+        ),
     ]
 
 

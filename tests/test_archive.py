@@ -21,8 +21,10 @@ from src.models import (
     AgentOutput,
     AgentResult,
     Project,
+    RepoConfig,
     RepoSourceType,
     Task,
+    TaskCompletion,
     TaskStatus,
     TaskType,
     Workspace,
@@ -34,17 +36,220 @@ from tests.db_fixtures import lease_dsn
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
+def _retirement_handler(db, tmp_path):
+    config = AppConfig(
+        data_dir=str(tmp_path / "data"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
+    )
+    orchestrator = Orchestrator(config)
+    orchestrator.db = db
+    return CommandHandler(orchestrator, config)
+
+
+async def _retirement_graph(db):
+    await _seed_hierarchy_project(db)
+    await _seed_task(db, "epic", pid="p-hier", status=TaskStatus.IN_PROGRESS)
+    await _seed_task(db, "duplicate", pid="p-hier", status=TaskStatus.READY)
+    await db.add_dependency("duplicate", "epic", "parent-child")
+    await _seed_task(db, "replacement", pid="p-hier", status=TaskStatus.READY)
+    await _seed_task(db, "dependent", pid="p-hier", status=TaskStatus.READY)
+    await db.add_dependency("dependent", "duplicate", "blocks")
+    await _enable_hierarchy_mode(db)
+
+
+async def test_obsolete_with_replacement_rewires_dependents(db, tmp_path):
+    """The dependent waits for real replacement work; the duplicate records no pass."""
+    import json
+
+    await _retirement_graph(db)
+    handler = _retirement_handler(db, tmp_path)
+    result = await handler._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate scope",
+        "replacement": "replacement",
+    })
+    assert result["archived"] == "duplicate", result
+    assert await db.get_task("duplicate") is None
+    assert (await db.get_archived_task("duplicate"))["status"] == "READY"
+    assert await db.get_task_result("duplicate") is None
+    assert await db.get_task_completions("duplicate") == []
+    deps = await db.get_dependencies("dependent")
+    assert deps == {"replacement"}
+    assert await db.get_typed_dependencies("dependent") == [("replacement", "blocks")]
+    assert (await db.get_task("dependent")).is_blocked
+    assert (await db.get_task("epic")).status == TaskStatus.COMPLETED
+    history = (await db.list_task_comments("duplicate", project_id="p-hier"))["comments"]
+    evidence = next(c["body"] for c in history if c["body"].startswith("Retirement evidence: "))
+    marker = json.loads(evidence.removeprefix("Retirement evidence: "))
+    assert marker["replacement_task_id"] == "replacement"
+    assert marker["previous_status"] == "READY"
+    await db.transition_task("replacement", TaskStatus.COMPLETED, force=True)
+    assert not (await db.get_task("dependent")).is_blocked
+
+
+@pytest.mark.parametrize("replacement", ["duplicate", "missing", "epic", "dependent"])
+async def test_obsolete_invalid_replacement_rolls_back(db, tmp_path, replacement):
+    await _retirement_graph(db)
+    handler = _retirement_handler(db, tmp_path)
+    result = await handler._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate scope",
+        "replacement": replacement,
+    })
+    assert result.get("success") is False, result
+    assert await db.get_task("duplicate") is not None
+    assert await db.get_archived_task("duplicate") is None
+    assert await db.get_task_meta("duplicate", "obsolete") is None
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+async def test_satisfied_by_requires_explicit_edge_plan(db, tmp_path):
+    await _retirement_graph(db)
+    handler = _retirement_handler(db, tmp_path)
+    args = {
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "already implemented",
+        "satisfied_by": "verified delivery receipt source:abc",
+    }
+    refused = await handler._cmd_archive_task(args)
+    assert refused["success"] is False
+    assert (await db.get_task("dependent")).is_blocked
+    result = await handler._cmd_archive_task({**args, "rewire": {
+        "remove_edges": [{"from": "dependent", "to": "duplicate", "dep_type": "blocks"}],
+    }})
+    assert result["archived"] == "duplicate", result
+    assert not (await db.get_task("dependent")).is_blocked
+    assert await db.get_task_completions("duplicate") == []
+
+
+async def test_obsolete_replacement_cycle_rolls_back(db, tmp_path):
+    await _retirement_graph(db)
+    await db.add_dependency("replacement", "dependent", "blocks")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement",
+    })
+    assert result["success"] is False
+    assert "cycle" in result["error"]
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+@pytest.mark.parametrize("dep_type", ["blocks", "conditional-blocks", "related"])
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_obsolete_replacement_preserves_edge_type(db, tmp_path, dep_type, explicit):
+    await _retirement_graph(db)
+    await db.remove_dependency("dependent", "duplicate", "blocks")
+    await db.add_dependency("dependent", "duplicate", dep_type, description="required scope")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement",
+        **({"rewire": {
+            "remove_edges": [{"from": "dependent", "to": "duplicate", "dep_type": dep_type}],
+            "edges": [{"from": "dependent", "to": "replacement", "dep_type": dep_type}],
+        }} if explicit else {}),
+    })
+    assert result["archived"] == "duplicate", result
+    assert await db.get_typed_dependencies("dependent") == [("replacement", dep_type)]
+    async with db.immediate() as conn:
+        assert await conn.scalar(text(
+            "SELECT description FROM task_dependencies WHERE task_id='dependent' "
+            "AND depends_on_task_id='replacement'"
+        )) == "required scope"
+
+
+async def test_obsolete_partial_rewire_cannot_orphan_a_dependent(db, tmp_path):
+    await _retirement_graph(db)
+    await _seed_task(db, "second", pid="p-hier", status=TaskStatus.READY)
+    await db.add_dependency("second", "duplicate", "blocks")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement", "rewire": {
+            "remove_edges": [{"from": "dependent", "to": "duplicate"}],
+            "edges": [{"from": "dependent", "to": "replacement"}],
+        },
+    })
+    assert result["success"] is False
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+    assert await db.get_dependencies("second") == {"duplicate"}
+    assert await db.get_task_meta("duplicate", "obsolete") is None
+
+
+async def test_obsolete_rewire_requires_stopped_dependents(db, tmp_path):
+    await _retirement_graph(db)
+    await db.update_task("dependent", status=TaskStatus.IN_PROGRESS)
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement",
+    })
+    assert result["success"] is False
+    assert "needs_quiescence" in result["code"]
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+async def test_hierarchical_obsolete_close_retains_replacement_evidence(db):
+    from src.sessions.obsolete import ObsoleteClose
+
+    await _retirement_graph(db)
+    closer = ObsoleteClose(db, release_owner=None)
+    result = await closer.close(
+        "duplicate", reason="duplicate", principal="supervisor:test",
+        replacement_task_id="replacement",
+    )
+    assert result["outcome"] == "closed"
+    marker = await db.get_task_meta("duplicate", "obsolete")
+    assert marker["replacement_task_id"] == "replacement"
+    assert await db.get_task_meta("duplicate", "work_outcome") == "abandoned"
+    assert await db.get_task_completions("duplicate") == []
+    assert (await db.get_task("dependent")).is_blocked
+    assert await db.get_dependencies("dependent") == {"replacement"}
+    assert (await closer.close(
+        "duplicate", reason="duplicate", principal="supervisor:test",
+        replacement_task_id="replacement",
+    ))["outcome"] == "already_obsolete"
+    marker = await db.get_task_meta("duplicate", "obsolete")
+    await db.archive_task(
+        "duplicate", disposition="obsolete", abandon_undelivered=True,
+        abandon_reason="retain obsolete evidence", archive_reason="retain obsolete evidence",
+        replacement_task_id="replacement",
+    )
+    import json
+
+    history = (await db.list_task_comments("duplicate", project_id="p-hier"))["comments"]
+    archived_marker = next(json.loads(c["body"].removeprefix("Retirement evidence: "))
+                           for c in history if c["body"].startswith("Retirement evidence: "))
+    assert archived_marker == marker
+
+
+async def test_obsolete_replacement_in_another_project_is_refused(db, tmp_path):
+    await _retirement_graph(db)
+    await _seed_project(db, "other")
+    await _seed_task(db, "other-leaf", pid="other")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "other-leaf",
+    })
+    assert result["success"] is False
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+@pytest.mark.parametrize("plan", [[], {"edges": {}}, {"remove_edges": [None]}, {"invalid": []}])
+async def test_obsolete_malformed_edge_plan_is_refused(db, tmp_path, plan):
+    await _retirement_graph(db)
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement", "rewire": plan,
+    })
+    assert result["success"] is False
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def db(tmp_path, request):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, request, reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 async def _seed_project(
@@ -508,6 +713,158 @@ class TestArchiveCommands:
 
         result = await handler.execute("archive_settings", {})
         assert result["archived_count"] == 1
+
+    async def test_archive_settings_omits_history_that_can_now_archive(self, handler, db):
+        """A completed audit-only root no longer appears as a blocked backlog item."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await _age(db, "root")
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        result = await handler.execute("archive_settings", {})
+        assert result["blocked_count"] == 0
+        assert result["blocked"] == []
+        assert await db.get_archived_task("root") is not None
+
+    async def test_abandon_undelivered_requires_reason_and_operator_and_records_event(
+        self, handler, db
+    ):
+        """The public escape hatch is deliberate, auditable, and never worker-run."""
+        await _seed_development_project(db)
+        await _seed_task(
+            db,
+            "undelivered",
+            pid="p-dev",
+            status=TaskStatus.COMPLETED,
+            repo_id="web-repo",
+            branch_name="aq/undelivered",
+        )
+        await db.save_task_completion(
+            TaskCompletion(
+                id="close-undelivered",
+                task_id="undelivered",
+                outcome="pass",
+                commits=["a" * 40],
+                completed_at=time.time(),
+            )
+        )
+
+        missing_reason = await handler._cmd_archive_task(
+            {"task_id": "undelivered", "abandon_undelivered": True}
+        )
+        assert missing_reason["error"] == "--abandon-undelivered requires --reason."
+
+        handler._current_scope = {
+            "kind": "session",
+            "session_id": "worker",
+            "project_id": "p-dev",
+            "elevated": False,
+        }
+        worker = await handler._cmd_archive_task(
+            {
+                "task_id": "undelivered",
+                "abandon_undelivered": True,
+                "reason": "superseded by manual patch",
+            },
+        )
+        assert worker["code"] == "hierarchy.abandon_not_for_sessions"
+
+        handler._current_scope = None
+        undecided = await handler._cmd_archive_task(
+            {
+                "task_id": "undelivered",
+                "abandon_undelivered": True,
+                "reason": "superseded by manual patch",
+            },
+        )
+        assert undecided["code"] == "hierarchy.disposition_required"
+        assert await db.get_task("undelivered") is not None
+
+        archived = await handler._cmd_archive_task(
+            {
+                "task_id": "undelivered",
+                "disposition": "obsolete",
+                "reason": "superseded by manual patch",
+            },
+        )
+        assert archived["archived"] == "undelivered"
+        assert archived["disposition"] == "obsolete"
+        comments = (await db.list_task_comments("undelivered", project_id="p-dev"))["comments"]
+        assert any(
+            "Delivery abandoned before archive by operator: superseded by manual patch" in row["body"]
+            and "Disposition: obsolete" in row["body"]
+            for row in comments
+        )
+        assert len(
+            await db.get_recent_events(
+                event_type="task.delivery_abandoned", task_id="undelivered"
+            )
+        ) == 1
+        # The branch is retired through the audited path, carrying the decision.
+        async with db._engine.connect() as conn:
+            reasons = set((await conn.execute(text(
+                "SELECT reason FROM branch_retirements WHERE task_id = 'undelivered'"
+            ))).scalars())
+        assert reasons == {"task archived (obsolete): superseded by manual patch"}
+
+    async def test_deliver_disposition_keeps_undelivered_work_and_reports_its_delivery(
+        self, handler, db
+    ):
+        """``deliver`` archives nothing: it records the decision and says what delivers it."""
+        await _seed_development_project(db)
+        await _seed_task(
+            db,
+            "undelivered",
+            pid="p-dev",
+            status=TaskStatus.COMPLETED,
+            repo_id="web-repo",
+            branch_name="aq/undelivered",
+        )
+        await db.save_task_completion(
+            TaskCompletion(
+                id="close-undelivered",
+                task_id="undelivered",
+                outcome="pass",
+                commits=["a" * 40],
+                completed_at=time.time(),
+            )
+        )
+        both = await handler._cmd_archive_task(
+            {"task_id": "undelivered", "disposition": "deliver", "abandon_undelivered": True},
+        )
+        assert "drop --abandon-undelivered" in both["error"]
+        unknown = await handler._cmd_archive_task(
+            {"task_id": "undelivered", "disposition": "later"},
+        )
+        assert "must be one of deliver, obsolete, retire" in unknown["error"]
+
+        kept = await handler._cmd_archive_task(
+            {"task_id": "undelivered", "disposition": "deliver", "reason": "lands next train"},
+        )
+
+        assert kept["archived"] == ""
+        assert kept["kept"] == "undelivered"
+        assert kept["disposition"] == "deliver"
+        assert [row["task_id"] for row in kept["undelivered"]] == ["undelivered"]
+        # A root gets its authorize-root dry run: the train's own answer.
+        assert isinstance(kept["delivery"], dict) and kept["delivery"]["dry_run"] is True
+        assert await db.get_task("undelivered") is not None
+        assert await db.get_archived_task("undelivered") is None
+        comments = (await db.list_task_comments("undelivered", project_id="p-dev"))["comments"]
+        assert any(
+            "Delivery disposition by operator: deliver: lands next train" in row["body"]
+            and "undelivered holders: undelivered" in row["body"]
+            for row in comments
+        )
+        assert len(await db.get_recent_events(
+            event_type="task.delivery_disposition", task_id="undelivered"
+        )) == 1
+        async with db._engine.connect() as conn:
+            assert not (await conn.execute(text(
+                "SELECT 1 FROM branch_retirements WHERE task_id = 'undelivered'"
+            ))).first()
 
 
 # ---------------------------------------------------------------------------
@@ -1072,10 +1429,10 @@ async def test_bulk_archive_rechecks_root_status_after_selection(db, monkeypatch
         await conn.execute(update(tasks).values(updated_at=time.time() - 10000))
     archive = db.archive_task
 
-    async def reopen_before_archive(task_id):
+    async def reopen_before_archive(task_id, **kwargs):
         if task_id == "reopened":
             await db.update_task(task_id, status=status)
-        return await archive(task_id)
+        return await archive(task_id, **kwargs)
 
     monkeypatch.setattr(db, "archive_task", reopen_before_archive)
     archived = (
@@ -1127,3 +1484,1147 @@ async def test_completion_history_survives_archive_and_restore(db):
     assert (await db.get_task_completion("history")).summary == "Keep findings"
     await db.delete_task("history")
     assert await db.get_task_completion("history") is None
+
+
+# ---------------------------------------------------------------------------
+# Integration bookkeeping that outlives the task it describes
+# ---------------------------------------------------------------------------
+
+
+async def _seed_hierarchy_project(db: Database, pid: str = "p-hier") -> None:
+    """A hierarchy-mode project with one repo, as the operator's install has."""
+    from src.models import RepoConfig
+
+    await db.create_project(Project(id=pid, name=f"project-{pid}"))
+    await db.create_repo(
+        RepoConfig(id=f"repo-{pid}", project_id=pid, source_type=RepoSourceType.LINK)
+    )
+
+
+async def _enable_hierarchy_mode(db: Database, pid: str = "p-hier") -> None:
+    """Switch the project to hierarchy mode once its task graph is built."""
+    await db.update_project(
+        pid,
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id=f"repo-{pid}",
+    )
+
+
+async def _seed_parent_episode(db: Database, parent_task_id: str, pid: str = "p-hier") -> str:
+    """Write the append-only parent-episode row hierarchy completion writes."""
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_parent_episodes
+
+    episode_id = f"ep-{parent_task_id}"
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id=episode_id,
+                parent_task_id=parent_task_id,
+                repository_id=f"repo-{pid}",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+    return episode_id
+
+
+async def _age(db: Database, *task_ids: str) -> None:
+    old = time.time() - 86400
+    async with db._engine.begin() as conn:
+        for tid in task_ids:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"), {"t": old, "id": tid}
+            )
+
+
+class TestArchiveWithIntegrationBookkeeping:
+    """The production failure: one integration-tracked root killed the sweep."""
+
+    async def _seed(self, db):
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.IN_PROGRESS)
+        await _seed_task(db, "kid", pid="p-hier", status=TaskStatus.READY)
+        await db.add_dependency("kid", "root", "parent-child")
+        async with db._engine.begin() as conn:
+            for tid in ("root", "kid"):
+                await conn.execute(
+                    text("UPDATE tasks SET status = 'COMPLETED' WHERE id = :id"), {"id": tid}
+                )
+        await _seed_parent_episode(db, "root")
+        await _seed_task(db, "solo", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        await _age(db, "root", "kid", "solo")
+
+    async def test_sweep_survives_an_integration_tracked_root(self, db):
+        await self._seed(db)
+
+        archived = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        # Audit history no longer pins a finished root in the active table.
+        assert archived == ["root", "solo"]
+        assert await db.get_archived_task("solo") is not None
+        assert await db.get_archived_task("root") is not None
+        assert await db.get_archived_task("kid") is not None
+
+    async def test_archive_task_retains_history_instead_of_raising_integrityerror(self, db):
+        await self._seed(db)
+        assert await db.archive_task("root") is True
+        assert await db.get_archived_task("root") is not None
+
+    async def test_delete_task_refuses_instead_of_raising_integrityerror(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await self._seed(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_task("root", cascade=True, branch_policy="keep")
+        assert exc.value.code == "integration_history_retained"
+        assert await db.get_task("root") is not None
+
+    async def test_blocked_roots_are_reported_read_only(self, db):
+        """The report reads what the sweep actually recorded — it derives nothing."""
+        await self._seed(db)
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        assert blocked.total == 0
+        assert blocked.roots == []
+        # Read-only: the report itself moved nothing the sweep had not.
+        assert await db.get_task("root") is None
+        assert await db.get_archived_task("solo") is not None
+
+    async def test_nothing_is_reported_before_the_sweep_has_tried(self, db):
+        """No record, no report — the sweep is the only thing that decides."""
+        await self._seed(db)
+
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        assert blocked.total == 0
+        assert blocked.roots == []
+
+
+async def _seed_settled_batch_repair(db: Database, verifier_task_id: str) -> str:
+    """A *completed* batch repair operation whose verifier was *verifier_task_id*.
+
+    Settled on purpose: ``archive_task``'s active-repair guard only looks at
+    ``active``/``escalated``/``human_required`` operations, so a refusal can
+    only come from the foreign-key guard.
+    """
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_repair_operations
+
+    operation_id = f"op-{verifier_task_id}"
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id=operation_id,
+                target_kind="batch",
+                batch_id="b-1",
+                parent_task_id=None,
+                episode_id="ep-batch",
+                active_stage=0,
+                state="completed",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                verifier_task_id=verifier_task_id,
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    return operation_id
+
+
+class TestArchiveIntegrationReferenceScope:
+    """How far the integration-reference refusal reaches.
+
+    The class above and ``tests/test_hierarchy_archive_delete.py`` cover a task
+    the bookkeeping names directly.  These pin the rest: a named *descendant*
+    holds its root in either integration mode, the explicit bulk path skips the
+    held task like the hourly sweep does, and a batch repair's verifier is
+    named as well as a parent repair's.
+    """
+
+    @pytest.mark.parametrize("hierarchical", [False, True], ids=["legacy", "hierarchy"])
+    async def test_a_held_descendant_pins_its_root(self, db, hierarchical):
+        """The subtree moves together, so a child the bookkeeping names holds the root."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "kid", pid="p-hier", status=TaskStatus.COMPLETED, parent_task_id="root"
+        )
+        await _seed_parent_episode(db, "kid")
+        if hierarchical:
+            await _enable_hierarchy_mode(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_task("root", cascade=True, branch_policy="keep")
+        assert exc.value.code == "integration_history_retained"
+        assert exc.value.context["references"] == [
+            {"task_id": "kid", "table": "integration_parent_episodes", "column": "parent_task_id"}
+        ]
+        assert await db.get_task("root") is not None
+        assert await db.get_task("kid") is not None
+
+    async def test_archive_completed_tasks_skips_the_held_task(self, db):
+        """The explicit bulk command archives the rest instead of stopping."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "held", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "other", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "held")
+
+        archived = await db.archive_completed_tasks(project_id="p-hier")
+
+        assert sorted(archived) == ["held", "other"]
+        assert await db.get_archived_task("other") is not None
+        assert await db.get_archived_task("held") is not None
+
+    async def test_a_settled_batch_repairs_verifier_is_archived_with_history(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await _seed_settled_batch_repair(db, "t-1")
+
+        assert await db.archive_task("t-1") is True
+        assert await db.get_task("t-1") is None
+        assert await db.get_archived_task("t-1") is not None
+
+
+class TestArchiveRefusalRecord:
+    """The sweep records why each root it skipped was refused (F3)."""
+
+    async def _eligible(self, db, *task_ids: str) -> None:
+        await _age(db, *task_ids)
+
+    async def test_records_the_refusal_the_sweep_actually_hit(self, db):
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root")
+
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        assert await db.get_task_meta("root", "archive_refusal") is None
+        assert await db.get_archived_task("root") is not None
+
+    async def test_records_a_refusal_the_report_could_not_have_derived(self, db):
+        """A sealed root: the old report re-derived conditions and missed this one."""
+        from sqlalchemy import insert
+
+        from src.database.tables import (
+            integration_batch_members,
+            integration_batches,
+            integration_review_evidence,
+        )
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(integration_batches).values(
+                    id="b",
+                    project_id="p-hier",
+                    repository_id="repo-p-hier",
+                    request_id="r",
+                    trigger="manual",
+                    source_manifest_digest="sha256:" + "4" * 64,
+                    base_sha="a" * 40,
+                    lifecycle="sealing",
+                    current_revision=0,
+                    integration_branch="refs/heads/aq/integration/p-hier/1",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+            await conn.execute(
+                insert(integration_review_evidence).values(
+                    id="rev",
+                    source_task_id="root",
+                    repository_id="repo-p-hier",
+                    source_base="a" * 40,
+                    reviewed_head_sha="b" * 40,
+                    reviewed_tree_sha="c" * 40,
+                    reviewer_task_id="reviewer",
+                    reviewer_session_attempt_id=None,
+                    review_kind="leaf",
+                    generation=1,
+                    verdict="approved",
+                    evidence={"decision": "approved"},
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                insert(integration_batch_members).values(
+                    batch_id="b",
+                    ordinal=0,
+                    task_id="root",
+                    repository_id="repo-p-hier",
+                    source_base_sha="a" * 40,
+                    reviewed_head_sha="b" * 40,
+                    reviewed_tree_sha="c" * 40,
+                    review_evidence_id="rev",
+                    review_evidence={},
+                )
+            )
+        await self._eligible(db, "root")
+
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        record = await db.get_task_meta("root", "archive_refusal")
+        assert record["code"] == "sealed"
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+        assert [r["reason"] for r in blocked.roots] == ["sealed"]
+
+    async def test_records_an_unexpected_failure_with_a_one_line_signature(self, db, monkeypatch):
+        await _seed_project(db)
+        await _seed_task(db, "root", status=TaskStatus.COMPLETED)
+        await self._eligible(db, "root")
+
+        async def boom(task_id, **_kwargs):
+            raise RuntimeError("something\nwith newlines\nand detail")
+
+        monkeypatch.setattr(db, "archive_task", boom)
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        record = await db.get_task_meta("root", "archive_refusal")
+        assert record["code"] == "unexpected"
+        assert record["detail"].startswith("RuntimeError")
+        assert "\n" not in record["detail"]
+
+    async def test_a_history_only_root_leaves_the_active_updated_at_projection(self, db):
+        """Archive moves the root rather than maintaining a stale refusal record."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root")
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        assert await db.get_task_updated_at("root") is None
+        assert await db.get_task_meta("root", "archive_refusal") is None
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+        assert blocked.total == 0
+
+    async def test_an_unchanged_refusal_is_not_rewritten_every_sweep(self, db, monkeypatch):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "root", status=TaskStatus.COMPLETED)
+        await self._eligible(db, "root")
+
+        async def refused(*_args, **_kwargs):
+            raise HierarchyError("sealed", "still sealed")
+
+        monkeypatch.setattr(db, "archive_task", refused)
+
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+        first = await db.get_task_meta("root", "archive_refusal")
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        assert await db.get_task_meta("root", "archive_refusal") == first
+
+    async def test_the_record_goes_when_the_refusal_does(self, db, monkeypatch):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "root", status=TaskStatus.COMPLETED)
+        await self._eligible(db, "root")
+
+        actual_archive = db.archive_task
+
+        async def refused(*_args, **_kwargs):
+            raise HierarchyError("sealed", "still sealed")
+
+        monkeypatch.setattr(db, "archive_task", refused)
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+        assert await db.get_task_meta("root", "archive_refusal") is not None
+
+        monkeypatch.setattr(db, "archive_task", actual_archive)
+
+        archived = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        assert archived == ["root"]
+        assert await db.get_task_meta("root", "archive_refusal") is None
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+        assert blocked.total == 0
+
+    async def test_a_failed_record_write_does_not_abandon_the_rest_of_the_sweep(
+        self, db, monkeypatch, caplog
+    ):
+        """The reporting write is not allowed to reintroduce the bug it reports."""
+        import logging
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _seed_task(db, "solo", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root", "solo")
+
+        async def boom(task_id, code, detail):
+            raise RuntimeError("metadata write failed")
+
+        actual_archive = db.archive_task
+
+        async def root_refused(task_id, **kwargs):
+            if task_id == "root":
+                raise HierarchyError("sealed", "still sealed")
+            return await actual_archive(task_id, **kwargs)
+
+        monkeypatch.setattr(db, "archive_task", root_refused)
+        monkeypatch.setattr(db, "_record_archive_refusal", boom)
+        with caplog.at_level(logging.WARNING, logger="src.database.queries.archive_queries"):
+            archived = await db.archive_old_terminal_tasks(
+                statuses=["COMPLETED"], older_than_seconds=3600
+            )
+
+        # The unrelated root still leaves the graph and the call returns.
+        assert archived == ["solo"]
+        assert await db.get_task("root") is not None
+        warnings = [r for r in caplog.records if "root" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "RuntimeError" in warnings[0].getMessage()
+
+    async def test_a_failed_clear_does_not_abandon_the_rest_of_the_sweep(
+        self, db, monkeypatch, caplog
+    ):
+        import logging
+
+        await _seed_project(db)
+        await _seed_task(db, "first", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "second", status=TaskStatus.COMPLETED)
+        await self._eligible(db, "first", "second")
+
+        async def boom(task_id):
+            raise RuntimeError("metadata clear failed")
+
+        monkeypatch.setattr(db, "_clear_archive_refusal", boom)
+        with caplog.at_level(logging.WARNING, logger="src.database.queries.archive_queries"):
+            archived = await db.archive_old_terminal_tasks(
+                statuses=["COMPLETED"], older_than_seconds=3600
+            )
+
+        # Both really archived, and the failed tidy did not unmake either.
+        assert sorted(archived) == ["first", "second"]
+        assert await db.get_archived_task("first") is not None
+        assert await db.get_archived_task("second") is not None
+        assert len([r for r in caplog.records if "RuntimeError" in r.getMessage()]) == 2
+
+    async def test_blocked_count_is_the_true_total_not_the_page_size(self, db, monkeypatch):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        for n in range(4):
+            await _seed_task(db, f"root-{n}", status=TaskStatus.COMPLETED)
+        await self._eligible(db, *[f"root-{n}" for n in range(4)])
+
+        async def refused(*_args, **_kwargs):
+            raise HierarchyError("sealed", "still sealed")
+
+        monkeypatch.setattr(db, "archive_task", refused)
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600, limit=2
+        )
+
+        assert blocked.total == 4
+        assert len(blocked.roots) == 2
+
+
+class TestFailureSignature:
+    """F1: the signature is one line and names the constraint asyncpg reports."""
+
+    async def test_names_the_constraint_from_a_real_wrapped_integrityerror(self, db):
+        from sqlalchemy import delete as sa_delete
+        from sqlalchemy.exc import IntegrityError
+
+        from src.database.queries.archive_queries import _failure_signature
+        from src.database.tables import repos
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+
+        with pytest.raises(IntegrityError) as exc:
+            async with db._engine.begin() as conn:
+                await conn.execute(
+                    sa_delete(repos).where(repos.c.id == "repo-p-hier")
+                )
+
+        signature = _failure_signature(exc.value)
+        assert signature == "IntegrityError(fk_integration_parent_episodes_repository)"
+
+    def test_falls_back_to_one_truncated_line(self):
+        from src.database.queries.archive_queries import _failure_signature
+
+        signature = _failure_signature(RuntimeError("first line\nsecond line\n" + "x" * 500))
+        assert "\n" not in signature
+        assert signature.startswith("RuntimeError: first line")
+        assert len(signature) < 250
+
+
+# ---------------------------------------------------------------------------
+# Development integration owns its manifest members and repair sources
+# ---------------------------------------------------------------------------
+
+
+async def _seed_development_delivery(
+    db: Database,
+    delivery_id: str,
+    *,
+    state: str,
+    task_ids: list[str],
+    project_id: str = "p-1",
+    created_at: float = 1.0,
+) -> None:
+    """Append one publisher operation (``development.operation``) naming *task_ids*."""
+    from src.integration.development import DevelopmentPrimitives
+
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            DevelopmentPrimitives._operation_insert(
+                id=delivery_id,
+                project_id=project_id,
+                repository_id="repo",
+                target_ref="refs/heads/main",
+                expected_sha=None,
+                prepared_sha=None,
+                state=state,
+                manifest=[{"task_id": tid, "source_sha": "a" * 40} for tid in task_ids],
+                evidence={},
+                reason="development batch",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+
+
+async def _set_delivery_state(db: Database, delivery_id: str, state: str) -> None:
+    """Append the operation's next revision; ``delivered`` is recorded as ``finished``."""
+    from src.integration.development import revise_operation_on
+
+    async with db._engine.begin() as conn:
+        await revise_operation_on(conn, delivery_id, lambda _current: {"state": state})
+
+
+async def _backdate(db: Database, *task_ids: str, seconds: float = 86400) -> None:
+    old = time.time() - seconds
+    async with db._engine.begin() as conn:
+        for tid in task_ids:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": old, "id": tid},
+            )
+
+
+class TestDevelopmentIntegrationArchiveGuard:
+    """A development batch or repair still owes work to the tasks it names."""
+
+    @pytest.fixture
+    async def handler(self, db, tmp_path):
+        config = AppConfig(
+            discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
+        )
+        orchestrator = Orchestrator(config)
+        orchestrator.db = db
+        orchestrator.git = MagicMock()
+        return CommandHandler(orchestrator, config)
+
+    @pytest.mark.parametrize("state", ["prepared", "publishing", "parked"])
+    async def test_unfinished_batch_member_is_refused_and_names_the_batch(self, db, state):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_development_delivery(db, "batch-1", state=state, task_ids=["t-src"])
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-src")
+        assert exc.value.code == "integration_owned"
+        assert "batch-1" in exc.value.detail
+        assert state in exc.value.detail
+        assert "t-src" in exc.value.detail
+        assert await db.get_task("t-src") is not None
+
+    @pytest.mark.parametrize("state", ["delivered", "adopted", "cancelled"])
+    async def test_member_is_archivable_once_the_batch_settles(self, db, state):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+        await _set_delivery_state(db, "batch-1", state)
+
+        assert await db.archive_task("t-src") is True
+        assert await db.get_archived_task("t-src") is not None
+
+    async def test_an_unrelated_task_is_untouched_by_an_open_batch(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-other", status=TaskStatus.COMPLETED, title="Other")
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+
+        assert await db.archive_task("t-other") is True
+
+    async def test_a_named_descendant_holds_the_whole_subtree(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-parent", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "t-child", status=TaskStatus.COMPLETED, title="Child", parent_task_id="t-parent"
+        )
+        await _seed_development_delivery(db, "batch-1", state="prepared", task_ids=["t-child"])
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-parent")
+        assert exc.value.code == "integration_owned"
+        assert "t-child" in exc.value.detail
+
+    async def test_auto_archive_sweep_skips_the_member_then_takes_it(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-free", status=TaskStatus.COMPLETED, title="Free")
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+        await _backdate(db, "t-src", "t-free")
+
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == [
+            "t-free"
+        ]
+        assert await db.get_task("t-src") is not None
+
+        await _set_delivery_state(db, "batch-1", "delivered")
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == [
+            "t-src"
+        ]
+
+    async def test_manual_archive_command_reports_integration_owned(self, handler, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_development_delivery(db, "batch-1", state="publishing", task_ids=["t-src"])
+
+        result = await handler.execute("archive_task", {"task_id": "t-src"})
+        assert result["code"] == "hierarchy.integration_owned"
+        assert "batch-1" in result["error"]
+        assert await db.get_task("t-src") is not None
+
+        await _set_delivery_state(db, "batch-1", "delivered")
+        assert (await handler.execute("archive_task", {"task_id": "t-src"}))["archived"] == "t-src"
+
+    async def test_bulk_archive_skips_the_member_and_reports_it(self, handler, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-free", status=TaskStatus.COMPLETED, title="Free")
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+
+        result = await handler.execute("archive_task", {"project_id": "p-1"})
+        assert result["archived_ids"] == ["t-free"]
+        assert result["skipped"] == [
+            {
+                "task_id": "t-src",
+                "code": "hierarchy.integration_owned",
+                "detail": result["skipped"][0]["detail"],
+            }
+        ]
+        assert "batch-1" in result["skipped"][0]["detail"]
+
+    async def test_open_development_repair_holds_its_sources(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "development-repair-abc", status=TaskStatus.READY, title="Repair"
+        )
+        await db.set_task_meta(
+            "development-repair-abc",
+            "development_repair_sources",
+            [{"task_id": "t-src", "source_sha": "b" * 40}],
+        )
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-src")
+        assert exc.value.code == "integration_owned"
+        assert "development-repair-abc" in exc.value.detail
+        assert "t-src" in exc.value.detail
+
+    async def test_source_is_archivable_once_the_repair_is_terminal(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "development-repair-abc", status=TaskStatus.READY, title="Repair"
+        )
+        await db.set_task_meta(
+            "development-repair-abc",
+            "development_repair_sources",
+            [{"task_id": "t-src", "source_sha": "b" * 40}],
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET status = 'COMPLETED' WHERE id = :id"),
+                {"id": "development-repair-abc"},
+            )
+
+        assert await db.archive_task("t-src") is True
+
+    async def test_non_list_metadata_values_do_not_break_the_guard(self, db):
+        """Every task metadata value is JSON, but most are scalars, not manifests."""
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-noise", status=TaskStatus.READY, title="Noise")
+        await db.set_task_meta("t-noise", "needs_attention", "session_exited_open")
+        await db.set_task_meta("t-noise", "development_repair_sources", "not-a-manifest")
+
+        assert await db.archive_task("t-src") is True
+
+
+# ---------------------------------------------------------------------------
+# Archive sweeps keep undelivered development work in the queue
+# ---------------------------------------------------------------------------
+
+
+async def _seed_development_project(
+    db: Database, pid: str = "p-dev", url: str = "https://example.test/dev.git"
+) -> None:
+    """A development-mode project delivering to ``dev-repo``, plus a second project.
+
+    ``p-web`` owns ``web-repo``: the repository ``fleet-meadow`` named even
+    though it belonged to the development project.
+    """
+    from sqlalchemy import update
+
+    from src.database.tables import projects
+
+    await db.create_project(Project(id=pid, name="Development"))
+    await db.create_project(Project(id="p-web", name="Web"))
+    await db.create_repo(
+        RepoConfig(
+            id="dev-repo", project_id=pid, source_type=RepoSourceType.CLONE,
+            url=url,
+        )
+    )
+    await db.create_repo(
+        RepoConfig(
+            id="web-repo", project_id="p-web", source_type=RepoSourceType.CLONE,
+            url="https://example.test/web.git",
+        )
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == pid)
+            .values(
+                integration_repository_id="dev-repo",
+                hierarchical_integration_mode="development",
+            )
+        )
+
+
+async def _completed_with_close(
+    db: Database, tid: str, *, repo_id: str, commit: str, pid: str = "p-dev", origin=None,
+    **kwargs,
+) -> None:
+    """A COMPLETED task and its close; with *origin*, its source retained in git.
+
+    The retained identity names the project's designated ``dev-repo``: a task
+    on a foreign repository id is unknown until rebound, whatever git holds.
+    """
+    await _seed_task(
+        db, tid, pid=pid, status=TaskStatus.COMPLETED, repo_id=repo_id,
+        branch_name=f"aq/{tid}", **kwargs,
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id=f"close-{tid}", task_id=tid, outcome="pass", commits=[commit],
+            completed_at=time.time(),
+        )
+    )
+    if origin is not None:
+        from src.git.manager import GitManager
+        from src.integration.provenance import (
+            CompletedSource,
+            CompletionIdentity,
+            GitProvenance,
+        )
+
+        await GitProvenance(GitManager(), str(origin.clone), repository_url=origin.url
+                            ).write_completion(
+            CompletedSource(CompletionIdentity(pid, "dev-repo", tid, f"close-{tid}"), commit)
+        )
+
+
+async def _journal(
+    db: Database, row_id: str, *, state: str, target_ref: str, members: list[tuple[str, str]],
+    pid: str = "p-dev", parent_task_id: str | None = None,
+) -> None:
+    from src.integration.development import DevelopmentPrimitives
+
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            DevelopmentPrimitives._operation_insert(
+                id=row_id, project_id=pid, repository_id="dev-repo", target_ref=target_ref,
+                expected_sha=None, prepared_sha=None, state=state,
+                manifest=[
+                    {"task_id": tid, "source_sha": sha, "parent_task_id": parent_task_id}
+                    for tid, sha in members
+                ],
+                evidence={}, reason="development batch", created_at=now, updated_at=now,
+            )
+        )
+
+
+def _git(path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.check_output(
+        ["git", "-C", str(path), *args], text=True, stderr=subprocess.PIPE
+    ).strip()
+
+
+class _DevOrigin:
+    """A disposable ``origin`` the development project delivers to."""
+
+    def __init__(self, tmp_path):
+        self.url = str(tmp_path / "origin.git")
+        _git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
+        self.clone = tmp_path / "clone"
+        _git(tmp_path, "clone", self.url, str(self.clone))
+        _git(self.clone, "config", "user.name", "Tester")
+        _git(self.clone, "config", "user.email", "tester@example.test")
+        (self.clone / "base.txt").write_text("base\n")
+        _git(self.clone, "add", ".")
+        _git(self.clone, "commit", "-q", "-m", "base")
+        _git(self.clone, "push", "-q", "origin", "main")
+
+    def work(self, tid: str) -> str:
+        _git(self.clone, "checkout", "-q", "-B", f"aq/{tid}", "origin/main")
+        (self.clone / f"{tid}.txt").write_text(tid + "\n")
+        _git(self.clone, "add", ".")
+        _git(self.clone, "commit", "-q", "-m", tid)
+        _git(self.clone, "push", "-q", "origin", f"aq/{tid}")
+        return _git(self.clone, "rev-parse", "HEAD")
+
+    def land(self, tid: str) -> None:
+        _git(self.clone, "fetch", "-q", "origin")
+        _git(self.clone, "checkout", "-q", "-B", "main", "origin/main")
+        _git(self.clone, "merge", "-q", "--no-ff", "-m", f"deliver {tid}", f"origin/aq/{tid}")
+        _git(self.clone, "push", "-q", "origin", "main")
+
+
+@pytest.fixture
+def dev_origin(db, tmp_path):
+    """A real origin plus the git observer the daemon registers on its database."""
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+
+    db.set_delivery_observer(
+        DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "data")
+    )
+    return _DevOrigin(tmp_path)
+
+
+class TestUndeliveredDevelopmentWorkIsNotSwept:
+    """quick-ridge: an archive sweep never takes COMPLETED work that has not landed."""
+
+    FLEET = "c9fe0f80500894c94ecefd2b7dd92d5928e034db"
+    NEXUS = "514463eec6acd98b3d2b731ed4e02ebd7756fda7"
+    REPAIR = "991851bcb888753ff70d01655f07c6525ec579b1"
+
+    async def _seed_fleet_meadow(self, db):
+        """fleet-meadow, 2026-09-12: another project's repo id, never in any batch."""
+        await _seed_development_project(db)
+        # The live row named agent-queue-web's generated repository.
+        await _seed_task(
+            db, "fleet-meadow", pid="p-dev", status=TaskStatus.COMPLETED,
+            repo_id="web-repo", branch_name="aq/fleet-meadow",
+        )
+        # A failed close, then a passing close of the same revision.
+        for n, outcome in enumerate(("fail", "pass")):
+            await db.save_task_completion(
+                TaskCompletion(
+                    id=f"fleet-close-{n}", task_id="fleet-meadow", outcome=outcome,
+                    commits=[self.FLEET], completed_at=time.time() + n,
+                )
+            )
+        await _backdate(db, "fleet-meadow")
+
+    async def test_fleet_meadow_shape_is_held_by_the_auto_archive_sweep(self, db):
+        from src.integration.delivery_observer import delivery_sensitive_ids
+
+        await self._seed_fleet_meadow(db)
+        # The publisher never collects a foreign repository id, which is
+        # exactly why nothing ever delivered it; the archive guard still asks.
+        async with db._engine.connect() as conn:
+            assert await delivery_sensitive_ids(conn, ["fleet-meadow"]) == {"fleet-meadow"}
+
+        archived = await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600)
+
+        assert archived == []
+        assert await db.get_task("fleet-meadow") is not None
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [(b["task_id"], b["reason"]) for b in blocked.roots] == [
+            ("fleet-meadow", "integration_undelivered")
+        ]
+
+    async def test_fleet_meadow_is_swept_once_rebound_and_its_revision_is_on_main(
+        self, db, dev_origin
+    ):
+        from sqlalchemy import update
+
+        from src.database.tables import tasks as tasks_table
+
+        await _seed_development_project(db, url=dev_origin.url)
+        sha = dev_origin.work("fleet-meadow")
+        await _completed_with_close(
+            db, "fleet-meadow", repo_id="web-repo", commit=sha, origin=dev_origin,
+        )
+        await _backdate(db, "fleet-meadow")
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+
+        # Its revision on main is not enough: git cannot prove work for a
+        # task that names another project's repository.
+        dev_origin.land("fleet-meadow")
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+
+        # The publisher's rebind heals the repository id; git then proves it.
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(tasks_table).where(tasks_table.c.id == "fleet-meadow")
+                .values(repo_id="dev-repo")
+            )
+        await _backdate(db, "fleet-meadow")
+
+        assert await db.archive_old_terminal_tasks(
+            ["COMPLETED"], older_than_seconds=3600
+        ) == ["fleet-meadow"]
+
+    async def _seed_nimble_nexus(self, db):
+        """nimble-nexus, 2026-09-20: validation parked it, its repair parked too."""
+        await _seed_development_project(db)
+        await _completed_with_close(db, "nimble-nexus", repo_id="dev-repo", commit=self.NEXUS)
+        repair = "development-repair-2bfd84c0ad9f434c18e3"
+        await _completed_with_close(
+            db, repair, repo_id="dev-repo", commit=self.REPAIR, parent_task_id="nimble-nexus",
+        )
+        await _journal(
+            db, "nexus-candidate", state="delivered",
+            target_ref=f"refs/heads/aq/development/aeacda21cbc3/{self.NEXUS}",
+            members=[("nimble-nexus", self.NEXUS)],
+        )
+        await _journal(
+            db, "nexus-main", state="parked", target_ref="refs/heads/main",
+            members=[("nimble-nexus", self.NEXUS)],
+        )
+        await _journal(
+            db, "repair-parent", state="delivered",
+            target_ref="refs/heads/aq/development/parent/97b1afbb18674463/5630e634770e",
+            members=[(repair, self.REPAIR)], parent_task_id="nimble-nexus",
+        )
+        await _journal(
+            db, "repair-main", state="parked", target_ref="refs/heads/main",
+            members=[(repair, self.REPAIR)], parent_task_id="nimble-nexus",
+        )
+        await _backdate(db, "nimble-nexus", repair)
+        return repair
+
+    async def test_nimble_nexus_shape_is_held_while_its_batches_are_parked(self, db):
+        repair = await self._seed_nimble_nexus(db)
+
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+
+        assert await db.get_task("nimble-nexus") is not None
+        assert await db.get_task(repair) is not None
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [b["task_id"] for b in blocked.roots] == ["nimble-nexus"]
+
+    async def test_a_settled_but_undelivered_batch_still_does_not_release_it(self, db):
+        """A batch that ends without landing its work is not a delivery."""
+        await self._seed_nimble_nexus(db)
+        await _set_delivery_state(db, "nexus-main", "cancelled")
+        await _set_delivery_state(db, "repair-main", "cancelled")
+
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [(b["task_id"], b["reason"]) for b in blocked.roots] == [
+            ("nimble-nexus", "integration_undelivered")
+        ]
+
+    async def test_nimble_nexus_is_swept_once_both_revisions_are_on_main_in_git(
+        self, db, dev_origin
+    ):
+        await _seed_development_project(db, url=dev_origin.url)
+        repair = "development-repair-2bfd84c0ad9f434c18e3"
+        await _completed_with_close(
+            db, "nimble-nexus", repo_id="dev-repo", commit=dev_origin.work("nimble-nexus"),
+            origin=dev_origin,
+        )
+        await _completed_with_close(
+            db, repair, repo_id="dev-repo", commit=dev_origin.work(repair),
+            parent_task_id="nimble-nexus", origin=dev_origin,
+        )
+        # Rows that claim delivery prove nothing: the work is not on main.
+        await _journal(
+            db, "nexus-main", state="adopted", target_ref="refs/heads/main",
+            members=[("nimble-nexus", "0" * 40)],
+        )
+        await _backdate(db, "nimble-nexus", repair)
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [(b["task_id"], b["reason"]) for b in blocked.roots] == [
+            ("nimble-nexus", "integration_undelivered")
+        ]
+
+        dev_origin.land("nimble-nexus")
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+        dev_origin.land(repair)
+
+        assert await db.archive_old_terminal_tasks(
+            ["COMPLETED"], older_than_seconds=3600
+        ) == ["nimble-nexus"]
+        assert await db.get_archived_task(repair) is not None
+
+    async def test_explicit_single_archive_requires_a_recorded_abandonment(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await self._seed_fleet_meadow(db)
+
+        with pytest.raises(HierarchyError, match="integration_undelivered"):
+            await db.archive_task("fleet-meadow")
+        assert await db.archive_task(
+            "fleet-meadow",
+            abandon_undelivered=True,
+            abandon_reason="known foreign repository",
+            abandoned_by="test-operator",
+        ) is True
+        comments = (await db.list_task_comments("fleet-meadow", project_id="p-dev"))["comments"]
+        assert any(
+            "Delivery abandoned before archive by test-operator: known foreign repository" in row["body"]
+            for row in comments
+        )
+
+    async def test_bulk_archive_paths_hold_it_too(self, db):
+        await self._seed_fleet_meadow(db)
+
+        assert await db.archive_completed_tasks("p-dev") == []
+        assert await db.get_task("fleet-meadow") is not None
+
+    async def test_other_work_is_still_swept(self, db):
+        await _seed_development_project(db)
+        # A failed task and a branchless task have nothing to deliver; a task
+        # on another repository of its own project is outside the publisher.
+        await _seed_task(
+            db, "failed", pid="p-dev", status=TaskStatus.FAILED, repo_id="dev-repo",
+            branch_name="aq/failed",
+        )
+        await _seed_task(db, "branchless", pid="p-dev", status=TaskStatus.COMPLETED)
+        await db.create_repo(
+            RepoConfig(
+                id="dev-docs", project_id="p-dev", source_type=RepoSourceType.CLONE,
+                url="https://example.test/docs.git",
+            )
+        )
+        await _completed_with_close(db, "docs", repo_id="dev-docs", commit="d" * 40)
+        await _backdate(db, "failed", "branchless", "docs")
+
+        archived = await db.archive_old_terminal_tasks(
+            ["COMPLETED", "FAILED"], older_than_seconds=3600
+        )
+
+        assert sorted(archived) == ["branchless", "docs", "failed"]
+
+
+class TestBulkArchiveCommandReportsDeliveryPending:
+    @pytest.fixture
+    async def handler(self, db, tmp_path):
+        config = AppConfig(
+            discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
+        )
+        orchestrator = Orchestrator(config)
+        orchestrator.db = db
+        orchestrator.git = MagicMock()
+        return CommandHandler(orchestrator, config)
+
+    async def test_bulk_command_skips_and_names_the_undelivered_task(self, handler, db):
+        await _seed_development_project(db)
+        await _completed_with_close(db, "t-undelivered", repo_id="dev-repo", commit="e" * 40)
+        await _seed_task(db, "t-free", pid="p-dev", status=TaskStatus.COMPLETED, title="Free")
+
+        result = await handler.execute("archive_task", {"project_id": "p-dev"})
+
+        assert result["archived_ids"] == ["t-free"]
+        assert [(s["task_id"], s["code"]) for s in result["skipped"]] == [
+            ("t-undelivered", "hierarchy.integration_undelivered")
+        ]
+
+
+@pytest.mark.parametrize("refusal", ["replacement", "after_rewire", None])
+async def test_recovery_preparation_and_replacement_retirement_share_transaction(db, monkeypatch, refusal):
+    """Both merge parents' behavior survives, including rollback after rewiring."""
+    from src.sessions.obsolete import ObsoleteClose, ObsoleteCloseRefused
+
+    await _retirement_graph(db)
+    closer = ObsoleteClose(db, release_owner=None)
+    prepared = []
+
+    async def prepare(conn):
+        prepared.append(conn)
+        await db._upsert_meta("duplicate", "recovery-transaction-proof", "prepared", conn=conn)
+        return None
+
+    if refusal == "after_rewire":
+        async def refuse(*args, **kwargs):
+            assert (await prepared[0].execute(text(
+                "SELECT depends_on_task_id FROM task_dependencies "
+                "WHERE task_id='dependent' AND dep_type='blocks'"
+            ))).scalars().all() == ["replacement"]
+            raise ObsoleteCloseRefused("obsolete.test_refusal", "late refusal")
+        monkeypatch.setattr(closer, "_refuse_unsafe", refuse)
+    kwargs = dict(reason="duplicate", principal="supervisor:test", _prepare_on=prepare,
+                  replacement_task_id="missing" if refusal == "replacement" else "replacement")
+    if refusal:
+        with pytest.raises(ObsoleteCloseRefused):
+            await closer.close("duplicate", **kwargs)
+        assert await db.get_task_meta("duplicate", "recovery-transaction-proof") is None
+        assert await db.get_task_meta("duplicate", "obsolete") is None
+        assert await db.get_dependencies("dependent") == {"duplicate"}
+        assert (await db.get_task("duplicate")).status == TaskStatus.READY
+    else:
+        result = await closer.close("duplicate", **kwargs)
+        assert result["outcome"] == "closed"
+        assert await db.get_task_meta("duplicate", "recovery-transaction-proof") == "prepared"
+        assert await db.get_dependencies("dependent") == {"replacement"}
+    assert len(prepared) == 1
+    assert await db.get_task_completions("duplicate") == []

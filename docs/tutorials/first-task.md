@@ -2,8 +2,50 @@
 
 Create a disposable Git project, ask AQ for one small change, and inspect the
 result without giving a worker your normal repository. This follows
-[installation](install.md); it assumes `aq status` works and a harness profile
-is ready.
+[installation](install.md); it assumes the installer's **First-task readiness**
+summary is ready.
+
+## Confirm that a live task is admissible
+
+Do this before creating the sample project. `aq install` may complete when an
+optional provider was skipped, but that is not evidence that AQ can start a
+coding worker. Its closing summary (and `--json` under
+`onboarding.readiness`) reports separate, observed checks for the PostgreSQL
+connection, daemon health, dashboard reachability, harness authentication,
+profile routing, Git/tmux worktree prerequisites, and a configured project
+root that is readable and writable.
+
+Every check must say `ready` for this tutorial. In particular, do not infer
+agent authentication from an executable being on `PATH`, or daemon readiness
+from a started process. Repair the named check and rerun the installer; it
+revalidates completed steps rather than starting over.
+
+A fresh installation reports **needs attention** for **Project root**: AQ
+derives its defaults from this machine's cores and memory and deliberately
+invents no filesystem location, so `project_roots` starts empty and
+`aq project onboard` has no `--root-id` to take. [A realistic disposable
+example](#a-realistic-disposable-example) below configures one; that is the
+step the installer is asking for.
+
+Check that one cheap worker is active for this demonstration. The project's
+router picks the worker, but only from the profiles you have: a rung is a class,
+so a task hinted `fast-low` goes to a `fast-low-<harness>` rung rather than
+`deep-high-<harness>`. The example below checks the Codex rung only when it
+appears as active on *your* daemon; otherwise substitute a `fast-low-` profile
+shown by the command.
+
+```bash
+aq agent list-profiles
+export AQ_FIRST_PROFILE=fast-low-codex
+aq agent check-profile --profile-id "$AQ_FIRST_PROFILE"
+```
+
+This is a real live-agent demonstration, not a dry run. It starts one worker
+and consumes whatever usage your chosen provider/account applies (included
+plan allowance or API usage) as well as local CPU and one worktree slot. Keep
+the prompt below unchanged and do not queue more tasks until you have observed
+the result. Provider credentials stay with the provider CLI; never paste a
+key into the task description or AQ configuration.
 
 ## Why this exists
 
@@ -76,16 +118,17 @@ returns the durable status/result rather than creating a second project. Use a
 new request ID if you change the input.
 
 Create a task small enough to understand at a glance. This command's flags
-were checked with `aq task create --help`; replace the profile only after
-checking the profiles actually installed on your host.
+were checked with `aq task create --help`. You do not pick the worker: you give
+the task a kind and an intelligence-class hint, and the project's router picks
+the profile.
 
 ```bash
-aq agent list-profiles
 aq task create \
   --project hello-aq \
   --title "Add a hello script" \
   --description "Create hello.sh that prints Hello, AQ! and add a short README note." \
-  --profile worker-standard-medium-claude
+  --type feature \
+  --intelligence-class fast-low
 ```
 
 ```text
@@ -94,8 +137,12 @@ aq task create \
 … status: READY …
 ```
 
-If the chosen profile uses a different harness, substitute its ID. The profile
-is a configured choice. The task's default `project-repo` workspace requirement
+The router routes the task within a cycle or two. `aq task show <task-id>`
+names the profile it chose — one of your active `fast-low` rungs, such as the
+one you checked above — and `aq task explain --task-id <task-id>` says why a
+task is still waiting for a route. The hint is a request, not a choice: the
+router honours it within its policy for the kind, and `aq task create` refuses
+a profile outright. The task's default `project-repo` workspace requirement
 is shipped behaviour; you do not need to pass `--requires-kind` for this
 single-repository example ([task creation](../../src/commands/task_commands.py)).
 
@@ -119,6 +166,19 @@ dashboard to follow it visually or `aq task get`/`aq task comments` to inspect
 durable task state. The worker will work in an AQ-managed worktree and commit
 to its task branch, leaving `~/aq-tutorials/hello-aq` as the project checkout.
 
+Then inspect the integration that this project's configured policy actually
+performed; do not assume a worker's completion summary means the default
+branch changed:
+
+```bash
+aq integration status hello-aq
+```
+
+The status reports the project's rollout mode, readiness, active work, and
+cleanup. A successful result plus an integration record is the end-to-end
+proof for this disposable run. If the status names a pending or blocked
+integration item, follow that diagnostic before deleting the project.
+
 ```mermaid
 flowchart LR
   A[Operator creates task] --> B[AQ records task in PostgreSQL]
@@ -133,8 +193,9 @@ flowchart LR
 | Input | Owner | Result |
 | --- | --- | --- |
 | `project_roots` id and relative path | Operator configuration | A new Git repository and AQ project/workspace. |
-| Project ID, title, description, profile | Operator creating the task | A durable task with its initial state and routing data. |
-| Worker harness credentials | Daemon host / selected profile | A worker can start a session when capacity and routing allow. |
+| Project ID, title, description, kind and class hint | Operator creating the task | A durable task with its initial state and routing hints. |
+| Task route | The project's router | The profile and class a worker runs the task with. |
+| Worker harness credentials | Daemon host / routed profile | A worker can start a session when capacity and routing allow. |
 | Worker commit and close summary | Worker | `aq task get-result` returns completion information. |
 
 ## State ownership
@@ -164,25 +225,26 @@ on the default branch.
 | `root_unavailable` or no roots listed | `aq project list-roots`, then `aq doctor` | Create/fix the configured directory and its read/write permissions; retry. |
 | `destination_conflict` | Check the requested relative path | Choose a new path. AQ will not overwrite an existing destination. |
 | `project_id_conflict` | `aq project get --project-id hello-aq` | Reuse the existing project only if intended, otherwise choose a new ID. |
-| Task remains ready | `aq task get --task-id <task-id>` and inspect profile availability | Check `aq agent check-profile <profile-id>` and daemon status; do not edit worker worktrees by hand. |
+| Task remains ready | `aq task explain --task-id <task-id>` names the routing state (`awaiting_route`, `route_no_candidates`, …) and `aq task show <task-id>` the route | Check `aq agent check-profile --profile-id <profile-id>` for the routed profile, and daemon status; do not edit worker worktrees by hand. |
 | No result yet | `aq task get --task-id <task-id>` | The task has not closed. Wait for a terminal state, then run `aq task get-result`. |
 | Onboarding was interrupted | `aq project get-onboarding --request-id hello-aq-first-run` | Retry unchanged with the same ID; change input only with a new ID. |
 
 ## Cleanup
 
-Wait for the task to finish and inspect its result first. Then delete the
-disposable AQ project through the dashboard or the project-management CLI, and
-remove `~/aq-tutorials/hello-aq` only after confirming it is the tutorial
-repository. Stop the disposable PostgreSQL container when you no longer need
-AQ:
+Wait for the task to finish, inspect its result, and check the integration
+status first. Then delete the disposable AQ project through the dashboard or
+the project-management CLI. The CLI refuses to delete a project with a live
+task, which protects the worker and its worktree:
 
 ```bash
-aq stop
-docker compose down
+aq project delete --project-id hello-aq
+rm -rf ~/aq-tutorials/hello-aq
 ```
 
-`aq stop` ends agent sessions as well as the daemon. Do not use `--keep-sessions`
-for this disposable cleanup.
+Only run the `rm -rf` line after confirming that exact path is the disposable
+tutorial repository. AQ deletes its own task/project records; the repository
+directory is still yours. `aq stop` is optional and ends all agent sessions,
+so use it only when you mean to stop AQ rather than merely remove the sample.
 
 ## Related pages
 

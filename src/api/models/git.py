@@ -116,9 +116,24 @@ class GitPullResponse(BaseModel):
     pulled: bool = False
 
 
+class CommitAuthorNote(BaseModel):
+    commit: str
+    author: str | None = None
+    #: Present only when the committer could not be enforced (a root
+    #: delivery, or a session from an earlier release).
+    committer: str | None = None
+
+
 class GitPushResponse(BaseModel):
     project_id: str
     pushed: str = ""
+    #: The exact commit the push published — the value a later
+    #: ``expected_remote_oid`` lease names after a local squash.
+    oid: str | None = None
+    #: Published commits whose author is not the project's Git identity
+    #: (kept upstream authorship, or a worker-supplied ``--author``).
+    identity_notes: list[CommitAuthorNote] = []
+    identity_warning: str | None = None
 
 
 class MergeBranchResponse(BaseModel):
@@ -134,6 +149,9 @@ class PushBranchResponse(BaseModel):
     project_id: str
     branch: str = ""
     status: str = ""
+    oid: str | None = None
+    identity_notes: list[CommitAuthorNote] = []
+    identity_warning: str | None = None
 
 
 class GitRemoteUrlResponse(BaseModel):
@@ -200,7 +218,17 @@ class PrMergeResponse(BaseModel):
     pr_url: str = ""
     sha: str | None = None
     error: str | None = None
+    outcome: str | None = None
     ci: PrMergeCiVerdict | None = None
+
+
+class CiCompletedStatusResponse(BaseModel):
+    success: bool = True
+    project_id: str = ""
+    checked: int = 0
+    failing: list[dict] = []
+    unresolved: list[dict] = []
+    error: str | None = None
 
 
 class CiBaselineStatusResponse(BaseModel):
@@ -223,11 +251,31 @@ class CiBaselineStatusResponse(BaseModel):
     escalation_key: str | None = None
     escalation_title: str | None = None
     escalation_question: str | None = None
+    in_flight: list[str] = []
+    repair_signature: str | None = None
+    repair_tests: list[str] = []
+    repair_checks: list[str] = []
+    error: str | None = None
+
+
+class CiRepairAdoptResponse(BaseModel):
+    success: bool = True
+    outcome: str = ""
+    task_id: str = ""
+    dedup_key: str = ""
+    ref: str | None = None
+    head_sha: str | None = None
+    signature: str | None = None
+    failing_tests: list[str] = []
+    failing_checks: list[str] = []
+    in_flight: list[str] = []
     error: str | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "ci_completed_status": CiCompletedStatusResponse,
     "ci_baseline_status": CiBaselineStatusResponse,
+    "ci_repair_adopt": CiRepairAdoptResponse,
     "checkout_branch": CheckoutBranchResponse,
     "commit_changes": CommitChangesResponse,
     "create_branch": CreateBranchResponse,

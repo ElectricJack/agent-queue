@@ -22,11 +22,13 @@ class ListSessionsResponse:
         success (bool | Unset):  Default: True.
         sessions (list[SessionSummary] | Unset):
         count (int | Unset):  Default: 0.
+        has_more (bool | Unset):  Default: False.
     """
 
     success: bool | Unset = True
     sessions: list[SessionSummary] | Unset = UNSET
     count: int | Unset = 0
+    has_more: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -41,6 +43,8 @@ class ListSessionsResponse:
 
         count = self.count
 
+        has_more = self.has_more
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -50,6 +54,8 @@ class ListSessionsResponse:
             field_dict["sessions"] = sessions
         if count is not UNSET:
             field_dict["count"] = count
+        if has_more is not UNSET:
+            field_dict["has_more"] = has_more
 
         return field_dict
 
@@ -71,10 +77,13 @@ class ListSessionsResponse:
 
         count = d.pop("count", UNSET)
 
+        has_more = d.pop("has_more", UNSET)
+
         list_sessions_response = cls(
             success=success,
             sessions=sessions,
             count=count,
+            has_more=has_more,
         )
 
         list_sessions_response.additional_properties = d
