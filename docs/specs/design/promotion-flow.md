@@ -25,8 +25,8 @@ to other projects and legacy retirement remain separate work.
 |---|---|
 | §2.2 completion and collection | Retained completion refs, Git containment, immutable members and `AQ-Source` merges stay in the train. A worker close is a checkpoint, not delivery. |
 | §2.2 epic completion and PR gate | Train opens the epic PR; root admission requires its exact source head and the boundary's checks. `authorized` does not require a human review; `reviewed` does. |
-| §2.2 cadence | Root batches wait for quiet after the latest admitted input, capped from the first admission; defaults are 300/1800 seconds. Epic batches freeze immediately. |
-| §2.2 candidate and repair | Candidate checks, attestation and expected-old fast-forward remain. Repairs follow bounded primary/debug policy and escalate according to `on_exhausted`. |
+| §2.2 cadence | Idle root lanes dispatch immediately; busy lanes accumulate the next batch. The former 300/1800-second timing fields are deprecated; the settling cap remains an alert threshold. |
+| §2.2 candidate and repair | Candidate checks, attestation and expected-old fast-forward remain. The active allocator reuses one task-free fixer and retained candidate. Bounded notifications and CI rounds defer exhausted work with one supervisor report; exact green still advances it. Legacy ordinary repair tasks retain their close protocol. |
 | §2.2 cleanup and controls | Git-proved delivery triggers separate cleanup. Pause/resume, eject and seal-now use preview/apply commands; see the [supervisor runbook](../../guides/git-first-train-runbook.md#supervisor-controls). |
 | B1–B5 (D1–D3) | Flow schema, activation, promotion targets and pinned-PR intents are shipped. See [promotion flows](../../guides/promotion-flow.md). |
 | B6–B8 | Annotated-tag selection, deployment records, additive-migration tooling and custom-archive restore are shipped. See [releases](../../guides/releases.md). |
@@ -42,7 +42,13 @@ Sources for shipped train behavior:
 [cleanup.py](../../../src/integration/cleanup.py), and
 [promotion_steps.py](../../../src/integration/promotion_steps.py).
 The [repository map](../../contributing/repo-map.md#train-fidelity-and-release-modules)
-locates the added modules and marks later deletion as planned.
+locates the train and release modules and the retained legacy boundaries.
+
+The later fast-smooth-integration changes supersede the original timed dispatch,
+task-per-repair and mandatory epic-check behavior. See the
+[current operating guide](../../guides/hierarchical-integration-trains.md) for
+project playbook activation, task-free repair and advisory epic checks. Promotion
+source checks, exact-candidate checks, review and publication fences still apply.
 
 ## Implementation boundaries
 
@@ -71,6 +77,17 @@ operator to disable integration. Task explanations name `delivery_engine_unavail
 and say "no delivery engine for this project" for undeliverable prerequisites,
 instead of describing their delivery as ordinary pending work. Git proof remains
 the authority for dependency admission.
+
+Branch reconciliation also repairs missing origins for detached READY root tasks
+in `train` and `hierarchy` projects, including tasks filed while the train playbook
+was disabled and system delivery takeovers. It does bounded, fair passes and
+rechecks activation and task eligibility under the project hierarchy lock. An
+explicitly disabled train, attached writer, foreign repository, or repair/verifier
+delegate receives no new origin. Existing origins and checkpoints are preserved;
+published branches are adopted at their observed tips, and absent branches are
+reserved for normal fenced materialization. A failed reservation must not prevent
+unrelated tasks from reaching the claim frontier. No operator action is required
+after re-enabling the train.
 
 The reviewed policies request, gate, publish and backmerge through commands.
 They do not publish GitHub Releases or dispatch deploy hooks. Keep those optional

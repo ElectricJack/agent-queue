@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/database/queries/gate_queries.py::_VALID_STATUSES['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}
