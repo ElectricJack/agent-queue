@@ -1,0 +1,18 @@
+{
+  "exclusions": {
+    "src/jobs/result.py::build_result": "Generic resource-job output envelope; integration result parser is independently charged."
+  },
+  "shared_definitions": {
+    "src/jobs/result.py::import from src.integration.development_result_parser import PARSER_VERSION, PytestReport, classify_report": {
+      "baseline_span": [
+        9,
+        9
+      ],
+      "landing_span": [
+        9,
+        9
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/doctor/ingestion_checks.py::ingestion_checks": {
+      "fingerprint": "69186aa5f6d30989dccd5076741cf05b3397293ca2cb67d372392df590e62341",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

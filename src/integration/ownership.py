@@ -63,9 +63,7 @@ class BranchOwnership:
         async with self._db.immediate() as conn:
             return await self._locked_row(conn, target)
 
-    async def acquire(
-        self, target: BranchKey, owner_id: str, role: str, *, conn=None
-    ) -> Fence:
+    async def acquire(self, target: BranchKey, owner_id: str, role: str, *, conn=None) -> Fence:
         """Reserve an unowned branch; expiry never overrides an attached owner."""
         self._validate_identity(target, owner_id, role)
         if conn is not None:
@@ -74,7 +72,26 @@ class BranchOwnership:
             return await self._acquire_on(owned_conn, target, owner_id, role)
 
     async def _acquire_on(self, conn, target: BranchKey, owner_id: str, role: str) -> Fence:
+        if role == "worker":
+            from src.database.tables import projects, tasks
+            from src.integration.train_policy import train_disabled_for_project
+
+            project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == owner_id))
+            if project_id is not None:
+                # Activation changes take repo then hierarchy; callers may already
+                # hold hierarchy, so never acquire the repo fence here.
+                await self._db.lock_hierarchy_project(conn, project_id)
+                if await conn.scalar(select(projects.c.id).where(
+                    projects.c.id == project_id, train_disabled_for_project(),
+                )):
+                    raise BranchBusy("train playbook is disabled")
         row = await self._locked_row(conn, target)
+        if row is not None and row.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            return await BranchLock(self._db, clock=self._clock).acquire_on(
+                conn, target, owner_id, role=role
+            )
         if row is None:
             token = 1
             try:
@@ -120,6 +137,8 @@ class BranchOwnership:
         async with self._db.immediate() as conn:
             row = await self._locked_row(conn, fence.target)
             self._require_current(row, fence)
+            if row.get("fence") is not None:
+                return await self._claim_released(conn, row, fence.target, next_owner_id, next_role)
             live_mutation = (
                 await conn.execute(
                     select(integration_candidate_ref_mutations.c.id).where(
@@ -174,6 +193,8 @@ class BranchOwnership:
         async with self._db.immediate() as conn:
             row = await self._locked_row(conn, fence.target)
             self._require_current(row, fence)
+            if row.get("fence") is not None:
+                return row
             if row["handoff_state"] == "attached":
                 if not row["session_id"] or not row["workspace_id"]:
                     raise BranchBusy("attached owner lacks session/workspace handoff evidence")
@@ -216,10 +237,9 @@ class BranchOwnership:
                 ):
                     raise BranchBusy("branch release evidence changed while confirming handoff")
             elif current["handoff_state"] == "handoff_pending":
-                if (
-                    current["session_id"] != row.get("session_id")
-                    or current["workspace_id"] != row.get("workspace_id")
-                ):
+                if current["session_id"] != row.get("session_id") or current[
+                    "workspace_id"
+                ] != row.get("workspace_id"):
                     raise BranchBusy("branch handoff changed while confirmation ran")
             else:
                 raise BranchBusy("branch handoff changed while confirmation ran")
@@ -239,6 +259,8 @@ class BranchOwnership:
         self._validate_identity(fence.target, next_owner_id, next_role)
         current = await self._locked_row(conn, fence.target)
         self._require_current(current, fence)
+        if current.get("fence") is not None:
+            return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
         confirmation_fields = (
             "id",
             "owner_id",
@@ -264,6 +286,34 @@ class BranchOwnership:
             raise BranchBusy("branch has a live external mutation claim")
         return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
 
+    async def transfer_detached_on(
+        self, conn, fence: Fence, next_owner_id: str, next_role: str
+    ) -> Fence:
+        """Transfer a detached reservation alongside the caller's eligibility checks."""
+        self._validate_identity(fence.target, next_owner_id, next_role)
+        current = await self._locked_row(conn, fence.target)
+        self._require_current(current, fence)
+        if current.get("fence") is not None:
+            return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
+        if (
+            current["handoff_state"] not in {"reserved", "released"}
+            or current["session_id"] is not None
+            or current["workspace_id"] is not None
+        ):
+            raise BranchBusy("branch still has an attached writer")
+        mutation = await conn.execute(
+            select(integration_candidate_ref_mutations.c.id)
+            .where(
+                integration_candidate_ref_mutations.c.repository_id == fence.target.repository_id,
+                integration_candidate_ref_mutations.c.branch == fence.target.branch,
+                integration_candidate_ref_mutations.c.state == "reserved",
+            )
+            .limit(1)
+        )
+        if mutation.first() is not None:
+            raise BranchBusy("branch has a live external mutation claim")
+        return await self._claim_released(conn, current, fence.target, next_owner_id, next_role)
+
     async def assert_current(self, fence: Fence, *, expected_role: str | None = None) -> None:
         """Raise unless *fence* remains the current write authority."""
         async with self._db.immediate() as conn:
@@ -271,7 +321,7 @@ class BranchOwnership:
             self._require_current(row, fence)
             if expected_role is not None and row["owner_role"] != expected_role:
                 raise BranchBusy(f"branch ownership role must be {expected_role}")
-            if row["handoff_state"] not in {"reserved", "attached"}:
+            if row.get("fence") is None and row["handoff_state"] not in {"reserved", "attached"}:
                 raise BranchBusy("branch ownership is not write-authoritative")
 
     @asynccontextmanager
@@ -281,6 +331,7 @@ class BranchOwnership:
         *,
         state: str = "reserved",
         expected_role: str | None = None,
+        timeout_seconds: float | None = None,
     ):
         """Hold the ownership row across one bounded external mutation.
 
@@ -291,7 +342,8 @@ class BranchOwnership:
         """
         async with self._db.immediate() as conn:
             async with self.mutation_exclusion_on(
-                conn, fence, state=state, expected_role=expected_role
+                conn, fence, state=state, expected_role=expected_role,
+                timeout_seconds=timeout_seconds,
             ):
                 yield conn
 
@@ -303,6 +355,7 @@ class BranchOwnership:
         *,
         state: str = "reserved",
         expected_role: str | None = None,
+        timeout_seconds: float | None = None,
     ):
         """Recheck and hold ownership inside a caller's canonically ordered transaction."""
         row = await self._locked_row(conn, fence.target)
@@ -310,8 +363,17 @@ class BranchOwnership:
         if expected_role is not None and row["owner_role"] != expected_role:
             raise BranchBusy(f"branch ownership role must be {expected_role}")
         if row["handoff_state"] != state:
-            raise BranchBusy(f"branch ownership must be {state} for this mutation")
-        yield row
+            if row.get("fence") is None:
+                raise BranchBusy(f"branch ownership must be {state} for this mutation")
+        if row.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            async with BranchLock(self._db, clock=self._clock).exclusion(
+                fence, conn=conn, timeout_seconds=timeout_seconds,
+            ):
+                yield row
+        else:
+            yield row
 
     async def attach(
         self,
@@ -359,6 +421,17 @@ class BranchOwnership:
         self._require_current(row, fence)
         if expected_role is not None and row["owner_role"] != expected_role:
             raise BranchBusy(f"branch ownership role must be {expected_role}")
+        if row.get("fence") is not None:
+            # A managed lease has no workspace/session attachment saga. Ordinary
+            # claims own the workspace; the captured fence owns managed ref writes.
+            if row["session_id"] not in {None, session_id}:
+                raise StaleFence("ref lease is bound to another claim session")
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.id == row["id"])
+                .values(session_id=session_id, updated_at=self._clock())
+            )
+            return fence
         if row["handoff_state"] == "attached":
             if row.get("session_id") == session_id and row.get("workspace_id") == workspace_id:
                 return fence
@@ -366,18 +439,26 @@ class BranchOwnership:
         if row["handoff_state"] != "reserved":
             raise BranchBusy("branch ownership is not reserved for attachment")
         workspace = (
-            await conn.execute(
-                select(workspaces)
-                .where(workspaces.c.id == workspace_id)
-                .with_for_update()
+            (
+                await conn.execute(
+                    select(workspaces).where(workspaces.c.id == workspace_id).with_for_update()
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if (
             workspace is None
             or workspace["locked_by_task_id"] != fence.owner_id
             or (agent_id is not None and workspace["locked_by_agent_id"] != agent_id)
         ):
             raise BranchBusy("workspace is no longer locked by the branch owner")
+        slot = workspaces.alias("owner_attachment_slot")
+        base = await conn.scalar(
+            select(slot.c.id).where(slot.c.base_workspace_id == workspace_id).limit(1)
+        )
+        if base is not None:
+            raise BranchBusy("branch ownership cannot attach to a shared base checkout")
         result = await conn.execute(
             update(integration_branch_owners)
             .where(integration_branch_owners.c.id == row["id"])
@@ -441,6 +522,12 @@ class BranchOwnership:
             return result.rowcount == 1
 
     async def _claim_released(self, conn, row: dict[str, Any], target, owner_id, role) -> Fence:
+        if row.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            lock = BranchLock(self._db, clock=self._clock)
+            await lock.release(self._fence(row), conn=conn)
+            return await lock.acquire_on(conn, target, owner_id, role=role)
         token = int(row["fence_token"]) + 1
         result = await conn.execute(
             update(integration_branch_owners)
@@ -465,14 +552,29 @@ class BranchOwnership:
         return Fence(target=target, owner_id=owner_id, token=token)
 
     async def _locked_row(self, conn, target: BranchKey) -> dict[str, Any] | None:
-        result = await conn.execute(
-            select(integration_branch_owners)
-            .where(integration_branch_owners.c.repository_id == target.repository_id)
-            .where(integration_branch_owners.c.ref == target.branch)
-            .with_for_update()
-        )
-        row = result.mappings().one_or_none()
-        return dict(row) if row is not None else None
+        from src.integration.lock import BranchLock
+
+        # Retained-store cleanup also asks about private refs/aq pins. They
+        # are legacy inventory identities, outside managed branch publication.
+        if target.branch.startswith("refs/") and not target.branch.startswith("refs/heads/"):
+            result = await conn.execute(
+                select(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == target.repository_id,
+                    integration_branch_owners.c.ref == target.branch,
+                )
+                .with_for_update()
+            )
+            row = result.mappings().one_or_none()
+            return dict(row) if row is not None else None
+        # Same advisory-before-row order as managed publication, including first
+        # acquisition and both spellings of a branch. Shadow semantics stay above.
+        row = await BranchLock(self._db, clock=self._clock).lock_on(conn, target)
+        # Shadow callers still distinguish exact stored ref spellings; their
+        # handoff fences capture that spelling. Managed identities canonicalize.
+        if row is not None and row.get("fence") is None and row["ref"] != target.branch:
+            return None
+        return row
 
     @staticmethod
     def _validate_identity(target: BranchKey, owner_id: str, role: str) -> None:
@@ -485,15 +587,18 @@ class BranchOwnership:
     def _fence(row: dict[str, Any]) -> Fence:
         return Fence(
             target=BranchKey(repository_id=row["repository_id"], branch=row["ref"]),
-            owner_id=row["owner_id"],
-            token=int(row["fence_token"]),
+            owner_id=row["holder"] if row.get("holder") is not None else row["owner_id"],
+            token=int(row["fence"] if row.get("fence") is not None else row["fence_token"]),
         )
 
-    @classmethod
-    def _require_current(cls, row: dict[str, Any] | None, fence: Fence) -> None:
+    def _require_current(self, row: dict[str, Any] | None, fence: Fence) -> None:
         if row is None:
             raise StaleFence("branch ownership record does not exist")
-        if cls._fence(row) != fence:
+        if row.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            BranchLock(self._db, clock=self._clock).require_current(row, fence)
+        elif self._fence(row) != fence:
             raise StaleFence("branch ownership fence is stale")
 
 

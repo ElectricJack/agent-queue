@@ -1,10 +1,23 @@
 ---
 tags: [tokens, budget, scheduling, observability, design]
-status: draft
+status: historical proposal; observation and headroom routing shipped, reset pacing unimplemented
 date: 2026-08-24
 ---
 
 # Usage-Aware Concurrency — Track Real Headroom, Spend It Before Reset
+
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
+Current behaviour: [providers system spec](../../specs/systems/providers.md),
+[usage accounting](../../reference/usage-accounting.md),
+[scheduling and provider availability](../../concepts/scheduling.md), and
+[worker pools](../../guides/worker-pools.md). This historical proposal does not
+describe the current fleet sizing algorithm or replace its configured ceilings;
+its proposed implementation details are not setup instructions.
 
 ## 1. Goal
 
@@ -13,7 +26,7 @@ not by how many workspaces happen to exist. The target is to finish each window
 having used the quota, without hitting the wall early and stalling.
 
 Slots stop being the constraint once worktree mode lands (see
-[[plans/2026-08-24-worktree-workspace-migration]]) — creating a slot is lazy and
+[plans/2026-08-24-worktree-workspace-migration](../plans/2026-08-24-worktree-workspace-migration.md)) — creating a slot is lazy and
 free. `max_concurrent_agents` then becomes the only ceiling, and it is a static
 number that knows nothing about quota. This spec is about replacing that with a
 signal derived from real usage.

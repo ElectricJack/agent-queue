@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/waits/holding.py::active_wait_for": {
+      "fingerprint": "9b7ee03548bf6aa05c0696875c97797ef487fa57476cc3646c86151c2b92c8f6",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}
