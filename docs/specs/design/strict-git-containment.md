@@ -140,9 +140,13 @@ The admission-owned receipt fallbacks in `hierarchy_queries`, `claim_queries`,
 `blocked_state`, `task_graph/readiness`, `hierarchy`, `removal_guard`,
 `source_repairs`, `drain_owners` and `doctor/stall_checks` are removed. SQL blocked
 state projects source completion for `delivery-of`; the view separately proves
-current default-target containment. Unknown or unloaded evidence, including a
-missing truthful observer, permits worker preparation without asserting
-containment or restoring receipt eligibility. The agent merges prerequisite
+current default-target containment. `delivery-of` requires positive current proof
+in every mode: unknown or unloaded evidence, including a missing truthful observer,
+withholds admission and names the unproven source in explain and stall diagnostics.
+Cold caches and failed fetches request coalesced background re-observation with
+bounded backoff, independent of train visits; an absent observer is reported
+without spinning. `blocks` retains worker preparation on unknown evidence without
+asserting containment or restoring receipt eligibility. The agent merges prerequisite
 state from Git; proven negative ancestry may withhold work. Publication and
 destructive cleanup retain their current-proof requirements. Cleanup materializes
 historical resource identities without treating receipt presence as delivery and

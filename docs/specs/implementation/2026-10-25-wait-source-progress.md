@@ -8,6 +8,10 @@ its undispatched row as durable retry ownership. Later events may proceed. Cance
 and lease loss never authorize this advance. Retry passes are bounded and back off.
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
+PostgreSQL deadlocks (`40P01`) and serialization failures (`40001`) during a
+source attempt follow the same rollback, leased cursor CAS and retry backoff as
+an expired work budget. Reobserve the source on retry and keep unrelated events
+moving without restarting the listener. Other database errors still propagate.
 Retained undispatched events older than the listener safety cadence share alternating
 turns with forward work once their observation backoff expires. Preserve the next
 turn across drain passes, including timeouts, so a continuous forward backlog cannot
@@ -42,6 +46,14 @@ must never fall back to remote I/O. Database-backed predicates and resource admi
 remain fresh transaction-local reads. Lease loss, cancellation and failed apply roll
 back all outcomes and cursor changes. A deferred newest CI hint retains durable
 retry ownership; superseding a hint does not prove satisfaction.
+
+The CI source fence and every mutable exact-head cache writer lock the repository
+row first, then a transaction advisory lock keyed by repository and SHA before any
+cache row access for mutation or locked revalidation. This includes refresh inserts
+and updates and check-reconciliation reservations/results. The source fence uses
+this advisory lock instead of locking cache rows in a competing order; it also
+covers first observations where no cache row exists yet. Refreshes touching several
+heads acquire their fences in repository/SHA order before any check-specific locks.
 
 CI events have no lifecycle effects without a pending verified subscriber of the
 same source/generation whose watermark precedes the event. Pool, config and workspace
@@ -80,7 +92,14 @@ against current subscriptions. Preparation never authorizes an outcome itself.
 supervisor or local operator reobserve one persisted source through normal dispatch.
 The command requires a project, fences the leader lease, preserves the forward cursor,
 filters wait and lifecycle effects to that project, and records an audit event. It
-never trusts caller-supplied evidence or a former dispatched stamp. Missing sources,
+never trusts caller-supplied evidence. After validating project and source scope,
+an already dispatched source returns success with outcome `already_dispatched` and
+its `dispatched_at` timestamp, without acquiring the listener lock or lease,
+preparing observations, dispatching, retiring history or writing an audit event.
+Recheck dispatch state after acquiring the listener lock. For pending sources, a
+work-budget refusal includes the source sequence, phase, budget and elapsed seconds,
+and dispatch attempt count; an observation's own timeout is reported separately.
+Missing sources,
 contention and absent leadership return a refusal; no wake is fabricated.
 For a CI, pool, config or workspace source, the command also retires retained events
 of that source/generation through the requested sequence when no pending verified

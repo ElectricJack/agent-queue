@@ -1,8 +1,8 @@
-"""One link resolver, one path scheme, one link per post (spec §6.1, §6.2).
+"""One link resolver, one path scheme, clickable dashboard links (spec §6.1, §6.2).
 
 The scheme table is pinned here so a renderer cannot invent a route, so no
 post can name a ``/settings/`` page, and so every post that links anywhere
-links exactly once, last, bare and wrapped in ``<>``.
+links to the canonical dashboard page with explicit Markdown markup.
 """
 
 from __future__ import annotations
@@ -186,14 +186,33 @@ def test_the_escalation_post_links_the_incident_page_and_nothing_else():
     post = render_root(
         facts(), mentions=MentionPolicy(), base_url=ORIGIN, dedup_key="esc-1:root:0"
     )
-    assert post.endswith(f"<{ORIGIN}/escalations/esc-1>")
+    assert post.endswith(f"[Dashboard]({ORIGIN}/escalations/esc-1)")
     assert "#escalation-reply-" not in post
     assert ORIGIN in post
 
 
 def test_the_digest_links_the_needs_you_inbox():
     post = digest_post()
-    assert post.endswith(f"<{ORIGIN}/inbox>")
+    assert post.endswith(f"[Dashboard]({ORIGIN}/inbox)")
+
+
+@pytest.mark.parametrize("origin", [
+    "https://aq.example.ts.net", "http://100.99.1.2:8082",
+    "http://[fd7a:115c:a1e0::55]:8082", "http://queue:8082",
+])
+def test_dashboard_host_forms_have_explicit_clickable_markup(origin):
+    assert link_line(origin, "/tasks/task-1") == f"[Dashboard]({origin}/tasks/task-1)"
+
+
+def test_link_markup_encodes_path_characters_instead_of_removing_the_link():
+    assert link_line(ORIGIN, "/tasks/a b(c)<d>?q=[yes]#résumé") == (
+        f"[Dashboard]({ORIGIN}/tasks/a%20b%28c%29%3Cd%3E?q=%5Byes%5D#r%C3%A9sum%C3%A9)"
+    )
+
+
+@pytest.mark.parametrize("origin", ["", "queue:8082", "ftp://queue", "https://bad host", "https://x:99999"])
+def test_a_link_that_cannot_be_built_always_says_so(origin):
+    assert "could not be built" in link_line(origin, "/inbox")
 
 
 @pytest.mark.parametrize(
@@ -209,7 +228,7 @@ def test_the_digest_links_the_needs_you_inbox():
 def test_every_linked_post_carries_exactly_one_link_and_it_is_last(name, expected):
     post = every_post()[name]
     assert post.count(ORIGIN) == 1, post
-    assert post.splitlines()[-1] == f"<{expected}>"
+    assert post.splitlines()[-1] == f"[Dashboard]({expected})"
 
 
 def test_a_post_without_an_origin_says_why_instead_of_guessing_one():
@@ -338,4 +357,6 @@ async def no_probe(_settings):
 def test_a_link_is_never_built_from_a_dashboard_link_that_never_resolved():
     """``DashboardLink(url="")`` is the "no origin" answer, not a relative link."""
     assert link_line(DashboardLink().url, escalation_path("esc-1"), notice="n") == "n"
-    assert compose(["one"], STATUS_LINE, link=link_line("", "/inbox")) == "one"
+    assert compose(["one"], STATUS_LINE, link=link_line("", "/inbox")) == (
+        "one\nThe dashboard link could not be built for this post."
+    )

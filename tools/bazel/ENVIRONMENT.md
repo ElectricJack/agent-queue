@@ -38,6 +38,13 @@ input/output roots fail admission. Output roots must belong to this target/shard
 never declare the host /tmp, operator home, an entire checkout containing private
 state, or a shared output ancestor. These declarations are trusted build inputs.
 
+The module launcher sets `PYTHONTZPATH` to `runtime/share/zoneinfo` beneath the
+runfiles-resolved native toolchain. The existing native runtime filegroup declares
+that data, and the same subtree verification and read-only mounts used for
+PostgreSQL retain it inside H2. Python configuration validation can resolve IANA
+zones without a host zoneinfo directory or an additional wheel. Coverage includes
+the default report zone, UTC, and the full pinned toolchain's IANA database.
+
 `environment.child_env(settings)` returns an independent environment copy for
 local child launchers. Explicit per-target settings cannot override isolation or
 interpreter startup controls, session identifiers, tokens or database DSNs.
@@ -87,6 +94,40 @@ admission the helper proves a loopback TCP connection works and an external
 connection has no route. Namespace, mount or self-test failure returns 125;
 there is no host-network fallback. Unsupported platforms receive an explicit
 instruction to select the legacy backend.
+
+`Runtime.read_only_mappings` is an additive interface for the locked H1 sysroot.
+Runtime manifests retain these mappings, the sysroot, shell and `env` executable
+across the module, PostgreSQL and E2E child boundaries. Module PostgreSQL targets
+also pass their declared Python import paths to H3's E2E environment manifest.
+Each `ReadOnlyMapping(source, target)` source must resolve inside the explicit
+`Runtime.sysroot`, itself inside declared inputs. Targets are restricted to
+`/lib`, `/lib64`, `/usr/lib`, and `/usr/lib64`; duplicates, undeclared sources,
+symlink escapes, and shadowing declared inputs or private outputs are refused.
+Mappings are always read-only binds and have no writable option; nested host
+mounts are never imported.
+Existing callers keep their same-absolute-path input binds. B1 supplied this
+H1/H2 extension with supervisor authorization because the H epic was closed.
+
+B1 also preserves H1's native installation prefix: Conda PostgreSQL embeds that
+prefix for server data, timezone files and loadable libraries. Before mounting,
+`pytest_main.native_runtime_inputs` verifies every file in each native subtree
+against the declared runfiles and rejects undeclared siblings or escaping
+symlinks. Those complete subtrees use the existing `Runtime.read_only` input
+binds at their original absolute paths. The enclosing cache/repository and
+excluded `conda-meta` metadata remain absent. This prefix preservation is covered
+by the same supervisor authorization; it adds no writable mount or host fallback.
+
+To verify the pinned ABI, supply the already materialized, locked runtime roots
+alongside AQ admission (these settings are never discovered from host paths):
+
+```bash
+AQ_BAZEL_NATIVE_RUNTIME=/absolute/locked/aq_native/runtime \
+AQ_BAZEL_PYTHON_RUNTIME=/absolute/locked/python \
+aq test tests/test_bazel_environment.py -k locked_sysroot
+```
+
+This executes the declared Python and native tools in H2's real jail, checks
+glibc 2.28, refuses writes through the mappings, and proves host libc paths absent.
 
 The public launch deadline includes namespace setup and execution, with two
 bounded cleanup grace periods. The total must fit 300 seconds (default 290 +
