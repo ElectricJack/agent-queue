@@ -4,13 +4,13 @@ import yaml
 from src.config import DatabaseConfig, WaitPolicyConfig, load_config
 
 
-def test_wait_policy_defaults_are_disabled_and_match_approved_policy():
+def test_wait_policy_cutover_defaults_and_approved_policy():
     policy = WaitPolicyConfig()
     assert policy.validate() == []
-    assert not policy.v2_enabled
-    assert not policy.hibernation_enabled
-    assert not policy.scheduler_waits_enabled
-    assert policy.v1_bodies == "translate"
+    assert policy.v2_enabled
+    assert policy.hibernation_enabled
+    assert policy.scheduler_waits_enabled
+    assert policy.v1_bodies == "refuse"
     assert policy.in_place_ceiling_seconds == 1800
     assert policy.hibernate_margin == 2.0
     assert policy.resume_cost_minutes == 10
@@ -20,6 +20,7 @@ def test_wait_policy_defaults_are_disabled_and_match_approved_policy():
     assert policy.branch_admission_deadline_seconds == 1800
     assert policy.transition_budget_seconds == 120
     assert policy.resume_launch_attempts == 2
+    assert policy.resume_stall_seconds == 300
     assert {
         kind: (row.escalate_after_seconds, row.expected_duration_seconds)
         for kind, row in policy.kinds.items()
@@ -39,7 +40,10 @@ def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp
         "messaging_platform": "none",
         "database": {"url": "postgresql://u:p@localhost/aq_cfg_test"},
         "wait_policy": {
+            "v2_enabled": False,
+            "scheduler_waits_enabled": False,
             "resume_cost_minutes": 20,
+            "resume_stall_seconds": 600,
             "hibernation_enabled": True,
             "kinds": {"task": {"escalate_after_seconds": 12000}},
             "projects": {
@@ -48,6 +52,7 @@ def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp
                     "hibernation_enabled": False,
                     "scheduler_waits_enabled": True,
                     "resume_cost_minutes": 40,
+                    "resume_stall_seconds": 120,
                     "in_place_ceiling_seconds": 7200,
                     "hibernate_margin": 3,
                     "kinds": {"task": {"expected_duration_seconds": 6000}},
@@ -61,6 +66,7 @@ def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp
     assert canary.v2_enabled and canary.scheduler_waits_enabled
     assert not canary.hibernation_enabled
     assert canary.resume_cost_minutes == 40
+    assert canary.resume_stall_seconds == 120
     assert canary.in_place_ceiling_seconds == 7200
     assert canary.hibernate_margin == 3
     assert canary.kinds["task"].escalate_after_seconds == 12000
@@ -71,10 +77,53 @@ def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp
         assert not resolved.scheduler_waits_enabled
         assert resolved.hibernation_enabled
         assert resolved.resume_cost_minutes == 20
+        assert resolved.resume_stall_seconds == 600
         assert resolved.kinds["task"].expected_duration_seconds == 3600
     canary.kinds["job"].escalate_after_seconds = 10000
     assert policy.kinds["job"].escalate_after_seconds == 7200
     assert WaitPolicyConfig().kinds["job"].escalate_after_seconds == 7200
+
+
+def test_wait_policy_config_and_runtime_share_models_and_preserve_metrics(tmp_path):
+    from src.config import WaitKindPolicy, WaitProjectOverrides
+    from src.config_wait_policy import (
+        WaitKindPolicy as RuntimeKindPolicy,
+        WaitPolicyConfig as RuntimePolicyConfig,
+        WaitProjectOverrides as RuntimeProjectOverrides,
+        parse_wait_policy,
+    )
+
+    assert WaitPolicyConfig is RuntimePolicyConfig
+    assert WaitKindPolicy is RuntimeKindPolicy
+    assert WaitProjectOverrides is RuntimeProjectOverrides
+    values = {
+        "metrics": {
+            "pre_rollout_turn_rate": 2.5,
+            "pre_rollout_tokens_per_turn": 100,
+            "cohort": "before-rollout",
+            "window": "2026-10-01/2026-10-07",
+        },
+        "projects": {"canary": {
+            "v2_enabled": True,
+            "kinds": {"job": {"escalate_after_seconds": 9000}},
+        }},
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/aq_cfg_test"},
+        "wait_policy": values,
+    }))
+    loaded = load_config(str(path)).wait_policy
+    assert loaded == parse_wait_policy(values)
+    resolved = loaded.resolve_project("canary")
+    assert resolved.v2_enabled
+    assert resolved.escalation_seconds("job") == 9000
+    assert resolved.escalation_seconds("human") is None
+    assert resolved.metrics == loaded.metrics
+    resolved.metrics.cohort = "changed"
+    assert loaded.metrics.cohort == "before-rollout"
+    assert loaded.metrics.pre_rollout_turn_rate == 2.5
 
 
 @pytest.fixture

@@ -39,6 +39,7 @@ from tests.db_fixtures import lease_dsn
     ("loop_window_registrations", -1), ("loop_window_seconds", 0),
     ("branch_admission_deadline_seconds", -1), ("transition_budget_seconds", -1),
     ("resume_launch_attempts", 0), ("projects", []), ("kinds", []),
+    ("resume_stall_seconds", 0), ("resume_stall_seconds", True), ("resume_stall_seconds", 86401),
 ])
 def test_wait_policy_invalid_scalars_return_config_errors(name, value):
     errors = WaitPolicyConfig(**{name: value}).validate()
@@ -85,6 +86,10 @@ def test_wait_policy_aggregates_nested_validation_errors():
     ({"kinds": []}, "kinds"),
     ({"kinds": {"task": []}}, "kinds.task"),
     ({"resume_cost_minutes": "ten"}, "resume_cost_minutes"),
+    ({"metrics": []}, "metrics"),
+    ({"metrics": {"typo": 1}}, "metrics.typo"),
+    ({"metrics": {"pre_rollout_turn_rate": -1}}, "metrics.pre_rollout_turn_rate"),
+    ({"metrics": {"cohort": ""}}, "metrics.cohort"),
     ([], "must be a mapping"),
     (None, "must be a mapping"),
 ])
@@ -140,6 +145,23 @@ integration:
             private_key_path="/run/secrets/aq-github-app.pem",
         )
         assert "private_key" not in vars(config.integration.github_app)
+
+    @pytest.mark.parametrize("permission", ["read", "write", "admin", True, None, [], {}])
+    def test_actions_permission_load_and_validation(self, tmp_path, permission):
+        values = dict(client_id="Iv1.example", app_id=101, installation_id=202,
+                      private_key_path="/run/secrets/key.pem", actions_permission=permission)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.safe_dump({"messaging_platform": "none",
+            "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
+            "integration": {"github_app": values}}))
+        errors = GitHubAppConfig(**values).validate()
+        if isinstance(permission, str) and permission in ("read", "write"):
+            assert errors == []
+            assert load_config(str(config_file)).integration.github_app.actions_permission == permission
+        else:
+            assert any(e.field == "github_app.actions_permission" for e in errors)
+            with pytest.raises(ConfigValidationError, match="github_app"):
+                load_config(str(config_file))
 
     @pytest.mark.parametrize(
         "github_app",
@@ -1205,6 +1227,16 @@ class TestSubstrateLoaderDefaults:
         cfg = self._load(tmp_path, sessions={"lease_ttl_seconds": 90})
         assert cfg.sessions.provider == SessionsConfig().provider
         assert cfg.sessions.lease_ttl_seconds == 90
+
+    def test_idle_claim_timeout_defaults_loads_and_rejects_negative(self, tmp_path):
+        from src.config import SessionsConfig
+
+        assert SessionsConfig().idle_claim_timeout_seconds == 900
+        cfg = self._load(tmp_path, sessions={"idle_claim_timeout_seconds": 120})
+        assert cfg.sessions.idle_claim_timeout_seconds == 120
+        assert not SessionsConfig(idle_claim_timeout_seconds=0).validate()
+        errors = SessionsConfig(idle_claim_timeout_seconds=-1).validate()
+        assert any(error.field == "idle_claim_timeout_seconds" for error in errors)
 
     def test_sessions_explicit_values_override_defaults(self, tmp_path):
         cfg = self._load(
