@@ -50,6 +50,11 @@ The new train and release flow use retained Git readers, ownership guards and
 shared contracts. Legacy publishers and subject runtimes are retired. Historical recovery,
 archival and cleanup consumers retain their fenced records; active startup
 constructs the train and retained maintenance.
+The retired parent-action dispatch has no command handler or transport schema.
+Shared and project parent/root bundles retain their authored policy tables and
+recovery rules; legacy candidate-building and publication event rules are removed
+from sources, recordings and shipped copies together. Profile grants and CLI
+references must resolve only to retained commands.
 Shared definitions have retained owners in `development_policy.py`,
 `repository_git.py` and the train contracts.
 

@@ -299,6 +299,32 @@ async def test_app_credentials_cannot_replace_subject_manifest_with_policy_only_
     requester.assert_not_awaited()
 
 
+@pytest.mark.parametrize("manifest", [False, True])
+@pytest.mark.parametrize("aggregate", [None, "failure", "cancelled", "timed_out"])
+async def test_hosted_required_job_succeeds_independently_of_unrequired_jobs(manifest, aggregate):
+    client, trust = github(app=manifest, manifest=manifest)
+    client.workflows[0].update(
+        status="queued" if aggregate is None else "completed", conclusion=aggregate,
+    )
+    client.checks.append({**client.checks[0], "id": 99, "name": "waived-windows",
+                          "status": "queued", "conclusion": None})
+    client.jobs.append({**client.jobs[0], "id": 99, "name": "waived-windows",
+                       "status": "queued", "conclusion": None})
+    s = subject()
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+    assert result.state is CIState.GREEN
+    assert result.checks == {"unit": "success"}
+    assert result.details["receipt"]["workflow_runs"][0]["conclusion"] == aggregate
+    assert result.details["checks"][0]["job_url"].endswith("/actions/runs/31/job/51")
+    assert "job_url" not in result.details["receipt"]["checks"][0]
+
+    # A workflow rerun cannot borrow the previous attempt's successful job.
+    client.workflows[0]["run_attempt"] = 2
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+    assert result.state is not CIState.GREEN
+    assert result.classification == "superseded"
+
+
 @pytest.mark.parametrize("change", ["head", "app", "newer-pending", "older-attempt"])
 async def test_hosted_never_uses_wrong_head_foreign_app_or_superseded_success(change):
     client, trust = github(app=False)
@@ -649,14 +675,11 @@ def test_typed_green_cannot_claim_failure_cancellation_or_untrusted_evidence():
 
 
 @pytest.fixture
-async def ci_producer_db():
+async def ci_producer_db(reuse_database):
     from sqlalchemy import insert
-    from src.database import Database
     from src.database.tables import playbook_artifacts
-    from tests.db_fixtures import lease_dsn
 
-    db = Database(lease_dsn("ci-producers"))
-    await db.initialize()
+    db = await reuse_database("ci-producers")
     pin = subject().policy
     async with db._engine.begin() as conn:
         await conn.execute(
@@ -671,7 +694,6 @@ async def ci_producer_db():
             )
         )
     yield db
-    await db.close()
 
 
 async def test_real_journal_replay_is_append_only_and_never_counts_budget(ci_producer_db):
