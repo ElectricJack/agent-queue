@@ -33,20 +33,26 @@ from typing import Any
 
 from sqlalchemy import and_, delete, insert, or_, select
 
+from src.task_templates import render_task_template
 from src.database.queries.integration_state_queries import session_attached_clause
 from src.database.tables import (
     integration_candidate_resolutions,
     integration_delegate_releases,
     integration_repair_operations,
     integration_repair_stages,
+    agents,
+    gates,
     sessions,
+    task_dependencies,
+    task_gates,
     task_metadata,
+    task_results,
     tasks,
 )
 from src.models import TaskStatus
 
-#: What an operator runs to settle every stranded delegate on the install.
-RELEASE_COMMAND = "aq doctor --check integration.stranded_delegates --fix"
+#: The daemon maintenance source that settles stranded terminal delegates.
+RELEASE_COMMAND = "automatic delegate cleanup"
 
 #: Operation states that mean the operation is over.  ``cancelled`` disposes of
 #: its delegates as ``cancelled``; ``completed`` means the operation finished
@@ -85,9 +91,29 @@ def retired_delegate_message(operation_id: str, state: str, *, action: str) -> s
     """
     return (
         f"Integration operation {operation_id} is {state}; its delegate is no longer "
-        f"required and cannot be {action}. Release it with `{RELEASE_COMMAND}`; it "
+        f"required and cannot be {action}. The daemon's {RELEASE_COMMAND} "
         "settles as FAILED. It can be deleted or archived only once no integration "
         "history names it."
+    )
+
+
+def retired_writer_close_feedback(retirement: dict[str, Any]) -> str:
+    """What a retired delegate's writer is told when its close is refused.
+
+    *retirement* is ``get_retired_integration_writer``'s proof.  The close can
+    never be accepted, so the worker is told to stop and acknowledge its
+    drain; the session reconciler stops a drain-acknowledged worker holding a
+    proven-retired delegate, and owner recovery preserves its checkout before
+    anything is released (bold-impact-53).
+    """
+    reason = str(retirement["reason"])
+    return (
+        render_task_template(
+            "retired-writer-close-feedback",
+            reason_1_upper=reason[:1].upper(),
+            reason_1=reason[1:],
+            retirement_disposition=retirement["disposition"],
+        )
     )
 
 
@@ -372,7 +398,9 @@ async def release_delegates(
     return releases
 
 
-async def live_integration_owner(conn, task_ids: list[str]) -> dict[str, Any] | None:
+async def live_integration_owner(
+    conn, task_ids: list[str], *, archive_obsolete: bool = False
+) -> dict[str, Any] | None:
     """The first still-running operation that owns any task in *task_ids*.
 
     It covers a reference the foreign keys never did:
@@ -413,6 +441,10 @@ async def live_integration_owner(conn, task_ids: list[str]) -> dict[str, Any] | 
             .where(
                 operation.c.state.in_(LIVE_OPERATION_STATES),
                 stage.c.repair_task_id.in_(task_ids),
+                or_(
+                    stage.c.ordinal >= operation.c.active_stage,
+                    stage.c.state.not_in(("passed", "failed", "expired", "cancelled")),
+                ) if archive_obsolete else True,
             )
             .order_by(operation.c.updated_at.desc(), operation.c.id)
             .limit(1)
@@ -453,3 +485,125 @@ async def live_integration_owner(conn, task_ids: list[str]) -> dict[str, Any] | 
             "task_id": row["repair_task_id"],
         }
     return None
+
+
+async def assert_obsolete_delegate_on(db, conn, task_id: str) -> dict[str, Any]:
+    """Prove a generated delegate can leave the graph without releasing authority.
+
+    Called inside the ordinary archive transaction under the project lock.
+    It never releases an owner, claim or human gate to make the proof pass.
+    """
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    refs = [dict(row) for row in (await conn.execute(
+        select(integration_repair_stages, integration_repair_operations.c.state.label(
+            "operation_state"), integration_repair_operations.c.active_stage)
+        .join(integration_repair_operations,
+              integration_repair_operations.c.id == integration_repair_stages.c.operation_id)
+        .where(integration_repair_stages.c.repair_task_id == task_id)
+        .with_for_update(of=(integration_repair_operations, integration_repair_stages))
+    )).mappings()]
+    # Repair dispatch holds operation/stage before its task. Follow the same
+    # order so an archive cannot deadlock that authority check.
+    task = (await conn.execute(select(tasks).where(
+        tasks.c.id == task_id,
+    ).with_for_update())).mappings().one_or_none()
+    if task is None:
+        raise HierarchyError("not_found", task_id)
+    blockers = []
+    if (
+        task["created_by_kind"] != "integration_repair"
+        or task["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}
+        or task["parent_task_id"] is not None
+    ):
+        blockers.append({"code": "not_terminal_generated_delegate"})
+    if task["assigned_agent_id"] is not None:
+        blockers.append({"code": "assigned_agent"})
+    if not refs or any(
+        row["operation_state"] not in ENDED_OPERATION_STATES and (
+            row["ordinal"] >= row["active_stage"]
+            or row["state"] not in {"passed", "failed", "expired", "cancelled"}
+        ) for row in refs
+    ):
+        blockers.append({"code": "current_repair_delegate"})
+    owner = await live_integration_owner(conn, [task_id], archive_obsolete=True)
+    if owner is not None:
+        blockers.append({"code": "integration_owned", **owner})
+    blockers.extend(await db.get_integration_delegate_cleanup(task_id, conn=conn))
+    claims = (await conn.execute(select(sessions.c.id).where(
+        sessions.c.task_id == task_id, sessions.c.claim_phase.is_not(None),
+    ).with_for_update())).scalars().all()
+    blockers.extend({"code": "claim_retained", "session_id": sid} for sid in claims)
+    if (await conn.execute(select(agents.c.id).where(
+        agents.c.current_task_id == task_id,
+    ))).first():
+        blockers.append({"code": "agent_claim_retained"})
+    if (await conn.execute(select(tasks.c.id).where(
+        tasks.c.parent_task_id == task_id,
+    ))).first():
+        blockers.append({"code": "children_retained"})
+    dependencies = [dict(row) for row in (await conn.execute(select(task_dependencies).where(
+        or_(task_dependencies.c.task_id == task_id,
+            task_dependencies.c.depends_on_task_id == task_id),
+    ))).mappings()]
+    if any(row["dep_type"] in {"blocks", "parent-child", "waits-for", "conditional-blocks"}
+           for row in dependencies):
+        blockers.append({"code": "dependency_retained"})
+    open_gates = (await conn.execute(select(gates.c.id).join(
+        task_gates, task_gates.c.gate_id == gates.c.id,
+    ).where(task_gates.c.task_id == task_id, gates.c.status == "open")
+        .with_for_update(of=gates))).scalars().all()
+    blockers.extend({"code": "open_gate", "gate_id": gid} for gid in open_gates)
+    if (await conn.execute(select(integration_candidate_resolutions.c.id).where(
+        integration_candidate_resolutions.c.repair_task_id == task_id,
+        integration_candidate_resolutions.c.state.in_(LIVE_RESOLUTION_STATES),
+    ).with_for_update())).first():
+        blockers.append({"code": "candidate_resolution_retained"})
+    if blockers:
+        raise HierarchyError("delegate_archive_blocked", task_id, {"blockers": blockers})
+    metadata = dict((await conn.execute(select(task_metadata.c.key, task_metadata.c.value).where(
+        task_metadata.c.task_id == task_id,
+    ))).all())
+    results = [dict(row) for row in (await conn.execute(select(task_results).where(
+        task_results.c.task_id == task_id,
+    ).order_by(task_results.c.created_at, task_results.c.id))).mappings()]
+    session_history = (await conn.execute(select(sessions.c.id).where(
+        sessions.c.task_id == task_id,
+    ).order_by(sessions.c.id))).scalars().all()
+    return {"stages": refs, "dependencies": dependencies, "metadata": metadata,
+            "results": results, "session_ids": session_history}
+
+
+async def archive_obsolete_delegates(
+    db, *, operation_ids=None, limit: int = 100, after: str | None = None
+) -> dict:
+    """Reconcile a bounded page; all safety proofs are repeated by archive_task."""
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    stage, operation = integration_repair_stages, integration_repair_operations
+    statement = select(tasks.c.id).join(stage, stage.c.repair_task_id == tasks.c.id).join(
+        operation, operation.c.id == stage.c.operation_id,
+    ).where(
+        tasks.c.created_by_kind == "integration_repair",
+        tasks.c.status.in_(("COMPLETED", "FAILED", "BLOCKED")),
+        or_(operation.c.state.in_(ENDED_OPERATION_STATES), and_(
+            stage.c.ordinal < operation.c.active_stage,
+            stage.c.state.in_(("passed", "failed", "expired", "cancelled")),
+        )),
+    ).distinct().order_by(tasks.c.id).limit(limit)
+    if operation_ids is not None:
+        statement = statement.where(operation.c.id.in_(operation_ids))
+    if after is not None:
+        statement = statement.where(tasks.c.id > after)
+    async with db._engine.connect() as conn:
+        candidates = (await conn.execute(statement)).scalars().all()
+    archived, blockers = [], []
+    for task_id in candidates:
+        try:
+            if await db.archive_task(task_id, obsolete_integration_delegate=True):
+                archived.append(task_id)
+        except HierarchyError as exc:
+            blockers.append({"task_id": task_id, "code": exc.code, "detail": exc.detail,
+                             **exc.context})
+    return {"archived_delegates": archived, "blockers": blockers,
+            "next_after": candidates[-1] if len(candidates) == limit else None}

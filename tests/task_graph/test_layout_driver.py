@@ -6,9 +6,8 @@ from sqlalchemy import event, update
 from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.task_graph.layout import driver as driver_module
-from src.task_graph.layout.constants import CARD_W, SIBLING_GAP
+from src.task_graph.layout.constants import CARD_W, SIBLING_GAP, TARGET_ROW_WIDTH
 from src.task_graph.layout.driver import LayoutDriver
-from src.task_graph.layout.flow import clamp_row_target, row_target
 from tests.db_fixtures import lease_dsn
 
 
@@ -73,6 +72,45 @@ async def test_full_layout_nests_children_inside_container(db):
         assert e.abs_x <= r.abs_x and r.abs_x + r.w <= e.abs_x + e.w
         assert e.abs_y <= r.abs_y and r.abs_y + r.h <= e.abs_y + e.h
     assert e.agg_children == 3 and e.agg_descendants == 3 and e.agg_active == 3
+
+
+async def test_epic_rows_contain_wrapped_completed_and_nested_children(db):
+    kids = await seed_epic(db, n=18, completed=6)
+    nested = [f"nested-{i}" for i in range(5)]
+    for cid in nested:
+        await db.create_task(Task(id=cid, project_id="p1", title=cid, description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent(cid, kids[-1], conn=conn)
+    # Creation order places these completed dependents before their blocker.
+    for cid in kids[:6]:
+        await db.add_dependency(cid, kids[6])
+    driver = LayoutDriver(db)
+    await driver.full_layout("p1", "all")
+    rows = await db.load_subtree_rows("p1", "all")
+
+    for cid in [*kids, *nested]:
+        child = rows[cid]
+        parent = rows[child.container_id]
+        assert parent.abs_x <= child.abs_x
+        assert child.abs_x + child.w <= parent.abs_x + parent.w
+        assert parent.abs_y <= child.abs_y
+        assert child.abs_y + child.h <= parent.abs_y + parent.h
+    lines = {}
+    for cid in kids:
+        child = rows[cid]
+        lines.setdefault(child.rel_y, []).append(child)
+    assert max(map(len, lines.values())) <= 4
+    assert all(rows[cid].rank == 1 for cid in kids[:6])
+    assert rows[kids[6]].rank == 0
+    assert min(rows[cid].abs_y for cid in kids[:6]) > max(
+        rows[cid].abs_y for cid in kids[6:]
+    )
+    first = {cid: (row.ordinal, row.abs_x, row.abs_y) for cid, row in rows.items() if row.depth > 0}
+    await driver.full_layout("p1", "all")
+    refreshed = await db.load_subtree_rows("p1", "all")
+    assert first == {
+        cid: (row.ordinal, row.abs_x, row.abs_y) for cid, row in refreshed.items() if row.depth > 0
+    }
 
 
 async def test_active_variant_excludes_finished_and_stubs_finished_epics(db):
@@ -739,8 +777,13 @@ async def test_finished_active_leaf_writes_a_deferred_reflow_then_compacts(db):
     assert (await db.layout_reflow_status())["queued"] == 0
     after = await db.load_layout_rows("p1", "active", kids)
     assert kids[1] not in after
-    for kid in (kids[0], kids[2], kids[3]):
-        assert after[kid].ordinal == before[kid].ordinal
+    # The remaining siblings retain their relative execution order. Canonical
+    # epic keys can close their own gaps along with the visual gap.
+    survivors = [kids[0], kids[2], kids[3]]
+    assert sorted(after, key=lambda kid: after[kid].ordinal) == survivors
+    assert all(after[kid].rank == before[kid].rank == 0 for kid in survivors)
+    assert [after[kid].rel_x for kid in survivors] == pytest.approx([0, 1.15, 2.3])
+    assert len({after[kid].rel_y for kid in survivors}) == 1
     assert (after[kids[2]].abs_x, after[kids[2]].abs_y) != (
         before[kids[2]].abs_x,
         before[kids[2]].abs_y,
@@ -1036,21 +1079,8 @@ async def test_published_positions_move_only_on_a_band_crossing(db):
     await _drain(db, drv)
 
     def scope_shape(rows):
-        """What actually governs the epic's wrapping: the CLAMPED target
-        (the ideal can move without the published one moving, and vice
-        versa), plus the box the epic is allocated."""
-        kids = {k: (r.w, r.h) for k, r in rows.items() if r.container_id == "e"}
-        ordered: dict[int, list[str]] = {}
-        for k, r in sorted(rows.items()):
-            if r.container_id == "e":
-                ordered.setdefault(r.rank, []).append(k)
-        ideal = row_target(kids, is_root=False)
-        return (
-            clamp_row_target(
-                [ordered[r] for r in sorted(ordered)], kids, is_root=False, target=ideal
-            ),
-            (rows["e"].w, rows["e"].h),
-        )
+        """Epics keep the four-card target; only their allocation can grow."""
+        return TARGET_ROW_WIDTH, (rows["e"].w, rows["e"].h)
 
     rows = await db.load_subtree_rows("p1", "all")
     shape = scope_shape(rows)

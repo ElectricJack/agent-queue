@@ -1,0 +1,20 @@
+{
+  "wait_graph_lock_measurement_history": [
+    {
+      "authority_task": "sharp-cascade-53",
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 131,
+      "branch": "aq/epic/wait-graph-advisory-lock-held-across-idle-in-transaction",
+      "decision_message_id": "msg-000c812477994a65a62633a4a051224c",
+      "measured_engine_lines": 85316,
+      "measured_owned_total": 160968,
+      "measured_source_revision": "24b2dde7d4be3f393c698eff68b2fd08bd7b9de0",
+      "measured_table_count": 45,
+      "previous_engine_lines": 85316,
+      "previous_owned_total": 160837,
+      "reason": "Keep external observations outside the wait graph fence and reconcile one scheduler owner per transaction; the extracted reconciliation helper remains explicitly charged. Project supervisor approved the exact measured footprint under the delegated size-cap authority.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bold-flare-41"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+
+Merge parent head {{parent_head}} as well. Conflicting paths: {{conflicting_files}}. Preserve every listed head as an ancestor of your result. Resolve source files first, then run scripts/regenerate-generated.sh; never hand-merge generated artifacts. Do not implement the dependent's work.
