@@ -68,17 +68,18 @@ def session_list(ctx: click.Context, state, lifecycle, live_only) -> None:
         args["lifecycle"] = lifecycle
     result = _call(ctx, "session_list", args)
 
-    def _render(data: dict) -> None:
+    rows = result.get("sessions", [])
+
+    def _render(render_rows: list[dict]) -> None:
         from rich.table import Table
 
-        rows = data.get("sessions", [])
-        if not rows:
+        if not render_rows:
             console.print("[dim]No sessions.[/dim]")
             return
         table = Table(border_style="bright_black")
         for col in ("ID", "Name", "State", "Task", "Harness", "Idle", "Restarts"):
             table.add_column(col)
-        for r in rows:
+        for r in render_rows:
             idle = r.get("idle_seconds") or 0
             table.add_row(
                 (r.get("id") or "")[:8],
@@ -93,7 +94,14 @@ def session_list(ctx: click.Context, state, lifecycle, live_only) -> None:
             )
         console.print(table)
 
-    emit(ctx, result, render=_render)
+    emit(
+        ctx,
+        rows,
+        entity="session",
+        total=result.get("count"),
+        legacy_data=result,
+        render=_render,
+    )
 
 
 @session.command("show")
@@ -102,7 +110,8 @@ def session_list(ctx: click.Context, state, lifecycle, live_only) -> None:
 @_handle_errors
 def session_show(ctx: click.Context, session_id) -> None:
     """Full detail for one session."""
-    emit(ctx, _call(ctx, "session_show", {"session_id": _resolve_session_id(session_id)}))
+    result = _call(ctx, "session_show", {"session_id": _resolve_session_id(session_id)})
+    emit(ctx, result.get("session", result), entity="session", legacy_data=result)
 
 
 @session.command("peek")
@@ -263,3 +272,37 @@ def session_drain_ack(ctx: click.Context, session_id) -> None:
             "(AQ_SESSION_ID is set by the session runtime)"
         )
     emit(ctx, _call(ctx, "session_drain_ack", {"session_id": resolved}))
+
+
+@session.command("prune")
+@click.argument("session_id")
+@click.pass_context
+@_handle_errors
+def prune(ctx: click.Context, session_id: str) -> None:
+    """Forget one inactive sleeping/stopped named session (never live work)."""
+    emit(ctx, _call(ctx, "session_prune", {"session_id": session_id}))
+
+
+@session.command("cleanup")
+@click.option("--project-id", help="Limit cleanup to one project.")
+@click.option("--dry-run", is_flag=True, help="List eligible sessions without changing them.")
+@click.pass_context
+@_handle_errors
+def session_cleanup(ctx: click.Context, project_id: str | None, dry_run: bool) -> None:
+    """Stop terminals and prune taskless sleeping named sessions."""
+    args = {"dry_run": dry_run}
+    if project_id:
+        args["project_id"] = project_id
+    result = _call(ctx, "session_cleanup", args)
+
+    def render(data: dict) -> None:
+        if data.get("dry_run"):
+            click.echo(f"{data['count']} sleeping session(s) eligible for cleanup")
+            for row in data["sessions"]:
+                click.echo(f"  {row['id']}  {row['name']}")
+            return
+        click.echo(f"Pruned {len(data['pruned'])} of {data['count']} sleeping session(s)")
+        for row in data["skipped"]:
+            click.echo(f"  Skipped {row['session_id']}: {row['reason']}")
+
+    emit(ctx, result, render=render)

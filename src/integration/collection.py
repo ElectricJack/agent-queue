@@ -1,0 +1,284 @@
+"""Reconcile approved children into the durable parent promotion policy."""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+
+from sqlalchemy import select
+
+from src.database.tables import (
+    integration_promotion_intents,
+    integration_repair_operations,
+    integration_repair_stages,
+    projects,
+    task_integration_checkpoints,
+    tasks,
+)
+from src.integration.owner_guards import parent_engine_guard
+from src.integration.models import BranchKey, Fence
+from src.integration.outbox import enqueue_integration_event
+
+logger = logging.getLogger(__name__)
+
+
+class CollectionService:
+    """Submit one child per parent; promotion remains the mutation authority.
+
+    *child_delivery* (``src.integration.child_delivery.ChildDelivery``) supplies
+    the approval a completed child needs when no reviewer gave one: it proves
+    the child's published head from Git and records completion evidence for it.
+    Without it a child waits for a reviewer's verdict, which nothing files
+    automatically since per-task reviews were retired (vivid-ridge).
+    """
+
+    def __init__(self, db, *, hierarchy_service_factory, page_size=10, child_delivery=None):
+        self.db = db
+        self.hierarchy_service_factory = hierarchy_service_factory
+        self.page_size = page_size
+        self.child_delivery = child_delivery
+        self.after = ""
+
+    async def tick(self, now):
+        hierarchy = self.hierarchy_service_factory()
+        if hierarchy is None:
+            return
+        checkpoint = task_integration_checkpoints
+        operation = integration_repair_operations
+        async with self.db._engine.connect() as conn:
+            parents = (
+                (
+                    await conn.execute(
+                        select(tasks.c.id)
+                        .join(checkpoint, checkpoint.c.task_id == tasks.c.id)
+                        .join(
+                            operation,
+                            (operation.c.parent_task_id == tasks.c.id)
+                            & (operation.c.episode_id == checkpoint.c.episode_id),
+                        )
+                        .join(projects, projects.c.id == tasks.c.project_id)
+                        .where(
+                            tasks.c.id > self.after,
+                            tasks.c.status == "PAUSED",
+                            checkpoint.c.state == "awaiting_children",
+                            operation.c.state.in_(("active", "escalated")),
+                            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                        )
+                        .order_by(tasks.c.id)
+                        .limit(self.page_size)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        self.after = parents[-1] if len(parents) == self.page_size else ""
+        for task_id in parents:
+            try:
+                await self.queue_next(hierarchy, task_id, now)
+            except Exception:
+                logger.warning("Child collection failed for %s", task_id, exc_info=True)
+
+    @parent_engine_guard()
+    async def collect_parent(self, task_id, now):
+        """Queue *task_id*'s next approved child now instead of on the next tick."""
+        hierarchy = self.hierarchy_service_factory()
+        if hierarchy is None:
+            return None
+        return await self.queue_next(hierarchy, task_id, now)
+
+    @parent_engine_guard()
+    async def queue_next(self, hierarchy, task_id, now):
+        parent = await self.db.get_task(task_id)
+        checkpoint = await self.db.get_integration_checkpoint(task_id)
+        if parent is None or checkpoint is None or not checkpoint.get("episode_id"):
+            return "waiting"
+        target = BranchKey(repository_id=parent.repo_id, branch=parent.branch_name)
+        owner = await hierarchy.ownership.get_owner(target)
+        if owner is not None and owner["owner_role"] == "worker":
+            from src.integration.suspended_parent_recovery import SuspendedParentRecovery
+
+            await SuspendedParentRecovery(self.db, hierarchy).run(
+                task_id, dry_run=False, automatic=True,
+                reason="collection reconciliation after producer detachment",
+            )
+            owner = await hierarchy.ownership.get_owner(target)
+        if owner is not None and owner["owner_role"] in {"repair", "repair_delegate"}:
+            await self.return_repaired_branch(hierarchy, parent, checkpoint, target, owner)
+            owner = await hierarchy.ownership.get_owner(target)
+        if (
+            owner is None
+            or owner["owner_role"] != "collector"
+            or owner["handoff_state"] != "reserved"
+        ):
+            return "waiting"
+        operation = await self.db.get_integration_operation(owner["owner_id"])
+        if (
+            operation is None
+            or operation["state"] not in {"active", "escalated"}
+            or operation["parent_task_id"] != task_id
+            or operation["episode_id"] != checkpoint["episode_id"]
+        ):
+            return "waiting"
+        fence = Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"])
+        children = await self.db.get_children(task_id)
+        for child in sorted(children, key=lambda child: child.id):
+            if child.status.value != "COMPLETED":
+                continue
+            if await self.db.get_task_meta(child.id, "object_experiment") is not None:
+                continue
+            origin = await self.db.get_task_branch_origin_for_promotion(child.id, parent.repo_id)
+            source = await self.db.get_integration_checkpoint(child.id)
+            if (
+                origin is None
+                or source is None
+                or not origin["materialized"]
+                or not origin["reserved"]
+                or origin["parent_task_id"] != task_id
+            ):
+                continue
+            source_head = source["checkpoint_sha"]
+            receipts = await self.db.list_integration_delivery_receipts(
+                source_task_id=child.id,
+                repository_id=parent.repo_id,
+                target_branch=parent.branch_name,
+            )
+            if any(receipt["reviewed_head_sha"] == source_head for receipt in receipts):
+                continue
+            review = await self.db.get_applicable_integration_review_evidence(
+                source_task_id=child.id,
+                repository_id=parent.repo_id,
+                source_base=origin["base_sha"],
+                reviewed_head_sha=source_head,
+                current_generation=int(source["generation"]),
+            )
+            # No reviewer approved this head.  Prove it from Git and record
+            # completion evidence; a rejected head or an open reviewer is left
+            # alone, and a failed proof backs off.
+            if (
+                review is None
+                and self.child_delivery is not None
+                and await self.child_delivery.ensure_evidence(child.id, now) is not None
+            ):
+                review = await self.db.get_applicable_integration_review_evidence(
+                    source_task_id=child.id,
+                    repository_id=parent.repo_id,
+                    source_base=origin["base_sha"],
+                    reviewed_head_sha=source_head,
+                    current_generation=int(source["generation"]),
+                )
+            if review is None:
+                continue
+            # Observe Git only when an approved child needs delivery. Promotion
+            # rechecks this exact lease and source evidence before any push.
+            repo = await self.db.get_repo(parent.repo_id)
+            head = await hierarchy._resolve_head(repo, parent.branch_name)
+            identity = hashlib.sha256(
+                f"{operation['id']}:{child.id}:{source_head}:{head}:{fence.token}".encode()
+            ).hexdigest()
+            async with hierarchy.ownership.mutation_exclusion(
+                fence, expected_role="collector"
+            ) as conn:
+                current = (
+                    await conn.execute(
+                        select(integration_repair_operations.c.id)
+                        .join(
+                            task_integration_checkpoints,
+                            task_integration_checkpoints.c.episode_id
+                            == integration_repair_operations.c.episode_id,
+                        )
+                        .join(tasks, tasks.c.id == task_integration_checkpoints.c.task_id)
+                        .join(projects, projects.c.id == tasks.c.project_id)
+                        .where(
+                            integration_repair_operations.c.id == operation["id"],
+                            integration_repair_operations.c.state.in_(("active", "escalated")),
+                            task_integration_checkpoints.c.state == "awaiting_children",
+                            tasks.c.id == task_id,
+                            tasks.c.status == "PAUSED",
+                            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                        )
+                    )
+                ).first()
+                if current is None:
+                    return "waiting"
+                pending = (
+                    await conn.execute(
+                        select(integration_promotion_intents.c.id)
+                        .where(
+                            integration_promotion_intents.c.repository_id == parent.repo_id,
+                            integration_promotion_intents.c.target_branch == parent.branch_name,
+                            integration_promotion_intents.c.state != "superseded",
+                            (integration_promotion_intents.c.state != "committed")
+                            | (
+                                (integration_promotion_intents.c.source_task_id == child.id)
+                                & (integration_promotion_intents.c.source_head == source_head)
+                            ),
+                        )
+                        .limit(1)
+                    )
+                ).first()
+                if pending:
+                    return "waiting"
+                await enqueue_integration_event(
+                    conn,
+                    event_id=f"delivery-ready-{identity}",
+                    dedup_key=f"delivery.ready:{identity}",
+                    project_id=parent.project_id,
+                    event_type="delivery.ready",
+                    available_at=now,
+                    payload={
+                        "operation_id": operation["id"],
+                        "operation_key": operation["id"],
+                        "source_task_id": child.id,
+                        "source_head": source_head,
+                        "source_base": origin["base_sha"],
+                        "expected_target": head,
+                        "fence": fence.model_dump(mode="json"),
+                    },
+                )
+            return "queued"
+        return "waiting"
+
+    async def return_repaired_branch(self, hierarchy, parent, checkpoint, target, owner):
+        """Recover collection only after a completed repair detached and delivered."""
+        if owner["handoff_state"] not in {"reserved", "released"}:
+            return
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, parent.project_id)
+            operation = (await conn.execute(select(integration_repair_operations).where(
+                integration_repair_operations.c.parent_task_id == parent.id,
+                integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+                integration_repair_operations.c.state.in_(("active", "escalated")),
+            ).with_for_update())).mappings().one_or_none()
+            if operation is None:
+                return
+            stage = (await conn.execute(select(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == operation["active_stage"],
+            ).with_for_update())).mappings().one_or_none()
+            repair = (await conn.execute(select(tasks).where(
+                tasks.c.id == owner["owner_id"],
+            ).with_for_update())).mappings().one_or_none()
+            current = (await conn.execute(select(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == parent.id,
+                task_integration_checkpoints.c.episode_id == operation["episode_id"],
+                task_integration_checkpoints.c.state == "awaiting_children",
+            ))).first()
+            if (stage is None or repair is None or current is None
+                    or stage["state"] not in {"active", "awaiting_completion"}
+                    or stage["writer_kind"] != "repair_delegate"
+                    or repair["status"] != "COMPLETED"
+                    or repair["created_by_kind"] != "integration_repair"
+                    or repair["created_by_id"] != operation["id"]
+                    or stage["repair_task_id"] != repair["id"]):
+                return
+            pending = (await conn.execute(select(integration_promotion_intents.c.id).where(
+                integration_promotion_intents.c.repository_id == parent.repo_id,
+                integration_promotion_intents.c.target_branch == parent.branch_name,
+                integration_promotion_intents.c.state.not_in(("committed", "superseded")),
+            ).limit(1))).first()
+            if pending is not None:
+                return
+            await hierarchy.ownership.transfer_detached_on(
+                conn, Fence(target=target, owner_id=owner["owner_id"],
+                            token=owner["fence_token"]), operation["id"], "collector",
+            )

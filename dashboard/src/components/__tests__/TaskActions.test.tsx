@@ -1,12 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TaskActions from "../TaskActions";
+import { TerminalLinkModeProvider } from "../terminalLinks";
 
 const mockNavigate = vi.fn();
 const mockDelete = vi.fn();
 const mockSendChatMessage = vi.fn();
-
 vi.mock("../../api/chat", () => ({
   sendChatMessage: (...args: unknown[]) => mockSendChatMessage(...args),
 }));
@@ -26,13 +26,15 @@ vi.mock("../../api/hooks", () => {
     useSkipTask: mutation,
     useReopenWithFeedback: mutation,
     useProvideInput: mutation,
-    useDeleteTask: () => ({
-      mutate: mockDelete,
-      isPending: false,
-      isError: true,
-      error: new Error("A descendant still has a live session"),
-    }),
+    useDeleteTask: () => ({ mutateAsync: mockDelete, isPending: false }),
+    useDeleteTaskPreview: () => ({ data: { task_ids: ["task/with space"], tasks: [],
+      reparented_tasks: [], branch_details: [], sessions: [], warnings: [] }, isFetching: false }),
   };
+});
+
+beforeEach(() => {
+  mockDelete.mockReset();
+  mockDelete.mockResolvedValue({ warnings: [] });
 });
 
 const task = {
@@ -43,41 +45,24 @@ const task = {
 } as never;
 
 describe("TaskActions deletion", () => {
-  it("shows a cascade deletion failure in the confirmation dialog", async () => {
-    render(<TaskActions task={task} />);
-
+  it("offers one Delete action even while running", async () => {
+    render(<TaskActions task={{ ...(task as object), status: "IN_PROGRESS" } as never} />);
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Delete" }));
-
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "A descendant still has a live session",
-    );
+    expect(screen.getByLabelText("Deletion scope")).toHaveValue("task");
+    expect(screen.getByLabelText("Branch cleanup")).toHaveValue("keep");
+    await userEvent.click(screen.getByRole("button", { name: "Delete selected tasks" }));
+    expect(mockDelete).toHaveBeenCalledOnce();
+    expect(mockDelete).toHaveBeenCalledWith({ task_id: "task/with space", recursive: false,
+      branches: "keep", stop_running: true, reason: "", confirmed: true });
   });
 
-  it("closes a pane and does not create a duplicate navigation entry when returnTo is current", async () => {
+  it("closes a pane without duplicate navigation when returnTo is current", async () => {
     const onDeleted = vi.fn();
     mockNavigate.mockReset();
-    mockDelete.mockImplementation((_input, options) => options.onSuccess());
-
-    render(
-      <TaskActions
-        task={task}
-        returnTo="/command-center/graph?q=needle"
-        onDeleted={onDeleted}
-      />,
-    );
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Delete" }));
-    await user.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Delete task and descendants",
-      }),
-    );
-
-    expect(mockDelete).toHaveBeenCalledWith(
-      { task_id: "task/with space", cascade: true },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
-    );
+    render(<TaskActions task={task} returnTo="/command-center/graph?q=needle" onDeleted={onDeleted} />);
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete selected tasks" }));
     expect(onDeleted).toHaveBeenCalledOnce();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
@@ -100,8 +85,19 @@ describe("TaskActions ask-supervisor", () => {
       { sessionAddress: "supervisor-global", threadId: "dashboard:global" },
     );
     expect(mockNavigate).toHaveBeenCalledWith("/agents?agent=supervisor-global", {
-      state: { agentSelection: "replace" },
+      state: { agentSelection: "replace", terminalFocus: "supervisor-global" },
     });
+  });
+
+  it("in watch mode opens the supervisor's focus session, never /agents", async () => {
+    mockNavigate.mockReset();
+    mockSendChatMessage.mockReset();
+    mockSendChatMessage.mockResolvedValue({ message_id: "m1" });
+
+    render(<TerminalLinkModeProvider mode="watch"><TaskActions task={blocked} /></TerminalLinkModeProvider>);
+    await userEvent.click(screen.getByRole("button", { name: "Ask supervisor why" }));
+
+    expect(mockNavigate).toHaveBeenCalledWith("/focus/sessions/supervisor-global");
   });
 
   it("is not offered for a task that is not blocked", () => {

@@ -1,6 +1,6 @@
-import type { ReactNode } from "react";
-import type { NodeChange } from "@xyflow/react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useCallback, useState, type ReactNode } from "react";
+import type { Edge, NodeChange } from "@xyflow/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { TilesResponse } from "@aq/ts-client";
@@ -10,46 +10,64 @@ interface FlowNode {
   id: string;
   type?: string;
   position: { x: number; y: number };
+  width?: number;
   selected?: boolean;
   draggable?: boolean;
   data: Record<string, unknown>;
 }
 
 interface FlowProps {
+  colorMode?: "light" | "dark" | "system";
   nodes: FlowNode[];
+  edges: Edge[];
   children: ReactNode;
   onlyRenderVisibleElements?: boolean;
   onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
   onNodeClick?: (event: unknown, node: FlowNode) => void;
+  onNodeDoubleClick?: (event: unknown, node: FlowNode) => void;
   onNodesChange?: (changes: NodeChange[]) => void;
   onNodeDragStop?: (event: unknown, node: FlowNode) => void;
   nodesDraggable?: boolean;
+  elevateNodesOnSelect?: boolean;
 }
 
-const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
+const flow = vi.hoisted(() => ({ current: null as FlowProps | null, real: false }));
 const fitBounds = vi.hoisted(() => vi.fn());
 const setCenter = vi.hoisted(() => vi.fn());
+const fitView = vi.hoisted(() => vi.fn());
+const zoomIn = vi.hoisted(() => vi.fn());
+const zoomOut = vi.hoisted(() => vi.fn());
 const setViewport = vi.hoisted(() => vi.fn());
 const getViewport = vi.hoisted(() => vi.fn(() => ({ x: 0, y: 0, zoom: 1 })));
-vi.mock("@xyflow/react", () => ({
-  MarkerType: { ArrowClosed: "arrowclosed" },
-  Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
-  ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
-  useReactFlow: () => ({ fitBounds, setCenter, setViewport, getViewport }),
-  ReactFlow: (props: FlowProps) => {
-    flow.current = props;
-    return <div>
-      {props.nodes.map((node) => <div key={node.id} data-testid={`node-${node.id}`} />)}
-      {props.children}
-    </div>;
-  },
-  Background: () => null,
-  Handle: () => null,
-  Controls: () => null,
-  Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
-  ViewportPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
-  useStore: (selector: (s: { nodeLookup: Map<string, unknown> }) => unknown) => selector({ nodeLookup: new Map() }),
-}));
+vi.mock("@xyflow/react", async (importOriginal) => {
+  const { ReactFlow: ActualReactFlow } = await importOriginal<typeof import("@xyflow/react")>();
+  return {
+    MarkerType: { ArrowClosed: "arrowclosed" },
+    Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
+    ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
+    useReactFlow: () => ({ fitBounds, fitView, setCenter, setViewport, getViewport, zoomIn, zoomOut }),
+    ReactFlow: (props: FlowProps) => {
+      flow.current = props;
+      // jsdom has no viewport geometry. Render every node when a test needs
+      // React Flow's real wrappers, including their computed stacking order.
+      if (flow.real) return <ActualReactFlow {...props} onlyRenderVisibleElements={false} width={800} height={600} />;
+      return <div>
+        {props.nodes.map((node) => <div key={node.id} data-testid={`node-${node.id}`} />)}
+        {props.children}
+      </div>;
+    },
+    Background: () => null,
+    Handle: () => null,
+    Controls: () => null,
+    Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
+    ViewportPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
+    // The avatar layer positions its badges from the nodes they dock at, so the
+    // fake store answers from whatever the canvas last handed React Flow.
+    useStore: (selector: (s: { nodeLookup: Map<string, unknown> }) => unknown) => selector({
+      nodeLookup: new Map((flow.current?.nodes ?? []).map((node) => [node.id, node])),
+    }),
+  };
+});
 
 const tiles = vi.hoisted(() => ({
   store: null as unknown,
@@ -60,36 +78,132 @@ const tiles = vi.hoisted(() => ({
   refetchVisible: vi.fn(),
   loaded: true,
   params: null as unknown,
+  /** Every params object the canvas has asked for, newest last. */
+  paramsSeen: [] as unknown[],
+  /** The last params each project's own layer asked for. A multi-project
+   * canvas renders one layer per project, so `params` alone only ever shows
+   * whichever rendered last. */
+  paramsByProject: {} as Record<string, unknown>,
 }));
-const extents = vi.hoisted(() => ({ pending: false }));
+const extents = vi.hoisted(() => ({ pending: false, loading: false }));
+let layoutReady = false;
 vi.mock("../useLayoutTiles", () => ({
-  useLayoutTiles: (_projectId: string, params: unknown, rect: unknown) => {
+  useLayoutTiles: (projectId: string, params: unknown, rect: unknown, ready: boolean) => {
+    layoutReady = ready;
     tiles.params = params;
+    tiles.paramsSeen.push(params);
+    tiles.paramsByProject[projectId] = params;
     tiles.rects.push(rect);
     return tiles;
   },
 }));
 const layoutNode = vi.hoisted(() => ({ data: undefined as unknown }));
+const currentRunningTarget = vi.hoisted(() => ({ value: null as unknown }));
+/** null (default) means "not cheaply available"; a test sets a number to
+ * simulate the `all` variant's extent already sitting in the query cache. */
+const hiddenFinishedCount = vi.hoisted(() => ({ value: null as number | null }));
 vi.mock("../../../../api/graphLayout", () => ({
-  useLayoutExtents: (ids: string[]) => ids.map(() => extents.pending
+  useLayoutExtents: (ids: string[]) => ids.map(() => extents.loading ? undefined : extents.pending
     ? { pending: true }
     : { layout_version: 1, extent_w: 10, extent_h: 10, node_count: 3 }),
   useLayoutNode: () => layoutNode,
+  fetchRunningTarget: () => Promise.resolve(currentRunningTarget.value),
+  useHiddenFinishedCount: () => hiddenFinishedCount.value,
   locate: vi.fn(),
   useTidyLayout: () => ({ mutate: vi.fn() }),
 }));
 
+// A minimal fake of the daemon's dashboard-state network boundary: stubbing
+// HERE -- `dashboardStateGet`/`dashboardStatePut`, the two SDK calls
+// `fetchDashboardDocument`/`putDashboardDocument` make -- exercises the REAL
+// `GraphStateProvider`, not a mock of the provider itself.
+interface FakeDoc { revision: number; value: unknown }
+const dashboardStateFake = vi.hoisted(() => ({
+  docs: new Map<string, FakeDoc>(),
+  puts: [] as { namespace: string; subject?: string | null; base_revision: number | null; value: unknown }[],
+}));
+function fakeDocKey(namespace: string, subject?: string | null) { return `${namespace}\u0001${subject ?? ""}`; }
+/** Test helper: seed a document as if an earlier session had already written it. */
+function seedDashboardDoc(namespace: string, subject: string | null, value: unknown, revision = 1) {
+  dashboardStateFake.docs.set(fakeDocKey(namespace, subject), { revision, value });
+}
+vi.mock("../../../../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../api/client")>();
+  return {
+    ...actual,
+    dashboardStateGet: vi.fn(async ({ body }: { body: { namespace: string; subject?: string } }) => {
+      const row = dashboardStateFake.docs.get(fakeDocKey(body.namespace, body.subject ?? null));
+      return {
+        data: {
+          document: {
+            namespace: body.namespace, subject: body.subject ?? null,
+            revision: row?.revision ?? 0, exists: !!row, value: row?.value ?? {},
+          },
+        },
+      };
+    }),
+    dashboardStatePut: vi.fn(async (
+      { body }: { body: { namespace: string; subject?: string; base_revision: number | null; value: unknown } },
+    ) => {
+      dashboardStateFake.puts.push(body);
+      const key = fakeDocKey(body.namespace, body.subject ?? null);
+      const current = dashboardStateFake.docs.get(key);
+      if (body.base_revision != null && body.base_revision !== (current?.revision ?? 0)) {
+        const err = new Error("API 409: revision conflict") as Error & { payload?: unknown };
+        err.payload = {
+          success: false, error_code: "revision_conflict",
+          current: {
+            namespace: body.namespace, subject: body.subject ?? null,
+            revision: current?.revision ?? 0, exists: !!current, value: current?.value ?? {},
+          },
+        };
+        throw err;
+      }
+      const revision = (current?.revision ?? 0) + 1;
+      dashboardStateFake.docs.set(key, { revision, value: body.value });
+      return {
+        data: {
+          document: { namespace: body.namespace, subject: body.subject ?? null, revision, exists: true, value: body.value },
+        },
+      };
+    }),
+  };
+});
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { emptyStore, mergeTiles } from "../layoutStore";
 import { sizePx, toPx } from "../units";
 import LayoutCanvas from "../LayoutCanvas";
-import { setExpandedTaskIds } from "../../useGraphHierarchy";
+import { GraphStateProvider, resetGraphStateFallback, useGraphState } from "../../useGraphHierarchy";
+import { PLAYBOOK_POSITION_SCOPE } from "../manualPositions";
+
+/** Density lives in the task toolbar, not in the canvas overlay (it floated
+ * over the canvas and covered the card underneath it). These tests still own
+ * the canvas half of the behaviour -- that a density change re-scales card
+ * positions -- driven through the same `setDensity` call the toolbar control
+ * makes. The control itself is covered by
+ * `command-center/__tests__/TaskToolbar.test.tsx`. */
+function DensityProbe() {
+  const { setDensity } = useGraphState();
+  return <button type="button" onClick={() => setDensity("compact")}>Density: compact (toolbar)</button>;
+}
+
+function PlaybookPositionProbe() {
+  const { manualPositions, saveGraphPosition } = useGraphState();
+  return <>
+    <button type="button" onClick={() => saveGraphPosition(PLAYBOOK_POSITION_SCOPE, "playbook:one", { x: 1.2, y: 3.4 })}>
+      Pin playbook
+    </button>
+    <output data-testid="playbook-positions">{JSON.stringify(manualPositions[PLAYBOOK_POSITION_SCOPE])}</output>
+  </>;
+}
 
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
   container_id: null, kind, context_only: false, agg_children: 1, agg_descendants: 1,
   agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 1, ...extra,
 });
-const filters = { query: "", status: "", showCompleted: false, focus: "" };
+const filters = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false };
 const base = {
   projectIds: ["p1"],
   projectNames: new Map([["p1", "P1"]]),
@@ -97,51 +211,221 @@ const base = {
   filters,
   focusId: null,
   setFocus: vi.fn(),
+  setShowCompleted: vi.fn(),
   onTaskClick: vi.fn(),
 };
 
 beforeEach(() => {
+  flow.real = false;
+  delete document.documentElement.dataset.theme;
   tiles.store = mergeTiles(emptyStore(), ["0:0"], {
     nodes: [n("e", "collapsed", 0, 0), n("z", "card", 2, 0)],
     edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    variant_applied: "active",
   } as unknown as TilesResponse);
   tiles.params = null;
+  tiles.paramsSeen.length = 0;
+  tiles.paramsByProject = {};
   tiles.rects.length = 0;
   tiles.loaded = true;
   tiles.refetchVisible = vi.fn();
   extents.pending = false;
+  extents.loading = false;
+  hiddenFinishedCount.value = null;
+  base.setFocus.mockClear();
+  base.setShowCompleted.mockClear();
   fitBounds.mockReset();
+  fitView.mockReset();
+  zoomIn.mockReset();
+  zoomOut.mockReset();
   setCenter.mockReset();
   setViewport.mockReset();
   getViewport.mockReset();
   getViewport.mockReturnValue({ x: 0, y: 0, zoom: 1 });
   tiles.error = null;
   layoutNode.data = undefined;
-  localStorage.clear();
-  // The expanded set is one live store, not per-component state.
-  setExpandedTaskIds(new Set());
+  currentRunningTarget.value = null;
+  // Density and manual positions live in one module-level store for
+  // components rendered without their route provider.
+  resetGraphStateFallback();
+  dashboardStateFake.docs.clear();
+  dashboardStateFake.puts.length = 0;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  delete document.documentElement.dataset.theme;
+});
 
 describe("LayoutCanvas", () => {
-  it("moves task cards and restores their saved positions", () => {
-    const first = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(flow.current?.nodesDraggable).toBe(true);
-    expect(flow.current?.nodes.find((node) => node.id === "z")?.draggable).toBe(true);
+  it("selects an entered epic without elevating its frame above the children", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 6, h: 3 }),
+        n("child", "card", 0.1, 0.45, { container_id: "e", depth: 1 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    const child = flow.current!.nodes.find((node) => node.id === "child");
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" selectedTaskId="e" /></MemoryRouter>);
+    expect(flow.current!.nodes.find((node) => node.id === "e")!.selected).toBe(true);
+    expect(flow.current!.nodes.find((node) => node.id === "child")).toBe(child);
+    expect(flow.current!.elevateNodesOnSelect).toBe(false);
+    expect(base.setFocus).not.toHaveBeenCalled();
+  });
+
+  it("uses the dark default when the shell has not published a theme", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("dark");
+  });
+
+  it("reads the shell theme and updates an already-mounted canvas", async () => {
+    document.documentElement.dataset.theme = "light";
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("light");
+
+    await act(async () => { document.documentElement.dataset.theme = "dark"; });
+    expect(flow.current?.colorMode).toBe("dark");
+    await act(async () => { document.documentElement.dataset.theme = "light"; });
+    expect(flow.current?.colorMode).toBe("light");
+  });
+
+  describe("viewport gestures", () => {
+    beforeEach(() => {
+      // Give the real React Flow pan/zoom engine a measurable, offset canvas.
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        x: 100, y: 50, left: 100, top: 50, right: 900, bottom: 650, width: 800, height: 600,
+        toJSON: () => ({}),
+      });
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(800);
+      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    async function renderViewport() {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      const canvasProps = flow.current!;
+      cleanup();
+      // Replay the canvas's actual props through React Flow rather than fake
+      // wheel math in the mock. Tiles and node rendering are tested separately.
+      const { ReactFlow } = await vi.importActual<typeof import("@xyflow/react")>("@xyflow/react");
+      const onMove = vi.fn();
+      const view = render(<>
+        <ReactFlow {...canvasProps} nodes={[]} edges={[]} onMove={onMove}>{null}</ReactFlow>
+        <aside data-testid="detail-drawer">Task details</aside>
+      </>);
+      const pane = view.container.querySelector(".react-flow__pane")!;
+      return { pane, onMove };
+    }
+
+    it.each([0, 1, 2])("zooms around the cursor with wheel delta mode %s", async (deltaMode) => {
+      const { pane, onMove } = await renderViewport();
+      const wheel = new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, deltaY: deltaMode === 0 ? -50 : -1,
+        deltaMode, clientX: 320, clientY: 180,
+      });
+      fireEvent(pane, wheel);
+      expect(wheel.defaultPrevented).toBe(true);
+      expect(onMove).toHaveBeenCalled();
+      const zoomed = onMove.mock.lastCall![1] as { x: number; y: number; zoom: number };
+      expect(zoomed.zoom).toBeGreaterThan(1);
+      expect(zoomed.zoom).toBeLessThanOrEqual(2);
+      // The world point beneath the cursor stays at its canvas-relative position.
+      expect(zoomed.x + 220 * zoomed.zoom).toBeCloseTo(220);
+      expect(zoomed.y + 130 * zoomed.zoom).toBeCloseTo(130);
+
+      fireEvent.wheel(pane, { deltaY: 100, clientX: 320, clientY: 180 });
+      expect(onMove.mock.lastCall![1].zoom).toBeLessThan(zoomed.zoom);
+    });
+
+    it("zooms with ctrl+wheel pinch and clamps both zoom limits", async () => {
+      const { pane, onMove } = await renderViewport();
+      fireEvent.wheel(pane, { ctrlKey: true, deltaY: -25, clientX: 320, clientY: 180 });
+      const pinch = onMove.mock.lastCall![1] as { x: number; y: number; zoom: number };
+      expect(pinch.zoom).toBeGreaterThan(1);
+      expect(pinch.x + 220 * pinch.zoom).toBeCloseTo(220);
+      expect(pinch.y + 130 * pinch.zoom).toBeCloseTo(130);
+      fireEvent.wheel(pane, { deltaY: -10000 });
+      expect(onMove.mock.lastCall![1].zoom).toBe(2);
+      fireEvent.wheel(pane, { deltaY: 10000 });
+      expect(onMove.mock.lastCall![1].zoom).toBe(0.15);
+    });
+
+    it("pans on an empty-canvas drag without changing zoom", async () => {
+      const { pane, onMove } = await renderViewport();
+      const view = pane.ownerDocument.defaultView!;
+      function mouse(target: Element | Window, type: string, init: MouseEventInit) {
+        const event = new MouseEvent(type, { bubbles: true, ...init });
+        // d3 needs event.view, but jsdom rejects Vitest's wrapped Window in
+        // the constructor's init dictionary.
+        Object.defineProperty(event, "view", { value: view });
+        fireEvent(target, event);
+      }
+      mouse(pane, "mousedown", { button: 0, clientX: 300, clientY: 200 });
+      mouse(view, "mousemove", { buttons: 1, clientX: 330, clientY: 240 });
+      mouse(view, "mouseup", { button: 0, clientX: 330, clientY: 240 });
+      expect(onMove.mock.lastCall![1]).toEqual({ x: 30, y: 40, zoom: 1 });
+    });
+
+    it("leaves wheel scrolling in the detail drawer alone", async () => {
+      const { onMove } = await renderViewport();
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
+      fireEvent(screen.getByTestId("detail-drawer"), wheel);
+      expect(wheel.defaultPrevented).toBe(false);
+      expect(onMove).not.toHaveBeenCalled();
+    });
+  });
+
+  it("zooms with +/- and fits with 0 even when no cards are loaded", () => {
+    tiles.store = emptyStore();
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const canvas = screen.getByRole("region", { name: "Task graph" });
+    fireEvent.keyDown(canvas, { key: "+" });
+    fireEvent.keyDown(canvas, { key: "=" });
+    fireEvent.keyDown(canvas, { key: "-" });
+    fireEvent.keyDown(canvas, { key: "0" });
+    expect(zoomIn).toHaveBeenCalledTimes(2);
+    expect(zoomIn).toHaveBeenCalledWith({ duration: 200 });
+    expect(zoomOut).toHaveBeenCalledWith({ duration: 200 });
+    expect(fitView).toHaveBeenCalledWith({ duration: 200 });
+  });
+
+  it("leaves typing and modified browser shortcuts alone", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const canvas = screen.getByRole("region", { name: "Task graph" });
+    const input = document.createElement("input");
+    canvas.append(input);
+    for (const key of ["+", "-", "0"]) fireEvent.keyDown(input, { key });
+    fireEvent.keyDown(canvas, { key: "+", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "-", metaKey: true });
+    fireEvent.keyDown(canvas, { key: "0", altKey: true });
+    expect(zoomIn).not.toHaveBeenCalled();
+    expect(zoomOut).not.toHaveBeenCalled();
+    expect(fitView).not.toHaveBeenCalled();
+  });
+
+  it("keeps the zoom shortcuts available when a canvas control has focus", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const control = document.createElement("button");
+    screen.getByRole("region", { name: "Task graph" }).append(control);
+    fireEvent.keyDown(control, { key: "+" });
+    fireEvent.keyDown(control, { key: "0" });
+    expect(zoomIn).toHaveBeenCalledWith({ duration: 200 });
+    expect(fitView).toHaveBeenCalledWith({ duration: 200 });
+  });
+
+  it("keeps task cards at their server-owned positions without drag pinning", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const serverPosition = toPx(2, 0, "comfortable");
+    expect(flow.current?.nodesDraggable).toBe(false);
+    expect(flow.current?.nodes.find((node) => node.id === "z")?.draggable).toBe(false);
 
     act(() => flow.current!.onNodesChange!([
       { id: "z", type: "position", position: { x: 720, y: 312 }, dragging: true },
     ]));
     const moved = flow.current!.nodes.find((node) => node.id === "z")!;
-    expect(moved.position).toEqual({ x: 720, y: 312 });
+    expect(moved.position).toEqual(serverPosition);
     act(() => flow.current!.onNodeDragStop!(null, moved));
-    expect(JSON.parse(localStorage.getItem("aq.command-center.graph-positions")!)).toMatchObject({
-      p1: { z: { x: 3, y: 2 } },
-    });
-
-    first.unmount();
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(flow.current!.nodes.find((node) => node.id === "z")?.position).toEqual({ x: 720, y: 312 });
+    expect(flow.current!.nodes.find((node) => node.id === "z")?.position).toEqual(serverPosition);
   });
 
   it("renders server nodes with visibility culling and sends viewport-derived params", () => {
@@ -152,38 +436,15 @@ describe("LayoutCanvas", () => {
     expect(tiles.params).toMatchObject({ variant: "active", expanded: [], root: null, q: "", status: "" });
   });
 
-  it("uses the full layout while a finished container is expanded", async () => {
-    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
-      nodes: [n("done", "stub", 0, 0, { status: "COMPLETED" })],
-      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
-    } as unknown as TilesResponse);
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const toggle = () => {
-      const node = flow.current!.nodes.find((candidate) => candidate.id === "done")!;
-      return (node.data as { onToggleChildren: (id: string, finished?: boolean) => void }).onToggleChildren;
-    };
+  it("uses server-default (comfortable) density until the toolbar changes it", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /><DensityProbe /></MemoryRouter>);
+    const before = flow.current!.nodes.find((node) => node.id === "z")!.position;
+    expect(before).toEqual(toPx(2, 0));
 
-    act(() => toggle()("done", true));
-    await screen.findByTestId("node-done");
-    expect(tiles.params).toMatchObject({ variant: "all", expanded: ["done"] });
+    fireEvent.click(screen.getByRole("button", { name: "Density: compact (toolbar)" }));
 
-    act(() => toggle()("done", true));
-    await screen.findByTestId("node-done");
-    expect(tiles.params).toMatchObject({ variant: "active", expanded: [] });
-  });
-
-  it("uses comfortable density by default and persists a user-selected density", () => {
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const density = screen.getByRole("combobox", { name: "Graph density" });
-    expect(density).toHaveValue("comfortable");
-    fireEvent.change(density, { target: { value: "compact" } });
-    expect(localStorage.getItem("aq.command-center.graph-density")).toBe("compact");
-  });
-
-  it("restores the saved density for this browser user", () => {
-    localStorage.setItem("aq.command-center.graph-density", "spacious");
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(screen.getByRole("combobox", { name: "Graph density" })).toHaveValue("spacious");
+    const after = flow.current!.nodes.find((node) => node.id === "z")!.position;
+    expect(after).toEqual(toPx(2, 0, "compact"));
   });
 
   it("re-renders only the cards a live refetch actually changed", () => {
@@ -212,6 +473,59 @@ describe("LayoutCanvas", () => {
     const after = Object.fromEntries(flow.current!.nodes.map((node) => [node.id, node]));
     expect(after.e!.selected).toBe(true);
     expect(after.z).toBe(before.z);
+  });
+
+  it.each([false, true])("keeps children above the entered epic when it is selected and reselected (selected before entering: %s)", (selectedBeforeEntering) => {
+    flow.real = true;
+    // React Flow reads the viewport's transform while measuring new nodes;
+    // jsdom has no DOMMatrix implementation, and this test uses zoom 1.
+    vi.stubGlobal("DOMMatrixReadOnly", class { m22 = 1; });
+    const rootStore = tiles.store;
+    const enteredStore = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [
+        n("e", "container", 0, 0, { w: 4, h: 3 }),
+        n("child-a", "card", 0.2, 0.5, { container_id: "e", depth: 1, agg_children: 0 }),
+        n("child-b", "card", 2, 0.5, { container_id: "e", depth: 1, agg_children: 0 }),
+      ],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      variant_applied: "active",
+    } as unknown as TilesResponse);
+    function Harness() {
+      const [focusId, setFocusId] = useState<string | null>(null);
+      const [selectedTaskId, setSelectedTaskId] = useState<string | null>(selectedBeforeEntering ? "e" : null);
+      const setFocus = useCallback((id: string | null) => {
+        tiles.store = id ? enteredStore : rootStore;
+        setFocusId(id);
+      }, []);
+      return <MemoryRouter><LayoutCanvas {...base} focusId={focusId} setFocus={setFocus}
+        selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} /></MemoryRouter>;
+    }
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Enter e" }));
+    expect(tiles.params).toMatchObject({ root: "e", expanded: [] });
+    const assertChildrenVisible = () => {
+      const frame = screen.getByTestId("rf__node-e");
+      for (const id of ["child-a", "child-b"]) {
+        const child = screen.getByTestId(`rf__node-${id}`);
+        expect(child).toBeVisible();
+        // DOM presence alone misses this regression: the opaque frame was
+        // elevated over the children, which stayed mounted underneath it.
+        expect(Number(child.style.zIndex)).toBeGreaterThan(Number(frame.style.zIndex));
+      }
+      expect(tiles.params).toMatchObject({ root: "e", expanded: [] });
+    };
+    assertChildrenVisible();
+    const openEpic = screen.getByRole("button", { name: "Open task e" });
+    fireEvent.click(openEpic);
+    expect(screen.getByTestId("rf__node-e")).toHaveClass("selected");
+    assertChildrenVisible();
+    fireEvent.click(openEpic);
+    assertChildrenVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open task child-a" }));
+    expect(screen.getByTestId("rf__node-child-a")).toHaveClass("selected");
+    assertChildrenVisible();
+    fireEvent.click(openEpic);
+    assertChildrenVisible();
   });
 
   it("only asks for tiles again when a pan changes the cells the viewport covers", () => {
@@ -252,92 +566,162 @@ describe("LayoutCanvas", () => {
     }
   });
 
-  it("lowers max depth when zoomed out", () => {
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom: 0.2 }));
-    expect((tiles.params as { maxDepth: number }).maxDepth).toBe(0);
-  });
+  describe("static stripes (§3.3)", () => {
+    const running = (count: number) => {
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: Array.from({ length: count }, (_, i) => n(`r${i}`, "card", 0, 0, {
+          status: "IN_PROGRESS", agg_children: 0, agg_descendants: 0, agg_active: 0,
+        })),
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+    };
+    const withSizedCanvas = (body: (move: (vp: { x: number; y: number; zoom: number }) => void) => void) => {
+      const observers = globalThis.ResizeObserver;
+      const raf = globalThis.requestAnimationFrame;
+      let notify: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {};
+      class Stub {
+        constructor(cb: typeof notify) { notify = cb; }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+      globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+      const frames: FrameRequestCallback[] = [];
+      globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as unknown as typeof requestAnimationFrame;
+      try {
+        body((vp) => {
+          act(() => flow.current!.onMove!(null, vp));
+          act(() => { for (const cb of frames.splice(0)) cb(0); });
+        });
+        act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
+      } finally {
+        globalThis.ResizeObserver = observers;
+        globalThis.requestAnimationFrame = raf;
+      }
+    };
+    const graph = () => document.querySelector(".aq-task-graph")!;
 
-  it("focus forces variant all, sets root, fits bounds, and shows breadcrumbs", () => {
-    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
-    render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
-    expect(tiles.params).toMatchObject({ variant: "all", root: "e" });
-    expect(fitBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 720, height: 312 }, expect.anything());
-    expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("P1");
-  });
-
-  it("toggling a collapsed card adds it to expanded params", async () => {
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const node = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
-    act(() => (node.data as { onToggleChildren: (id: string) => void }).onToggleChildren("e"));
-    await screen.findByTestId("node-e");
-    expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e"]);
-  });
-
-  it("toggling a container reflows its siblings to the positions the API returns", async () => {
-    // `e` is collapsed to one tile, with `z` laid out right below it.
-    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
-      nodes: [n("e", "collapsed", 0, 0), n("z", "card", 0, 1.2)],
-      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
-    } as unknown as TilesResponse);
-    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const node = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
-    act(() => (node.data as { onToggleChildren: (id: string) => void }).onToggleChildren("e"));
-    expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e"]);
-
-    // Expanded, the server answers with `e` three units tall and `z` pushed
-    // down by exactly the space it took back.
-    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
-      nodes: [n("e", "container", 0, 0, { w: 1, h: 3 }), n("z", "card", 0, 3.2)],
-      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
-    } as unknown as TilesResponse);
-    view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const z = flow.current!.nodes.find((candidate) => candidate.id === "z")!;
-    expect(z.position).toEqual(toPx(0, 3.2));
-    // The toggled container is a fixed point of the compaction, so nothing
-    // needs to pan to keep it under the pointer.
-    expect(setViewport).not.toHaveBeenCalled();
-  });
-
-  it("pans to hold a toggled container still when the reflow does move it", () => {
-    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
-      nodes: [n("e", "collapsed", 0, 0), n("z", "card", 0, 1.2)],
-      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
-    } as unknown as TilesResponse);
-    getViewport.mockReturnValue({ x: 40, y: 60, zoom: 2 });
-    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const before = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
-    const node = before;
-    act(() => (node.data as { onToggleChildren: (id: string) => void }).onToggleChildren("e"));
-
-    // A concurrent republish can land `e` somewhere else entirely; the pin is
-    // what keeps the operator's eye on the container they clicked.
-    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
-      nodes: [n("e", "collapsed", 0, 5), n("z", "card", 0, 6.2)],
-      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
-    } as unknown as TilesResponse);
-    view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const moved = flow.current!.nodes.find((candidate) => candidate.id === "e")!;
-    expect(setViewport).toHaveBeenCalledWith({
-      x: before.position.x * 2 + 40 - moved.position.x * 2,
-      y: before.position.y * 2 + 60 - moved.position.y * 2,
-      zoom: 2,
+    it("stops the drift once more than 60 striped cards are on screen", () => {
+      running(61);
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        move({ x: 0, y: 0, zoom: 1 });
+      });
+      expect(graph().classList.contains("aq-static-stripes")).toBe(true);
     });
+
+    it("keeps 60 striped cards drifting, and a pan away from 61 resumes it", () => {
+      running(60);
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        move({ x: 0, y: 0, zoom: 1 });
+      });
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+      cleanup();
+
+      running(61);
+      let pan: (vp: { x: number; y: number; zoom: number }) => void = () => {};
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        pan = move;
+      });
+      act(() => pan({ x: -500000, y: -500000, zoom: 1 }));
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+    });
+
+    it("stops the drift below zoom 0.45 whatever is on screen", () => {
+      running(1);
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+      act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom: 0.4 }));
+      expect(graph().classList.contains("aq-static-stripes")).toBe(true);
+    });
+  });
+
+  it("waits for the focus node's layout: a 202 fits nothing, the real response fits once", () => {
+    layoutNode.data = { pending: true };
+    const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    expect(fitBounds).not.toHaveBeenCalled();
+    expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("e");
+    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    expect(fitBounds.mock.calls[0]![0]).toEqual({ x: 0, y: 0, width: 720, height: 312 });
+    // The persisted box, then (the tiles having landed) the cropped frame --
+    // and a re-render with nothing new fits nothing more.
+    const fits = fitBounds.mock.calls.length;
+    expect(fits).toBeLessThanOrEqual(2);
+    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    expect(fitBounds).toHaveBeenCalledTimes(fits);
+  });
+
+  it("refits an entered container to its children once they land, leaving a far stub out", () => {
+    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 12 }), ancestors: [], layout_version: 1 };
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 3, h: 12 }),
+              n("c", "card", 0.1, 0.45, { container_id: "e", depth: 1 }),
+              n("d", "card", 0.1, 5.33, { container_id: "e", depth: 1 })],
+      edges: [], stubs: [{ id: "far", project_id: "p1", x: 6.15, y: 12.22, w: 1, h: 1, title: "Far" }],
+      stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    const last = fitBounds.mock.calls[fitBounds.mock.calls.length - 1]![0] as { x: number; y: number; width: number; height: number };
+    expect(fitBounds.mock.calls[0]![0]).toEqual({ x: 0, y: 0, width: 720, height: 12 * 156 });
+    expect(last.x).toBe(0); expect(last.y).toBe(0);
+    // Frame 1.25 wide (card at 0.1 + 1 + inset) plus the docked stub column.
+    expect(last.width).toBeCloseTo((1.25 + 0.6 + 1) * 240);
+    expect(last.height).toBeCloseTo((6.33 + 0.15) * 156);
+    expect(flow.current!.nodes.find((node) => node.id === "far")!.position.y).toBe(0);
   });
 
   it("does not claim an empty graph before the first tiles response", () => {
     tiles.store = emptyStore();
     tiles.loaded = false;
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(screen.queryByText("No tasks or playbooks match these filters.")).toBeNull();
+    expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
+    expect(screen.queryByText(/no tasks yet/i)).toBeNull();
     expect(screen.getByRole("region", { name: "Task graph" })).toBeInTheDocument();
   });
 
-  it("shows the empty state once every layer has loaded with nothing to draw", () => {
+  it("shows no empty state while nodes are present", () => {
+    // The default beforeEach store already has nodes "e" and "z".
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
+    expect(screen.queryByText(/no tasks yet/i)).toBeNull();
+  });
+
+  it("says there's no unfinished work and offers a button that turns Show completed on", () => {
     tiles.store = emptyStore();
     tiles.loaded = true;
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(screen.getByText("No tasks or playbooks match these filters.")).toBeInTheDocument();
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: false }} /></MemoryRouter>);
+    expect(screen.getByText(/no unfinished work here/i)).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Show completed" });
+    fireEvent.click(button);
+    expect(base.setShowCompleted).toHaveBeenCalledWith(true);
+  });
+
+  it("says there are no tasks yet when Show completed is already on and the graph is still empty", () => {
+    tiles.store = emptyStore();
+    tiles.loaded = true;
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: true }} /></MemoryRouter>);
+    expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show completed" })).not.toBeInTheDocument();
+  });
+
+  it("includes a hidden-finished-tasks count in the caption when it's already cached", () => {
+    hiddenFinishedCount.value = 12;
+    tiles.store = emptyStore();
+    tiles.loaded = true;
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: false }} /></MemoryRouter>);
+    expect(screen.getByText(/12 finished tasks hidden/i)).toBeInTheDocument();
+  });
+
+  it("omits the hidden-finished-tasks count when it would need a new request", () => {
+    tiles.store = emptyStore();
+    tiles.loaded = true;
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: false }} /></MemoryRouter>);
+    expect(screen.queryByText(/finished tasks? hidden/i)).toBeNull();
   });
 
   it("loads tiles when a project's extent stops being pending", () => {
@@ -346,7 +730,33 @@ describe("LayoutCanvas", () => {
     tiles.refetchVisible.mockClear();
     extents.pending = false;
     view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(tiles.refetchVisible).toHaveBeenCalled();
+    expect(layoutReady).toBe(true);
+    expect(tiles.refetchVisible).not.toHaveBeenCalled();
+  });
+
+  it("starts tiles before extent arrives and keeps that request when extent resolves", () => {
+    const original = globalThis.ResizeObserver;
+    let notify: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {};
+    class Stub {
+      constructor(cb: typeof notify) { notify = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+    try {
+      extents.loading = true;
+      const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
+      expect(tiles.paramsByProject).toHaveProperty("p1");
+      expect(tiles.rects[tiles.rects.length - 1]).not.toBeNull();
+      tiles.refetchVisible.mockClear();
+      extents.loading = false;
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(tiles.refetchVisible).not.toHaveBeenCalled();
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
   });
 
   it("hands the clicked card's payload to onTaskClick so run tasks keep their routing", () => {
@@ -373,24 +783,14 @@ describe("LayoutCanvas", () => {
     expect(onTaskClick).toHaveBeenCalledWith("e", expect.objectContaining({ id: "e", playbook_run_id: "run-2" }));
   });
 
-  it("fits the viewport to a located search result", () => {
-    const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    fitBounds.mockClear();
-    const hit = { id: "z", x: 2, y: 1, w: 1, h: 1 };
-    view.rerender(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
-    expect(fitBounds).toHaveBeenCalledWith(
-      { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
-      expect.anything(),
-    );
-  });
-
   it("shows an error band with a retry instead of the empty state when tiles fail", () => {
     tiles.store = emptyStore();
     tiles.error = new Error("rect larger than 64.0 units");
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("rect larger than 64.0 units");
-    expect(screen.queryByText("No tasks or playbooks match these filters.")).toBeNull();
+    expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
+    expect(screen.queryByText(/no tasks yet/i)).toBeNull();
     tiles.refetchVisible.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(tiles.refetchVisible).toHaveBeenCalled();
@@ -423,13 +823,352 @@ describe("LayoutCanvas", () => {
     expect(onTaskClick).toHaveBeenCalledWith("z", expect.objectContaining({ id: "z" }));
   });
 
-  it("waits for the focus node's layout: a 202 fits nothing, the real response fits once", () => {
-    layoutNode.data = { pending: true };
-    const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
-    expect(fitBounds).not.toHaveBeenCalled();
-    expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("e");
-    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
-    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
-    expect(fitBounds).toHaveBeenCalledTimes(1);
+  /**
+   * Operator decision (2026-09-20): the graph never expands a container in
+   * place. Every container is a compact tile at every zoom, and the only way
+   * into one is to enter it.
+   */
+  describe("containers are never expanded inline", () => {
+    it("never asks for an expansion, an auto expansion or a depth, at any zoom", () => {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      for (const zoom of [0.15, 0.2, 0.5, 0.8, 1, 2]) {
+        act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom }));
+      }
+      expect(tiles.paramsSeen.length).toBeGreaterThan(0);
+      for (const params of tiles.paramsSeen as Record<string, unknown>[]) {
+        expect(params.expanded).toEqual([]);
+        expect(params.autoExpand).toBeUndefined();
+        expect(params.maxDepth ?? null).toBeNull();
+      }
+    });
+
+    it("asks for exactly the same tiles zoomed out as zoomed in", () => {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      const atOne = tiles.params;
+      act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom: 0.2 }));
+      // Same object identity: nothing about the request depends on zoom, so
+      // the layer does not even re-run its fetch effect.
+      expect(tiles.params).toBe(atOne);
+    });
+
+    it("keeps an entered epic's dependency edge appearance through zoom out and back", () => {
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [
+          n("epic", "container", 0, 0, { w: 4, h: 3 }),
+          n("child-a", "card", 0.2, 0.5, { container_id: "epic", depth: 1 }),
+          n("child-b", "card", 2, 0.5, { container_id: "epic", depth: 1 }),
+        ],
+        edges: [{ from: "child-b", to: "child-a", dep_type: "parent-child", description: null, count: 3 }],
+        stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      } as unknown as TilesResponse);
+      const originalRaf = globalThis.requestAnimationFrame;
+      const frames: FrameRequestCallback[] = [];
+      globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as typeof requestAnimationFrame;
+      try {
+        render(<MemoryRouter><LayoutCanvas {...base} focusId="epic" /></MemoryRouter>);
+        const appearance = () => flow.current!.edges.map((edge) => ({
+          id: edge.id, type: edge.type, style: edge.style, markerEnd: edge.markerEnd,
+          depType: edge.data?.depType,
+        }));
+        const expected = appearance();
+        expect(expected).toMatchObject([{ type: "smoothstep", depType: "parent-child" }]);
+        expect(flow.current!.edges[0]!.label).toBe("×3");
+        for (const zoom of [2, 1, 0.8, 0.5, 0.49, 0.2, 0.15, 0.49, 0.5, 1, 2]) {
+          act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom }));
+          expect(appearance()).toEqual(expected);
+          if (zoom < 0.5) expect(flow.current!.edges[0]!.label).toBeUndefined();
+          act(() => { for (const cb of frames.splice(0)) cb(0); });
+        }
+        expect(flow.current!.edges[0]!.label).toBe("×3");
+      } finally {
+        globalThis.requestAnimationFrame = originalRaf;
+      }
+    });
+
+    it("draws a container tile with an enter control and no expand/collapse toggle", () => {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      const card = flow.current!.nodes.find((node) => node.id === "e")!;
+      const data = card.data as { onToggleChildren?: unknown; onFocus?: (id: string) => void };
+      expect(data.onToggleChildren).toBeUndefined();
+      expect(typeof data.onFocus).toBe("function");
+    });
+
+    it("ignores a task position stored by an earlier project viewer", async () => {
+      seedDashboardDoc("command_center_project_view", "p1", {
+        expanded_task_ids: ["e", "pkg"],
+        expanded_finished_task_ids: ["pkg"],
+        manual_positions: { z: { x: 3, y: 2 } },
+        expanded_initialised: true,
+      });
+      render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <GraphStateProvider>
+            <MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>
+          </GraphStateProvider>
+        </QueryClientProvider>,
+      );
+      await screen.findByTestId("node-e");
+      expect(flow.current!.nodes.find((node) => node.id === "z")?.position).toEqual(toPx(2, 0, "comfortable"));
+      expect(flow.current!.nodes.find((node) => node.id === "z")?.draggable).toBe(false);
+      // Compatibility leaves the old document untouched; task positions are
+      // not fetched, overlaid, or written by the graph state provider.
+      expect(dashboardStateFake.puts).toEqual([]);
+    });
+
+    it("persists playbook pins in their separate dashboard document", async () => {
+      render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <GraphStateProvider>
+            <PlaybookPositionProbe />
+          </GraphStateProvider>
+        </QueryClientProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Pin playbook" }));
+
+      await waitFor(() => {
+        const put = dashboardStateFake.puts.find((p) => p.namespace === "playbook_graph_view");
+        expect(put).toBeDefined();
+        expect(put!.subject).toBeUndefined();
+        expect((put!.value as { manual_positions: Record<string, unknown> }).manual_positions).toEqual({
+          "playbook:one": { x: 1.2, y: 3.4 },
+        });
+      });
+      expect(screen.getByTestId("playbook-positions")).toHaveTextContent("playbook:one");
+    });
+
+    it("docks a worker running inside a collapsed container on that container's tile", () => {
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "collapsed", 0, 0)],
+        edges: [], stubs: [], stub_overflow: [],
+        workers: [{ agent_id: "a1", name: "bot", docked_at: "e", in_collapsed: true }],
+        gates: [], layout_version: 1,
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(screen.getByRole("img", { name: "bot (working in collapsed tasks)" })).toBeInTheDocument();
+    });
+
+    it("docks it just the same one level down, inside an entered container", () => {
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("pkg", "collapsed", 0.2, 0.5)],
+        edges: [], stubs: [], stub_overflow: [],
+        workers: [{ agent_id: "a1", name: "bot", docked_at: "pkg", in_collapsed: true }],
+        gates: [], layout_version: 1,
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(screen.getByRole("img", { name: "bot (working in collapsed tasks)" })).toBeInTheDocument();
+    });
+  });
+
+  describe("entering a container", () => {
+    it("sets focus from a tile's enter control", () => {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      const card = flow.current!.nodes.find((node) => node.id === "e")!;
+      act(() => (card.data as { onFocus: (id: string) => void }).onFocus("e"));
+      expect(base.setFocus).toHaveBeenCalledWith("e");
+    });
+
+    it("enters a container on a double click of its tile", () => {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      const card = flow.current!.nodes.find((node) => node.id === "e")!;
+      act(() => flow.current!.onNodeDoubleClick!(null, card));
+      expect(base.setFocus).toHaveBeenCalledWith("e");
+    });
+
+    it("does not enter anything when a leaf card is double clicked", () => {
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("z", "card", 2, 0, { agg_children: 0, agg_descendants: 0 })],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      const card = flow.current!.nodes.find((node) => node.id === "z")!;
+      act(() => flow.current!.onNodeDoubleClick!(null, card));
+      expect(base.setFocus).not.toHaveBeenCalled();
+    });
+
+    it("sets root and keeps the variant it was given, and shows the path", () => {
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(tiles.params).toMatchObject({ variant: "active", root: "e", expanded: [] });
+      expect(fitBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 720, height: 312 }, expect.anything());
+      expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("P1");
+    });
+
+    it("shows the whole ancestor path and an up-one-level control at depth 3", async () => {
+      layoutNode.data = {
+        node: n("g", "container", 0, 0, { w: 2, h: 2, title: "Grandchild" }),
+        ancestors: [{ id: "e", title: "Epic" }, { id: "pkg", title: "Package" }],
+        layout_version: 1,
+      };
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="g" /></MemoryRouter>);
+      const nav = screen.getByRole("navigation", { name: "Focus path" });
+      expect(nav).toHaveTextContent("P1");
+      expect(nav).toHaveTextContent("Epic");
+      expect(nav).toHaveTextContent("Package");
+      expect(nav).toHaveTextContent("Grandchild");
+      fireEvent.click(screen.getByRole("button", { name: "Up one level" }));
+      expect(base.setFocus).toHaveBeenCalledWith("pkg");
+      fireEvent.click(screen.getByRole("button", { name: "Epic" }));
+      expect(base.setFocus).toHaveBeenCalledWith("e");
+    });
+
+    it("says completed work is shown when the response was served from `all`", () => {
+      // The container's own status is DEFINED: the promotion is the
+      // LAYOUT's decision (every descendant finished), which is why the
+      // response reports it and the client never infers it.
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("kid", "card", 0.2, 0.5)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "all",
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(screen.getByText(/completed work is shown/i)).toBeInTheDocument();
+    });
+
+    it("says nothing when the operator asked for completed work themselves", () => {
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("kid", "card", 0.2, 0.5)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "all",
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e"
+        filters={{ ...filters, showCompleted: true }} /></MemoryRouter>);
+      expect(screen.queryByText(/completed work is shown/i)).toBeNull();
+    });
+
+    it("says nothing for a finished container the active layout still carries", () => {
+      // The old status inference claimed completed work was on screen here.
+      layoutNode.data = {
+        node: n("e", "container", 0, 0, { w: 3, h: 2, status: "COMPLETED" }), ancestors: [], layout_version: 1,
+      };
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(screen.queryByText(/completed work is shown/i)).toBeNull();
+    });
+
+    it("says there is no unfinished work inside a container whose children are all hidden", () => {
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      // A focused response ALWAYS carries the entered container itself, so
+      // "nothing here" can never mean "no nodes at all".
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 })],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+      tiles.loaded = true;
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(screen.getByText(/no unfinished work here/i)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Show completed" }));
+      expect(base.setShowCompleted).toHaveBeenCalledWith(true);
+    });
+
+    it("shows no empty state inside a container that does have children", () => {
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("kid", "card", 0.2, 0.5)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
+    });
+
+    it("fits the viewport to a located search result in the current scope", () => {
+      const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      fitBounds.mockClear();
+      const hit = { id: "z", x: 2, y: 1, w: 1, h: 1, container_id: null };
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+      expect(fitBounds).toHaveBeenCalledWith(
+        { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
+        expect.anything(),
+      );
+    });
+
+    it("pans to a hit a filter already drew in this scope instead of re-scoping", () => {
+      // A search force-opens the ancestors of every match server-side (the
+      // one exception to enter-only), so the match IS on screen: entering
+      // its container would throw the operator's place away.
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("g0", "card", 2, 1)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+      const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      fitBounds.mockClear();
+      const hit = { id: "g0", x: 2, y: 1, w: 1, h: 1, container_id: "pkg" };
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+      expect(base.setFocus).not.toHaveBeenCalled();
+      expect(fitBounds).toHaveBeenCalledWith(
+        { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
+        expect.anything(),
+      );
+    });
+
+    it("enters the parent container when the jump target lives inside one", () => {
+      const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      fitBounds.mockClear();
+      const hit = { id: "g0", x: 2, y: 1, w: 1, h: 1, container_id: "pkg" };
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+      expect(base.setFocus).toHaveBeenCalledWith("pkg");
+      // The entered container is what the viewport is fitted to; fitting the
+      // hit's own box now would use coordinates from the scope we just left.
+      expect(fitBounds).not.toHaveBeenCalled();
+    });
+
+    it("does not re-fit a spent hit once entering its container has landed", () => {
+      const hit = { id: "g0", x: 2, y: 1, w: 1, h: 1, container_id: "pkg" };
+      const view = render(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+      expect(base.setFocus).toHaveBeenCalledWith("pkg");
+      fitBounds.mockClear();
+      // The URL change comes back as a new `focusId`, with the same hit.
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="pkg" jumpTarget={hit} /></MemoryRouter>);
+      expect(fitBounds).not.toHaveBeenCalledWith(
+        { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
+        expect.anything(),
+      );
+    });
+
+  it("fits the hit itself once its own container is the one on screen", () => {
+      const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="pkg" /></MemoryRouter>);
+      fitBounds.mockClear();
+      const hit = { id: "g0", x: 2, y: 1, w: 1, h: 1, container_id: "pkg" };
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="pkg" jumpTarget={hit} /></MemoryRouter>);
+      expect(base.setFocus).not.toHaveBeenCalled();
+      expect(fitBounds).toHaveBeenCalledWith(
+        { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
+        expect.anything(),
+      );
+    });
+  });
+
+  it("pans a root graph to the visible ancestor in the drawn layout", () => {
+    layoutNode.data = {
+      node: n("g0", "card", 4, 50),
+      ancestors: [{ id: "e", title: "Epic", x: 1, y: 40, w: 3, h: 2 }],
+      layout_version: 1,
+    };
+    const target = { task_id: "g0", project_id: "p1", parent_task_id: "pkg", ancestors: ["e", "pkg"], observed_at: 1, layout_version: 1 };
+    render(<MemoryRouter><LayoutCanvas {...base} runningTarget={target} /></MemoryRouter>);
+    expect(fitBounds).toHaveBeenCalledWith(
+      { ...toPx(0, 0), ...sizePx(1, 1) },
+      expect.objectContaining({ padding: 0.2, duration: 0 }),
+    );
+  });
+
+  it("pans the running leaf after entering its parent frame", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("pkg", "container", 0, 0), n("g0", "card", 2, 3)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      variant_applied: "active",
+    } as unknown as TilesResponse);
+    layoutNode.data = { node: n("g0", "card", 4, 5), ancestors: [], layout_version: 1 };
+    const target = { task_id: "g0", project_id: "p1", parent_task_id: "pkg", ancestors: ["e", "pkg"], observed_at: 1, layout_version: 1 };
+    currentRunningTarget.value = target;
+    render(<MemoryRouter><LayoutCanvas {...base} focusId="pkg" runningTarget={target} manualRunningTarget /></MemoryRouter>);
+    return waitFor(() => expect(fitBounds).toHaveBeenCalledWith(
+      { ...toPx(2, 3), ...sizePx(1, 1) },
+      expect.objectContaining({ padding: 0.4, duration: 300 }),
+    ));
   });
 });

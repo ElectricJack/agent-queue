@@ -4,19 +4,26 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dataclasses import replace
 
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, Project, RepoSourceType, SessionRecord, Workspace
+from src.models import (
+    Agent, AgentProfile, AgentState, Project, RepoSourceType, SessionRecord, Workspace,
+)
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def pool_routing(tmp_path):
-    db = Database(str(tmp_path / "pool-routing.db"))
+    db = Database(lease_dsn("pool-routing.db"))
     await db.initialize()
+    # These fixtures model independent clones; slot provisioning has its own tests.
+    kind = await db.resolve_workspace_kind("__system__", "project-repo")
+    await db.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await db.create_project(Project(id="p", name="Project"))
     for profile in (
         AgentProfile(
@@ -38,6 +45,10 @@ async def pool_routing(tmp_path):
             id="saved-claude", name="Saved Claude worker",
             harness="claude", default_class="deep-high",
         ),
+        AgentProfile(
+            id="deep-gemini-pool", name="Deep Gemini pool", lifecycle="pool",
+            harness="gemini", default_class="deep-high",
+        ),
     ):
         await db.create_profile(profile)
     await db.create_workspace(Workspace(
@@ -47,7 +58,7 @@ async def pool_routing(tmp_path):
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"), data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "unused.db"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
     )
     cfg.sessions.enabled = True
     cfg.sessions.provider = "fake"
@@ -79,11 +90,6 @@ async def pool_routing(tmp_path):
     await db.close()
 
 
-async def freeze_roster(db):
-    await db.create_agent(Agent(id="deleted", name="Deleted", profile_id="triage"))
-    assert await db.soft_delete_agent("deleted")
-
-
 async def launch(orch, db, profile_id="deep-codex-pool"):
     return await orch._launch_pool_session(
         await db.get_project("p"), await db.get_profile(profile_id),
@@ -107,40 +113,174 @@ async def test_pool_start_selects_compatible_worker_before_reserving(pool_routin
     assert await db.get_workspace_for_agent("claude") is None
 
 
-async def test_pool_start_waits_without_growing_manual_roster_or_using_triage(pool_routing):
+async def test_pool_start_grows_the_roster_rather_than_using_triage(pool_routing):
     orch, db = pool_routing
     await db.create_agent(Agent(id="triage", name="Triage", profile_id="triage"))
-    await freeze_roster(db)
-    assert await launch(orch, db) is None
+    sid = await launch(orch, db)
+    assert sid is not None
+    # Deleting a worker is not a scaling policy, so growth is allowed here --
+    # but only into a *fresh* identity for the requested pool profile.  The
+    # incompatible triage worker is neither reused nor reprofiled.
+    row = await db.get_session(sid)
+    assert row.agent_id != "triage"
+    assert (row.harness, row.model, row.intelligence_class) == (
+        "codex", "gpt-5.6-sol", "deep-high",
+    )
+    assert (await db.get_agent(row.agent_id)).profile_id == "deep-codex-pool"
+    assert sorted(agent.id for agent in await db.list_agents()) == sorted(
+        ["triage", row.agent_id]
+    )
+    assert (await db.get_agent("triage")).profile_id == "triage"
+    assert await db.get_workspace_for_agent("triage") is None
+    assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("reuse", [False, True], ids=["new-agent", "saved-agent"])
+async def test_operator_pool_starts_without_reusing_ordinary_workers(pool_routing, harness, reuse):
+    orch, db = pool_routing
+    # Role identity comes from the capability, not a profile-id prefix.
+    profile = AgentProfile(
+        id="setup-pool", name="Setup", lifecycle="pool", harness=harness,
+        default_class="deep-high", max_active=1, aq_commands=["operator_execute"],
+    )
+    await db.create_profile(profile)
+    await db.create_agent(Agent(id="ordinary", name="Worker", profile_id=f"saved-{harness}"))
+    ordinary = await db.get_agent("ordinary")
+    if reuse:
+        await db.create_agent(Agent(id="setup-agent", name="Setup", profile_id=profile.id))
+
+    session_id = await launch(orch, db, profile.id)
+
+    assert session_id is not None
+    row = await db.get_session(session_id)
+    assert (row.profile_id, row.harness, row.intelligence_class) == (
+        profile.id, harness, "deep-high",
+    )
+    assert row.agent_id != ordinary.id
+    if reuse:
+        assert row.agent_id == "setup-agent"
+    assert (await db.get_agent(row.agent_id)).profile_id == profile.id
+    assert await db.get_agent(ordinary.id) == ordinary
+    assert await db.get_workspace_for_agent(ordinary.id) is None
+
+
+async def test_pool_start_preserves_class_compatible_named_role_definition(pool_routing):
+    orch, db = pool_routing
+    await db.create_profile(AgentProfile(
+        id="spec-ingest", name="Spec ingest", harness="claude", default_class="deep-high",
+    ))
+    await db.create_agent(Agent(
+        id="role-agent", name="Review Spec Ingest", profile_id="spec-ingest",
+        harness="codex", intelligence_class="deep-high",
+    ))
+    before = await db.get_agent("role-agent")
+    row = await db.get_session(await launch(orch, db))
+    assert row.agent_id != "role-agent"
+    assert (row.harness, row.intelligence_class) == ("codex", "deep-high")
+    assert await db.get_agent("role-agent") == before
+    assert await db.get_workspace_for_agent("role-agent") is None
+
+
+async def test_pool_start_waits_rather_than_growing_into_an_unrunnable_worker(pool_routing):
+    orch, db = pool_routing
+    await db.create_agent(Agent(id="triage", name="Triage", profile_id="triage"))
+    # ``deep-high`` maps a model for anthropic and codex only, so a fresh
+    # gemini identity would fail the same execution check push assignment
+    # applies.  Growth is permitted; growing into an unusable worker is not.
+    assert await launch(orch, db, "deep-gemini-pool") is None
     assert await db.list_sessions(lifecycle="pool") == []
     assert [agent.id for agent in await db.list_agents()] == ["triage"]
     assert (await db.get_workspace("ws")).locked_by_agent_id is None
 
 
-async def test_generic_pool_inherits_the_matched_workers_codex_identity(pool_routing):
+async def test_claude_pool_mints_its_own_row_rather_than_launching_an_idle_codex_row(
+    pool_routing,
+):
+    """A pool session for profile P runs P's harness (swift-dune, 2026-09-21).
+
+    ``worker-deep`` is a generic Claude profile, so ``task_agent_mismatch``
+    accepts any idle worker of its class -- the Codex row included -- and the
+    launch used to take that row's harness.  The Claude pool then started
+    Codex sessions, which sat at Codex's usage-limit screen while the Claude
+    task they were counted against waited.  An idle row that would run a
+    different CLI is not a candidate; the pool mints a row of its own.
+    """
     orch, db = pool_routing
-    await db.create_agent(Agent(id="sol", name="Codex", profile_id="saved-codex"))
+    await db.create_agent(Agent(id="sol", name="Codex standard-high #1", profile_id="saved-codex"))
     sid = await launch(orch, db, "worker-deep")
     assert sid is not None
     row = await db.get_session(sid)
-    assert (row.agent_id, row.harness, row.model, row.intelligence_class) == (
-        "sol", "codex", "gpt-5.6-sol", "deep-high",
+    assert row.agent_id != "sol"
+    assert (row.harness, row.model, row.intelligence_class) == (
+        "claude", "claude-fable-5", "deep-high",
     )
-    assert (await db.get_profile("worker-deep")).harness == "claude"
-    assert (await db.get_agent("sol")).harness is None
+    assert (await db.get_agent(row.agent_id)).profile_id == "worker-deep"
+    sol = await db.get_agent("sol")
+    assert (sol.state, sol.profile_id, sol.harness) == (AgentState.IDLE, "saved-codex", None)
+    assert await db.get_workspace_for_agent("sol") is None
+    assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id
+
+
+async def test_codex_pool_does_not_launch_an_idle_claude_row(pool_routing):
+    orch, db = pool_routing
+    await db.create_agent(Agent(id="fable", name="Deep Claude", profile_id="saved-claude"))
+    sid = await launch(orch, db, "deep-codex-pool")
+    row = await db.get_session(sid)
+    assert row.agent_id != "fable"
+    assert (row.harness, row.model) == ("codex", "gpt-5.6-sol")
+    assert (await db.get_agent("fable")).state == AgentState.IDLE
+
+
+async def test_pool_reuses_an_idle_row_whose_resolved_harness_is_its_own(pool_routing):
+    """The comparison is on the harness the session would run, not the profile id.
+
+    Another Claude profile's row, and a Codex-profile row whose saved
+    override runs Claude, both launch Claude -- so both remain candidates
+    for the Claude pool, while the plain Codex row created first does not.
+    """
+    orch, db = pool_routing
+    await db.create_agent(Agent(id="sol", name="Codex", profile_id="saved-codex"))
+    await db.create_agent(Agent(
+        id="switched", name="Codex profile, Claude override", profile_id="saved-codex",
+        harness="claude",
+    ))
+    await db.create_agent(Agent(id="fable", name="Deep Claude", profile_id="saved-claude"))
+    first = await db.get_session(await launch(orch, db, "worker-deep"))
+    assert (first.agent_id, first.harness, first.model) == (
+        "switched", "claude", "claude-fable-5",
+    )
+    await db.create_workspace(Workspace(
+        id="ws2", project_id="p", workspace_path="/tmp/pool-routing-ws2",
+        source_type=RepoSourceType.LINK, kind_id="project-repo",
+    ))
+    second = await db.get_session(await launch(orch, db, "worker-deep"))
+    assert (second.agent_id, second.harness) == ("fable", "claude")
+    assert (await db.get_agent("sol")).state == AgentState.IDLE
+    assert {agent.id for agent in await db.list_agents()} == {"sol", "switched", "fable"}
 
 
 async def test_pool_start_does_not_steal_an_interactive_sol_or_fall_back_to_triage(pool_routing):
     orch, db = pool_routing
     await db.create_agent(Agent(id="triage", name="Triage first", profile_id="triage"))
     await db.create_agent(Agent(id="sol", name="Codex", profile_id="saved-codex"))
-    await freeze_roster(db)
     await db.create_session(SessionRecord(
         id="interactive", project_id=None, profile_id="saved-codex", harness="codex",
         provider="fake", name="interactive-sol", lifecycle="named", state="running",
         work_dir="/tmp", epoch="e", instance_token="test", started_at=1, agent_id="sol",
     ))
-    assert await launch(orch, db) is None
-    assert await db.list_sessions(lifecycle="pool") == []
+    sid = await launch(orch, db)
+    assert sid is not None
+    row = await db.get_session(sid)
+    # The only compatible saved worker is held by a live interactive session,
+    # so the pool grows instead of stealing it -- and still never falls back
+    # to the incompatible triage worker.
+    assert row.agent_id not in ("sol", "triage")
+    assert (row.harness, row.model, row.intelligence_class) == (
+        "codex", "gpt-5.6-sol", "deep-high",
+    )
     assert (await db.get_session("interactive")).state == "running"
-    assert (await db.get_workspace("ws")).locked_by_agent_id is None
+    assert (await db.get_agent("sol")).profile_id == "saved-codex"
+    assert await db.get_workspace_for_agent("sol") is None
+    assert await db.get_workspace_for_agent("triage") is None
+    assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id

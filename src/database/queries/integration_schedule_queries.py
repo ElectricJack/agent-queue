@@ -4,12 +4,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import project_integration_schedules
+
+INTEGRATION_LEASE_SECONDS = 300
+# Renew while this much lease remains. Promotion and candidate mutation refuse a
+# lease with under 135s left (their claim horizon), and integration ticks run tens
+# of seconds apart, so renewal must leave the claim horizon plus a tick margin.
+INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS = 135
+INTEGRATION_LEASE_TICK_MARGIN_SECONDS = 65
+INTEGRATION_LEASE_RENEW_WITHIN_SECONDS = (
+    INTEGRATION_LEASE_CLAIM_HORIZON_SECONDS + INTEGRATION_LEASE_TICK_MARGIN_SECONDS
+)
 
 
 class IntegrationScheduleQueriesMixin:
@@ -23,7 +32,7 @@ class IntegrationScheduleQueriesMixin:
         now: float,
         default_interval_seconds: int,
     ) -> dict[str, Any]:
-        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        insert_fn = pg_insert
         await conn.execute(
             insert_fn(project_integration_schedules)
             .values(
@@ -42,31 +51,6 @@ class IntegrationScheduleQueriesMixin:
                     select(project_integration_schedules)
                     .where(project_integration_schedules.c.project_id == project_id)
                     .with_for_update()
-                )
-            )
-            .mappings()
-            .one()
-        )
-        return dict(row)
-
-    async def update_integration_schedule_on(
-        self,
-        conn: AsyncConnection,
-        *,
-        project_id: str,
-        values: dict[str, Any],
-    ) -> dict[str, Any]:
-        await conn.execute(
-            update(project_integration_schedules)
-            .where(project_integration_schedules.c.project_id == project_id)
-            .values(**values)
-        )
-        row = (
-            (
-                await conn.execute(
-                    select(project_integration_schedules).where(
-                        project_integration_schedules.c.project_id == project_id
-                    )
                 )
             )
             .mappings()

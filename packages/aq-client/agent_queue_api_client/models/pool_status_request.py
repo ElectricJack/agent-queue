@@ -15,7 +15,8 @@ T = TypeVar("T", bound="PoolStatusRequest")
 class PoolStatusRequest:
     """
     Attributes:
-        project_id (None | str | Unset): Limit to this project (optional — defaults to all).
+        project_id (None | str | Unset): View filter on the per-project breakdown (optional — defaults to all). Pool
+            bounds and totals stay fleet-wide.
     """
 
     project_id: None | str | Unset = UNSET
