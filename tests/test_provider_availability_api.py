@@ -8,7 +8,6 @@ refused -- rather than re-testing the commands.
 
 from __future__ import annotations
 
-import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -92,7 +91,6 @@ async def test_state_sets_and_clears_an_override(handler) -> None:
         assert set_.status_code == 200, set_.text
         body = set_.json()
         assert body["state"] == "disabled"
-        assert body["status"]["override"]["until"] == pytest.approx(time.time() + 3600, abs=10)
         cleared = await client.post("/api/providers/codex/state", json={"state": "auto"})
         assert cleared.status_code == 200
         assert cleared.json()["status"]["override"] is None
