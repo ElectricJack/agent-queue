@@ -26,54 +26,89 @@ async def test_checkpoint_accepts_same_canonical_full_ref(prefix):
 
 
 @pytest.mark.parametrize('ancestor', [True, False])
-async def test_repair_retry_fetches_published_tip_with_exact_ref(ancestor):
+async def test_repair_retry_fetches_published_tip_from_authorized_repository(ancestor):
     head = 'b' * 40
     git = SimpleNamespace(
-        _arun=AsyncMock(side_effect=['', head]),
+        _arun=AsyncMock(return_value=head),
+        afetch_origin=AsyncMock(),
         ais_ancestor=AsyncMock(return_value=ancestor),
+        _apush_oid=AsyncMock(),
     )
     orch = SimpleNamespace(git=git)
     fence = Fence(target=BranchKey(repository_id='repo', branch='refs/heads/aq/integration/batch'), owner_id='repair', token=4)
     if ancestor:
         assert await WorkspaceMixin._hierarchy_repair_start(
-            orch, '/slot', {'base_sha': 'a' * 40}, fence
+            orch, '/slot', {'base_sha': 'a' * 40}, fence,
+            repository_url='git@github.com:acme/widgets.git',
         ) == head
     else:
-        with pytest.raises(GitError, match='frozen starting commit'):
-            await WorkspaceMixin._hierarchy_repair_start(
-                orch, '/slot', {'base_sha': 'a' * 40}, fence
-            )
-    assert git._arun.await_args_list[0].args[0][-1] == (
-        '+refs/heads/aq/integration/batch:refs/remotes/origin/aq/integration/batch'
+        # A superseded prior stage's tip is reset to the frozen start under
+        # a lease on the observed tip (main hotfix #1062).
+        assert await WorkspaceMixin._hierarchy_repair_start(
+            orch, '/slot', {'base_sha': 'a' * 40}, fence,
+            repository_url='git@github.com:acme/widgets.git',
+        ) == 'a' * 40
+        git._apush_oid.assert_awaited_once()
+        assert git._apush_oid.await_args.kwargs['expected_old_oid'] == head
+    git.afetch_origin.assert_awaited_once_with(
+        '/slot', repository_url='git@github.com:acme/widgets.git'
+    )
+
+
+@pytest.mark.parametrize('state', [RemoteRefState.ABSENT, RemoteRefState.ERROR])
+async def test_ordinary_repair_checks_remote_even_with_stale_tracking_ref(state):
+    from src.integration.repair import UnpublishedRepairTarget
+
+    git = SimpleNamespace(
+        afetch_origin=AsyncMock(), _arun=AsyncMock(return_value='b' * 40),
+        als_remote_ref=AsyncMock(return_value=RemoteRefResult(state, error='unavailable')),
+    )
+    fence = Fence(target=BranchKey(repository_id='repo', branch='aq/batches/missing'),
+                  owner_id='repair', token=1)
+    error = UnpublishedRepairTarget if state is RemoteRefState.ABSENT else GitError
+    with pytest.raises(error) as raised:
+        await WorkspaceMixin._hierarchy_repair_start(
+            SimpleNamespace(git=git), '/slot', {'ordinary_repair': True}, fence,
+            repository_url='/authorized',
+        )
+    assert isinstance(raised.value, UnpublishedRepairTarget) is (state is RemoteRefState.ABSENT)
+    git._arun.assert_not_awaited()
+    git.als_remote_ref.assert_awaited_once_with(
+        '/slot', 'aq/batches/missing', repository_url='/authorized',
     )
 
 
 @pytest.mark.parametrize(
-    ('workspace_task', 'repo_id', 'branch_name', 'expected'),
+    ('workspace_task', 'repo_id', 'branch_name', 'precondition', 'fixable_by'),
     [
-        (None, 'repo', 'aq/t', 'task has no exact owned integration workspace'),
-        ('other', 'repo', 'aq/t', 'task has no exact owned integration workspace'),
-        ('t', 'elsewhere', 'aq/t', 'task is not bound to the integration repository'),
-        ('t', 'repo', None, 'task has no recorded delivery branch'),
-        ('t', 'repo', '', 'task has no recorded delivery branch'),
+        (None, 'repo', 'aq/t', 'no_integration_workspace', 'operator'),
+        ('other', 'repo', 'aq/t', 'workspace_not_owned', 'operator'),
+        ('t', 'elsewhere', 'aq/t', 'repo_mismatch', 'operator'),
+        ('t', 'repo', None, 'branch_not_recorded', 'worker'),
+        ('t', 'repo', '', 'branch_not_recorded', 'worker'),
     ],
 )
 async def test_checkpoint_refusal_names_the_condition_that_failed(
-    workspace_task, repo_id, branch_name, expected
+    workspace_task, repo_id, branch_name, precondition, fixable_by
 ):
     """Each guard has a different remedy, so each names itself.
 
     Folded into one message, a missing ``tasks.branch_name`` read as a
     workspace-lock problem — the refusal a pool worker in a development-mode
-    project could neither diagnose nor fix.
+    project could neither diagnose nor fix.  The refusal also carries who can
+    clear it, which is what routes the development close arm between "fix this
+    and close again" and "escalate to an operator".
     """
     ws = None if workspace_task is None else SimpleNamespace(
-        locked_by_task_id=workspace_task, workspace_path='/slot'
+        id='ws-1', locked_by_task_id=workspace_task, workspace_path='/slot'
     )
     db = SimpleNamespace(get_workspace_for_task=AsyncMock(return_value=ws))
     git = SimpleNamespace(aget_current_branch=AsyncMock(return_value='aq/t'))
     task = {'id': 't', 'repo_id': repo_id, 'branch_name': branch_name}
-    with pytest.raises(HierarchyError, match=expected) as raised:
+    with pytest.raises(HierarchyError) as raised:
         await resolve_workspace_checkpoint(db, git, task, SimpleNamespace(id='repo'))
     assert raised.value.code == 'dirty'
+    assert raised.value.context['precondition'] == precondition
+    assert raised.value.context['fixable_by'] == fixable_by
+    assert 't' in raised.value.detail
     git.aget_current_branch.assert_not_awaited()

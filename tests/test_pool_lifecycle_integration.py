@@ -19,6 +19,7 @@ otherwise, matching ``tests/test_claim_queries.py``'s ``any_db`` shape.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -45,6 +46,7 @@ from src.sessions.harness_parser import Harness
 from src.sessions.reconciler import SessionReconciler
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 
@@ -124,11 +126,11 @@ async def orch(db, config):
     # than the constructor's uninitialized production adapter.
     o.session_reconciler.db = db
     o.git = MagicMock()
-    # A pool claim now records ``tasks.branch_name`` from the slot reset (see
-    # ``_prepare_and_activate_locked``), so ``task_close`` reaches the
-    # branch-tip capture in ``session_commands`` — which awaits the git
-    # adapter.  A bare ``MagicMock`` attribute is not awaitable.
-    o.git.arev_parse = AsyncMock(return_value="c" * 40)
+    # The claim now persists the branch its slot reset created, so
+    # ``task_close`` reaches the "capture the final branch tip" read that a
+    # branchless pool task used to skip.  There is no checkout behind this
+    # fixture's git mock; answer with no SHA.
+    o.git.arev_parse = AsyncMock(return_value=None)
     # Pool launch installs the managed git excludes before it hands a
     # checkout to a session (src/orchestrator/pools.py), which reaches for
     # the real GitManager; these fixtures have no checkout.  Same stub as
@@ -167,10 +169,47 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class="standard-me
             description=tid,
             status=TaskStatus.READY,
             profile_id=profile_id,
+            route_source=kw.pop("route_source", route_source_for(profile_id)),
             intelligence_class=intelligence_class,
             **kw,
         )
     )
+
+
+async def test_pool_status_reports_effective_codex_service_tier(db, orch, handler):
+    await db.update_profile("worker", harness="codex", codex_service_tier="default")
+    orch.harness_registry.upsert(Harness(id="codex", command="codex"))
+    orch.session_spec_builder._intelligence_classes["standard-medium"] = IntelligenceClass(
+        "standard-medium", "Standard", "",
+        {"codex": {"model": "gpt-5", "service_tier": "fast"}},
+    )
+
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["service_tier"] == "default"
+
+    await db.update_profile("worker", codex_service_tier=None)
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["service_tier"] == "fast"
+
+
+async def test_pool_status_displays_retired_classes_without_launch_warnings(
+    db, orch, handler, caplog,
+):
+    await db.update_profile("worker", harness="codex", default_class="retired-medium")
+    orch.harness_registry.upsert(Harness(id="codex", command="codex"))
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["service_tier"] is None
+    assert not any("retired-medium" in record.getMessage() for record in caplog.records)
+
+    # Launch resolution retains its diagnostic warning for an invalid class.
+    profile = await db.get_profile("worker")
+    assert orch.session_spec_builder._resolve_class_config(
+        profile, orch.harness_registry.get("codex"), None,
+    ) == {}
+    assert any("retired-medium" in record.getMessage() for record in caplog.records)
 
 
 def scoped(handler, sid):
@@ -182,6 +221,20 @@ def scoped(handler, sid):
         "elevated": False,
     }
     return handler
+
+
+async def settled_claim(handler, args):
+    """Wait for this attempt's preparation before asserting its lifecycle outcome."""
+    result = await handler._cmd_task_claim(args)
+    if result.get("result") != "claim_in_progress":
+        return result
+    scope = handler._current_scope or {}
+    key = (scope.get("session_id") or args.get("session_id"),
+           result["task_id"], result["claim_epoch"])
+    preparation = handler.orchestrator.claim_preparations.get(key)
+    if preparation is not None:
+        await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+    return await handler._cmd_task_claim(args)
 
 
 async def only_pool_session(db):
@@ -209,6 +262,7 @@ class TestFullPullLoop:
 
         # -- launch ---------------------------------------------------------
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         assert (session.lifecycle, session.state, session.desired_state) == (
             "pool",
@@ -220,7 +274,7 @@ class TestFullPullLoop:
         assert slot is not None and slot.locked_by_task_id is None
 
         # -- claim ----------------------------------------------------------
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True, "wait": 2})
+        res = await settled_claim(scoped(handler, session.id), {"next": True, "wait": 2})
         assert (res["result"], res["task"]["id"]) == ("claimed", "t1")
         epoch = res["claim_epoch"]
         held = await db.get_session(session.id)
@@ -278,9 +332,10 @@ class TestFullPullLoop:
         await ready(db, "t1")
         await ready(db, "t2")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         first = await only_pool_session(db)
 
-        res = await scoped(handler, first.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, first.id), {"next": True})
         assert res["result"] == "claimed"
         claimed_first = res["task"]["id"]
         await handler._cmd_task_close(
@@ -292,29 +347,35 @@ class TestFullPullLoop:
         # Next tick: the stopped row is no longer supply, so the pool
         # re-launches and the fresh worker takes the remaining task.
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         second = await only_pool_session(db)
         assert second.id != first.id
         # The roster stays bounded: the replacement reuses the definition the
         # drained session released rather than minting a second one.
         assert second.agent_id == first.agent_id
         assert len(await db.list_agents()) == 1
-        res2 = await scoped(handler, second.id)._cmd_task_claim({"next": True})
+        res2 = await settled_claim(scoped(handler, second.id), {"next": True})
         assert res2["result"] == "claimed"
         assert res2["task"]["id"] != claimed_first
 
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
     async def test_prepare_failure_abandoned_loop_is_recycled_for_next_ready_task(
-        self, orch, db, handler
+        self, orch, db, handler, response_seconds, monkeypatch,
     ):
         """A failed prepare cannot consume the sole idle worker indefinitely."""
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+        )
         await single_worker_pool(db)
         await ready(db, "broken", priority=1)
         await ready(db, "next", priority=100)
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         first = await only_pool_session(db)
         reset = orch._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = [RuntimeError("repair checkout cannot be prepared"), "aq/next"]
 
-        failed = await scoped(handler, first.id)._cmd_task_claim({"next": True})
+        failed = await settled_claim(scoped(handler, first.id), {"next": True})
         assert failed["result"] == "prepare_failed"
         assert await db.get_task_meta("broken", "needs_attention") == "slot_reset_failed"
         assert await db.get_task_meta("broken", "claim_prepare_backoff_until") > time.time()
@@ -327,12 +388,18 @@ class TestFullPullLoop:
         provider.sessions[first.name].activity = stale_at
         await db.update_session(first.id, last_activity=stale_at)
         await orch.session_reconciler.tick(now=time.time())
-        assert (await db.get_session(first.id)).state == "stopped"
+        stopped = await db.get_session(first.id)
+        assert (stopped.state, stopped.desired_state, stopped.end_reason) == (
+            "stopped", "stopped", "claim_loop_stalled",
+        )
+        slept = await handler.execute("session_sleep", {"session_id": first.id})
+        assert slept["success"] and slept["desired_state"] == "stopped"
 
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         second = await only_pool_session(db)
         assert second.id != first.id
-        claimed = await scoped(handler, second.id)._cmd_task_claim({"next": True})
+        claimed = await settled_claim(scoped(handler, second.id), {"next": True})
         assert (claimed["result"], claimed["task"]["id"]) == ("claimed", "next")
 
     async def test_no_ready_work_then_scale_down_after_grace(self, orch, db, handler):
@@ -343,34 +410,43 @@ class TestFullPullLoop:
         orch.config.swarm.fresh_context_per_task = False
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, session.id), {"next": True})
         assert res["result"] == "claimed"
         await handler._cmd_task_close(
             {"outcome": "pass", "summary": "s", "claim_epoch": res["claim_epoch"]}
         )
         assert (await db.get_session(session.id)).desired_state == "running"
 
-        empty = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        empty = await settled_claim(scoped(handler, session.id), {"next": True})
         assert empty["result"] == "no_ready_work"
 
         orch.config.swarm.scale_down_grace = 3600
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert (await db.get_session(session.id)).desired_state == "running"
 
         orch.config.swarm.scale_down_grace = 0
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert (await db.get_session(session.id)).desired_state == "stopped"
 
 
 class TestPublicPoolSleep:
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["default", "deferred"])
     async def test_sleep_terminates_idle_pool_and_reconciliation_replaces_it(
-        self, orch, db, handler
+        self, orch, db, handler, monkeypatch, response_seconds
     ):
         """Public sleep retires the exact idle worker instance, not its successor."""
+        # A zero response window forces preparation to outlive the first response.
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds
+        )
         await single_worker_pool(db)
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         first = await only_pool_session(db)
         provider = orch.session_providers.create(first.provider, orch.config)
         reconciler = SessionReconciler(
@@ -399,6 +475,7 @@ class TestPublicPoolSleep:
         # Sleeping a pool instance does not leave a stale desired state that
         # can stop the worker launched to meet still-ready demand.
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         successor = await only_pool_session(db)
         assert successor.id != first.id
         assert successor.agent_id == first.agent_id
@@ -406,17 +483,32 @@ class TestPublicPoolSleep:
         assert (successor.state, successor.desired_state) == ("running", "running")
         assert [h.name for h in await provider.list_running("")] == [successor.name]
 
+        # A late operator sleep addresses the historical instance only. It
+        # cannot reattach it to the checkout or drain its successor's claim.
+        claim = await settled_claim(scoped(handler, successor.id), {"next": True})
+        assert claim["result"] == "claimed"
+        slept = await handler.execute("session_sleep", {"session_id": first.id})
+        assert slept["success"] and slept["desired_state"] == "stopped"
+        assert (await db.get_session(first.id)).desired_state == "stopped"
+        current = await db.get_session(successor.id)
+        assert (current.state, current.desired_state, current.task_id) == (
+            "running", "running", "t1",
+        )
+        assert (await db.get_workspace_for_agent(successor.agent_id)).locked_by_task_id == "t1"
+        assert [h.name for h in await provider.list_running("")] == [successor.name]
+
     async def test_sleep_defers_while_pool_holds_a_task(self, orch, db, handler):
         """Sleeping a busy pool worker never interrupts its active claim."""
         orch.config.swarm.fresh_context_per_task = False
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
         provider = orch.session_providers.create(session.provider, orch.config)
         reconciler = SessionReconciler(
             db, orch.config, orch.session_providers, bus=orch.bus, orchestrator=orch
         )
-        claim = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        claim = await settled_claim(scoped(handler, session.id), {"next": True})
         assert claim["result"] == "claimed"
 
         slept = await handler.execute("session_sleep", {"session_id": session.id})
@@ -442,12 +534,16 @@ class TestClaimAdmissibility:
     """A pool session may only claim work its live class/harness can run."""
 
     async def test_pool_session_cannot_claim_a_higher_class_task(self, orch, db, handler):
-        await ready(db, "deep", intelligence_class="deep-high")
+        # Launch from compatible demand, then replace it with a stale class route.
+        await ready(db, "std")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        await db.transition_task("std", TaskStatus.COMPLETED, context="test")
+        await ready(db, "deep", intelligence_class="deep-high")
         session = await only_pool_session(db)
         assert session.intelligence_class == "standard-medium"
 
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, session.id), {"next": True})
         assert res["result"] == "no_ready_work"
         assert (await db.get_task("deep")).status == TaskStatus.READY
 
@@ -456,16 +552,20 @@ class TestClaimAdmissibility:
         await ready(db, "deep", intelligence_class="deep-high", priority=1)
         await ready(db, "std", intelligence_class="standard-medium", priority=50)
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, session.id), {"next": True})
         # ``deep`` sorts first by priority but is inadmissible for this worker.
         assert (res["result"], res["task"]["id"]) == ("claimed", "std")
 
     async def test_targeted_claim_of_an_inadmissible_task_is_refused(self, orch, db, handler):
-        await ready(db, "deep", intelligence_class="deep-high")
+        await ready(db, "std")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
+        await db.transition_task("std", TaskStatus.COMPLETED, context="test")
+        await ready(db, "deep", intelligence_class="deep-high")
         session = await only_pool_session(db)
-        res = await scoped(handler, session.id)._cmd_task_claim({"task_id": "deep"})
+        res = await settled_claim(scoped(handler, session.id), {"task_id": "deep"})
         assert res["result"] != "claimed"
         assert (await db.get_task("deep")).status == TaskStatus.READY
 
@@ -499,7 +599,13 @@ class TestQuarantine:
 
         with caplog.at_level("WARNING", logger="src.orchestrator.pools"):
             await orch._reconcile_pools()
-        assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
+            await orch.wait_for_pool_launches()
+        history = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
+        assert len(history) == 1
+        stopped = history[0]
+        assert stopped.state == stopped.desired_state == "stopped"
+        assert stopped.end_reason == "startup_exit" and stopped.ended_at
+        assert not provider.sessions
 
         status = await handler._cmd_pool_status({"project_id": PROJECT_ID})
         row = next(r for r in status["pools"] if r["profile_id"] == "worker")
@@ -520,14 +626,18 @@ class TestQuarantine:
         caplog.clear()
         with caplog.at_level("WARNING", logger="src.orchestrator.pools"):
             await orch._reconcile_pools()
+            await orch.wait_for_pool_launches()
         assert _pool_warnings(caplog) == []
-        assert await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID) == []
+        history = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
+        assert [session.id for session in history] == [stopped.id]
+        assert history[0].state == "stopped"
 
     async def test_expired_quarantine_relaunches(self, orch, db):
         orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() - 1
         orch._pool_quarantine_reason[(PROJECT_ID, "worker")] = "stale"
         await ready(db, "t1")
         await orch._reconcile_pools()
+        await orch.wait_for_pool_launches()
         assert await only_pool_session(db)
 
 
@@ -566,6 +676,26 @@ class TestReconcilerInterplay:
         detail = next(r["detail"] for r in res["reasons"] if r["code"] == "awaiting_pool_session")
         assert "worker" in detail
 
+    @pytest.mark.parametrize("status", [
+        TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.PAUSED,
+    ])
+    async def test_explain_does_not_report_worker_wait_outside_claim_queue(
+        self, orch, db, handler, status,
+    ):
+        await db.create_task(Task(
+            id="not-waiting", project_id=PROJECT_ID, title="not waiting", description="",
+            status=status, profile_id="worker",
+            route_source="legacy", intelligence_class="standard-medium",
+        ))
+        # Populate the scheduler's capacity snapshot as well as the pool path.
+        await orch._schedule()
+        result = await handler._cmd_explain_task({"task_id": "not-waiting"})
+        assert "awaiting_pool_session" not in result["reason_codes"]
+        assert "no_idle_agent" not in result["reason_codes"]
+        assert "workspace_locked" not in result["reason_codes"]
+        if status == TaskStatus.PAUSED:
+            assert "paused_manually" in result["reason_codes"]
+
     async def test_explain_uses_fleet_occupancy_for_global_pool_cap(self, orch, db, handler):
         from src.models import SessionRecord
 
@@ -574,7 +704,7 @@ class TestReconcilerInterplay:
         for project_id, task_id in ((PROJECT_ID, "busy-local"), ("other-project", "busy-other")):
             await db.create_task(Task(
                 id=task_id, project_id=project_id, title=task_id, description="busy worker",
-                profile_id="worker", status=TaskStatus.IN_PROGRESS,
+                profile_id="worker", route_source="legacy", status=TaskStatus.IN_PROGRESS,
             ))
             await db.create_session(SessionRecord(
                 id=task_id, project_id=project_id, profile_id="worker",
@@ -590,6 +720,26 @@ class TestReconcilerInterplay:
         assert "fleet: 2 busy, 0 idle, 0 starting" in detail
         assert "max_active=2" in detail
         assert "at max_active with no idle worker" in detail
+
+    async def test_explain_names_an_unresponsive_worker_instead_of_calling_it_idle(
+        self, orch, db, handler,
+    ):
+        from src.models import SessionRecord
+
+        await ready(db, "waiting")
+        silent_since = time.time() - 10_000
+        await db.create_session(SessionRecord(
+            id="stuck", project_id=PROJECT_ID, profile_id="worker",
+            harness="claude", provider="fake", name="stuck", lifecycle="pool",
+            work_dir="/tmp/unused-pool-explain", epoch="test", instance_token="stuck",
+            started_at=silent_since, last_activity=silent_since, state="running",
+        ))
+
+        result = await handler._cmd_explain_task({"task_id": "waiting"})
+        detail = next(r["detail"] for r in result["reasons"]
+                      if r["code"] == "awaiting_pool_session")
+        assert "project: 0 busy, 0 idle, 0 starting, 1 unresponsive" in detail
+        assert "fleet: 0 busy, 0 idle, 0 starting, 1 unresponsive" in detail
 
     async def test_explain_names_the_quarantine_as_the_blocker(self, orch, db, handler):
         await ready(db, "t1")

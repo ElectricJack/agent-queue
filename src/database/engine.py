@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from typing import Any
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import event, exc, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
-from src.database.migration_guard import VERIFY, migration_decision
+from src.database.migration_guard import VERIFY, SchemaAheadPolicy, migration_decision
 from src.database.schema_key import (
     ALEMBIC_INI as _ALEMBIC_INI_SHARED,
 )
@@ -24,6 +27,7 @@ from src.database.schema_key import (
     schema_key,
 )
 from src.database.tables import projects, repos
+from src.logging_config import CorrelationContext
 
 logger = logging.getLogger(__name__)
 
@@ -56,28 +60,186 @@ _schema_cache_key = schema_key
 
 
 
-def create_postgres_engine(dsn: str, pool_min: int = 2, pool_max: int = 10) -> AsyncEngine:
+def _install_local_liveness_check(engine: AsyncEngine) -> None:
+    """Discard a pooled connection that asyncpg already knows is dead.
+
+    This is the ``local`` half of :data:`src.config.POOL_PRE_PING_MODES`, and
+    the reason the daemon does not pay for ``pool_pre_ping=True``.
+
+    When PostgreSQL drops a connection — a server bounce, an idle reaper, a
+    ``pg_terminate_backend`` — the socket delivers EOF (or a FATAL) while that
+    connection sits idle in the pool, and asyncpg's protocol marks it closed
+    from the event loop's own read.  ``Connection.is_closed()`` therefore
+    answers the question pre-ping asks without touching the wire at all.
+    Raising :class:`~sqlalchemy.exc.DisconnectionError` from the ``checkout``
+    event is SQLAlchemy's documented hook for pessimistic disconnect handling:
+    the pool invalidates the entry and retries the checkout with a fresh
+    connection, so the caller never sees the stale one.
+
+    What this does *not* cover, and ``wire`` does: a connection that died so
+    recently the loop has not processed the EOF yet, and a half-open socket
+    where no FIN ever arrives.  Both still surface as an ``InterfaceError`` on
+    first use.  Operators who cannot accept that — notably behind pgbouncer in
+    transaction mode — set ``database.pre_ping: wire``.
+    """
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _discard_closed_connections(dbapi_connection, connection_record, connection_proxy):
+        # ``is_closed`` is a local read on the asyncpg connection -- no wire
+        # traffic, and nothing to fail.  The ``getattr`` is only there so a
+        # non-asyncpg driver connection (a test double) is a no-op rather than
+        # an AttributeError raised into every checkout.
+        driver_connection = connection_record.driver_connection
+        is_closed = getattr(driver_connection, "is_closed", None)
+        if is_closed is not None and is_closed():
+            raise exc.DisconnectionError(
+                "asyncpg connection is already closed; discarding it from the pool"
+            )
+
+
+class ObservedQueuePool(AsyncAdaptedQueuePool):
+    """The daemon's pool, reporting how long each checkout waited.
+
+    ``_do_get`` is where ``QueuePool`` blocks when every connection is out
+    (the greenlet yields to the loop, so the wall clock here is the wait the
+    caller experienced, spec 2026-09-24 dashboard performance §4.1); opening a
+    new connection under ``pool_size + max_overflow`` happens here too and is
+    part of that wait.  It is a private SQLAlchemy hook;
+    ``tests/test_engine_perf_observer.py`` pins that it still exists on the
+    installed version.
+
+    ``QueuePool._do_get`` calls itself again only when another *thread* moves
+    the overflow counter between two reads; the asyncio adapter runs every
+    checkout on the loop thread, so each checkout is observed exactly once.
+    """
+
+    def _do_get(self):
+        from src.metrics.perf import perf_registry
+
+        started = time.perf_counter()
+        try:
+            return super()._do_get()
+        except exc.TimeoutError:
+            perf_registry().observe_pool_timeout()
+            raise
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            perf_registry().observe_pool_wait(elapsed_ms)
+            if elapsed_ms >= 1000:
+                with CorrelationContext(
+                    operation="db.pool_wait", duration_ms=round(elapsed_ms, 3),
+                    checked_out=self.checkedout(), pool_size=self.size(), overflow=self.overflow(),
+                ):
+                    logger.warning(
+                        "database pool wait duration_ms=%.1f checked_out=%s size=%s overflow=%s",
+                        elapsed_ms, self.checkedout(), self.size(), self.overflow(),
+                    )
+
+
+def _install_query_observer(engine: AsyncEngine) -> None:
+    """Time every cursor execution.  The statement and parameters are never read.
+
+    Failed statements are timed by ``handle_error``. Slow queries and pool waits
+    log durations with the current request/command context, never SQL or parameters.
+    """
+    from src.metrics.perf import perf_registry
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def _started(conn, cursor, statement, parameters, context, executemany):
+        conn.info["aq_perf_started"] = time.perf_counter()
+
+    @event.listens_for(engine.sync_engine, "after_cursor_execute")
+    def _finished(conn, cursor, statement, parameters, context, executemany):
+        _record_query(conn, failed=False)
+
+    @event.listens_for(engine.sync_engine, "handle_error")
+    def _failed(context):
+        try:
+            if context.connection is not None:
+                _record_query(context.connection, failed=True)
+        except Exception:  # diagnostics must preserve the original database failure
+            logger.debug("failed query timing unavailable", exc_info=True)
+
+    def _record_query(conn, *, failed):
+        started = conn.info.pop("aq_perf_started", None)
+        if started is not None:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            perf_registry().observe_query(elapsed_ms)
+            if elapsed_ms >= 1000:
+                with CorrelationContext(
+                    operation="db.query", duration_ms=round(elapsed_ms, 3), failed=failed,
+                ):
+                    logger.warning(
+                        "database query duration_ms=%.1f failed=%s", elapsed_ms, failed,
+                    )
+
+
+def create_postgres_engine(
+    dsn: str,
+    pool_min: int = 2,
+    pool_max: int = 10,
+    *,
+    pre_ping: str = "local",
+    pool_recycle: int = 1800,
+    pool_timeout: float = 30.0,
+    observe: bool = True,
+) -> AsyncEngine:
     """Create an async PostgreSQL engine with connection pooling.
 
     Normalizes ``postgresql://`` or ``postgres://`` schemes to the
     ``postgresql+asyncpg://`` dialect required by SQLAlchemy async.
+
+    *pre_ping* selects the connection-liveness strategy — see
+    :data:`src.config.POOL_PRE_PING_MODES` for what each mode costs and
+    covers.  It is a string rather than a bool because ``wire`` (SQLAlchemy's
+    ``pool_pre_ping``) is three round trips per checkout on this dialect and
+    ``local`` is none, and the daemon takes eight pooled transactions in a
+    single ``task_claim``; an unknown value falls back to ``local`` rather
+    than failing engine creation, because config validation is where a typo
+    is supposed to be reported.
+
+    *pool_recycle* retires a connection older than that many seconds at its
+    next checkout (``0`` disables it).  The comparison is local, so unlike
+    ``wire`` it is free, and it is what keeps a server-side idle timeout from
+    being raced in the first place.
+
+    *pool_timeout* is how many seconds a checkout waits for a connection
+    before raising :class:`~sqlalchemy.exc.TimeoutError`; it used to be a
+    hard-coded 30.
+
+    *observe* builds the pool as :class:`ObservedQueuePool` and times every
+    cursor execution: they are the perf registry's pool-wait, pool-timeout and
+    query-duration sources (:mod:`src.metrics.perf`).  Neither hook reads the
+    statement or its parameters, and ``metrics.perf_enabled: false`` stops
+    them recording without rebuilding the engine.
     """
     import re
 
     url = re.sub(r"^postgres(ql)?://", "postgresql+asyncpg://", dsn)
-    return create_async_engine(
+    kwargs: dict[str, Any] = {}
+    if observe:
+        kwargs["poolclass"] = ObservedQueuePool
+    engine = create_async_engine(
         url,
         pool_size=pool_max,
         max_overflow=pool_max,
-        pool_pre_ping=True,
-        pool_timeout=30,
+        pool_pre_ping=pre_ping == "wire",
+        pool_recycle=pool_recycle if pool_recycle > 0 else -1,
+        pool_timeout=pool_timeout,
+        **kwargs,
     )
+    if pre_ping not in ("wire", "off"):
+        _install_local_liveness_check(engine)
+    if observe:
+        _install_query_observer(engine)
+    return engine
 
 
 
 
-def _preflight_check_alembic_version(sync_connection) -> None:
-    """Fail loudly if ``alembic_version`` names a revision the code lacks.
+def _preflight_check_alembic_version(
+    sync_connection, schema_ahead_policy: SchemaAheadPolicy | None = None
+) -> bool:
+    """Return True for a proven additive ahead schema; refuse unknown revisions.
 
     The symptom this catches: ``aq restart`` bombs deep inside Alembic
     with ``Can't locate revision identified by 'X'`` — a phantom
@@ -98,6 +260,8 @@ def _preflight_check_alembic_version(sync_connection) -> None:
 
     NOTE: never auto-repair — clobbering the row loses history and
     can silently skip data migrations. A clearer error is the fix.
+    Retained newer migration sources may instead prove a safe ahead schema;
+    in that case callers must skip Alembic entirely.
     """
     from alembic.config import Config
     from alembic.migration import MigrationContext
@@ -108,10 +272,14 @@ def _preflight_check_alembic_version(sync_connection) -> None:
     script = ScriptDirectory.from_config(alembic_cfg)
     ctx = MigrationContext.configure(sync_connection)
     db_revs = ctx.get_current_heads()  # ()  if unmarked, or (rev,) / (rev, rev)
+    if schema_ahead_policy and schema_ahead_policy.accepts(
+        db_revs, _PROJECT_ROOT / "migrations" / "versions"
+    ):
+        return True
     known = {s.revision for s in script.walk_revisions()}
     unknown = [r for r in db_revs if r and r not in known]
     if unknown:
-        engine_url = str(sync_connection.engine.url)
+        engine_url = sync_connection.engine.url.render_as_string(hide_password=True)
         raise RuntimeError(
             "Alembic preflight failed: this database's alembic_version "
             f"references unknown revision(s) {unknown!r}. "
@@ -122,9 +290,10 @@ def _preflight_check_alembic_version(sync_connection) -> None:
             "this same URL (destructive to history — confirm the schema "
             "matches head first)."
         )
+    return False
 
 
-def _run_alembic_upgrade(sync_connection) -> None:
+def _run_alembic_upgrade(sync_connection, schema_ahead_policy=None) -> None:
     """Run Alembic migrations up to head using a sync connection.
 
     Called via ``conn.run_sync()`` from an async context. Preflights
@@ -134,7 +303,8 @@ def _run_alembic_upgrade(sync_connection) -> None:
     from alembic import command
     from alembic.config import Config
 
-    _preflight_check_alembic_version(sync_connection)
+    if _preflight_check_alembic_version(sync_connection, schema_ahead_policy):
+        return  # Never ask Alembic to upgrade an ahead schema with older code.
     # Close the implicit transaction those reads opened.  Alembic's
     # ``begin_transaction()`` is a no-op while the connection is already
     # in a transaction, which would defeat ``transaction_per_migration``
@@ -145,13 +315,14 @@ def _run_alembic_upgrade(sync_connection) -> None:
     command.upgrade(alembic_cfg, "head")
 
 
-def _verify_schema_at_head(sync_connection) -> None:
+def _verify_schema_at_head(sync_connection, schema_ahead_policy=None) -> None:
     """Read-only counterpart to :func:`_run_alembic_upgrade`.
 
     Used when the caller may *not* migrate the database it is pointed at
     (see :mod:`src.database.migration_guard`).  Three outcomes:
 
     * stamped at the code's head — return, the process may proceed;
+    * proven additive ahead schema within policy — return without mutation;
     * stamped at a revision this checkout does not have — the same unknown
       revision diagnostic the upgrade path raises;
     * anything else (behind head, or never stamped) — refuse and name the
@@ -163,7 +334,8 @@ def _verify_schema_at_head(sync_connection) -> None:
 
     from src.database.migration_guard import SchemaBehindCode, refusal_message
 
-    _preflight_check_alembic_version(sync_connection)
+    if _preflight_check_alembic_version(sync_connection, schema_ahead_policy):
+        return
     alembic_cfg = Config(str(_ALEMBIC_INI))
     alembic_cfg.attributes["connection"] = sync_connection
     script = ScriptDirectory.from_config(alembic_cfg)
@@ -245,11 +417,15 @@ def _reject_unstamped_legacy_database() -> None:
     )
 
 
-async def run_schema_setup(engine: AsyncEngine) -> None:
+async def run_schema_setup(
+    engine: AsyncEngine, *, schema_ahead_policy: SchemaAheadPolicy | None = None
+) -> None:
     """Create/migrate the database schema using Alembic.
 
     A database already stamped at this checkout's head returns immediately
     (see :func:`_is_stamped_at_head`); a new database runs the full chain.
+    An ahead schema proven additive by ``schema_ahead_policy`` is accepted
+    without running Alembic. Its optional distance limit defaults to disabled.
     For existing pre-Alembic databases (have tables but no
     ``alembic_version``), it refuses to guess their migration history and
     directs the operator to upgrade on the previous release first.
@@ -264,13 +440,15 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
     connection unable to see the earlier revision's work.
     """
     if migration_decision(str(engine.url)) == VERIFY:
-        await verify_schema_current(engine)
+        await verify_schema_current(engine, schema_ahead_policy=schema_ahead_policy)
         return
 
-    await _run_schema_setup_without_cache(engine)
+    await _run_schema_setup_without_cache(engine, schema_ahead_policy=schema_ahead_policy)
 
 
-async def verify_schema_current(engine: AsyncEngine) -> None:
+async def verify_schema_current(
+    engine: AsyncEngine, *, schema_ahead_policy: SchemaAheadPolicy | None = None
+) -> None:
     """Assert *engine*'s schema is at this checkout's head, without migrating.
 
     The read-only path a worker session, the CLI and pytest take when they
@@ -278,10 +456,10 @@ async def verify_schema_current(engine: AsyncEngine) -> None:
     changing its schema is not.
     """
     async with engine.connect() as conn:
-        await conn.run_sync(_verify_schema_at_head)
+        await conn.run_sync(_verify_schema_at_head, schema_ahead_policy)
 
 
-async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
+async def _run_schema_setup_without_cache(engine: AsyncEngine, *, schema_ahead_policy=None) -> None:
     """Run the Alembic path directly."""
     async with engine.connect() as conn:
         # Check if this is a pre-Alembic database (has tables but no alembic_version)
@@ -311,7 +489,7 @@ async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
                 _reject_unstamped_legacy_database()
             else:
                 # New DB or already-Alembic DB — run migrations normally
-                _run_alembic_upgrade(sync_conn)
+                _run_alembic_upgrade(sync_conn, schema_ahead_policy)
 
         await conn.run_sync(_check_and_migrate)
         await conn.commit()

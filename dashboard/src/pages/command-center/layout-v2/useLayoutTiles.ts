@@ -6,17 +6,10 @@ import {
   evictFar,
   mergeTiles,
   missingCells,
-  nodeCount,
   retainForReflow,
   type LayoutStore,
 } from "./layoutStore";
-import {
-  NODE_BUDGET, boundedBatch, cellRect, cellsForRect, centreCell, type CellKey, type Rect,
-} from "./units";
-
-interface Options {
-  onBudgetExceeded?: () => void;
-}
+import { boundedBatch, cellRect, cellsForRect, centreCell, type CellKey, type Rect } from "./units";
 
 /**
  * Trailing edge for a viewport-driven fetch. A drag hands the hook a new rect
@@ -35,7 +28,7 @@ export function useLayoutTiles(
   projectId: string | undefined,
   params: TilesParams,
   viewportRect: Rect | null,
-  opts: Options = {},
+  layoutReady = false,
 ) {
   const [store, setStore] = useState<LayoutStore>(emptyStore);
   const [pending, setPending] = useState(false);
@@ -60,8 +53,6 @@ export function useLayoutTiles(
   const paramsKey = JSON.stringify(params);
   const paramsRef = useRef(params);
   paramsRef.current = params;
-  const onBudget = useRef(opts.onBudgetExceeded);
-  onBudget.current = opts.onBudgetExceeded;
 
   const load = useCallback(async () => {
     if (!projectId || failed.current) return;
@@ -109,10 +100,6 @@ export function useLayoutTiles(
         : fetched;
       storeRef.current = merged;
       setStore(merged);
-      const depth = paramsRef.current.maxDepth ?? null;
-      // `max_depth` is ignored under `root` too: stepping it down would only
-      // churn the params and refetch the same subtree.
-      if (!root && nodeCount(merged) > NODE_BUDGET && (depth === null || depth > 0)) onBudget.current?.();
       // A response carrying a new layout_version makes mergeTiles drop every
       // previously-loaded cell and re-add only this request's, so cells still
       // inside the viewport can come back unloaded. Ask for another pass
@@ -130,9 +117,9 @@ export function useLayoutTiles(
   }, [projectId]);
 
   // Params (or project) changed: every cell cached describes a different
-  // graph. The DRAWN nodes are kept, though — collapsing a container reflows
-  // its siblings, and the canvas animates them from where they were rather
-  // than blanking and re-mounting the whole graph. A different PROJECT shares
+  // graph. The DRAWN nodes are kept, though — a filter edit or a step into a
+  // container re-lays the same project out, and the canvas animates the cards
+  // from where they were rather than blanking and re-mounting the whole graph. A different PROJECT shares
   // nothing with what is drawn, so that case still starts empty.
   const drawnProject = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -145,6 +132,7 @@ export function useLayoutTiles(
     const fresh = sameProject ? retainForReflow(storeRef.current) : emptyStore();
     storeRef.current = fresh;
     setStore(fresh);
+    setPending(false);
     setLoaded(false);
     void load();
     // paramsKey is the structural identity of `params`.
@@ -167,6 +155,13 @@ export function useLayoutTiles(
     const timer = setTimeout(() => void load(), VIEWPORT_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [viewportRect, load]);
+
+  // Extent and tiles start independently. Only retry tiles that actually
+  // answered 202; the first extent must not cancel a useful in-flight fetch.
+  // Checking both values also covers an extent that arrives before the 202.
+  useEffect(() => {
+    if (layoutReady && pending) void load();
+  }, [layoutReady, pending, load]);
 
   const refetchVisible = useCallback(() => {
     // Dropping the cells from `loaded` alone would leave nodes that vanished
