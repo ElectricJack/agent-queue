@@ -1,11 +1,12 @@
 # System spec: sessions and harnesses
 
-Status: describes the system as of 2026-10-20 (base `22cffd1b7`). This is system 5 of the
+Status: audited against development source `52d2efe4c` on 2026-10-22.
+Originally written against `22cffd1b7` on 2026-10-20. This is system 5 of the
 eighteen in the agent-queue system inventory (vault
 `projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`, review
-`rev-bright-rapids`, in review at revision 1 when this was written). Written for epic
+`rev-bright-rapids`; the inventory is approved). Written for epic
 eager-vault-55, task eager-vault-55.5. It explains what the system is for, how it works
-today, where it stops, and what is planned. It links to the existing concept, reference
+today, where it stops, and which historical plans have landed. It links to the existing concept, reference
 and design documents rather than repeating them. The inventory folds waits, hibernation,
 handoffs and stall watch into this system, so they are covered here.
 
@@ -76,18 +77,20 @@ operator in the vault; the code supports them (`src/sessions/opencode_store.py`,
 `native_questions.py`) but none ships.
 
 - **Parsing.** `parse_harness_markdown` (`src/sessions/harness_parser.py`) reads YAML
-  frontmatter plus one JSON block. `HARNESS_KNOWN_KEYS` lists every key; unknown keys are
-  rejected. Keys cover the executable and argv, prompt mode (`arg`, `flag`, `none`),
+  frontmatter plus one JSON block. `HARNESS_KNOWN_KEYS` lists recognized keys;
+  unknown keys are warned about and ignored. Keys cover the executable and argv, prompt mode (`arg`, `flag`, `none`),
   readiness prefix and delay, process names, dialog rules, resume style, composer
-  clearing, hook support, environment and the context window. A harness may name one
-  `base` to inherit from (`resolve_base`).
+  clearing, hook support and environment. Context-window metadata comes from
+  model/transcript information, not a harness `context_window` key. A harness may
+  name one `base` to inherit from (`resolve_base`); an invalid base logs an error
+  and leaves the child unresolved rather than refusing it.
 - **Registry.** `HarnessRegistry.get` (`src/sessions/harness_registry.py`) looks in the
   project's vault scope (`vault/projects/<pid>/harnesses/`) first, then the system scope
   (`vault/harnesses/<id>.md`).
 - **Seeding and drift.** `sync_vault_harnesses` (`src/sessions/harness_manifest.py`)
   writes a missing copy and compares installed copies with `SHIPPED_HARNESS_HASHES`. Each
   copy is classified as missing, current, stale (an older shipped version, safe to
-  refresh) or edited (operator changes, never overwritten). The doctor check
+  refresh automatically) or edited (operator changes, never overwritten). The doctor check
   `harness.drift` reports the last two, and `aq vault reset-harness` restores the
   shipped copy.
 - **Selection.** A task session takes its profile's `harness`
@@ -181,9 +184,13 @@ All tables are in `src/database/tables.py`; the schema itself is owned by `daemo
 |---|---|
 | `sessions` | One row per session: name, lifecycle, profile, task, work folder, `state` (observed: starting, running, draining, sleeping, stopped, quarantined), `desired_state` (intended: running, sleeping, stopped), `instance_token`, daemon epoch, lease, stall and restart counters, `hooks_provisioned`. It is also the flock registry; there is no separate one. |
 | `task_session_attempts` | Attempt history: session, task, model, start, end and verdict. |
-| `agent_waits` | v1 durable waits (§2.8), fenced by `claim_epoch` and `session_instance_token`. |
+| `wait_records`, `wait_edges` | Verified waits and their dependency graph (§2.8). |
+| `wait_source_events`, `wait_listener_cursors`, `wait_deadlines`, `wait_escalations` | Source outbox, listener progress, escalation deadlines and decisions. |
+| `continuations`, `admission_reservations` | Hibernation checkpoints, resume generations and admission reservations. |
+| `wait_measurements`, `wait_priority_projection`, `wait_bridge_progress` | Wait cost samples, inherited priorities and legacy migration progress. |
+| `agent_waits` | Legacy waits and the collaboration-specific `aq message wait` path; generic CLI registration defaults to v2. |
 | `agent_questions` | Questions detected in transcripts (§2.9). |
-| `transcript_checkpoints` | Per-session read offset into each transcript. |
+| `transcript_checkpoints` | Read offsets keyed by transcript path. |
 | `transcript_usage_calls` | Per-call token usage read from transcripts; also written to `token_ledger`. |
 | `collaboration_threads`, `collaboration_members`, `collaboration_messages` | Bounded agent-to-agent threads (§2.10). |
 
@@ -221,8 +228,9 @@ sits in the cycle is owned by `daemon-core`. The tick runs these steps in order:
 13. **backstop**.
 
 **Unknown is not dead.** If a provider cannot list a prefix (`PartialListError`), every
-destructive step for that prefix is deferred. Before a kill, `confirm_stopped` re-probes,
-and the instance token is checked again so a recycled name is never killed by mistake
+destructive step for that prefix is deferred. Stop operations check the instance
+token so a recycled name is never killed by mistake. Resource release requires
+fresh `confirm_stopped` evidence after stopping
 (`src/sessions/proctable.py`).
 
 **Exit verdicts.** `classify_exit` (`src/sessions/exit_classifier.py`) picks, in order:
@@ -231,9 +239,9 @@ and the instance token is checked again so a recycled name is never killed by mi
 |---|---|---|
 | `drained` | A pool row asked to stop, or the task is closed or gone | Clean finish |
 | `context_thrash` | The screen shows autocompact thrashing | Guarded recovery; the resume key is dropped |
-| `rate_limit` | A usage-limit screen (`src/sessions/usage_limit_screen.py`) or rate-limit text | 900 s cooldown; provider availability is told |
+| `rate_limit` | A usage-limit screen (`src/sessions/usage_limit_screen.py`) or rate-limit text | Provider availability/failover handling; outside enforce mode use the detected retry time or a 900 s fallback |
 | `rapid_crash` | Died within 600 s of starting | Counts toward quarantine |
-| `productive_death` | Anything else | Restart with the resume key |
+| `productive_death` | Anything else | Preserve work and record incident/attention evidence; recovery policy may requeue with the resume key |
 
 `src/sessions/worker_recovery.py` keeps a failure streak per cause in task metadata. Two
 failures from the same guarded cause (`context_thrash`, `stalled`, `stuck_timeout`) block
@@ -258,6 +266,18 @@ killed. That is why `aq restart` keeps agents running
 woken by a message or `aq session wake`. A drain asks a pool session to finish its claim
 and exit; the session confirms with `aq session drain-ack`
 ([idle sessions and drains](../../concepts/sessions.md#idle-sessions-and-drains)).
+
+**Supervisor health.** Named convergence also runs the health reconciler in
+`src/sessions/supervisor_health.py`. It reads bounded Claude/Codex transcript
+tails for completed turns and errors; terminal repainting is not liveness evidence.
+Pending turns time out after `supervisor.turn_timeout_seconds` (900 s); retries
+use exponential backoff from 60 s, capped at 1800 s, with two retries by default.
+A retry-budget restart uses a fresh conversation and retains durable pending
+requests. Unanswered worker/question requests produce one global notice after
+`supervisor.question_timeout_seconds` (900 s), without fabricating a reply or
+resolving the worker's wait. Idle supervisors rotate after `supervisor.max_session_age_seconds`
+(86400 s) or at `context_ceiling_tokens` (160000), when transcript evidence is
+available. The profile field `max_session_age` is separate and unused.
 
 **Pausing.** Pausing a task commits its work to `refs/aq/task-pauses/<hex>`
 (`src/orchestrator/task_checkpoint.py`) before the session is stopped, so a later session
@@ -286,7 +306,9 @@ completion protocol (`src/prime/models.py`, `sections.py`).
 Prime runs on first launch (the bootstrap prompt), on resume and after compaction (the
 `SessionStart` hook, returned as `hookSpecificOutput.additionalContext` by
 `src/prime/hook_envelopes.py`). A startup hook is skipped when
-`AQ_STARTUP_PROMPT_DELIVERED=1`, so the first brief is not delivered twice. A message
+`AQ_STARTUP_PROMPT_DELIVERED=1` only for non-resume/non-compact hook sources;
+continuation hooks always refresh the brief. The launcher does not write
+`.aq/prompt.md`. A message
 wake-up does not re-prime.
 
 ### 2.7 Between turns: messages, nudges and handoffs
@@ -320,27 +342,52 @@ newest note, quoted and capped at 8 KiB, and labels it stale when the claim, ses
 folder, branch or HEAD changed since it was written. See
 [wake context and compaction](../../guides/wake-context-compaction.md).
 
-### 2.8 Durable waits (v1, on main today)
+### 2.8 Verified waits and hibernation
 
-An agent that is waiting for a job, another task, a message or a timer should not burn
-turns polling. A durable wait lets it say so and keep its claim. The
-[agent waits guide](../../guides/agent-waits.md) is the user guide.
+Verified waits are shipped, not planned. `src/config_wait_policy.py` defaults to
+`v2_enabled: true`, `hibernation_enabled: true`, `scheduler_waits_enabled: true`
+and `v1_bodies: refuse`. CLI registration builds schema v2; raw v1 API/MCP bodies
+receive `wait.upgrade_required` with an upgrade example. Project policy can
+inherit or override the feature flags. The [agent waits guide](../../guides/agent-waits.md)
+and [cutover runbook](../../guides/hibernation-cutover-runbook.md) are operational references.
 
-- Kinds: `job`, `task`, `message`, `timer`. States: `active`, `satisfied`, `expired`,
-  `cancelled`. Default timeout 7200 s, maximum 86400 s (`src/agent_waits.py`).
-- Registration (`src/commands/wait_commands.py`,
-  `src/database/queries/agent_wait_queries.py`) derives the owner on the server: a live
-  session on the current claim epoch with the task in progress. Replaying the same
-  idempotency key returns the existing wait. One active task wait is allowed per claim.
-- While a wait is active and its producer has not finished, the reconciler renews the
-  session's lease up to the wait's deadline and skips the stall ladder.
-- `AgentWaitReconciler` runs each orchestrator cycle, resolves satisfied or expired
-  waits, cancels waits whose claim ended, and writes a `wait:<id>:result` message through
-  an outbox.
-- The agent resumes with `aq wait show WAIT_ID --consume --json` (`src/cli/waits.py`).
+- **Verified conditions.** `src/waits/` validates task, dependency, job, CI run/check,
+  pull request, batch, message, human, timer, resource and playbook conditions.
+  References must exist, be in scope and still be unsatisfied. Stable idempotency
+  keys recover the existing wait; an already satisfied condition is refused with
+  `wait.already_satisfied`. Register once and end the turn.
+- **AQ chooses the mode.** Short waits can retain the session in `WAITING`;
+  longer waits or slot pressure can hibernate it. Human waits always hibernate.
+  The in-place ceiling is 1800 s; the decision also uses measured cost, a 2.0
+  margin against a ten-minute resume cost, and registration-loop detection
+  (three registrations in an hour).
+- **Hibernation.** `src/wait_runtime/` checkpoints, publishes WIP, proves the fenced
+  process stopped, advances the claim epoch and releases the workspace. The
+  transition budget is 120 s. A general `aq handoff` note is not this checkpoint.
+- **Event-driven outcomes.** A transactional outbox, source listener, lease-elected
+  timer driver and repository CI watchers resolve conditions. A deadline escalates
+  to the supervisor without waking the worker or resetting its wait age. Human
+  waits have no automatic deadline. Default escalation intervals are four hours
+  for task/dependency/pull-request/batch, two hours for job/message/playbook,
+  90 minutes for CI, 30 minutes for resource, and five minutes after a timer is due.
+- **Resume.** Hibernated work enters `RESUME_PENDING` and launches a fresh session;
+  it does not reuse the native transcript. Prime supplies the condition outcome,
+  checkpoint, bounded newest task comments with full-history pointers and held
+  mail. The agent checks the retained result and acknowledges the exact outcome
+  with `aq wait ack`. Ordinary mail is held until acknowledgement. Resume dispatch
+  is independent of a slow main cycle, has two launch attempts by default, and
+  reports a stalled generation once after 300 s.
+- **Operations.** Supervisors decide, lift or extend waits. `waits.schema` and
+  `waits.orphans` doctor checks diagnose retained state; fixes are conservative.
+  Terminal tasks retire waits. Permanently refused admission is quarantined with
+  a notice rather than retried forever. Disabled policy refuses new registration;
+  a worker preserves its claim/preparation and awaits supervisor delivery.
 
-Playbook waits (`playbook_waits`, `src/playbooks/waits.py`) are a separate mechanism that
-parks playbook runs, owned by `playbooks`.
+`agent_waits` and `AgentWaitReconciler` remain for compatibility and the direct
+collaboration message-wait command (§2.10). Their legacy lease renewal and
+`aq wait show WAIT_ID --consume --json` result path are distinct from v2
+checkpoint/acknowledgement. Playbook waits (`playbook_waits`, `src/playbooks/waits.py`)
+park playbook runs and belong to `playbooks`.
 
 ### 2.9 Agent questions
 
@@ -359,7 +406,9 @@ A supervisor or operator can open a short thread between two to four agents
 (`src/collaboration.py`, `src/commands/collaboration_commands.py`): at most 7200 s, a
 budget of up to 40 messages, 4096 bytes per message, 5 sends a minute per sender. Each
 member accepts for its current claim epoch, and sending needs an accepted, live claim.
-`aq message wait` registers a real `agent_waits` row and long-polls. See
+`aq message wait` still registers a legacy `agent_waits` row directly, even with
+v2 enabled, and attaches a bounded long-poll to that durable row. Prefer generic
+`aq wait register --kind message` for the verified wait protocol. See
 [agent collaboration](../../guides/agent-collaboration.md).
 
 ### 2.11 Transcripts and context
@@ -368,7 +417,9 @@ member accepts for its current claim epoch, and sending needs an accepted, live 
 about every 2 s, records per-call usage in `transcript_usage_calls` and `token_ledger`,
 and keeps offsets in `transcript_checkpoints`. For Codex the session key is learned from
 the transcript. `src/sessions/context.py` measures how full the context window is from
-the transcript tail; for OpenCode it reads OpenCode's store. Gemini has no reader. What
+the Claude/Codex transcript tail. OpenCode's store supplies liveness, not a
+measured context metric; Gemini has no reader. Harness `transcript_paths` is
+currently unused metadata; reader discovery paths are implemented in code. What
 AQ reads and keeps is described under
 [privacy](../../concepts/sessions.md#privacy-what-aq-reads-and-what-it-keeps); usage
 accounting is in [usage accounting](../../reference/usage-accounting.md).
@@ -394,21 +445,24 @@ There are three ways to look at a session, all in the
 
 Besides the ladder in §2.5, three things report stuck work. None repairs anything.
 
-- **Stuck-task watch**: a playbook on `timer.10m` calls `get_stuck_tasks`
-  (`src/stall_watch.py`, `src/commands/system_commands.py`) and messages the global
-  supervisor about orphaned, stale active, stuck ready and waiting-on-delivery tasks,
-  excluding held ones ([stuck-task watch](../stuck-task-watch.md)).
+- **Stuck-task watch**: the optional reviewed V2 playbook runs on `timer.15m`.
+  It combines the five `task_observations_v1` finding kinds, BLOCKED tasks and
+  aged ASSIGNED/IN_PROGRESS/orphaned rows from `get_stuck_tasks`. A complete
+  active-project inventory and notification manifest gate each scan; incomplete
+  partitions cannot clear findings. Notifications to the global supervisor are
+  deduplicated per episode. The base policy has no repeat reminder; operators
+  explicitly import/activate it ([stuck-task watch](../stuck-task-watch.md)).
 - **Doctor** `aq doctor --check stall.sweep` (`src/doctor/stall_checks.py`).
 - **Operator script** `scripts/operator-checks/stall-sweep.py`
   ([operator stall sweep](../operator-stall-sweep.md)).
 
 ### 2.14 Command and doctor surface
 
-- Session commands: `aq session list|show|wake|stop|drain-ack|cleanup`
+- Session commands: `aq session list|show|wake|sleep|kill|drain-ack|cleanup`
   (`src/commands/session_commands.py`; [session cleanup](../operations/session-cleanup.md)).
 - Agent surface: `aq prime`, `aq handoff`, `aq wait …`, `aq message wait`,
   `aq subagent event` (`src/cli/agent_surface.py`, `src/cli/waits.py`).
-- `aq task close --obsolete|--no-change|--done` is implemented in
+- `aq task close --obsolete`, `--no-change` and `--done` is implemented in
   `src/sessions/obsolete.py` and refuses tasks held by a live session.
 - Doctor checks in `src/doctor/session_checks.py` (including the flock audit),
   `harness.drift` and `stall.sweep`. The
@@ -419,7 +473,7 @@ Besides the ladder in §2.5, three things report stuck work. None repairs anythi
 
 | Neighbour | This system owns | The neighbour owns |
 |---|---|---|
-| `daemon-core` | `SessionReconciler.tick`, `AgentWaitReconciler`, `adopt_on_start` as callables | Where they run in `run_one_cycle`, start-up order, the schema and migrations |
+| `daemon-core` | `SessionReconciler.tick`, verified-wait drivers, `AgentWaitReconciler`, `adopt_on_start` as callables | Where they run in `run_one_cycle`, start-up order, the schema and migrations |
 | `task-graph` | Reading task status to classify exits; pausing a task with a checkpoint ref | Task statuses, hierarchy, gates |
 | `scheduling-and-claims` | Carrying the claim into the session (`AQ_CLAIM_EPOCH`, `.aq/claim.json` via `src/claim_file.py`), lease renewal, stall-exempt waits | Claims, epochs, the frontier, pools, `_assert_session_owns` and `stale_claim` |
 | `routing-and-profiles` | Launching the harness the profile names; applying the class slice | Which profile runs a task; profile and class formats and resolution rules |
@@ -462,167 +516,66 @@ Besides the ladder in §2.5, three things report stuck work. None repairs anythi
 - **Mechanism here, policy elsewhere.** The reconciler and the ladder are deterministic
   and make no LLM calls; judgment (what to do with a stuck task, a question, a failed
   provider) belongs to supervisors and playbooks.
-- **Shipped harnesses are write-if-absent.** Operator edits are kept and reported as
-  drift, never overwritten.
+- **Shipped harness drift is classified.** Missing copies are installed and known
+  stale shipped copies refresh automatically. Operator edits are kept and reported
+  as drift, never overwritten.
 
-## 5. Known gaps
+## 5. Current limitations and suspected code gaps
 
-These were found while writing this spec. None is tracked by an open task as of
-2026-10-20 unless noted.
+These are source observations at the audited revision, not claims about live task
+status. Documentation corrections from the audit are reflected in the linked
+concept, reference and guides. The supervisor should triage code findings.
 
-1. **The concept page is behind the code.** [Sessions](../../concepts/sessions.md):
-   - lists four exit verdicts; the code has five (`context_thrash` is missing);
-   - lists ten reconciler steps, leaving out `flock_audit`, `claim_refusals` and
-     `disabled_project_supervisors`;
-   - draws `sleeping → starting` and `starting → quarantined` on a dialog. In code a
-     sleeping row cannot restart (waking creates a new row) and a launch that dies is
-     `stopped` with `startup_exit`;
-   - says the subprocess provider has no `confirm_stopped`; it does.
-2. **The harness reference is behind the code.** [Harnesses](../../reference/harnesses.md):
-   - calls a `base` chain an error; the code only warns;
-   - documents `transcript_paths` and `{work_dir_slug}`, which nothing reads (reader paths
-     are hard-coded);
-   - describes `--full-auto` handling inaccurately; the code always strips it.
-3. **Shipped harness notes are stale.** `codex.md` says only subagent hooks are wired;
-   `codex.json` also wires `SessionStart` and `PreCompact`. `gemini.md` still describes
-   the removed `aq inbox --inject`.
-4. **Gemini is a second-class harness.** It has no transcript reader, so it reports no
-   usage or context, and with no hooks and no resume key a restart starts fresh.
-5. **Codex resume is half wired.** The session key is learned from the transcript, but
-   the harness declares `resume: none`, so it is never used.
-6. **The question-routing spec is stale.**
-   [Agent question routing](../../superpowers/specs/2026-08-30-agent-question-routing.md)
-   describes escalation after 5 minutes. Today every question starts at the supervisor and
-   the 15-minute timeout only sends a notice.
-7. **`session.restart_requested` has no subscriber.** A plain `aq handoff` emits it
-   (`src/commands/surface_commands.py`, `src/event_schemas.py`), and nothing listens.
-8. **A latent break in the sync workflow.** `src/orchestrator/sync_workflow.py` still calls
-   `self._runtimes.create("")` on the empty runtime registry, which raises `ValueError` if
-   that path is ever reached.
-9. **`max_session_age` is unused.** The field exists (`src/models.py`) but nothing
-   recycles old sessions.
-10. **Doctor and the ladder disagree about waits.** The reconciler skips the ladder for a
-    session with an active wait, but the `stall.sweep` `idle_worker` finding still fires
-    after 15 idle minutes.
-11. **The collaboration guide is behind the code.**
-    [Agent collaboration](../../guides/agent-collaboration.md) says `aq message wait`
-    gives back no durable wait (it registers one), lists a `collaboration.budget_exhausted`
-    code (the code returns `collaboration.closed`), and says a thread closes when a
-    member's task ends (only an explicit removal or the deadline closes it).
-12. **The compaction guide is behind the code.**
-    [Wake context and compaction](../../guides/wake-context-compaction.md) says job and
-    wait lists in handoff facts are empty; they are filled now.
-13. **Stale code text.** Docstrings in `src/sessions/provider.py` and `subprocess.py` say
-    tmux and the process table "land with a later wave"; `LIFECYCLES` comments and the
-    `sessions` table comment omit `pool`; the reconciler docstring's step list does not
-    match the tick; prime docstrings describe a `.aq/prompt.md` nothing writes.
-14. **The design records are historical.**
-    [Session runtime design](../design/session-runtime.md) and its
-    [implementation plan](../implementation/session-runtime.md) are marked historical and
-    differ from the code (adoption prefixes, subprocess capabilities, pool lifecycle).
-    Where they disagree, the code is right.
+- **Collaboration waits bypass v2.** `message_wait_commands.py` writes directly to
+  `agent_waits`, so the collaboration-specific long-poll does not use verified
+  admission, hibernation or exact outcome acknowledgement. Use generic message
+  wait registration for the current protocol.
+- **A plain handoff does not restart a session.** It emits
+  `session.restart_requested`, but no subscriber handles that event.
+- **The sync workflow still uses the retired registry.**
+  `src/orchestrator/sync_workflow.py` calls `_runtimes.create` on a registry with
+  no production implementations; reaching that path raises `ValueError`.
+- **Stall reporting disagrees with wait exemption.** The reconciler exempts active
+  waits from its stall ladder; `stall.sweep` can still flag `idle_worker` after
+  15 idle minutes without the same wait check.
+- **Harness inheritance fails open.** Invalid bases log an error and return the
+  unresolved child. `transcript_paths` is parsed/inherited but unused by readers.
+- **Harness coverage differs.** Gemini has no transcript reader, hooks or native
+  resume and restarts fresh. Codex learns a transcript key but deliberately ships
+  `resume: none`, so it also launches fresh. OpenCode observation requires an
+  operator-authored harness; its store supports liveness, not context measurement.
+- **Profile age is not supervisor age.** `max_session_age` on profiles is unused;
+  supervisor rotation uses the active `supervisor.max_session_age_seconds` setting.
+- **Source commentary can be historical.** Shipped Codex notes omit its prime and
+  compaction hooks, and some source docstrings still describe later-wave process
+  support or a `.aq/prompt.md` writer. The hook templates and launch code are
+  authoritative. The removed Gemini inbox hook does not mean the supported
+  `aq inbox --inject` command was removed.
 
-## 6. Planned work
+## 6. Rollout history and design records
 
-The main open epic is **bold-zenith-11** (IN_PROGRESS), event-driven hibernation and
-verified waits. It replaces v1 waits. Task states were re-queried on 2026-10-20 just
-before writing.
+The original 2026-10-20 version of this page described event-driven hibernation
+(epic `bold-zenith-11`) as unmerged work and listed live task states. That is a
+historical snapshot: verified waits, continuation storage, source drivers,
+resume dispatch, per-project flags, doctor checks and cutover defaults are now
+in this checkout. §2.8 describes current behavior; do not use the old queue
+snapshot to decide which features exist.
 
-### 6.1 Event-driven hibernation and verified waits (bold-zenith-11)
+The approved vault design
+`2026-10-13-event-driven-agent-hibernation-and-verified-waits.md` (review
+`rev-bold-pinnacle`, revision 2) and
+`2026-10-13-hibernation-rev2-decisions.md` record the rationale. The operator
+[cutover runbook](../../guides/hibernation-cutover-runbook.md) governs migration
+and rollback; worker sessions never migrate the operator database.
 
-**Why.** Three incidents on 2026-10-13: a train repair sat READY for 11.5 hours at
-priority 100 while holding the development branch; nine Codex sessions kept waking on
-expiry, lease renewal and patrol notes; and agents' claimed blockers could not be checked.
+Earlier design records remain historical rather than operational instructions:
+[session runtime design](../design/session-runtime.md), its
+[implementation plan](../implementation/session-runtime.md), and
+[agent question routing](../../superpowers/specs/2026-08-30-agent-question-routing.md).
+In particular, the question-routing design's five-minute automatic escalation
+is superseded by the supervisor-first routing and fifteen-minute notice in §2.9.
 
-**What the design changes** (vault
-`2026-10-13-event-driven-agent-hibernation-and-verified-waits.md`, review
-`rev-bold-pinnacle`, approved at revision 2; Jack's decisions in
-`2026-10-13-hibernation-rev2-decisions.md`):
-
-- **Typed conditions AQ can observe**: task, dependency, job, CI run or check, pull
-  request, batch, message, human, timer, resource and playbook condition. Registration
-  refuses a condition that is missing, out of scope or already satisfied
-  (`wait.already_satisfied`), so an agent's claimed blocker is checked.
-- **Wake only on the condition or a supervisor decision.** Routine mail is held until the
-  wake. A timeout escalates to the supervisor (`wait_decide`: extend, wake, cancel,
-  reroute or escalate to Jack). Three registrations in an hour count as a loop and force
-  hibernation. Human waits never time out.
-- **Sleep in place or hibernate.** A short wait keeps the session (ceiling 1800 s). A
-  longer one, or slot pressure, hibernates it: write an 8 KiB compaction summary, push a
-  WIP commit, prove the session stopped within 120 s, advance the claim epoch and release
-  the folder. Both modes exist because some rebuilds take 20 minutes or more; human waits
-  always hibernate.
-- **Resume is a fresh session**, primed with the outcome, the summary, the ticket, all
-  comments and the held mail; the agent acknowledges with `wait_ack`. Native transcript
-  resume was removed in revision 2.
-- **New task statuses**: `WAITING`, `HIBERNATED`, `RESUME_PENDING`.
-- **The wait graph raises priority.** A blocker inherits its most urgent waiter's
-  priority, and a branch-holding blocker left unclaimed for 1800 s escalates and gets a
-  reserved slot.
-- **Event sources**: a transactional outbox (`wait_source_events`), `LISTEN/NOTIFY`, a
-  lease-elected timer driver and one CI watcher per repository.
-
-**Implementation** (vault `…-implementa.md`, review `rev-fleet-orbit`, approved at
-revision 1). Children .1–.21 and .23–.36 are COMPLETED. Their work is on
-`aq/epic/event-driven-hibernation-and-verified-waits-implementation` and **not on main**
-at this base. It adds:
-
-- migrations `a00000000103`–`a00000000106` and the tables `wait_records`, `wait_edges`,
-  `wait_source_events`, `wait_listener_cursors`, `wait_deadlines`, `wait_escalations`,
-  `continuations`, `admission_reservations`, `wait_measurements`,
-  `wait_priority_projection` and `wait_bridge_progress`;
-- `src/waits/` (registry, conditions, admission, decisions, graph, holding, mail, loops,
-  sources, timers, adapters per kind, a CI watcher) and `src/wait_runtime/` (hibernate,
-  resume, eviction, scheduler, legacy bridge);
-- `wait_v2` commands (`wait_ack`, `wait_checkpoint`, `wait_decide`, `wait_lift`,
-  `wait_explain`, `wait_graph`, `wait_evict`, and internal verbs for deadlines, sources,
-  resume dispatch and the legacy bridge);
-- prime sections for the wait outcome and the compaction summary;
-- `src/config_wait_policy.py`, with `wait_policy.v2_enabled`, `hibernation_enabled` and
-  `scheduler_waits_enabled` all false and `v1_bodies: translate`.
-
-Defaults: escalation after 14400 s for task, dependency, pull request and batch waits,
-7200 s for job, message and playbook condition, 5400 s for CI, 1800 s for resource and
-300 s for timer; resume margin 2.0 against a 10-minute resume cost; two resume attempts.
-Rollback is flags only, and continuations are never deleted.
-
-**Remaining: bold-zenith-11.22** (READY, routed to `standard-high-codex`): flip the
-defaults, refuse v1 bodies (`wait.upgrade_required`), ship the `waits.schema` and
-`waits.orphans --fix` doctor checks and the cutover runbook, rewrite the agent-waits and
-wake-context-compaction guides, sync grants and regenerate. The live migration and flip
-are done by the global supervisor as operator, with no human gate (owner directive
-2026-10-19). Gaps on the epic branch at writing time: no per-project `v2_enabled` for a
-canary, no `src/doctor/wait_checks.py`, no runbook, and the legacy bridge keeps
-`deadline_at` with no grace period.
-
-When it lands, §2.8 is replaced: v1 waits become a translated legacy body, then a refusal.
-
-### 6.2 Other open work that touches this system
-
-| Item | State | What it changes |
-|---|---|---|
-| stark-willow-95.3 — redrive stuck delivery once, with one waiting view (epic stark-willow-95, fast smooth integration) | READY | A waiting view built on the wait records. |
-| stark-willow-95.7 — idle-busy dispatch replaces the timed train window | READY | Needs v2 waits and exact-SHA CI check waits. |
-| stark-willow-95.13 — one admission view for frontier, pools explain and delivery guards | READY | Admission reads the waits API. Owned by `scheduling-and-claims`. |
-| stark-willow-95.15 — keep author context through the fenced parent merge, with budgets as verified waits | DEFINED | Authors wait on verified integration conditions instead of exiting. |
-| stark-willow-95.11 — keep candidate and fixer workspaces warm | DEFINED | Workspace reuse across sessions. Owned by `projects-workspaces-git`. |
-| stark-willow-95.17 — align shipped policy, profile instructions and retirement ratchets | DEFINED | Changes prime text and worker instructions. |
-| eager-vault-55.19 — rewrite the vision spec from all eighteen system specs | DEFINED | Consumes this document. |
-
-The fast smooth integration spec (vault `2026-10-12-fast-smooth-integration.md`, review
-`rev-fair-lantern`) was in review at revision 3 when this was written.
-
-### 6.3 Research not yet planned
-
-**Distributed worker nodes** (vault `2026-10-06-distributed-worker-nodes.md`, review
-`rev-eager-quest`, in review at revision 2). It recommends one control plane plus an
-execution-worker service on every host, including the daemon's own machine. tmux
-sessions, transcripts, the PTY terminal and the flock audit would move behind that
-service, and session records would gain a node dimension. No task is filed.
-
-### 6.4 Recently completed work this spec reflects
-
-These specs describe behaviour already on main and are worth reading for the reasoning:
+Recent implemented changes also include
 [worker context thrash recovery](../../superpowers/specs/2026-10-10-worker-context-thrash-recovery.md),
 [context thrash deferred handoff](../../superpowers/specs/2026-10-13-context-thrash-deferred-handoff.md),
 [retained workspace stop rework](../../superpowers/specs/2026-10-13-retained-workspace-stop-rework.md),
@@ -630,12 +583,14 @@ These specs describe behaviour already on main and are worth reading for the rea
 [task branch recovery](../../superpowers/specs/2026-10-09-task-branch-recovery-design.md),
 [mobile terminal](../../superpowers/specs/2026-10-08-mobile-terminal-design.md),
 [worker provider usage exhaustion](../../superpowers/specs/2026-10-06-worker-provider-usage-exhaustion.md),
-[project supervisor opt-in](../../superpowers/specs/2026-10-12-project-supervisor-opt-in.md)
-and [pool header terminal selector](../../superpowers/specs/2026-10-01-pool-header-terminal-selector.md).
-The vault spec `2026-10-03-local-opencode-compaction-loops-and-permanent-stalls-fleet-t.md`
-(review `rev-noble-glacier`, approved) is behind the OpenCode liveness reader.
+and [project supervisor opt-in](../../superpowers/specs/2026-10-12-project-supervisor-opt-in.md).
+The profile/supervisor age distinction in §5 also reflects the newer transcript-based
+supervisor health reconciler, rather than the original no-rotation snapshot.
 
-The gaps in §5 are candidates for follow-up work. None has a filed task.
+Distributed worker nodes remain a design/research direction in the vault's
+`2026-10-06-distributed-worker-nodes.md`. This checkout has no execution-worker
+service; local providers, tmux adoption and local transcript readers remain the
+implemented boundary. Current queue state belongs to the task service, not this spec.
 
 ## 7. Related documents and source
 
@@ -676,7 +631,7 @@ The gaps in §5 are candidates for follow-up work. None has a filed task.
 **Source**
 - Sessions: `src/sessions/` (`provider.py`, `tmux.py`, `subprocess.py`, `fake.py`,
   `spec.py`, `env.py`, `launch.py`, `reconciler.py`, `exit_classifier.py`,
-  `worker_recovery.py`, `flock_audit.py`, `proctable.py`, `dialogs.py`,
+  `worker_recovery.py`, `supervisor_health.py`, `flock_audit.py`, `proctable.py`, `dialogs.py`,
   `usage_limit_screen.py`, `context.py`, `opencode_store.py`, `questions.py`,
   `native_questions.py`, `input_prompts.py`, `obsolete.py`)
 - Harnesses: `src/sessions/harness_parser.py`, `harness_registry.py`,
@@ -684,7 +639,8 @@ The gaps in §5 are candidates for follow-up work. None has a filed task.
 - Transcripts: `src/sessions/transcripts/`
 - Terminals: `src/sessions/pane_broadcaster.py`, `terminal_pty.py`, `terminal_input.py`,
   `host_shell.py`
-- Between turns: `src/prime/`, `src/handoffs.py`, `src/agent_waits.py`,
+- Between turns: `src/prime/`, `src/handoffs.py`, `src/waits/`, `src/wait_runtime/`,
+  `src/config_wait_policy.py`, `src/agent_waits.py`,
   `src/commands/wait_commands.py`, `src/commands/message_wait_commands.py`,
   `src/collaboration.py`, `src/stall_watch.py`, `src/messages/delivery.py`,
   `src/messages/session_lens.py`

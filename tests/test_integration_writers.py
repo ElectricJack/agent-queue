@@ -620,3 +620,17 @@ async def test_stop_journal_identity_survives_a_target_ref_change(env):
     stops = [entry for entry in journal if entry["primitive"] == Primitive.WRITER_STOP_PROOF]
     assert len(stops) == 2
     assert len({entry["idempotency_key"] for entry in stops}) == 2
+
+
+async def test_unlimited_repair_deadline_preserves_writer_lease_ttl(env):
+    subject = await make_subject(env)
+    await env.writers.file(subject, filing())
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_subjects).where(
+            integration_subjects.c.id == subject.id,
+        ).values(budget_deadline_at=None, budget_attempt_limit=None, budget_attempts=1000))
+    subject = await current(env, subject)
+    result = await env.writers.lease(subject, leasing(subject))
+    assert result.outcome == "leased"
+    assert result.detail["expires_at"] == env.now + leasing(subject).ttl_seconds
+    assert not subject.budget.expired(1_000_000) and not subject.budget.exhausted

@@ -11,6 +11,9 @@ tags: [spec, command-handler, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -2248,6 +2251,13 @@ The daily branch sweep skips absent source and checkout-base registrations and
 reports one actionable warning per repository/path. Persist the warning state
 only after accepted report delivery; suppress it across days/restarts until the
 path is restored or repointed. No Git probe runs against an absent directory.
+
+Clean, detached linked worktrees that are not AQ slots are skipped before
+authenticated Git preparation and noted separately from failures. Skipping one
+does not mark its shared Git repository as swept: a base checkout or AQ slot
+sharing that repository remains eligible. Dirty, attached, managed-slot and
+unreadable worktrees retain the normal sweep/error behavior. No worktree or
+detached HEAD is removed or changed by this classification.
 
 ### Base registration points to a different clone
 

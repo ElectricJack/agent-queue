@@ -1,0 +1,456 @@
+{
+  "escalation_apply_reply": {
+    "argument_reads_diagnostic_only": [
+      "action_kind",
+      "escalation_id",
+      "expected",
+      "expected_revision",
+      "idempotency_key",
+      "option_key",
+      "prepare",
+      "preview_id",
+      "reply_id",
+      "target_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_apply_reply",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'reply not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean_expression",
+        "return": "{'success': result['application_state'] == 'applied', 'created': created, 'ask_id': ask['id'], 'applied': result['application_state'] == 'applied', 'replayed': not created, **result}"
+      },
+      {
+        "protocol": "delegated_producer: dictionary expansion retains producer outcome",
+        "return": "{**_error('ask.context_missing', 'Review the request effects and pass its expected version; use prepare first'), 'ask_id': ask['id'], 'ask_url': f'/focus/asks/{ask['id']}', 'expected': {k: ask[k] for k in ('decision_generation', 'source_fingerprint', 'feedback_version')}}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(exc.code, str(exc))"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'ask_id': ask['id'], 'preview': preview, 'expected': args['expected']}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed canonical /focus/asks compatibility URL; outcome protocol, resource gates and typed contract unchanged.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:a06e77eb4ed436ca45caa9a3e61bbea29ca38c6f1b1fdd52dfdd74b28529e51a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_escalation_commands.py::test_apply_reply_resolves_only_bound_human_gate_once"
+    ]
+  },
+  "escalation_create": {
+    "argument_reads_diagnostic_only": [
+      "choices",
+      "decision_requested",
+      "escalation_id",
+      "incident_key",
+      "investigation",
+      "project_id",
+      "severity",
+      "source_identity",
+      "source_kind",
+      "summary",
+      "task_id",
+      "task_title"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_create_escalation": "sha256:e5ec830fbd973f539bd34d950ab1f6ce3971c32b596d6bf9ec9b507533e32a14"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_create",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._create_escalation(args)"
+      }
+    ],
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "typed",
+    "source_digest": "sha256:f1010169b15e1bccc491ea92431c80837b508570a68082f525112fd22cf19538",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "escalation_get": {
+    "argument_reads_diagnostic_only": [
+      "escalation_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_get",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **alias, 'escalation': incident, 'messages': await self.db.list_escalation_messages(incident['id']), 'deliveries': await self.db.list_escalation_deliveries(incident['id']), 'actions': await self.db.list_escalation_actions(incident['id'])}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      }
+    ],
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "typed",
+    "source_digest": "sha256:0b7e7bfb3269992a37444b90b7df60c3bbe6915dc496d362d6ddb5a8e16bc5b7",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "escalation_list": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "project_id",
+      "states",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'a project-scoped principal is required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'escalation belongs to another project')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'limit must be between 1 and 500')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'states contains an unknown escalation state')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'escalations': result, 'count': len(result)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:757ebfbd2cd45ca73caea46be7f7eb79996f907b332b664f51db2cb980834226",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "escalation_reply": {
+    "argument_reads_diagnostic_only": [
+      "escalation_id",
+      "external_message_id",
+      "received_sequence",
+      "text"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_reply",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('human_evidence_required', \"replies require a dashboard human or trusted '<transport>:<actor>' adapter principal\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'text must contain 1 to 16000 characters')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'external_message_id must be a non-empty string')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('identity_conflict', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', str(exc))"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **accepted}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:7ecd2d15b3bbb895ae0ab4f16586568e9345fb2532fca5318e91d8e25a18e28b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "escalation_resolve": {
+    "argument_reads_diagnostic_only": [
+      "escalation_id",
+      "expected_revision",
+      "outcome"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_resolve",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wait.decide_required', 'resolve a wait escalation through wait_decide')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'outcome must contain 1 to 4000 characters')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'expected_revision must be a non-negative integer')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_state', f'escalation is already {incident['state']} and terminal states are immutable')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_state', 'no verified human answer is recorded on this escalation; wait for one, or withdraw the question with aq escalation update --state cancelled')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_state', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale_revision', 'escalation changed while it was being resolved; reload it and resolve again')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'resolved': True, 'escalation': current}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:546ed4a7044451751108ad8b34f5a0a3e45f26601843c993522e9445ae45ee68",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "escalation_sweep": {
+    "argument_reads_diagnostic_only": [
+      "apply",
+      "limit",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_sweep",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'a project-scoped principal is required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'escalations belong to another project')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'apply must be a boolean')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'limit must be between 1 and 500')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'mode': 'apply' if apply else 'dry_run', 'plan': plan.to_dict(), 'report': report.to_dict(), 'open_before': plan.open_before, 'open_after': open_after, 'target_open_items': TARGET_OPEN_ITEMS, 'within_target': open_after <= TARGET_OPEN_ITEMS}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:c86ff3b1f8ab346e80eceda4ba2c41bae0ea3f0ceb55818fdb62b267a0700711",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "escalation_update": {
+    "argument_reads_diagnostic_only": [
+      "choices",
+      "decision_requested",
+      "escalation_id",
+      "expected_revision",
+      "investigation",
+      "severity",
+      "state",
+      "summary",
+      "terminal_evidence",
+      "terminal_outcome"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/escalation_commands.py:EscalationCommandsMixin._cmd_escalation_update",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'expected_revision must be a non-negative integer')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_state', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale_revision', 'escalation revision changed; reload and retry')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'escalation': updated}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:8e384321e4851163d662c439f6ba1fe35709fde6d3ebe035e64e8e709363f65c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

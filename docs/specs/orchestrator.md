@@ -11,6 +11,9 @@ tags: [spec, orchestrator, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 This document describes the design and behaviour of the orchestrator subsystem in sufficient
 detail to reimplement it from scratch.  It covers the event bus, task-name generation,
