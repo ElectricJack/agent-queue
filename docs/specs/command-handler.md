@@ -11,6 +11,9 @@ tags: [spec, command-handler, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -130,7 +133,8 @@ Returns all projects.
 **Parameters:** None.
 
 **Behavior:** Fetches all projects from the database and returns their core
-fields. Repository URL and assignment playbook are included only when set.
+fields. Repository URL is included only when set. `assignment_playbook_id` is the
+project's router binding; since mandatory task routing (2026-09-28) every project has one.
 `workspace` is the resolved primary workspace path (or null).
 
 **Returns on success:**
@@ -145,7 +149,7 @@ fields. Repository URL and assignment playbook are included only when set.
             "max_concurrent_agents": <int>,
             "workspace": <str>,
             "repo_url": <str>,              # present only if set
-            "assignment_playbook_id": <str>, # present only if set
+            "assignment_playbook_id": <str>, # the router binding (always set)
         },
         ...
     ]
@@ -169,16 +173,19 @@ creates the project, primary workspace, and vault structure as one operation.
 - `credit_weight` (optional, default `1.0`): Scheduler weight for this project.
 - `max_concurrent_agents` (optional, default `2`): Maximum agents that can work on this project simultaneously.
 
-**Behavior:** Derives the project ID from the name, selects the requested or
-system-default profile when one resolves, saves the project, creates its
-standard task/vault storage, and invokes the optional project-created callback.
+**Behavior:** Derives the project ID from the name, binds the project to the
+router named by config `routing.default_router` (default
+`default-assignment-routing`), saves the project, creates its standard
+task/vault storage, and emits `project.created`. A project has no default
+profile: `default_profile_id` (and every other routing choice) is refused with
+`routing.choice_forbidden` (mandatory task routing, 2026-09-28).
 
 **Returns on success:**
 ```python
 {
     "created": <str: project_id>,
     "name": <str>,
-    "default_profile_id": <str | None>,
+    "assignment_playbook_id": <str>,   # the router binding
 }
 ```
 
@@ -229,8 +236,13 @@ Updates one or more mutable fields on a project.
 - `name` (optional): New display name.
 - `credit_weight` (optional): New scheduler weight.
 - `max_concurrent_agents` (optional): New concurrency limit.
+- `assignment_playbook_id` (optional): Re-bind the project to another router
+  (`aq project set <project> router <playbook-id>`). Local operator only; refused
+  (`router_required`, `router_<state>`) when the value is empty or names a playbook with no
+  enabled system or project activation whose artifact grants `task_route_apply`.
 
-At least one optional field must be supplied.
+At least one optional field must be supplied. `default_profile_id` and the other routing
+choices are refused with `routing.choice_forbidden`: a project has no default profile.
 
 **Returns on success:**
 ```python
@@ -240,6 +252,39 @@ At least one optional field must be supplied.
 **Errors:**
 - Project not found.
 - No updatable fields provided.
+- `routing.choice_forbidden`, `local_operator_only` or a router refusal (above).
+
+---
+
+#### `bind_project_repository`
+
+Authorizes the first GitHub repository for an existing project whose `repo_url`
+is empty. Available to the local operator or a live named global supervisor with
+the command capability; workers, project supervisors, services and playbooks are
+refused, including through direct command dispatch.
+
+Required parameters are `project_id`, `repo_url`, `expected_repo_url` (the exact
+stored string, including `""`), and a nonempty audit `reason`. The daemon validates
+the URL using the onboarding GitHub parser, checks repository access with its
+configured credentials, and stores canonical HTTPS. Credentials in URLs, local
+paths, other hosts, query strings and fragments are refused without echoing them.
+
+The project row CAS and `project.repository_bound` audit event commit in one
+transaction. The event records the operator identity, reason, old/new URL and
+project ID. A matching nonempty binding is an unchanged success only when the
+expected value matches; a different nonempty binding cannot be reassigned or
+cleared. Stale expectations and missing projects write nothing.
+
+Binding is refused while a project Git push holds the publication fence, or
+when integration is enabled, draining, designated, or has durable publication
+state. Concurrent project pushes share a PostgreSQL advisory fence; first
+binding takes its exclusive counterpart without waiting. The push resolves the
+project again inside the fence. Pending task implementations and approval gates
+are preserved. This operation changes only the project URL: it never pushes,
+changes a checkout remote, creates a repository, or releases a gate.
+
+CLI: `aq project bind-repository <project> --repo-url <url>
+--expected-repo-url '' --reason '<authorization and repair reason>'`.
 
 ---
 
@@ -311,12 +356,19 @@ Creates a new task in READY status. If no `project_id` is given, the active proj
 - `project_id` (optional, falls back to active project): Project to assign the task to.
 - `priority` (optional, default: `100`): Scheduling priority (lower value = higher priority).
 - `integration_mode` (optional, default: `None` = inherit): Integration policy override — `'direct'` or `'pull_request'`. When unset, the effective mode is resolved down the chain: plan-subtask parent's task-level override → task override → project policy (`projects.integration_mode`) → config `integration.default_mode` (shipped default `pull_request`). In `pull_request` mode the worker pushes its branch and opens a PR; the task completes unmerged and the review pipeline owns the merge. In `direct` mode the completion pipeline merges the task branch on completion.
-- `task_type` (optional): Task type classification (feature, bugfix, docs, etc.).
-- `profile_id` (optional): Agent profile to use for execution.
+- `task_type` (optional): Task type classification (feature, bugfix, refactor, test, docs, chore, research, plan, sync, design, art) — the kind hint the router reads.
+- `intelligence_class` (optional): Intelligence-class hint for the router, stored as `class_hint`.
 - `preferred_workspace_id` (optional): Specific workspace to use.
 - `attachments` (optional): List of file paths or URLs for additional context.
 
-**Behavior:** Generates a human-readable task ID using `generate_task_id`. Creates the task in READY status.
+Filing carries hints, never routes (mandatory task routing, 2026-09-28): `profile_id`,
+`profile`, `provider`, `model`, `harness`, `agent_type`, `pin`, `provider_intent`,
+`preferred_provider` and `default_profile_id` are refused with `success: false`,
+`code: routing.choice_forbidden`, and nothing is written. The one exception is a role profile
+(`triage`, `spec-ingest`, `reviewer`, `final-reviewer`) passed by a `SERVICE` or `PLAYBOOK`
+principal, which is stored with `route_source='role'`.
+
+**Behavior:** Generates a human-readable task ID using `generate_task_id`. Creates the task in READY status, unrouted (`route_source='unrouted'`, `profile_id` and `intelligence_class` NULL, `provider_intent='class_only'`); `task.route_needed` then asks the project's router to route it.
 
 **Returns on success:**
 ```python
@@ -380,10 +432,16 @@ Updates one or more mutable fields on a task.
   `development`/`hierarchy`/`train` project and NULL otherwise (the value task creation
   gives it), because every publisher collects only its own project's tasks.
 - `status` (optional): Change status (goes through proper transition logging).
-- `task_type` (optional): Change task type classification.
+- `task_type` (optional): Change task type classification (the kind hint).
+- `intelligence_class` (optional): Change the class hint. On a queued, unclaimed task an edit
+  to either hint resets the route to `unrouted`, so the router plans again.
 - `max_retries` (optional): Update retry limit.
 - `verification_type` (optional): Change verification mode.
-- `profile_id` (optional): Change agent profile.
+
+`profile_id`, `provider_intent`, `pin` and the other routing choices are refused with
+`routing.choice_forbidden` (mandatory task routing, 2026-09-28). To re-route a task use
+`task_route` (`aq task route`), which re-runs the router; only the emergency
+`task_route_override` names a profile.
 - `integration_mode` (optional): Set the task-level integration policy override (`'direct'` or `'pull_request'`); pass `null` to clear the override so the task inherits from parent/project/config.
 
 At least one optional field must be supplied.
@@ -424,6 +482,21 @@ Resets a task back to READY status, clearing retry count and agent assignment.
 - `task_id` (required)
 
 **Behavior:** Refuses if the task is currently IN_PROGRESS (caller must stop it first). Transitions the task to READY, sets `retry_count=0`, clears `assigned_agent_id`.
+
+A manual pause first goes through Resume with the same scope and termination
+proofs. A refused Resume retains the pause and recovery hold and refuses Restart.
+After a successful Resume, Restart performs its normal cleanup and readmission.
+
+Cold restart shares the task-control lock with resume, including its Git setup.
+For a retained continuation, it first proves its old and resumed writers
+stopped through their providers. Under graph/task/workspace exclusion it checks
+every task reservation and both recorded relocation paths, detaches clean,
+published task checkouts, releases all unpinned reservations, and retires the
+waits, continuation and pending admission requests. Directory contents and saved
+HEADs survive. Live or unknown writers, reused reservations, dirty or unpublished
+work and job pins refuse restart and retain ownership. A failed resume setup must
+record the relocated checkout before setup so cleanup observes its branch holder;
+the persisted relocation intent covers a crash before that path update.
 
 **Returns on success:**
 ```python
@@ -745,16 +818,92 @@ composition of `create_project` and `add_workspace`.
 
 #### `list_workspaces`
 
-Lists workspaces with lock status.
+Lists workspaces with lock status, owner identity and bounded checkout
+diagnostics. Read-only: it never writes a row, takes a row lock, or takes a
+Git index lock. Implementation: `src/workspace_listing.py`.
 
 **Parameters:**
 - `project_id` (optional)
+- `git` (optional bool, default `true`): probe each checkout's branch and dirty
+  state. `false` returns lock and owner facts only.
+- `deadline_seconds` (optional number, default 10, clamped to 0.5–20): the
+  budget for all diagnostics, kept under the CLI's 30s request timeout.
+
+**Bounds.** Owner facts are one read-only transaction (tasks named by locks,
+their `claimed_by_session` metadata, and unended sessions whose agent, task or
+`work_dir` match a row) under `min(5s, deadline/2)`. Checkout probes then run
+in the remaining budget, at most four at a time: a directory check in a worker
+thread and one `git --no-optional-locks status --porcelain=v1 --branch`, so a
+probe never contends with a writer's index lock. At the deadline every running
+probe is cancelled, which kills its Git child; the call itself being cancelled
+does the same. A row whose live session is mid-claim (`claim_phase` `claiming`
+or `preparing`) is not probed (`skipped_active_writer`).
+
+**Response.** `{"workspaces": [row], "diagnostics": {...}}`. Each row keeps
+`id`, `project_id`, `workspace_path`, `source_type`, `name`, `kind_id`,
+`locked_by_agent_id`, `locked_by_task_id`, `lock_mode`, `enabled` and the
+worktree annotations `role`, `slot_index`, `mode`, `branch`, `dirty`
+(`branch`/`dirty` are `null` whenever the checkout was not read — never a
+guessed "clean"), plus:
+
+- `presence`: `present` | `missing` | `unknown`.
+- `git_status`: `ok` | `missing` | `not_a_checkout` | `error` | `timeout`
+  (started, unfinished at the deadline) | `not_started` (no probe slot before
+  the deadline) | `skipped` (`git=false`) | `skipped_active_writer`;
+  `git_error` carries a bounded error text.
+- `beyond_cap`: for a slot, `slot_index >= project.max_concurrent_agents` (the
+  test `workspace_reap all_retired` uses); `null` otherwise or when unread.
+  A historical slot beyond the cap whose directory is missing and that no
+  session names is reported as such, distinct from an active slot.
+- `owner`: `lock_state` (`unlocked` | `agent_only` | `task`), `agent_id`,
+  `task_id`, `locked_at`, `facts` (`complete` | `timeout` | `unavailable`),
+  `task` (`id`, `found`, `status`, `claim_epoch`, `claimed_by_session`),
+  `session` (best-matching live session: `id`, `agent_id`, `task_id`,
+  `lifecycle`, `state`, `claim_phase`, `last_claim_epoch`, `last_activity`,
+  `work_dir`), `sessions_matched`, `fence` (`consistent` | `mismatch` |
+  `unknown`: the task's `claim_epoch` against the session's
+  `last_claim_epoch`), `session_matches_claim`, and `classification`:
+  `unlocked`, `unlocked_session_present`, `held` (lock task, its live session
+  and fence agree), `agent_held` (a pool session's between-task agent lock),
+  `preparing`, `unverified` (the lock names an owner the facts do not
+  corroborate) or `unknown` (owner facts unavailable).
+
+`diagnostics`: `complete` (false when owner facts are not `complete` or any
+row is `timeout`/`not_started`/`error`), `deadline_seconds`,
+`elapsed_seconds`, `owner_facts`, `owner_facts_error`, `git_requested`,
+`git_status_counts`, `presence_counts`, `incomplete_rows`, and `authority`.
+
+**Authority.** Lock and owner fields come from the database. A missing,
+timed-out, skipped or partial diagnostic — and `unverified` or `unknown` — is
+not evidence that a lock or worker is stale or that a workspace is free.
+Releases and reaps keep their own proofs (`workspace_doctor`,
+`workspace_reap`, `release_workspace`); nothing here feeds them.
+
+`aq project list-workspaces --json` keeps its `data` as the row list (each row
+carries its own `owner.facts` and `git_status`); the human table adds Owner
+and Checkout columns and a partial-readback footer.
 
 ---
 
 #### `remove_workspace`
 
-Deletes a workspace.
+Deletes a workspace. Both agent and task locks must be released first.
+For a missing non-slot directory, removal atomically cleans matching repository
+registrations in the same project (LINK source path or CLONE checkout base path)
+and records `workspace.registration_removed` with the path and removed repository
+IDs in the event audit log. A repository shared by another workspace is retained.
+Pinned workspaces, live sessions, child slots, designated integration repositories
+and referenced repository identities refuse cleanup; restore or repair their
+ownership/references before retrying. Filesystem contents are never deleted.
+
+`workspace_doctor` reports `missing_workspace_path` independently of the worktree
+rollout flag, with restore/remove instructions; a locked row requires owner
+verification and release first. Missing paths do not also produce misleading
+managed-exclude findings. The daily branch backstop reports missing non-slot
+workspaces and missing LINK sources once per registration/path until restored
+or changed, persisting notice state only after supervisor delivery succeeds.
+These are inventory notices rather than Git sweep failures. Repository identity
+and live branch holds remain available to sweeps of other healthy checkouts.
 
 **Parameters:**
 - `workspace_id` (required)
@@ -763,10 +912,25 @@ Deletes a workspace.
 
 #### `release_workspace`
 
-Admin force-release a stuck workspace lock.
+Release a stuck workspace lock after re-reading ownership under a row lock.
+Refuse if a claim marker, live or preparing session, attached integration owner,
+agent launch reservation or job pin still protects the checkout. A stale listing is never release authority.
+`force=true` requires `task_id` matching every protected task; ambiguous or
+taskless protections and job pins cannot be overridden. Forced release changes
+only the lock row, preserving claim markers and integration ownership, and is audited.
 
 **Parameters:**
 - `workspace_id` (required)
+- `force` (optional, default false), `task_id` (required with force)
+
+#### `rebind_workspace`
+
+Repair missing lock columns for an existing active pool claim, without starting
+or stopping a session or changing task state. Require `workspace_id`, `task_id`
+and `session_id`; verify project, path, agent assignment, active claim phase and
+epoch against the claim marker. Conflicting locks, sessions or attached owners
+refuse the repair. The command restores only the lock binding and audits it;
+it does not enable a quarantined workspace or rewrite a claim marker.
 
 ---
 
@@ -1646,22 +1810,39 @@ When `wait_for_tasks` is true and there are running tasks, the orchestrator is p
 
 #### `update_and_restart`
 
-Pulls the latest source from git and restarts the daemon. Determines the repo root from the source file location. Runs `git pull --ff-only` followed by `pip install -e .` to pick up dependency changes. Both commands are run in a thread via `asyncio.to_thread(subprocess.run, ...)` to avoid blocking the event loop. On success, logs a notification and triggers a restart via `SIGTERM`.
+Updates and restarts the daemon. With no `deploy.tag_glob`, the existing path
+runs `git pull --ff-only`, reinstalls Python dependencies, regenerates the
+TypeScript client and restarts even if git is already current. Local commits
+that permit a fast-forward pull remain supported.
 
-When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal. The git pull and pip install happen first, so the code is already updated by the time the wait begins.
+With `deploy.tag_glob` configured, shared release preflight selects a deployment.
+A refusal returns an error and remediation; an already active deployment returns
+`status: up_to_date` without restarting. Otherwise the command launches a detached
+operator `aq update --yes` process which owns backup, stop, install and restart.
+`status: updating` acknowledges launch; the returned log carries the final outcome.
+
+When `wait_for_tasks` is true, the orchestrator waits up to five minutes for
+running tasks before restarting or launching the updater. Every prelaunch error
+and every updater exit that leaves this daemon running restores its prior pause
+state, including refusals and races that become up to date.
 
 **Parameters:**
-- `reason` (optional, default `"No reason provided"`): Human-readable reason for the update.
-- `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
+- `reason` (optional, default `"No reason provided"`): Human-readable reason.
+- `wait_for_tasks` (optional, default `false`): Wait for running tasks to finish.
 
 **Returns on success:**
 ```python
-{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Legacy path:
+{"status": "updating", "pull_output": <str>, "message": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Release updater launch:
+{"success": True, "status": "updating", "pid": <int>, "log": <str>, "selector": <str>, "commit": <str>, "message": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Selected deployment already active:
+{"success": True, "status": "up_to_date", "commit": <str>}
 ```
 
-**Errors:**
-- `git pull` failed (non-zero exit code).
-- `pip install` failed (non-zero exit code).
+**Errors:** Legacy pull/install/client generation failures, release preflight
+refusals, and failure to launch the updater. A later updater refusal/failure is
+recorded in the returned log.
 
 ---
 
@@ -2041,3 +2222,77 @@ vault watcher pick the change up.
 
 ### Deprecated Analyzer Commands (return error stubs)
 - `analyzer_status`, `analyzer_toggle`, `analyzer_history`
+
+### Authorized project creation
+
+`create_project` with `repo_url` or `create_repo` delegates to the same durable
+onboarding saga as the dashboard. `root_id` selects a configured project root
+(required when more than one exists); `relative_path` defaults to the project
+slug, and `request_id` identifies retries. The two remote choices are exclusive.
+Existing repositories are cloned; new repositories are created through the
+configured GitHub access provider. App mode never falls back to personal credentials.
+Onboarding init also accepts `repo_url` for an existing empty remote.
+
+Before publishing the initial commit, verify repository access with the configured
+provider and record the audited first binding using `bind_project_repository`.
+Register with an empty authorization first, then bind; never overwrite an existing
+authorization. On failure roll back request-owned local resources and registration;
+retain external repositories and return an exact clone/adoption command with a new
+request ID. Completed requests replay without repeated side effects.
+`integration_app_verify(repository_access_only=true)` verifies access without
+requiring an integration policy or enabling integration. `project_doctor` reports
+a primary local repository missing authorization and offers `bind-repository`.
+
+### Stale repository checkout registrations
+
+`repair_repository_checkout` (`aq project repair-repository-checkout`) repoints a
+confirmed missing checkout path in a project's repository registration. It takes
+`project_id`, `repository_id`, `expected_path`, `replacement_path`, and an audit
+`reason`. The default is a read-only preview with complete `before`/`after`
+repository configuration; `apply=true` performs the same validation and commits
+the path change and an attributed `project.repository_checkout_repaired` event
+atomically. Only the local operator or a live global supervisor may invoke it.
+The supervisor template grants this command and the read-only `project_doctor`.
+
+Only `source_path` and `checkout_base_path` equal to `expected_path` change.
+Require an absolute, confirmed missing old path, an existing replacement Git
+checkout whose origin matches the registered nonempty URL, and unchanged repository
+configuration at commit time. Refuse stale expectations, inaccessible or existing
+old paths, unknown repository identity, mismatched origins, and cross-project IDs.
+Preserve repository IDs, URLs, source types, workspaces, locks, tasks, integration
+records and all filesystem contents. The command does not remove repository rows.
+
+The daily branch sweep skips absent source and checkout-base registrations and
+reports one actionable warning per repository/path. Persist the warning state
+only after accepted report delivery; suppress it across days/restarts until the
+path is restored or repointed. No Git probe runs against an absent directory.
+
+Clean, detached linked worktrees that are not AQ slots are skipped before
+authenticated Git preparation and noted separately from failures. Skipping one
+does not mark its shared Git repository as swept: a base checkout or AQ slot
+sharing that repository remains eligible. Dirty, attached, managed-slot and
+unreadable worktrees retain the normal sweep/error behavior. No worktree or
+detached HEAD is removed or changed by this classification.
+
+### Base registration points to a different clone
+
+`repair_workspace_checkout` (`aq project repair-workspace-checkout`) repairs a
+base workspace registration whose existing slots belong to another local clone.
+It requires local operator or live global supervisor authority, `project_id`,
+`workspace_id`, `expected_path`, `replacement_path`, and an audit `reason`.
+Preview returns full base `before`/`after`, family and Git identity evidence, and
+a proof digest. Apply requires that digest as `expected_proof`, repeats validation
+under workspace row locks, and atomically changes only the base's path with an
+attributed `project.workspace_checkout_repaired` event. Stale paths or proof refuse.
+
+The replacement must be a real base checkout, have the same origin as the old
+checkout (or the authorized project/kind URL if the old path is confirmed missing),
+and share the resolved Git common directory and objects directory identity with
+every registered slot. Check each slot's project/base/workspace sentinel identity.
+An independent clone with the same origin is insufficient. Require at least one
+slot and a compatible worktree kind. Refuse an occupied replacement registration,
+an active/pinned/claimed base or integration writer, and unverifiable identity.
+Slot locks and retained claims are permitted and preserved because this repair
+only corrects the base's metadata; it moves no source and changes no slot, writer,
+generation, checkpoint, claim, sentinel, branch or filesystem content. The regular
+slot identity preflight remains enforced and must pass after the repair.
