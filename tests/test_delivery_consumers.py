@@ -2020,6 +2020,69 @@ async def test_unavailable_delivery_observer_withholds_only_edge_consumers(world
     assert view.reasons["waiting"][0]["code"] == "delivery_evidence_unavailable"
 
 
+@pytest.mark.parametrize('source_edge', ['blocks', 'delivery-of'])
+async def test_admission_completes_while_retained_fsck_holds_repository(
+    world, tmp_path, monkeypatch, source_edge,
+):
+    from src.integration.admission import observe_admission
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, service = world
+    observer = DeliveryObserver(db, git=service.git, data_dir=tmp_path / 'recovery-observer',
+                                truth=GitTruth(service.git) if source_edge == 'delivery-of' else None)
+    if source_edge == 'delivery-of':
+        db.set_prerequisite_observer(observer)
+    if source_edge == 'blocks':
+        # The development-mode sources use the service's ordinary observer.
+        service._delivery_observer = observer
+    for tid in ('waiting', 'independent'):
+        await db.create_task(Task(
+            id=tid, project_id='p', title=tid, description='', status=TaskStatus.READY,
+        ))
+    await db.add_dependency('waiting', 'done', source_edge)
+    from src.integration.delivery_observer import DeliveryTarget
+
+    target = DeliveryTarget('p', 'r', origin.url, 'refs/heads/main')
+    store = await observer._store(target)
+    assert (await observer.snapshot(target)).error is None
+    # Force full verification, then keep its real repository transaction held.
+    service.git.__dict__.setdefault('_retained_verified', {}).clear()
+    started, release = asyncio.Event(), asyncio.Event()
+    normal = service.git.arun_git_result
+
+    async def slow_fsck(args, **kwargs):
+        if 'fsck' in args and kwargs.get('cwd') == str(store):
+            started.set()
+            await release.wait()
+        return await normal(args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'arun_git_result', slow_fsck)
+    monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 0.1)
+    recovery = asyncio.create_task(observer.snapshot(target))
+    try:
+        await asyncio.wait_for(started.wait(), 10)
+        view = await asyncio.wait_for(observe_admission(
+            db, ['waiting', 'independent'], service,
+        ), 5)
+        assert view.allowed == {'independent'}
+        assert view.reasons['waiting']
+        assert not recovery.done()
+        # A subsequent reader also returns without a second fetch or cancellation.
+        assert (await asyncio.wait_for(observe_admission(
+            db, ['waiting', 'independent'], service,
+        ), 5)).allowed == {'independent'}
+        assert not recovery.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(recovery, 10)
+    # Recovery completion does not extend admission's expired request budget.
+    # A new admission must acquire fresh proof and can release the dependent.
+    monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 5)
+    assert (await observe_admission(db, ['waiting', 'independent'], service)).allowed == {
+        'waiting', 'independent',
+    }
+
+
 async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp_path):
     from src.integration.cleanup import IntegrationCleanupService
     from src.integration.git_truth import GitTruth
