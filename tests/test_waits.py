@@ -257,6 +257,7 @@ CONDITIONS = [
     {"kind": "timer", "due_at": NOW + 20},
     {"kind": "resource", "blocker": "slot", "identity": "p:profile", "source_revision": "1"},
     {"kind": "playbook_condition", "run_id": "run", "wait_id": "wait"},
+    {"kind": "close_merge", "operation_id": "op", "budget_seconds": 90},
 ]
 
 
@@ -363,8 +364,9 @@ def test_result_projection_rejects_a_new_source_generation():
                 f"timer:{NOW + 20}",
                 "resource:slot:p:profile",
                 "playbook_condition:run:wait",
+                "close_merge:op",
             ],
-            [7, 7, 7, 0, 0, 0, 7, 0, 7, 7, 0, 0, 0, 7],
+            [7, 7, 7, 0, 0, 0, 7, 0, 7, 7, 0, 0, 0, 7, 0],
             strict=True,
         )
     ),

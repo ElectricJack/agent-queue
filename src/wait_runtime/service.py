@@ -6,6 +6,10 @@ import time
 import asyncio
 import logging
 
+from sqlalchemy import select
+
+from src.waits.conditions import WaitError
+
 from src.waits.listener import WaitSourceListener
 from src.waits.registry import build_registry
 from src.waits.timers import WaitTimerDriver
@@ -20,6 +24,9 @@ from src.wait_runtime.scheduler import SchedulerWaitService
 logger = logging.getLogger(__name__)
 
 
+BRIDGE_TICK_BUDGET_SECONDS = 10.0
+
+
 class WaitService:
     def __init__(self, orch, *, clock=time.time, owner=None, connect=None):
         self.orch = orch
@@ -28,6 +35,7 @@ class WaitService:
         self.registry = getattr(orch, "wait_registry", None) or build_registry(
             clock=clock, resource_reader=getattr(orch, "wait_resource_reader", None)
             or self.scheduler.reader,
+            ci_reader=getattr(orch, "wait_ci_reader", None),
         )
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
@@ -56,6 +64,8 @@ class WaitService:
                                ("wait_lift", self.human.lift),
                                ("wait_register", self.lifecycle.register),
                                ("wait_graph", self.graph),
+                               ("wait_explain", self.explain),
+                               ("wait_cancel", self.decisions.cancel),
                                ("wait_ack", self.lifecycle.acknowledge),
                                ("wait_resume_dispatch", self.lifecycle.resume.dispatch),
                                ("wait_evict", self.lifecycle.evict),
@@ -63,6 +73,7 @@ class WaitService:
             if name in handlers:
                 raise ValueError(f"duplicate wait lifecycle owner: {name}")
             handlers[name] = callback
+        require_wait_handlers(handlers, self.scheduler.sync)
         deadlines = getattr(orch, "wait_deadline_handlers", None)
         if deadlines is None:
             deadlines = orch.wait_deadline_handlers = {}
@@ -78,6 +89,10 @@ class WaitService:
             # AdmissionReader observes current typed constraints under the
             # dispatcher's graph/owner lock. Events never supply its verdict.
             return
+        if condition.kind in {"ci_check", "ci_run"}:
+            callback = getattr(self.orch, "wait_ci_lock_source", None)
+            if callback is not None:
+                return await callback(conn, condition)
         await lock_database_source(conn, condition)
 
     async def graph(self, args, *, principal, scope, handler):
@@ -90,6 +105,29 @@ class WaitService:
                 now=self.lifecycle.clock(),
             )
         return {'success': True, 'graph': result}
+
+    async def explain(self, args, *, principal, scope, handler):
+        from src.database.queries.wait_queries import wait_explain
+        from src.database.tables import tasks, wait_records
+
+        async with self.orch.db._engine.connect() as conn:
+            project_id = (scope or {}).get("project_id")
+            if project_id is None:
+                # A local operator names no project; the target row carries it.
+                table, key = ((wait_records, args["wait_id"]) if args.get("wait_id")
+                              else (tasks, args["task_id"]))
+                project_id = await conn.scalar(
+                    select(table.c.project_id).where(table.c.id == key))
+                if project_id is None:
+                    raise WaitError("wait.not_found", "wait or task not found")
+            result = await wait_explain(
+                conn, project_id=project_id, wait_id=args.get("wait_id"),
+                task_id=args.get("task_id"), history=args.get("history", False),
+                now=self.lifecycle.clock(),
+            )
+        if args.get("wait_id") and result["waits"]:
+            result["explanation"] = result["waits"][0]
+        return result
 
     async def escalation_deadline(self, conn, deadline, wait, *, now, handler):
         callback = (self.scheduler.deadline_locked if wait["origin"] == "scheduler"
@@ -129,6 +167,11 @@ class WaitService:
     async def drain(self, watermark):
         return await self.orch._command_handler.wait_service_drain(self.listener, watermark)
 
+    async def quarantine_deadline(self, deadline, refusal):
+        return await self.orch._command_handler.wait_service_quarantine_deadline(
+            self.timers, deadline, refusal,
+        )
+
     async def source_commit(self, args, *, principal, scope, handler):
         seq = await self.orch.db.wait_source_commit(**args)
         return {"success": True, "source_seq": seq}
@@ -148,7 +191,7 @@ class WaitService:
     async def tick(self):
         if await self.processing_enabled():
             if self.enabled:
-                await self.startup_bridge()
+                await self._bounded_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
         return False
@@ -180,6 +223,20 @@ class WaitService:
                 logger.exception("Wait continuation maintenance failed")
             await asyncio.sleep(self.listener.renewal_seconds)
 
+    async def _bounded_bridge(self):
+        """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
+        task = getattr(self, "_bridge_task", None)
+        if task is None or task.done():
+            self._bridge_task = asyncio.create_task(self._run_bridge())
+        # A slow pass keeps running; the scheduler continues after the budget.
+        await asyncio.wait({self._bridge_task}, timeout=BRIDGE_TICK_BUDGET_SECONDS)
+
+    async def _run_bridge(self):
+        try:
+            await self.startup_bridge()
+        except Exception:
+            logger.exception("Wait startup bridge failed")
+
     async def startup_bridge(self):
         """Durable project receipts permit restart and newly enabled canary recovery."""
         from sqlalchemy import exists, select
@@ -203,3 +260,17 @@ class WaitService:
                     })
                     if not result.get('success'):
                         return
+
+
+def require_wait_handlers(handlers, scheduler_sync):
+    """Fail startup when a verified-wait command would answer "not installed"."""
+    from src.commands.contracts.wait_v2 import WAIT_V2_ARGS
+
+    # scheduler_tick installs the same owner lazily; claim it here so the
+    # check below sees it.
+    handlers.setdefault("scheduler_wait_sync", scheduler_sync)
+    # wait_checkpoint falls back to src.waits.checkpoint inside the command.
+    expected = (set(WAIT_V2_ARGS) | {"wait_register", "wait_cancel"}) - {"wait_checkpoint"}
+    missing = sorted(expected - set(handlers))
+    if missing:
+        raise RuntimeError(f"verified wait commands have no handler: {', '.join(missing)}")
