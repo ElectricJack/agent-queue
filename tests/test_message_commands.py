@@ -1103,6 +1103,40 @@ class TestInboxMailboxFence:
 
 
 class TestStatusMailboxFence:
+    @pytest.mark.parametrize("lifecycle", ["named", "pool", "task"])
+    @pytest.mark.parametrize("own_name", [True, False])
+    async def test_session_name_mailbox_requires_own_named_session(
+        self, setup, lifecycle, own_name,
+    ):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-1", project_id="p1", profile_id="worker", harness="codex",
+            provider="fake", name="n-reader", lifecycle=lifecycle, work_dir="/tmp",
+            epoch="test", instance_token="reader-token", started_at=1, state="running",
+        ))
+        await db.create_session(SessionRecord(
+            id="sess-other", project_id="p1", profile_id="worker", harness="codex",
+            provider="fake", name="n-other", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="other-token", started_at=1, state="running",
+        ))
+        target = "n-reader" if own_name else "n-other"
+        sent = await handler._cmd_message_send(_send_args(to_id=target))
+        scope = _session_scope(task_id=None)
+        result = await _execute_as(
+            handler, "message_status", {"message_id": sent["message_id"]}, scope,
+        )
+        inbox = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": target, "inject": True,
+        }, scope)
+        if lifecycle == "named" and own_name:
+            assert result["state"] == "acknowledged"
+            assert "error" not in inbox, inbox
+        else:
+            assert "not found" in result["error"]
+            assert "out of scope" in inbox["error"]
+            stored = await db.get_message(sent["message_id"])
+            assert stored.delivered_at is None and stored.read_at is None
+
     async def test_pool_worker_reads_a_nudged_message_to_its_claimed_task(self, setup):
         """The nudge marks the row delivered, so ``inbox`` no longer lists it.
 
@@ -2062,3 +2096,42 @@ async def test_only_recipient_body_read_acknowledges_notification(setup, mailbox
     assert len(events) == 1 and events[0]["method"] == "read"
     await _execute_as(handler, "message_status", {"message_id": msg_id}, scope)
     assert bus.of_type("message.delivered") == events
+
+
+@pytest.mark.parametrize("recipient", ["supervisor-global", "n-supervisor--global", "global-uuid"])
+@pytest.mark.parametrize("project_id", [None, "p1"])
+async def test_global_supervisor_status_read_stops_nudges(setup, monkeypatch, recipient, project_id):
+    handler, db, bus = setup
+    await db.create_session(SessionRecord(
+        id="global-uuid", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="test", instance_token="global-launch", started_at=1, state="running",
+    ))
+    message = await db.create_message(
+        project_id=project_id, from_kind="system", from_id="test", to_kind="session",
+        to_id=recipient, body="global supervisor report",
+    )
+    clock = message.created_at
+    monkeypatch.setattr("src.messages.delivery.time", MagicMock(time=lambda: clock))
+    sessions = _NudgeRecorder()
+    engine = MessageDeliveryEngine(db=db, sessions=sessions, config=MessagesConfig(), bus=bus)
+    await engine.run_delivery_pass()
+    assert len(sessions.nudges) == 1
+    scope = _session_scope(
+        session_id="global-uuid", task_id=None, project_id=None, elevated=True,
+        session_instance_token="global-launch",
+    )
+    result = await _execute_as(handler, "message_status", {"message_id": message.id}, scope)
+    assert result["state"] == "acknowledged", result
+    assert result["message"]["body"] == message.body
+    stored = await db.get_message(message.id)
+    assert stored.read_at is not None and stored.delivered_at is not None
+    assert stored.via == "read"
+    for _ in range(4):
+        clock += 600
+        await engine.run_delivery_pass()
+    assert len(sessions.nudges) == 1
+    assert (await db.get_message(message.id)).notification_attempts == 1
+    assert bus.of_type("message.delivered") == [{
+        "message_id": message.id, "project_id": project_id, "method": "read",
+    }]
