@@ -12,13 +12,10 @@ completed-turn questions are owned by ``AgentQuestionService`` and explicit
 blocker notifications use ``message_send``.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method takes a
-flat ``dict`` of arguments and returns a ``dict`` — domain data on success,
-``{"error": "..."}`` on failure.  ``CommandHandler.execute`` returns this
-dict verbatim (no implicit ``"success"`` key is injected at that layer); the
-wire-level ``{"ok": bool, "result"|"error"}`` shape is added by
-``/api/execute`` (``src/api/execute.py``).  ``prime`` and ``task_handoff``
-are exceptions: their §3 spec table explicitly documents a ``"success"`` key
-in the returned shape, so they include it to match.
+flat ``dict`` of arguments and returns a ``dict`` with an explicit boolean
+``success`` and the existing domain payload. ``CommandHandler.execute`` returns
+that dictionary verbatim; protocol interpretation belongs to its consumers.
+The HTTP transport adds its separate ``ok`` envelope.
 """
 
 from __future__ import annotations
@@ -47,7 +44,7 @@ class SurfaceCommandsMixin:
         """
         from src.surface_schema import get_surface_schema
 
-        return get_surface_schema()
+        return {**get_surface_schema(), "success": True}
 
     # ------------------------------------------------------------------
     # task_show — backs `aq task show|details` (design §3.1)
@@ -64,7 +61,7 @@ class SurfaceCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
 
         # ``_cmd_get_task`` applies ``_assert_task_in_scope`` itself; the
         # composed sections below must not run when it refused.
@@ -72,8 +69,21 @@ class SurfaceCommandsMixin:
         if "error" in info:
             return info
 
+        # The reviewer projection is complete: expanding ordinary detail here
+        # would disclose unrelated parents, children and provenance.
+        if "batch_member" in info:
+            return info
+
+        from src.operator_decisions import OperatorDecisions
+
+        info["success"] = True
+        info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)
         info["context"] = await self.db.get_task_contexts(task_id)
         info["labels"] = await self.db.get_task_labels(task_id)
+        # Preparation workers need only their own immutable, daemon-built input.
+        notes_input = await self.db.get_task_meta(task_id, "notes_input")
+        if notes_input is not None:
+            info["metadata"] = {"notes_input": notes_input}
         deps = await self._cmd_task_deps({"task_id": task_id})
         info["provenance"] = deps.get("provenance", [])
 
@@ -86,6 +96,10 @@ class SurfaceCommandsMixin:
         info["parent"] = parent
         info["children"] = await self.db.get_children_summary(task_id)
         info["claimed_by"] = await self._claimed_by(task_id)
+        from src.sessions.worker_recovery import CONTINUATION_KEY, STREAK_KEY
+
+        info[STREAK_KEY] = await self.db.get_task_meta(task_id, STREAK_KEY)
+        info[CONTINUATION_KEY] = await self.db.get_task_meta(task_id, CONTINUATION_KEY)
         task = await self.db.get_task(task_id)
         project = await self.db.get_project(task.project_id) if task else None
         checkpoint = await self.db.get_integration_checkpoint(task_id) if task else None
@@ -95,25 +109,115 @@ class SurfaceCommandsMixin:
             and project.hierarchical_integration_mode in {"hierarchy", "train"}
             and checkpoint is not None
         ):
-            if checkpoint.get("episode_id") is None:
+            from src.integration.delivery_observer import prerequisite_observer
+
+            observer = prerequisite_observer(self.db)
+            if observer is not None:
+                from src.integration.delivery_truth import DeliveryState
+
+                view = await observer.observe(
+                    [task_id], max_age=observer.READ_MAX_AGE, cached_only=True,
+                )
+                async with self.db._engine.connect() as conn:
+                    verified = await view.verified_on(conn, [task_id])
+                proof = verified.get(task_id)
+                head = (checkpoint.get("verified_sha") if checkpoint.get("episode_id")
+                        else checkpoint.get("checkpoint_sha"))
+                delivered = bool(
+                    proof is not None
+                    and proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
+                    and head == proof.source_oid
+                )
                 info["integration_delivery"] = {
-                    "outcome": "working",
+                    "outcome": "delivered" if delivered else "working",
+                    "task_id": task_id, "generation": int(checkpoint["generation"]),
+                    "checkpoint_sha": checkpoint.get("checkpoint_sha"),
+                    "episode_id": checkpoint.get("episode_id"), "operation_id": None,
+                    "head_sha": head,
+                    "receipts": [], "blockers": [],
+                }
+            elif checkpoint.get("episode_id") is None:
+                receipts = await self._root_delivery_receipts(checkpoint)
+                info["integration_delivery"] = {
+                    "outcome": "delivered" if receipts else "working",
                     "task_id": task_id,
                     "generation": int(checkpoint["generation"]),
                     "checkpoint_sha": checkpoint.get("checkpoint_sha"),
                     "episode_id": None,
                     "operation_id": None,
                     "head_sha": checkpoint.get("checkpoint_sha"),
-                    "receipts": [],
+                    "receipts": receipts,
                     "blockers": [],
                 }
             else:
-                from src.integration.parent_completion import ParentCompletion
+                from src.integration.records import ParentEpisodeRecords
 
-                info["integration_delivery"] = await ParentCompletion(self.db).readiness(
+                info["integration_delivery"] = await ParentEpisodeRecords(self.db).readiness(
                     task_id
                 )
+        from src.prime.budgets import field_page, task_preview
+
+        if args.get("field") == "prime_context":
+            from src.prime.sections import build_task_context_section
+
+            scope = getattr(self, "_current_scope", None) or {}
+            section = await build_task_context_section(
+                self.db, self.config, task, session_id=scope.get("session_id"),
+            )
+            info["prime_context"] = section.body
+        if args.get("field"):
+            return field_page(info, args["field"], args.get("offset", 0), args.get("limit", 4096))
+        scope = getattr(self, "_current_scope", None) or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return task_preview(info)
         return info
+
+    async def _root_delivery_receipts(self, checkpoint: dict) -> list[dict]:
+        """Root train receipts that deliver the checkpoint's current reviewed identity.
+
+        A root task has no collection episode; its delivery is the batch
+        receipt on the default branch. Only ``code`` receipts for the exact
+        current head whose review evidence carries the current generation count.
+        """
+        repository_id = checkpoint.get("repository_id")
+        head = checkpoint.get("checkpoint_sha")
+        if not repository_id or not head:
+            return []
+        repo = await self.db.get_repo(repository_id)
+        default_branch = getattr(repo, "default_branch", None) if repo else None
+        if not default_branch:
+            return []
+        rows = await self.db.list_integration_delivery_receipts(
+            source_task_id=checkpoint["task_id"],
+            repository_id=repository_id,
+            target_branch=f"refs/heads/{default_branch}",
+        )
+        selected = []
+        for row in rows:
+            if (
+                row["disposition"] != "code"
+                or row["batch_id"] is None
+                or row["reviewed_head_sha"] != head
+            ):
+                continue
+            evidence = row["review_evidence"]
+            evidence_id = (
+                evidence.get("review_evidence_id") if isinstance(evidence, dict) else None
+            )
+            review = (
+                await self.db.get_integration_review_evidence(evidence_id)
+                if evidence_id
+                else None
+            )
+            if (
+                review is None
+                or review["source_task_id"] != checkpoint["task_id"]
+                or review["reviewed_head_sha"] != head
+                or int(review["generation"]) != int(checkpoint["generation"])
+            ):
+                continue
+            selected.append(row)
+        return selected
 
     async def _claimed_by(self, task_id: str) -> dict | None:
         """Who currently holds *task_id*, or ``None`` when nobody does.
@@ -123,12 +227,22 @@ class SurfaceCommandsMixin:
         ``tasks.assigned_agent_id``, and the fence in ``tasks.claim_epoch``.
         A task counts as claimed when at least one of the session or agent is
         set — a released claim clears both, and ``claim_epoch`` alone is just
-        the historical high-water mark.
+        the historical high-water mark.  A session record whose holder is
+        durably stopped is provenance, not a claim (``unresolved_claim_clause``).
         """
         task = await self.db.get_task(task_id)
         if task is None:
             return None
         session_id = await self.db.get_task_meta(task_id, "claimed_by_session")
+        if session_id:
+            holder = await self.db.get_session(session_id)
+            if (
+                holder is not None
+                and holder.state == "stopped"
+                and holder.desired_state == "stopped"
+                and holder.instance_token
+            ):
+                session_id = None
         agent_id = task.assigned_agent_id
         if not session_id and not agent_id:
             return None
@@ -147,7 +261,7 @@ class SurfaceCommandsMixin:
 
         Supported fields: ``description`` (optional ``expected_description`` CAS),
         ``branch``, ``pr_url``, ``work_dir``, ``note``,
-        ``labels_add``, ``labels_remove``, ``meta``.
+        ``labels_add``, ``labels_remove``, ``meta``, ``repair_batch`` (operator assignment).
 
         ``work_dir`` is recorded as task metadata (``task_metadata`` key
         ``"work_dir"``) rather than a proper workspace binding — the
@@ -157,20 +271,33 @@ class SurfaceCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
 
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
-            return {"error": "manual_pause is reserved; use pause_task/resume_task."}
+            return {"success": False, "error": "manual_pause is reserved; use pause_task/resume_task."}
+        if "retained_workspace_stop" in (args.get("meta") or {}):
+            return {"success": False, "error": "retained_workspace_stop is reserved; use stop_task."}
+        if "integration_batch_repair" in (args.get("meta") or {}):
+            return {"success": False, "error": "integration_batch_repair is reserved; use --repair-batch."}
+
+        if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
+            "backmerge_result", "promotion_intent", "promotion_result",
+            "promotion_publish_intent"}.intersection(args.get("meta") or {}):
+            return {"success": False, "error": "Promotion preparation metadata is immutable and daemon-owned."}
 
         if any(str(key).startswith("supervisor_recovery") for key in (args.get("meta") or {})):
-            return {"error": "supervisor_recovery metadata is reserved; use task_recover."}
+            return {"success": False, "error": "supervisor_recovery metadata is reserved; use task_recover."}
+
+        if any(str(key).startswith("integration_train_ejection")
+               for key in (args.get("meta") or {})):
+            return {"success": False, "error": "integration_train_ejection metadata is reserved; use integration_eject."}
 
         # Validate the description contract before touching any legacy field.
         for field in ("description", "expected_description"):
             if field in args and not isinstance(args[field], str):
-                return {"error": f"{field} must be a string"}
+                return {"success": False, "error": f"{field} must be a string"}
         if "expected_description" in args and "description" not in args:
-            return {"error": "expected_description requires description"}
+            return {"success": False, "error": "expected_description requires description"}
         scope = self._current_scope or {}
         err = await self._assert_session_owns(
             task_id,
@@ -182,12 +309,33 @@ class SurfaceCommandsMixin:
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         scope_error = self._task_findings_scope_error(task)
         if scope_error:
             return scope_error
+        if "branch" in args:
+            checkpoint = await self.db.get_integration_checkpoint(task_id)
+            if checkpoint is not None and args["branch"] != checkpoint["branch"]:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Task '{task_id}' has a canonical integration branch "
+                        f"'{checkpoint['branch']}'; --branch cannot rename it"
+                    )
+                }
         fields_changed: list[str] = []
+        if "repair_batch" in args:
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            if self.config.integration.git_first != "active":
+                return {"success": False, "error": "batch repair assignment requires Git-first active mode"}
+            try:
+                await BatchRepairAssignments(self.db).assign(task, args["repair_batch"])
+            except GitError as exc:
+                return {"success": False, "error": str(exc)}
+            fields_changed.append("repair_batch")
         if "description" in args:
             from src.database.queries.task_comment_queries import TaskFindingsConflict
 
@@ -245,6 +393,7 @@ class SurfaceCommandsMixin:
 
         if not fields_changed:
             return {
+                "success": False,
                 "error": (
                     "No fields to update. Provide description, branch, pr_url, work_dir, note, "
                     "labels_add, labels_remove, or meta."
@@ -253,6 +402,10 @@ class SurfaceCommandsMixin:
 
         if "description" in fields_changed:
             await self._emit_task_findings_updated(task)
+        else:
+            # Closed work can lose a hold or gain its PR/source metadata without
+            # re-entering the ready frontier. Wake its integration lane too.
+            await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         result = await self._cmd_task_show({"task_id": task_id})
         result["fields_changed"] = fields_changed
         return result
@@ -283,6 +436,7 @@ class SurfaceCommandsMixin:
             task_id = s.task_id if s else None
         if not task_id:
             return {
+                "success": False,
                 "error": (
                     "task_id is required (no task in scope — pass task_id "
                     "explicitly or run inside a task session)"
@@ -303,24 +457,120 @@ class SurfaceCommandsMixin:
         messages_cfg = getattr(self.config, "messages", None)
         mark_messages_delivered = bool(getattr(messages_cfg, "enabled", False))
 
-        renderer = PrimeRenderer(self.db, self.config)
+        renderer = PrimeRenderer(
+            self.db,
+            self.config,
+            harness_registry=getattr(self.orchestrator, "harness_registry", None),
+        )
         try:
             doc = await renderer.render_for_task(
                 task_id,
-                session_id=args.get("session_id"),
+                session_id=scope.get("session_id") or args.get("session_id"),
                 work_dir=args.get("work_dir"),
                 mark_messages_delivered=mark_messages_delivered,
+                bounded_worker=scope.get("kind") == "session" and not scope.get("elevated"),
             )
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
-        return {
+        if any(section.key == "wait_outcome" for section in doc.sections):
+            await self._record_continuation_prime_delivery(
+                scope.get("session_id") or args.get("session_id"),
+            )
+
+        from src.commands.principal import current_principal
+        from src.knowledge.context import (
+            ACCESS_REFUSAL_CODES,
+            context_bundle_commands,
+            context_enabled,
+        )
+        from src.records.models import RecordError
+
+        bundle = None
+        context_error = None
+        # Disabled context leaves prime's reads unchanged.
+        task = await self.db.get_task(task_id) if context_enabled(self.config) else None
+        if task is not None and task.project_id in self.config.knowledge.enabled_projects:
+            principal = current_principal()
+            try:
+                bundle = await self._knowledge_context_service().prepare(
+                    principal=principal, required=doc.to_markdown(),
+                    query=task.title, project_ids=[task.project_id], claim_epoch=task.claim_epoch,
+                    task_id=task.id,
+                )
+                doc = renderer.with_context(doc, bundle)
+            except RecordError as exc:
+                if exc.code not in ACCESS_REFUSAL_CODES:
+                    result = exc.result()
+                    if exc.code == "context.required_over_budget":
+                        from src.knowledge.budget import ContextBudget
+
+                        # Counts and configured limits only; do not expose the
+                        # undelivered instruction bodies through diagnostics.
+                        accounting = (
+                            bundle.budget if bundle is not None
+                            else ContextBudget.from_config(self.config).account(doc.to_markdown())
+                        )
+                        section_bytes = {
+                            s.key: len(s.body.encode("utf-8")) for s in doc.sections
+                        }
+                        largest = sorted(section_bytes.items(), key=lambda item: -item[1])[:3]
+                        requested = accounting["requested"]
+                        available = max(0, requested["input_tokens"]
+                                        - requested["output_tokens"] - requested["wrapper_tokens"])
+                        result["error"] = (
+                            f"{exc.code}: required body {len(doc.to_markdown().encode('utf-8'))} "
+                            f"bytes exceeds {available} available "
+                            f"(input ceiling {requested['input_tokens']}, "
+                            f"output/wrapper reserve "
+                            f"{requested['output_tokens'] + requested['wrapper_tokens']}); "
+                            "largest required sections (UTF-8 bytes, excluding headings): "
+                            + ", ".join(f"{key}={size}" for key, size in largest)
+                        )
+                        result.update(
+                            context_budget=accounting,
+                            required_body_bytes=len(doc.to_markdown().encode("utf-8")),
+                            required_section_bytes=section_bytes,
+                            source=doc.source,
+                        )
+                    return result
+                # Context is an enrichment, so a refused or unavailable scope
+                # degrades: prime still delivers its full ordinary body, with a
+                # code-only note in place of the context section. The grant
+                # check itself is untouched — nothing is delivered to a
+                # principal that may not read the corpus.
+                bundle = None
+                context_error = exc.code
+                doc = renderer.with_context_unavailable(doc, exc.code)
+                # A degraded prime is indistinguishable from a prime served
+                # with no corpus at all, so the daemon log is the only place
+                # the refusal is visible. It names the identity and the grant
+                # to add and nothing else: template drift between an installed
+                # worker profile and the shipped grants is the failure this
+                # exists to make findable, and no record content crosses here.
+                logger.warning(
+                    "prime: knowledge context unavailable (%s); serving the startup "
+                    "document without it. task=%s project=%s profile=%s needs the "
+                    "aq_commands %s granted to it",
+                    exc.code, task.id, task.project_id,
+                    getattr(principal, "profile_id", None),
+                    ", ".join(context_bundle_commands(self.config, task.title)),
+                )
+        result = {
             "success": True,
             "body": doc.to_markdown(),
             "sections": [{"key": s.key, "title": s.title, "body": s.body} for s in doc.sections],
             "source": doc.source,
             "tokens_est": doc.tokens_est(),
+            "tokens_est_method": "estimated characters / 4; not a measured token count",
         }
+        if bundle is not None:
+            result.update(context_bundle=bundle.to_dict(), context_state="prepared",
+                          tokens_est=bundle.budget["total_tokens"],
+                          tokens_est_method=bundle.budget["method"])
+        elif context_error is not None:
+            result.update(context_state="unavailable", context_error_code=context_error)
+        return result
 
     # ------------------------------------------------------------------
     # task_handoff — backs `aq handoff` (design §6.1, implementation §3)
@@ -336,12 +586,27 @@ class SurfaceCommandsMixin:
         owns restart mechanics (recycle now vs. later, wake_mode) — this
         command only records intent.
         """
-        task_id = args.get("task_id")
+        from pydantic import ValidationError
+
+        from src.commands.contracts.handoff import TaskHandoffArgs
+        from src.handoffs import agent_note, collect_facts, meaningful
+
+        try:
+            validated = TaskHandoffArgs.model_validate(args)
+        except ValidationError as exc:
+            return {"success": False, "error": f"Invalid handoff: {exc}"}
+        task_id = validated.task_id
         scope = getattr(self, "_current_scope", None) or {}
         if not task_id:
             task_id = scope.get("task_id")
+        if not task_id and scope.get("session_id"):
+            # Pool tokens have no fixed task: resolve the daemon-held claim,
+            # then apply the same ownership and epoch fence as explicit IDs.
+            held_session = await self.db.get_session(scope["session_id"])
+            task_id = held_session.task_id if held_session else None
         if not task_id:
             return {
+                "success": False,
                 "error": (
                     "task_id is required (no task in scope — pass task_id "
                     "explicitly or run inside a task session)"
@@ -349,30 +614,54 @@ class SurfaceCommandsMixin:
             }
 
         err = await self._assert_session_owns(
-            task_id, session_id=scope.get("session_id"), claim_epoch=args.get("claim_epoch")
+            task_id, session_id=scope.get("session_id"), claim_epoch=validated.claim_epoch
         )
         if err:
             return err
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
-        auto = bool(args.get("auto", False))
-        session_id = args.get("session_id") or scope.get("session_id")
+        auto = validated.auto
+        note = agent_note(validated.model_dump())
+        # A bearer session's identity always comes from daemon scope.
+        session_id = scope.get("session_id") or validated.session_id
+        session = await self.db.get_session(session_id) if session_id else None
+        if session and session.task_id != task_id:
+            return {"success": False, "error": "session does not hold this task"}
+        work_dir = getattr(session, "work_dir", None)
+        if not work_dir and not session_id:
+            work_dir = await self.db.get_task_meta(task_id, "work_dir")
+        now = time.time()
+        facts = await collect_facts(self.db, task, session, work_dir)
         payload = {
-            "subject": args.get("subject") or "",
-            "detail": args.get("detail") or "",
+            "schema_version": 1,
+            # Keep the legacy fields readable by old prime versions on rollback.
+            "subject": note["subject"],
+            "detail": note["detail"],
+            "agent": note,
+            "facts": facts,
             "session_id": session_id,
             "auto": auto,
-            "ts": time.time(),
+            "ts": now,
+            "created_at": now,
+            "facts_only": not meaningful(note),
         }
-        handoff_id = await self.db.add_task_context(
-            task_id, type="handoff", label="handoff", content=json.dumps(payload)
-        )
+        try:
+            handoff_id, created = await self.db.add_task_handoff(
+                task_id,
+                content=json.dumps(payload),
+                claim_epoch=task.claim_epoch,
+                session_id=session_id,
+                idempotency_key=validated.idempotency_key,
+                created_at=now,
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
 
         restart_requested = False
-        if not auto:
+        if not auto and created:
             bus = getattr(self.orchestrator, "bus", None)
             if bus is not None:
                 await bus.emit(
@@ -390,6 +679,8 @@ class SurfaceCommandsMixin:
             "success": True,
             "handoff_id": handoff_id,
             "restart_requested": restart_requested,
+            "created": created,
+            "noop": False,
         }
 
     # ------------------------------------------------------------------
@@ -414,18 +705,18 @@ class SurfaceCommandsMixin:
         """
         event = str(args.get("event") or "").strip().lower()
         if event not in {"start", "stop"}:
-            return {"error": "event must be 'start' or 'stop'"}
+            return {"success": False, "error": "event must be 'start' or 'stop'"}
         subagent_id = str(args.get("subagent_id") or "").strip()
         if not subagent_id:
-            return {"error": "subagent_id is required"}
+            return {"success": False, "error": "subagent_id is required"}
 
         scope = getattr(self, "_current_scope", None) or {}
         session_id = scope.get("session_id") or args.get("session_id")
         if not session_id:
-            return {"error": "session_id is required (no session in scope)"}
+            return {"success": False, "error": "session_id is required (no session in scope)"}
         session = await self.db.get_session(str(session_id))
         if session is None:
-            return {"error": f"No session '{session_id}'"}
+            return {"success": False, "error": f"No session '{session_id}'"}
 
         recorded = await self.db.record_subagent_event(
             session_id=session.id,

@@ -28,6 +28,8 @@ class EventsMixin:
             "project_id": task.project_id,
             "title": getattr(task, "title", ""),
         }
+        if event_type == "task.updated":
+            payload["status"] = task.status.value
         # The default pipeline's review rules stand down on
         # ``event.review_task`` (default-pipeline.md), and an *absent* key
         # reads falsy under ``truthy: false`` — so an emitter that forgets it
@@ -46,7 +48,23 @@ class EventsMixin:
                 getattr(task, "dedup_key", None), getattr(task, "profile_id", None)
             )
         payload.update(extra)
+        if event_type == "task.completed" and getattr(getattr(self, "db", None), "_engine", None) is not None:
+            from sqlalchemy import select
+            import json
+
+            from src.database.tables import task_metadata
+            from src.integration.promotion_steps import promotion_policy_event
+
+            async with self.db.immediate() as conn:
+                value = await conn.scalar(select(task_metadata.c.value).where(
+                    task_metadata.c.task_id == task.id, task_metadata.c.key == "promotion_hotfix"))
+                if value:
+                    hotfix = json.loads(value)
+                    await promotion_policy_event(conn, project_id=task.project_id, step_id=hotfix["step_id"],
+                        kind="hotfix_completed", identity=task.id + ":" + str(task.updated_at), now=time.time(),
+                        from_task=task.id, notes_reviewed=False)
         await self.bus.emit(event_type, payload)
+
 
     async def _emit_blocked_flips(self, flipped: set[str], *, reason: str = "graph") -> None:
         """Emit ``task.blocked`` / ``task.unblocked`` on the bus for a flip set.
@@ -195,9 +213,9 @@ class EventsMixin:
         """Check whether a project's token usage has crossed a warning threshold.
 
         Called after recording token usage for a task.  Queries the project's
-        ``budget_limit`` and current rolling-window usage, then sends a
-        ``format_budget_warning_embed`` notification if the usage percentage
-        has crossed one of the defined thresholds since the last notification.
+        ``budget_limit`` and current rolling-window usage, then emits a
+        ``notify.budget_warning`` event if the usage percentage has crossed
+        one of the defined thresholds since the last notification.
 
         Rate-limited: each threshold level is notified at most once per
         project until the budget resets (e.g. new rolling window).

@@ -176,7 +176,7 @@ install-profile` acts on.
 
 ## Shipped agent skills
 
-Five skills ship in [`src/skills/`](../../../src/skills/) and are installed
+Six skills ship in [`src/skills/`](../../../src/skills/) and are installed
 into a harness's skill directory at session start. They are the agent-facing
 documentation of this surface — short, task-shaped, and loaded on demand:
 
@@ -187,6 +187,7 @@ documentation of this surface — short, task-shaped, and loaded on demand:
 | `aq-comms` | Messages, the inbox, and reporting a blocker to a human. |
 | `aq-workspaces-and-git` | The assigned worktree, its branch, committing, pushing, opening a PR. |
 | `aq-playbooks-and-gates` | Inspecting a paused run and resolving a human gate. |
+| `aq-reviews` | Document reviews by seat — author, reviser, dispatched reviewer — and the opt-in adversarial review recipe across model families. |
 
 Installation is **write-if-absent** (`ensure_default_aq_skills`): editing a
 skill in this repository does **not** update an already-installed copy. The

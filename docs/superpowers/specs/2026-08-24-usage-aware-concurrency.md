@@ -6,6 +6,12 @@ date: 2026-08-24
 
 # Usage-Aware Concurrency — Track Real Headroom, Spend It Before Reset
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Goal
 
 Concurrency should be bounded by **how much quota is left before the next reset**,
@@ -13,7 +19,7 @@ not by how many workspaces happen to exist. The target is to finish each window
 having used the quota, without hitting the wall early and stalling.
 
 Slots stop being the constraint once worktree mode lands (see
-[[plans/2026-08-24-worktree-workspace-migration]]) — creating a slot is lazy and
+[plans/2026-08-24-worktree-workspace-migration](../plans/2026-08-24-worktree-workspace-migration.md)) — creating a slot is lazy and
 free. `max_concurrent_agents` then becomes the only ceiling, and it is a static
 number that knows nothing about quota. This spec is about replacing that with a
 signal derived from real usage.
