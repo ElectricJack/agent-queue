@@ -22,8 +22,8 @@ class ProjectSummary:
         max_concurrent_agents (int | Unset):  Default: 1.
         workspace (None | str | Unset):
         repo_url (None | str | Unset):
-        discord_channel_id (None | str | Unset):
         assignment_playbook_id (None | str | Unset):
+        supervisor_enabled (bool | Unset):  Default: False.
     """
 
     id: str
@@ -33,8 +33,8 @@ class ProjectSummary:
     max_concurrent_agents: int | Unset = 1
     workspace: None | str | Unset = UNSET
     repo_url: None | str | Unset = UNSET
-    discord_channel_id: None | str | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
+    supervisor_enabled: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,17 +60,13 @@ class ProjectSummary:
         else:
             repo_url = self.repo_url
 
-        discord_channel_id: None | str | Unset
-        if isinstance(self.discord_channel_id, Unset):
-            discord_channel_id = UNSET
-        else:
-            discord_channel_id = self.discord_channel_id
-
         assignment_playbook_id: None | str | Unset
         if isinstance(self.assignment_playbook_id, Unset):
             assignment_playbook_id = UNSET
         else:
             assignment_playbook_id = self.assignment_playbook_id
+
+        supervisor_enabled = self.supervisor_enabled
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -90,10 +86,10 @@ class ProjectSummary:
             field_dict["workspace"] = workspace
         if repo_url is not UNSET:
             field_dict["repo_url"] = repo_url
-        if discord_channel_id is not UNSET:
-            field_dict["discord_channel_id"] = discord_channel_id
         if assignment_playbook_id is not UNSET:
             field_dict["assignment_playbook_id"] = assignment_playbook_id
+        if supervisor_enabled is not UNSET:
+            field_dict["supervisor_enabled"] = supervisor_enabled
 
         return field_dict
 
@@ -128,15 +124,6 @@ class ProjectSummary:
 
         repo_url = _parse_repo_url(d.pop("repo_url", UNSET))
 
-        def _parse_discord_channel_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        discord_channel_id = _parse_discord_channel_id(d.pop("discord_channel_id", UNSET))
-
         def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -146,6 +133,8 @@ class ProjectSummary:
 
         assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
 
+        supervisor_enabled = d.pop("supervisor_enabled", UNSET)
+
         project_summary = cls(
             id=id,
             name=name,
@@ -154,8 +143,8 @@ class ProjectSummary:
             max_concurrent_agents=max_concurrent_agents,
             workspace=workspace,
             repo_url=repo_url,
-            discord_channel_id=discord_channel_id,
             assignment_playbook_id=assignment_playbook_id,
+            supervisor_enabled=supervisor_enabled,
         )
 
         project_summary.additional_properties = d

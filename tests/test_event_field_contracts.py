@@ -43,5 +43,7 @@ def test_contracted_events_describe_every_emitted_field_and_playbook_path() -> N
         ("spec.approved", "spec_path"),
         ("proposal.ready", "proposal_id"),
         ("gate.resolved", "await_id"),
+        ("project.created", "workspace_in_vault"),
+        ("project.created", "workspace_path"),
     ):
         assert resolve_event_path(event_type, path) is not None

@@ -6,6 +6,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.observations.models import SnapshotValue
+
+from src.api.models.project import EffectiveGitIdentity
+
 
 class TaskStatusSummary(BaseModel):
     total: int = 0
@@ -27,6 +31,21 @@ class GetTokenUsageResponse(BaseModel):
     project_id: str | None = None
     breakdown: list[dict[str, Any]] = []
     total: int = 0
+
+
+class GetBenchmarkReportResponse(BaseModel):
+    success: bool
+    project_id: str
+    policy_sha256: str
+    rate_card_version: str
+    rate_card_sha256: str
+    pairs: list[dict[str, Any]]
+    attempts_total: int
+    attempts_failed: int
+    cost_complete: bool
+    estimated_api_cost_usd: float
+    unpriced_tokens: int
+    tokens_total: int
 
 
 class TokenAuditResponse(BaseModel):
@@ -96,7 +115,25 @@ class EnvVarReference(BaseModel):
     resolved: bool
 
 
+class DeploymentEvent(BaseModel):
+    timestamp: float
+    outcome: str
+    branch: str = ""
+    previous: str = ""
+    target: str = ""
+    message: str = ""
+    automatic: bool = False
+
+
 class GetConfigResponse(BaseModel):
+    """The config as written on disk, with literal credentials redacted.
+
+    ``redacted`` holds the dotted path of every value replaced (or, for a DSN,
+    partially replaced) with ``secret_placeholder``.  Saving a section with the
+    placeholder left in place keeps the stored credential — see
+    :mod:`src.config_secrets`.
+    """
+
     model_config = {"extra": "allow"}
     path: str = ""
     config: dict[str, Any] = {}
@@ -105,6 +142,9 @@ class GetConfigResponse(BaseModel):
     restart_required: list[str] = []
     unclassified: list[str] = []
     env_var_references: list[EnvVarReference] = []
+    redacted: list[str] = []
+    secret_placeholder: str = ""
+    deployment_history: list[DeploymentEvent] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -122,6 +162,16 @@ class UpdateConfigResponse(BaseModel):
     validation_errors: list[str] = []
     dry_run: bool | None = None
     error: str | None = None
+
+
+class PortableConfigResponse(BaseModel):
+    """Preview/export/import receipt. Fields vary by operation."""
+
+    model_config = {"extra": "allow"}
+    error: str | None = None
+    applied: bool = False
+    dry_run: bool | None = None
+    validation_errors: list[str] = []
 
 
 class ReloadConfigResponse(BaseModel):
@@ -151,6 +201,11 @@ class UpdateAndRestartResponse(BaseModel):
     message: str = ""
     pull_output: str = ""
     reason: str = ""
+    waited_for_tasks: bool = False
+    pid: int | None = None
+    log: str | None = None
+    selector: str | None = None
+    commit: str | None = None
 
 
 class RunCommandResponse(BaseModel):
@@ -192,6 +247,9 @@ class StuckTask(BaseModel):
     assigned_agent: str | None = None
     updated_at: float
     seconds_in_state: float
+    kind: str | None = None
+    reason: str | None = None
+    suggested_command: str | None = None
 
 
 class StuckTasksThresholds(BaseModel):
@@ -199,10 +257,11 @@ class StuckTasksThresholds(BaseModel):
     in_progress: int
 
 
-class GetStuckTasksResponse(BaseModel):
+class GetStuckTasksResponse(SnapshotValue):
     stuck: list[StuckTask] = []
-    now_used: float
-    thresholds: StuckTasksThresholds
+    now_used: float | None = None
+    thresholds: StuckTasksThresholds | None = None
+    summary: str = ""
 
 
 class StubScanEntry(BaseModel):
@@ -271,9 +330,68 @@ class EditIntelligenceClassResponse(BaseModel):
     intelligence_class: IntelligenceClassModel
 
 
+class IntelligenceClassReference(BaseModel):
+    kind: Literal["agent", "profile", "task"]
+    id: str
+    name: str
+    lifecycle: str | None = None
+    status: str | None = None
+    source: str | None = None
+
+
+class DeleteIntelligenceClassConflictResponse(BaseModel):
+    error: str
+    error_code: Literal["class_referenced"]
+    references: list[IntelligenceClassReference]
+
+
+class DeleteIntelligenceClassResponse(BaseModel):
+    success: bool = True
+    class_id: str
+    retired_file: str
+
+
+class GitIdentityValue(BaseModel):
+    name: str
+    email: str
+
+
+class GetGitIdentityResponse(BaseModel):
+    """The installation default, the fallback, and optionally one project's effective identity."""
+
+    success: bool = True
+    configured: bool
+    installation: GitIdentityValue | None = None
+    installation_source: str | None = None
+    fallback: GitIdentityValue
+    project_id: str | None = None
+    effective: EffectiveGitIdentity | None = None
+
+
+class SetGitIdentityResponse(BaseModel):
+    success: bool = True
+    configured: bool
+    installation: GitIdentityValue | None = None
+    previous: GitIdentityValue | None = None
+    changed: bool = False
+    applies_to: str = ""
+
+
+class OperationalRetentionResponse(BaseModel):
+    """A completed bounded retention pass, overlap acknowledgement, or refusal."""
+
+    success: bool
+    counts: dict[str, int] | None = None
+    dry_run: bool | None = None
+    outcome: Literal["already_running"] | None = None
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "operational_retention": OperationalRetentionResponse,
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
+    "get_benchmark_report": GetBenchmarkReportResponse,
     "token_audit": TokenAuditResponse,
     "claude_usage": ClaudeUsageResponse,
     "get_recent_events": GetRecentEventsResponse,
@@ -286,6 +404,11 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_config": GetConfigResponse,
     "get_config_schema": GetConfigSchemaResponse,
     "update_config": UpdateConfigResponse,
+    "get_git_identity": GetGitIdentityResponse,
+    "set_git_identity": SetGitIdentityResponse,
+    "preview_portable_config": PortableConfigResponse,
+    "export_portable_config": PortableConfigResponse,
+    "import_portable_config": PortableConfigResponse,
     "restart_daemon": RestartDaemonResponse,
     "shutdown": ShutdownResponse,
     "update_and_restart": UpdateAndRestartResponse,
@@ -296,4 +419,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "scan_stub_staleness": ScanStubStalenessResponse,
     "list_intelligence_classes": ListIntelligenceClassesResponse,
     "edit_intelligence_class": EditIntelligenceClassResponse,
+    "delete_intelligence_class": DeleteIntelligenceClassResponse,
 }
