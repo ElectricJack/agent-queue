@@ -139,8 +139,11 @@ The admission-owned receipt fallbacks in `hierarchy_queries`, `claim_queries`,
 `blocked_state`, `task_graph/readiness`, `hierarchy`, `removal_guard`,
 `source_repairs`, `drain_owners` and `doctor/stall_checks` are removed. SQL blocked
 state projects source completion for `delivery-of`; the view separately proves
-current default-target containment. A missing truthful observer withholds only
-Git-gated candidates and cannot restore receipt eligibility. Cleanup materializes
+current default-target containment. Unknown or unloaded evidence, including a
+missing truthful observer, permits worker preparation without asserting
+containment or restoring receipt eligibility. The agent merges prerequisite
+state from Git; proven negative ancestry may withhold work. Publication and
+destructive cleanup retain their current-proof requirements. Cleanup materializes
 historical resource identities without treating receipt presence as delivery and
 revalidates current default-target proof before destructive legacy cleanup.
 
@@ -167,7 +170,8 @@ Receipts are read-only historical audit (spec §3.3); nothing active writes one 
 delivery authority. The S1 writers are retired: the promotion finalizer
 `finalize_integration_promotion` and its `DatabaseBackend` stub,
 `RecordsPrimitives.record_receipt[_on]` with its `RECORD_RECEIPT` binding (the
-primitive is unbound and invokes as `primitive_unavailable`), the
+primitive is unbound and invokes as `primitive_unavailable`; `RecordsPrimitives`
+itself was later removed as test-only), the
 `ChildDelivery._reissue_receipt` path (a receipt predating the current completion
 now blocks until Git-first delivery proves containment), and the
 settled-claim receipt fallback in `claim_queries`.
@@ -182,6 +186,11 @@ these writers and every module that still names the table with its owner;
 both sets only shrink, and admission consumers read none. Historical
 tables/foreign keys remain until rollback retention and a separately approved
 destructive migration permit deletion.
+
+The later `azure-ridge-72` adapter retirement removed the unused
+`parent_subjects` receipt query with its parent observer. Its baseline inventory
+entry above is historical; the receipt-reader ratchet no longer includes that
+module. Parent episode records and historical recovery remain retained.
 
 `main_promotion.py`, named in the approved spec's baseline inventory, is absent in
 this checkout. Promotion runtime uses `promotion_steps.py` and train publication;
