@@ -38,6 +38,7 @@ from tests.playbook_v2_engine_helpers import (
     artifact_ref_for,
 )
 from tests.test_object_loop import B, C, H, receipt, start_args, variant
+from tests.test_review_commands import decide
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "tests/fixtures/playbooks/v2/object-loop"
@@ -629,7 +630,7 @@ async def test_object_review_approval_stores_pinned_bytes_without_activation(set
     revision = await setup.db.get_review_revision(submitted["review_id"], 1)
     pinned = load_definition_json(revision["playbook_artifact"])
     assert pinned.steps == artifact().steps
-    approved = await setup.execute("review_decide", {
+    approved = await decide(setup, {
         "review_id": submitted["review_id"], "revision": 1, "decision": "approve",
     })
     assert approved["success"] and approved["playbook"]["stored"], approved
