@@ -695,32 +695,31 @@ reconciling concern — see [escalations](../../guides/escalations.md).
 
 ### The integration operation model
 
-Durable root, parent and Development Subjects own delivery. A Subject pins its
-reviewed policy artifact, exact source identity and next visit. The reconciler
-runs one policy-selected primitive at a time through CommandHandler, records its
-result, and revisits waits after restarts.
+The Git-first train is always the delivery engine. The compatibility key
+`integration.git_first` defaults to `active` and accepts only that value; obsolete
+`shadow` configs must remove the key or set it to `active`.
 
 Project configuration uses `edit_project` with an expected integration generation,
-reason and authenticated operator identity. Existing Subjects keep their frozen
-policy. Disabling delivery pauses visits without transferring ownership. A live
-Subject or unresolved publisher prevents changing the repository binding.
+reason and authenticated operator identity. Frozen batches retain their policy
+and membership. Disabling delivery preserves work and authority; unresolved
+publication or retained ownership can prevent changing the repository binding.
 
 | Mode | What it means |
 |---|---|
 | `disabled` | Delivery is paused; durable work and authority are retained. |
 | `observe` | Readiness can be inspected without admitting delivery work. |
-| `hierarchy` | Parent Subjects collect children and verify their exact aggregate. |
-| `train` | Root Subjects seal batches, build candidates, collect trusted CI, and publish. |
-| `development` | Development Subjects assemble, validate locally, and publish with a lease. |
+| `hierarchy` | The train collects children into their parent branches. |
+| `train` | The train builds exact candidates, checks and publishes eligible batches. |
+| `development` | The train delivers the project's configured development target. |
 
-Every mutation rechecks the Subject version, exact head and generation, policy
-pin, branch fence and human hold. Rebuilding invalidates old CI evidence. A stale
-observation is a refusal; unresolved external-write evidence never grants a retry.
+Publication rechecks exact source and target identities, candidate checks,
+review evidence, policy pins, branch fences and human holds. A stale observation
+is a refusal; unresolved external-write evidence never grants a retry.
 
-Use `aq integration status` to inspect Subjects, wait reasons and gates. Recovery
-commands operate on exact retained evidence and authenticated authority. Root
-mutation primitives require the active reconciler visit; caller arguments cannot
-select another engine or grant that authority.
+Use `aq integration status` to inspect train batches, checks, blockers and Git
+delivery. Batch controls preview changes before applying them. Retained historical
+recovery commands use exact evidence and authenticated authority; they do not
+restore a Subject publisher or another delivery engine.
 
 | Outcome | Meaning |
 |---|---|

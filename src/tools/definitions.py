@@ -1134,7 +1134,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "hierarchical_integration_mode": {
                     "type": "string",
                     "enum": ["disabled", "observe", "hierarchy", "train", "development"],
-                    "description": "LOCAL-only integration mode for new reconciler subjects.",
+                    "description": "LOCAL-only integration delivery mode for the Git-first train.",
                 },
                 "promotion_flow": {
                     "type": ["array", "object", "null"],

@@ -759,7 +759,7 @@ chain to a release tag, and answers "is this delivered?" from git.
 - The live staging promotion is in progress; rewriting the sentinel and promotion playbooks is ready behind the playbooks refactor; the duplicate human publishers removal is ready.
 - Deleting the retired subject reconciler is stage 4 of the train spec with no open task.
 
-**Gaps today.** A default config delivers nothing (git-first defaults to shadow), delivery edges cannot be satisfied under the train, two protocols coexist at 81k lines against a 12k target, p90 latency is 6.3 hours with no watchdog, and promotion beyond staging has never run.
+**Default delivery resolved (2026-10-23).** The Git-first train is always active, and delivery edges use current Git admission. The remaining recorded gaps are legacy protocol size (81k lines against a 12k target), p90 latency of 6.3 hours with no watchdog, and promotion beyond staging not yet observed.
 
 ### 7.8 [playbooks](playbooks.md)
 

@@ -712,7 +712,7 @@ async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monke
     assert findings[1]["detail"] == "offline"
 
 
-async def test_a_stranded_child_line_names_the_missing_path(context):
+async def test_legacy_subject_absence_does_not_report_a_train_child_as_stranded(context):
     """The shape both PR lines miss: completed, pushed, no PR, no delivery."""
     context.db.rows = [
         {"task_id": "container.1", "project_id": "one", "parent_task_id": "container",
@@ -728,14 +728,9 @@ async def test_a_stranded_child_line_names_the_missing_path(context):
 
     findings = await module._stranded_child_findings(context, NOW)
 
-    assert [item["kind"] for item in findings] == ["stranded_child", "stranded_child"]
-    first = findings[0]
-    assert first["project_id"] == "one" and first["parent_task_id"] == "container"
-    assert "22m" in first["detail"] and "aq/container.1" in first["detail"]
-    # Every part of the container's path is named, including the absent ones.
-    assert "checkpoint awaiting_children" in first["detail"]
-    assert "operation none" in first["detail"] and "Subject none" in first["detail"]
-    assert "no collector will carry it" in findings[1]["detail"]
+    # Parent Subjects no longer collect children. These rows cannot prove a
+    # train stall; current train status supplies its blockers instead.
+    assert findings == []
 
 
 async def test_the_stranded_child_line_is_quiet_on_a_healthy_train(context):

@@ -102,6 +102,7 @@ it is not a limit on simultaneous V2 runs.
 | `auto_task.max_verification_retries` | 2 | One reopen for a genuine flake, then a stop. |
 | `swarm.prepare_timeout` | 120 | An abandoned preparation becomes eligible for recovery after two minutes. A live preparation request remains protected while its Git operations run under their own timeouts. |
 | `agents_config.stuck_timeout_seconds` (emitted name) | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. The loader currently reads YAML `agents`, so this recommendation needs that key to take effect; see the [configuration reference](../reference/configuration.md#top-level-sections). |
+| `integration.git_first` | `active` | The Git-first train delivers configured projects on every install. Trial mode is removed; remove an old `shadow` value or set `active` before restarting. |
 | `integration.default_mode` | `pull_request` | Worker output lands on a branch and a PR, never straight onto the default branch. |
 | `integration.merge_ci_policy` | `warn` | Installation-level compatibility default. Active delivery also follows project/repository CI and integration policy; this value alone does not guarantee a merge. |
 | `integration.merge_require_up_to_date` | `true` | A green rollup only proves the head passed against the base as it was when the run started. |
