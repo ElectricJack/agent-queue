@@ -12,13 +12,32 @@ tags: [design, playbooks, automation, workflows]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
-**Status:** Active — **Paused** ([feature-pauses](feature-pauses.md); `playbooks.enabled=false`)
+**Status:** Superseded V1 design. The current [Playbooks V2 guide](../../concepts/playbooks.md) and [system map](../systems/playbooks.md) describe execution and configuration; the original design below is retained as history.
 **Supersedes:** `rule-system.md`, `hooks.md` (migration complete, deprecated spec files removed)
 **Source files:** TBD
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
 **Related:** [vault](vault.md), [agent-coordination](agent-coordination.md), [specs/event-bus](../event-bus.md), [specs/supervisor](../supervisor.md), [specs/plugin-system](../plugin-system.md)
 
 ---
+
+## Current V2 authoring contract (2026-10-14)
+
+The historical model below is superseded for executable V2 policy by the
+[building-block authoring and rollout guide](../../guides/playbook-building-blocks.md).
+The compiler emits exactly `rules` and `steps`; the server derives metadata from
+reviewed source. Catalogue coverage and caller authority are independent, including
+review verbs. The four denied commands remain `run_command`, `shutdown`,
+`restart_daemon`, `update_and_restart`; registered commands retain scope, capability,
+claim and human-decision checks.
+
+V2 supports bounded lexical collections, finite immutable observation snapshots,
+state CAS and notification episodes, plus script steps. State is retained through
+recompile/disable/removal; operator reset or reviewed version migration can re-alert.
+Incomplete coverage never authorizes absence clearing. Scripts run as ordinary
+processes with timeout/output caps and JSON parsing, enabled by default via config.
+There is no sandbox isolation, launcher prerequisite or real-host acceptance gate.
+Protected output uses authorized readback; ambiguous launches are not replayable.
+Installation, targeted artifact rebuilds and rollback remain explicit operator work.
 
 ## 1. Problem Statement
 

@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.observations.models import SnapshotValue
+
 from src.api.models.project import EffectiveGitIdentity
 
 
@@ -245,6 +247,9 @@ class StuckTask(BaseModel):
     assigned_agent: str | None = None
     updated_at: float
     seconds_in_state: float
+    kind: str | None = None
+    reason: str | None = None
+    suggested_command: str | None = None
 
 
 class StuckTasksThresholds(BaseModel):
@@ -252,10 +257,11 @@ class StuckTasksThresholds(BaseModel):
     in_progress: int
 
 
-class GetStuckTasksResponse(BaseModel):
+class GetStuckTasksResponse(SnapshotValue):
     stuck: list[StuckTask] = []
-    now_used: float
-    thresholds: StuckTasksThresholds
+    now_used: float | None = None
+    thresholds: StuckTasksThresholds | None = None
+    summary: str = ""
 
 
 class StubScanEntry(BaseModel):
@@ -371,7 +377,18 @@ class SetGitIdentityResponse(BaseModel):
     applies_to: str = ""
 
 
+class OperationalRetentionResponse(BaseModel):
+    """A completed bounded retention pass, overlap acknowledgement, or refusal."""
+
+    success: bool
+    counts: dict[str, int] | None = None
+    dry_run: bool | None = None
+    outcome: Literal["already_running"] | None = None
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "operational_retention": OperationalRetentionResponse,
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
     "get_benchmark_report": GetBenchmarkReportResponse,
