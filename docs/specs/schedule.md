@@ -4,6 +4,14 @@ tags: [spec, schedule, core]
 
 # Schedule Matching Spec
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 `src/schedule.py` evaluates embedded schedule definitions against a point in
@@ -14,7 +22,7 @@ structured `times`/`days_of_week`/`days_of_month` format is part of the same
 public contract and is specified here.
 
 The synthetic `timer.*` / `cron.HH:MM` playbook triggers are a **different**
-subsystem (`src/timer_service.py`, see [[design/playbooks]] §7) and do not use
+subsystem (`src/timer_service.py`, see [design/playbooks](design/playbooks.md) §7) and do not use
 this module.
 
 ## Source Files
