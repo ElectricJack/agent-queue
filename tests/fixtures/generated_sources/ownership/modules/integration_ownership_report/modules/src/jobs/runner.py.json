@@ -1,0 +1,27 @@
+{
+  "exclusions": {
+    "src/jobs/runner.py::supervise": "Generic resource-job process supervision; integration result parser is independently charged."
+  },
+  "shared_definitions": {
+    "src/jobs/runner.py::fingerprint": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/runner.py::import from src.integration.development_result_parser import PytestOutputParser, parse_junit": {
+      "baseline_span": [
+        19,
+        19
+      ],
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/jobs/runner.py::import from src.jobs.artifacts import OutputStore, atomic_json, read_json, open_artifact": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/runner.py::import from src.jobs.identity import identity, processes, stop_tree": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

@@ -10,6 +10,10 @@ import type { Task } from "../../../api/hooks";
 import { EPIC_DELIVERY } from "../../../testUtils/epicDelivery";
 
 const mockUseAgentFlock = vi.fn();
+vi.mock("../../../api/waits", () => ({
+  useWaitExplain: () => ({ data: { waits: [] }, isPending: false, error: null }),
+}));
+
 vi.mock("../../../api/agents", () => ({ useAgentFlock: () => mockUseAgentFlock() }));
 
 const mockUseTask = vi.fn();
@@ -38,6 +42,7 @@ vi.mock("../../../api/hooks", async () => {
     useUploadTaskAttachment: (...args: unknown[]) => mockUseUploadTaskAttachment(...args),
     useDeleteTaskAttachment: (...args: unknown[]) => mockUseDeleteTaskAttachment(...args),
     useDeleteTask: (...args: unknown[]) => mockUseDeleteTask(...args),
+    useDeleteTaskPreview: () => ({ data: { task_ids: ["t1"], tasks: [] }, isFetching: false }),
   };
 });
 
@@ -553,22 +558,21 @@ describe("TaskDetailPane — toolbar and shortcuts", () => {
     act(() => {
       bindings.find((b: { key: string }) => b.key === "c").onFire();
     });
-    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Deletion scope")).toBeInTheDocument();
   });
 
-  it("deletes the task subtree after confirmation", () => {
-    const mutate = vi.fn();
-    mockUseDeleteTask.mockReturnValue({ mutate, isPending: false });
+  it("uses the shared dialog to choose subtree deletion after confirmation", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ warnings: [] });
+    mockUseDeleteTask.mockReturnValue({ mutateAsync, isPending: false });
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
     const setShortcuts = vi.fn();
     renderWithRouter(<TaskDetailPane {...noopProps()} setShortcuts={setShortcuts} />);
     const bindings = setShortcuts.mock.calls[setShortcuts.mock.calls.length - 1]?.[0];
     act(() => bindings.find((b: { key: string }) => b.key === "c").onFire());
-    screen.getByRole("button", { name: "Delete task and descendants" }).click();
-    expect(mutate).toHaveBeenCalledWith(
-      { task_id: "t1", cascade: true },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
-    );
+    fireEvent.change(screen.getByLabelText("Deletion scope"), { target: { value: "recursive" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete selected tasks" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ task_id: "t1", recursive: true,
+      branches: "keep", confirmed: true, stop_running: true, reason: "" }));
   });
 
   it("shows a cascade deletion failure in the confirmation dialog", () => {

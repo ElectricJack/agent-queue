@@ -78,10 +78,51 @@ _LIVE_STATES = ("starting", "running", "draining")
 ENV_CHECK_ID = "sessions.env_markers"
 
 BACKLOG_CHECK_ID = "messages.idle_worker_backlog"
+AUTH_CHECK_ID = "sessions.authentication"
+
+
+async def session_authentication_findings(ctx: DoctorContext, *, now: float) -> list[dict]:
+    if ctx.db is None:
+        return []
+    entries = {}
+    if getattr(ctx.db, "_engine", None):
+        for row in await ctx.db.uncredentialed_supervisor_sessions(now=now):
+            entries[row["id"]] = {
+                "session_id": row["id"], "name": row["name"],
+                "project_id": row["project_id"], "reason": "no valid supervisor credential",
+            }
+    store = getattr(getattr(ctx.handler, "orchestrator", None), "token_store", None)
+    for session_id, failure in getattr(store, "auth_failures", {}).copy().items():
+        if failure["at"] < now - 900:
+            continue
+        session = await ctx.db.get_session(session_id)
+        if (session is None or session.state != "running"
+                or session.ended_at is not None
+                or session.instance_token != failure["instance_token"]):
+            continue
+        entries[session_id] = {
+            "session_id": session_id, "name": session.name, "project_id": session.project_id,
+            "reason": failure["reason"], "last_failure_at": failure["at"],
+        }
+    for entry in entries.values():
+        entry["detail"] = f"Session {entry['name']} cannot authenticate: {entry['reason']}"
+        entry["recovery_command"] = f"aq session token {entry['session_id']} --json"
+    return list(entries.values())
+
+
+async def _check_authentication(ctx: DoctorContext) -> CheckResult:
+    findings = await session_authentication_findings(ctx, now=time.time())
+    return CheckResult(
+        AUTH_CHECK_ID, Severity.ERROR if findings else Severity.OK,
+        f"{len(findings)} running session(s) have unusable credentials" if findings
+        else "no running session authentication failures",
+        data={"sessions": findings, "count": len(findings)},
+    )
 
 UNREACHABLE_CHECK_ID = "sessions.stall_unreachable"
 
 STOP_INTENT_CHECK_ID = "sessions.stop_intent_pending"
+PROJECT_SUPERVISOR_CHECK_ID = "sessions.disabled_project_supervisors"
 
 #: Refusal reasons a person is responsible for: the ladder will not advance
 #: on these however long the holder is idle, so they are the ones an operator
@@ -674,8 +715,35 @@ async def _check_flock(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_disabled_project_supervisors(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id=PROJECT_SUPERVISOR_CHECK_ID,
+            severity=Severity.INFO,
+            detail="no database is available to read sessions from",
+        )
+    findings = []
+    for row in await ctx.db.list_sessions(lifecycle="named", live_only=True):
+        if row.project_id is None or row.name != "n-supervisor--" + row.project_id:
+            continue
+        project = await ctx.db.get_project(row.project_id)
+        if project is not None and not project.supervisor_enabled:
+            findings.append({"session_id": row.id, "project_id": row.project_id,
+                             "name": row.name, "state": row.state})
+    return CheckResult(
+        PROJECT_SUPERVISOR_CHECK_ID, Severity.WARN if findings else Severity.OK,
+        f"{len(findings)} project supervisor(s) running while disabled; "
+        "the reconciler stops them after their current turn" if findings
+        else "no disabled project supervisors are running",
+        data={"count": len(findings), "sessions": findings},
+    )
+
+
 def session_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id=AUTH_CHECK_ID, run=_check_authentication, owner=OWNER),
+        DoctorCheck(id=PROJECT_SUPERVISOR_CHECK_ID, run=_check_disabled_project_supervisors,
+                    owner=OWNER),
         DoctorCheck(id="sessions.untracked", run=_check_flock, owner=OWNER, timeout_s=15.0),
         DoctorCheck(id=ENV_CHECK_ID, run=_check_env_markers, owner=OWNER),
         DoctorCheck(
