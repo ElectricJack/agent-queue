@@ -65,6 +65,7 @@ class WaitProjectOverrides:
 
     in_place_ceiling_seconds: int | None = None
     resume_cost_minutes: float | None = None
+    resume_stall_seconds: int | None = None
     hibernate_margin: float | None = None
     v2_enabled: bool | None = None
     hibernation_enabled: bool | None = None
@@ -124,6 +125,7 @@ class WaitPolicyConfig:
     branch_admission_deadline_seconds: int = 1800
     transition_budget_seconds: int = 120
     resume_launch_attempts: int = 2
+    resume_stall_seconds: int = 300
     kinds: dict[str, WaitKindPolicy] = field(default_factory=default_kinds)
     projects: dict[str, WaitProjectOverrides] = field(default_factory=dict)
     metrics: WaitMetricsConfig = field(default_factory=WaitMetricsConfig)

@@ -30,8 +30,12 @@ Review binds the final pushed SHA; later fixes require fresh review.
 
 ## Never close over unpushed commits
 
-Commit and publish your assigned task branch with guarded `aq git push` before pass or fail
-close; record HEAD and checks. Slots reset after release. A failed close preserves unpushed
+As the final submission step for every code task, merge `origin/dev` into your task branch
+with `git merge origin/dev` (merge, not rebase). Resolve any conflicts with full context,
+then run only targeted tests for the touched files; do not run a full CI pass.
+Commit the result, push with guarded `aq git push`, then publish/close the task.
+Record HEAD and checks. Before any pass or fail close, commit and publish your assigned
+task branch. Slots reset after release. A failed close preserves unpushed
 work on an AQ recovery branch; if its push fails, the task remains held. Fix publication
 before retrying. For a required PR use `aq git create-pr --title "..." --body "..."` after
 pushing.
@@ -49,10 +53,7 @@ A PR into a feature branch has not delivered to the default branch.
 ## Stay visible while you work
 
 Before minutes of quiet foreground work, run `aq task heartbeat {task_id}`; renew during
-long work. For supported long work, register one durable wait and end the turn instead
-(managed tests: `aq test --aq-detach --aq-wait --aq-idempotency-key KEY TEST_ARGS` when job
-admission is enabled). AQ owns the wait lifecycle and delivers the outcome; resume
-with `aq wait show WAIT_ID --consume --json` and act on the recorded result.
+long work. {long_work_guidance}
 Never manage the operator daemon.
 
 ## Save findings before closing or handing off
