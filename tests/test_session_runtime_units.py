@@ -398,6 +398,75 @@ class TestProctable:
         (proc / "stat").write_text("123456789 (worker) Z 1")
         assert await proctable.workspace_quiescent((str(tmp_path),), "target") is True
 
+    async def test_marked_inventory_keeps_live_token_marked_processes(
+        self, tmp_path, monkeypatch,
+    ):
+        inventory = tmp_path / "proc"
+        for pid, stat, environ in (
+            (101, "101 (claude) S 1", b"AQ_INSTANCE_TOKEN=tok\0"),
+            (102, "102 (python (x)) R 101", b"AQ_INSTANCE_TOKEN=tok\0AQ_TEST_RUN_ID=r1\0"),
+            (103, "103 (bash) S 1", b"HOME=/h\0"),
+            (104, "104 (bash) Z 101", b"AQ_INSTANCE_TOKEN=tok\0"),
+            (105, "105 (bash) S", b"AQ_INSTANCE_TOKEN=tok\0"),
+            (106, "106 (bash) S 1", b"AQ_INSTANCE_TOKEN=\0"),
+        ):
+            (inventory / str(pid)).mkdir(parents=True)
+            (inventory / str(pid) / "stat").write_text(stat)
+            (inventory / str(pid) / "environ").write_bytes(environ)
+        (inventory / "self").mkdir()
+        monkeypatch.setattr(proctable, "_PROC", inventory)
+        assert sorted(await proctable.marked_inventory(), key=lambda p: p.pid) == [
+            proctable.MarkedProc(101, 1, "claude", "tok"),
+            proctable.MarkedProc(102, 101, "python (x)", "tok", test_run=True),
+        ]
+
+    @staticmethod
+    def _tree(*rows):
+        return [proctable.MarkedProc(pid, ppid, comm, token, test_run)
+                for pid, ppid, comm, token, test_run in rows]
+
+    @pytest.mark.parametrize("names", [("claude",), ()])
+    def test_a_shell_the_harness_spawned_is_a_running_command(self, names):
+        procs = self._tree(
+            (21, 1, "claude", "tok", False),
+            (22, 21, "bash", "tok", False),
+            (23, 22, "python3", "tok", False),
+        )
+        assert proctable.agent_command_running(procs, "tok", names) is True
+        assert proctable.agent_command_running(procs, "other", names) is False
+
+    def test_a_pane_shell_above_the_harness_needs_the_harness_name(self):
+        procs = self._tree(
+            (20, 10, "bash", "tok", False),
+            (21, 20, "claude", "tok", False),
+            (22, 21, "bash", "tok", False),
+        )
+        assert proctable.agent_command_running(procs, "tok", ("claude",)) is True
+        idle = [p for p in procs if p.pid != 22]
+        assert proctable.agent_command_running(idle, "tok", ("claude",)) is False
+
+    @pytest.mark.parametrize("names", [("claude",), ()])
+    def test_mcp_servers_and_tmux_shells_are_not_commands(self, names):
+        procs = self._tree(
+            (10, 1, "tmux: server", "tok", False),
+            (20, 10, "bash", "tok", False),
+            (21, 1, "claude", "tok", False),
+            (30, 21, "npm exec @x/mcp", "tok", False),
+            (31, 30, "sh", "tok", False),
+            (32, 31, "MainThread", "tok", False),
+            (33, 21, "node", "tok", False),
+        )
+        assert proctable.agent_command_running(procs, "tok", names) is False
+
+    def test_an_aq_test_run_is_a_running_command_wherever_it_sits(self):
+        procs = self._tree(
+            (21, 1, "claude", "tok", False),
+            (30, 21, "npm exec @x/mcp", "tok", False),
+            (40, 30, "python", "tok", True),
+        )
+        assert proctable.agent_command_running(procs, "tok") is True
+        assert proctable.agent_command_running(procs, "") is False
+
     async def test_read_start_ticks_of_a_live_process(self):
         ticks = await proctable.read_start_ticks(os.getpid())
         assert isinstance(ticks, int)

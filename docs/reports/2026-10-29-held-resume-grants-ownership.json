@@ -1,0 +1,58 @@
+{
+  "approval": {
+    "approved_by": "supervisor-global (session 8baaf8db), relayed by supervisor-agent-queue",
+    "authority": "size-cap-delegation-2026-10-23",
+    "decision_message_id": "msg-61dbbae9c12e4a60954ebd61892bd9b6",
+    "remaining_headroom": 0
+  },
+  "base_revision": "b7fc79d107710a46d5bbf16af02cd3de19d0404e",
+  "charged_files": {
+    "src/wait_runtime/resume.py": 19
+  },
+  "delta": {
+    "groups": {
+      "companions": 0,
+      "engine": 0,
+      "guards": 0,
+      "policy": 0,
+      "policy_sources": 0,
+      "shared": 19,
+      "ui": 0
+    },
+    "table_count": 0,
+    "total": 19
+  },
+  "dev": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64139,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161805,
+    "unknown_count": 66,
+    "unknown_sinks_count": 59
+  },
+  "merged": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64158,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161824,
+    "unknown_count": 67,
+    "unknown_sinks_count": 59
+  },
+  "method": "Complete origin/dev archive (src, dashboard/src, migrations/integration_guards.py) and merged tree scored with the incoming dev scanner and unchanged classifications. Exactly +19 shared owned lines in src/wait_runtime/resume.py, +0 engine and +0 tables. Preserve every historical grant, baseline, ownership classification and s4_modules expiry; zero remaining headroom.",
+  "source_revision": "168de2d9a801f9e005571c653e8daeadf140cd70",
+  "task_id": "nimble-orbit-12"
+}
