@@ -10,6 +10,7 @@ import uuid
 
 from sqlalchemy import case, func, insert, select, update
 
+from src.waits.sources import insert_message_with_source_event
 from src.agent_cron import MAX_ACTIVE, MAX_ATTEMPTS, PENDING_TTL, CronError, due_count, next_fire
 from src.agent_waits import WaitError
 from src.database.tables import agent_cron as cron, messages, sessions
@@ -185,14 +186,14 @@ class AgentCronQueriesMixin:
             )
         )
 
-    async def _cancel_session_agent_cron(self, conn, session_id, instance_token, now):
-        """Cancel this instance's patrols while the caller holds its session row lock."""
+    async def _cancel_sleeping_session_cron(self, conn, session, now):
+        """Cancel this instance's schedules while the caller holds its session lock."""
         rows = (
             await conn.execute(
                 select(cron)
                 .where(
-                    cron.c.session_id == session_id,
-                    cron.c.session_instance_token == instance_token,
+                    cron.c.session_id == session["id"],
+                    cron.c.session_instance_token == session["instance_token"],
                     cron.c.state == "active",
                 )
                 .order_by(cron.c.id)
@@ -323,7 +324,7 @@ class AgentCronQueriesMixin:
                     else:
                         tick = row["tick_count"] + 1
                         message_id = f"cron:{row['id']}:{tick}"
-                        await conn.execute(
+                        await insert_message_with_source_event(conn,
                             insert(messages).values(
                                 id=message_id,
                                 project_id=row["project_id"],
