@@ -16,12 +16,27 @@ value an App installation token would see, and they also use the recorded
 payload as it is to show that the reader reports `unverifiable` when the field
 is absent.
 
-Built from GitHub's documented response shape, not recorded:
+Recorded 2026-09-28 through the App `agent-queue-train` (5075923), with an
+installation token minted for the private fixture repository alone, by the
+live proof's `prepare` step (`scripts/e2e-app-train.sh`, spec §10):
 
-- `fixture-classic-protection.json`: the classic protection on
-  `ElectricJack/aq-gh615-app-fixture-20260923` described in spec §2, which
-  requires `fixture` from App 15368. That repository is private, and reading
-  classic protection needs a credential.
+- `fixture-classic-protection.json`:
+  `GET /repositories/1384141153/branches/main/protection`, the classic
+  protection on `ElectricJack/aq-gh615-app-fixture-20260923` described in
+  spec §2, which requires `fixture` from App 15368 (strictly up to date).
 
-The live proof (spec §10, S1-S6) replaces the built payloads with recordings
-made through the App.
+Recorded 2026-09-28 through the App's own installation token during the live
+proof's S2 (spec §10), after `Train-only main` (ruleset `24108467`, the §8.1
+shape) was applied to the fixture:
+
+- `fixture-rules-main-attested-only.json`:
+  `GET /repositories/1384141153/rules/branches/main?per_page=100`
+- `fixture-ruleset-24108467-app-never.json` and
+  `fixture-ruleset-24108467-app-always.json`:
+  `GET /repositories/1384141153/rulesets/24108467`, first with no bypass actor,
+  then with the App (`Integration` 5075923, `always`) as one. The App's token
+  reads `current_user_can_bypass` for itself (`never`, then `always`), and
+  GitHub returns no `bypass_actors` list to it: spec §8.3's assumption,
+  confirmed live.
+- `fixture-classic-protection-404.json`: the same classic-protection read after
+  S1 removed it (HTTP 404, "Branch not protected"), with its status.

@@ -1,0 +1,10 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/object-loop/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/object-loop-port/repository.artifact.json",
+      "previous_sha256": "f83489a7c46bfa11eaaaa3bc98e642f25452a302909de97a680378118d966f1c",
+      "sha256": "e460ed23a681f061e0227e6d1722d7cb13b9c7ec3c596b9e68a510466eef3d13"
+    }
+  },
+  "reason": "swift-orbit-41 documents object-loop's existing reusable building blocks. Source hash and source references change; executable rules, typed command pins and legacy authority are unchanged. Preserve the exact pre-port repository artifact separately from the installed snapshot, which differs only in compiled_at. The original legacy and main-refresh golden records remain unchanged. Scenario equivalence and graph/authority invariants are checked in tests/test_object_loop_playbook.py. Installation and activation remain separate operator decisions."
+}

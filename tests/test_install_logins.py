@@ -13,11 +13,12 @@ from src.install.logins import (
     CLAUDE_CODE_LOGIN,
     CODEX_LOGIN,
     GEMINI_LOGIN,
+    STATUS_TIMEOUT_SECONDS,
     AuthProbe,
     CredentialStore,
     EnvironmentCredential,
     ProviderLogin,
-    STATUS_TIMEOUT_SECONDS,
+    login_instructions,
     login_step,
     login_steps,
     probe_all,
@@ -36,8 +37,8 @@ from src.install.steps import StepContext, StepRegistry, StepSpec
 FAKE_KEY = "sk-ant-notarealkey-000111222333444555666777888999"
 
 
-def _completed(command, code=0, stdout=""):
-    return subprocess.CompletedProcess(command, code, stdout=stdout, stderr="")
+def _completed(command, code=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(command, code, stdout=stdout, stderr=stderr)
 
 
 def _support() -> SupportVerdict:
@@ -73,8 +74,42 @@ def _present(*names):
     return lambda command: f"/opt/bin/{command}" if command in names else None
 
 
+def _found(executable: Path):
+    """A PATH lookup that resolves the bare name to this one file."""
+    return lambda command: str(executable)
+
+
+#: A provider CLI built before it documented the status subcommand, answering
+#: the way a commander-style CLI does: words on stderr, a non-zero exit, and
+#: nothing whatever about a login.  `/bin/sh` keeps the fixture byte-identical
+#: on every host and it names no account, plan or key.
+_WITHOUT_THE_STATUS_SUBCOMMAND = """#!/bin/sh
+echo "error: unknown command 'status'" >&2
+exit 1
+"""
+
+#: The same build answering the question it *was* asked, redacted to the shape
+#: of a real one: not signed in, with nothing identifying in the text.
+_ANSWERED_NOT_SIGNED_IN = """#!/bin/sh
+echo '{"loggedIn": false, "authMethod": "none"}' >&2
+exit 1
+"""
+
+
+def _fake_cli(tmp_path, script: str, name: str = "claude") -> Path:
+    """Write *script* as an executable provider CLI and return its path."""
+    path = tmp_path / name
+    path.write_text(script, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 def _never_signed_in(command):
     return _completed(command, code=1)
+
+
+def _completed_ok(command):
+    return _completed(command)
 
 
 # -- the registry mirrors current official documentation --------------------
@@ -365,6 +400,310 @@ def test_a_broken_or_hung_status_command_is_cannot_tell_not_authenticated(tmp_pa
     assert probe.source == "ANTHROPIC_API_KEY"
 
 
+def _expired_login(tmp_path):
+    """A credential store left exactly where a dead OAuth token leaves it."""
+    credentials = tmp_path / ".claude" / ".credentials.json"
+    credentials.parent.mkdir(parents=True)
+    credentials.write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": FAKE_KEY, "expiresAt": 1_700_000_000_000}}),
+        encoding="utf-8",
+    )
+    return credentials
+
+
+def test_a_credential_store_left_by_an_expired_login_is_not_authentication(tmp_path):
+    """The 2026-10-03 report: readiness said authenticated, the CLI said /login.
+
+    An expired OAuth token leaves ``~/.claude/.credentials.json`` behind, so
+    "the file exists" answered the question the probe was actually asked.  It
+    was asked whether the harness works.
+    """
+    credentials = _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+
+    assert not probe.authenticated
+    assert probe.installed
+    # The store is named because the operator will go looking for it; nothing
+    # in it was read, and the answer still carries no material.
+    assert probe.stale_store == "Claude Code credential file"
+    assert credentials.exists()
+    assert FAKE_KEY not in json.dumps(probe.detail())
+    assert probe.detail()["stale_credential_store"] == "Claude Code credential file"
+
+
+def test_a_fresh_login_is_authenticated_again_on_the_same_store(tmp_path):
+    """Recovery: the file is unchanged, the human's ``/login`` is what counts."""
+    _expired_login(tmp_path)
+
+    def signed_in(command):
+        return _completed(command)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=signed_in,
+    )
+
+    assert probe.authenticated
+    assert probe.method == "provider-login"
+    assert probe.source == "claude auth status"
+    assert probe.stale_store is None
+
+
+def test_a_store_is_still_proof_for_a_provider_with_no_status_command(tmp_path):
+    """Gemini documents no non-interactive status command, so nothing can say no."""
+    cache = tmp_path / ".gemini" / "oauth_creds.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text("{}", encoding="utf-8")
+
+    probe = probe_login(GEMINI_LOGIN, environ=_env(tmp_path), which=_present("gemini"))
+
+    assert probe.authenticated
+    assert probe.stale_store is None
+    assert probe.source == "Gemini CLI OAuth cache"
+
+
+def test_an_explicitly_configured_credential_outranks_a_refused_store(tmp_path):
+    """Presence is weak evidence; a credential the operator supplied is not."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path, ANTHROPIC_API_KEY=FAKE_KEY),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+
+    assert probe.authenticated
+    assert probe.method == "api-key"
+    assert probe.source == "ANTHROPIC_API_KEY"
+    assert probe.stale_store is None
+
+
+def test_a_present_store_survives_a_status_command_that_could_not_tell(tmp_path):
+    """Silence is not a denial -- only an answer is."""
+    _expired_login(tmp_path)
+
+    def hung(command):
+        raise subprocess.TimeoutExpired(cmd=command, timeout=10)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=hung,
+    )
+
+    assert probe.authenticated
+    assert probe.source == "Claude Code credential file"
+    assert probe.stale_store is None
+
+
+# -- an unavailable status command is not an answer -------------------------
+
+
+def test_a_cli_without_the_status_subcommand_leaves_the_store_standing(tmp_path):
+    """The 2026-10-03 follow-up: an older build answers about its own CLI.
+
+    ``claude auth status`` does not exist in every installed build, and one
+    without it complains about the *command* and exits non-zero — the same
+    shape as a signed-out answer.  Read as a denial it refused the credential
+    store a perfectly good login had left behind and told the operator to sign
+    in again; ``docs/specs/provider-failover.md`` D5a promises the opposite.
+    """
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_found(_fake_cli(tmp_path, _WITHOUT_THE_STATUS_SUBCOMMAND)),
+    )
+
+    assert probe.installed and probe.authenticated
+    assert probe.source == "Claude Code credential file"
+    assert probe.stale_store is None
+
+
+def test_a_cli_that_answered_not_signed_in_is_still_a_denial(tmp_path):
+    """The other half of the same fixture pair: an answer keeps refusing."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_found(_fake_cli(tmp_path, _ANSWERED_NOT_SIGNED_IN)),
+    )
+
+    assert not probe.authenticated
+    assert probe.stale_store == "Claude Code credential file"
+
+
+def test_a_configured_credential_outranks_a_status_command_that_is_not_there(tmp_path):
+    """Presence is weak evidence and an unavailable command is not evidence."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path, ANTHROPIC_API_KEY=FAKE_KEY),
+        which=_found(_fake_cli(tmp_path, _WITHOUT_THE_STATUS_SUBCOMMAND)),
+    )
+
+    assert probe.authenticated
+    assert probe.method == "api-key"
+    assert probe.source == "ANTHROPIC_API_KEY"
+    assert probe.stale_store is None
+
+
+def test_an_unavailable_status_command_authenticates_nothing_by_itself(tmp_path):
+    """A "cannot tell" answer must not become a claim in either direction."""
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_found(_fake_cli(tmp_path, _WITHOUT_THE_STATUS_SUBCOMMAND)),
+    )
+
+    assert probe.installed and not probe.authenticated
+    # No store, no environment, no status answer: nothing is claimed and
+    # nothing is blamed.
+    assert probe.stale_store is None
+    assert probe.source is None
+    assert probe.method is None
+
+
+@pytest.mark.parametrize(
+    "complaint",
+    [
+        "error: unknown command 'status'",
+        "error: unrecognized subcommand 'status'",
+        "unknown subcommand: status",
+        "error: unsupported command 'auth status'",
+        "error: no such command 'status'",
+        "error: invalid command 'status'",
+        "error: command not found: status",
+    ],
+)
+def test_a_cli_complaining_about_the_command_itself_cannot_tell(tmp_path, complaint):
+    """The phrases each CLI family uses for a subcommand it does not have."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=lambda command: _completed(command, code=1, stderr=complaint),
+    )
+
+    assert probe.authenticated
+    assert probe.source == "Claude Code credential file"
+    assert probe.stale_store is None
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "",
+        "Not logged in. Run `codex login`.",
+        "Invalid API key · Please run /login",
+        '{"loggedIn": false, "authMethod": "none"}',
+        "OAuth token expired; re-authentication required",
+    ],
+)
+def test_a_provider_asked_about_its_login_answers_signed_out(tmp_path, answer):
+    """No false positives: a denial is a denial, whatever words it uses."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=lambda command: _completed(command, code=1, stdout=answer),
+    )
+
+    assert not probe.authenticated
+    assert probe.stale_store == "Claude Code credential file"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Signed in as person@example.com (last command: unknown command aborted)",
+        "Logged in. Recent: `no such command` while resuming an old session",
+    ],
+)
+def test_a_successful_status_command_is_never_downgraded_by_its_output(tmp_path, answer):
+    """A zero exit is an answer, and a phrase inside it cannot take it back.
+
+    The output of a signed-in CLI can quote the operator's own last command, a
+    session title or an account name.  Only a run that already failed is read
+    for a complaint about the command, so none of that can turn a signed-in
+    harness into silence — or, worse, into a denial.
+    """
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=lambda command: _completed(command, code=0, stdout=answer),
+    )
+
+    assert probe.authenticated
+    assert probe.source == "claude auth status"
+    assert probe.stale_store is None
+
+
+def test_an_unavailable_status_command_is_not_retried_and_carries_nothing(tmp_path):
+    """Asking a CLI that has no such command again teaches it nothing."""
+    calls = []
+
+    def unavailable(command):
+        calls.append(command)
+        return _completed(
+            command,
+            code=1,
+            stderr=f"error: unknown command 'status' (tried with {FAKE_KEY})",
+        )
+
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=unavailable,
+    )
+
+    assert len(calls) == 1
+    assert probe.authenticated
+    assert probe.stale_store is None
+    # The complaint was read to classify the run and discarded: none of it is
+    # in the answer the operator sees.
+    assert FAKE_KEY not in json.dumps(probe.detail())
+
+
+def test_a_refused_store_names_no_credential_and_fails_the_install_step(tmp_path):
+    """The remediation a human gets names the command, never a credential."""
+    _expired_login(tmp_path)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+    text = login_instructions(CLAUDE_CODE_LOGIN, probe, interactive=True)
+
+    assert CLAUDE_CODE_LOGIN.login_command in text
+    assert FAKE_KEY not in text
+
+
 def test_probe_all_reports_every_provider_independently(tmp_path):
     (tmp_path / ".codex").mkdir()
     (tmp_path / ".codex" / "auth.json").write_text("{}", encoding="utf-8")
@@ -394,7 +733,19 @@ def test_probe_all_reports_every_provider_independently(tmp_path):
             "Claude Code credential file",
         ),
     )
-    assert probes["codex"].authenticated is True
+    # Codex was told "not signed in" and its auth.json is still on disk. The
+    # file surviving an expired login is the symptom, not the answer.
+    assert probes["codex"] == AuthProbe(
+        "codex",
+        installed=True,
+        authenticated=False,
+        checked=(
+            "codex login status",
+            "OPENAI_API_KEY",
+            "Codex credential file",
+        ),
+        stale_store="Codex credential file",
+    )
     assert probes["gemini"].installed is False
 
 
@@ -449,6 +800,7 @@ def test_an_installed_but_unauthenticated_provider_stops_at_a_human_checkpoint(t
             "Claude Code credential file",
         ],
         "missing_environment": [],
+        "stale_credential_store": None,
     }
     assert "claude auth login" in result.remediation
     assert "rerun `aq install --with provider.claude`" in result.remediation
@@ -506,9 +858,16 @@ def test_the_login_step_is_read_only_and_verifies_by_reprobing(tmp_path):
     assert step.depends_on == ("provider.codex-cli",)
     assert step.verify(_context()) is False
 
+    # The auth cache alone no longer satisfies verification: verify asks the
+    # CLI, so an expired login cannot be verified into existence by a file.
     store.parent.mkdir(parents=True)
     store.write_text("{}", encoding="utf-8")
-    assert step.verify(_context()) is True
+    assert step.verify(_context()) is False
+
+    signed_in = login_step(
+        CODEX_LOGIN, environ=_env(tmp_path), which=_present("codex"), runner=_completed_ok
+    )
+    assert signed_in.verify(_context()) is True
 
 
 # -- registry wiring --------------------------------------------------------
@@ -758,7 +1117,7 @@ def test_a_cli_outside_this_process_path_is_still_asked_whether_it_is_signed_in(
 
     ``claude`` lives in ``~/.local/bin``, which the installer's lookup covers but
     this process's PATH may not.  Running the status command by bare name then
-    raised ``FileNotFoundError``, which ``_status_command_says_signed_in`` reads
+    raised ``FileNotFoundError``, which the status probe reads
     as "cannot tell" -- so a harness that was signed in the whole time was
     reported as not authenticated.
     """
