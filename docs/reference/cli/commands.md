@@ -43,11 +43,11 @@ can never disagree with the daemon. When a table here and `--help` differ,
 | `aq logs` | `—` | hand | Tail and filter daemon logs. |
 | `aq prime` | `prime` | hand | Print this task's startup prime document (design §5). |
 | `aq reply` | `—` | hand | Reply to a message (alias for `aq message reply`). |
-| `aq restart` | `—` | hand | Restart the agent-queue daemon. |
+| `aq restart` | `—` | hand | Restart the agent-queue daemon and the dashboard server. |
 | `aq schema` | `—` | hand | Print the system's enum catalog (task statuses, types, dependency types, gate types/statuses, ...) so scripts and agents never guess magic strings. |
-| `aq start` | `—` | hand | Start the agent-queue daemon. |
-| `aq status` | `get_status` | hand | Show system status overview. |
-| `aq stop` | `—` | hand | Stop the agent-queue daemon and its agent sessions. |
+| `aq start` | `—` | hand | Start the agent-queue daemon, then the dashboard server. |
+| `aq status` | `get_status` | hand | Show system status overview, and whether the dashboard server is up. |
+| `aq stop` | `—` | hand | Stop the agent-queue daemon, its agent sessions and the dashboard server. |
 | `aq test` | `—` | hand | Run pytest under the box-wide test semaphore. |
 
 ### `aq agent`
@@ -59,7 +59,9 @@ behaves. Profiles are global: one definition per agent type, shared across
 projects, with `vault/agent-types/<id>/profile.md` as the source of truth.
 Creating, editing and deleting global agents requires the global admin scope.
 `aq agent message` is the only hand-written leaf here: it delivers guidance to
-a *live* worker and reports the delivery status.
+a *live* worker and reports the delivery status. `--reply-to <message-id>` puts
+the guidance on that message's thread, which is what satisfies a worker's
+message-thread wait.
 
 
 | Command | Daemon command | Kind | What it does |
@@ -83,26 +85,60 @@ a *live* worker and reports the delivery status.
 | `aq agent message` | `agent_message` | hand | Send BODY to a live task, agent, or session. |
 | `aq agent profile-audit` | `profile_audit` | gen | Report which agent profiles still derive their capabilities from the legacy allowed_tools list rather than an explicit ## Capabilities block. |
 | `aq agent profile-drift` | `profile_drift` | gen | Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. |
-| `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. |
+| `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. Pass `--grants-only` to instead merge in just the missing `## Capabilities` grants, keeping every other edit. |
 | `aq agent show-effective-profile` | `show_effective_profile` | gen | Run the orchestrator's profile resolution cascade for a (project_id, agent_type) pair and return the merged profile the next task launch would use. |
 | `aq agent start-terminal` | `start_agent_terminal` | gen | Explicitly start or resume one agent's interactive terminal, without creating a task or sending a chat message. |
 
+### `aq dashboard`
+
+The dashboard server process, and the durable dashboard state documents. The
+dashboard server is a separate local process that serves the verified bundle
+and proxies the daemon's API, so the browser stays same-origin and the daemon
+serves no dashboard ([guide](../../guides/dashboard.md#opening-the-dashboard),
+[design](../../specs/dashboard-server.md)). `serve` runs it in
+the foreground; `start` / `stop` / `restart` / `status` manage it in the
+background (`~/.agent-queue/dashboard-server.pid` and `.log`) and work while
+the daemon is down. `aq start`, `aq stop` and `aq restart` call them when a
+bundle is installed: `--no-dashboard` only skips the Vite prompt of a source
+checkout, and `--no-dashboard-server` leaves the server alone. `aq status`
+reports it as `dashboard_server` under `--json`, and `aq doctor` checks
+`dashboard.server.running`, `.bundle`, `.port` and `.exposure`. The `state-*`
+leaves are generated from the dashboard-state commands.
+
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq dashboard restart` | `—` | hand | Restart the dashboard server, picking up changed settings or a rebuilt bundle. |
+| `aq dashboard serve` | `—` | hand | Serve the verified dashboard and proxy the daemon, in the foreground. |
+| `aq dashboard start` | `—` | hand | Start the dashboard server in the background (idempotent). |
+| `aq dashboard state-get` | `dashboard_state_get` | gen | Read one dashboard state document by namespace and optional subject. |
+| `aq dashboard state-list` | `dashboard_state_list` | gen | List every shared and caller-owned dashboard state document. |
+| `aq dashboard state-put` | `dashboard_state_put` | gen | Replace one validated dashboard state document. |
+| `aq dashboard state-reset` | `dashboard_state_reset` | gen | Reset one dashboard state document to its typed default. |
+| `aq dashboard status` | `—` | hand | Show whether the dashboard server is running, and where. |
+| `aq dashboard stop` | `—` | hand | Stop the background dashboard server (SIGTERM, then SIGKILL after 10s). |
+
 ### `aq db`
 
-The operator's migration door, and nothing else. `aq db current` is the
+The operator's database administration door. `aq db current` is the
 read-only "am I behind?" answer and is always safe to run. `aq db upgrade`
 runs Alembic against the configured database and is **daemon-host only** — a
 worker inside a worktree slot is refused by
 [`src/database/migration_guard.py`](../../../src/database/migration_guard.py)
 and must report the refusal rather than upgrade around it. The whole group
 refuses `--json`: it owns interactive safeguards and multi-step progress. See
-[migrations](../../guides/migrations.md).
-
+[migrations](../../guides/migrations.md). `aq db backup [destination.dump]`
+produces one private PostgreSQL custom archive; `aq db restore <dump>` verifies
+its schema, checks daemon/session quiescence and takes a recovery backup before
+restoring. Restore requires `--accept-data-loss <dump-timestamp>`; `--force`
+overrides only the live-daemon check. Both are local operator commands.
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|
+| `aq db backup` | `—` | hand | Write a private PostgreSQL custom archive of the configured database (operator only). |
 | `aq db current` | `—` | hand | Show the stamped revision(s) and this checkout's head. |
 | `aq db import-sqlite` | `—` | hand | Copy a pre-PostgreSQL SQLite database into the configured PostgreSQL one. |
+| `aq db restore` | `—` | hand | Validate a custom archive, report data loss, and take a recovery backup before restoring (operator only). |
 | `aq db upgrade` | `—` | hand | Run Alembic migrations against the configured database (operator only). |
 
 ### `aq digest`
@@ -149,6 +185,7 @@ a server-derived principal — no field in the message body is trusted.
 | `aq escalation get` | `escalation_get` | gen | Get one visible escalation with immutable messages, deliveries, and actions. |
 | `aq escalation list` | `escalation_list` | gen | List visible escalations with current external-delivery status. |
 | `aq escalation reply` | `escalation_reply` | gen | Append an authenticated human reply and atomically enqueue its owning supervisor. |
+| `aq escalation sweep` | `escalation_sweep` | gen | Plan the §5.6 back-fill sweep over the escalation pile and, with apply, run it. |
 | `aq escalation update` | `escalation_update` | gen | CAS-update an owned escalation, including explicit terminal resolution. |
 
 ### `aq file`
@@ -201,8 +238,9 @@ task's branch only**, verified against persisted state
 are not worker capabilities — merging belongs to the reviewing authority. Five
 leaves (`checkout-branch`, `commit-changes`, `create-branch`, `merge-branch`,
 `push-branch`) are alias spellings of a neighbour and say so in their help.
-`ci-baseline-status` is core, not plugin: it reads the CI verdict for a
-project's default branch head.
+`ci-baseline-status` and `ci-repair-adopt` are core, not plugin: the first
+reads the CI verdict for a project's default branch head, the second makes a
+task the repair that owns a red failure.
 
 
 | Command | Daemon command | Kind | What it does |
@@ -212,6 +250,7 @@ project's default branch head.
 | `aq git checkout` | `git_checkout` | gen | Switch to an existing branch. |
 | `aq git checkout-branch` | `checkout_branch` | gen | Check out an existing branch (alias for git_checkout). |
 | `aq git ci-baseline-status` | `ci_baseline_status` | gen | Read the CI verdict for a project's default branch head (or ``ref``): green / red / pending / unknown, the failing checks and pytest node ids, and… |
+| `aq git ci-repair-adopt` | `ci_repair_adopt` | gen | Make a live task the repair for a red branch: key it ``ci-baseline:<signature>:<n>`` and record the failing tests it owns, so ci_baseline_status reuses it instead of… |
 | `aq git commit` | `git_commit` | gen | Stage all changes and create a commit. |
 | `aq git commit-changes` | `commit_changes` | gen | Stage all changes and commit (alias for git_commit). |
 | `aq git create-branch` | `create_branch` | gen | Create and switch to a new branch (alias for git_create_branch). |
@@ -236,6 +275,16 @@ leaves are synchronous jobs: `layout-rebuild` recomputes a project's layout,
 `tidy` enqueues a tidy pass. The layout is published atomically and the
 dashboard reads it; nothing here changes tasks.
 
+The daemon also enqueues tidy jobs of its own, of kind `rules:<n>`, to bring a
+project laid out under older engine rules up to the current ones (one
+`(project, variant)` per 15-minute sweep). Two consequences for `aq graph
+tidy`: a job is de-duplicated per `(project, variant)` whatever its kind, so a
+Tidy asked for while a `rules:<n>` job is already queued for that pair is
+served by **that** job — the response shows `kind: rules:<n>`, and the rebuild
+is the same full layout you asked for; and because the job queue is FIFO, a
+Tidy may wait behind at most one rules rebuild (the daemon never queues a
+second while one is in flight).
+
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|
@@ -247,32 +296,19 @@ dashboard reads it; nothing here changes tasks.
 Inspect and control hierarchical integration trains — how finished task
 branches are validated and published. `status` is the read every diagnosis
 starts from: rollout mode, readiness, active work and cleanup for one project.
-Every other leaf is a control verb, and control verbs are **local operator
-only**: a session token is refused with `out of scope: integration control
-requires local operator`. The one exception is
-`resolve-candidate-member`, which a live repair session may run for the
-candidate it was assigned. All leaves are hand-written because they take
-positional identities and explicit compare-and-set fences (`enable` takes the
-generation `status` reported, so a stale operator cannot flip a mode that has
-moved).
+The Git-first controls include `pause-batch`, `resume-batch`, `eject`, and
+`seal-now`; their preview/apply forms carry the identity and reason needed for
+publication. Authorization resolves the target project server-side. Retired
+candidate-building and subject-engine recovery controls are archived in the
+[historical command notes](../../history/legacy-train-commands/).
 
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|
-| `aq integration abort` | `—` | hand | Abort a safe, human-required integration OPERATION_ID. |
-| `aq integration adopt` | `—` | hand | Record already-delivered work without replaying old repair checkpoints. |
-| `aq integration cancel-preserving` | `—` | hand | Cancel obsolete repair scheduling while retaining refs and attached workspaces. |
-| `aq integration develop` | `—` | hand | Use automatic development batches with explicit local validation. |
-| `aq integration enable` | `—` | hand | CAS PROJECT_ID to MODE using the generation reported by status. |
-| `aq integration flush` | `—` | hand | Request an immediate eligibility pass or train sweep for PROJECT_ID. |
-| `aq integration reconcile-unmaterialized` | `—` | hand | Bind safe pre-rollout tasks and reserve their hierarchy origins. |
-| `aq integration recover-candidate-member` | `—` | hand | Resolve one pushed frozen candidate-member repair reservation. |
-| `aq integration resolve-candidate-member` | `—` | hand | Resolve the candidate member assigned to this repair session. |
-| `aq integration resume` | `—` | hand | Resume a safe, human-required integration OPERATION_ID. |
-| `aq integration retry-cleanup` | `—` | hand | Requeue the exact safe cleanup items for BATCH_ID. |
+| `aq integration app-setup` | `—` | hand | Print what App credential mode still needs for PROJECT_ID and the exact fix; `--apply` sets only the differing Actions variables with your `gh` login and verifies again ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
+| `aq integration app-verify` | `—` | hand | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each, exit 1 when one fails ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
 | `aq integration status` | `—` | hand | Show rollout, readiness, active work, and cleanup for PROJECT_ID. |
-| `aq integration sweep` | `—` | hand | Build and publish a development batch now. |
-| `aq integration waive-history` | `—` | hand | Waive only the exact historical blockers reported for PROJECT_ID. |
+| `aq integration trust-manifest` | `—` | hand | Render the App-mode trust manifest from the policy, the binding and the daemon's App; `--write`, `--print` or `--check` the default-branch copy ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
 
 ### `aq mcp`
 
@@ -348,7 +384,8 @@ Playbooks V2 — the event-triggered markdown workflows that carry policy.
 The lifecycle is: author markdown in the vault, `v2-propose` or
 `update-source` to turn it into an immutable artifact, `v2-validate` it
 against the strict model and the live command contracts, then `activate` one
-validated artifact hash. Runs are inspected with `list-runs` /
+validated artifact hash. A reviewed bundle in the vault (`reviewed-playbooks/<id>`)
+is imported with `import`. Runs are inspected with `list-runs` /
 `inspect-run` / `run-overlay`, and a paused human-in-the-loop run is continued
 with `resume`. `pending-events` lists events held because no artifact could
 run them, which is the first place to look when a trigger appears to do
@@ -362,12 +399,14 @@ nothing.
 | `aq playbook artifact-diff` | `playbook_artifact_diff` | gen | Semantically diff two Playbook V2 artifacts before activation. |
 | `aq playbook artifacts` | `playbook_artifacts` | gen | List the stored Playbook V2 artifacts of one playbook, newest version first, with the currently active one flagged. |
 | `aq playbook cancel-run` | `cancel_playbook_run` | gen | Cancel a playbook run that is running or paused. |
+| `aq playbook commands` | `playbook_commands` | gen | List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema. |
 | `aq playbook delete` | `playbook_delete` | gen | Delete an exact disabled playbook catalog entry. |
 | `aq playbook dry-run` | `dry_run_playbook` | gen | Simulate playbook execution with a mock event, producing no side effects. |
 | `aq playbook get-source` | `get_playbook_source` | gen | Return the raw markdown of a playbook plus its content hash. |
 | `aq playbook graph-layout-save` | `playbook_graph_layout_save` | gen | Persist user-arranged grid coordinates for the nodes of one immutable playbook artifact. |
 | `aq playbook graph-view` | `playbook_graph_view` | gen | Get structured graph view data for dashboard rendering of a playbook. |
 | `aq playbook health` | `playbook_health` | gen | Compute health metrics for playbook runs: tokens per node, run duration statistics, transition paths, and failure rates. |
+| `aq playbook import --path reviewed-playbooks/<id> [--activate]` | — | hand | Import a reviewed bundle from the vault (`playbook_v2_import`); with `--activate`, also activate the exact hash it stored (`playbook_activate`). Otherwise prints the activate command. |
 | `aq playbook inspect-run` | `inspect_playbook_run` | gen | Inspect a playbook run in detail. |
 | `aq playbook list` | `list_playbooks` | gen | List all playbooks across scopes with status, triggers, and last run info. |
 | `aq playbook list-runs` | `list_playbook_runs` | gen | List recent playbook runs with status and path taken through the graph. |
@@ -472,6 +511,26 @@ orphaned worktree slots.
 | `aq project workspace-doctor` | `workspace_doctor` | gen | Diagnose worktree inventory. |
 | `aq project workspace-reap` | `workspace_reap` | gen | Explicitly reap a retired worktree slot (removes its directory + row). |
 
+### `aq provider`
+
+Provider availability and failover. A **provider** is a harness login
+(`claude`, `codex`, `gemini`, plus `llm` for the direct path); a vendor name is
+accepted as an alias. `status`, `history` and `held-tasks` read; `recheck`,
+`set-state`, `reroute` and `reroute-undo` change state. None of them is in an
+ordinary worker token's scope: they belong to operators and supervisors. See
+[a provider ran out of usage](../../guides/provider-outage.md).
+
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq provider held-tasks` | `provider_held_tasks` | gen | List the queued tasks an unavailable provider is holding, each with why it is not moving (provider_pinned, no_equivalent_rung, awaiting_failover_capacity with how many are ahead, …). |
+| `aq provider history` | `provider_history` | gen | List a provider's effective-state transitions, newest first: from/to state, reason, expected recovery, generation and who caused it. |
+| `aq provider recheck` | `provider_recheck` | gen | Run the provider's login probe now (e.g. `codex login status`) and fold the answer into its state. |
+| `aq provider reroute` | `provider_reroute` | gen | Re-route queued work off an unavailable provider to the same intelligence class on an available one; `--dry-run` plans only. |
+| `aq provider reroute-undo` | `provider_reroute_undo` | gen | Undo provider re-routes: return tasks to the profile they were on before, by `--batch-id` or `--task-id`. |
+| `aq provider set-state` | `provider_set_state` | gen | Override a provider's availability: `disabled`, `available` (always expires) or `auto` (clear the override). |
+| `aq provider status` | `provider_status` | gen | Show each provider's availability: the effective state, its reason, since when, the expected recovery, any override, held tasks and the newest usage reading. |
+
 ### `aq question`
 
 Worker questions and their answers. A question is recorded from a live
@@ -486,6 +545,22 @@ through the escalation surface.
 | `aq question answer` | `—` | hand | Answer without restarting or reassigning the worker. |
 | `aq question escalate` | `—` | hand | Ask a human to decide a question that the supervisor cannot answer. |
 | `aq question list` | `—` | hand | List questions waiting for a supervisor, human, or safe answer delivery. |
+
+### `aq service`
+
+Auto-restart: a watchdog, registered with systemd (user unit), launchd or cron,
+that starts the daemon at boot and after a crash and never overrides a
+deliberate `aq stop`. It needs no daemon, and workers are refused everything but
+`status` and `--dry-run`. See
+[Install AQ](../../tutorials/install.md#keep-aq-running-after-a-reboot-or-a-crash).
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq service check` | `—` | hand | Run one watchdog check now: start the daemon if it is down and may be. |
+| `aq service install` | `—` | hand | Install (or reinstall) the auto-restart watchdog. |
+| `aq service run` | `—` | hand | Run the watchdog loop in the foreground (what the service manager runs). |
+| `aq service status` | `—` | hand | Show whether auto-restart is installed and working. |
+| `aq service uninstall` | `—` | hand | Remove the auto-restart watchdog.  The daemon is left as it is. |
 
 ### `aq session`
 
@@ -565,7 +640,7 @@ group is large.
 | `aq system config set` | `—` | hand | Set one key by dotted path, e.g. |
 | `aq system create-workflow` | `create_workflow` | gen | Create a new coordination workflow record. |
 | `aq system db-preflight-hierarchy` | `db_preflight_hierarchy` | gen | Dry-run the hierarchy canonicalisation used by migration revision b2c3d4e5f6a7 (spec §17): pick one canonical parent per task from the current pare… |
-| `aq system delivery-promote` | `delivery_promote` | gen | Prepare and lease-push one reviewed squash to its immediate parent. |
+| `aq system delete-intelligence-class` | `delete_intelligence_class` | gen | Retire an unreferenced intelligence class in the vault; refuses active agent, profile, and task references. |
 | `aq system delivery-receipts` | `delivery_receipts` | gen | Read repository-qualified delivery evidence for one source task. |
 | `aq system doctor` | `doctor` | gen | Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, an… |
 | `aq system edit-intelligence-class` | `edit_intelligence_class` | gen | Edit an existing global intelligence class in the vault. |
@@ -579,7 +654,6 @@ group is large.
 | `aq system get-stuck-tasks` | `get_stuck_tasks` | gen | Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold. |
 | `aq system get-token-usage` | `get_token_usage` | gen | Get token usage breakdown by project or task. |
 | `aq system get-workflow` | `get_workflow` | gen | Fetch a single workflow by ID. |
-| `aq system integration-build-candidate` | `integration_build_candidate` | gen | Build exact root candidate |
 | `aq system integration-checkpoint-parent` | `integration_checkpoint_parent` | gen | Pin the parent head and generation before waiting for child deliveries. |
 | `aq system integration-ci-evidence` | `integration_ci_evidence` | gen | Observe exact root candidate CI |
 | `aq system integration-cleanup` | `integration_cleanup` | gen | Materialize and advance bounded cleanup for one terminal root batch. |
@@ -588,18 +662,11 @@ group is large.
 | `aq system integration-file-children` | `integration_file_children` | gen | Reserve child origins and advance the parent integration generation atomically. |
 | `aq system integration-mutate-hierarchy` | `integration_mutate_hierarchy` | gen | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | `aq system integration-parent-verify` | `integration_parent_verify` | gen | Execute the integration_parent_verify command. |
-| `aq system integration-promote-main` | `integration_promote_main` | gen | Reconcile and fast-forward main to the exact trusted green candidate. |
-| `aq system integration-push-conflict-resolution` | `integration_push_conflict_resolution` | gen | Push a frozen conflict resolution under the current repair writer fence. |
-| `aq system integration-reconcile-promotion` | `integration_reconcile_promotion` | gen | Compare a durable prepared intent with the remote and finalize its receipt. |
 | `aq system integration-record-repair` | `integration_record_repair` | gen | Execute the integration_record_repair command. |
-| `aq system integration-recover-unwritten-resolution` | `integration_recover_unwritten_resolution` | gen | Supersede a malformed reservation only after an operator proves no remote write occurred. |
 | `aq system integration-release` | `integration_release` | gen | Release terminal root train |
 | `aq system integration-repair-dispatch` | `integration_repair_dispatch` | gen | Execute the integration_repair_dispatch command. |
 | `aq system integration-repair-start` | `integration_repair_start` | gen | Execute the integration_repair_start command. |
 | `aq system integration-repair-timeout` | `integration_repair_timeout` | gen | Execute the integration_repair_timeout command. |
-| `aq system integration-resolve-conflict` | `integration_resolve_conflict` | gen | Freeze an active repair session's exact conflict resolution before push. |
-| `aq system integration-schedule-due` | `integration_schedule_due` | gen | Coalesce a periodic or manual trigger into one durable sweep request. |
-| `aq system integration-seal` | `integration_seal` | gen | Atomically snapshot the full eligible integration frontier. |
 | `aq system integration-transfer-owner` | `integration_transfer_owner` | gen | Stop and detach the current branch writer before granting a fresh fence. |
 | `aq system list-event-triggers` | `list_event_triggers` | gen | List event types that are valid playbook triggers, grouped by category (e.g. |
 | `aq system list-intelligence-classes` | `list_intelligence_classes` | gen | List the intelligence classes seeded under ``vault/intelligence-classes`` — id, name, description, and the provider→config mapping each one resolve… |
@@ -615,7 +682,6 @@ group is large.
 | `aq system render-prompt` | `render_prompt` | gen | Render a prompt template with variable substitution. |
 | `aq system scan-stub-staleness` | `scan_stub_staleness` | gen | Scan vault reference stubs to detect staleness. |
 | `aq system session-input` | `session_input` | gen | Type directly into a live terminal. |
-| `aq system task-route-options` | `task_route_options` | gen | Report whether the task is routed, whether its class is explicit, and which class, provider and profile combinations could execute it. |
 | `aq system token-audit` | `token_audit` | gen | Comprehensive token usage audit over a time range. |
 | `aq system update-config` | `update_config` | gen | Replace one top-level section in the YAML config and trigger a hot reload for hot-reloadable sections. |
 | `aq system vault-rebuild-index` | `vault_rebuild_index` | gen | Rebuild vault hub files with optional LLM-generated summaries. |
@@ -681,7 +747,8 @@ proposal flow a spec ingest produces.
 | `aq task reparent` | `reparent_task` | gen | Move a task under another container (parent_id) or to the root (root=true). |
 | `aq task restart` | `restart_task` | hand | Restart a failed or stopped task. |
 | `aq task resume` | `resume_task` | gen | Resume a paused task, respecting its existing gates and approval state. |
-| `aq task route` | `task_route` | gen | Route a task: assign its agent profile, optional intelligence class, and optional workspace, then resolve any open 'routing' gates on the task. |
+| `aq task route` | `task_route` | gen | Send a task back to its project's router with optional new hints (intelligence class, kind); never picks a profile. |
+| `aq task route-override` | `task_route_override` | gen | Emergency override: pin one queued task to a worker profile, with a mandatory reason. Local operator and supervisor only. |
 | `aq task search` | `list_tasks` | hand | Search tasks by title or description. |
 | `aq task select` | `—` | hand | Interactively select a task and show its details. |
 | `aq task set` | `task_set` | hand | Work-state writes: findings, branch, PR URL, work dir, notes, labels, metadata. |

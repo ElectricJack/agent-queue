@@ -128,7 +128,7 @@ agree.
 
 | Module | Owns | Shape |
 |---|---|---|
-| [`message_queries.py`](../../../src/database/queries/message_queries.py) | The `messages` table. `mark_delivered` is a compare-and-set on `delivered_at IS NULL` — that one predicate is the whole guard against a nudge and a prompt both delivering the same message. | self-contained |
+| [`message_queries.py`](../../../src/database/queries/message_queries.py) | The `messages` table. Delivery receipts use a compare-and-set on `delivered_at IS NULL`; notification attempts use a separate reservation and leave the body pending for recipient read or inbox/prime injection. | self-contained |
 | [`escalation_queries.py`](../../../src/database/queries/escalation_queries.py) | Transport-neutral escalations, delivery leases and digest windows, 27 methods. Accepting a verified reply appends the immutable conversation fact, advances the escalation revision **and** queues the supervisor message in one transaction. | self-contained |
 | [`digest_queries.py`](../../../src/database/queries/digest_queries.py) | The only part of the digest that touches rows. Two questions: what *happened* in the window (completions, attempt starts, `kind='progress'` comments, PR milestones — each carrying the identity of its source row so a replay cannot double-count), and what is *executing now* (a live, non-stale attempt on a running session, never `updated_at` churn, a heartbeat, a stalled session or a worker parked on a human answer). | self-contained |
 

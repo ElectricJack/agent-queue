@@ -1,0 +1,123 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 8192,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-hook-and-startup-parity",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-hook-and-startup-parity",
+        "final_state": "delivered",
+        "transport": "hook_envelope",
+        "transport_key": "bundle-hook-and-startup-parity:hook_envelope"
+      }
+    ],
+    "owner_id": "attempt-hook-and-startup-parity",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-integrated-evidence@rev-0001:evidence",
+      "rec-integrated-procedure@rev-0002:procedure"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-hook-and-startup-parity",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "hook_envelope",
+          "transport_key": "bundle-hook-and-startup-parity:hook_envelope"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "hook-and-startup-parity",
+  "input_hashes": {
+    "budget": "a2accc83d846c18a7af9844f6a54a77139c6af24f5a6db4ab4e983aa6385120d",
+    "delivery_rules": "226c74741e230d249bc2eecbe0fd11cb141cd491cb6eb25307b427e8beb0ff65",
+    "expected": "570d9c771e2d51c9101371eb829da27736219babca1245d4efd0028c8087c2a5",
+    "fixture_id": "4e810a797bd9c7874754a9db8cf50289f0665e4c5d3daff15b376dc0666f3d6a",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "995a1695ab7515e32599ec8df4292c86f616950b3da4a30e2058e5e8dd69920f",
+    "records": "c78b9b545dd1335e524de34ca3184d0f870a808213c94b8a78316afdda47f9b9",
+    "scenario": "cd9d78840319ef44797f96e60fb35c8de56bf3466cb7eea71ebdf779e00d29ec",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [],
+    "deliveries": [],
+    "diagnostics": [],
+    "metadata": {
+      "synthetic": true
+    },
+    "omissions": [],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-hook-and-startup-parity",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "",
+    "rendered_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "selected": [],
+    "usage": {
+      "bytes": 0,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 0
+    }
+  },
+  "records": [
+    {
+      "authority": "none",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "lifecycle": "active",
+      "record_id": "rec-integrated-evidence",
+      "revision_id": "rev-0001",
+      "revision_sha256": "2de7cbb3a21ab62e47daa467598b457ddb302a755f7bdad70936b138dc926ab6",
+      "verification": "unverified"
+    },
+    {
+      "authority": "none",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "Run the staging health gate, then freeze the schema before release."
+      },
+      "freshness": "current",
+      "kind": "procedure",
+      "lifecycle": "active",
+      "record_id": "rec-integrated-procedure",
+      "revision_id": "rev-0002",
+      "revision_sha256": "5e1f4fb67783e9659ea8503ccedc4b95080cb7370fd2357796e0921a991df026",
+      "verification": "unverified"
+    }
+  ],
+  "scenario": "Identical selected Markdown and one citation per record across every harness",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}
