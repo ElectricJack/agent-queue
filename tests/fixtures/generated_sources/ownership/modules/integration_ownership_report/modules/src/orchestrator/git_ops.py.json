@@ -1,0 +1,125 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/git_ops.py::GitOpsMixin._create_pr_for_task": {
+      "baseline_span": [
+        594,
+        670
+      ],
+      "landing_span": [
+        594,
+        670
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._effective_integration_mode": {
+      "baseline_span": [
+        1087,
+        1106
+      ],
+      "landing_span": [
+        1087,
+        1106
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._merge_and_push": {
+      "baseline_span": [
+        467,
+        593
+      ],
+      "landing_span": [
+        467,
+        593
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_integrate": {
+      "baseline_span": [
+        2208,
+        2619
+      ],
+      "landing_span": [
+        2208,
+        2619
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_verify": {
+      "baseline_span": [
+        1197,
+        1864
+      ],
+      "landing_span": [
+        1197,
+        1864
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_verify_aggregate_verifier": {
+      "baseline_span": [
+        246,
+        375
+      ],
+      "landing_span": [
+        246,
+        375
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_verify_hierarchy_producer": {
+      "baseline_span": [
+        376,
+        444
+      ],
+      "landing_span": [
+        376,
+        444
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._run_completion_phases": {
+      "baseline_span": [
+        1120,
+        1196
+      ],
+      "landing_span": [
+        1120,
+        1196
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::TRUSTED_EVIDENCE_WAIT_KEY": {
+      "baseline_span": [
+        44,
+        48
+      ],
+      "landing_span": [
+        44,
+        48
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::import from src.models import INTEGRATION_MODE_PULL_REQUEST, PhaseResult, PipelineContext, RepoConfig, Task, TaskStatus": {
+      "baseline_span": [
+        17,
+        24
+      ],
+      "landing_span": [
+        17,
+        24
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::import from src.notifications.builder import build_task_detail": {
+      "baseline_span": [
+        12,
+        12
+      ],
+      "landing_span": [
+        12,
+        12
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

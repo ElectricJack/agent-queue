@@ -245,6 +245,7 @@ def _render_profile_markdown(profile: AgentProfile) -> str:
         permission_mode=profile.permission_mode,
         harness=profile.harness,
         codex_full_auto=profile.codex_full_auto,
+        codex_service_tier=profile.codex_service_tier,
         claude_dangerously_skip_permissions=profile.claude_dangerously_skip_permissions,
         default_class=profile.default_class,
         allowed_tools=profile.allowed_tools if profile.allowed_tools else None,

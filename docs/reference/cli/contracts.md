@@ -79,8 +79,22 @@ can be explained" true by construction rather than by convention.
 
 `CommandPresentation` carries the title, summary, and human labels for
 arguments, outcomes, results and subjects — the strings a dashboard shows next
-to a playbook step. It is deliberately excluded from the fingerprint: renaming
-a label must not invalidate every artifact compiled against the command.
+to a playbook step. Its `help_url` is derived for every registered command as
+`<docs.base_url>reference/playbook-commands/<command>.md`, rather than copied
+into each contract. That is the page under
+[playbook commands](../playbook-commands/README.md), the per-command reference
+whose contract facts are generated from this registry. `aq playbook commands`
+exposes the name, title, summary, documentation URL, and parameter JSON Schema
+as the read-only catalog used by the dashboard. The catalog includes denied and
+unavailable commands with their reason and schema quality. Queries accept
+`name`, `prefix`, `origin`, `plugin`, `schema_quality`, `result_mode`, `available`
+and `denied` filters, plus `offset` and `limit` (default 50, maximum 100).
+`include_schema=false` omits schemas; `total` and `next_offset` support paging.
+Availability describes discovery; `execution_available` also accounts for the
+generated invocation gate. Presentation metadata is
+deliberately excluded from the fingerprint: renaming a label or moving the
+documentation host must not invalidate every artifact compiled against the
+command.
 
 ## Fingerprints and staleness
 
@@ -132,7 +146,7 @@ Built-ins are registered in three modules:
 
 | Module | Covers |
 |---|---|
-| [`builtin.py`](../../../src/commands/contracts/builtin.py) | The pipeline commands: task reads and writes, `ensure_task`, gates, dependencies, `message_send`, memory, `git_diff`, `render_prompt`, `stop_task`, `task_route`, `delivery_*`, `task_batch_commit`. |
+| [`builtin.py`](../../../src/commands/contracts/builtin.py) | The pipeline commands: task reads and writes, `ensure_task`, gates, dependencies, `message_send`, memory, `git_diff`, `render_prompt`, `stop_task`, `task_route_plan`, `task_route_apply`, `delivery_*`, `task_batch_commit`. |
 | [`integration.py`](../../../src/commands/contracts/integration.py) | Every hierarchical-integration primitive — the largest group by far, and the reason most contracts are `composite`. |
 | [`escalation.py`](../../../src/commands/contracts/escalation.py) | The durable human-escalation boundary. |
 
@@ -190,6 +204,8 @@ belonging to a different mode is an error, not an ignored extra.
 
 * [The CLI contract](README.md) — the surface a human calls the same commands
   through, and the authority model contracts compose with.
+* [Playbook commands](../playbook-commands/README.md) — one page per
+  contracted command: its parameters, outcomes, internals and failure modes.
 * [Agent-facing tools](agent-tools.md) — the looser tool-definition layer.
 * [Command groups](commands.md) — where each contracted command appears on the
   CLI.

@@ -22,7 +22,7 @@ from smoke import (
     PROJECT,
     CliError,
     Failure,
-    aq,
+    api_checked,
     collection_rows,
     ensure_project,
     workspace_paths,
@@ -35,7 +35,7 @@ def main() -> int:
             ensure_project(project_id, workspace_paths(project_id))
             count = len(
                 collection_rows(
-                    aq("project", "list-workspaces", "--project-id", project_id),
+                    api_checked("list_workspaces", {"project_id": project_id}),
                     "workspaces",
                 )
             )

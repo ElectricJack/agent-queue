@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/install/update.py::backup_database": {
+      "baseline_span": [
+        295,
+        345
+      ],
+      "landing_span": [
+        295,
+        345
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

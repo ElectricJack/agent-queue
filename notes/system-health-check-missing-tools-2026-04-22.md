@@ -1,5 +1,11 @@
 # System Health Check — Missing `system_monitor.*` Tools (Investigation)
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 **Task:** `solid-orbit` — Investigate missing `system_monitor` tools for
 health-check playbook
 **Date:** 2026-04-22

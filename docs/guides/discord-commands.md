@@ -2,43 +2,39 @@
 tags: [discord, interface]
 ---
 
-# Discord interface
+# Discord interface — moved
 
-Agent Queue's Discord integration is deliberately notification-only. It posts
-eligible hourly activity digests to one configured channel and opens one thread
-for each durable human escalation. There are no Agent Queue slash commands,
-general bot chat, task controls, gate buttons, worker-input routing, or streamed
-execution threads.
+<!-- aq:redirect -->
+> **This page moved.** Read
+> [Messaging, digests and escalations](../concepts/messaging.md) for the model
+> and [Escalations and the hourly digest](escalations.md) for the operator
+> procedure. This stub is kept so existing links resolve.
 
-Use the dashboard Command Center for task browsing and controls, the Gates
-drawer for approvals, session detail for logs and terminal access, and the
-dashboard supervisor chat for general conversation. The CLI provides the same
-core operations for scripted use.
+Discord carries digests, reports and durable human asks in one configured
+channel. Legacy escalations retain their threads until destination ownership
+transfers. The six former AQ slash commands, general task controls, worker-input
+routing and streamed execution threads remain retired. Canonical ask and legacy
+escalation choice buttons are supported decision surfaces.
 
-## Replying to an escalation
+Opt-in [supervisor conversations](discord-conversations.md) reply in the channel
+and route to the project supervisor, falling back to global. A bot mention is
+required by default; `require_mention: false` permits plain channel messages and
+`allow_dm: true` permits allowlisted DMs. Existing bound threads remain supported.
+Ask channel mode exclusively owns inbound input before these routes; inspect
+`aq ask cutover-status` and [the rollout guide](human-asks-rollout.md).
 
-Reply inside the escalation's own thread. Replies from users in
-`discord.authorized_users` are persisted with their Discord identity and sent
-to the owning project supervisor. The reply itself never changes a task,
-resolves a gate, or sends input directly to a worker. The supervisor reloads
-the current state and applies any authorized recovery through the normal core
-command.
+The explicit task deletion action is `/delete-task task_id:<id> reason:<optional>`.
+An allowlisted operator or administrator must invoke it in the configured AQ channel.
+Its private confirmation lets you choose this task only or all descendants, and
+keep or delete local/remote branches and worktrees. It previews exact resources,
+stops selected running work and records a durable audit. Cleanup failures are warnings.
+No other retired task controls return; browsing and other controls live in the
+Command Center and the `aq` CLI.
 
-Messages in the shared channel, direct messages, arbitrary mentions, old task
-threads, and unrelated threads are ignored for work routing. Replies to closed
-escalations receive closed-state guidance and cannot reopen work.
-
-## Configuration
-
-Configure one numeric `discord.channel_id`. Digest and escalation delivery can
-be enabled independently. Legacy channel names are read only during the
-one-way startup migration; conflicting old destinations require an explicit
-channel selection. Agent Queue never creates or deletes channels during the
-cutover.
-
-See [Discord replacement capability checklist](discord-replacement-checklist.md)
-for the dashboard/CLI replacement for each retired surface, the
-[migration runbook](discord-migration.md) for the operator procedure — channel
-selection, pending-conversation migration, digest preview, delivery health and
-rollback — and [Durable human escalations](escalations.md) for the model
-underneath the threads.
+| You were looking for | Read |
+|---|---|
+| What AQ posts, and when it stays quiet | [Messaging](../concepts/messaging.md) |
+| Configuring the channel, digest and mentions | [Escalations and the hourly digest](escalations.md) |
+| Opting into supervisor conversations | [Discord supervisor conversations](discord-conversations.md) |
+| Approving something | Dashboard Needs you and canonical ask decisions; legacy gate CLI where applicable |
+| The cutover that removed the old controls | [Discord migration](discord-migration.md) (historical) |
