@@ -12,8 +12,12 @@ function fmt(ts: number | null | undefined): string {
   return new Date(ts * 1000).toLocaleTimeString();
 }
 
-function Bubble({ msg }: { msg: PendingMessage }) {
+function Bubble({ msg, replied, deliveryFailed }: { msg: PendingMessage; replied: boolean; deliveryFailed: boolean }) {
   const mine = msg.from_kind === "user" && msg.from_id === "dashboard";
+  const outbound = msg.to_kind === "session";
+  const state = msg.failed ? "Send failed" : msg.pending ? "Sending…" : replied ? "Replied"
+    : msg.read_at || msg.read ? "Read" : msg.delivered_at || msg.delivered ? "Delivered · unread"
+      : deliveryFailed ? "Delivery failed · awaiting retry" : "Queued · unread";
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
@@ -28,8 +32,7 @@ function Bubble({ msg }: { msg: PendingMessage }) {
         <div className="mb-1 flex items-center gap-2 text-xs text-gray-400">
           <span>{senderLabel(msg)}</span>
           <span>{fmt(msg.created_at)}</span>
-          {msg.pending && <span className="text-gray-500">sending…</span>}
-          {msg.failed && <span className="text-red-400">failed</span>}
+          {outbound && <span className={msg.failed || deliveryFailed ? "text-red-400" : "text-gray-400"}>{state}</span>}
         </div>
         <div className="whitespace-pre-wrap">{msg.body}</div>
       </div>
@@ -42,15 +45,17 @@ interface Props {
   sessionAddress?: string;
   threadIdOverride?: string;
   headerText?: string;
+  allThreads?: boolean;
 }
 
 export default function ChatConversation(props: Props = {}) {
   const params = useParams();
   const projectId = props.projectId ?? params.projectId ?? "";
-  const { items, isLoading, error, send, isSending, sendError, thinking } =
+  const { items, isLoading, error, send, isSending, sendError, thinking, deliveryFailure } =
     useChatTranscript(projectId, {
       sessionAddress: props.sessionAddress,
       threadIdOverride: props.threadIdOverride,
+      allThreads: props.allThreads,
     });
   const [body, setBody] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -85,6 +90,10 @@ export default function ChatConversation(props: Props = {}) {
         </p>
       )}
 
+      {deliveryFailure && <p role="alert" className="text-xs text-red-400">
+        Delivery {deliveryFailure.deferred ? "deferred" : "failed"}: {deliveryFailure.reason}. Pending messages remain queued for retry.
+      </p>}
+
       <div
         ref={scrollRef}
         className="flex-1 space-y-2 overflow-y-auto rounded border border-gray-800 bg-gray-950 p-3"
@@ -95,7 +104,11 @@ export default function ChatConversation(props: Props = {}) {
         )}
         {items.map((it, idx) =>
           it.kind === "message" ? (
-            <Bubble key={`m-${it.msg.id}-${idx}`} msg={it.msg} />
+            <Bubble key={`m-${it.msg.id}-${idx}`} msg={it.msg}
+              replied={items.some((reply) => reply.kind === "message" && reply.msg.reply_to_id === it.msg.id)}
+              deliveryFailed={!!deliveryFailure && !deliveryFailure.deferred
+                && !it.msg.delivered_at && !it.msg.delivered && !it.msg.read_at && !it.msg.read
+                && (it.msg.created_at ?? 0) <= deliveryFailure.at} />
           ) : (
             <InlineEventCard key={`e-${idx}`} event={it.event} ts={it.ts} />
           ),
@@ -111,6 +124,7 @@ export default function ChatConversation(props: Props = {}) {
         }}
       >
         <textarea
+          aria-label="Message the supervisor"
           value={body}
           onChange={(e) => setBody(e.target.value)}
           onKeyDown={(e) => {

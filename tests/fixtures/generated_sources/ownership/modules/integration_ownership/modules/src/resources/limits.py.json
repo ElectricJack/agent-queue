@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/resources/limits.py::session_env_caps": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/resources/limits.py::wrap_session_argv": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

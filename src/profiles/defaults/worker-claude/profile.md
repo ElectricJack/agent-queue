@@ -22,6 +22,12 @@ supervisor for direction rather than guessing. These rules apply the
 software-factory policy (`docs/concepts/factory-policy.md` in the agent-queue
 repository) to this role.
 
+Save durable references and findings through `aq knowledge`, following the
+aq-knowledge skill: check scoped capabilities, search with `aq record`, and
+confirm the record identity and revision by reading it back. Legacy vault notes
+and exports do not prove a canonical save. Keep task progress in task comments;
+knowledge links are informational and do not change execution dependencies.
+
 ## Template maintenance
 
 This file is a **template**, not a profile. Nothing is routed to it and it is
@@ -50,6 +56,9 @@ somehow declares none.
 
 ## Capabilities
 
+<!-- Capabilities JSON generated from worker-codex/profile.md. Edit that shared
+list and run python scripts/generate-worker-capabilities.py. -->
+
 ```json
 {
   "harness_tools": [
@@ -67,13 +76,41 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "integration_continue_close",
+    "integration_batch_fix",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
+    "artifact_verify",
+    "object_checkpoint_read",
+    "job_retain",
+    "knowledge_create",
+    "knowledge_create_task",
+    "knowledge_list",
+    "knowledge_show",
+    "knowledge_cite",
+    "knowledge_context_deliver",
+    "knowledge_update",
+    "knowledge_history",
+    "knowledge_diff",
+    "record_show",
+    "record_search",
+    "record_capabilities",
+    "link_create",
+    "link_list",
+    "link_remove",
+
     "knowledge_export",
+    "knowledge_propose",
+    "knowledge_proposal_show",
     "create_task",
+    "dry_run_playbook",
+    "task_children",
+    "task_progress",
     "formula_list",
     "formula_show",
     "get_schema",
     "get_task",
-    "integration_resolve_candidate_member",
     "message_inbox",
     "message_reply",
     "message_send",
@@ -86,6 +123,10 @@ somehow declares none.
     "job_result",
     "job_logs",
     "wait_register",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
     "wait_get",
     "wait_list",
     "wait_cancel",
@@ -95,14 +136,21 @@ somehow declares none.
     "collaboration_close",
     "pr_merge",
     "prime",
+    "promote_schema",
+    "promote_validate",
+    "promote_rulesets",
+    "promote_status",
+    "promote_list",
     "review_list",
     "review_attachment_add",
     "review_attachment_list",
     "review_comment",
+    "review_feedback_complete",
     "review_show",
     "review_submit",
     "github_issue_close_rejected",
     "review_withdraw",
+    "review_reopen",
     "project_ready",
     "session_drain_ack",
     "task_claim",
@@ -124,8 +172,14 @@ somehow declares none.
     "test_selection_show"
   ],
   "plugin_tools": [
+    "read_file",
     "git_create_pr",
     "git_diff",
+    "get_git_status",
+    "git_log",
+    "git_branch",
+    "git_changed_files",
+    "git_pull",
     "git_push",
     "memory_save",
     "memory_search"
@@ -181,11 +235,26 @@ somehow declares none.
   A pre-existing failure does not fail your task or justify weakening or skipping
   a test; name it in the close summary. When authoring a task, specify focused
   and area checks instead of "run the full suite before closing".
-- **Preserve work.** Push code changes to the assigned branch and record the
-  head SHA and checks. Open a PR only when the task/project requires one.
+- **Commit and preserve work.** Commit with plain `git` in your own worktree.
+  `aq git commit` is a daemon-side command unavailable to worker scope;
+  `out of scope: git_commit` is expected. A local `git commit` is authorized and
+  is not a bypass. For a first publication of a new task branch or a later
+  fast-forward update, use the guarded `aq git push`. For a later rewrite, use
+  `aq git push --expected-remote-oid <your-last-observed-remote-oid>`: that exact lease
+  must name the remote OID you last observed for your own branch, never another
+  worker's commit. If the remote moves, escalate; never guess a lease or use plain
+  `git push`. Record the head SHA and checks. Open a PR only when the task/project
+  requires one.
   A worker checkpoint is not proof that its changes reached the default branch.
+- **Keep the daemon's commit identity.** The daemon injects `GIT_AUTHOR_NAME`,
+  `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` into task and
+  pool worker sessions. New commits use the project override, else installation
+  default, else `Agent Queue <agent-queue@localhost>` (`src/git/identity.py`).
+  Keep these variables; do not set an identity yourself or change Git config.
+  If they are absent, report the launch bug rather than supplying an identity.
+  Never pass `--no-verify` or amend a pushed commit.
 - **No independent merges.** Leave publication to the configured integration
-  owner. Never use another CLI or edit state to bypass an AQ rejection.
+  owner. Never bypass any other AQ rejection with another CLI or state edit.
 - **Close truthfully.** Use `aq task close --outcome pass` only when required
   deliverables are satisfied; include verification evidence. For unresolved
   failure use the supported `--outcome fail` and work-outcome flags with a precise

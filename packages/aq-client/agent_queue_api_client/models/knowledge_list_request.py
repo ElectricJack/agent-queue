@@ -15,24 +15,34 @@ T = TypeVar("T", bound="KnowledgeListRequest")
 class KnowledgeListRequest:
     """
     Attributes:
-        project_id (str):
+        project_id (None | str | Unset):
         category (None | str | Unset):
         include_retired (bool | Unset):  Default: False.
         include_disputed (bool | Unset):  Default: False.
         limit (int | Unset):  Default: 25.
         cursor (None | str | Unset):
+        global_scope (bool | Unset):  Default: False.
+        lifecycle (None | str | Unset):
+        verification (None | str | Unset):
     """
 
-    project_id: str
+    project_id: None | str | Unset = UNSET
     category: None | str | Unset = UNSET
     include_retired: bool | Unset = False
     include_disputed: bool | Unset = False
     limit: int | Unset = 25
     cursor: None | str | Unset = UNSET
+    global_scope: bool | Unset = False
+    lifecycle: None | str | Unset = UNSET
+    verification: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         category: None | str | Unset
         if isinstance(self.category, Unset):
@@ -52,13 +62,25 @@ class KnowledgeListRequest:
         else:
             cursor = self.cursor
 
+        global_scope = self.global_scope
+
+        lifecycle: None | str | Unset
+        if isinstance(self.lifecycle, Unset):
+            lifecycle = UNSET
+        else:
+            lifecycle = self.lifecycle
+
+        verification: None | str | Unset
+        if isinstance(self.verification, Unset):
+            verification = UNSET
+        else:
+            verification = self.verification
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "project_id": project_id,
-            }
-        )
+        field_dict.update({})
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if category is not UNSET:
             field_dict["category"] = category
         if include_retired is not UNSET:
@@ -69,13 +91,27 @@ class KnowledgeListRequest:
             field_dict["limit"] = limit
         if cursor is not UNSET:
             field_dict["cursor"] = cursor
+        if global_scope is not UNSET:
+            field_dict["global_scope"] = global_scope
+        if lifecycle is not UNSET:
+            field_dict["lifecycle"] = lifecycle
+        if verification is not UNSET:
+            field_dict["verification"] = verification
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_category(data: object) -> None | str | Unset:
             if data is None:
@@ -101,6 +137,26 @@ class KnowledgeListRequest:
 
         cursor = _parse_cursor(d.pop("cursor", UNSET))
 
+        global_scope = d.pop("global_scope", UNSET)
+
+        def _parse_lifecycle(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        lifecycle = _parse_lifecycle(d.pop("lifecycle", UNSET))
+
+        def _parse_verification(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        verification = _parse_verification(d.pop("verification", UNSET))
+
         knowledge_list_request = cls(
             project_id=project_id,
             category=category,
@@ -108,6 +164,9 @@ class KnowledgeListRequest:
             include_disputed=include_disputed,
             limit=limit,
             cursor=cursor,
+            global_scope=global_scope,
+            lifecycle=lifecycle,
+            verification=verification,
         )
 
         knowledge_list_request.additional_properties = d

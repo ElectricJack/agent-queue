@@ -1,6 +1,8 @@
 """Core access remains fail closed with legacy capability enforcement disabled."""
 
+import ast
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -67,6 +69,60 @@ async def test_workers_read_project_knowledge_but_only_edit_own(context):
             idempotency_key="supervisor",
         )
     )["sequence"] == 2
+
+
+async def test_pool_bearer_resolves_live_task_for_reads_writes_and_task_visibility(context):
+    service, worker, _, _ = context
+    pool = replace(worker, task_id=None)
+    pool = replace(pool, policy=replace(
+        pool.policy, aq_commands=pool.policy.aq_commands | {"record_search"},
+    ))
+    record = await create(service, pool)
+    shown = await service.show(identity=ident(record), principal=pool, project_id="p")
+    assert shown["record_id"] == record["record_id"]
+    assert "edit" in shown["allowed_actions"]
+    records = RecordService(service.db, service.config)
+    own_task = await records.show(
+        identity=f"task:{worker.task_id}", principal=pool, project_id="p",
+    )
+    assert own_task["task"]["id"] == worker.task_id
+    found = await records.search(principal=pool, project_id="p", kind="task")
+    assert [item["task_id"] for item in found["items"]] == [worker.task_id]
+    # A resolved bearer and a task-bound caller have the same ownership key.
+    updated = await service.update(
+        identity=ident(record), principal=worker, project_id="p", claim_epoch=1,
+        if_revision=record["revision_id"], patch={"body": "Same author"},
+        idempotency_key="bound-edit",
+    )
+    assert updated["sequence"] == 2
+
+
+@pytest.mark.parametrize("change", ["idle", "non-pool", "wrong-task", "wrong-project", "epoch"])
+async def test_pool_task_resolution_preserves_scope_and_claim_fences(context, change):
+    service, worker, other, _ = context
+    pool = replace(worker, task_id=None)
+    async with service.db.immediate() as conn:
+        if change == "idle":
+            await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                               .values(task_id=None))
+        elif change == "non-pool":
+            await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                               .values(lifecycle="task"))
+        elif change == "epoch":
+            await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                               .values(last_claim_epoch=2))
+    if change == "wrong-task":
+        pool = replace(pool, task_id=other.task_id)
+    project = "q" if change == "wrong-project" else "p"
+    with pytest.raises(RecordError) as exc:
+        await service.create(
+            snapshot=snapshot(), principal=pool, project_id=project, claim_epoch=1,
+            idempotency_key="refused-pool",
+        )
+    assert exc.value.code == (
+        "record.not_found" if change == "wrong-project" else
+        "record.stale_claim" if change == "epoch" else "record.forbidden"
+    )
 
 
 async def test_denied_unknown_and_global_have_no_private_tokens(context):
@@ -333,7 +389,7 @@ async def test_link_remove_requires_current_target_access(context):
     assert exc.value.code == "record.not_found"
 
 
-async def test_no_protected_mutation_before_k05(context):
+async def test_protected_mutations_require_supervisor_and_reset_verification(context):
     from tests.record_helpers import create_knowledge
 
     service, worker, _, supervisor = context
@@ -348,15 +404,69 @@ async def test_no_protected_mutation_before_k05(context):
     assert exc.value.code == "knowledge.operation_unavailable"
     async with service.db.immediate() as conn:
         record_id, revision_id = await create_knowledge(service.db, conn, doc=doc)
-    for principal in (worker, supervisor, TRUSTED_LOCAL):
-        with pytest.raises(RecordError) as exc:
-            await service.update(
-                identity=f"record:{record_id}",
-                patch={"body": "overwrite"},
-                principal=principal,
-                project_id="p",
-                claim_epoch=1,
-                if_revision=revision_id,
-                idempotency_key="protected",
-            )
-        assert exc.value.code == "knowledge.operation_unavailable"
+    with pytest.raises(RecordError) as exc:
+        await service.update(
+            identity=f"record:{record_id}", patch={"body": "overwrite"}, principal=worker,
+            project_id="p", claim_epoch=1, if_revision=revision_id, idempotency_key="protected",
+        )
+    assert exc.value.code == "record.forbidden"
+    for principal in (supervisor, TRUSTED_LOCAL):
+        result = await service.update(
+            identity=f"record:{record_id}", patch={"body": f"Correction {principal.kind}"},
+            principal=principal, project_id="p", claim_epoch=1, if_revision=revision_id,
+            idempotency_key="protected",
+        )
+        revision_id = result["revision_id"]
+        shown = await service.show(identity=f"record:{record_id}", principal=principal, project_id="p")
+        assert shown["snapshot"]["verification"] == "unverified"
+        assert shown["authority"] is None
+
+
+def test_module_level_imports_of_the_knowledge_layer_stay_acyclic():
+    """The service layer needs ``PrincipalKind``; ``src.commands`` needs the models.
+
+    A module-level cycle between them only shows up when one side is imported
+    first, so no ordinary test order catches it. Read the module-level
+    first-party imports directly instead of paying for one interpreter per
+    module.
+    """
+    sources = {}
+    for package in ("src/knowledge", "src/records", "src/commands"):
+        for path in Path(package).rglob("*.py"):
+            name = str(path.with_suffix("")).replace("/", ".")
+            sources[name.removesuffix(".__init__")] = path
+
+    def module_level_imports(path):
+        found = set()
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                found.add(node.module)
+                found.update(f"{node.module}.{alias.name}" for alias in node.names)
+        return {name for name in found if name in sources}
+
+    graph = {name: module_level_imports(path) for name, path in sources.items()}
+    settled, active, cycles, path = set(), set(), [], []
+    for start in sorted(graph):
+        if start in settled:
+            continue
+        stack = [(start, iter(sorted(graph[start])))]
+        active.add(start)
+        path.append(start)
+        while stack:
+            node, pending = stack[-1]
+            for successor in pending:
+                if successor in active:
+                    cycles.append([*path[path.index(successor) :], successor])
+                elif successor not in settled:
+                    active.add(successor)
+                    path.append(successor)
+                    stack.append((successor, iter(sorted(graph[successor]))))
+                    break
+            else:
+                stack.pop()
+                active.discard(node)
+                path.pop()
+                settled.add(node)
+    assert cycles == [], f"module-level import cycle: {' -> '.join(cycles[0])}"

@@ -1,8 +1,8 @@
 """Reopen a parent collection that ``cancel-preserving`` stopped mid-episode.
 
-``aq integration cancel-preserving`` ends a repair operation.  When the
+Historical cancellation ended a repair operation. When the
 operation is a parent's *collection* operation -- the one
-``ParentCompletion.reserve_episode_on`` created for the parent's current
+``ParentEpisodeRecords.reserve_episode_on`` created for the parent's current
 episode -- nothing collects that parent any more.  Its checkpoint still says
 ``awaiting_children`` in the original episode, its completed children's
 receipts are bound to ``(operation, episode)``, the collector's reservation is
@@ -11,10 +11,8 @@ calm-grove-25 and azure-vault-92):
 
 * the collector and ``aq integration redrive-child`` need an ``active`` or
   ``escalated`` operation for the episode;
-* ``ParentCompletion.reserve_episode_on`` returns the episode's existing
+* ``ParentEpisodeRecords.reserve_episode_on`` returns the episode's existing
   (cancelled) operation, and one operation per episode is a unique index;
-* ``aq integration resume`` needs ``human_required`` and the stage's delegate
-  in ``tasks``, but the cancellation archived it;
 * a later child's conflict cannot open a repair, because
   ``RepairService.start`` continues only a live stage whose delegate is still
   inside its deadline.
@@ -41,16 +39,21 @@ reason, and within one transaction under the project lock:
   dispatch then files a *new* delegate ``repair-<operation>-<stage>``: archived
   delegates are never restored and their cancelled stages stay cancelled;
 * returns a parent the exhausted repair terminally BLOCKED to PAUSED, exactly as
-  ``aq integration resume`` would.
+  the shared parent transition requires.
 
 With no conflict waiting, the operation resumes with its cancelled stage still
 active; ``RepairService.start`` gives the next conflict a fresh stage past it.
-The orchestrator's continuation sweep retries a reopened stage whose dispatch
-failed, whatever the frozen policy's ``on_exhausted``.
+The durable Subject retries a reopened stage whose dispatch failed, whatever
+the frozen policy's ``on_exhausted``.
 
 Gates, manual holds and the root's human review are never touched; open human
 gates on the parent are reported.  Every apply writes an
 ``integration.collection_reopened`` event.
+
+An escalated, terminal no-progress incident can use the same control for a
+later conflict that no old stage owns. This additional path requires the
+exact detached collector fence, preserves every old stage, and rechecks Git
+under the apply lock. It never retries an exhausted conflict with a new budget.
 """
 
 from __future__ import annotations
@@ -85,8 +88,9 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import RemoteRefState
+from src.integration.owner_guards import parent_engine_guard
 from src.integration.models import BranchKey, Fence
-from src.integration.promotion import PromotionError
+from src.integration.promotion_contracts import PromotionError
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -95,7 +99,7 @@ logger = logging.getLogger(__name__)
 REOPEN_EVENT = "integration.collection_reopened"
 
 #: What settles a stage delegate the cancellation left unsettled.
-SETTLE_DELEGATES_COMMAND = "aq doctor --check integration.stranded_delegates --fix"
+SETTLE_DELEGATES_COMMAND = "automatic delegate cleanup"
 
 MANAGED_MODES = ("hierarchy", "train")
 _TERMINAL_STAGE_STATES = ("passed", "failed", "expired", "cancelled")
@@ -121,7 +125,7 @@ class _Changed(Exception):
 
 
 class CancelledCollectionRecovery:
-    """Dry-run-first reactivation of a parent's cancelled collection operation."""
+    """Reactivate cancelled collection or dispatch its later, stranded conflict."""
 
     def __init__(
         self,
@@ -141,6 +145,11 @@ class CancelledCollectionRecovery:
         diagnosis, _facts = await self._diagnose(task_id)
         return diagnosis
 
+    async def _prepare_apply(self, task_id, facts):
+        """Allow a specialized recovery to prove an external handoff before its CAS."""
+        return None, facts
+
+    @parent_engine_guard()
     async def run(
         self,
         task_id: str,
@@ -159,6 +168,9 @@ class CancelledCollectionRecovery:
                 "outcome": "changed",
                 "reason": "supply the head the dry run reported and an audit reason",
             }
+        refusal, facts = await self._prepare_apply(task_id, facts)
+        if refusal is not None:
+            return {**diagnosis, **refusal}
         now = self.clock()
         transition = None
         try:
@@ -167,6 +179,11 @@ class CancelledCollectionRecovery:
                 refusal, current = await self._facts_on(conn, task_id, lock=True)
                 if refusal is not None or current["fingerprint"] != facts["fingerprint"]:
                     raise _Changed()
+                if current.get("no_progress"):
+                    try:
+                        await self._prove(current)
+                    except _ProofFailed as exc:
+                        raise _Changed() from exc
                 transition, applied = await self._apply_on(
                     conn, current, now=now, head_sha=expected_head_sha,
                     reason=reason, operator_id=operator_id,
@@ -241,10 +258,10 @@ class CancelledCollectionRecovery:
             "head_sha": remote_head,
             "remote_head_sha": remote_head,
             "reason": (
-                "the cancelled collection can resume in its episode; a fresh repair stage "
+                "the collection can resume in its episode; a fresh repair stage "
                 "takes the current conflict"
                 if facts["conflict"] is not None
-                else "the cancelled collection can resume in its episode"
+                else "the collection can resume in its episode"
             ),
         }, facts
 
@@ -346,7 +363,8 @@ class CancelledCollectionRecovery:
             return refused("blocked", "the parent has no matching collection episode and operation")
         operation = dict(operation)
         report.update(operation_id=operation["id"], episode_id=episode["id"])
-        if operation["state"] in {"active", "escalated"}:
+        no_progress = operation["state"] == "escalated"
+        if operation["state"] == "active":
             return refused(
                 "nothing_to_reopen",
                 f"the collection operation is {operation['state']}; "
@@ -355,9 +373,9 @@ class CancelledCollectionRecovery:
         if operation["state"] == "human_required":
             return refused(
                 "not_eligible",
-                f"the operation awaits a human: `aq integration resume {operation['id']}`",
+                "the operation awaits a human decision; inspect the owning Subject and its gate",
             )
-        if operation["state"] != "cancelled":
+        if operation["state"] != "cancelled" and not no_progress:
             return refused("not_eligible", f"the collection operation is {operation['state']}")
         other = (
             await conn.execute(
@@ -423,6 +441,27 @@ class CancelledCollectionRecovery:
                 )
             ).mappings()
         ]
+        if no_progress:
+            active = next(
+                (s for s in stages if s["ordinal"] == operation["active_stage"]), None
+            )
+            incident = (active["dossier"] or {}).get("supervisor_recovery") if active else None
+            if (
+                active is None
+                or active["state"] not in {"failed", "expired"}
+                or not isinstance(incident, dict)
+                or incident.get("incident_id")
+                != f"repair-no-progress:{operation['id']}:{active['ordinal']}"
+                or any(
+                    incident.get(key) != active[key]
+                    for key in ("attempts", "deadline_at", "repair_task_id")
+                )
+                or incident.get("stage") != active["ordinal"]
+                or incident.get("subject") != active["current_subject"]
+            ):
+                return refused(
+                    "nothing_to_reopen", "the escalated stage has no exact no-progress incident"
+                )
         for stage in stages:
             if stage["state"] not in _TERMINAL_STAGE_STATES:
                 return refused(
@@ -496,11 +535,29 @@ class CancelledCollectionRecovery:
                 f"({owner['handoff_state']}, fence {owner['fence_token']}); recover that "
                 "writer first",
             )
+        if no_progress and (
+            owner["handoff_state"] != "reserved"
+            or owner["owner_id"] != operation["id"]
+            or owner["owner_role"] != "collector"
+        ):
+            return refused("blocked", "the no-progress conflict needs its detached collector")
+        workspace = None
+        if no_progress and owner["confirmed_workspace_id"]:
+            workspace = (
+                await conn.execute(guarded(select(workspaces).where(
+                    workspaces.c.id == owner["confirmed_workspace_id"],
+                    workspaces.c.project_id == parent["project_id"],
+                )))
+            ).mappings().one_or_none()
+            if workspace is None:
+                return refused("blocked", "confirmed parent workspace is unavailable")
 
         # No external mutation whose outcome is unknown.
-        from src.integration.recovery_controls import IntegrationRecoveryControls
+        from src.integration.writers import OperationSafety
 
-        blockers = await IntegrationRecoveryControls._ambiguous_writes_on(conn, operation)
+        blockers = await OperationSafety._ambiguous_writes_on(
+            conn, operation, allowed_writer_id=owner["id"] if no_progress else None
+        )
         target_promotion = (
             await conn.execute(
                 select(integration_promotion_intents.c.id).where(
@@ -585,6 +642,20 @@ class CancelledCollectionRecovery:
                 + ", ".join(row["id"] for row in conflicts),
             )
         conflict = conflicts[0] if conflicts else None
+        if no_progress and (
+            conflict is None
+            or conflict["fence_token"] != owner["fence_token"]
+            or any(
+                stage["trigger_id"] == conflict["id"]
+                or ((stage["dossier"] or {}).get("current_conflict") or {}).get("intent_id")
+                == conflict["id"]
+                for stage in stages
+            )
+        ):
+            return refused(
+                "blocked", "no later conflict at the collector fence; an exhausted conflict "
+                "cannot receive another stage",
+            )
         stage_plan = None
         next_ordinal = max((int(stage["ordinal"]) for stage in stages), default=-1) + 1
         if conflict is not None:
@@ -648,6 +719,8 @@ class CancelledCollectionRecovery:
             ).scalars()
         )
         report["recorded_head_sha"] = expected_tip
+        if no_progress and report["human_gates"]:
+            return refused("blocked", "open human gates must be resolved before conflict recovery")
         facts = {
             "report": report,
             "project_id": parent["project_id"],
@@ -662,6 +735,9 @@ class CancelledCollectionRecovery:
             "receipts": receipts,
             "expected_tip": expected_tip,
             "target": BranchKey(repository_id=parent["repo_id"], branch=branch),
+            "checkpoint": dict(checkpoint),
+            "workspace": dict(workspace) if workspace else None,
+            "no_progress": no_progress,
         }
         facts["fingerprint"] = json.dumps(
             {
@@ -684,6 +760,8 @@ class CancelledCollectionRecovery:
                     else None
                 ),
                 "expected_tip": expected_tip,
+                "workspace": facts["workspace"],
+                "recovery_incident": incident if no_progress else None,
             },
             sort_keys=True,
             default=str,
@@ -721,7 +799,9 @@ class CancelledCollectionRecovery:
             return f"conflict {conflict['id']} belongs to another collection"
         source = (
             await conn.execute(
-                select(tasks.c.parent_task_id, tasks.c.status).where(
+                select(
+                    tasks.c.parent_task_id, tasks.c.status, tasks.c.project_id, tasks.c.repo_id
+                ).where(
                     tasks.c.id == conflict["source_task_id"]
                 )
             )
@@ -736,6 +816,8 @@ class CancelledCollectionRecovery:
         if (
             source is None
             or source["parent_task_id"] != parent["id"]
+            or source["project_id"] != parent["project_id"]
+            or source["repo_id"] != parent["repo_id"]
             or source["status"] != TaskStatus.COMPLETED.value
             or head != conflict["source_head"]
         ):
@@ -786,6 +868,16 @@ class CancelledCollectionRecovery:
                             f"{label} ({sha}) is no longer on the parent branch",
                             remote_head=remote.oid,
                         )
+            if facts.get("no_progress"):
+                from src.integration.parent_repair_heads import ParentHeadRecovery
+
+                async with self.db._engine.connect() as conn:
+                    try:
+                        await ParentHeadRecovery(promotion)._workspace_proof_on(
+                            conn, facts, resolved, remote.oid
+                        )
+                    except ValueError as exc:
+                        raise _ProofFailed(str(exc), remote_head=remote.oid) from exc
         except PromotionError as exc:
             raise _ProofFailed(f"could not prove the parent branch: {exc}") from exc
         return remote.oid
@@ -805,7 +897,7 @@ class CancelledCollectionRecovery:
         operator_id: str | None,
     ) -> tuple[Any | None, dict[str, Any]]:
         from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-        from src.integration.recovery_controls import IntegrationRecoveryControls
+        from src.integration.writers import OperationSafety
 
         operation = facts["operation"]
         owner = facts["owner"]
@@ -835,8 +927,8 @@ class CancelledCollectionRecovery:
 
         transition = None
         if facts["restore_parent"]:
-            transition, refusal = await IntegrationRecoveryControls(
-                self.db, clock=self.clock
+            transition, refusal = await OperationSafety(
+                self.db
             )._restore_parent_collection_on(conn, operation, allow_paused=False)
             if refusal is not None:
                 raise _Changed()
@@ -848,7 +940,7 @@ class CancelledCollectionRecovery:
             update(integration_repair_operations)
             .where(
                 integration_repair_operations.c.id == operation["id"],
-                integration_repair_operations.c.state == "cancelled",
+                integration_repair_operations.c.state == operation["state"],
                 integration_repair_operations.c.active_stage == operation["active_stage"],
             )
             .values(state=state, active_stage=active_stage, updated_at=now)
@@ -867,7 +959,11 @@ class CancelledCollectionRecovery:
                 key: owner[key] for key in ("owner_id", "owner_role", "fence_token")
             },
             "collector_fence_token": fence_token,
-            "cancelled_stages": [int(stage["ordinal"]) for stage in facts["stages"]],
+            "cancelled_stages": [
+                int(stage["ordinal"]) for stage in facts["stages"] if stage["state"] == "cancelled"
+            ],
+            "ended_stages": [int(stage["ordinal"]) for stage in facts["stages"]],
+            "previous_operation_state": operation["state"],
             "receipts": [row["id"] for row in facts["receipts"]],
         }
         if plan is not None:

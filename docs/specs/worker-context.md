@@ -3,9 +3,10 @@
 Task: `azure-vault-92.3` (2026-10-01).
 
 Long workers checkpoint continuation state before native harness compaction.
-The daemon never clears, kills, restarts or releases a live worker to reduce
-context. Claims, waits, workspaces, routing and human/verification gates retain
-their existing owners and semantics. Small tasks remain whole.
+The native-compaction mechanism does not clear, kill, restart or release a
+live worker to reduce context. Separate guarded context-thrash recovery and
+verified-wait hibernation can stop a session. Claims, waits, workspaces, routing
+and human/verification gates retain their existing owners and semantics. Small tasks remain whole.
 
 `sessions.worker_context_compact_tokens` defaults to 160000, accepts 100000–1000000,
 and accepts 0 to inherit harness defaults. It applies only at new task/pool
@@ -29,10 +30,24 @@ Readings older than five minutes, malformed/missing readings, and a compaction
 boundary after the last reading are unknown. Original transcript bytes remain
 untouched and the snapshot retains their path for retrieval.
 
+Guidance is harness-aware. `context_guidance` names the measured threshold and
+the derived compact window only for a harness AQ can both read and launch with a
+derived setting — Claude and Codex. A harness with no transcript reader, which
+`resolve_reader` answers with `None`: an operator's `opencode` or `opencode-zen`,
+the shipped `gemini`, is told its context metric is unavailable, is given no
+token threshold and no compact-window claim, and is pointed at the turn cadence
+plus the boundaries a worker can actually see — after each completed change, and
+before a step expected to fill the remaining context, since AQ sees no
+compaction signal for that harness. A reading supplied for such a harness is
+never echoed back. This is bounded remediation of R7 in the 2026-10-03
+compaction-and-stall fleet report: prompt text only, with reads, launch settings,
+scheduling and the stall ladder unchanged. A 65 k model is no longer told to
+watch a 120 k threshold from a metric AQ never measured for it.
+
 Both shipped harnesses use PreCompact to save an automatic, note-only snapshot,
 and SessionStart on compact/resume to re-prime before continuing. Empty automatic
-hooks save facts-only recovery without displacing useful agent notes. A snapshot
-contains task/claim/session/workspace/branch/HEAD, active jobs, active waits
+hooks are a no-op, preserving useful agent notes. Non-empty automatic hooks
+save a note and current facts. A snapshot contains task/claim/session/workspace/branch/HEAD, active jobs, active waits
 and result pointers, open gates, subtask progress and metric provenance.
 Stores that cannot be read are explicitly unknown, not an empty success.
 
@@ -58,6 +73,10 @@ Native controls verified against [Codex configuration](https://learn.chatgpt.com
 
 ## Verification evidence
 
+The following is the recorded implementation evidence from 2026-10-01. The
+current empty-auto-hook behavior is described above; earlier facts-only-hook
+simulation results do not imply that an empty hook still writes a row.
+
 The operator's corrected audit confirms 368 calls for the largest sampled worker,
 mean request input context 349868.73 tokens and peak 588548 tokens. This is the
 recorded production baseline, not a quota percentage.
@@ -82,3 +101,20 @@ savings. Follow-up production auditing must measure those after deployment.
 Focused and related area validation passed 635 tests. Ruff on the changed Python
 files passed. Generated API/CLI/configuration/selection artifacts and both clients
 were regenerated without installing packages or changing the shared environment.
+
+R7 validation adds `test_context_guidance_names_no_metric_it_cannot_read`
+(opencode, opencode-zen, gemini: no 120000, no 160000, metric declared
+unreadable, completed-change and pre-compaction triggers and the 40-turn cadence
+present), `test_context_guidance_never_echoes_a_reading_for_an_unmeasurable_harness`,
+and `test_primed_context_guidance_tracks_what_the_harness_reports`, which asserts
+the same split at the prime prompt surface for claude, codex, opencode and gemini
+and keeps the measured Claude/Codex reading path. `measures_context` pins the
+supported set to the two harnesses that both have a transcript reader and receive
+a derived compact setting. Focused checks: 11 context tests in
+`tests/test_handoffs.py`, 18 guidance/context tests in `tests/test_prime_renderer.py`;
+the related area run of both files plus `tests/test_prime_hook_envelopes.py`,
+`tests/test_jobs_waits.py` and `tests/test_session_spec.py` passed 276 tests. Ruff
+on the changed files reported only the seven pre-existing `I001` findings present
+at baseline in those test files. No configuration, generated artifact or routing
+change accompanies this: the settings, their defaults and the measured thresholds
+are unchanged.

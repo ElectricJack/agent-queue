@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict
-from src.integration.development_result_parser import PARSER_VERSION, PytestReport, classify_report
+from src.jobs.pytest_output import PARSER_VERSION, PytestReport, classify_report
 
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 
@@ -111,6 +111,9 @@ def build_result(job: dict, completion: dict | None, tail: bytes = b"") -> dict:
     }
     if job["preset"] == "matter_render":
         result["capture"] = receipt.get("capture")
+        result["render_profile"] = render_profile_record(job, receipt.get("capture"))
+    if "build_measurements" in receipt:
+        result["build_measurements"] = receipt["build_measurements"]
     result["result_hash"] = hashlib.sha256(
         json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -119,3 +122,30 @@ def build_result(job: dict, completion: dict | None, tail: bytes = b"") -> dict:
 
 def report_json(report):
     return asdict(report)
+
+
+def render_profile_record(job: dict, capture: dict | None) -> dict | None:
+    """The render profile recorded beside a completed capture, or the reason.
+
+    The object loop's ``render_profile_sha256`` has to be a value AQ computed
+    from the evidence it retained, so the profile is built here, where the
+    result is still being assembled and ``result_hash`` will cover it.  A
+    capture that was never retained has no profile, and a receipt that cannot
+    yield one records why rather than dropping the gap: a passed render must
+    not become a failed job over a reporting field, and an operator reading
+    ``aq job result`` must be able to see that it is missing.
+    """
+    if not capture:
+        return None
+    from src.object_loop.render_profile import (
+        RenderProfileError,
+        capture_observations,
+        render_profile,
+        with_digest,
+    )
+
+    contract = job.get("contract") or {}
+    try:
+        return with_digest(render_profile(contract, capture), capture_observations(contract, capture))
+    except RenderProfileError as exc:
+        return {"error": str(exc)}

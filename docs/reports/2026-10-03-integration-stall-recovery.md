@@ -85,14 +85,16 @@ These are supervisor-supplied live observations, distinct from worker tests.
 | Backup | `pre-deploy-20261003T071932Z.sql` |
 | Live outbox for agent-queue | Zero undelivered across all types; zero retrying; zero quarantined |
 | Azure parent `azure-vault-92`, incident prefix `bcab5af6` | Adopted `acc7f2b0` on main `e7b745` |
-| Knowledge parent `calm-grove-25`, incident prefix `338ab85e` | All six receipts, including `49288437` for child 6; fresh head `7740eb7`; named remaining validation `verifier-g5` is running |
+| Knowledge parent `calm-grove-25`, incident prefix `338ab85e` | All six receipts, including `49288437` for child 6; fresh head `7740eb7`; `verifier-g5` passed 450 focused/schema checks; operator adoption `0805bdb9-f962-43e3-a344-f8f126ceddf4` records equivalent delivery on main `2a126c67` |
 | Outbox prerequisite | Completed through operator adoption `e8645e8e-1c90-4e6a-a30e-ef61f8f6c51f`, preserving the independently tested tree |
 | Feature state | Bounded owner recovery sweep on; new reconciler shadow and active flags off |
 
-The Knowledge incident has a named remaining validation gate, `verifier-g5`.
-The supervisor owns its final validation/disposition receipt. That remaining
-validation is separate from the original integration stall. The receipt and
-deployed SHA for this acceptance branch must be added by the integration owner
+The Knowledge incident is settled by operator-equivalent acceptance, not CI
+attestation: the reviewed source is included in deployed main, while the worker
+close was refused for a missing trusted-verification binding. The supervisor
+cancelled the obsolete operation and retained the 450-check evidence. Azure
+verification was likewise retired after its previously recorded adoption. The
+receipt and deployed SHA for this acceptance branch must be added by the integration owner
 after publication; the above snapshot does not claim that they already exist.
 
 ## Pending one week observation
@@ -107,7 +109,7 @@ remain occupied for this observation, and later-phase implementation can proceed
 | Repair recovery notifications | Full-window count pending | No `Task recovery: repair-…` notification throughout the complete window, with continuous message/log coverage |
 | Outbox backlog | Zero at the approximately 07:22 UTC snapshot | Timestamped samples continue to show zero undelivered; any quarantine is reported as undelivered |
 | Successor allocation on unchanged heads | Automated cases retain ordinals 0 and 1 | Audit new allocations by subject head during the window; investigate any allocation beyond the two-successor bound |
-| Parent incidents | Azure adopted; Knowledge at named verifier gate | Final delivery/validation receipts or an explicit named human gate |
+| Parent incidents | Azure and Knowledge adopted; obsolete verification operations cancelled | Final delivery/validation receipts or an explicit named human gate |
 | Rollout identity and rollback | Supervisor owns rollout; reconciler flags off | Record deployed SHA, policy artifacts/generation, feature state and rollback decisions at every change |
 
 At the end, record the actual UTC start/end, coverage gaps, notification count,

@@ -14,18 +14,21 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/knowledge.py`](../../../src/commands/contracts/knowledge.py) |
-| Contract fingerprint | `sha256:521c2e48989fd2673c4e337f2918602b0e0745a3fa99bd94e7be6a688c16cc77` |
+| Contract fingerprint | `sha256:f96e4d65ff0fce348ab4e2c4a95751769c26f26aafe78e879cd03f99852085c5` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
 | `title` | `string` | yes | — | — |
 | `body` | `string` | yes | — | — |
 | `category` | `"fact" \| "decision" \| "policy" \| "procedure" \| "incident" \| "reference" \| "note"` | yes | — | — |
 | `summary` | `string \| null` | no | `null` | — |
 | `tags` | `string[]` | no | — | — |
+| `source_task_id` | `string \| null` | no | `null` | — |
+| `if_link_token` | `string \| null` | no | `null` | — |
 | `sources` | `object[]` | no | — | — |
 | `metadata` | `object` | no | — | — |
 | `idempotency_key` | `string` | yes | — | — |
@@ -66,7 +69,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create using project_id, title, body, category, summary, tags, sources, metadata, idempotency_key, claim_epoch | — | always |
+| Create using project_id, global_scope, title, body, category, summary, tags, source_task_id, if_link_token, sources, metadata, idempotency_key, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 
