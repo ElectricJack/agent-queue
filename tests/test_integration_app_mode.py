@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,12 +32,16 @@ REPO = Path(__file__).resolve().parents[1]
 POLICY_PATH = REPO / "docs/config/agent-queue-train-policy.json"
 SHA = "a" * 40
 APP_ID = 5075923
+RULESET_ID = 24002443
 BINDING = GitHubRepositoryBinding(1160639300, "ElectricJack/agent-queue")
 APP = GitHubCredentialIdentity.app(APP_ID, 164874645)
 AUDIT_TEXT = (
     "name: Main attestation\n"
     "env:\n  APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}\n"
 )
+#: The reviewed policy's root check-set version: what
+#: ``AQ_INTEGRATION_REQUIRED_CHECK_VERSION`` must hold.
+CHECK_VERSION = json.loads(POLICY_PATH.read_text())["root"]["required_checks"]["version"]
 
 
 def _policy(**producers: str) -> dict:
@@ -80,8 +85,24 @@ class FakeGitHub:
         }
         self.variables = {
             app_mode.APP_ID_VARIABLE: str(APP_ID),
-            app_mode.CHECK_VERSION_VARIABLE: "tests-yml-v3",
+            app_mode.CHECK_VERSION_VARIABLE: CHECK_VERSION,
         }
+        # The §8.1 ruleset app-verify renders, applied: GitHub's effective rules.
+        self.rules = [
+            {
+                **rule,
+                "ruleset_source_type": "Repository",
+                "ruleset_source": BINDING.full_name,
+                "ruleset_id": RULESET_ID,
+            }
+            for rule in app_mode.target_ruleset(APP_ID, "main")["rules"]
+        ]
+        self.rulesets = {
+            RULESET_ID: {
+                "id": RULESET_ID, "name": "Train-only main", "current_user_can_bypass": "never",
+            },
+        }
+        self.classic: dict | None = None
         self.paths: list[str] = []
 
     async def installation_token(self):
@@ -94,8 +115,11 @@ class FakeGitHub:
         return SHA
 
     async def paged_list(self, path, *, max_pages):
-        assert max_pages == 1
         self.paths.append(path)
+        if "/rules/branches/" in path:
+            assert path == f"/repositories/{BINDING.repository_id}/rules/branches/main?per_page=100"
+            return copy.deepcopy(self.rules)
+        assert max_pages == 1
         assert path == f"/repositories/{BINDING.repository_id}/contents/.github/workflows?ref={SHA}"
         return [
             {"type": "file", "path": name}
@@ -115,6 +139,16 @@ class FakeGitHub:
             if name not in self.variables:
                 raise GitHubAccessError("not_found_or_hidden", "GitHub request failed")
             return {"name": name, "value": self.variables[name]}
+        root = f"/repositories/{BINDING.repository_id}"
+        if path.startswith(f"{root}/rulesets/"):
+            ruleset = self.rulesets.get(int(path.rsplit("/", 1)[1]))
+            if ruleset is None:
+                raise GitHubAccessError("not_found_or_hidden", "GitHub request failed")
+            return copy.deepcopy(ruleset)
+        if path == f"{root}/branches/main/protection":
+            if self.classic is None:
+                raise GitHubAccessError("not_found_or_hidden", "GitHub request failed")
+            return copy.deepcopy(self.classic)
         prefix = f"/repositories/{BINDING.repository_id}/contents/"
         assert path.startswith(prefix) and path.endswith(f"?ref={SHA}"), path
         name = path[len(prefix):].split("?", 1)[0]
@@ -125,7 +159,7 @@ class FakeGitHub:
 
 @pytest.fixture
 def protected(monkeypatch):
-    """Default-branch protection reads as ``attested_only`` (the reader is a stub)."""
+    """Default-branch protection reads as ``attested_only`` without the reader's reads."""
 
     async def attested_only(_ctx):
         return app_mode.AppModeItem(
@@ -151,21 +185,12 @@ def _db(policy: dict) -> SimpleNamespace:
         default_branch="main",
         url="https://github.com/ElectricJack/agent-queue.git",
     )
-    parsed = HierarchicalIntegrationPolicy.model_validate(_policy())
-    profiles = {
-        profile
-        for boundary in (parsed.parent, parsed.root)
-        for profile in (
-            boundary.primary_profile_id,
-            boundary.repair.debug_profile_id,
-            boundary.verifier_profile_id,
-        )
-    }
+    # No list_profiles: preflight gates on the class hints only; the router
+    # assigns repair and verifier profiles.
     return SimpleNamespace(
         get_project=AsyncMock(return_value=_project(policy)),
         get_repo=AsyncMock(side_effect=lambda rid: repository if rid == "agent-queue2" else None),
         get_session=AsyncMock(return_value=None),
-        list_profiles=AsyncMock(return_value=[SimpleNamespace(id=value) for value in profiles]),
     )
 
 
@@ -364,18 +389,109 @@ async def test_preflight_and_app_verify_produce_identical_codes(protected, scena
     assert failing == set(blockers)
 
 
-async def test_the_protection_stub_is_the_same_blocker_in_both():
+def _bypass(gh: FakeGitHub, value: str | None) -> None:
+    _set(gh.rulesets[RULESET_ID], "current_user_can_bypass", value)
+
+
+PROTECTION = {
+    # how GitHub's protection differs from §8.1, blockers, warnings, classification
+    "the §8.1 ruleset": (lambda gh: None, (), (), "attested_only"),
+    "the App bypass kept": (
+        lambda gh: _bypass(gh, "always"), (), ("main_protection_app_bypass",), "app_bypass",
+    ),
+    "a pull request rule": (
+        lambda gh: gh.rules.append(
+            {**gh.rules[0], "type": "pull_request", "parameters": {}}
+        ),
+        ("branch_protection_incompatible",),
+        (),
+        "incompatible",
+    ),
+    "no ruleset": (
+        lambda gh: (gh.rules.clear(), gh.rulesets.clear()),
+        ("main_protection_missing",),
+        (),
+        "unprotected",
+    ),
+    "the bypass unreported": (
+        lambda gh: _bypass(gh, None), ("main_protection_unverifiable",), (), "unverifiable",
+    ),
+    "classic protection pinning the attestation": (
+        lambda gh: (
+            gh.rules.clear(),
+            gh.rulesets.clear(),
+            setattr(gh, "classic", {"required_status_checks": {
+                "strict": False,
+                "contexts": [trust_manifest.ATTESTATION_NAME],
+                "checks": [{"context": trust_manifest.ATTESTATION_NAME, "app_id": APP_ID}],
+            }}),
+        ),
+        (),
+        (),
+        "attested_only",
+    ),
+}
+
+
+@pytest.mark.parametrize("scenario", list(PROTECTION))
+async def test_protection_is_the_same_codes_in_the_preflight_and_app_verify(scenario):
+    mutate, blockers, warnings, classification = PROTECTION[scenario]
     client = FakeGitHub()
+    mutate(client)
 
     preflight = await daemon_functional_preflight(
         _orchestrator(client, _policy()), "agent-queue", "agent-queue2"
     )
     verified = await _handler(client)._cmd_integration_app_verify({"project_id": "agent-queue"})
 
-    assert tuple(preflight) == tuple(verified["blockers"]) == ("main_protection_unverifiable",)
+    assert (tuple(preflight), preflight.warnings) == (blockers, warnings)
+    assert (tuple(verified["blockers"]), tuple(verified["warnings"])) == (blockers, warnings)
     protection = verified["items"][app_mode.ITEM_IDS.index("protection")]
+    assert protection["observed"]["classification"] == classification
+    assert protection["expected"] == {"classification": "attested_only"}
+    assert protection["codes"] == list(blockers or warnings)
+    assert (protection["fix"] is None) is (not blockers and not warnings)
+
+
+@pytest.mark.parametrize(
+    "bypass, status, codes",
+    [
+        ("never", "fail", ["main_protection_blocks_development_publisher"]),
+        ("always", "ok", []),
+    ],
+)
+async def test_a_development_project_needs_the_app_bypass(bypass, status, codes):
+    client = FakeGitHub()
+    _bypass(client, bypass)
+    handler = _handler(client)
+    handler.db.get_project.return_value = _project(_policy(), mode="development")
+
+    result = await handler._cmd_integration_app_verify({"project_id": "agent-queue"})
+
+    protection = result["items"][app_mode.ITEM_IDS.index("protection")]
+    assert (protection["status"], protection["codes"]) == (status, codes)
+    assert protection["expected"] == {"classification": "app_bypass"}
+    if codes:
+        assert f'{{"actor_id": {APP_ID}, "actor_type": "Integration"' in protection["fix"]
+
+
+async def test_a_disabled_project_is_judged_like_the_preflight():
+    """Runbook §9.3 steps 3-5 run app-verify while disabled; status judges it strictly too."""
+    client = FakeGitHub()
+    _bypass(client, None)
+    handler = _handler(client)
+    handler.db.get_project.return_value = _project(_policy(), mode="disabled")
+
+    result = await handler._cmd_integration_app_verify({"project_id": "agent-queue"})
+    preflight = await daemon_functional_preflight(
+        _orchestrator(client, _policy()), "agent-queue", "agent-queue2"
+    )
+
+    protection = result["items"][app_mode.ITEM_IDS.index("protection")]
+    assert protection["status"] == "fail"
     assert protection["observed"]["classification"] == "unverifiable"
     assert protection["expected"] == {"classification": "attested_only"}
+    assert tuple(result["blockers"]) == tuple(preflight) == ("main_protection_unverifiable",)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +518,69 @@ async def test_every_item_is_ok_with_the_anchors_in_place(protected):
     assert all(f"?ref={SHA}" in path for path in client.paths if "/contents/" in path)
 
 
+async def test_app_verify_and_preflight_block_missing_origins_without_writing(protected, reuse_database):
+    from sqlalchemy import select
+    from src.database.tables import task_branch_origins
+    from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+
+    db = await reuse_database("app-origin-readiness")
+    await db.create_project(Project(id="agent-queue", name="Queue"))
+    await db.create_repo(RepoConfig(id="agent-queue2", project_id="agent-queue", default_branch="main",
+                                    source_type=RepoSourceType.CLONE))
+    await db.create_task(Task(id="legacy", project_id="agent-queue", title="legacy", description="",
+                              status=TaskStatus.READY))
+    handler = _handler(FakeGitHub())
+    handler.db._engine = db._engine
+    verified = await handler._cmd_integration_app_verify({"project_id": "agent-queue"})
+    preflight = await daemon_functional_preflight(handler.orchestrator, "agent-queue", "agent-queue2")
+    assert verified["ready"] is False
+    assert verified["blockers"] == list(preflight) == ["branch_origins_missing"]
+    item = next(item for item in verified["items"] if item["id"] == "branch_origins")
+    assert item["observed"] == {"task_ids": ["legacy"]}
+    assert item["fix"] == "aq doctor --check integration.branch_origins --fix"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(task_branch_origins))).all() == []
+
+
+@pytest.mark.parametrize("drift", [None, "missing", "another-attestation"])
+async def test_verify_and_preflight_compare_bound_promotion_identities(protected, monkeypatch, drift):
+    steps = [
+        {"id": "staging", "source": "main", "target": "staging",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (staging)"}},
+        {"id": "release", "source": "staging", "target": "production",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (release)"}},
+    ]
+    names = [step["gate"]["attestation"] for step in steps]
+    stored = AsyncMock(return_value=steps)
+    monkeypatch.setattr("src.integration.promotion_steps.read_stored_promotion_flow", stored)
+    client = FakeGitHub()
+    manifest = _manifest()
+    manifest["promotion_attestation_names"] = names.copy()
+    if drift == "missing":
+        manifest.pop("promotion_attestation_names")
+    elif drift == "another-attestation":
+        manifest["promotion_attestation_names"][1] = "Unconfigured release attestation"
+    client.files[trust_manifest.TRUST_MANIFEST_PATH] = trust_manifest.canonical_text(manifest)
+    result = await _handler(client)._cmd_integration_app_verify({"project_id": "agent-queue"})
+    item = next(item for item in result["items"] if item["id"] == "manifest")
+    preflight = await daemon_functional_preflight(
+        _orchestrator(client, _policy()), "agent-queue", "agent-queue2",
+    )
+    assert stored.await_count == 2
+    assert result["expected"]["manifest"]["promotion_attestation_names"] == names
+    if drift is None:
+        assert item["status"] == "ok"
+        assert "trust_manifest_mismatch" not in result["blockers"]
+        assert "trust_manifest_mismatch" not in preflight
+    else:
+        assert item["status"] == "fail"
+        assert [change["field"] for change in item["observed"]["diff"]] == [
+            "promotion_attestation_names",
+        ]
+        assert "trust_manifest_mismatch" in result["blockers"]
+        assert "trust_manifest_mismatch" in preflight
+
+
 async def test_expected_carries_the_manifest_the_variables_and_the_ruleset(protected):
     result = await _handler(FakeGitHub())._cmd_integration_app_verify(
         {"project_id": "agent-queue"}
@@ -412,7 +591,7 @@ async def test_expected_carries_the_manifest_the_variables_and_the_ruleset(prote
     assert expected["manifest_text"] == trust_manifest.canonical_text(_manifest())
     assert expected["variables"] == {
         "AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923",
-        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "tests-yml-v3",
+        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": CHECK_VERSION,
     }
     # Spec §8.1, pinned to this App, with no bypass.
     assert expected["ruleset"] == {
@@ -449,6 +628,49 @@ async def test_variables_answer_to_the_policy_not_the_manifest(protected):
     assert items["variables"]["status"] == "ok"
     assert items["manifest"]["status"] == "warn"
     assert items["manifest"]["codes"] == ["trust_manifest_check_set_differs"]
+
+
+RECORDED_VARIABLES = REPO / "tests/fixtures/app_mode"
+
+
+class RecordedVariables(FakeGitHub):
+    """Serves both Actions variables exactly as GitHub returned them to the fixture.
+
+    Recorded 2026-09-28 after the live proof's rotation switch (spec §10 S8):
+    ``GET /repos/ElectricJack/aq-gh615-app-fixture-20260923/actions/variables/<name>``.
+    """
+
+    async def request_json(self, method, path):
+        if "/actions/variables/" not in path:
+            return await super().request_json(method, path)
+        self.paths.append(path)
+        name = path.rsplit("/", 1)[-1]
+        return json.loads((RECORDED_VARIABLES / f"fixture-variable-{name}.json").read_text())
+
+
+async def test_recorded_variables_answer_to_the_bound_policy_version(protected):
+    """GitHub's payload carries timestamps beside the name and value; the item reads the
+    value and compares it with the policy alone, so the same recording is ok for the
+    policy the switch bound and a mismatch for one it did not."""
+    switched = _policy()
+    switched["root"]["required_checks"]["version"] = "fixture-v2"
+
+    ok = await _handler(RecordedVariables(), switched)._cmd_integration_app_verify(
+        {"project_id": "agent-queue"}
+    )
+    stale = await _handler(RecordedVariables())._cmd_integration_app_verify(
+        {"project_id": "agent-queue"}
+    )
+
+    variables = {item["id"]: item for item in ok["items"]}["variables"]
+    assert variables["status"] == "ok"
+    assert variables["observed"]["values"] == {
+        app_mode.APP_ID_VARIABLE: str(APP_ID),
+        app_mode.CHECK_VERSION_VARIABLE: "fixture-v2",
+    }
+    assert {item["id"]: item for item in stale["items"]}["variables"]["codes"] == [
+        "hosted_workflow_variables_mismatch"
+    ]
 
 
 async def test_a_slug_producer_leaves_the_manifest_compared_on_every_other_field(protected):
@@ -590,6 +812,7 @@ async def test_contract_is_a_typed_read():
             assert command == "integration_app_verify"
             assert payload == {
                 "project_id": "p", "policy": None, "repository_id": None, "policy_path": None,
+                "repository_access_only": False,
             }
             return report
 
@@ -612,10 +835,12 @@ async def test_status_contract_carries_warnings():
     register_integration_contracts(registry)
     registration = registry.require("integration_status")
     warning = {"code": "audit_workflow_missing", "detail": "d", "ref": "agent-queue2"}
+    activity = {"scope": "daemon", "api_calls_per_minute": {"GET repos/acme/widgets": 3}}
 
     class StubHandler:
         async def execute(self, command, payload):
-            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning]}
+            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning],
+                    "github": activity}
 
     set_handler_provider(StubHandler)
     try:
@@ -625,6 +850,7 @@ async def test_status_contract_carries_warnings():
     finally:
         set_handler_provider(None)
     assert result.value.ready is True and result.value.warnings == (warning,)
+    assert result.value.github == activity
 
 
 # ---------------------------------------------------------------------------
@@ -632,11 +858,14 @@ async def test_status_contract_carries_warnings():
 # ---------------------------------------------------------------------------
 
 
-def _cli(argv, client: FakeGitHub, *, policy: dict | None = None, global_args=()):
+def _cli(
+    argv, client: FakeGitHub, *, policy: dict | None = None, global_args=(), mode: str = "observe"
+):
     """Run ``aq integration ...`` against the real handler over ``client``."""
     from src.cli.app import cli
 
     handler = _handler(client, policy)
+    handler.db.get_project.return_value = _project(policy or _policy(), mode=mode)
     calls: list[tuple[str, dict]] = []
 
     async def execute(command, args):
@@ -656,6 +885,7 @@ def _cli(argv, client: FakeGitHub, *, policy: dict | None = None, global_args=()
 def test_cli_app_verify_renders_every_item_and_exits_one_when_not_ready():
     client = FakeGitHub()
     client.variables.pop(app_mode.CHECK_VERSION_VARIABLE)
+    client.rules.clear()
 
     outcome, calls = _cli(["app-verify", "agent-queue"], client)
 
@@ -664,7 +894,7 @@ def test_cli_app_verify_renders_every_item_and_exits_one_when_not_ready():
     for item_id in app_mode.ITEM_IDS:
         assert item_id in outcome.output
     assert "hosted_workflow_variables_unavailable" in outcome.output
-    assert "main_protection_unverifiable" in outcome.output
+    assert "main_protection_missing" in outcome.output
     assert "aq integration app-setup agent-queue --apply" in outcome.output
     assert "not ready: 2 blocker(s), 0 warning(s)" in outcome.output
 
@@ -712,7 +942,7 @@ def test_app_setup_apply_sets_only_the_differing_variables_and_reverifies(protec
     # The App id was already right, so gh never touched it.
     assert runs == [[
         "gh", "variable", "set", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
-        "--repo", "ElectricJack/agent-queue", "--body", "tests-yml-v3",
+        "--repo", "ElectricJack/agent-queue", "--body", CHECK_VERSION,
     ]]
     # Verified, applied, then verified again through the App.
     assert [command for command, _args in calls] == ["integration_app_verify"] * 2
@@ -731,7 +961,7 @@ def test_app_setup_apply_sets_both_when_both_are_unset(protected):
 
     assert outcome.exit_code == 0, outcome.output
     assert [argv[3] for argv in runs] == list(app_mode.HOSTED_VARIABLES)
-    assert [argv[7] for argv in runs] == ["5075923", "tests-yml-v3"]
+    assert [argv[7] for argv in runs] == ["5075923", CHECK_VERSION]
 
 
 def test_app_setup_apply_touches_nothing_when_the_variables_are_correct(protected):
@@ -764,6 +994,7 @@ def test_app_setup_without_apply_prints_commands_manifest_and_ruleset_steps():
     client = FakeGitHub()
     client.variables.clear()
     client.files.pop(trust_manifest.TRUST_MANIFEST_PATH)
+    client.rules.clear()
 
     with patch("subprocess.run", side_effect=AssertionError("gh must not run")):
         outcome, calls = _cli(
@@ -779,7 +1010,7 @@ def test_app_setup_without_apply_prints_commands_manifest_and_ruleset_steps():
     ) in output
     assert (
         "gh variable set AQ_INTEGRATION_REQUIRED_CHECK_VERSION --repo "
-        "ElectricJack/agent-queue --body tests-yml-v3"
+        f"ElectricJack/agent-queue --body {CHECK_VERSION}"
     ) in output
     assert (
         f"aq integration trust-manifest agent-queue --policy {POLICY_PATH} "
@@ -790,6 +1021,54 @@ def test_app_setup_without_apply_prints_commands_manifest_and_ruleset_steps():
     assert '"integration_id": 5075923' in outcome.output
     assert "gh api --method PUT repos/ElectricJack/agent-queue/rulesets/RULESET_ID" in output
     assert "gh api --method POST repos/ElectricJack/agent-queue/rulesets --input FILE" in output
+
+
+def test_app_setup_names_the_train_only_ruleset():
+    """Spec §9.3 step 4: the ruleset named like the target is the one to update."""
+    client = FakeGitHub()
+    _bypass(client, "always")
+
+    outcome, _calls = _cli(["app-setup", "agent-queue"], client)
+
+    output = " ".join(outcome.output.split())
+    assert "main_protection_app_bypass (app_bypass)" in output
+    assert f"gh api --method PUT repos/ElectricJack/agent-queue/rulesets/{RULESET_ID}" in output
+    assert "--method POST" not in output
+
+
+def test_app_setup_never_targets_a_ruleset_named_otherwise():
+    """PUT replaces a whole ruleset: one with another name may hold other rules."""
+    client = FakeGitHub()
+    _bypass(client, "always")
+    client.rulesets[RULESET_ID]["name"] = "main protection"
+
+    outcome, _calls = _cli(["app-setup", "agent-queue"], client)
+
+    output = " ".join(outcome.output.split())
+    assert "gh api --method PUT repos/ElectricJack/agent-queue/rulesets/RULESET_ID" in output
+    assert "gh api --method POST repos/ElectricJack/agent-queue/rulesets --input FILE" in output
+
+
+@pytest.mark.parametrize(
+    "mode, mutate, code",
+    [
+        ("development", lambda gh: None, "main_protection_blocks_development_publisher"),
+        ("observe", lambda gh: _bypass(gh, None), "main_protection_unverifiable"),
+    ],
+)
+def test_app_setup_prints_the_item_fix_where_the_target_ruleset_would_not_help(
+    mode, mutate, code
+):
+    client = FakeGitHub()
+    mutate(client)
+
+    outcome, _calls = _cli(["app-setup", "agent-queue"], client, mode=mode)
+
+    output = " ".join(outcome.output.split())
+    assert code in output
+    assert "gh api --method" not in output and '"bypass_actors": []' not in outcome.output
+    fix = "bypass actors" if mode == "development" else "administration: read"
+    assert fix in output
 
 
 def test_app_setup_json_keeps_the_envelope(protected):

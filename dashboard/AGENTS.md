@@ -9,7 +9,7 @@ Query hook per command) → components and pages.
 
 - **Never call `fetch` directly** for daemon endpoints: import the SDK function from
   `../api/client` or use an existing hook. `legacy-fetch.ts` exists only for the routes
-  the SDK lacks (`/health`, `/ready`, `/plans/{task_id}`); don't reach for it in new code.
+  the SDK lacks (`/health`, `/ready`); don't reach for it in new code.
 - The SDK is generated from the daemon's `/openapi.json`. Refresh it **from the repo
   root** after changing FastAPI routes or response models:
   ```
@@ -28,6 +28,10 @@ Query hook per command) → components and pages.
   normally; there is no `result.error` after `mutateAsync`.
 - Icons: `@heroicons/react/24/outline` (or `/solid` where the design calls for it) only.
 - Project field names match the daemon: `repo_url`, `repo_default_branch`, `assigned_agent`.
+- Never call `crypto.randomUUID` directly: it exists only in secure contexts, so the
+  dashboard served over plain HTTP from a LAN address throws. Import `randomUUID` from
+  `src/randomUUID.ts` (falls back to `getRandomValues`); ESLint and
+  `tests/test_dashboard_secure_context.py` enforce it.
 
 ## Browser storage
 
