@@ -98,14 +98,14 @@ class WaitV2CommandsMixin:
         async with engine.connect() as conn:
             return await mutation_fence(conn, name, principal)
 
-    async def wait_reroute_target(self, project_id, target):
+    async def wait_reroute_target(self, project_id, target, *, conn=None):
         """Keep routing policy and command dependencies out of the waits package."""
-        if not self._validate_routing_class(target):
+        if conn is None and not self._validate_routing_class(target):
             return {"class_hint": target}, None
         from src.commands.routing_commands import validate_route_preference
 
         (preference, mode), error = await validate_route_preference(
-            self, project_id, target, "strict",
+            self, project_id, target, "strict", conn=conn,
         )
         return {"prefer_target": preference, "prefer_mode": mode}, error
 
@@ -126,6 +126,12 @@ class WaitV2CommandsMixin:
     async def wait_service_drain(self, listener, watermark):
         with principal_context(ExecutionPrincipal.service("waits-listener")):
             return await self.wait_listener_drain(listener, watermark)
+
+    async def wait_service_quarantine_deadline(self, timers, deadline, refusal):
+        """Internal service mutation; no public worker quarantine authority."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            self._wait_listener_authorize(timers.service.listener)
+            return await timers.quarantine(deadline, refusal)
 
     async def wait_service_resume_stalls(self, lifecycle):
         """Internal maintenance boundary; never exposes service authority to agents."""
@@ -323,6 +329,11 @@ class WaitV2CommandsMixin:
         return {"success": True, "waits": rows, "count": len(rows)}
 
     async def _wait_v2_cancel(self, args):
+        if current_principal().kind == PrincipalKind.SERVICE:
+            scope = await self._wait_v2_scope(args, mutation=True)
+            return await self._wait_v2_invoke("wait_cancel", args, scope=scope)
+        if args.get("owner_kind") or args.get("owner_id"):
+            raise WaitError("wait.out_of_scope", "owner scope is server-derived")
         filters = await self._wait_v2_read_filter(args)
         scope = await self._wait_v2_authorize_target(
             args,
