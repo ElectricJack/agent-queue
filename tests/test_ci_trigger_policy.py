@@ -621,18 +621,20 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
 
 def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_together():
     scenarios = [scenario for group in SCENARIO_GROUPS.values() for scenario in group]
-    expected = {f'S{index}' for index in range(1, 21)} - {'S16'} | {'S16a', 'S16b'}
+    expected = {f'S{index}' for index in range(1, 22)} - {'S16'} | {'S16a', 'S16b'}
     assert set(scenarios) == expected
     assert len(scenarios) == len(expected)
     assert SCENARIO_GROUPS['claims'][:3] == ('S1', 'S2', 'S3')
     assert 'S20' in SCENARIO_GROUPS['cli']
+    assert 'S21' in SCENARIO_GROUPS['graphs']
 
 
 @pytest.mark.parametrize(
     ('job', 'run_step', 'run_seconds'),
     [
-        # Run 39368476563 default-8 passed, then timed out during shutdown.
-        ('test', 'Run tests', 595),
+        # Run 38601833262 cancelled progressing default shards at ten minutes,
+        # before pytest could print failure diagnostics or finish teardown.
+        ('test', 'Run tests', 600),
         # tests/test_e2e_cli_stateful.py gives each item its own limit; let it
         # fire first, with a minute for its diagnostics and runner overhead.
         ('e2e-cli', 'Run scenario group', E2E_TEST_TIMEOUT_SECONDS + 59),
