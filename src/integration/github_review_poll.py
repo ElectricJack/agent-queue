@@ -25,7 +25,10 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import and_, select
@@ -37,6 +40,7 @@ from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
 from src.integration.source_ci import pull_request_conflicts
+from src.integration.selection_metrics import selection_count
 from src.models import TaskStatus
 from src.projects.github import GitHubError
 
@@ -52,6 +56,22 @@ MERGEABILITY_RETRY_SECONDS = 15
 #: fetch queue. A visit waits this long for it, then defers that root and goes
 #: on; the recovery keeps running and a later visit takes its outcome.
 ROOT_PR_RECOVERY_WAIT_SECONDS = 30.0
+
+# Successful observations must survive a cold pass through a large frontier,
+# but reviews and rerun checks can change without a new head.
+PR_GATE_CACHE_SECONDS = 600.0
+PR_GATE_CACHE_LIMIT = 2048
+_PR_TARGET: ContextVar[tuple | None] = ContextVar("root_pr_target", default=None)
+
+
+@contextmanager
+def root_pr_target_scope(target, target_sha):
+    """Bind admission to the fetched target, including paired-repair admission."""
+    token = _PR_TARGET.set((target.key, target_sha))
+    try:
+        yield
+    finally:
+        _PR_TARGET.reset(token)
 
 
 def _pull_fingerprint(pull):
@@ -85,7 +105,7 @@ def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
 
 
 class RootPullRequestGate:
-    """Read the PR at freeze time; unavailable observations back off, never admit.
+    """Observe exact PR admission; reuse bounded observations on unchanged tips.
 
     Git alone has already decided this source is pending. These observations
     authorize admission, and have no bearing on delivery or a frozen batch.
@@ -99,6 +119,8 @@ class RootPullRequestGate:
         self._deferred = {}
         self._recoveries = {}
         self._running = set()
+        self._admitted = OrderedDict()
+        self._target_tips = {}
 
     async def __call__(self, target, member):
         return await self._observe(target, member)
@@ -121,15 +143,23 @@ class RootPullRequestGate:
             ).join(projects, projects.c.id == tasks.c.project_id).where(
                 tasks.c.id == member.task_id,
             ))).mappings().one()
-            request = None
-            if self.failure_handler is not None and not repaired_source:
-                from src.integration.delivery_truth import load_delivery_requests
+            from src.integration.delivery_truth import load_delivery_requests
+            from src.integration.root_pr_refresh import admission_source_on
 
-                request = (await load_delivery_requests(self.db, [member.task_id],
-                    repository_id=target.repository_id, target_ref=target.target_ref,
-                    conn=conn, reduced=True)).get(member.task_id)
+            request = (await load_delivery_requests(self.db, [member.task_id],
+                repository_id=target.repository_id, target_ref=target.target_ref,
+                conn=conn, reduced=True)).get(member.task_id)
+            checked_sha = (await admission_source_on(conn, request, member.source_sha,
+                row["hierarchical_integration_generation"],
+                row["hierarchical_integration_policy"] or {}) if request else member.source_sha)
         policy = row["hierarchical_integration_policy"] or {}
         url = row["pr_url"]
+        observed_target = _PR_TARGET.get()
+        scoped = observed_target is not None and observed_target[0] == target.key
+        if scoped:
+            self._target_tips[target.key] = observed_target[1]
+        target_sha = self._target_tips.get(target.key)
+        root = (target.key, member.task_id)
 
         def blocker(code, **detail):
             return {"code": code, "task_id": member.task_id, "ref": member.task_id,
@@ -137,23 +167,39 @@ class RootPullRequestGate:
                     "detail": f"root {member.task_id} PR admission: {code}", **detail}
 
         if not isinstance(url, str) or not url.strip():
+            self._admitted.pop(root, None)
             return blocker("awaiting_pr")
         key = (target.key, member.task_id, member.source_sha, url, row["branch_name"],
-               json.dumps(policy, sort_keys=True), request)
+               json.dumps(policy, sort_keys=True), request, member.source_base_sha,
+               row["hierarchical_integration_generation"], target_sha)
+        # A target move invalidates admission, but cannot cancel an exact-source
+        # recovery that may already be publishing or recording its outcome.
+        recovery_key = key[:-1]
         for stale in list(self._deferred):
             if stale[:2] == key[:2] and stale != key:
                 del self._deferred[stale]
         for stale in list(self._recoveries):
-            if stale[:2] == key[:2] and stale != key:
+            if stale[:2] == recovery_key[:2] and stale != recovery_key:
                 # A superseded observation could only answer stale; at most one
                 # recovery runs per target and root.
                 self._recoveries.pop(stale).cancel()
         previous = self._deferred.get(key)
         now = self.clock()
-        recovered = key in self._recoveries and self._recoveries[key].done()
+        admitted = self._admitted.get(root)
+        if (not repaired_source and scoped and target_sha and admitted is not None
+                and admitted[0] == key and now < admitted[1]):
+            self._admitted.move_to_end(root)
+            selection_count("pr_gate_cache_hits")
+            return None
+        # Never fall back to a stale success after an unsuccessful refresh.
+        self._admitted.pop(root, None)
+        recovered = (recovery_key in self._recoveries
+                     and self._recoveries[recovery_key].done())
         if (previous and now < previous["retry_at"] and not recovered
                 and not (repaired_source and previous["code"] == "pr_checks_red")):
+            selection_count("pr_gate_cache_hits")
             return previous
+        selection_count("pr_gate_cache_misses")
 
         def defer(code, *, due_at=None, **detail):
             delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
@@ -184,6 +230,8 @@ class RootPullRequestGate:
                              reason=mismatch)
             if pull.get("draft"):
                 return defer("pr_draft")
+            conflicting = (pull_request_conflicts(pull) or pull.get("mergeable_state") == "dirty"
+                or pull.get("mergeable") == "CONFLICTING" or pull.get("mergeStateStatus") == "DIRTY")
             from src.integration.models import integration_ci_policy
 
             ci = integration_ci_policy(policy)
@@ -196,42 +244,45 @@ class RootPullRequestGate:
             async def review_state():
                 reviews = await client.paged_list(
                     f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
-                return await observe_pull_request_review_state(reviews, member.source_sha,
+                return await observe_pull_request_review_state(reviews, checked_sha,
                     client=client, binding=binding, requirements=self.review_requirements)
 
             if local:
                 state = await review_state()
                 if state != "approved":
                     return defer(state)
-            exact = await self.checks(target, member, policy, binding)
+            exact = await self.checks(target, replace(member, source_sha=checked_sha), policy, binding)
             if exact is None:
                 raise ValueError("PR required checks observer is unavailable")
             result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,
-                ref="refs/heads/" + pull["head"]["ref"], sha=member.source_sha, generation=0))
-            # A successful authenticated listing can prove that no PR workflow
-            # exists for this exact head. GitHub suppresses that workflow for
-            # dirty PRs; the frozen candidate owns integration and its own CI.
-            # An outage, an executing run or a genuine failure never qualifies.
-            suppressed = (pull_request_conflicts(pull) and bool(result.checks)
-                          and all(check.detail.get("missing_pr_run") is True
-                                  for check in result.checks)
-                          and result.state.value in {"pending", "unknown"})
-            if not result.green and not suppressed and result.state.value != "red":
+                ref="refs/heads/" + pull["head"]["ref"], sha=checked_sha, generation=0))
+            from src.integration.checks import Conclusion
+
+            # GitHub suppresses PR workflows on dirty merge refs. Absence of a
+            # run must reach conflict recovery, while an observed running, red,
+            # cancelled or unavailable run retains its normal admission gate.
+            suppressed_conflict = conflicting and not local and all(
+                check.conclusion is Conclusion.PENDING
+                and (check.classification == "none" or check.detail.get("missing_pr_run") is True)
+                for check in result.checks
+            )
+            if not conflicting and not result.green and result.state.value != "red":
                 if result.state.value != "unknown" and pull.get("mergeable") is None:
                     return computing()
-            if result.state.value == "unknown" and not suppressed:
+            if result.state.value == "unknown":
                 return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
             repaired_red = repaired_source and result.state.value == "red"
-            if not result.green and not suppressed and not repaired_red:
+            if not result.green and not repaired_red and not suppressed_conflict:
                 recovery = {}
-                if result.state.value == "red" and request is not None:
+                if (result.state.value == "red" and request is not None
+                        and self.failure_handler is not None and checked_sha == member.source_sha):
                     from src.integration.checks import Conclusion
                     from src.integration.root_pr_recovery import RootPRCheckFailure
 
                     # Workflow-level failure, absent checks and cancellations do
                     # not establish a failed required job that a worker can fix.
                     if any(check.conclusion is Conclusion.FAILURE for check in result.checks):
-                        recovery = await self._recover(key, RootPRCheckFailure(
+                        recovery = await self._recover(recovery_key, RootPRCheckFailure(
                             request=request, source_sha=member.source_sha,
                             source_base_sha=member.source_base_sha, pr_url=url,
                             policy_generation=row["hierarchical_integration_generation"],
@@ -245,7 +296,17 @@ class RootPullRequestGate:
                 state = await review_state()
                 if state != "approved":
                     return defer(state)
+            # A conflict cannot conceal a failed check, unavailable observation,
+            # or missing authorization. Only an otherwise eligible PR reaches
+            # conflict recovery; exact green checks also settle a transient null
+            # mergeability observation.
+            if conflicting:
+                return defer("pr_conflicting")
             self._deferred.pop(key, None)
+            if not repaired_source and scoped and target_sha and result.green:
+                self._admitted[root] = (key, self.clock() + PR_GATE_CACHE_SECONDS)
+                while len(self._admitted) > PR_GATE_CACHE_LIMIT:
+                    self._admitted.popitem(last=False)
             return None
         except ReviewerPermissionUnavailable as exc:
             return defer("pr_review_permission_unavailable", reason=str(exc))

@@ -17,6 +17,8 @@ from src.database.tables import (
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
 from src.waits.conditions import WaitError
+from src.waits.admission import admission_pass
+
 from src.waits.graph import background_graph_work
 from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
@@ -85,17 +87,18 @@ class ResumeTransaction:
 
     @background_graph_work()
     async def reserve(self, continuation_id, generation):
+        """Refresh Git before capturing admission, outside the global graph lock."""
         from src.integration.delivery_observer import hierarchy_frontier_modes
-
-        # Network/Git observation must not hold the global wait graph lock.
-        # AdmissionReader revalidates these cached identities in the transaction.
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(continuations.c.task_id).where(
-                continuations.c.id == continuation_id,
-                continuations.c.resume_state == 'queued',
+                continuations.c.id == continuation_id, continuations.c.resume_state == 'queued',
             ))
         if task_id:
             await hierarchy_frontier_modes(self.db, task_id=task_id)
+        return await self._reserve(continuation_id, generation)
+
+    @admission_pass("service.scheduler.reader")
+    async def _reserve(self, continuation_id, generation):
         async with self.db._engine.begin() as conn:
             wait_id = await conn.scalar(select(continuations.c.wait_id).where(
                 continuations.c.id == continuation_id,

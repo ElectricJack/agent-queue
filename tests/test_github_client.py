@@ -705,32 +705,6 @@ async def test_conditional_cache_does_not_retain_oversized_entries(
     assert not any("If-" in arg for args in requests for arg in args)
 
 
-def _audit_pull(
-    *,
-    key: str,
-    head_sha: str = "a" * 40,
-    head_branch: str = "aq/integration/batch",
-    base_branch: str = "main",
-    body: str | None = None,
-    state: str = "open",
-) -> dict[str, Any]:
-    return {
-        "html_url": "https://github.com/acme/widgets/pull/7",
-        "number": 7,
-        "state": state,
-        "body": body or f"<!-- aq-integration-audit:{key} -->",
-        "head": {
-            "sha": head_sha,
-            "ref": head_branch,
-            "repo": {"id": 303, "full_name": "acme/widgets"},
-        },
-        "base": {
-            "ref": base_branch,
-            "repo": {"id": 303, "full_name": "acme/widgets"},
-        },
-    }
-
-
 @pytest.fixture(params=["app", "existing_login"])
 def credential_identity(request) -> GitHubCredentialIdentity:
     if request.param == "app":
@@ -1214,155 +1188,6 @@ async def test_exact_pull_request_validates_canonical_base_repository(credential
 
 
 @pytest.mark.asyncio
-async def test_audit_lookup_rechecks_requested_branch_identity(credential_identity):
-    key = "b" * 64
-    payload = _audit_pull(key=key, head_branch="aq/integration/other")
-    runner = FakeRunner(credential_identity, [_response(200, [payload])])
-    client = GitHubClient(REPOSITORY, runner=runner)
-
-    with pytest.raises(GitHubAccessError, match="branch identity") as caught:
-        await client.lookup_audit_pr(
-            idempotency_key=key,
-            branch="aq/integration/batch",
-        )
-
-    assert caught.value.category == "conflict_or_invalid"
-    assert runner.calls[0]["args"][-1].endswith("&head=acme%3Aaq%2Fintegration%2Fbatch")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mismatch", ["head", "base", "repository", "base_repository"])
-async def test_audit_create_confirms_head_base_and_repository_identity(
-    credential_identity, mismatch
-):
-    key = "b" * 64
-    payload = _audit_pull(key=key)
-    if mismatch == "head":
-        payload["head"]["sha"] = "c" * 40
-    elif mismatch == "base":
-        payload["base"]["ref"] = "other"
-    elif mismatch == "repository":
-        payload["head"]["repo"] = {"id": 404, "full_name": "other/widgets"}
-    else:
-        payload["base"]["repo"] = {"id": 404, "full_name": "other/widgets"}
-    runner = FakeRunner(
-        credential_identity,
-        [_response(200, []), _response(201, payload)],
-    )
-    client = GitHubClient(REPOSITORY, runner=runner)
-
-    with pytest.raises(GitHubAccessError) as caught:
-        await client.create_audit_pr(
-            repository_id="repo",
-            branch="aq/integration/batch",
-            head_sha="a" * 40,
-            base_branch="main",
-            batch_id="batch",
-            idempotency_key=key,
-            repository_numeric_id=303,
-            repository_full_name="acme/widgets",
-        )
-
-    assert caught.value.category == "conflict_or_invalid"
-    assert [call["args"][call["args"].index("--method") + 1] for call in runner.calls] == [
-        "GET",
-        "POST",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_uncertain_audit_revision_write_reconciles_without_replay(credential_identity):
-    old_key = "a" * 64
-    new_key = "b" * 64
-    old_body = f"<!-- aq-integration-audit:{old_key} -->\nRoot integration batch `batch`."
-    new_body = old_body + f"\n<!-- aq-integration-audit:{new_key} -->"
-    existing = _audit_pull(key=old_key, body=old_body)
-    reconciled = _audit_pull(key=new_key, body=new_body)
-    runner = FakeRunner(
-        credential_identity,
-        [
-            _response(200, [existing]),
-            _response(500, {"message": "ambiguous"}, returncode=1),
-            _response(200, [reconciled]),
-        ],
-    )
-    client = GitHubClient(REPOSITORY, runner=runner)
-    arguments = {
-        "repository_id": "repo",
-        "branch": "aq/integration/batch",
-        "head_sha": "a" * 40,
-        "base_branch": "main",
-        "batch_id": "batch",
-        "idempotency_key": new_key,
-        "repository_numeric_id": 303,
-        "repository_full_name": "acme/widgets",
-    }
-
-    with pytest.raises(GitHubAccessError) as caught:
-        await client.create_audit_pr(**arguments)
-    assert caught.value.category == "transient"
-
-    result = await client.create_audit_pr(**arguments)
-
-    assert result.idempotency_key == new_key
-    assert result.head_sha == "a" * 40
-    methods = [call["args"][call["args"].index("--method") + 1] for call in runner.calls]
-    assert methods == ["GET", "PATCH", "GET"]
-
-
-@pytest.mark.asyncio
-async def test_audit_create_supersedes_closed_pr_of_earlier_revision(credential_identity):
-    old_key = "a" * 64
-    new_key = "b" * 64
-    body = f"<!-- aq-integration-audit:{old_key} -->\nRoot integration batch `batch`."
-    stale = _audit_pull(key=old_key, body=body, state="closed", head_sha="c" * 40)
-    created = _audit_pull(key=new_key, head_sha="a" * 40)
-    created["number"] = 8
-    created["html_url"] = "https://github.com/acme/widgets/pull/8"
-    runner = FakeRunner(
-        credential_identity, [_response(200, [stale]), _response(201, created)]
-    )
-    client = GitHubClient(REPOSITORY, runner=runner)
-
-    result = await client.create_audit_pr(
-        repository_id="repo",
-        branch="aq/integration/batch",
-        head_sha="a" * 40,
-        base_branch="main",
-        batch_id="batch",
-        idempotency_key=new_key,
-        repository_numeric_id=303,
-        repository_full_name="acme/widgets",
-    )
-
-    assert result.number == 8
-    assert result.head_sha == "a" * 40
-    methods = [call["args"][call["args"].index("--method") + 1] for call in runner.calls]
-    assert methods == ["GET", "POST"]
-
-
-@pytest.mark.asyncio
-async def test_audit_create_refuses_closed_pr_of_another_batch(credential_identity):
-    body = f"<!-- aq-integration-audit:{'a' * 64} -->\nRoot integration batch `other`."
-    stale = _audit_pull(key="a" * 64, body=body, state="closed", head_sha="c" * 40)
-    runner = FakeRunner(credential_identity, [_response(200, [stale])])
-    client = GitHubClient(REPOSITORY, runner=runner)
-
-    with pytest.raises(GitHubAccessError) as caught:
-        await client.create_audit_pr(
-            repository_id="repo",
-            branch="aq/integration/batch",
-            head_sha="a" * 40,
-            base_branch="main",
-            batch_id="batch",
-            idempotency_key="b" * 64,
-            repository_numeric_id=303,
-            repository_full_name="acme/widgets",
-        )
-    assert caught.value.category == "conflict_or_invalid"
-
-
-@pytest.mark.asyncio
 async def test_uncertain_comment_write_is_reconciled_by_marker(credential_identity):
     marker = "<!-- aq-delivery:receipt:head -->"
     body = f"{marker}\nDelivered once."
@@ -1715,6 +1540,25 @@ async def test_ordinary_create_ignores_earlier_merged_or_closed_prs_of_the_head(
     assert all("PATCH" not in call["args"] for call in runner.calls)
 
 
+async def test_ordinary_create_ignores_an_unrelated_branch_in_lookup(credential_identity):
+    # Preserve the retired audit lookup's branch-identity assertion on the live
+    # publication path: an unrelated proposal never becomes this branch's PR.
+    unrelated = _ordinary_pull()
+    unrelated["head"]["ref"] = "another-feature"
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [unrelated]),
+        FakeResult(0, b"https://github.com/acme/widgets/pull/31\n"),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature",
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/31"
+    assert creation.created is True
+    assert sum(call["args"][:2] == ["pr", "create"] for call in runner.calls) == 1
+    assert all("PATCH" not in call["args"] for call in runner.calls)
+
+
 async def test_ordinary_create_reuses_the_open_pr_beside_merged_history(credential_identity):
     runner = FakeRunner(credential_identity, [
         _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
@@ -1792,15 +1636,26 @@ async def test_app_create_reconciles_rejected_write_with_refreshed_read():
 
 
 @pytest.mark.asyncio
-async def test_ordinary_create_rejects_conflicting_existing_pr(credential_identity):
+@pytest.mark.parametrize("mismatch", ["head", "base", "repository", "base_repository"])
+async def test_ordinary_create_rejects_conflicting_existing_pr(credential_identity, mismatch):
+    pull = _ordinary_pull()
+    if mismatch == "head":
+        pull["head"]["sha"] = "c" * 40
+    elif mismatch == "base":
+        pull["base"]["ref"] = "release"
+    else:
+        pull["head" if mismatch == "repository" else "base"]["repo"] = {
+            "id": 404, "full_name": "other/widgets",
+        }
     runner = FakeRunner(credential_identity, [
         _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
-        _response(200, [_ordinary_pull(base="release")]),
+        _response(200, [pull]),
     ])
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubAccessError, match="existing PR head did not match"):
         await client.create_pull_request(title="Fix", body="Body", base="main", head="feature")
     assert len(runner.calls) == 2
+    assert all(call["args"][0] == "api" for call in runner.calls)
 
 
 @pytest.mark.asyncio

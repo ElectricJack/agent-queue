@@ -21,6 +21,7 @@ from src.database.tables import (
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.graph import background_graph_work, lock_graph
 from src.waits.sources import insert_message_with_source_event
+from src.waits.admission import admission_pass
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,8 @@ class WaitTimerDriver:
                 await asyncio.wait_for(changed.wait(), min(delay, 60))
             except TimeoutError:
                 pass
+
+    @admission_pass("service.scheduler.reader")
 
     @background_graph_work()
     async def fire(self, args, *, principal, scope, handler):

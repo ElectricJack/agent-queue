@@ -85,6 +85,77 @@ async def test_expiry_one_supervisor_incident_no_worker_or_human_delivery(env):
     assert (await env.db.get_task("owner")).status is TaskStatus.WAITING
 
 
+@pytest.mark.parametrize("legacy_delivery", [False, True])
+async def test_discord_reconcile_and_retry_keep_operational_wait_internal(env, legacy_delivery):
+    from src.escalations import SinkTransport
+    from tests.test_escalation_delivery import make_service
+
+    receipt, _, now, _ = await escalated(env)
+    incident = (await records(env, escalations))[0]
+    sink = SinkTransport()
+    delivery = make_service(env.db, sink, clock=lambda: now[0])
+    if legacy_delivery:
+        await env.db.enqueue_escalation_delivery(
+            incident["id"], dedup_key=f"{incident['id']}:root:0", kind="root",
+            payload={"replacement": False}, available_at=now[0],
+        )
+    for _ in range(2):
+        await delivery.tick()
+        now[0] += 60
+    assert sink.calls == []
+    assert (await records(env))[0]["id"] == receipt["wait_id"]
+    assert (await records(env))[0]["outcome"] == "pending"
+    for row in await env.db.list_escalations():
+        assert not row["human_delivery_authorized"]
+    assert not (await env.db.get_escalation(incident["id"]))["human_delivery_authorized"]
+    if legacy_delivery:
+        assert (await records(env, escalation_deliveries))[0]["status"] == "unknown"
+    else:
+        assert not await records(env, escalation_deliveries)
+
+
+async def test_unread_wait_incident_falls_back_to_global_supervisor_once(env):
+    _, _, _, _ = await escalated(env)
+    notice = (await records(env, messages))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(messages).where(messages.c.id == notice["id"]).values(
+            notification_attempts=3,
+        ))
+    alert = await env.db.escalate_unread_message(notice["id"])
+    assert alert.to_kind == "session" and alert.to_id == "supervisor-global"
+    assert not await env.db.escalate_unread_message(notice["id"])
+    assert not [row for row in await records(env, messages) if row["to_kind"] == "user"]
+
+
+async def test_human_decision_racing_internal_suppression_is_reconciled(env, monkeypatch):
+    from src.escalations import SinkTransport
+    from tests.test_escalation_delivery import make_service
+
+    receipt, service, now, _ = await escalated(env)
+    incident = (await records(env, escalations))[0]
+    await env.db.enqueue_escalation_delivery(
+        incident["id"], dedup_key=f"{incident['id']}:root:0", kind="root",
+        payload={"replacement": False}, available_at=now[0],
+    )
+    sink = SinkTransport()
+    delivery = make_service(env.db, sink, clock=lambda: now[0])
+    finish = delivery._finish
+
+    async def decide_before_suppression(*args, **kwargs):
+        assert (await decide(service, receipt, "escalate_to_human"))["success"]
+        await finish(*args, **kwargs)
+
+    monkeypatch.setattr(delivery, "_finish", decide_before_suppression)
+    await delivery.tick()
+    assert sink.calls == []
+    assert (await records(env, escalation_deliveries))[0]["status"] == "unknown"
+    monkeypatch.setattr(delivery, "_finish", finish)
+    now[0] += 60  # The next periodic reconciliation owns this recovery.
+    await delivery.tick()
+    await delivery.tick()
+    assert sink.calls.count("post_root") == 1
+
+
 @pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "BLOCKED"])
 async def test_terminal_owner_source_event_retires_execution_and_incident_once(env, status):
     receipt, service, now, _ = await escalated(env, hibernate=True)
@@ -262,8 +333,24 @@ async def test_source_satisfaction_with_escalation_is_one_atomic_commit(env):
 
 
 @pytest.mark.parametrize("hibernate", [False, True])
-async def test_human_conversion_uses_verified_thread_and_no_operational_wake(env, hibernate):
+@pytest.mark.parametrize("legacy_delivery", [False, True])
+async def test_human_conversion_uses_verified_thread_and_no_operational_wake(
+    env, hibernate, legacy_delivery,
+):
+    from src.escalations import SinkTransport
+    from tests.test_escalation_delivery import make_service
+
     receipt, service, _, _ = await escalated(env, hibernate=hibernate)
+    incident = (await records(env, escalations))[0]
+    sink = SinkTransport()
+    delivery = make_service(env.db, sink, clock=lambda: NOW + 61)
+    if legacy_delivery:
+        await env.db.enqueue_escalation_delivery(
+            incident["id"], dedup_key=f"{incident['id']}:root:0", kind="root",
+            payload={"replacement": False}, available_at=NOW + 60,
+        )
+        await delivery.tick()
+        assert sink.calls == []
     result = await decide(service, receipt, "escalate_to_human")
     assert result["success"], result
     wait = (await records(env))[0]
@@ -273,6 +360,10 @@ async def test_human_conversion_uses_verified_thread_and_no_operational_wake(env
     assert len(await records(env, escalation_deliveries)) == 1
     assert not [row for row in await records(env, messages) if row["body_kind"] == "wait_decision"]
     incident = (await records(env, escalations))[0]
+    assert (await env.db.get_escalation(incident["id"]))["human_delivery_authorized"]
+    assert (await env.db.list_escalations())[0]["human_delivery_authorized"]
+    await delivery.tick()
+    assert sink.calls.count("post_root") == 1
     await env.db.accept_escalation_reply(incident["id"], transport="test", external_message_id="reply",
                                         verified_actor="user:jack", text="Proceed", received_at=NOW+61)
     cond = Condition.from_record(wait["condition"])
@@ -441,3 +532,62 @@ async def test_same_value_task_edit_counts_but_lifecycle_events_do_not(env):
     await complete_and_ack(env, service, receipt, now)
     receipt = await register(env, idempotency_key="edit-third", now=now[0])
     assert receipt["decision"]["mode"] == "in_place"
+
+
+async def test_original_pr_1858_source_satisfaction_with_escalation_is_one_atomic_commit(env):
+    receipt, service, _, _ = await escalated(env)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.tick()
+    assert (await records(env))[0]["outcome"] == "satisfied"
+    incident = (await records(env, escalations))[0]
+    assert incident["state"] == "cancelled" and incident["terminal_outcome"] == "source_satisfied"
+    assert incident["outcome"] == "sweep"
+    assert incident["terminal_evidence"]["automatic_rule"] == "wait_source_cleared"
+    assert incident["terminal_evidence"]["source_seq"]
+    assert not (await decide(service, receipt, "wake"))["success"]
+
+
+
+@pytest.mark.parametrize("hibernate", [False, True])
+@pytest.mark.parametrize("legacy", [None, "fenced", "ambiguous"])
+async def test_original_pr_1858_human_conversion_uses_verified_thread_and_no_operational_wake(env, hibernate, legacy):
+    receipt, service, _, _ = await escalated(env, hibernate=hibernate)
+    if legacy:
+        incident = (await records(env, escalations))[0]
+        delivery, _ = await env.db.enqueue_escalation_delivery(
+            incident["id"], dedup_key=f"{incident['id']}:root:0", kind="root",
+            payload={"replacement": False}, available_at=NOW, now=NOW,
+        )
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(escalation_deliveries).where(
+                escalation_deliveries.c.id == delivery["id"],
+            ).values(status="unknown", attempt_count=1, last_error=(
+                "supervisor delivery incident is internal-only; nothing was sent" if legacy == "fenced"
+                else "send timed out; delivery may have happened")))
+    result = await decide(service, receipt, "escalate_to_human")
+    assert result["success"], result
+    wait = (await records(env))[0]
+    assert wait["condition_kind"] == "human" and wait["sleep_decision"] == "hibernate"
+    assert wait["outcome"] == "pending" and wait["escalate_at"] is None
+    assert wait["decision_inputs"]["registration_receipt"] == receipt
+    assert len(await records(env, escalation_deliveries)) == 1
+    delivery = (await records(env, escalation_deliveries))[0]
+    assert delivery["status"] == ("unknown" if legacy == "ambiguous" else "pending")
+    assert not [row for row in await records(env, messages) if row["body_kind"] == "wait_decision"]
+    incident = (await records(env, escalations))[0]
+    from src.escalations.facts import EscalationFacts
+
+    facts = EscalationFacts.from_row(await env.db.get_escalation(incident["id"]))
+    assert facts.human_delivery_authorized and facts.wants_human_delivery
+    await env.db.accept_escalation_reply(incident["id"], transport="test", external_message_id="reply",
+                                        verified_actor="user:jack", text="Proceed", received_at=NOW+61)
+    cond = Condition.from_record(wait["condition"])
+    async with env.db._engine.connect() as conn:
+        assert (await service.registry.observe(conn, cond)).state == "satisfied"
+    assert (await records(env))[0]["outcome"] == "pending"
+    if hibernate:
+        assert await service.tick()
+        assert (await records(env))[0]["outcome"] == "satisfied"
+        assert (await records(env, continuations))[0]["resume_state"] == "queued"
+        assert (await env.db.get_task("owner")).status is TaskStatus.RESUME_PENDING
+        assert (await records(env, escalations))[0]["terminal_outcome"] == "source_satisfied"
