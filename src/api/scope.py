@@ -81,6 +81,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "message_status",
         "memory_save",
         "memory_search",
+        "read_file",
         # Knowledge records (K03). Project-pinned reads that the profile must
         # also grant a capability for; the record service is the independent
         # authorization gate. Retire/restore stay supervisor-only.
@@ -145,6 +146,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # only for a task that session filed.
         "task_route",
         "integration_status",
+        "integration_batch_fix",
+        "integration_continue_close",
         "promote_schema",
         "promote_validate",
         "promote_rulesets",
@@ -204,8 +207,11 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_record_root_noop",
         "integration_abort_batch",
         "integration_settle_batch",
+        "integration_release_withheld_source",
         "integration_pause_batch",
         "integration_resume_batch",
+        "integration_repair_target",
+        "integration_rerequest_check",
         "integration_seal_now",
         "integration_eject",
         "integration_refresh_epic",
@@ -213,6 +219,8 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_retire_origin",
         "integration_reevaluate_repair",
         "integration_release_owner",
+        "integration_delegate_publication",
+        "integration_revoke_publication",
         "integration_restore_task_origin",
         "integration_release_stale_owners",
         "integration_clear_retained_recovery",
@@ -222,6 +230,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
+        "integration_fast_forward_pr",
         "integration_transfer_owner",
     }
 )
@@ -261,8 +270,8 @@ def _forbids_project_id(command: str) -> bool:
     rather than listed, so a contract that gains or loses the field moves with
     it.
 
-    An unregistered command (``delete_project``, ``edit_project``, the project
-    and agent controls — none of them carry a contract) forbids nothing, so the
+    A command without a typed dispatch contract (``delete_project``,
+    ``edit_project``, the project and agent controls) forbids nothing, so the
     gate keeps injecting for them: there is no model to reject the key, and the
     project row itself is what such a command acts on.  A contractless command
     that acts on *another* project's row has to fence it in its handler, because
@@ -281,7 +290,9 @@ def _forbids_project_id(command: str) -> bool:
     from src.commands.contracts import CONTRACTS
 
     registration = CONTRACTS.get(command)
-    if registration is None:
+    if registration is None or registration.contract.execution.argument_mode == "json_object":
+        # Discovery-only generated models are not the handler's dispatch model.
+        # Their catalogue presence must not suppress legacy project injection.
         return False
     args_model = registration.contract.execution.args_model
     return "project_id" not in args_model.model_fields
@@ -306,6 +317,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     if command in GATEWAY_COMMANDS:
         return "out of scope: ask intake requires the authenticated daemon gateway"
     if scope.kind == "local":
+        return None
+    if command in {"doctor_catalog", "playbook_commands"}:
+        # Registered schemas/audits carry no project data. Preserve the strict
+        # empty argument schema; capability enforcement still applies at dispatch.
         return None
     if command in OPERATOR_COMMANDS and not (
         command in GLOBAL_CONTROL_COMMANDS and scope.elevated and scope.project_id is None
@@ -540,8 +555,33 @@ async def _check_worker_git_scope(
         return "out of scope: branch mismatch"
     if command in _WORKER_GIT_WRITE_COMMANDS:
         branch = args.get("branch_name" if command == "push_branch" else "branch")
-        if branch is not None and branch not in branches:
-            return "out of scope: branch mismatch"
+        delegation_id = args.get("publication_delegation_id")
+        if delegation_id is not None:
+            if command not in {"git_push", "push_branch"}:
+                return "out of scope: publication delegation applies only to push"
+            from src.integration.publication_delegations import (
+                DELEGATION_ERRORS, PublicationDelegations,
+            )
+
+            try:
+                await PublicationDelegations(db).validate(
+                    delegation_id, scope, branch, args.get("expected_remote_oid"),
+                )
+            except DELEGATION_ERRORS as exc:
+                return f"out of scope: {exc}"
+        elif branch is not None and branch not in branches:
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            task = await held_task_for_session(db, scope)
+            try:
+                assignment = (await BatchRepairAssignments(db).get(task)
+                              if task is not None and command in {"git_push", "push_branch"}
+                              else None)
+            except GitError:
+                assignment = None
+            if assignment is None or branch != assignment["branch"]:
+                return "out of scope: branch mismatch"
     if command == "git_create_pr":
         base = args.get("base")
         if base is not None and base != default_branch:
@@ -1025,7 +1065,7 @@ def _canonicalise_reroute_args(
     return None
 
 
-async def check_request_scope(
+async def _check_request_scope(
     command: str, args: dict, scope: RequestScope, *, db=None,
 ) -> str | None:
     """Apply the normal scope, with narrowly verified triage capabilities.
@@ -1238,3 +1278,23 @@ async def check_request_scope(
     args["project_id"] = project_id
     args["session_id"] = scope.session_id
     return None
+
+
+async def check_request_scope(
+    command: str, args: dict, scope: RequestScope, *, db=None,
+) -> str | None:
+    """Keep transport grants and share resource ownership with every dispatcher."""
+    error = await _check_request_scope(command, args, scope, db=db)
+    if error is not None or scope.kind == "local" or db is None:
+        return error
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.commands.resource_authorization import authorize_resources
+    from src.profiles.capabilities import DENY_ALL
+
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id=scope.session_id,
+        task_id=scope.task_id, project_id=scope.project_id, elevated=scope.elevated,
+        session_instance_token=scope.session_instance_token,
+    )
+    refusal = await authorize_resources(command, args, principal, db=db)
+    return refusal["error"] if refusal is not None else None

@@ -333,9 +333,9 @@ class EscalationQueriesMixin:
             or incident["state"] not in OPEN_ESCALATION_STATES
         ):
             return
-        if incident["source_kind"] == "wait":
-            # Operational deadlines go to the supervisor. Only an explicit
-            # escalate_to_human decision creates a human delivery for this source.
+        if incident["source_kind"] in {"wait", "continuation"}:
+            # Operational deadlines and infrastructure holds go to the supervisor.
+            # Only an explicit escalate_to_human decision creates a human delivery.
             await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id="msg-" + incident["id"], project_id=incident["project_id"],
                 from_kind="system", from_id="wait-dispatcher", to_kind="session",
