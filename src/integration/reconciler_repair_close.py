@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import partial
 
 from sqlalchemy import select, update
 
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
 from src.database import tables as t
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.integration.row_query import select_row
 from src.integration.engine import EngineRefused, RootEngineOwnership
 from src.integration.hierarchy import resolve_repair_commit_proof
 from src.integration.repair import RepairService, repair_subject_sha
-from src.integration.subjects import Subject, SubjectPhase
+from src.integration.runtime_contracts import Subject, SubjectPhase
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -122,12 +124,7 @@ async def close_reconciler_delegate(
 
 async def _held_claim(conn, task, *, session_id, claim_epoch):
     """The exact session, task and workspace rows this close may release."""
-    async def row(table, *where):
-        return (
-            (await conn.execute(select(table).where(*where).with_for_update()))
-            .mappings()
-            .one_or_none()
-        )
+    row = partial(select_row, conn, lock=True)
 
     session = await row(t.sessions, t.sessions.c.id == session_id)
     held = await row(t.tasks, t.tasks.c.id == task.id)
@@ -197,12 +194,7 @@ async def _close_on_owner(
         if current["version"] != subject.version or current["engine"] != "reconciler":
             raise ValueError("Repair subject changed during close")
 
-        async def row(table, *where):
-            return (
-                (await conn.execute(select(table).where(*where).with_for_update()))
-                .mappings()
-                .one_or_none()
-            )
+        row = partial(select_row, conn, lock=True)
 
         session, held, workspace = await _held_claim(
             conn, task, session_id=session_id, claim_epoch=claim_epoch
@@ -294,6 +286,15 @@ async def _close_on_owner(
             )
             # Even a failed delegate may have useful pushed work; preserve that
             # revision and let the next policy visit decide CI or another writer.
+            #
+            # A stage that ran out of budget while this exact fenced writer was
+            # attached gets expire's live-writer recheck first: the deadline
+            # bounds the wait for a writer, not the writer it already has, and
+            # refusing here left the worker holding a claim it could neither
+            # complete nor release.
+            await repair.defer_lapsed_writer_close(
+                conn, scope["operation_id"], task.id, now=now
+            )
             await repair.adopt_batch_repair_on(
                 conn,
                 scope["operation_id"],
@@ -473,12 +474,7 @@ async def close_delivered_reconciler_delegate(
         if await _promoted_delivery_on(db, task, scope, operation, conn=conn) != proof:
             return None
 
-        async def row(table, *where):
-            return (
-                (await conn.execute(select(table).where(*where).with_for_update()))
-                .mappings()
-                .one_or_none()
-            )
+        row = partial(select_row, conn, lock=True)
 
         session, held, workspace = await _held_claim(
             conn, task, session_id=session_id, claim_epoch=claim_epoch
