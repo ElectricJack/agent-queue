@@ -1,11 +1,11 @@
 # Git-first integration train: activation runbook
 
-`integration.git_first` selects the protocol the reconciler-owned integration loop
-runs. `shadow` (the default) keeps the subject runtimes authoritative and only logs
-Git-first comparisons. `active` replaces the root, parent and development subject
-runtimes with one train ([`src/integration/train.py`](../../src/integration/train.py)).
-This page is the operator procedure for switching between them. Spec:
-`projects/agent-queue/specs/2026-10-04-git-first-integration-train.md` (vault).
+`integration.git_first: active` constructs the Git-first train
+([`src/integration/train.py`](../../src/integration/train.py)). The code default
+remains `shadow`, but the Subject runtimes were retired on 2026-10-12: shadow
+constructs no delivery engine and cannot restore the old publisher. The
+`integration.delivery_engine` doctor check reports projects with no selected writer.
+This page describes the current engine; the earlier cutover procedure is historical.
 
 Only an operator changes the daemon's configuration or restarts it. A worker
 session never runs these steps.
@@ -84,12 +84,13 @@ rewrite unrelated receipts.
 The restored process is specified by the operator-vault document
 `projects/agent-queue/specs/2026-10-06-git-first-train-fidelity.md`, §2.2.
 For the branch-chain release path, see [promotion flows](promotion-flow.md)
-and [releases](releases.md); their pending sections describe work awaiting delivery.
+and [releases](releases.md); activation remains a per-project operator action.
 
 ## What `active` changes
 
 - **One loop.** The integration service constructs no subject runtime and no second
-  reconciler. Every five seconds it runs `integration_train_tick` through
+  reconciler. Readiness events wake the service, with a five-second reconciliation interval.
+  It runs `integration_train_tick` through
   `CommandHandler` as the `integration-train` service principal.
 - **Targets.** Every `ACTIVE` project in `train`, `hierarchy` or `development` mode
   contributes its default branch, each parent branch its completed work routes to,
@@ -135,8 +136,11 @@ and [releases](releases.md); their pending sections describe work awaiting deliv
 - **Checks.** A development project's default branch runs its pinned development
   policy's validation commands as integration jobs on a retained snapshot of the exact
   candidate (`validation: none` publishes without jobs; `advisory` publishes on red).
-  Every other target requires the checks named by the frozen policy's
-  `root.required_checks` (`parent.required_checks` for parent branches). The
+  Root candidates require `root.required_checks`, overridden by the current bound
+  train playbook's check set when supplied. Epic/parent checks are advisory by
+  default; only an enabled, ready project playbook with
+  `tables.parent_episode.required_checks` opts into an epic check gate. Stored
+  parent checks alone never create that gate. The
   policy's optional `ci` block chooses which runner produces them:
   `source` is `hosted` (the default; GitHub Actions, from the trusted producer
   only), `local` (the local job runner runs `ci.commands[<check name>]` on a
@@ -182,67 +186,35 @@ and [releases](releases.md); their pending sections describe work awaiting deliv
   failures, without attributing them to the batch. A failed workflow with no
   identifiable failing required check blocks publication and repair allocation
   with `candidate_failing_checks_unknown`.
-- **Repairs.** A red candidate's checks are refreshed once more first; a green
-  result ends the repair with no attempt counted. A red candidate is then measured
-  against the target commit it was built on: a failing required check the target
-  also fails is a pre-existing failure, and one the target has not decided yet is
-  nobody's. For an epic with only proven pre-existing failures, the train may
-  file one ordinary sync repair to merge the current default branch at a pinned
-  SHA. The default head must be the exact fetched candidate of a known root batch
-  or carry a trusted App attestation, and its own trusted required checks must
-  freshly pass every failing name. The visit records `detail.sync_default_branch`
-  with the default ref, SHA, check names, provenance and allocation outcome.
-  The repair keeps every frozen member, resolves conflicts and regenerates
-  generated files; its resulting candidate still owes exact-head CI and
-  attestation. Its ordinary dedup key allows only one sync per batch, including
-  after a restart or archival. Root targets and unproven failures do not sync.
-  The train inspects the pinned merge and names conflicting files in the
-  existing worker conflict brief; it never resolves real code automatically.
-  A completed epic whose required children are already collected gets a
-  `train-epic-sync-` batch freezing those exact sources and the current epic
-  head, including children with retired origins or archived tasks. This works
-  after an earlier batch was aborted, without reopening work or filing children.
-  If default evidence is unavailable or red, the fix is already in the candidate,
-  or the sync is spent, the visit re-requests that candidate's own
-  failing check suites under bounded backoff (`baseline_*` on the batch) and files
-  no repair, naming `candidate_pre_existing_failure` for a human once three
-  consecutive observations have been unrepairable. Only an observed `FAILURE`
-  establishes a pre-existing failure. If any required target check is `MISSING`,
-  the target has no comparable baseline and candidate failures remain repairable:
-  a hand-pushed target may never have run the required workflow. Status reports
-  `baseline.state: unavailable`, `reason: target_required_checks_missing` and the
-  missing names in `missing_target_checks`. Candidate checks must still pass on
-  the exact candidate before publication. With a comparable baseline, only the
-  failures the target does not fail reach the repair, named in its brief.
-  A conflicting candidate then
-  gets one ordinary repair task for the batch and target
-  (`OrdinaryRepairService.allocate`); its counter rises when a task is filed, never
-  per visit. A merge conflict first publishes the partial merge head to the
-  batch ref through the managed lease. Allocation confirms that exact remote
-  start before filing. Publication failure leaves the batch waiting without
-  creating a repair or consuming an attempt.
-  A merge conflict files its repair with a plain-English brief naming the
-  conflicting member, its source OID, the conflicting files, the members already
-  merged into the starting head and the members still to merge in order. That
-  one repair owns every remaining member and must preserve all exact sources as
-  ancestors. During merges, take either side of a generated conflict and run
-  regeneration once after all sources are combined; generated files are never
-  hand-merged. Automatic generated-only construction uses the same final sweep.
-  A repaired head is published to the target only once every frozen source is
-  an ancestor and its own exact required checks pass. Source trailers and green
-  checks on a partial repair cannot authorize publication.
-  A passing repair close also requires every frozen source as an ancestor;
-  missing sources return to the same worker without releasing its claim.
-  Frozen source commits are inherited history for the publishing identity
-  check, while new repair commits still require the worker's allowed identity.
-  A candidate with no authenticated push workflow run on its exact SHA gets
-  five minutes from the first missing-run observation. The deadline survives
-  daemon restarts. After that, `ci_not_triggered` names its workflow filters
-  and files an ordinary repair. The worker brings the needed workflow changes
-  from the repository's default branch into a normal candidate commit and
-  publishes it under the managed lease. Only a push run on the repaired exact
-  head can satisfy the required checks and attestation. An existing push run
-  that is still executing remains pending.
+- **Repairs.** The production allocator is `BatchFixerService`. A conclusive red
+  result is refreshed before repair; pre-existing target failures are classified
+  against the exact target baseline. An unavailable baseline does not invent
+  attribution. Proven inherited failures on a sealed epic can be repaired on the
+  retained candidate; other unrepairable baseline failures keep bounded check
+  retries and named blockers. A red promotion target remains held.
+
+  A red or conflicting batch starts one task-free fixer session on its retained
+  candidate checkout. It creates no task or claim. The brief names exact checks,
+  frozen sources, conflicting paths and remaining merges. The fixer preserves all
+  frozen sources as ancestors, regenerates after the combined merge, commits
+  locally and uses `aq integration batch-fix --action push`. Further distinct red
+  results notify the same session, within the primary time budget and at most
+  three CI rounds. Exhaustion or uncertain launch reports once to the supervisor,
+  releases the lane and retains work for a finite revisit; it creates no successor
+  and no automatic indefinite hold. Exact current-policy green can still deliver.
+
+  Attributed failures may split out a strict subset and its dependents. The
+  original candidate stays as a companion, and a later successor includes its
+  saved fixes and reuses the same fixer. The clean fixer checkout changes binding
+  only through `aq integration batch-fix --action rebind`. See the
+  [fixer and split protocol](hierarchical-integration-trains.md) for budgets and
+  retained-work guarantees. Existing ordinary repair tasks still use their
+  ancestry-checked close protocol; the active allocator files no new ones.
+
+  A missing exact push workflow reports `ci_not_triggered` after its persisted
+  five-minute deadline. With a bound train playbook, unknown CI takes a finite
+  policy wait instead of allocating a code fixer. Without that policy, the
+  compatibility path can allocate repair. An executing push run remains pending.
 - **Legacy isolation.** The scheduler, legacy outbox dispatch and green continuations stop.
   Progress comes from Git, cached check evidence, review evidence and batch intent
   at visit time, so a restart or missed notification is repaired by the next visit.
@@ -250,10 +222,10 @@ and [releases](releases.md); their pending sections describe work awaiting deliv
   to the old writers while `active` is set. Promotion policy events are dispatched
   through a filtered outbox page, so activated continuous flows can author train intents.
 
-## Restored PR gate, cadence and cleanup
+## PR gate, immediate admission and cleanup
 
-When an epic's required children are contained in its branch and that exact head
-is green, the train opens its PR; maintenance retries a failed open. Leaf roots
+When an epic's required children are contained in its branch and its required
+reviews and any explicit epic check gate pass, the train opens its PR; maintenance retries a failed open. Leaf roots
 get their PR at worker close. Before freezing a root member, the train checks
 that its PR is open on the exact source head and that the boundary's required
 checks pass. `admission: authorized` requires no human review;
@@ -295,20 +267,20 @@ Sources: [cleanup.py](../../src/integration/cleanup.py) and
 
 ## Preconditions
 
-1. **Schema at head.** Revisions `a00000000073_integration_ref_leases`,
-   `a00000000074_git_batch_inputs`,
-   `a00000000075_integration_check_evidence_commit_cache` and
-   `a00000000080_candidate_target_baseline` are applied:
-   `aq db current`, then `aq db upgrade` if behind.
-2. **Reviewed bundles current.** The installed `agent-queue-root-train` and
-   `agent-queue-parent-integration` bundles match the digests the project policy pins;
-   see [the train policy runbook](../config/agent-queue-train-policy.md). Shadow and
-   active read the same frozen policy, so its `required_checks` are what active
-   requires; `tests/test_agent_queue_train_policy.py` holds the route, bundle and
-   check-set pins together.
-3. **Development pin.** Every development-mode project has a
-   `hierarchical_integration_policy.development.route.artifact` pin whose artifact
-   loads. Without one, its default branch is checked by hosted CI instead.
+1. **Schema at head.** The operator checks `aq db current` and upgrades through
+   `aq db upgrade` if needed. Use the current migration head, rather than the old
+   cutover's revision list. Worker slots never migrate the operator database.
+2. **Current project policy.** Check the designated repository, root checks,
+   CI producer and committed trust manifest. The historical parent/root bundles
+   do not start Subject runtimes. To install the current train policy, copy the
+   shipped `fast-smooth-train` source into project scope, compile it and activate
+   its reviewed artifact. For a renamed copy, bind `train.playbook_id`. Existing
+   projects with neither activation nor binding keep their pre-install behavior.
+   Disabling the activation stops train admission and fenced writes while worker
+   source pushes and closes continue. Re-enabling resumes retained candidates.
+3. **Development pin.** A development-mode project's local validation comes from
+   its `hierarchical_integration_policy.development.route.artifact` pin. Without
+   a loadable development pin, its default branch uses hosted checks instead.
 4. **CI triggers.** Each candidate's own tree must carry workflows that run on
    pushes to `aq/batches/**`; updating only the default branch does not update
    older epic branches. In
@@ -397,12 +369,12 @@ target.
 |---|---|---|
 | `awaiting_visit` | No visit since the daemon started | Wait one tick |
 | `checks_pending` | Required checks not yet green on the exact candidate | Wait; check the producer if it stays |
-| `ci_not_triggered` | No push workflow run on the exact candidate after five minutes | Follow the ordinary repair; its brief names workflow filters and how to bring needed changes from the default branch into the candidate. A manual dispatch does not count |
-| `checks_red` | Red on the exact candidate | A repair task is filed; follow it |
+| `ci_not_triggered` | No push workflow run on the exact candidate after five minutes | Inspect workflow filters and the policy wait or fixer. A manual dispatch does not count |
+| `checks_red` | Red on the exact candidate | Inspect the retained fixer, failure groups and budget; legacy repairs may still name a task |
 | `checks_preexisting` | Every failing required check also fails on the target commit, or the target has not decided it. No verified default-branch sync is available and the candidate's suites are re-requested under backoff | Fix the target's own failure, or let the batch move; `candidate_pre_existing_failure` in `detail.re_request.blocker` means three consecutive observations were unrepairable |
 | `candidate_pre_existing_failure` | The bounded re-request of an unrepairable red candidate is spent | A person owns this batch: fix the target's required checks, or abort the batch |
 | `repair_open` | A repair task owns the candidate | Follow the named task |
-| `merge_conflict` | The batch does not merge onto its target | Follow the repair task, or inspect publication evidence if filing was withheld |
+| `merge_conflict` | The batch does not merge onto its target | Inspect the retained fixer and partial candidate, or publication evidence if allocation was withheld |
 | `repair_target_unconfirmed` | The repair starting OID could not be confirmed on the batch ref | Inspect the visit's publication evidence; the train retries |
 | `no_regenerator` | The repository configures no regenerate command, so a generated artifact both members changed cannot be rebuilt | Configure the project's regenerate command (default `scripts/regenerate-generated.sh`); the same batch then rebuilds. No member is parked |
 | `target_moved` | The target moved | None; the next visit rebuilds |
@@ -448,8 +420,7 @@ An operator or authorized project supervisor can:
   batch ID. The ejected member returns to pending with its PR and approval intact.
 
 Every action records the principal and reason. No command edits frozen
-membership or forces a target ref. A switch to `git_first: shadow` reactivates
-legacy writers and pending outbox delivery; it cannot undo a fast-forward
+membership or forces a target ref. A switch to `git_first: shadow` leaves no delivery engine; it cannot undo a fast-forward
 already proved by Git and is not the fidelity recovery procedure. See
 [Controls](#controls) and
 [Recovery after fidelity cutover](#recovery-after-fidelity-cutover).
@@ -572,7 +543,7 @@ it instead:
 
 ```bash
 aq integration settle-batch <batch-id>
-aq integration settle-batch <batch-id> --apply --reason "target already matches"
+aq integration settle-batch <batch-id> --apply --target-sha <previewed-sha> --reason "target already matches"
 ```
 
 The control requires every member source to be a Git ancestor of the observed
@@ -610,7 +581,6 @@ The fidelity rollout is roll-forward only. Pause or abort an affected unpromoted
 batch, preserve its evidence and file the fix through the configured owner.
 Never force-move a target or edit a batch record to simulate rollback.
 
-`git_first: shadow` remains an optional compatibility selector in code; it
-reactivates legacy writers and pending outbox delivery. It is not the restored
-train's recovery procedure. A protocol switch also cannot undo a fast-forward
+`git_first: shadow` remains the code default but constructs no delivery engine.
+It does not reactivate legacy writers or provide a recovery procedure. A protocol switch also cannot undo a fast-forward
 already proved by Git. See the [policy entry](../specs/design/promotion-flow.md).

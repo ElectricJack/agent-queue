@@ -78,6 +78,8 @@ class PromotionAuthorizationError(PromotionError):
 
 @dataclass(frozen=True)
 class ResolvedRepository:
+    """The repository and retained Git directory captured for a promotion."""
+
     repo: RepoConfig
     origin_url: str
     retained_git_dir: Path
@@ -102,5 +104,3 @@ class CandidateAuthorizationError(ValueError):
 
 class CandidateStaleAuthority(RuntimeError):
     """The snapshotted hierarchy, lease, revision, or branch fence changed."""
-
-

@@ -80,17 +80,18 @@ The split is about ownership, not scale:
 | | Daemon | Dashboard server |
 |---|---|---|
 | Owns | Tasks, sessions, scheduling, the database, the API | Static files and byte relays; no state |
-| Imports | Everything | Only `src.config` from AQ — never the API, orchestrator, database or command layers ([boundary test](../../tests/test_dashboard_server_app.py)) |
+| Imports | Everything | `src.config` and small histogram, version and remote-link helpers — never the API, orchestrator, database or command layers ([boundary test](../../tests/test_dashboard_server_app.py)) |
 | Secrets | Database URL, provider keys | None; started with an allowlisted environment |
 | Started by | `aq start` | `aq start`, after the daemon answers `/health`, when a verified bundle is installed and `dashboard.server.enabled` is true |
 | When the other is down | Keeps running; CLI and MCP still work | Keeps serving the page; proxied paths answer `503 daemon_unreachable` until the daemon is back |
 | Supervised | Recovers durable work on restart | Not restarted automatically; `aq status` and `aq doctor` report it and `aq start` heals it |
 
 Because the dashboard server sees the real browser address and the daemon only
-sees the relay on loopback, the dashboard server re-applies the daemon's two
-loopback-only rules — interactive terminals and bearer-token requests — for any
-non-loopback peer. How to reach it from another machine, and what a LAN bind
-exposes, is in the [dashboard guide](../guides/dashboard.md#reaching-it-from-another-machine).
+sees the relay on loopback, the dashboard server refuses bearer credentials from
+non-loopback peers and stamps the real peer/viewer verdict. Remote browser terminals
+also require an exact trusted origin at the daemon. Pull-request approval requires a
+loopback viewer or a tailnet browser on a trusted origin. How to reach it from another
+machine, and what a LAN bind exposes, is in the [dashboard guide](../guides/dashboard.md#reaching-it-from-another-machine).
 
 ## Vocabulary and responsibilities
 
