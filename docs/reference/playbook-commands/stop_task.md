@@ -66,7 +66,7 @@ it. Stopping a worker mid-flight is a supervisory decision, and the shipped
 recovery path deliberately routes it through a human-or-supervisor judgement
 instead: `task.failed` wakes a durable incident via
 [`task_recovery_notify`](task_recovery_notify.md)
-([`blocked-task-escalation.md`](../../../src/prompts/default_playbooks/blocked-task-escalation.md)),
+([retired `blocked-task-escalation` recording](../../../src/prompts/reviewed_playbooks/blocked-task-escalation/source.md)),
 and the supervisor decides with `aq task recover`.
 
 A custom policy uses `stop_task` when its own evidence says the execution is
