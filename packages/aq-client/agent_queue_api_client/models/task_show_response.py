@@ -6,18 +6,25 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.task_show_response_display_state_type_0 import TaskShowResponseDisplayStateType0
+from ..models.task_show_response_status import TaskShowResponseStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.claim_readiness import ClaimReadiness
     from ..models.claimed_by import ClaimedBy
     from ..models.epic_delivery_status import EpicDeliveryStatus
     from ..models.provider_hold_detail import ProviderHoldDetail
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
     from ..models.task_reroute import TaskReroute
+    from ..models.task_show_response_batch_member_type_0 import TaskShowResponseBatchMemberType0
+    from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
     from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
     from ..models.task_show_response_context_item import TaskShowResponseContextItem
     from ..models.task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+    from ..models.task_show_response_descendant_state_counts_type_0 import TaskShowResponseDescendantStateCountsType0
+    from ..models.task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
     from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
     from ..models.task_show_response_provenance_item import TaskShowResponseProvenanceItem
     from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -36,8 +43,13 @@ class TaskShowResponse:
             id (str):
             project_id (str):
             title (str):
+            display_state (None | TaskShowResponseDisplayStateType0 | Unset):
+            display_reason (None | str | Unset):
+            child_state_counts (None | TaskShowResponseChildStateCountsType0 | Unset):
+            descendant_state_counts (None | TaskShowResponseDescendantStateCountsType0 | Unset):
+            claim_readiness (ClaimReadiness | None | Unset):
             description (str | Unset):  Default: ''.
-            status (str | Unset):  Default: ''.
+            status (TaskShowResponseStatus | Unset):  Default: TaskShowResponseStatus.VALUE_0.
             priority (int | Unset):  Default: 0.
             assigned_agent (None | str | Unset):
             retry_count (int | Unset):  Default: 0.
@@ -78,13 +90,20 @@ class TaskShowResponse:
             labels (list[str] | Unset):
             provenance (list[TaskShowResponseProvenanceItem] | Unset):
             claimed_by (ClaimedBy | None | Unset):
+            batch_member (None | TaskShowResponseBatchMemberType0 | Unset):
+            fidelity (None | TaskShowResponseFidelityType0 | Unset):
     """
 
     id: str
     project_id: str
     title: str
+    display_state: None | TaskShowResponseDisplayStateType0 | Unset = UNSET
+    display_reason: None | str | Unset = UNSET
+    child_state_counts: None | TaskShowResponseChildStateCountsType0 | Unset = UNSET
+    descendant_state_counts: None | TaskShowResponseDescendantStateCountsType0 | Unset = UNSET
+    claim_readiness: ClaimReadiness | None | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: TaskShowResponseStatus | Unset = TaskShowResponseStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -125,15 +144,24 @@ class TaskShowResponse:
     labels: list[str] | Unset = UNSET
     provenance: list[TaskShowResponseProvenanceItem] | Unset = UNSET
     claimed_by: ClaimedBy | None | Unset = UNSET
+    batch_member: None | TaskShowResponseBatchMemberType0 | Unset = UNSET
+    fidelity: None | TaskShowResponseFidelityType0 | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.claimed_by import ClaimedBy
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_reroute import TaskReroute
+        from ..models.task_show_response_batch_member_type_0 import TaskShowResponseBatchMemberType0
+        from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
         from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
+        from ..models.task_show_response_descendant_state_counts_type_0 import (
+            TaskShowResponseDescendantStateCountsType0,
+        )
+        from ..models.task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
         from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
         from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
 
@@ -143,9 +171,49 @@ class TaskShowResponse:
 
         title = self.title
 
+        display_state: None | str | Unset
+        if isinstance(self.display_state, Unset):
+            display_state = UNSET
+        elif isinstance(self.display_state, TaskShowResponseDisplayStateType0):
+            display_state = self.display_state.value
+        else:
+            display_state = self.display_state
+
+        display_reason: None | str | Unset
+        if isinstance(self.display_reason, Unset):
+            display_reason = UNSET
+        else:
+            display_reason = self.display_reason
+
+        child_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.child_state_counts, Unset):
+            child_state_counts = UNSET
+        elif isinstance(self.child_state_counts, TaskShowResponseChildStateCountsType0):
+            child_state_counts = self.child_state_counts.to_dict()
+        else:
+            child_state_counts = self.child_state_counts
+
+        descendant_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.descendant_state_counts, Unset):
+            descendant_state_counts = UNSET
+        elif isinstance(self.descendant_state_counts, TaskShowResponseDescendantStateCountsType0):
+            descendant_state_counts = self.descendant_state_counts.to_dict()
+        else:
+            descendant_state_counts = self.descendant_state_counts
+
+        claim_readiness: dict[str, Any] | None | Unset
+        if isinstance(self.claim_readiness, Unset):
+            claim_readiness = UNSET
+        elif isinstance(self.claim_readiness, ClaimReadiness):
+            claim_readiness = self.claim_readiness.to_dict()
+        else:
+            claim_readiness = self.claim_readiness
+
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -369,6 +437,22 @@ class TaskShowResponse:
         else:
             claimed_by = self.claimed_by
 
+        batch_member: dict[str, Any] | None | Unset
+        if isinstance(self.batch_member, Unset):
+            batch_member = UNSET
+        elif isinstance(self.batch_member, TaskShowResponseBatchMemberType0):
+            batch_member = self.batch_member.to_dict()
+        else:
+            batch_member = self.batch_member
+
+        fidelity: dict[str, Any] | None | Unset
+        if isinstance(self.fidelity, Unset):
+            fidelity = UNSET
+        elif isinstance(self.fidelity, TaskShowResponseFidelityType0):
+            fidelity = self.fidelity.to_dict()
+        else:
+            fidelity = self.fidelity
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -378,6 +462,16 @@ class TaskShowResponse:
                 "title": title,
             }
         )
+        if display_state is not UNSET:
+            field_dict["display_state"] = display_state
+        if display_reason is not UNSET:
+            field_dict["display_reason"] = display_reason
+        if child_state_counts is not UNSET:
+            field_dict["child_state_counts"] = child_state_counts
+        if descendant_state_counts is not UNSET:
+            field_dict["descendant_state_counts"] = descendant_state_counts
+        if claim_readiness is not UNSET:
+            field_dict["claim_readiness"] = claim_readiness
         if description is not UNSET:
             field_dict["description"] = description
         if status is not UNSET:
@@ -462,20 +556,31 @@ class TaskShowResponse:
             field_dict["provenance"] = provenance
         if claimed_by is not UNSET:
             field_dict["claimed_by"] = claimed_by
+        if batch_member is not UNSET:
+            field_dict["batch_member"] = batch_member
+        if fidelity is not UNSET:
+            field_dict["fidelity"] = fidelity
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.claimed_by import ClaimedBy
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
         from ..models.task_reroute import TaskReroute
+        from ..models.task_show_response_batch_member_type_0 import TaskShowResponseBatchMemberType0
+        from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
         from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
         from ..models.task_show_response_context_item import TaskShowResponseContextItem
         from ..models.task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+        from ..models.task_show_response_descendant_state_counts_type_0 import (
+            TaskShowResponseDescendantStateCountsType0,
+        )
+        from ..models.task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
         from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
         from ..models.task_show_response_provenance_item import TaskShowResponseProvenanceItem
         from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -487,9 +592,91 @@ class TaskShowResponse:
 
         title = d.pop("title")
 
+        def _parse_display_state(data: object) -> None | TaskShowResponseDisplayStateType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                display_state_type_0 = TaskShowResponseDisplayStateType0(data)
+
+                return display_state_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseDisplayStateType0 | Unset, data)
+
+        display_state = _parse_display_state(d.pop("display_state", UNSET))
+
+        def _parse_display_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        display_reason = _parse_display_reason(d.pop("display_reason", UNSET))
+
+        def _parse_child_state_counts(data: object) -> None | TaskShowResponseChildStateCountsType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                child_state_counts_type_0 = TaskShowResponseChildStateCountsType0.from_dict(data)
+
+                return child_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseChildStateCountsType0 | Unset, data)
+
+        child_state_counts = _parse_child_state_counts(d.pop("child_state_counts", UNSET))
+
+        def _parse_descendant_state_counts(data: object) -> None | TaskShowResponseDescendantStateCountsType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                descendant_state_counts_type_0 = TaskShowResponseDescendantStateCountsType0.from_dict(data)
+
+                return descendant_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseDescendantStateCountsType0 | Unset, data)
+
+        descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
+
+        def _parse_claim_readiness(data: object) -> ClaimReadiness | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_readiness_type_0 = ClaimReadiness.from_dict(data)
+
+                return claim_readiness_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimReadiness | None | Unset, data)
+
+        claim_readiness = _parse_claim_readiness(d.pop("claim_readiness", UNSET))
+
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: TaskShowResponseStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = TaskShowResponseStatus(_status)
 
         priority = d.pop("priority", UNSET)
 
@@ -838,10 +1025,49 @@ class TaskShowResponse:
 
         claimed_by = _parse_claimed_by(d.pop("claimed_by", UNSET))
 
+        def _parse_batch_member(data: object) -> None | TaskShowResponseBatchMemberType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                batch_member_type_0 = TaskShowResponseBatchMemberType0.from_dict(data)
+
+                return batch_member_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseBatchMemberType0 | Unset, data)
+
+        batch_member = _parse_batch_member(d.pop("batch_member", UNSET))
+
+        def _parse_fidelity(data: object) -> None | TaskShowResponseFidelityType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                fidelity_type_0 = TaskShowResponseFidelityType0.from_dict(data)
+
+                return fidelity_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseFidelityType0 | Unset, data)
+
+        fidelity = _parse_fidelity(d.pop("fidelity", UNSET))
+
         task_show_response = cls(
             id=id,
             project_id=project_id,
             title=title,
+            display_state=display_state,
+            display_reason=display_reason,
+            child_state_counts=child_state_counts,
+            descendant_state_counts=descendant_state_counts,
+            claim_readiness=claim_readiness,
             description=description,
             status=status,
             priority=priority,
@@ -884,6 +1110,8 @@ class TaskShowResponse:
             labels=labels,
             provenance=provenance,
             claimed_by=claimed_by,
+            batch_member=batch_member,
+            fidelity=fidelity,
         )
 
         task_show_response.additional_properties = d
