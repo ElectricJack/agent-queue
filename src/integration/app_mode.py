@@ -52,6 +52,7 @@ ITEM_IDS = (
     "variables",
     "protection",
     "audit_workflow",
+    "branch_origins",
 )
 #: Items that can only warn: a missing audit never blocks readiness.
 WARN_ONLY = frozenset({"audit_workflow"})
@@ -164,6 +165,8 @@ class AppModeContext:
     #: The command's own inputs, repeated in every fix command it prints.
     policy_path: str | None = None
     repository_arg: str | None = None
+    promotion_flow: list[dict] | None = None
+    missing_origins: tuple[str, ...] = ()
 
 
 def required_protection(mode: str | None) -> str | None:
@@ -382,9 +385,9 @@ def _producer(ctx: AppModeContext) -> AppModeItem:
             '(GitHub Actions is "15368")',
             observed=observed,
             fix=(
-                f"aq integration onboard-train {shlex.quote(ctx.project_id)} --write-policy "
-                "FILE renders the numeric producer; review and rebind it "
-                "(runbook §9.3 step 5)"
+                f"Review the numeric producer in the policy, then use aq project set "
+                f"{shlex.quote(ctx.project_id)} integration-policy POLICY_JSON "
+                "--expected-integration-generation GENERATION --reason REASON"
             ),
         )
     return AppModeItem("producer", OK, expected=str(producer), observed=observed)
@@ -411,6 +414,15 @@ async def _manifest(
             attestation_app_id=ctx.identity.app_id,
             checks=required.names,
             check_version=required.version,
+            promotion_attestation_names=trust_manifest.flow_attestation_names(
+                ctx.promotion_flow or ()
+            ),
+        )
+    except trust_manifest.TrustManifestRefusal as exc:
+        return (
+            AppModeItem("manifest", FAIL, (exc.code,), observed={"error": str(exc)},
+                        fix="review the stored promotion flow's attestation identities"),
+            None,
         )
     except ValidationError as exc:
         # The App would be its own producer: no manifest can express the policy.
@@ -537,6 +549,21 @@ async def check_protection(ctx: AppModeContext) -> AppModeItem:
         if rule.ruleset_name == target and rule.ruleset_source_type == "Repository"
     }
     observed["ruleset_id"] = named.pop() if len(named) == 1 else None
+    if ctx.promotion_flow and ctx.identity.app_id is not None and ctx.default_branch:
+        from src.integration.promotion_steps import FlowSchema, read_promotion_protection
+
+        normalized = FlowSchema.validate(ctx.promotion_flow, default_branch=ctx.default_branch)
+        # Trust is judged separately; malformed chains cannot be read as valid protection.
+        if any(problem.layer < 3 for problem in normalized.problems):
+            observed["promotion"] = {"problems": [p.as_dict() for p in normalized.problems]}
+            warnings = (*warnings, "promotion_flow_invalid")
+        else:
+            chain = await read_promotion_protection(
+                ctx.client, ctx.binding, normalized.flow, default_branch=ctx.default_branch,
+                app_id=ctx.identity.app_id, policy=ctx.policy,
+            )
+            observed["promotion"] = chain
+            warnings = tuple(dict.fromkeys([*warnings, *(w["code"] for w in chain["warnings"])]))
     if not failures and not warnings:
         return AppModeItem("protection", OK, expected=expected, observed=observed)
     return AppModeItem(
@@ -545,7 +572,9 @@ async def check_protection(ctx: AppModeContext) -> AppModeItem:
         failures or warnings,
         expected=expected,
         observed=observed,
-        fix=_protection_fix(ctx, (failures or warnings)[0]),
+        fix=(f"inspect `aq promote rulesets --project {ctx.project_id}` and apply the "
+             "reported rulesets as repository admin" if not failures and ctx.promotion_flow
+             else _protection_fix(ctx, (failures or warnings)[0])),
     )
 
 
@@ -646,6 +675,13 @@ async def evaluate(ctx: AppModeContext) -> AppModeReport:
     items.append(
         await _audit_workflow(ctx, branch) if readable else _unchecked("audit_workflow", credential)
     )
+    items.append(AppModeItem(
+        "branch_origins", FAIL if ctx.missing_origins else OK,
+        ("branch_origins_missing",) if ctx.missing_origins else (),
+        expected="a live origin for every open or undelivered task",
+        observed={"task_ids": list(ctx.missing_origins)},
+        fix="aq doctor --check integration.branch_origins --fix" if ctx.missing_origins else None,
+    ))
     return AppModeReport(tuple(items), expected=_expected(ctx, manifest_expected))
 
 
