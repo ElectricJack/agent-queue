@@ -51,6 +51,10 @@ Namespace = Literal["harness_tools", "aq_commands", "plugin_tools"]
 #: The three namespaces, in canonical order.
 NAMESPACES: Final[tuple[Namespace, ...]] = ("harness_tools", "aq_commands", "plugin_tools")
 
+# Read scopes checked by a command in addition to its dispatch grant. These
+# names grant no command and never bypass the normal command capability check.
+AQ_FEATURE_CAPABILITIES: Final[frozenset[str]] = frozenset({"waits.fleet_summary"})
+
 #: Characters that make an entry a pattern rather than a name.
 WILDCARD_CHARS: Final = "*?"
 
