@@ -1911,7 +1911,7 @@ def test_disposable_fixture_builds_once_and_cleans_even_after_failure(monkeypatc
     home = tmp_path / "world"
     env = acceptance.world_env(home)
     calls = []
-    world = SimpleNamespace(timing=lambda _: None, cli_server=None)
+    world = SimpleNamespace(timing=lambda _: None, cli_server=None, cli_socket_directory=None)
     monkeypatch.setattr(acceptance, "World", lambda *_: world)
     monkeypatch.setattr(acceptance, "start_cli_server", lambda _: None)
 
