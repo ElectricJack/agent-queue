@@ -81,6 +81,12 @@ export function TaskExplain({ taskId }: { taskId: string }) {
   const timing = data.claim_timing;
   return (
     <div className="space-y-3">
+      <p className="text-xs text-gray-500">
+        Delivery to dev — time breakdown, linked waits and CI runs:{" "}
+        <Link to={`/metrics?task=${encodeURIComponent(taskId)}#delivery`} className="text-indigo-400 hover:underline">
+          delivery timing
+        </Link>
+      </p>
       {timing && (
         <div className="rounded border border-gray-800 bg-gray-950 p-3 text-sm">
           <h3 className="font-semibold text-gray-300">Claim preparation</h3>

@@ -1,12 +1,44 @@
-"""Classify exact candidate failures against trusted exact-target checks.
+"""The target's own checks are the baseline a red candidate is judged against.
 
-Only proven target successes normally admit repair; an open batch sealing its
-own epic also admits proven inherited failures within the same repair budget.
-Missing target checks are incomparable, whereas pending/unknown checks never
-prove a repairable failure. Refresh target evidence before classifying. Otherwise
-try trusted default sync or bounded re-requests, then report a named blocker.
-Counters bind the exact candidate/generation; epic refreshes compare their frozen
-default input. Providers unable to compare targets keep ordinary repair behavior.
+A red candidate is not automatically the batch's fault.  A required check that
+also fails on the target commit the candidate was built on is a pre-existing
+failure. Normally only a failing check the target does not fail is repairable.
+An open batch sealing its own epic subtree is the exception: its retained
+candidate can repair proven inherited failures because the seal prevents ordinary
+target repair. The ordinary repair budget and publication gates still apply.
+
+The target's verdict for its exact sha comes from the same per-commit check cache
+as the candidate's, so the comparison is over rows written by one trusted producer
+under one required-check version.  A target with no final verdict for its sha
+cannot decide anything: the baseline is requested and observed once before it is
+classified, and checks it has still not decided are unproven rather than assumed
+to be the batch's.
+
+A required check marked MISSING on the target is not an observed failure. The
+target may never have run the required workflow, as with a hand-pushed main whose
+only push workflow is attestation. Such a target has no comparable baseline, so
+the candidate's failing checks remain repairable. Missing candidate checks still
+fail the required set, and publication still requires trusted exact-candidate
+success.
+
+An unproven failure is never repaired. An epic with only proven pre-existing
+failures may receive one ordinary default-branch sync repair when the current
+default head is train-produced or attested and its own trusted exact-head checks
+pass those failing names. Otherwise the candidate's failing check suites are
+re-requested under bounded exponential backoff, exactly as
+source-CI infrastructure handling is, and the bound names the
+``candidate_pre_existing_failure`` blocker for a human instead of filing repairs
+forever.  The counters are durable per exact candidate, so a repaired or moved
+candidate starts from zero, like its repair lineage.
+
+Comparison is a property of the checks provider and the exact target's evidence,
+not of the batch: hosted checks can compare targets that ran the required checks,
+while local validation jobs only ever exist for candidates. A lane whose provider
+cannot compare a target keeps filing repairs exactly as before.
+
+Epic refreshes use their frozen default-branch input as the baseline. The epic
+head can already contain regressions and cannot prove a failure pre-existed on
+the default branch.
 """
 
 from __future__ import annotations
