@@ -141,6 +141,7 @@ def _legacy_source_metadata():
     absent_columns = {
         name: {column.name for column in additions} for name, additions in ADDITIONS.items()
     }
+    absent_columns["tasks"] = _POSTGRES_ONLY_COLUMNS["tasks"]
     absent_columns["conversation_inputs"] = (
         _POSTGRES_ONLY_COLUMNS["conversation_inputs"]
         | _POSTGRES_DEFAULT_COLUMNS["conversation_inputs"]
@@ -432,6 +433,9 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
         assert counts["supervisor_report_requests"] == 1
         async with target._engine.connect() as conn:
             assert await conn.scalar(select(record_installation.c.installation_id)) == installation_id
+            assert (await conn.execute(select(
+                metadata.tables["tasks"].c.held_batch_id,
+            ))).scalars().all() == [None, None]
             for table_name in RECORD_TABLE_NAMES:
                 if table_name != "record_installation":
                     assert not (await conn.execute(select(metadata.tables[table_name]))).first()
