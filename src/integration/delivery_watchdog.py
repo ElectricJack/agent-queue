@@ -105,6 +105,8 @@ THRESHOLD_KEY = "delivery_watchdog.threshold:"
 PAGE_SIZE = 50
 STUCK_SCANS_TO_REDRIVE = 2
 INCIDENT_SOURCE_KIND = "integration_delivery_stuck"
+#: Files landing tasks; one is watched through the generation it lands, never itself.
+TAKEOVER_CREATOR = "delivery-watchdog"
 
 #: Inventory rule -> (state before ageing, reason code). Rules absent here are
 #: contained or owe no default-branch delivery.
@@ -115,6 +117,8 @@ _WATCHED = {
     "unreconciled": ("stuck", "publisher_unavailable"),
     "unknown": ("unknown", "delivery_observation_unavailable"),
 }
+#: Inventory rules under which a record proves the work landed another way.
+_PROVEN_RULES = frozenset({"recorded", "delivered", "delivered_by_other_means", "integrated"})
 
 
 def _digest(text: str, size: int = 16) -> str:
@@ -210,6 +214,43 @@ async def _task_status_on(conn, task_id: str) -> str | None:
     return None
 
 
+async def _landing_tasks_on(conn, task_ids: Iterable[str]) -> set[str]:
+    """The tasks among *task_ids*, live or archived, that a takeover filed."""
+    from src.database.tables import archived_tasks, tasks
+
+    ids, found = sorted(set(task_ids)), set()
+    for table in (tasks, archived_tasks):
+        found.update((await conn.execute(select(table.c.id).where(
+            table.c.id.in_(ids), table.c.created_by_kind == "system",
+            table.c.created_by_id == TAKEOVER_CREATOR,
+        ))).scalars())
+    return found
+
+
+def _settlement(entry: Mapping[str, Any] | None, *, landing: set[str],
+                target_ref: str) -> tuple[str, str, str]:
+    """``(outcome, wait outcome, rule)`` for a projection the scan stopped watching.
+
+    Only an absent inventory entry means the target reaches the head (by
+    ancestry or identical content). A task still in the inventory under a rule
+    the scan does not watch, archived or a landing task, has not reached the
+    target and is never settled as delivered.
+    """
+    if entry is None:
+        return "the completed work reached the default branch", "satisfied", "delivery_contained"
+    target, head = target_ref.removeprefix("refs/heads/"), entry["head"][:12]
+    if entry["task_id"] in landing:
+        return (f"landing task {entry['task_id']} is watched through the generation it lands; "
+                f"its head {head} is not on {target}"), "cancelled", "landing_task_unwatched"
+    if entry["rule"] in _PROVEN_RULES:
+        return (f"accounted for without reaching {target}: {entry['reason']}",
+                "satisfied", "delivery_accounted")
+    how = ", ".join([entry["rule"]] + ["archived"] * bool(entry["archived"])
+                    + ["wip"] * bool(entry["wip"]))
+    return (f"no longer watched ({how}); its head {head} is not on {target}",
+            "cancelled", "delivery_unwatched")
+
+
 def _takeover_progress(status: str | None) -> tuple[str, str]:
     """The landing agent's task decides progress once the generation is handed over."""
     if status == "COMPLETED":
@@ -232,17 +273,23 @@ async def _pending_rows_on(conn, project_id: str) -> list[dict[str, Any]]:
             if (row["decision_inputs"] or {}).get("delivery_watchdog_projection")]
 
 
-async def _settle_on(db, conn, row: Mapping[str, Any], *, now: float, outcome: str) -> None:
-    """Containment satisfies the projection and resolves its incident."""
+async def _settle_on(db, conn, row: Mapping[str, Any], *, now: float, outcome: str,
+                     wait_outcome: str = "satisfied", rule: str = "delivery_contained",
+                     evidence: Mapping[str, Any] | None = None) -> None:
+    """Settle the projection (``cancelled`` if its work did not land); resolve its incident."""
     from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
     from src.database.tables import escalations
     from src.waits.adapters.legacy_escalation import execute_mutation
 
     inputs = row["decision_inputs"] or {}
+    values = {"outcome": wait_outcome, "resolved_at": now, "cleared_at": now,
+              "version": wait_records.c.version + 1}
+    if evidence:
+        values.update(decision_inputs={**inputs, **evidence, "settled_outcome": outcome},
+                      decision_reason=rule)
     await conn.execute(update(wait_records).where(
         wait_records.c.id == row["id"], wait_records.c.outcome == "pending",
-    ).values(outcome="satisfied", resolved_at=now, cleared_at=now,
-             version=wait_records.c.version + 1))
+    ).values(**values))
     if inputs.get("incident_id"):
         await execute_mutation(conn, update(escalations).where(
             escalations.c.id == inputs["incident_id"],
@@ -254,9 +301,9 @@ async def _settle_on(db, conn, row: Mapping[str, Any], *, now: float, outcome: s
             terminal_evidence={"task_id": row["owner_id"], "head": inputs.get("head"),
                                "target_ref": inputs.get("target_ref"),
                                "source_generation": row["source_generation"],
-                               "automatic_rule": "delivery_contained"},
+                               "automatic_rule": rule},
         ))
-    if inputs.get("redrive"):
+    if inputs.get("redrive") and wait_outcome == "satisfied":
         await db.log_event("delivery.recovered", project_id=row["project_id"],
                            task_id=row["owner_id"], payload=json.dumps({
                                "generation": row["condition"].get("generation"),
@@ -280,6 +327,9 @@ async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
     from src.integration.models import INTEGRATION_REPAIR_PRIORITY
     from src.models import Task, TaskStatus, TaskType
 
+    if await _landing_tasks_on(conn, [entry["task_id"]]):
+        raise ValueError(f"{entry['task_id']} is a landing task; the generation it lands "
+                         "owns its delivery")
     task_id = "land-" + _digest(key)
     if await _task_status_on(conn, task_id) is not None:
         return task_id
@@ -298,7 +348,7 @@ async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
         ),
         branch_name="aq/" + task_id, status=TaskStatus.READY, task_type=TaskType.BUGFIX,
         priority=INTEGRATION_REPAIR_PRIORITY, dedup_key=key,
-        created_by_kind="system", created_by_id="delivery-watchdog",
+        created_by_kind="system", created_by_id=TAKEOVER_CREATOR,
     ), conn=conn)
     if hierarchy is not None:
         await hierarchy.reserve_ready_root_origin_on(conn, task_id)
@@ -338,7 +388,8 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
 
 async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any, *,
                        threshold: DeliveryThreshold, repository_id: str, target_ref: str,
-                       now: float, hierarchy=None) -> dict[str, Any]:
+                       now: float, hierarchy=None, target_oid: str | None = None
+                       ) -> dict[str, Any]:
     """Classify one owed generation and write its projection; at most one handover."""
     from src.metrics.delivery_latency import generation_of
 
@@ -437,7 +488,8 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
             delivery_watchdog_projection=True, delivery_state=state, delivery_reason=reason,
             stuck_scans=stuck_scans, first_completed_at=first, threshold=threshold.as_dict(),
             redrive=redrive, repository_id=repository_id, target_ref=target_ref,
-            head=entry["head"], age_seconds=age, rule=entry["rule"],
+            target_oid=target_oid, head=entry["head"], head_on_target=False,
+            age_seconds=age, rule=entry["rule"],
         )
         if refused:
             inputs["redrive_refused"] = refused
@@ -492,7 +544,8 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
     ordered = ([t for t in targets if cursor is None or t["id"] > cursor]
                + [t for t in targets if cursor is not None and t["id"] <= cursor])
     report: dict[str, Any] = {"projects": [], "deliveries": [], "unavailable": [],
-                              "train_disabled": [], "project_inactive": [], "errors": []}
+                              "train_disabled": [], "project_inactive": [], "errors": [],
+                              "landing_tasks": []}
     seen = 0
     for target in ordered:
         if seen >= page_size:
@@ -515,17 +568,31 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
                 await _config_put(conn, CURSOR_KEY, project_id)
                 continue
         observed = await observe(db, observer, project_ids={project_id}, now=now)
-        if observed.get("unavailable"):
+        target_ref = "refs/heads/" + (target["default_branch"] or "").removeprefix("refs/heads/")
+        # The inventory must have judged the repository and ref this project
+        # delivers to; any other target's reachability is no evidence here.
+        judged = (observed.get("targets") or {}).get(project_id)
+        mismatch = judged is not None and (judged["repository_id"], judged["target_ref"]) != (
+            target["repository_id"], target_ref)
+        if observed.get("unavailable") or mismatch:
             report["unavailable"].append(project_id)
             async with db.immediate() as conn:
-                await _mark_rows_on(conn, pending.values(), reason="target_unavailable",
-                                    verification="unavailable", now=now)
+                await _mark_rows_on(conn, pending.values(), reason="target_mismatch" if mismatch
+                                    else "target_unavailable", verification="unavailable",
+                                    now=now)
                 await _config_put(conn, CURSOR_KEY, project_id)
             continue
+        target_oid = judged["target_oid"] if judged is not None else None
+        unreached: dict[str, Mapping[str, Any]] = {}
+        for e in observed.get("entries", ()):
+            if e["project_id"] == project_id:
+                unreached.setdefault(e["task_id"], e)
+        async with db._engine.connect() as conn:
+            landing = await _landing_tasks_on(conn, unreached)
+        report["landing_tasks"].extend(sorted(landing))
         entries = [e for e in observed.get("entries", ())
                    if e["project_id"] == project_id and e["rule"] in _WATCHED
-                   and not e["archived"] and not e["wip"]]
-        target_ref = "refs/heads/" + (target["default_branch"] or "").removeprefix("refs/heads/")
+                   and not e["archived"] and not e["wip"] and e["task_id"] not in landing]
         requests = await load_delivery_requests(
             db, [e["task_id"] for e in entries], repository_id=target["repository_id"],
             target_ref=target_ref, reduced=True,
@@ -541,7 +608,7 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
                 report["deliveries"].append(await _watch_entry(
                     db, entry, requests.get(entry["task_id"]), previous,
                     threshold=threshold, repository_id=target["repository_id"],
-                    target_ref=target_ref, now=now, hierarchy=hierarchy,
+                    target_ref=target_ref, now=now, hierarchy=hierarchy, target_oid=target_oid,
                 ))
             except Exception as exc:
                 logger.exception("delivery watchdog entry failed for %s/%s",
@@ -549,10 +616,15 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
                 report["errors"].append({"project_id": project_id, "task_id": entry["task_id"],
                                          "error": type(exc).__name__})
         for row in pending.values():
+            entry = unreached.get(row["owner_id"])
+            outcome, wait_outcome, rule = _settlement(entry, landing=landing,
+                                                      target_ref=target_ref)
             try:
                 async with db.immediate() as conn:
-                    await _settle_on(db, conn, row, now=now,
-                                     outcome="the completed work reached the default branch")
+                    await _settle_on(db, conn, row, now=now, outcome=outcome,
+                                     wait_outcome=wait_outcome, rule=rule, evidence={
+                                         "head_on_target": entry is None,
+                                         "target_oid": target_oid, "settled_rule": rule})
             except Exception as exc:
                 logger.exception("delivery watchdog settlement failed for %s/%s",
                                  project_id, row["owner_id"])

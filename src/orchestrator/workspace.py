@@ -1227,11 +1227,33 @@ class WorkspaceMixin:
         self._register_slot_bases(slots, base.workspace_path)
 
         in_cap = [s for s in slots if (s.slot_index or 0) < cap]
-        free = [s for s in in_cap if s.enabled and s.locked_by_agent_id is None]
+        # "Free" must mean what acquisition means: cleared lock columns alone
+        # do not make a slot acquirable while a retaining session, a job pin
+        # or a live claim file still protects it.  Counting those as free
+        # starved a pool indefinitely below its cap (2026-10-28).
+        unlocked = [s for s in in_cap if s.enabled and s.locked_by_agent_id is None
+                    and s.locked_by_task_id is None]
+        protected = await self.db.protected_workspace_ids(unlocked)
+        free = [s for s in unlocked if s.id not in protected]
         warming = len(in_cap) < cap
         if free or len(in_cap) >= cap:
             # Something is acquirable, or we are already at cap: no growth.
             return SlotGrowth(warming=warming, worktree=True)
+        if protected:
+            from src.claim_file import read_claim_file
+
+            claims = {s.id: read_claim_file(s.workspace_path) or {} for s in unlocked}
+            logger.warning(
+                "All %d unlocked slot(s) of kind %s in %s are protected (retaining "
+                "session, job pin or claim file); growing past them: %s",
+                len(unlocked),
+                kind.id,
+                project.id,
+                ", ".join(
+                    f"{sid} claim={c.get('task_id')}/{c.get('session_id')}"
+                    for sid, c in claims.items()
+                ),
+            )
 
         known = {s.id for s in slots}
         try:
