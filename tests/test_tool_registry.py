@@ -115,6 +115,7 @@ def test_registry_has_categories(registry):
         "files",
         "git",
         "ci",
+        "integration",
         "project",
         "agent",
         "supervisor",
