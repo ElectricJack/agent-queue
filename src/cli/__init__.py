@@ -6,4 +6,4 @@ with interactive menus, fuzzy search, and beautiful formatted output.
 Entry point: ``aq`` console script (see pyproject.toml).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
