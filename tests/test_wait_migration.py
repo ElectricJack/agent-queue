@@ -20,7 +20,7 @@ from tests.alembic_revisions import previous_revision
 from tests.pg_dsn import create_scratch_database
 
 ROOT = Path(__file__).resolve().parent.parent
-REVISION = "a00000000097"
+REVISION = "a00000000110"
 TABLES = (
     "wait_records",
     "wait_edges",
@@ -32,6 +32,7 @@ TABLES = (
     "admission_reservations",
     "wait_measurements",
     "wait_priority_projection",
+    "wait_bridge_progress",
 )
 CLAIM_INDEXES = (
     "idx_tasks_claim_frontier",
@@ -44,6 +45,7 @@ JSONB_COLUMNS = {
     "continuations": {"facts"},
     "admission_reservations": {"scope"},
     "wait_priority_projection": {"donor_path"},
+    "wait_bridge_progress": {"evidence"},
 }
 
 
@@ -99,6 +101,12 @@ def assert_schema(bind):
     indexes = {idx["name"]: idx for idx in inspector.get_indexes("tasks")}
     for name in CLAIM_INDEXES:
         assert indexes[name]["column_names"][-2:] == ["effective_priority", "created_at"]
+        base = name.replace("idx_tasks_claim", "idx_tasks_base_claim")
+        assert indexes[base]["column_names"] == [
+            "priority" if col == "effective_priority" else col
+            for col in indexes[name]["column_names"]
+        ]
+        assert indexes[base].get("dialect_options", {}) == indexes[name].get("dialect_options", {})
     assert not compare_metadata(
         MigrationContext.configure(bind, opts={"compare_type": True}), metadata
     )
@@ -222,10 +230,11 @@ def assert_unique_semantics(bind):
 @pytest.mark.parametrize("legacy", [True, False], ids=["pre-v2", "fresh-baseline"])
 async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrade(legacy):
     engine = create_async_engine(await create_scratch_database("waitmigration"))
-    revision = import_module("migrations.versions.a00000000097_wait_records")
-    predecessor = import_module("migrations.versions.a00000000096_workspace_kind_limits")
+    revision = import_module("migrations.versions.a00000000110_wait_records")
+    compatibility = import_module("migrations.versions.a00000000111_base_claim_frontier_indexes")
+    predecessor = import_module("migrations.versions.a00000000102_workspace_kind_limits")
     try:
-        await migrate(engine, previous_revision(previous_revision(REVISION)))
+        await migrate(engine, previous_revision(predecessor.revision))
         async with engine.begin() as conn:
             if legacy:
                 await conn.execute(
@@ -296,6 +305,14 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
             with Operations.context(MigrationContext.configure(bind)):
                 revision.upgrade()
                 revision.upgrade()
+                compatibility.upgrade()
+                compatibility.upgrade()
+                # Repair missing compatibility indexes without rewriting rows.
+                for name in CLAIM_INDEXES:
+                    Operations(MigrationContext.configure(bind)).drop_index(
+                        name.replace("idx_tasks_claim", "idx_tasks_base_claim"), table_name="tasks"
+                    )
+                compatibility.upgrade()
                 # Missing indexes on existing tables must also be repaired.
                 for name in TABLES:
                     for index in metadata.tables[name].indexes:
@@ -306,6 +323,7 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
                 assert_schema(bind)
                 assert_unique_semantics(bind)
                 revision.downgrade()
+                compatibility.downgrade()
             assert_schema(bind)
             assert bind.execute(sa.text("SELECT effective_priority FROM tasks")).scalar_one() == 7
             assert (
@@ -321,6 +339,37 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
                 bind.execute(sa.text("SELECT summary FROM continuations")).scalar_one()
                 == "é" * 4096
             )
+
+        async with engine.begin() as conn:
+            await conn.run_sync(verify)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.migration
+@pytest.mark.integration
+async def test_continuation_task_audit_fk_upgrade_is_idempotent():
+    engine = create_async_engine(await create_scratch_database("continuationaudit"))
+    revision = import_module("migrations.versions.a00000000113_continuation_task_audit")
+    try:
+        await migrate(engine, "head")
+
+        def verify(bind):
+            operations = Operations(MigrationContext.configure(bind))
+            for table in ("continuations", "admission_reservations"):
+                operations.create_foreign_key(
+                    f"{table}_task_id_fkey", table, "tasks", ["task_id"], ["id"],
+                )
+            with Operations.context(MigrationContext.configure(bind)):
+                revision.upgrade()
+                revision.upgrade()
+                revision.downgrade()
+            inspector = sa.inspect(bind)
+            assert {tuple(fk["constrained_columns"])
+                    for fk in inspector.get_foreign_keys("continuations")} == {("wait_id",)}
+            assert ("task_id",) not in {tuple(fk["constrained_columns"])
+                                        for fk in inspector.get_foreign_keys("admission_reservations")}
+            assert_schema(bind)
 
         async with engine.begin() as conn:
             await conn.run_sync(verify)

@@ -8,11 +8,11 @@ underlying repository (branch-isolated mode).
 import asyncio
 import pathlib
 import subprocess
-import shutil
 
 import pytest
 
 from src.git.manager import GitManager
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -26,30 +26,13 @@ def _git(args: list[str], cwd: str) -> str:
     return result.stdout.strip()
 
 
-def _disable_auto_maintenance(repo: str) -> None:
-    # Git 2.47+ detaches auto-maintenance after commit/push (receive-pack on the
-    # remote side); its objects/maintenance.lock can appear and vanish while the
-    # per-test copytree walks the seed. Local transport strips -c config from
-    # receive-pack, so the setting has to live in each repository's own config.
-    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
-    for key, value in settings:
-        _git(["config", key, value], cwd=repo)
-
-
-@pytest.fixture(scope="session")
-def _git_repo_seed(tmp_path_factory):
-    """Create a bare remote + working clone for testing."""
-    tmp_path = tmp_path_factory.mktemp("git-seed")
+@pytest.fixture
+def git_repo(tmp_path):
+    """Create a bare remote + working clone for this test."""
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
-    _disable_auto_maintenance(str(remote))
+    init_bare_seed(str(remote))
     clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
-    _disable_auto_maintenance(str(clone))
+    clone_seed(str(remote), str(clone))
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
     subprocess.run(
@@ -66,16 +49,6 @@ def _git_repo_seed(tmp_path_factory):
     )
     return {"remote": str(remote), "clone": str(clone)}
 
-
-@pytest.fixture
-def git_repo(tmp_path, _git_repo_seed):
-    """Copy both repos so every test owns its refs, objects, hooks and worktree."""
-    remote = tmp_path / "remote.git"
-    clone = tmp_path / "clone"
-    shutil.copytree(_git_repo_seed["remote"], remote)
-    shutil.copytree(_git_repo_seed["clone"], clone)
-    _git(["config", "remote.origin.url", str(remote)], cwd=str(clone))
-    return {"remote": str(remote), "clone": str(clone)}
 
 
 class TestLockProvider:

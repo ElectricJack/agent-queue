@@ -52,7 +52,7 @@ class RepositoryAdapter(Adapter):
         facts = snapshot.observation.facts
         if facts.get("repository_id") != cond.parameters["repository_id"]:
             unresolved("watcher did not verify the requested repository")
-        if not facts.get("exists_on_origin"):
+        if not facts.get("exists_on_origin") and snapshot.observation.state != "unavailable":
             unresolved("watcher did not verify the head on origin", retry_after=30)
         return snapshot
 
@@ -107,7 +107,23 @@ class CIAdapter(RepositoryAdapter):
             )
             .limit(1)
         )
-        if not known_batch and not known_job:
+        from src.waits.adapters.close_scope import author_candidate
+
+        close = await author_candidate(conn, scope, repository_id=p["repository_id"],
+                                       head=p["head_sha"])
+        if close:
+            hosted = close["evidence"].get("hosted") or {}
+            if self.kind != "ci_check" or p["check_name"] not in (
+                hosted.get("pending_checks", []) + hosted.get("missing_checks", [])
+            ):
+                foreign()
+        # The integration owner may observe disposable speculative heads
+        # before they occupy a delivery batch. The authenticated watcher
+        # must verify repository, origin SHA and exact run identity first.
+        if (not known_batch and not known_job and not close
+                and (self.kind != "ci_run" or scope.principal != "service"
+                     or scope.owner_kind != "integration"
+                     or not await self.snapshot(conn, cond))):
             unresolved("head is not known to a job or integration stage")
         return cond
 
@@ -119,7 +135,8 @@ class CIAdapter(RepositoryAdapter):
             if (
                 facts.get("head_sha") != cond.parameters["head_sha"]
                 or facts.get(identity) != cond.parameters[identity]
-                or not facts.get("identity_verified")
+                or (not facts.get("identity_verified")
+                    and snapshot.observation.state != "unavailable")
             ):
                 unresolved("watcher did not verify the exact check identity")
             if (
