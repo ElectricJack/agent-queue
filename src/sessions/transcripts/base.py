@@ -18,10 +18,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
 from typing import ClassVar
 
-__all__ = ["TranscriptEntry", "TranscriptReader", "parse_iso_ts"]
+__all__ = [
+    "TranscriptEntry",
+    "TranscriptReader",
+    "is_model_prose",
+    "parse_iso_ts",
+]
+
+
+def transcript_usage_key(provider: str, conversation: str, call_id: str) -> str:
+    """Stable call identity across daemon/AQ session incarnations."""
+    identity = json.dumps([provider, conversation, call_id], separators=(",", ":"))
+    return f"{provider}:{hashlib.sha256(identity.encode()).hexdigest()}"
 
 
 def parse_iso_ts(raw) -> float:
@@ -50,6 +63,24 @@ def parse_iso_ts(raw) -> float:
 #: long, and long enough to bridge the gap between two model turns.
 _IN_TURN_WINDOW_SECONDS = 60.0
 
+#: The readers flatten non-text content blocks into these stand-ins so an SSE
+#: consumer sees *something* for tool traffic (claude.py ``_extract_text``,
+#: codex.py ``_entry_from_line``).  They are harness bookkeeping, not model
+#: prose, so a consumer that would surface a turn to a human — the
+#: transcript-tail reply fallback — must never treat one as an answer.
+TOOL_PLACEHOLDER_PREFIXES = ("[tool_use:", "[tool_result]")
+
+
+def is_model_prose(text: str | None) -> bool:
+    """True when *text* is assistant prose rather than a tool placeholder.
+
+    ``""`` (a usage-only line) and ``"[tool_use: Bash]"`` are both "no reply
+    here".  Text that merely *contains* a placeholder still counts: a turn
+    that says something and then calls a tool is an answer.
+    """
+    stripped = (text or "").strip()
+    return bool(stripped) and not stripped.startswith(TOOL_PLACEHOLDER_PREFIXES)
+
 
 @dataclass(frozen=True)
 class TranscriptEntry:
@@ -77,6 +108,10 @@ class TranscriptEntry:
     #: Defaulted so the Claude reader and every existing construction are
     #: untouched.
     rate_limits: dict | None = None
+    #: Provenance of ``model`` (provider response, transcript context, etc.).
+    model_source: str | None = None
+    #: Provider API call identity, independent of content-block ``uuid``.
+    usage_call_id: str | None = None
 
 
 class TranscriptReader(ABC):
@@ -107,6 +142,14 @@ class TranscriptReader(ABC):
         if not session.session_key:
             return None
         return self.resolve_path(session.work_dir, session.session_key)
+
+    async def read_latest_provider_usage(self, path: Path) -> TranscriptEntry | None:
+        """Recover a quota reading without replaying conversation or token usage."""
+        return None
+
+    async def read_usage_baselines(self, path: Path, offset: int) -> dict[str, list[str]]:
+        """Legacy content UUIDs before a checkpoint, grouped by API call."""
+        return {}
 
     @abstractmethod
     def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:

@@ -65,25 +65,27 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PrMergeRequest,
 ) -> Response[PrMergeResponse | PrMergeResponse422]:
-    """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+    """Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
-     Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+     Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
     Args:
         body (PrMergeRequest):
@@ -112,25 +114,27 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PrMergeRequest,
 ) -> PrMergeResponse | PrMergeResponse422 | None:
-    """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+    """Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
-     Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+     Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
     Args:
         body (PrMergeRequest):
@@ -154,25 +158,27 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PrMergeRequest,
 ) -> Response[PrMergeResponse | PrMergeResponse422]:
-    """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+    """Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
-     Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+     Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
     Args:
         body (PrMergeRequest):
@@ -199,25 +205,27 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PrMergeRequest,
 ) -> PrMergeResponse | PrMergeResponse422 | None:
-    """Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+    """Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
-     Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist
-    ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns
-    the merged SHA on success (best-effort — callers who need the authoritative SHA should query the
-    branch head after this command returns).  The PR's status-check rollup is consulted first according
-    to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under the
-    ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says whether
-    the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head behind
-    its base passed against a base that has since moved, and under ``required`` that refuses too until
-    the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
+     Merge a GitHub pull request via ``gh pr merge``.  Use it only when a task delegates publication to
+    you and the project's configured publisher is PR-based; where AQ's integration service publishes
+    (e.g. ``development`` mode), do not merge.  Callable only by profiles that grant ``pr_merge``.
+    Returns the merged SHA on success (best-effort — callers who need the authoritative SHA should query
+    the branch head after this command returns).  The PR's status-check rollup is consulted first
+    according to ``integration.merge_ci_policy``; the verdict comes back in the ``ci`` block, and under
+    the ``required`` policy a non-green rollup refuses the merge.  The same block's ``base`` says
+    whether the head is up to date with its base (``current`` / ``stale`` / ``unknown``): a green head
+    behind its base passed against a base that has since moved, and under ``required`` that refuses too
+    until the branch is updated and its checks re-run (``integration.merge_require_up_to_date``).
 
     Args:
         body (PrMergeRequest):

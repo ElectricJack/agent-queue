@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +27,101 @@ from src.playbooks.run_state import (
 )
 
 
+def index_playbook_sources(vault_root: Path) -> dict[str, str]:
+    """Index only playbook source locations, never arbitrary vault content."""
+    from src.playbooks.definition import source_digest
+
+    sources: dict[str, str] = {}
+    roots = (
+        (vault_root, (
+            "system/playbooks/*.md",
+            "agent-types/*/playbooks/*.md",
+            "projects/*/playbooks/*.md",
+            "reviewed-playbooks/*/source.md",
+        )),
+        (Path(__file__).resolve().parents[1] / "prompts/reviewed_playbooks", ("*/source.md",)),
+    )
+    for root, patterns in roots:
+        for pattern in patterns:
+            for path in sorted(root.glob(pattern)):
+                if not path.resolve().is_relative_to(root.resolve()):
+                    continue
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    continue
+                sources.setdefault(source_digest(source), source)
+    return sources
+
+
+def resync_system_source(
+    store: ArtifactStore,
+    vault_root: Path,
+    playbook_id: str,
+    artifact_sha256: str,
+    expected_source_hash: str,
+) -> dict:
+    """Restore retained, digest-verified source without compiling or activating.
+
+    Explicit repair only. Preserve the previous bytes beside the source and
+    refuse an edited source or any path outside the system playbook directory.
+    """
+    from src.playbooks.definition import source_digest
+
+    directory = vault_root.resolve() / "system" / "playbooks"
+    path = directory / f"{playbook_id}.md"
+    if (
+        not playbook_id
+        or path.name != f"{playbook_id}.md"
+        or path.is_symlink()
+        or path.resolve().parent != directory.resolve()
+        or not directory.resolve().is_relative_to(vault_root.resolve())
+    ):
+        raise ValueError("invalid system playbook source path")
+    definition = store.load(artifact_sha256)
+    if definition.id != playbook_id or definition.scope.type != "system":
+        raise ValueError("artifact does not belong to this system playbook")
+    source = store.load_source(artifact_sha256).encode("utf-8")
+    previous = path.read_bytes()
+    previous_hash = source_digest(previous.decode("utf-8"))
+    if previous_hash != expected_source_hash:
+        raise ValueError("conflict: vault_changed_underneath")
+    result = {
+        "success": True,
+        "playbook_id": playbook_id,
+        "artifact_sha256": artifact_sha256,
+        "source_hash": definition.source_hash,
+        "previous_source_hash": previous_hash,
+        "source_path": str(path),
+        "backup_path": None,
+        "changed": previous != source,
+    }
+    if previous == source:
+        return result
+    backup = path.with_name(f"{path.name}.bak-{uuid4().hex}")
+    staging = path.with_name(f".{path.name}.tmp-{uuid4().hex}")
+    try:
+        with os.fdopen(
+            os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb"
+        ) as handle:
+            handle.write(previous)
+            handle.flush()
+            os.fsync(handle.fileno())
+        with os.fdopen(
+            os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb"
+        ) as handle:
+            handle.write(source)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.read_bytes() != previous:
+            raise ValueError("conflict: vault_changed_underneath")
+        os.replace(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
+    result["backup_path"] = str(backup)
+    return result
+
+
 class ArtifactStore:
     """Store canonical artifact bytes beneath ``<compiled_root>/artifacts``."""
 
@@ -44,6 +140,51 @@ class ArtifactStore:
         if not SHA256_RE.fullmatch(artifact_sha256):
             raise ValueError(f"invalid artifact SHA-256: {artifact_sha256!r}")
         return str(self._root / f"{artifact_sha256[7:]}.json")
+
+    def source_path_for(self, artifact_sha256: str) -> Path:
+        return Path(self.path_for(artifact_sha256)).with_suffix(".md")
+
+    def put_source(self, artifact_sha256: str, source: str) -> None:
+        """Retain reviewed Markdown separately from the immutable compiled schema."""
+        from src.playbooks.definition import source_digest
+
+        definition = self.load(artifact_sha256)
+        if source_digest(source) != definition.source_hash:
+            raise ArtifactVerificationFailed("source does not match the reviewed artifact")
+        path = self.source_path_for(artifact_sha256)
+        self._write_atomically(path, source.encode("utf-8"))
+
+    def load_source(self, artifact_sha256: str) -> str:
+        from src.playbooks.definition import source_digest
+
+        source = self.source_path_for(artifact_sha256).read_text(encoding="utf-8")
+        if source_digest(source) != self.load(artifact_sha256).source_hash:
+            raise ArtifactVerificationFailed("retained source does not match the reviewed artifact")
+        return source
+
+    def backfill_sources(self, sources: Mapping[str, str]) -> dict:
+        """Restore missing sources for legacy artifacts, including inactive ones.
+
+        Run once at startup. Digest verification and the normal atomic source
+        writer preserve artifact identity; subsequent starts never rewrite a
+        retained source. Unrecoverable or damaged artifacts do not block startup.
+        """
+        restored, unavailable, errors = [], [], []
+        for path in sorted(self._root.glob("*.json")):
+            sha = "sha256:" + path.stem
+            if not SHA256_RE.fullmatch(sha) or self.source_path_for(sha).exists():
+                continue
+            try:
+                definition = self.load(sha)
+                source = sources.get(definition.source_hash)
+                if source is None:
+                    unavailable.append(sha)
+                    continue
+                self.put_source(sha, source)
+                restored.append(sha)
+            except (OSError, ValueError, UnicodeError, ArtifactVerificationFailed) as exc:
+                errors.append({"artifact_sha256": sha, "error": str(exc)})
+        return {"restored": restored, "unavailable": unavailable, "errors": errors}
 
     def layout_path_for(self, artifact_sha256: str) -> str:
         if not SHA256_RE.fullmatch(artifact_sha256):

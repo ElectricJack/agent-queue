@@ -5,10 +5,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from src.database import Database
 from src.database.tables import playbook_activations
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 #: Re-activation writes an INSERT that can violate
 #: ``uq_playbook_activations_scope``.  On PostgreSQL a constraint violation
@@ -20,11 +18,9 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("playbook-activation.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("playbook-activation.db")
     yield database
-    await database.close()
 
 
 def _artifact(digest_char: str = "a"):
@@ -918,11 +914,10 @@ async def _activate_the_shipped_pipeline(db, tmp_path):
 async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, tmp_path):
     """`solid-harbor.54`, end to end on the artifact the fleet runs.
 
-    `default-pipeline` has no AI step: `reviewer`, `final-reviewer` and
-    `spec-ingest` reach it only as literal `profile_id` arguments to
-    `ensure_task`.  While `compiled_against.profiles` was empty, widening any
-    of them left this activation `ready` forever, because health can only
-    compare what the artifact recorded.
+    `default-pipeline` has no AI step: `ensure_spec_ingest` creates its
+    server-owned `spec-ingest` role. An empty `compiled_against.profiles`
+    would leave activation `ready` after widening that role, because health
+    can only compare what the artifact recorded.
     """
     from src.playbooks.activation import ActivationHealth, load_activation_health
     from src.playbooks.validation import RegistryContractLookup
@@ -940,7 +935,7 @@ async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, t
 
     widened = _OverriddenProfiles(
         {
-            "reviewer": CapabilityPolicy.from_namespaces(
+            "spec-ingest": CapabilityPolicy.from_namespaces(
                 aq_commands=frozenset({"task_close", "pr_merge"})
             )
         }
@@ -951,8 +946,8 @@ async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, t
 
     assert [record.health for record in stale] == [ActivationHealth.STALE_CONTRACT]
     reasons = {reason.subject: reason.code for reason in stale[0].reasons}
-    assert reasons["reviewer"] == "profile_capabilities_changed"
-    assert set(reasons) & {"final-reviewer", "spec-ingest"} == set(), (
+    assert reasons["spec-ingest"] == "profile_capabilities_changed"
+    assert set(reasons) & {"final-reviewer", "reviewer"} == set(), (
         "only the profile that moved may be named"
     )
 
@@ -1117,8 +1112,15 @@ async def test_read_path_never_reports_ready_for_a_duplicate_key_artifact(db, tm
     records = await load_activation_health(
         db, contracts=StubContracts(), profiles=StubProfiles(), enabled_only=True
     )
-    assert [record.health for record in records] == [ActivationHealth.UNAVAILABLE]
-    assert [reason.code for reason in records[0].reasons] == ["artifact_missing"]
+    assert [record.health for record in records] == [ActivationHealth.INVALID]
+    assert [reason.code for reason in records[0].reasons] == ["artifact_invalid"]
+
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_activation_invalid
+
+    doctor = await _check_activation_invalid(_stale_ctx(db))
+    assert doctor.severity is Severity.WARN
+    assert doctor.data["invalid"][0]["playbook_id"] == "twin"
 
 
 # -- doctor: playbooks.activation_stale --------------------------------------
@@ -1257,6 +1259,30 @@ async def test_activation_health_response_validates_against_the_wire_contract(db
     response = PlaybookActivationHealthResponse.model_validate(result)
     assert response.activations[0].health == "ready"
     assert response.activations[0].pending_event_count == 0
+
+
+@pytest.mark.asyncio
+async def test_activation_health_surfaces_authored_source_drift(db, tmp_path, monkeypatch):
+    """A changed source is visible without changing the deployed activation."""
+    from types import SimpleNamespace
+
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    await _activate_profiled_artifact(db, tmp_path)
+    handler = _v2_handler(db, (StubContracts(), StubProfiles(), None))
+    source = SimpleNamespace(
+        vault_path="system/playbooks/twin.md",
+        raw="---\nid: twin\nscope: system\ntriggers: [task.created]\n---\n\n# Edited\n",
+    )
+    monkeypatch.setattr(handler, "_v2_find_source", lambda _playbook_id: (source, None))
+
+    result = await handler._cmd_playbook_activation_health({})
+
+    activation = result["activations"][0]
+    assert activation["source_path"] == source.vault_path
+    assert activation["source_sha256"].startswith("sha256:")
+    assert activation["active_source_sha256"].startswith("sha256:")
+    assert activation["source_drift"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1509,10 +1535,15 @@ async def test_artifacts_command_honours_its_gates_and_arguments(db, tmp_path):
     lookups = (StubContracts(), StubProfiles(), None)
     handler = _v2_handler(db, lookups)
 
-    assert await handler._cmd_playbook_artifacts({}) == {"error": "playbook_id is required"}
+    assert await handler._cmd_playbook_artifacts({}) == {
+        "success": False,
+        "error": "playbook_id is required",
+    }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": 0}) == {
+        "success": False,
         "error": "limit must be >= 1"
     }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": "many"}) == {
+        "success": False,
         "error": "limit must be an integer"
     }

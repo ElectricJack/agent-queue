@@ -1,10 +1,20 @@
 import type { CSSProperties } from "react";
 import type {
   GraphNodeDTO,
+  ExplanationValueDTO,
   NodeOverlayDTO,
   PlaybookRunOverlayResponse,
   RuleClusterDTO,
 } from "../../api/client";
+
+/** Use the generated discriminator so new expression kinds cannot drift from the API. */
+export type ExpressionKind = ExplanationValueDTO["kind"];
+export const COLLECTION_EXPRESSION_LABELS: Partial<Record<ExpressionKind, string>> = {
+  filter: "Filter collection",
+  map: "Map collection",
+  len: "Collection length",
+  diff: "Collection difference",
+};
 
 /** Fixed card geometry. The backend owns rank and order (`GraphLayoutDTO`);
  *  the frontend owns pixels and nothing else. */
@@ -26,18 +36,12 @@ export const CLUSTER_HEADER = 44;
 export const SEMANTIC_NODE_TYPE = "semanticStep";
 export const RULE_CLUSTER_NODE_TYPE = "ruleCluster";
 
-/** The seven step kinds of the V2 step union (`StepKind` in
+/** The eight step kinds of the V2 step union (`StepKind` in
  *  `src/api/models/playbook_v2.py`). */
-export type SemanticStepKind =
-  | "command"
-  | "llm"
-  | "agent_task"
-  | "decision"
-  | "wait"
-  | "foreach"
-  | "terminal";
+export type SemanticStepKind = GraphNodeDTO["step_kind"];
 
 export const STEP_KIND_LABELS: Record<string, string> = {
+  script: "script",
   command: "command",
   llm: "AI",
   agent_task: "agent task",
@@ -51,6 +55,7 @@ export const STEP_KIND_LABELS: Record<string, string> = {
  *  label under the title is the accessible one, so a card never depends on
  *  hue alone to say what it is. */
 export const STEP_KIND_TONES: Record<string, string> = {
+  script: "border-orange-500 bg-orange-950 text-orange-100",
   command: "border-sky-600 bg-sky-950 text-sky-100",
   llm: "border-violet-500 bg-violet-950 text-violet-100",
   agent_task: "border-teal-500 bg-teal-950 text-teal-100",
@@ -119,6 +124,20 @@ export function selectedEdgeStyle(base: CSSProperties): CSSProperties {
     strokeWidth: width * 2,
     strokeOpacity: 1,
     filter: `drop-shadow(0 0 5px ${String(base.stroke ?? "#e2e8f0")})`,
+  };
+}
+
+/** Edges touching the selected step draw at full opacity above the faded
+ *  default edges. A run overlay dims the untraversed ones to
+ *  `UNTRAVERSED_EDGE_OPACITY`, and a connected edge nobody can see is not
+ *  connected either. The dash pattern still carries the kind, and the weight
+ *  stays the edge's own — `selectedEdgeStyle` is reserved for the edge the
+ *  operator picked themselves, which is a mutually exclusive selection. */
+export function connectedEdgeStyle(base: CSSProperties): CSSProperties {
+  return {
+    ...base,
+    strokeOpacity: 1,
+    filter: `drop-shadow(0 0 4px ${String(base.stroke ?? "#e2e8f0")})`,
   };
 }
 
@@ -208,4 +227,11 @@ export interface RuleClusterNodeData extends Record<string, unknown> {
   rule: RuleClusterDTO;
   /** Diagnostics attributed to the rule itself plus each of its steps. */
   diagnosticCount: number;
+}
+
+/** Keep protected and unresolved values explicit on compact and detailed views. */
+export function valueDisplay(value: ExplanationValueDTO): string {
+  if (value.redacted || value.kind === "redacted") return "Protected value";
+  if (value.kind === "unresolved") return `Unresolved: ${value.display}`;
+  return value.display;
 }

@@ -14,6 +14,8 @@ a caller has. The other pages in this directory go deeper:
 | [`aq prime` and the session hooks](prime.md) | The startup document a worker receives, its sections, its per-project override, and the harness hooks. |
 | [Agent-facing tools](agent-tools.md) | The tool definitions, the MCP surface, and the shipped agent skills. |
 | [Command contracts](contracts.md) | The typed, fingerprinted contracts playbooks execute commands through. |
+| [`aq install`](install.md) | The daemon-free installer: flags, JSON payload, exit codes and the resume record. |
+| [`aq uninstall`](uninstall.md) | Removing what the installer owns: scopes, confirmations and what is never touched. |
 
 > **Prerequisite for every example on this page.** The daemon is running on
 > loopback and the shell has no `AQ_API_TOKEN` set — that is an operator
@@ -349,8 +351,7 @@ run longer carry their own timeout in `_COMMAND_TIMEOUTS`
 | Command | Read timeout | Why |
 |---|---|---|
 | `task_claim`, `task_close` | 180 s | Both long-poll for the next claim; `--wait` is clamped server-side by `swarm.claim_wait_max`. |
-| `integration_adopt` | 180 s | Repository work against a remote. |
-| `integration_flush`, `integration_development_sweep` | 1800 s | Builds and publishes a batch, including validation. |
+| `integration_recover_completed_container` | 300 s | Preview and apply prove the exact head under the retained repository's lock: a fetch with its 120 s Git budget, authenticated `ls-remote` reads and ancestry checks. |
 
 `aq test` is not on this list because it is not an HTTP call — it execs pytest
 locally and waits as long as pytest does.
@@ -541,6 +542,9 @@ quoting a number from any page.
   definitions, and the MCP surface that publishes them.
 * [Command contracts](contracts.md) — the typed layer playbooks call commands
   through.
+* [`aq uninstall`](uninstall.md) — removing what the installer owns
+* [`aq install`](install.md) — the one command that runs before a daemon
+  exists, and the exit codes a script branches on.
 * [Module catalog: CLI](../modules/cli.md) — every module behind this surface.
 * [Resource gating](../../guides/resource-gating.md) — why `aq test` exists and
   what the slot semaphore protects.

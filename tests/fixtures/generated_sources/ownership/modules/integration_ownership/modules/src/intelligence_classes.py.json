@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/intelligence_classes.py::load_intelligence_classes": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
