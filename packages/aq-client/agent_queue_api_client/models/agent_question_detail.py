@@ -42,6 +42,7 @@ class AgentQuestionDetail:
         delivery_lease_until (float | None | Unset):
         delivered_at (float | None | Unset):
         reason (None | str | Unset):
+        escalation_id (None | str | Unset):
     """
 
     id: str
@@ -70,6 +71,7 @@ class AgentQuestionDetail:
     delivery_lease_until: float | None | Unset = UNSET
     delivered_at: float | None | Unset = UNSET
     reason: None | str | Unset = UNSET
+    escalation_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -161,6 +163,12 @@ class AgentQuestionDetail:
         else:
             reason = self.reason
 
+        escalation_id: None | str | Unset
+        if isinstance(self.escalation_id, Unset):
+            escalation_id = UNSET
+        else:
+            escalation_id = self.escalation_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -204,6 +212,8 @@ class AgentQuestionDetail:
             field_dict["delivered_at"] = delivered_at
         if reason is not UNSET:
             field_dict["reason"] = reason
+        if escalation_id is not UNSET:
+            field_dict["escalation_id"] = escalation_id
 
         return field_dict
 
@@ -325,6 +335,15 @@ class AgentQuestionDetail:
 
         reason = _parse_reason(d.pop("reason", UNSET))
 
+        def _parse_escalation_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        escalation_id = _parse_escalation_id(d.pop("escalation_id", UNSET))
+
         agent_question_detail = cls(
             id=id,
             question=question,
@@ -352,6 +371,7 @@ class AgentQuestionDetail:
             delivery_lease_until=delivery_lease_until,
             delivered_at=delivered_at,
             reason=reason,
+            escalation_id=escalation_id,
         )
 
         agent_question_detail.additional_properties = d
