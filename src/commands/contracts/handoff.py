@@ -26,6 +26,24 @@ from src.handoffs import HANDOFF_BYTES, LIST_FIELDS, TEXT_FIELDS
 
 
 class TaskHandoffArgs(CommandArgs):
+    """Scope fields the session gate injects; a worker cannot nominate others.
+
+    :func:`src.api.scope.check_command_scope` fills the ID triple from the
+    caller's own token before ``CommandHandler`` dispatches, and a session token
+    always carries a project.  A handful of agent-surface handlers validate that
+    raw dispatch dict against their own ``args_model``, so a model that omits an
+    injected field rejects a request the agent cannot fix by changing its
+    arguments — which is how ``project_id`` once broke ``aq handoff --auto``
+    from a worker terminal.
+
+    ``project_id`` is therefore declared and otherwise inert: the handoff is
+    keyed by ``task_id``, and ``agent_note`` reads only the prose fields.
+    Declaring it is a contract alignment, not a scope widening — the gate still
+    refuses a foreign ``project_id`` before dispatch, and ``_assert_session_owns``
+    still fences task/session/claim_epoch.
+    """
+
+    project_id: str | None = None
     task_id: str | None = None
     session_id: str | None = None
     claim_epoch: int | None = Field(default=None, ge=0)
@@ -41,6 +59,8 @@ class TaskHandoffArgs(CommandArgs):
     decisions: list[str] = Field(default_factory=list, max_length=20)
     do_not_repeat: list[str] = Field(default_factory=list, max_length=20)
     uncertainties: list[str] = Field(default_factory=list, max_length=20)
+    constraints: list[str] = Field(default_factory=list, max_length=20)
+    evidence: list[str] = Field(default_factory=list, max_length=20)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")

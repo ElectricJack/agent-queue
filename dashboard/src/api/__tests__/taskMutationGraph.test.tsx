@@ -23,7 +23,7 @@ afterAll(() => {
 function setup(hook: typeof useDeleteTask) {
   const client = new QueryClient();
   clients.push(client);
-  for (const key of [["projectGraph", "p1"], ["projectGraph", "p2"], ["tasks", "p1"], ["task", "t1"]]) client.setQueryData(key, {});
+  for (const key of [["projectGraph", "p1"], ["projectGraph", "p2"], ["tasks", "p1"], ["task", "t1"], ["records", "search", "p1"]]) client.setQueryData(key, {});
   return { client, ...renderHook(hook, { wrapper: ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   ) }) };
@@ -38,7 +38,7 @@ describe("task mutations refresh shared graph snapshots", () => {
   ] as const)("invalidates graphs and task caches after %s", async (_name, hook, input) => {
     const { result, client } = setup(hook as typeof useDeleteTask);
     await act(async () => { await result.current.mutateAsync(input as { task_id: string }); });
-    for (const key of [["projectGraph", "p1"], ["projectGraph", "p2"], ["tasks", "p1"], ["task", "t1"]]) {
+    for (const key of [["projectGraph", "p1"], ["projectGraph", "p2"], ["tasks", "p1"], ["task", "t1"], ["records", "search", "p1"]]) {
       expect(client.getQueryState(key)?.isInvalidated, key.join("/")).toBe(true);
     }
   });
@@ -48,5 +48,6 @@ describe("task mutations refresh shared graph snapshots", () => {
     const { result, client } = setup(useDeleteTask);
     await act(async () => { await expect(result.current.mutateAsync({ task_id: "t1" })).rejects.toThrow("active task"); });
     expect(client.getQueryState(["projectGraph", "p1"])?.isInvalidated).toBe(false);
+    expect(client.getQueryState(["records", "search", "p1"])?.isInvalidated).toBe(false);
   });
 });
