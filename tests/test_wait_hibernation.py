@@ -1806,8 +1806,12 @@ async def test_failed_stop_signal_with_fresh_death_proof_still_parks(env, monkey
     case.handler.wait_escalation_create.assert_not_awaited()
 
 
-async def bound_resume(env, *, outcome='satisfied'):
-    """Park a real claim, reserve a seat, bind an entirely new process."""
+async def bound_resume(env, *, outcome='satisfied', unpin_agent=False):
+    """Park a real claim, reserve a seat, bind an entirely new process.
+
+    ``unpin_agent`` replays the agent reconciler's stale-BUSY reset landing on
+    the reserved agent before its fresh workspace is ready (bold-rapids-90.3).
+    """
     from dataclasses import replace
     from src.database.tables import admission_reservations, agents
     from src.scheduler import AssignAction
@@ -1832,6 +1836,9 @@ async def bound_resume(env, *, outcome='satisfied'):
             id='reservation', project_id='p', continuation_id='c', scope={},
             effective_priority=100, provenance='resume', deadline_at=NOW + 300,
             state='granted', created_at=NOW + 30))
+        if unpin_agent:
+            await conn.execute(update(agents).where(agents.c.id == 'a').values(
+                state='IDLE', current_task_id=None))
     record = SessionRecord(
         id='fresh', task_id='owner', agent_id='a', project_id='p', profile_id='worker-codex',
         harness='codex', provider='fake', name='fresh', lifecycle='task', state='running',
@@ -1848,6 +1855,56 @@ async def bound_resume(env, *, outcome='satisfied'):
     await env.db.create_session(record)
     scope = replace(env.scope, session_id='fresh', instance_token='fresh-token', claim_epoch=2)
     return driver, action, scope
+
+
+@pytest.mark.parametrize('unpin_agent', [False, True])
+async def test_resumed_continuation_holds_a_live_claim_it_can_push_message_and_close(
+    env, unpin_agent,
+):
+    """bold-rapids-90.3: a resumed continuation bound an empty claim holder.
+
+    Park leaves ``claimed_by_session`` empty; the resume must bind the new
+    session id, and a reserved agent unpinned while its workspace was being
+    built must be re-pinned, or push, message and close all refuse it.
+    """
+    from src.api.auth import RequestScope
+    from src.api.scope import held_task_for_session
+    from src.commands.message_commands import MessageCommandsMixin
+    from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+    from src.models import AgentState, TaskStatus
+    from src.waits.fencing import mutation_fence
+    from src.waits.resume_ack import acknowledge, mark_delivered
+
+    _, _, scope = await bound_resume(env, unpin_agent=unpin_agent)
+    assert await env.db.get_task_meta('owner', CLAIMED_BY_SESSION_KEY) == 'fresh'
+    agent = await env.db.get_agent('a')
+    assert agent.state is AgentState.BUSY and agent.current_task_id == 'owner'
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id='c', session_id='fresh',
+                             instance_token='fresh-token', claim_epoch=2, now=NOW + 40)
+        await acknowledge(conn, {'wait_id': env.wait_id, 'continuation_id': 'c', 'generation': 1},
+                          scope=scope, now=NOW + 45)
+    task = await env.db.get_task('owner')
+    assert task.status is TaskStatus.IN_PROGRESS and task.assigned_agent_id == 'a'
+    assert await env.db.get_task_meta('owner', CLAIMED_BY_SESSION_KEY) == 'fresh'
+    # aq git push and the other held-task reads.
+    held = await held_task_for_session(env.db, RequestScope(
+        kind='session', session_id='fresh', session_instance_token='fresh-token',
+        task_id='owner', project_id='p'))
+    assert held is not None and held.id == 'owner'
+    # aq message send.
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=CapabilityPolicy(), session_id='fresh',
+        session_instance_token='fresh-token', task_id='owner', project_id='p',
+        profile_id='worker-codex')
+    with principal_context(principal):
+        sender = await MessageCommandsMixin._ordinary_message_sender(
+            SimpleNamespace(db=env.db), {'project_id': 'p', 'claim_epoch': 2})
+    assert sender == ('session', 'fresh')
+    # aq task close.
+    async with env.db._engine.connect() as conn:
+        assert await mutation_fence(conn, 'task_close', SimpleNamespace(
+            session_id='fresh', session_instance_token='fresh-token')) is None
 
 
 @pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])

@@ -23,6 +23,7 @@ from src.waits.admission import AdmissionReader
 from src.waits.graph import background_graph_work, lock_graph
 from src.wait_runtime.hibernate import locked_suspension, suspension_writer
 from src.waits.mail import held_messages
+from src.waits.resume_ack import bind_live_claim
 from src.waits.sources import insert_message_with_source_event
 from src.wait_runtime.legacy_parking import parked
 
@@ -512,6 +513,8 @@ class ResumeTransaction:
                 'session_id': record.id, 'instance_token': record.instance_token,
                 'claim_epoch': record.last_claim_epoch,
             }, conn=conn)
+            await bind_live_claim(conn, task_id=task['id'], agent_id=action.agent_id,
+                                  session_id=record.id, now=self.clock())
             held = await held_messages(conn, wait)
             ids = [m['id'] for m in held]
             envelope = wait_outcome_envelope(wait, intent, held_messages=ids)
