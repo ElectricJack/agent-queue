@@ -505,3 +505,43 @@ async def test_transfer_waits_for_bounded_reserved_mutation_exclusion(db):
     await preparation
     successor = await transfer
     assert successor.owner_id == "collector"
+
+
+async def test_train_disable_serializes_with_worker_reservation(db, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.models import RepoConfig
+    from tests.test_integration_train_policy import activate
+
+    await db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/example/project.git", default_branch="main",
+    ))
+    await db.update_project("p", hierarchical_integration_mode="train", integration_repository_id="r")
+    await db.create_task(Task(id="worker", project_id="p", title="Worker", description=""))
+    world = SimpleNamespace(db=db)
+    await activate(world, tmp_path)
+    owners = BranchOwnership(db)
+    target = BranchKey(repository_id="r", branch="worker")
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    locked_row = owners._locked_row
+
+    async def hold_before_reserving(conn, key):
+        entered.set()
+        await proceed.wait()
+        return await locked_row(conn, key)
+
+    monkeypatch.setattr(owners, "_locked_row", hold_before_reserving)
+    acquire = asyncio.create_task(owners.acquire(target, "worker", "worker"))
+    await asyncio.wait_for(entered.wait(), 3)
+    disable = asyncio.create_task(activate(world, tmp_path, enabled=False))
+    try:
+        await asyncio.sleep(0.05)
+        assert not disable.done(), "disable must serialize before checking idle reservations"
+    finally:
+        proceed.set()
+        await asyncio.wait_for(asyncio.gather(acquire, disable), 3)
+    owner = await owners.get_owner(target)
+    assert owner["handoff_state"] == "released"
+    with pytest.raises(BranchBusy, match="playbook is disabled"):
+        await owners.acquire(target, "worker", "worker")

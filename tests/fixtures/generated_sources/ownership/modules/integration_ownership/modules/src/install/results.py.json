@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/install/results.py::RESOURCE_CONFIG": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/install/results.py::ResourceRecord": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/install/results.py::StepResult": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
