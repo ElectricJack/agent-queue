@@ -99,6 +99,8 @@ class WorkerFacts:
     needs_attention: str | None = None
     #: Frontier predicates that exclude this task while it is READY.
     exclusions: tuple[str, ...] = ()
+    #: Ingestion batch awaiting fidelity review; held members are not candidates.
+    held_batch_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,7 @@ class EpicFacts:
     #: Git's own answer for this epic's current completion; ``None`` when no
     #: observer is registered or git had nothing to say about it.
     canonical: CanonicalDelivery | None = None
+    branch_name: str | None = None
 
 
 def lease_ttl_from(config: Any) -> float:
@@ -373,6 +376,15 @@ def classify_epic_delivery(
         unproven = _canonical_unproven(facts, result=result)
         if unproven is not None:
             return unproven
+        if (facts.mode == "development" and facts.status == "COMPLETED"
+                and facts.parent_task_id is None and facts.branch_name):
+            return result(
+                "unknown", "Delivery evidence unavailable",
+                reason="Implementation is complete; current delivery proof is unavailable "
+                "for this root branch",
+                remedy=f"aq integration redrive-root {facts.task_id}",
+                since=facts.updated_at, evidence="unavailable",
+            )
         reason = f"Integration mode {facts.mode} records no per-epic delivery"
         if hold == "backoff":
             reason = "Paused for a backoff; resumes automatically"
@@ -400,6 +412,17 @@ def classify_epic_delivery(
     checkpoint = facts.checkpoint
     if checkpoint is None:
         if facts.status == "COMPLETED":
+            unproven = _canonical_unproven(facts, result=result)
+            if unproven is not None:
+                return unproven
+            if facts.parent_task_id is None and facts.branch_name:
+                return result(
+                    "unknown", "Delivery evidence unavailable",
+                    reason="Implementation is complete; no aggregate checkpoint or current "
+                    "delivery proof accounts for this root branch",
+                    remedy=f"aq integration reverify-epic {facts.task_id}",
+                    since=facts.updated_at, evidence="unavailable",
+                )
             # Finished before the train tracked it (or in another mode): the
             # train never owed it a receipt, so its silence is not a blocker.
             return result(
@@ -416,6 +439,8 @@ def classify_epic_delivery(
 
     if facts.collection_cancelled and (operation is None):
         if facts.status == "COMPLETED":
+            if facts.parent_task_id is None:
+                return _completed_epic(facts, result=result)
             return result(
                 "not_tracked", "Completed outside the train",
                 reason="Its collection was cancelled and it completed outside the train; "
@@ -564,9 +589,12 @@ def _completed_epic(facts: EpicFacts, *, result) -> dict:
         )
     if not _train_verified(checkpoint):
         return result(
-            "not_tracked", "Completed outside the train",
-            reason="No train verification or receipt records this epic's delivery",
-            since=since, evidence="untracked",
+            "queued", "Waiting for aggregate verification",
+            reason="Implementation is complete; the integration train must verify the "
+            "collected root branch before delivery",
+            responsible=_ref("system", None, "Integration train"),
+            remedy=f"aq integration reverify-epic {facts.task_id}",
+            since=since,
         )
     return result(
         "queued", "Waiting for the next train",
@@ -594,7 +622,7 @@ _UNPROVEN_REASONS = {
     "missing_or_ambiguous_source": (
         "git could not locate an exact source for this completion"
     ),
-    "missing_target": "{target} does not exist, so nothing can be delivered to it",
+    "target_ref_missing": "{target} does not exist, so nothing can be delivered to it",
 }
 
 
@@ -822,7 +850,8 @@ def _queued_or_excluded(
     predicate = worker.exclusions[0]
     return result(
         "blocked", f"{noun} blocked - not claimable",
-        reason=f"{worker.id}: {FRONTIER_PREDICATE_DETAILS.get(predicate, predicate)}",
+        reason=f"{worker.id}: "
+        + FRONTIER_PREDICATE_DETAILS.get(predicate, predicate).format(batch_id=worker.held_batch_id),
         responsible=_ref("system", None, "Claim frontier"), since=since, extra=links,
     )
 
@@ -1195,7 +1224,7 @@ class EpicDeliveryProjection:
                 await conn.execute(
                     select(
                         tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.resume_after,
-                        tasks.c.parent_task_id, tasks.c.project_id,
+                        tasks.c.parent_task_id, tasks.c.project_id, tasks.c.branch_name,
                         parent.c.status.label("parent_status"),
                         projects.c.hierarchical_integration_mode.label("mode"),
                         projects.c.integration_repository_id,
@@ -1231,6 +1260,7 @@ class EpicDeliveryProjection:
                 updated_at=row["updated_at"],
                 resume_after=row["resume_after"],
                 project_id=row["project_id"],
+                branch_name=row["branch_name"],
                 parent_task_id=row["parent_task_id"],
                 parent_status=row["parent_status"],
                 mode=row["mode"] or "disabled",
@@ -1459,7 +1489,8 @@ class EpicDeliveryProjection:
 
     async def _workers_on(self, conn, worker_ids: list[str]) -> dict[str, WorkerFacts]:
         _delivery_query = select(
-            tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.profile_id, tasks.c.project_id
+            tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.profile_id, tasks.c.project_id,
+            tasks.c.held_batch_id,
         ).where(tasks.c.id.in_(worker_ids))
         found = {row["id"]: dict(row) for row in (await conn.execute(_delivery_query)).mappings()}
         meta: dict[str, dict[str, Any]] = {}
@@ -1520,6 +1551,7 @@ class EpicDeliveryProjection:
                 blocked_terminal=_text(meta.get(task_id, {}).get(TERMINAL_BLOCKED_META_KEY)),
                 needs_attention=_text(meta.get(task_id, {}).get("needs_attention")),
                 exclusions=exclusions.get(task_id, ()),
+                held_batch_id=row["held_batch_id"],
             )
         return out
 

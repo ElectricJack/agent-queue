@@ -10,6 +10,7 @@ import {
 import { diffView, useKnowledgeDiff, useKnowledgeUpdate } from "../../pages/knowledge/useKnowledge";
 import KnowledgeDiff from "./KnowledgeDiff";
 import KnowledgeEditConflict from "./KnowledgeEditConflict";
+import { randomUUID } from "../../randomUUID";
 
 export interface KnowledgeEditFormProps {
   adapter: KnowledgeAdapter;
@@ -33,11 +34,6 @@ function draftFrom(detail: KnowledgeDetailView): KnowledgeEditDraft {
   };
 }
 
-function newIdempotencyKey(): string {
-  const generator = globalThis.crypto as { randomUUID?: () => string } | undefined;
-  return generator?.randomUUID?.() ?? `edit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
 /**
  * Guarded edit. The form holds the revision token it observed and sends it
  * as `if_revision` with one idempotency key for the whole attempt. A
@@ -49,7 +45,7 @@ export default function KnowledgeEditForm({ adapter, detail, onSaved, onCancel }
   const [draft, setDraft] = useState<KnowledgeEditDraft>(() => draftFrom(detail));
   const [tagsText, setTagsText] = useState(() => detail.tags.join(", "));
   const [observed, setObserved] = useState<KnowledgeRevisionRef>({ revisionId: detail.viewed.revisionId, sequence: detail.viewed.sequence });
-  const [idempotencyKey] = useState(newIdempotencyKey);
+  const [idempotencyKey] = useState(randomUUID);
   const [conflict, setConflict] = useState<KnowledgeRevisionRef | null>(null);
   const [comparing, setComparing] = useState(false);
   const [reloading, setReloading] = useState(false);

@@ -1120,6 +1120,14 @@
     }
   },
   "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/review-pipeline.artifact.json": {
+      "previous_sha256": "bc2b74c555c0e4cf0e92eea6ba577fed3bda90259517f7d055cfe2ebdff1f35e",
+      "sha256": "b5ec180a7a48d708db4669590766b8f7610e998c3bca3e685aca3c0c5d7f5521"
+    },
+    "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json": {
+      "previous_sha256": "68713cc12ae40737680a2cc2ea7b1cc079b2da5f7362a1ca70374494738af2a6",
+      "sha256": "117ddd0b629c130b2d5cc61afaa128b52760cbce05c43a8ea7b3f7432cfb3f47"
+    },
     "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json": {
       "previous_sha256": "3ea1144f4896607c409e5333dc1ff0ae79babc61b3c03e2af8d42b42f4bab0fa",
       "sha256": "1a74993b0b29772a513b4d83275978a9d056e94f818ccc4538054f0705c4c1c0"

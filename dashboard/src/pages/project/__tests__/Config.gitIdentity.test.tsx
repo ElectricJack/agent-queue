@@ -95,6 +95,27 @@ function setup(project: object) {
 describe("Project Settings › Git commit identity", () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it.each([false, true])("an unrelated stale save preserves server supervisor state (loaded %s)", async (enabled) => {
+    // Another operator changes the server flag after this form loaded,
+    // without this tab receiving a refetch.
+    let serverEnabled = enabled;
+    const mutateAsync = setup({ ...inheriting, supervisor_enabled: enabled });
+    mutateAsync.mockImplementation(async (body) => {
+      if ("supervisor_enabled" in body) serverEnabled = body.supervisor_enabled;
+      return inheriting;
+    });
+    serverEnabled = !enabled;
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const name = screen.getByDisplayValue("Demo");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Demo v2");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0]![0]).not.toHaveProperty("supervisor_enabled");
+    expect(serverEnabled).toBe(!enabled);
+  });
+
   it("defaults the project supervisor off and saves an enabled toggle", async () => {
     const mutateAsync = setup(inheriting);
     const toggle = screen.getByRole("switch", { name: "Project supervisor" });
@@ -105,6 +126,14 @@ describe("Project Settings › Git commit identity", () => {
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ project_id: "demo", supervisor_enabled: true }),
     ));
+  });
+
+  it("saving another field leaves the project supervisor switch out of the body", async () => {
+    const mutateAsync = setup({ ...inheriting, supervisor_enabled: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(mutateAsync.mock.calls[0]![0]).not.toHaveProperty("supervisor_enabled");
   });
 
   it("stages disabling a project supervisor and Cancel restores its server value", async () => {
