@@ -321,7 +321,7 @@ def handler():
     return value
 
 
-async def test_command_validates_using_repository_default_and_reports_remote_gap():
+async def test_command_validates_using_repository_default_and_reports_unavailable_remote():
     value = handler()
     result = await value._cmd_promote_validate(
         {
@@ -332,7 +332,7 @@ async def test_command_validates_using_repository_default_and_reports_remote_gap
         }
     )
     assert result["success"] and result["valid"]
-    assert result["warnings"][0]["code"] == "not_implemented"
+    assert result["warnings"][0]["code"] == "remote_unverifiable"
     assert result["warnings"][0]["layer"] == 4
     value._promotion_manifest.assert_awaited_once()
 
@@ -497,7 +497,7 @@ def test_migration_column_is_nullable_jsonb_and_inspector_guarded():
 
     column = projects.c.promotion_flow
     assert isinstance(column.type, JSONB) and column.nullable and column.server_default is None
-    migration = import_module("migrations.versions.a00000000081_projects_promotion_flow")
+    migration = import_module("migrations.versions.a00000000085_projects_promotion_flow")
     inspector = MagicMock()
     inspector.has_table.return_value = True
     inspector.get_columns.return_value = [{"name": "id"}]
@@ -1132,3 +1132,32 @@ async def test_daemon_start_records_findings_and_logs_the_pointer(flow_db, caplo
     assert orchestrator.promotion_flow_problems["p"][0]["code"] == "check_set_unknown"
     assert "check_set_unknown at '/1/gate/checks'" in caplog.text
     assert (await stored(flow_db))[0] == filled(two_steps())
+
+
+async def test_status_names_the_ci_source_per_target_kind(flow_db):
+    from sqlalchemy import update
+
+    from src.database.tables import projects
+    from src.integration.status import IntegrationStatusService
+    from tests.test_integration_service import _minimal_policy_values
+
+    async def both():
+        control = await IntegrationStatusService(flow_db).status("p")
+        train = await IntegrationStatusService(flow_db, git_first="active").train_status("p")
+        assert control["ci_source"] == train["ci_source"]
+        return train["ci_source"]
+
+    async def store(policy):
+        async with flow_db._engine.begin() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p")
+                               .values(hierarchical_integration_policy=policy))
+
+    hosted = {"root": "hosted", "epic": "hosted", "promotion": "hosted"}
+    assert await both() == {**hosted, "origin": "default"}
+    await store({**_minimal_policy_values(), "ci": {
+        "source": "hybrid", "epic": "local", "commands": {"unit": "aq test tests/test_x.py"}}})
+    assert await both() == {
+        "root": "hybrid", "epic": "local", "promotion": "hybrid", "origin": "policy"}
+    pin = _minimal_policy_values()["root"]["route"]
+    await store({"development": {"route": pin}})
+    assert (await both())["origin"] == "development"
