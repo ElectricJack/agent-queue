@@ -14,6 +14,16 @@ failure diagnostics and guarded cleanup.
 If a notification transaction conflicts after activation has committed,
 return the current claimed result without preparing the checkout again.
 
+Repair startup may import objects through Git's 120-second acquisition budget.
+Its managed branch exclusion therefore allows that budget plus the normal
+30-second critical-section allowance, capped by the current lease's remaining
+lifetime. Ordinary publication retains its 30-second bound. A typed
+`BranchLockTimeout` during preparation follows the same bounded transient retry
+path as database contention, preserving the claim epoch, task, reservation and
+repair allocation count. Exhaustion retains preparation for a later claim call;
+it never blocks the task or consumes a repair attempt. Other Git/timeout errors
+keep their existing permanent-failure handling.
+
 Managed preparation must acquire session and task activation locks before
 the ref advisory/owner lock. Ordinary repair allocation takes batch intent,
 then the existing task (when present), then the ref lock. The incident's
