@@ -184,6 +184,24 @@ def test_min_active_keeps_idle_workers():
     assert [(a.kind, a.count) for a in actions] == [("start", 1)]
 
 
+def test_repairs_receive_limited_global_headroom_before_ordinary_profiles():
+    ordinary, repair = PoolKey("a-ordinary"), PoolKey("z-repair")
+    actions, _ = run(
+        demand={ordinary: 500, repair: 2}, bounds={ordinary: (0, 6), repair: (0, 6)},
+        global_cap=2, repair_demand={repair: 2},
+    )
+    assert [(a.key, a.count) for a in actions] == [(repair, 2)]
+
+
+def test_repair_priority_never_overrides_a_disabled_pool():
+    ordinary, repair = PoolKey("ordinary"), PoolKey("repair")
+    actions, _ = run(
+        demand={ordinary: 5, repair: 1}, bounds={ordinary: (0, 6), repair: (0, 0)},
+        global_cap=1, repair_demand={repair: 1},
+    )
+    assert [(a.key, a.count) for a in actions] == [(ordinary, 1)]
+
+
 def test_never_below_busy_plus_starting():
     actions, _ = run(
         supply={K: PoolSupply(running_busy=2, starting=1)}, demand={K: 0}, bounds={K: (0, 1)}
@@ -428,3 +446,33 @@ def test_drain_session_ids_are_the_fleet_wide_idle_set():
         now=500.0,
     )
     assert [(a.kind, a.count, a.session_ids) for a in actions] == [("drain", 2, ("a1", "b1"))]
+
+
+@pytest.mark.parametrize('capacity,cap,expected', [(0, 1, 'evict'), (1, 2, 'deficit')])
+def test_eviction_replaces_only_capacity_blocked_waiters(capacity, cap, expected):
+    from src.scheduler import PlacementCandidate, place_pool_actions
+
+    actions, _ = run(supply={K: PoolSupply(running_busy=1, evictable=1)},
+                     demand={K: 1}, bounds={K: (0, cap)}, global_cap=cap)
+    starts, drains, _ = place_pool_actions(actions=actions, candidates={K: [PlacementCandidate(
+        project_id='p', ready=1, live=1, project_live_total=1, project_cap=cap,
+        workspace_capacity=capacity, quarantined=False, warm_floor=0, evictable=1,
+    )]})
+    assert [(s.reason, s.count) for s in starts] == [(expected, 1)]
+    assert not drains
+
+
+def test_eviction_does_not_turn_busy_work_or_free_idle_supply_into_a_victim():
+    from src.scheduler import PlacementCandidate, place_pool_actions
+
+    actions, _ = run(supply={K: PoolSupply(running_busy=1)}, demand={K: 1},
+                     bounds={K: (0, 1)}, global_cap=1)
+    assert not actions
+    actions, _ = run(supply={K: PoolSupply(running_busy=1, running_idle=1, evictable=1)},
+                     demand={K: 1}, bounds={K: (0, 2)}, global_cap=2)
+    starts, _, _ = place_pool_actions(actions=actions, candidates={K: [PlacementCandidate(
+        project_id='p', ready=1, live=2, project_live_total=2, project_cap=2,
+        workspace_capacity=0, quarantined=False, warm_floor=0, evictable=1,
+        idle_session_ids=('idle',),
+    )]})
+    assert not starts
