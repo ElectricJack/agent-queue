@@ -65,15 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: RemoveTaskRequest,
 ) -> Response[HierarchyRefusalResponse | RemoveTaskResponse]:
-    """Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+    """Deprecated alias for delete_task; use delete instead.
 
-     Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+     Deprecated alias for delete_task; use delete instead.
 
     Args:
         body (RemoveTaskRequest):
@@ -102,15 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: RemoveTaskRequest,
 ) -> HierarchyRefusalResponse | RemoveTaskResponse | None:
-    """Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+    """Deprecated alias for delete_task; use delete instead.
 
-     Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+     Deprecated alias for delete_task; use delete instead.
 
     Args:
         body (RemoveTaskRequest):
@@ -134,15 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: RemoveTaskRequest,
 ) -> Response[HierarchyRefusalResponse | RemoveTaskResponse]:
-    """Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+    """Deprecated alias for delete_task; use delete instead.
 
-     Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+     Deprecated alias for delete_task; use delete instead.
 
     Args:
         body (RemoveTaskRequest):
@@ -169,15 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: RemoveTaskRequest,
 ) -> HierarchyRefusalResponse | RemoveTaskResponse | None:
-    """Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+    """Deprecated alias for delete_task; use delete instead.
 
-     Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without
-    changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless
-    legacy operations and archives when audit history exists. Branches are kept. Requires a reason when
-    confirmed.
+     Deprecated alias for delete_task; use delete instead.
 
     Args:
         body (RemoveTaskRequest):

@@ -79,6 +79,10 @@ class ReviewNotifier:
                     handled += 1
                     continue
 
+                blocked = getattr(self.db, "legacy_human_delivery_blocked", None)
+                if blocked and await blocked(review["project_id"]):
+                    continue
+
                 await self.transport.post_root(
                     channel_id=self.channel_id,
                     content=content,
