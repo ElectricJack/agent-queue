@@ -88,7 +88,7 @@ async def test_batch_ejection_record_migration_is_additive_and_ignores_legacy_me
 
     from src.models import Project, Task
 
-    migration = import_module("migrations.versions.a00000000082_batch_ejection_record")
+    migration = import_module("migrations.versions.a00000000083_batch_ejection_record")
     database = Database(lease_dsn("batch-ejection"))
     await database.initialize()
     await database.create_project(Project(id="p", name="Ejection migration"))

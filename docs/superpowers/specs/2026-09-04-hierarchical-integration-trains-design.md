@@ -168,6 +168,29 @@ A branchless parent's verification behavior is playbook policy with three typed 
 The shipped hierarchical-delivery playbook uses `verifier` for a branchless parent with delivered
 code and `skip` only for a proven code-less subtree.
 
+### 6.2.1 Origins for existing work
+
+Enabling `hierarchy` or `train` on an existing project backfills live branch origins
+under the project hierarchy lock and integration-generation fence. Every open task
+and every legacy artifact-bearing completion without an origin is covered,
+including ancestors needed to name a dedicated parent target. Existing published
+task branches are adopted at their observed exact tip without rewriting the ref;
+their origin base is the merge base with the parent/default target, and their initial
+checkpoint is the observed tip. Absent branches receive ordinary pinned reservations
+for the materialization consumer. Unknown remote state, incompatible checkpoints or
+branch ownership refuse activation atomically. Existing live origins are preserved.
+Retired completion origins remain cleanup history; an open child's retired ancestor
+refuses activation rather than resurrecting that history. Repair and verification
+delegates retain their subject branches, and code-less completions need no new
+branch. Receipts alone never exclude a legacy artifact from this backfill;
+ordinary Git containment still determines whether collection is owed.
+
+`integration.branch_origins` diagnoses and repairs projects already missing origins,
+using the same fenced configuration command. `app-verify`, functional preflight and
+`cutover-plan` report missing origins as `branch_origins_missing`, with task identities
+and the doctor repair command. Readiness reads never adopt refs or invent completions;
+collection still requires the ordinary exact completion provenance.
+
 ### 6.3 Suspending the parent
 
 A parent may continue its own work after filing a child, but it cannot close while children are
@@ -353,9 +376,15 @@ per affected parent and invalidates its aggregate verification and review eligib
 invalidates both old and new parents. Changes below a completed ancestor require explicitly
 reopening the affected ancestor chain first; completed ancestors cannot silently remain eligible.
 
-Reparenting is allowed only before the child has acquired a workspace, created a branch, or
-received a delivery receipt. It replaces the unused branch reservation with a checkpoint from the
-new parent. Once code work starts, keep its delivery target fixed; transfer later work through a
+The ordinary reparent command uses this integration transaction, including moves to root.
+An unheld leaf with no delivery receipt may move while its reservation is unused, or while
+fresh Git evidence proves its published branch is still exactly its recorded base (no commits).
+Live claims, locked workspaces, attached owners, completed work, descendants and sealed
+ancestors refuse the move. Both affected parents invalidate verification. An unused reservation
+is replaced from the new parent checkpoint or the default branch for root. A materialized
+no-commit branch keeps its exact base and ref; another parent must have that same checkpoint,
+and root delivery targets the default branch. The retired origin remains audit history.
+Once code work starts, keep its delivery target fixed; transfer later work through a
 new task instead. A delivered task cannot be reopened for additional code: create a follow-up task
 from its current parent's checkpoint. A root already sealed into a batch, and its descendants,
 cannot be reopened, reparented, or have delivery dispositions changed until the batch is terminal;
@@ -459,13 +488,27 @@ project, frozen member, operator and reason. The daemon supersedes an open batch
 whose stacked source was refreshed using the same batch-owned record, bound to
 the refreshed frozen member, service identity and supersede reason. Its inputs
 return to pending for a new exact candidate; an explicit pause still holds.
-If the refreshed member has no task row or appears in both active and archived
-tasks, supersede leaves the old batch and its inputs unchanged. The target visit
-reports `stack_member_missing` or `stack_member_ambiguous` with the task and batch
-IDs, and other targets continue. A later visit rechecks the member's identity.
+If the refreshed member has no task row, appears in both active and archived
+tasks, or belongs to another project, supersede leaves the old batch and its
+inputs unchanged. The target visit reports `stack_member_missing`,
+`stack_member_ambiguous` or `stack_member_foreign_project` with the task and batch
+IDs and the existing abort-batch command, and other targets continue. A later
+visit rechecks the member's identity. Explicit eject refusals remain unchanged.
 Task archival or deletion cannot erase that instruction; worker task metadata
 and legacy ejection markers cannot
 authorize release. An ordinary supervisor abort continues withholding its inputs.
+On each root or epic target visit, compare the frozen boundary's required check
+names with the current project policy. If a named check was removed, supersede
+an open, unpromoted batch through the same audited release instruction so its
+unchanged inputs can pass admission and seal under the new policy. Never edit
+the old snapshot or treat old CI as proof for the replacement. Special epic sync
+and refresh batches replace their complete frozen inputs atomically, retaining
+their purpose under a fresh identity instead of using the ordinary frontier.
+Recheck the removed names under the project-policy lock and target freshness under the
+batch fence. Missing policy never authorizes supersession. Missing Git evidence,
+ambiguous member identity and explicit holds retain the batch and name the blocker;
+already delivered inputs settle normally. Promotion batches retain their separately pinned check sets.
+Check additions, ordering changes and version-only edits do not release a batch.
 Pause requires open intent and resume requires paused intent; repeated or invalid
 transitions refuse. Pause, resume, eject and seal-now default to preview and remain
 operator/supervisor controls scoped to the owning project. Eject returns
@@ -527,7 +570,9 @@ moves before promotion, the expected-base update fails. The playbook input `on_m
 invalidates prior CI evidence, and requires full CI again. `wait` preserves the branch and asks a
 human to reconcile the external movement. Membership never changes automatically.
 
-Each rebuild creates a new numbered candidate revision within the same batch. Replay the sealed
+Each rebuild creates a new numbered candidate revision within the same batch. Reserving that
+revision atomically moves the batch to `building`, including when the prior revision was in
+CI or had a green/red result, so a new member conflict can move it to `repairing`. Replay the sealed
 sources and previously accepted repair changes on the new base, resolving new conflicts forward.
 Keep prior revision SHAs and evidence for audit; only the current revision can be promoted. Rebuilds
 do not reset repair stages, consumed attempts, or deadlines.
@@ -742,6 +787,42 @@ close-time release only because a verifier that is still `attached` to a *live* 
 ASSIGNED/IN_PROGRESS task may be rebound as a repair stage's existing writer. A re-queued verifier
 is none of those things. `collector` remains excluded everywhere: its owner is an operation, not a
 task, so it has no claim for the proof to read.
+
+Ownership attaches before pool slot preparation. If preparation fails before activation,
+the checkout can still be detached at the published default-branch tip, rather than at the
+task tip. That checkout can release only under the exact current `preparing` claim: its
+epoch, task, agent, session and workspace bindings must agree. Git must freshly prove the
+checkout clean, the task's local tip equal to its published origin tip, and the detached HEAD
+equal to the published default tip. The release CAS revalidates the preparation phase and
+epoch. This saves no new work, changes no resume point, and never admits an active claim,
+dirty checkout or unpublished detached HEAD. A failed preparation releases to READY;
+an external task stop uses the same proof and returns that unactivated task to READY too.
+
+A retained failed preparation may resume its own `handoff_pending` row in the same
+pool session. The retry must prove the exact session instance, preparing claim epoch,
+workspace acquisition receipt and generation, task assignment and canonical branch.
+It uses the pool clean/published checkout proof and a fenced self-transfer, restoring
+the same task and role to `reserved` before retrying preparation. It never requires
+the pool session to stop. If proof fails, retain the claim and workspace binding;
+the generic branch-busy retry ladder must not erase that evidence.
+
+The operator or project supervisor may preview this recovery with
+`aq integration release-owner --task-id TASK_ID --self-owned`, then apply it with
+`--apply`. This opt-in requires a retained preparation-failure record naming the
+exact instance, epoch, workspace and generation. It also works for a retained
+preparation whose repeated failures requested drain and disabled its workspace.
+An active claim, changed identity, unproved child cleanup, dirty or unpublished
+checkout is refused. Preview neither detaches nor changes ownership. Apply records
+the recovery and restores the reservation while retaining the claim, session and
+workspace locks; ordinary preparation or teardown still owns their lifecycle.
+The normal stopped-writer `release-owner` behavior remains the default.
+
+When the ordinary stop proof is unavailable, stop retains every binding and names the exact
+writer session and the supervisor recovery commands. `aq session kill` requests termination;
+`aq integration release-owner --task-id TASK_ID --dry-run` previews the provider-backed,
+work-preserving release, and applying it releases only the proved attachment. This control
+does not require a task recovery incident. A still-IN_PROGRESS task can then be stopped,
+and `aq task restart` intentionally retries the preserved task.
 
 Qualified candidate conflict repairs have one additional publication proof, evaluated only by
 `integration_resolve_candidate_member` during acceptance of its server-owned pushed reservation.
@@ -1133,6 +1214,9 @@ that keeps its frozen destinations and can be replayed. The reviewed event types
 playbook consumes are instead marked delivered with an audit reason, and only once the playbook
 runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
+Graceful runtime shutdown settles any in-flight pending-event claim before releasing
+its dispatch lease, including cancellation while the claim transaction is returning.
+A restarted consumer can then replay the retained event without waiting for lease expiry.
 
 ## 12. Events, gates, and operator controls
 
