@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,7 +14,6 @@ from sqlalchemy import insert
 
 from src.commands.claim_commands import write_claim_file
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
     integration_branch_owners,
@@ -36,6 +37,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions import SessionProviderRegistry
+from src.sessions.context import completed_turn_at
 from src.sessions.exit_classifier import ExitVerdict, Verdict
 from src.sessions.fake import FakeProvider
 from src.sessions.provider import SessionHandle, SessionSpec
@@ -51,13 +53,11 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", harness="claude"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -138,6 +138,25 @@ async def observe(reconciler, now=None):
     now = now if now is not None else time.time()
     live = await reconciler._step_observe(now)
     return live, now
+
+
+@pytest.mark.parametrize("desired_state", ["stopped", "running"])
+async def test_deleted_profile_retries_guarded_stop_of_a_busy_pool(
+    db, reconciler, provider, desired_state,
+):
+    sid = await held_pool_session(db)
+    await provider.start(SessionSpec(
+        session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+    ))
+    await db.update_session(sid, desired_state=desired_state)
+    await db.delete_profile("worker")
+
+    row = await db.get_session(sid)
+    await reconciler._step_drain_ack([row], time.time())
+
+    assert (await db.get_session(sid)).state == "stopped"
+    task = await db.get_task("t1")
+    assert (task.status, task.assigned_agent_id, task.profile_id) == (TaskStatus.READY, None, None)
 
 
 class TestPrepareTimeout:
@@ -382,6 +401,102 @@ class TestStallLadder:
         assert (await db.get_session(sid)).state == "stopped"
         t = await db.get_task("t1")
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
+
+    async def test_completed_turn_repainting_pane_enters_ladder(
+        self, db, reconciler, monkeypatch
+    ):
+        sid = await held_pool_session(db)
+        now = time.time()
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1000)
+        monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                            AsyncMock(return_value=now - 1000))
+        await reconciler._step_stall_ladder(await db.list_sessions(live_only=True), now)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
+
+
+class TestCompletedTurnBackstop:
+    @pytest.mark.parametrize("exemption", [None, "question", "wait", "heartbeat", "disabled"])
+    async def test_repainting_idle_holder_released_unless_exempt(
+        self, db, reconciler, monkeypatch, exemption
+    ):
+        sid = await held_pool_session(db)
+        now = time.time()
+        reconciler.config.agents_config.stuck_timeout_seconds = 0
+        if exemption == "disabled":
+            reconciler.sessions_config.idle_claim_timeout_seconds = 0
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=(
+            now if exemption == "heartbeat" else now - 1000
+        ))
+        monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                            AsyncMock(return_value=now - 1000))
+        if exemption == "question":
+            monkeypatch.setattr(reconciler, "_waiting_for_question", AsyncMock(return_value=True))
+        if exemption == "wait":
+            monkeypatch.setattr(reconciler, "_wait_lease", AsyncMock(return_value=(True, 0.0)))
+        await reconciler._step_backstop(await db.list_sessions(live_only=True), now)
+        row = await db.get_session(sid)
+        task = await db.get_task("t1")
+        if exemption:
+            assert row.state == "running"
+            assert task.status == TaskStatus.IN_PROGRESS
+        else:
+            assert row.state == "stopped"
+            assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+            assert (await db.get_agent("agent-1")).state == AgentState.IDLE
+            assert (await db.get_workspace("ws-agent-1")).locked_by_task_id is None
+
+    async def test_resumed_turn_before_stop_retains_claim(self, db, reconciler, monkeypatch):
+        sid = await held_pool_session(db)
+        now = time.time()
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1000)
+        monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                            AsyncMock(side_effect=[now - 1000, None]))
+        await reconciler._step_backstop(await db.list_sessions(live_only=True), now)
+        assert (await db.get_session(sid)).state == "running"
+        assert (await db.get_task("t1")).assigned_agent_id == "agent-1"
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("newer", [None, "user", "tool", "partial", "malformed", "preclaim"])
+async def test_completed_turn_requires_current_explicit_completion(
+    tmp_path, monkeypatch, harness, newer
+):
+    at = time.time() - 1000
+    stamp = datetime.fromtimestamp(at, UTC).isoformat()
+    row = SimpleNamespace(harness=harness, session_key="key", started_at=at - 100,
+                          claim_phase_at=at - 50)
+    complete = {"timestamp": stamp, "type": "assistant",
+                "message": {"stop_reason": "end_turn"}} if harness == "claude" else {
+                    "timestamp": stamp, "type": "event_msg",
+                    "payload": {"type": "task_complete"}}
+    records = [json.dumps(complete)]
+    if newer in {"user", "tool"}:
+        records.append(json.dumps(
+            {"type": "user" if newer == "user" else "assistant",
+             "message": {"stop_reason": "tool_use"}} if harness == "claude" else
+            {"type": "event_msg" if newer == "user" else "response_item",
+             "payload": {"type": "task_started" if newer == "user" else "function_call"}}
+        ))
+    if newer == "preclaim":
+        row.claim_phase_at = at + 1
+    path = tmp_path / "transcript.jsonl"
+    content = "\n".join(records) + "\n"
+    if newer == "partial":
+        content += '{"type":'
+    if newer == "malformed":
+        content += "broken\n"
+    path.write_text(content)
+    reader = MagicMock()
+    reader.resolve_session.return_value = path
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda *a, **kw: reader)
+    result = await completed_turn_at(row, base_dir=tmp_path)
+    if newer is None:
+        assert result == path.stat().st_mtime
+    else:
+        assert result is None
 
 
 class TestPrepareTimeoutFlagGate:
@@ -844,17 +959,6 @@ async def _completion(db, *, completed_at=None, task_id="t1", outcome="pass"):
     ))
 
 
-async def _code_receipt(db, *, task_id="t1"):
-    from src.database.tables import task_delivery_receipts
-
-    async with db.immediate() as conn:
-        await conn.execute(insert(task_delivery_receipts).values(
-            id=f"receipt-{task_id}", domain_key=f"delivery:{task_id}", source_task_id=task_id,
-            repository_id="repo", target_branch="main", disposition="code",
-            created_at=time.time(),
-        ))
-
-
 async def _accepted_close(db, session_id, *, claim_epoch=1, task_id="t1"):
     """The identity the transition accepting a close records in its transaction."""
     await db.set_task_meta(task_id, ACCEPTED_CLOSE_KEY, {
@@ -903,8 +1007,6 @@ class TestSettledClaimDrain:
 
     @pytest.mark.parametrize(("status", "evidence"), [
         (TaskStatus.COMPLETED, "completion_record"),
-        # sound-orbit: the restart lost the completion record; delivery wrote a receipt.
-        (TaskStatus.COMPLETED, "delivery_receipt"),
         (TaskStatus.FAILED, "completion_record"),
         # bold-impact-53's wait: no record and no receipt yet, but the transition
         # that accepted this session's close recorded its identity.
@@ -917,8 +1019,6 @@ class TestSettledClaimDrain:
         await self._close_committed(db, status)
         if evidence == "completion_record":
             await _completion(db, outcome="pass" if status == TaskStatus.COMPLETED else "fail")
-        elif evidence == "delivery_receipt":
-            await _code_receipt(db)
         else:
             await _accepted_close(db, bound)
         completions = await db.get_task_completions("t1")
@@ -1048,7 +1148,7 @@ class TestSettledClaimDrain:
         self, db, reconciler, provider, bound
     ):
         await self._close_committed(db)
-        await _code_receipt(db)
+        await _completion(db, outcome="pass")
         real_stop = provider.stop
         provider.stop = AsyncMock(side_effect=RuntimeError("tmux server unreachable"))
 

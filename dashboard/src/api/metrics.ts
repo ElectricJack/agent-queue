@@ -9,7 +9,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  getDeliveryLatencyApiMetricsDeliveryLatencyGet,
   getMetricsSeriesApiMetricsSeriesGet,
+  type DeliveryLatencyResponse,
   type MetricsSample,
   type MetricsSeriesResponse,
 } from "./client";
@@ -74,4 +76,30 @@ export function useMetricsSeries(
   return useQuery({ ...metricsSeriesQuery(range, options.detail), enabled: options.enabled });
 }
 
-export type { MetricsSample, MetricsSeriesResponse };
+/** The completion cohorts the delivery panel offers (spec section 10). */
+export const DELIVERY_WINDOWS = ["24h", "7d"] as const;
+export type DeliveryWindow = (typeof DELIVERY_WINDOWS)[number];
+
+/**
+ * One delivery-latency cohort.  The report is a fresh aggregate on every read
+ * and carries its own ``observed_at``, so a minute's poll keeps pending ages
+ * honest without hammering the event store.
+ */
+export function useDeliveryLatency(window: DeliveryWindow, projectId?: string) {
+  return useQuery({
+    queryKey: ["metrics", "delivery-latency", window, projectId ?? "fleet"],
+    queryFn: async ({ signal }): Promise<DeliveryLatencyResponse> => {
+      const response = await getDeliveryLatencyApiMetricsDeliveryLatencyGet({
+        client,
+        signal,
+        query: { window, ...(projectId ? { project_id: projectId } : {}) },
+        throwOnError: true,
+      });
+      return response.data as DeliveryLatencyResponse;
+    },
+    refetchInterval: 60_000,
+    retry: 1,
+  });
+}
+
+export type { DeliveryLatencyResponse, MetricsSample, MetricsSeriesResponse };

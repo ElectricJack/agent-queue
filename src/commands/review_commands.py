@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from src.task_templates import render_task_template
 from src.api.task_attachments import MAX_ATTACHMENT_BYTES, _ALLOWED_TYPES, _verify_image
 from src.api.auth import RequestScope
 from src.api.scope import held_task_for_session
@@ -170,6 +171,7 @@ class ReviewCommandsMixin:
                 file_feedback=self._file_review_feedback,
                 record_playbook=self._record_review_decision_playbook,
             ),
+            input_config=self.config,
         )
 
     async def _review_attachment_access(
@@ -352,7 +354,7 @@ class ReviewCommandsMixin:
             return None, _error("not_found", f"review {review_id!r} was not found")
         principal = current_principal() or TRUSTED_LOCAL
         if (
-            principal.kind is PrincipalKind.SESSION
+            principal.enforced
             and principal.project_id is not None
             and principal.project_id != review["project_id"]
         ):
@@ -390,7 +392,7 @@ class ReviewCommandsMixin:
             if task is None:
                 return None, None, _error("not_found", f"task {task_id!r} was not found")
             if (
-                principal.kind is PrincipalKind.SESSION
+                principal.enforced
                 and principal.project_id is not None
                 and task.project_id != principal.project_id
             ):
@@ -403,7 +405,7 @@ class ReviewCommandsMixin:
         if project is None:
             return None, None, _error("not_found", f"project {project_id!r} was not found")
         if (
-            principal.kind is PrincipalKind.SESSION
+            principal.enforced
             and principal.project_id is not None
             and project_id != principal.project_id
         ):
@@ -417,6 +419,25 @@ class ReviewCommandsMixin:
         if not isinstance(content, str):
             return _error("not_utf8", "content must be UTF-8 text")
         review_id = args.get("review_id")
+        held = None
+        response = None
+        if self._is_worker():
+            held, error = await self._worker_held_task()
+            if error:
+                return error
+            if args.get("task_id") not in (None, held.id):
+                return _error("not_your_task", "task_id must be the task this worker holds")
+            response = await self.db.get_task_meta(held.id, "review_response")
+            if isinstance(response, dict):
+                assigned_id = response["review_id"]
+                if review_id and review_id != assigned_id:
+                    return _error(
+                        "not_your_task",
+                        f"this revision task must update review {assigned_id}; use "
+                        f"aq review submit --review-id {assigned_id} --file <draft.md> "
+                        '--changes "<comment dispositions and evidence>"',
+                    )
+                review_id = assigned_id
         try:
             if review_id:
                 review, error = await self._review_for_caller(review_id)
@@ -432,10 +453,6 @@ class ReviewCommandsMixin:
                         return _error("object_result_language", error)
                 submitted_task_id: str | None = None
                 if self._is_worker():
-                    held, error = await self._worker_held_task()
-                    if error:
-                        return error
-                    response = await self.db.get_task_meta(held.id, "review_response")
                     is_response_task = (
                         isinstance(response, dict)
                         and response.get("review_id") == review["id"]
@@ -615,9 +632,11 @@ class ReviewCommandsMixin:
 
         version = source.frontmatter.get("version")
         contracts, profiles, events = await self._v2_lookups()
+        script_pins = await self._v2_script_pins(source)
         proposal = propose(
             source,
             body,
+            script_pins=script_pins,
             contracts=contracts,
             profiles=profiles,
             events=events,
@@ -849,7 +868,7 @@ class ReviewCommandsMixin:
         principal = current_principal() or TRUSTED_LOCAL
         project_id = args.get("project_id")
         task_id = args.get("task_id")
-        if principal.kind is PrincipalKind.SESSION and principal.project_id is not None:
+        if principal.enforced and principal.project_id is not None:
             if project_id not in (None, principal.project_id):
                 return _error("not_your_task", "project belongs to another session")
             project_id = principal.project_id
@@ -900,7 +919,7 @@ class ReviewCommandsMixin:
         # Authors can already be archived, and a task comment alone never
         # reaches the project supervisor. Queue a durable recovery notice.
         try:
-            notice = await self._cmd_message_send({
+            notice = await self._queue_message_notification({
                 "project_id": review["project_id"], "to_kind": "session",
                 "to_id": f"supervisor-{review['project_id']}", "from_kind": "system",
                 "from_id": f"review:{review['id']}",
@@ -1049,6 +1068,11 @@ class ReviewCommandsMixin:
             return _error(error.code, error.message)
 
     async def _cmd_review_comment(self, args: dict) -> dict:
+        if (
+            args.get("source_discussion_id")
+            and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL
+        ):
+            return _error("human_only", "Only a human can promote discussion into formal feedback")
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
@@ -1075,6 +1099,7 @@ class ReviewCommandsMixin:
                     heading_path=list(args.get("heading_path") or []),
                     body=str(args.get("body") or ""),
                     author=label,
+                    source_discussion_id=args.get("source_discussion_id"),
                 ),
             }
         except ReviewError as error:
@@ -1224,19 +1249,17 @@ class ReviewCommandsMixin:
                 if with_comments:
                     show_command += " --comments"
                 description = (
-                    f"ADVERSARIAL review of {current['kind']}: {current['title']}\n\n"
-                    f"Read the pinned revision with `{show_command}`.\n"
-                    "Find defects, unstated assumptions, missing acceptance criteria, and "
-                    "claims unsupported by the code. Verify claims against the repository "
-                    "rather than trusting the document. Agreement is allowed, but be specific.\n"
-                    "Post each finding with `aq review comment --review-id "
-                    f"{review['id']} --revision {revision} --quote ... --body ...` "
-                    "or use `--heading-path` to anchor a section.\n"
-                    "Close this task with a verdict summary: material defects found, or none. "
-                    "Do not decide the review gate.\n"
+                    render_task_template(
+                        "adversarial-review",
+                        current_kind=current["kind"],
+                        current_title=current["title"],
+                        show_command=show_command,
+                        review_id=review["id"],
+                        revision=revision,
+                    )
                 )
                 if not with_comments:
-                    description += "This is a clean-room read; do not request the existing comment thread.\n"
+                    description += render_task_template("adversarial-review-clean-room")
                 if focus:
                     description += f"\nFocus: {focus}\n"
                 dispatch = {
@@ -1413,10 +1436,18 @@ class ReviewCommandsMixin:
             "Author --resolves is a proposed response, not decider acceptance.",
             "At passing close, each feedback acceptance row needs its own completion evidence.",
         ])
+        if revision:
+            lines.append(render_task_template("review-revision", review_id=review["id"]))
         # Keep the historical reject-and-revise issue behavior explicit.
         if domain["effective_option"] == "reject":
-            lines.append(f"Close an associated issue only on an explicit human instruction; "
-                         f"use aq github-issue close-rejected --review-id {review['id']}.")
+            from src.commands.github_issue_commands import INVESTIGATION_KEY
+
+            author_key = author.dedup_key if author else archived.get("dedup_key") if archived else ""
+            if (author_key or "").startswith(INVESTIGATION_KEY):
+                lines.append(render_task_template("review-rejected-issue", review_id=review["id"]))
+            else:
+                lines.append(f"Close an associated issue only on an explicit human instruction; "
+                             f"use aq github-issue close-rejected --review-id {review['id']}.")
         created = await self._cmd_create_task({
             "project_id": review["project_id"],
             "title": f"{'Revise' if revision else 'Follow up on'} {review['title']} (review {review['id']})",
