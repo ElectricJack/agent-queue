@@ -30,7 +30,7 @@ E2E_TEST_TIMEOUT_SECONDS = 540
 SCENARIO_GROUPS = {
     "claims": ("S1", "S2", "S3", "S7", "S19"),
     "cli": ("S5", "S8", "S9", "S12", "S17", "S20"),
-    "graphs": ("S10", "S16b", "S18", "S6"),
+    "graphs": ("S10", "S16b", "S18", "S6", "S21"),
     "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
 }
 PREREQUISITES = {"S2": ("S1",), "S3": ("S1", "S2")}
@@ -126,8 +126,9 @@ class World:
                     }), "tasks")
                     for task in rows:
                         if not task.get("parent_task_id"):
-                            smoke.api("delete_task", {
-                                "task_id": task["id"], "cascade": True, "branches": "delete",
+                            smoke.api_checked("delete_task", {
+                                "task_id": task["id"], "recursive": True, "branches": "delete",
+                                "confirmed": True,
                             })
                     remaining.extend(smoke.collection_rows(smoke.api_checked("list_tasks", {
                         "project_id": project["id"], "include_completed": True,
@@ -145,6 +146,7 @@ class World:
                 smoke.api_checked("set_playbook_enabled", {
                     "playbook_id": smoke.FAILOVER_PLAYBOOK, "enabled": True,
                 })
+                smoke.wait_for_restored_readiness()
             except BaseException:
                 self.poisoned = True
                 raise
