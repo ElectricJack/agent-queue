@@ -187,6 +187,7 @@ async def completed_undelivered(ctx: DoctorContext, *, project_ids=None, now=Non
 
     return await observe_completed_branches(
         ctx.db, _doctor_observer(ctx), project_ids=project_ids, now=now,
+        **({"cached_only": True} if ctx.read_only else {}),
     )
 
 
@@ -205,12 +206,17 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
     stranded = [e for e in entries if not e["accounted"] and e["rule"] != "unknown"]
     accounted = [e for e in entries if e["accounted"]]
     unknown = [e for e in entries if e["rule"] == "unknown"] + inventory["unavailable"]
+    # Accounting explains why a branch remains; it does not establish root
+    # delivery. In particular a queued PR/batch must not hide a completed root.
+    roots = [e for e in entries if e.get("root") and not e["archived"]
+             and not e["wip"] and e["rule"] != "unknown"]
     by_rule: dict[str, int] = {}
     for entry in entries:
         by_rule[entry["rule"]] = by_rule.get(entry["rule"], 0) + 1
     data = {
         "stranded": stranded[:100], "accounted": accounted[:100], "unknown": unknown[:100],
         "by_rule": dict(sorted(by_rule.items())), "projects": inventory["projects"],
+        "undelivered_roots": roots[:100],
     }
     if stranded:
         return CheckResult(
@@ -220,6 +226,16 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
                 "cannot reach, and nothing on record will deliver or retire them — e.g. "
                 f"{_describe_completed(stranded[0])}. Settle it: {stranded[0]['remedy']}"
             ),
+            data=data,
+        )
+    if roots:
+        first = roots[0]
+        return CheckResult(
+            id=check_id, severity=Severity.WARN,
+            detail=f"{len(roots)} COMPLETED root branch(es) are not contained in the default "
+                   f"branch — e.g. {_describe_completed(first)}. Inspect "
+                   f"`aq integration redrive-root {first['task_id']}`; implementation "
+                   "completion does not establish delivery",
             data=data,
         )
     detail = "no COMPLETED task branch holds work that nothing will deliver or retire"
@@ -464,7 +480,7 @@ async def continuous_promotion_lag(
         try:
             snapshot = await observer.snapshot(DeliveryTarget(
                 row["id"], row["repository_id"], row["url"], "refs/heads/" + row["default_branch"],
-            ))
+            ), **({"cached_only": True} if ctx.read_only else {}))
             observed = getattr(snapshot, "observation", snapshot)
             if observed.error:
                 raise ValueError(observed.error)
@@ -526,6 +542,27 @@ async def _check_continuous_promotion_lag(ctx: DoctorContext) -> CheckResult:
         f"{report['max_age_seconds'] / 3600:g}h; {len(unavailable)} unavailable"
         + "".join(f"\n{item['project_id']}: {item['detail']}" for item in findings),
         data=report)
+
+
+async def _check_ci_producer(ctx: DoctorContext) -> CheckResult:
+    from src.integration.models import invalid_policy_producers
+
+    check_id = "integration.ci_producer"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    invalid = [
+        {"project_id": project.id, **entry}
+        for project in await ctx.db.list_projects()
+        for entry in invalid_policy_producers(project.hierarchical_integration_policy)
+    ]
+    return CheckResult(
+        check_id, Severity.ERROR if invalid else Severity.OK,
+        "; ".join(f"{entry['project_id']}: {entry['field']}={entry['producer_id']!r} "
+                  "must be a positive decimal GitHub App ID (GitHub Actions: 15368); "
+                  "update with `aq project set <id> integration-policy`" for entry in invalid)
+        or "every configured CI producer is a numeric GitHub App ID",
+        data={"invalid": invalid},
+    )
 
 
 async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
@@ -624,7 +661,9 @@ async def _check_promotion_stranded(ctx: DoctorContext) -> CheckResult:
         or "every open promotion intent has an admissible task", data={"stranded": stranded})
 
 
-async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=None) -> list[dict]:
+async def stalled_train_batches(
+    ctx: DoctorContext, *, now=None, project_ids=None, alert_after_seconds=None,
+) -> list[dict]:
     """Age alarms for sealed inputs, independent of the legacy Subject journal."""
     from sqlalchemy import union_all
 
@@ -663,7 +702,8 @@ async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=Non
         repair_id = (ordinary_repair_id(row["batch_id"], row["repair_attempt_count"])
                      if row["repair_attempt_count"] else None)
         repair = repairs.get(repair_id)
-        if repair is not None and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}:
+        if (alert_after_seconds is None and repair is not None
+                and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}):
             continue  # Existing task/repair capacity diagnostics own this wait.
         lane = lanes.get((row["project_id"], row["repository_id"], row["target_ref"]), {})
         progress_at = max(row["updated_at"], repair["updated_at"] if repair else 0)
@@ -671,12 +711,13 @@ async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=Non
             progress_at = max(progress_at, lane.get("progress_at", 0))
         policy = IntegrationTrainPolicy.model_validate(
             (row["hierarchical_integration_policy"] or {}).get("train") or {})
-        due_at = progress_at + policy.settling_cap_seconds
-        due_at = max(due_at, lane.get("deferred_until", 0) + 60)
-        if lane.get("running"):
-            due_at = max(due_at, lane.get("visit_started_at", 0)
-                         + train.visit_timeout_seconds + 60)
-        if now <= due_at:
+        due_at = progress_at + (alert_after_seconds or policy.settling_cap_seconds)
+        if alert_after_seconds is None:
+            due_at = max(due_at, lane.get("deferred_until", 0) + 60)
+            if lane.get("running"):
+                due_at = max(due_at, lane.get("visit_started_at", 0)
+                             + train.visit_timeout_seconds + 60)
+        if now < due_at:
             continue
         findings.append({
             "batch_id": row["batch_id"], "project_id": row["project_id"],
@@ -685,7 +726,7 @@ async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=Non
             "progress_at": progress_at, "due_at": due_at,
             "age_seconds": now - progress_at, "observation": lane,
             "detail": f"sealed batch {row['batch_id']} has no progress for "
-                      f"{int((now - progress_at) / 60)}m past its visit deadline; inspect "
+                      f"{int((now - progress_at) / 60)}m; inspect "
                       f"aq integration status {row['project_id']} and its candidate checks",
         })
     return findings
@@ -720,6 +761,7 @@ def integration_checks() -> list[DoctorCheck]:
             ("promotion_stranded", _check_promotion_stranded, 30.0, None),
             ("train_batches_stalled", _check_train_batches_stalled, 30.0, None),
             ("ci_source", _check_ci_source, 30.0, None),
+            ("ci_producer", _check_ci_producer, 30.0, None),
         )
     ]
 

@@ -49,8 +49,12 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
   revision task carrying that feedback (§ What happens when you reject).
 - `approved` — the gate is resolved and dependent tasks become routable.
   For kind `spec` or `plan`, approval also sets the vault status to `approved`
-  and emits `spec.approved`, starting one deep-high spec-ingest task per path
-  (`spec-ingest:<absolute vault path>`). Other documents do not ingest.
+  and dispatches `spec.approved`, starting one deep-high spec-ingest task per
+  immutable approval decision (`spec-ingest:decision:<id>`). Replays reuse its
+  task receipt after completion, closure as obsolete, or archive, and committed
+  graph receipts prevent duplicate work. The vault path is a mirror link;
+  existing text that mentions a path does not confer ingestion authority.
+  Other documents do not ingest.
 - `withdrawn` — the review's gate is cancelled in the same transaction. Its
   dependent tasks remain held for approval and are flagged for attention;
   their IDs appear in the response and review detail and are sent to the
@@ -347,6 +351,10 @@ From the worker's point of view the workflow is short:
    `aq review show --review-id <id> --comments`, then resubmit with
    `aq review submit --review-id <id> --file <draft> --changes "…"
    [--resolves <comment-id> …]`, and close it.
+   The daemon resolves an omitted `--review-id` from the held revision task's
+   assignment, so the ordinary submit command also updates that review.
+   Naming another review is refused with `not_your_task`; a revision worker
+   cannot open a parallel review.
    Revise a local draft; do not edit the vault mirror or its frontmatter
    directly. A passing close is refused with `reviews.revision_unpublished`
    until this task has submitted a newer revision of its assigned review.

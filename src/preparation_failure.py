@@ -84,12 +84,52 @@ def safe_message(exc: BaseException) -> str:
     return safe_text(text)
 
 
-def safe_text(text: str) -> str:
+def safe_text(text: str, *, limit: int = MAX_MESSAGE_CHARS) -> str:
     """Scrub and bound diagnostic text, including a workspace path."""
     text = scrub_secrets(text)
     for pattern, replacement in _EXTRA_SCRUBBERS:
         text = pattern.sub(replacement, text)
-    return _bounded(_WHITESPACE.sub(" ", text).strip(), MAX_MESSAGE_CHARS)
+    return _bounded(_WHITESPACE.sub(" ", text).strip(), limit)
+
+
+def preparation_identity(session, task, repository_id, origin, checkpoint, owners, failure, now):
+    """Allowlisted persisted evidence, never an authority or arbitrary row export."""
+    def snapshot(row, fields):
+        if row is None:
+            return None
+        return {
+            key: safe_text(value) if isinstance(value, str) else value
+            for key in fields if (value := row.get(key)) is not None
+        }
+
+    return {
+        "diagnostic_only": True,
+        "task_id": safe_text(task["id"]),
+        "task_created_at": task["created_at"],
+        "created_by_kind": safe_text(task["created_by_kind"]) if task["created_by_kind"] else None,
+        "repository_id": safe_text(repository_id) if repository_id else None,
+        "branch": safe_text(task["branch_name"]) if task["branch_name"] else None,
+        "session_id": safe_text(session["id"]),
+        "session_instance": safe_text(session["instance_token"]),
+        "claim_epoch": session["last_claim_epoch"],
+        "preparation_started_at": session["claim_phase_at"],
+        "observed_at": now,
+        "origin": snapshot(origin, (
+            "id", "task_id", "repository_id", "branch_name", "creation_generation",
+            "base_sha", "reserved", "materialized", "created_at",
+        )),
+        "checkpoint": snapshot(checkpoint, (
+            "task_id", "repository_id", "branch", "version", "generation", "state",
+            "checkpoint_sha", "episode_id",
+        )),
+        "owners": [snapshot(owner, (
+            "id", "repository_id", "ref", "owner_id", "owner_role", "fence_token",
+            "handoff_state", "session_id", "workspace_id",
+        )) for owner in owners[:2]],
+        "stage": safe_text(failure["stage"]),
+        "error_type": safe_text(failure["error_type"]),
+        "reason": safe_text(failure["reason"], limit=MAX_REASON_CHARS),
+    }
 
 
 def _type_name(exc: BaseException) -> str:
