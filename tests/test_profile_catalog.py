@@ -11,8 +11,8 @@ from src.profiles.catalog import (
     evaluate_catalog,
     refresh_catalog_profiles,
     shipped_profile_catalog,
+    worker_route,
 )
-from src.profiles.default_selection import select_default_profile_id
 from src.profiles.parser import parse_profile
 from src.profiles.retired_defaults import retire_default
 
@@ -37,6 +37,8 @@ def test_the_worker_set_is_the_class_x_harness_cross_product():
     catalog = {profile.id: profile for profile in shipped_profile_catalog()}
 
     assert set(catalog) == {
+        "operator-standard-high-claude", "operator-deep-high-claude",
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-claude", "fast-high-claude", "standard-high-claude",
         "deep-low-claude", "deep-high-claude",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
@@ -125,6 +127,7 @@ def test_refresh_seeds_ready_providers_and_preserves_existing_profile_edits(tmp_
     _seed_vault(tmp_path)
     first = refresh_catalog_profiles(tmp_path, _probes("codex"))
     assert set(first["created"]) == {
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
         "deep-low-codex", "deep-high-codex", "astra-low-codex", "astra-high-codex",
     }
@@ -135,6 +138,22 @@ def test_refresh_seeds_ready_providers_and_preserves_existing_profile_edits(tmp_
     second = refresh_catalog_profiles(tmp_path, _probes("codex"))
     assert "standard-high-codex" in second["skipped"]
     assert profile_path.read_text(encoding="utf-8") == "# operator edit\n"
+
+
+def test_installer_refresh_preserves_renamed_role_profile(tmp_path):
+    _seed_vault(tmp_path)
+    path = tmp_path / "vault" / "agent-types" / "spec-ingest" / "profile.md"
+    renamed = path.read_text(encoding="utf-8").replace(
+        "name: Review Spec Ingest", "name: My Spec Review"
+    )
+    path.write_text(renamed, encoding="utf-8")
+
+    refresh_catalog_profiles(tmp_path, _probes("codex"))
+    second = refresh_catalog_profiles(tmp_path, _probes("codex"))
+
+    assert second["created"] == []
+    assert path.read_text(encoding="utf-8") == renamed
+    assert parse_profile(renamed).frontmatter.name == "My Spec Review"
 
 
 def test_refresh_after_provider_removal_deactivates_without_deleting_profiles(tmp_path):
@@ -172,6 +191,7 @@ def test_refresh_skips_every_retired_catalog_id(tmp_path):
 
     assert refreshed["created"] == []
     assert set(refreshed["retired"]) == {
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
         "deep-low-codex", "deep-high-codex", "astra-low-codex", "astra-high-codex",
     }
@@ -211,6 +231,17 @@ def test_a_stage_profile_does_not_block_the_rung_of_its_class(tmp_path):
     assert {"fast-low-claude", "deep-high-claude"} <= created
 
 
+def test_fidelity_reviewer_is_a_stage_even_with_operator_write_access(tmp_path):
+    _seed_vault(tmp_path)
+    path = tmp_path / "vault" / "agent-types" / "fidelity-reviewer" / "profile.md"
+    path.write_text(path.read_text().replace('"read_only": true', '"read_only": false'))
+    assert worker_route(
+        "fidelity-reviewer", harness="claude", default_class="deep-high"
+    ) is None
+    created = set(refresh_catalog_profiles(tmp_path, _probes("claude"))["created"])
+    assert "deep-high-claude" in created
+
+
 def test_a_read_only_or_named_profile_does_not_block_the_rung_of_its_class(tmp_path):
     """An operator's auditor or a named session at a route is a role, not a worker."""
     _seed_vault(tmp_path)
@@ -234,19 +265,3 @@ def test_a_read_only_or_named_profile_does_not_block_the_rung_of_its_class(tmp_p
     created = set(refresh_catalog_profiles(tmp_path, _probes("codex"))["created"])
 
     assert {"astra-high-codex", "astra-low-codex"} <= created
-
-
-def test_default_selector_excludes_catalog_profiles_not_in_activation_record():
-    profiles = ["standard-high-claude", "standard-high-codex", "reviewer"]
-    assert select_default_profile_id(
-        profiles, eligible_profile_ids={"standard-high-codex"}
-    ) == "standard-high-codex"
-    assert select_default_profile_id(profiles, eligible_profile_ids=set()) is None
-
-
-def test_default_selector_never_chooses_a_disabled_profile():
-    class Profile:
-        id = "worker-codex"
-        enabled = False
-
-    assert select_default_profile_id([Profile(), "reviewer"]) == "reviewer"

@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(), close: vi.fn(), edit: vi.fn(), stop: vi.fn(), list: vi.fn(),
   state: { kind: "closed" } as { kind: "closed" } | { kind: "open"; view: string; args: unknown; width: number },
   filters: { query: "", status: "", showCompleted: false, focus: "", window: "", held: false },
+  setStatus: vi.fn(), clearFilters: vi.fn(), graphLoading: false, graphError: false,
   activity: vi.fn(),
   activityData: null as unknown,
   held: vi.fn(),
@@ -32,7 +33,7 @@ const mocks = vi.hoisted(() => ({
     { id: "other", title: "Other project", project_id: "beta", status: "READY", priority: 100 },
   ],
 }));
-vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alpha", projectIds: ["alpha"], isLoadingProjects: false, projectsError: null, projects: [{ id: "alpha", name: "Alpha" }], filters: mocks.filters }) }));
+vi.mock("../TaskWorkspace", () => ({ useTaskWorkspace: () => ({ projectId: "alpha", projectIds: ["alpha"], isLoadingProjects: false, projectsError: null, projects: [{ id: "alpha", name: "Alpha" }], filters: mocks.filters, setStatus: mocks.setStatus, clearFilters: mocks.clearFilters }) }));
 vi.mock("../../../api/graph", () => ({
   useProjectGraphs: (projectIds: string[]) => {
     mocks.list(projectIds);
@@ -40,7 +41,7 @@ vi.mock("../../../api/graph", () => ({
       tasks: mocks.tasks.map((task) => ({ ...task, assigned_agent_id: task.assigned_agent })),
       taskProject: Object.fromEntries(mocks.tasks.map((task) => [task.id, task.project_id])),
       edges: [], gates: [], agents: [],
-    }, isLoading: false, errors: [] };
+    }, isLoading: mocks.graphLoading, errors: mocks.graphError ? [new Error("unavailable")] : [] };
   },
 }));
 vi.mock("../../../api/activity", () => ({
@@ -59,6 +60,7 @@ vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks
 vi.mock("../../../api/hooks", () => ({
   useEditTask: () => ({ mutate: mocks.edit, isPending: false, error: null }),
   useDeleteTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteTaskPreview: () => ({ data: { task_ids: [], tasks: [] }, isFetching: false }),
   usePauseTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useResumeTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useStopTask: () => ({ mutate: mocks.stop, isPending: false, error: null }),
@@ -67,7 +69,7 @@ vi.mock("../../../api/hooks", () => ({
   useApprovePlan: () => ({ mutate: vi.fn(), isPending: false, error: null }),
 }));
 afterEach(cleanup);
-beforeEach(() => { vi.clearAllMocks(); mocks.tasks[0]!.priority = 25; mocks.state = { kind: "closed" }; mocks.filters = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false }; mocks.activityData = null; mocks.heldData = null; });
+beforeEach(() => { vi.clearAllMocks(); mocks.tasks[0]!.priority = 25; mocks.state = { kind: "closed" }; mocks.filters = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false }; mocks.activityData = null; mocks.heldData = null; mocks.graphLoading = false; mocks.graphError = false; });
 
 const NOW = Date.now() / 1000;
 function activityItem(overrides: Record<string, unknown> = {}) {
@@ -95,6 +97,59 @@ function windowResponse(items: unknown[], extra: Record<string, unknown> = {}) {
 }
 
 describe("unified task table", () => {
+  it("counts and filters waiting epics using their computed activity", () => {
+    const original = mocks.tasks;
+    mocks.tasks = [Object.assign({ ...original[0]! }, {
+      display_state: "waiting", display_reason: "Paused", child_state_counts: { waiting: 2 },
+    })];
+    try {
+      mocks.filters.status = "WAITING";
+      render(<Tasks />);
+      expect(screen.getByRole("button", { name: "In progress: 0 tasks" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Waiting: 1 task" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getAllByText("2 waiting").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
+      expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+    } finally {
+      mocks.tasks = original;
+    }
+  });
+
+  it("keeps status counts in scope and switches or clears a status without resetting other filters", async () => {
+    mocks.filters = { ...mocks.filters, query: "checkout", status: "BLOCKED" };
+    const view = render(<Tasks />);
+    const running = screen.getByRole("button", { name: "In progress: 1 task" });
+    expect(screen.getByRole("button", { name: "Blocked: 0 tasks" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("0 tasks")).toBeInTheDocument();
+    await userEvent.click(running);
+    expect(mocks.setStatus).toHaveBeenLastCalledWith("IN_PROGRESS");
+    mocks.filters = { ...mocks.filters, status: "IN_PROGRESS" };
+    view.rerender(<Tasks />);
+    expect(screen.getByRole("button", { name: "In progress: 1 task" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "In progress: 1 task" }));
+    expect(mocks.setStatus).toHaveBeenLastCalledWith("");
+    expect(mocks.clearFilters).not.toHaveBeenCalled();
+  });
+
+  it("offers recovery when a search has no results", async () => {
+    mocks.filters.query = "no-such-task";
+    render(<Tasks />);
+    expect(screen.getByText("No tasks match these filters.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "In progress: 0 tasks" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(mocks.clearFilters).toHaveBeenCalledOnce();
+  });
+
+  it.each(["loading", "error"])("does not present status counts as current during %s", (state) => {
+    mocks.graphLoading = state === "loading";
+    mocks.graphError = state === "error";
+    render(<Tasks />);
+    expect(screen.queryByRole("group", { name: "Filter by task status" })).not.toBeInTheDocument();
+    expect(screen.queryByText("1 task")).not.toBeInTheDocument();
+    expect(screen.getByRole(state === "loading" ? "status" : "alert")).toHaveTextContent(
+      state === "loading" ? "Loading tasks" : "Could not load tasks");
+  });
+
   describe("held by provider", () => {
     const heldResponse = {
       success: true, now: NOW, total: 1, by_kind: { awaiting_failover_capacity: 1 },
@@ -121,6 +176,7 @@ describe("unified task table", () => {
         expect(mocks.held).toHaveBeenLastCalledWith("alpha", true);
         expect(screen.getByText("Held work")).toBeInTheDocument();
         expect(screen.queryByText("Fix checkout")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "In progress: 0 tasks" })).toBeInTheDocument();
         expect(screen.getByTestId("held-note-other-alpha"))
           .toHaveTextContent("Codex logged out · Waiting for failover capacity (3 ahead)");
         expect(screen.getByTestId("held-filter-status")).toHaveTextContent("1 × waiting for failover capacity");
@@ -193,7 +249,7 @@ describe("unified task table", () => {
     expect(mocks.edit).not.toHaveBeenCalled();
   });
 
-  it("closes a delete dialog backdrop without selecting its task row", async () => {
+  it("closes a removal dialog backdrop without selecting its task row", async () => {
     render(<Tasks />);
     await userEvent.click(screen.getByRole("button", { name: "Delete" }));
     const dialog = screen.getByRole("dialog", { name: "Delete task" });
@@ -373,4 +429,38 @@ describe("below 768 px", () => {
       expect(cards.length).toBeLessThan(200);
     } finally { mocks.tasks.splice(0, mocks.tasks.length, ...original); }
   });
+});
+
+it("counts delivery-held work separately and filters it by the visible wait", () => {
+  const original = mocks.tasks;
+  mocks.tasks = [Object.assign({ ...original[0]!, status: "READY" }, {
+    claim_readiness: { state: "waiting_on_delivery", claimable: false,
+      label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" },
+  })];
+  try {
+    mocks.filters.status = "WAITING_ON_DELIVERY";
+    render(<Tasks />);
+    expect(screen.getByRole("button", { name: "Ready: 0 tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting on delivery: 1 task" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("Land source.6 on dev; refresh aq/epic").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally {
+    mocks.tasks = original;
+  }
+});
+
+it.each(["DEFINED", "IN_PROGRESS", "PAUSED", "READY"].flatMap((status) => ["", "24h"].map((window) => [status, window] as const)))
+  ("labels a held %s table row from canonical batch membership (window %s)", (status, window) => {
+  const original = mocks.tasks;
+  mocks.filters.window = window;
+  mocks.activityData = windowResponse([activityItem({ status })]);
+  mocks.tasks = [Object.assign({ ...original[0]!, status }, { held_batch: {
+    batch_id: "batch", state: "reviewing", structure_revision: 2,
+    source: "spec:approved", lineage: { lineage_kind: "none" },
+  } })];
+  try {
+    render(<Tasks />);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally { mocks.tasks = original; }
 });

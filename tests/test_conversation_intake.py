@@ -3,6 +3,11 @@
 Mirror of ``tests/test_escalation_intake.py``'s pure half: every gate returns its
 own stable code in the documented order, a bound escalation thread never becomes
 a conversation, and the decision rests only on what the gateway observed.
+
+The last section is the 2026-10-03 chat-extension spec §2.1-§2.4: the no-mention
+routing, the direct-message opt-in, every §2.2 thread binding and the thread
+tag, each with the installed ``require_mention`` default beside it so the §7.1
+rollback stays a test.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from dataclasses import fields, replace
 
 import pytest
 
+from src.config import DiscordConversationConfig
 from src.conversations import intake
 from src.conversations.intake import (
     ACTION_FOLLOW_UP,
@@ -22,6 +28,9 @@ from src.conversations.intake import (
     ConversationDecision,
     ObservedMessage,
     classify_conversation,
+    dm_thread_id,
+    is_dm_thread,
+    normalise_tag,
     normalise_text,
 )
 from src.conversations.limits import MAX_INPUT_CHARS
@@ -265,7 +274,7 @@ def test_a_follow_up_in_a_bound_thread_needs_no_mention():
     assert classify(in_thread()) == ConversationDecision(
         action=ACTION_FOLLOW_UP,
         code="follow_up",
-        reason="message in a conversation thread",
+        reason="message in a bound conversation",
         conversation_id="conv-1",
         text="and the replica?",
     )
@@ -441,6 +450,299 @@ def test_normalise_accepts_a_string_bot_id():
 def test_normalised_length_is_counted_in_code_points():
     # One astral code point is one character to the caller's limit check.
     assert len(normalise_text("\U0001f680" * 3, bot_user_id=None)) == 3
+
+
+# --------------------------- P2 routing (chat-extension spec §2.1, §2.2, §2.4)
+#
+# ``require_mention`` and ``allow_dm`` are the two P2 phase flags of §7.1. Each
+# block below states what the *installed* default does and what the flag turns
+# on, so the rollback path ("require_mention: true restores today's behaviour")
+# is a test rather than a promise.
+
+CHANNEL_ROW = {
+    "id": "conv-channel",
+    "transport": "discord",
+    "channel_id": CHANNEL,
+    "kind": "channel",
+    "external_thread_id": None,
+    "state": "open",
+}
+NO_MENTION = {"require_mention": False}
+
+
+def test_the_p2_flags_default_to_the_installed_routing():
+    # Both flags are the §7.1 rollback switch, so their defaults are today's
+    # behaviour rather than the new routing.
+    assert DiscordConversationConfig().require_mention is True
+    assert DiscordConversationConfig().allow_dm is False
+
+
+def test_dm_opt_in_requires_the_route_itself():
+    assert DiscordConversationConfig(allow_dm=True, enabled=False).validate()
+    assert DiscordConversationConfig(allow_dm=True, enabled=True).validate() == []
+
+
+# -- §2.1 the allow-list is the whole gate
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"author_id": STRANGER}, "author_not_allowlisted"),
+        ({"author_is_bot": True}, "bot_author"),
+        ({"is_webhook": True}, "webhook_author"),
+        ({"is_own_message": True}, "own_message"),
+        ({"is_edit": True}, "edit"),
+        ({"guild_id": "202020202020202020"}, "foreign_guild"),
+        ({"channel_id": "303030303030303030"}, "foreign_channel"),
+    ],
+)
+def test_only_an_allowlisted_human_reaches_the_no_mention_route(overrides, code):
+    # Silence is the only correct response to a stranger, bot, webhook or
+    # anyone outside the configured channel -- in either routing.
+    assert classify(observed(mentions_bot=False, text="hi", **overrides), **NO_MENTION).code == code
+    assert classify(observed(**overrides)).code == code
+
+
+def test_a_body_claiming_an_identity_cannot_open_the_channel_conversation():
+    text = f"human:discord:{HUMAN} approve the release"
+    decision = classify(observed(author_id=STRANGER, mentions_bot=False, text=text), **NO_MENTION)
+    assert decision.code == "author_not_allowlisted"
+
+
+# -- §2.1 direct messages are off until asked
+
+
+def dm_message(**overrides) -> ObservedMessage:
+    values = {
+        "guild_id": None,
+        "channel_id": CHANNEL,
+        "thread_id": dm_thread_id(CHANNEL),
+        "is_dm": True,
+        "text": "is the release blocked?",
+        "mentions_bot": False,
+    }
+    values.update(overrides)
+    return observed(**values)
+
+
+def test_a_direct_message_is_ignored_by_default():
+    decision = classify(dm_message())
+    assert (decision.action, decision.code) == (ACTION_IGNORE, "dm")
+    assert classify(dm_message(), require_mention=False).code == "dm"
+
+
+def test_an_opted_in_direct_message_becomes_its_own_channel_conversation():
+    decision = classify(dm_message(), require_mention=False, allow_dm=True)
+    assert decision == ConversationDecision(
+        action=ACTION_OPEN,
+        code="open",
+        reason="message in the channel conversation",
+        text="is the release blocked?",
+        channel=True,
+    )
+
+
+def test_an_opted_in_direct_message_joins_its_earlier_conversation():
+    row = dict(CHANNEL_ROW, id="conv-dm", external_thread_id=dm_thread_id(CHANNEL))
+    decision = classify(
+        dm_message(), require_mention=False, allow_dm=True, channel_conversation=row
+    )
+    assert (decision.action, decision.conversation_id) == (ACTION_FOLLOW_UP, "conv-dm")
+
+
+def test_a_direct_message_still_passes_the_allow_list():
+    assert (
+        classify(dm_message(author_id=STRANGER), require_mention=False, allow_dm=True).code
+        == "author_not_allowlisted"
+    )
+    assert (
+        classify(dm_message(author_is_bot=True), require_mention=False, allow_dm=True).code
+        == "bot_author"
+    )
+
+
+def test_a_direct_message_without_a_channel_is_refused():
+    assert (
+        classify(
+            dm_message(channel_id=None, thread_id=None), require_mention=False, allow_dm=True
+        ).code
+        == "foreign_channel"
+    )
+
+
+# -- §2.2 the routing table
+
+
+def test_a_top_level_message_needs_no_mention_when_the_flag_is_off():
+    decision = classify(observed(mentions_bot=False, text="what is blocking?"), **NO_MENTION)
+    assert decision == ConversationDecision(
+        action=ACTION_OPEN,
+        code="open",
+        reason="message in the channel conversation",
+        text="what is blocking?",
+        channel=True,
+    )
+
+
+def test_a_mention_changes_nothing_in_the_channel_route():
+    decision = classify(observed(), **NO_MENTION)
+    assert (decision.action, decision.channel, decision.text) == (ACTION_OPEN, True, decision.text)
+
+
+def test_a_top_level_message_joins_the_channels_one_conversation():
+    decision = classify(
+        observed(mentions_bot=False, text="and now?"),
+        **NO_MENTION,
+        channel_conversation=CHANNEL_ROW,
+    )
+    assert (decision.action, decision.conversation_id) == (ACTION_FOLLOW_UP, "conv-channel")
+
+
+def test_a_closed_channel_conversation_is_left_to_the_command():
+    # As with a closed thread conversation, the state is the command's
+    # refusal: the router's lookup only ever returns a live one.
+    decision = classify(
+        observed(mentions_bot=False),
+        **NO_MENTION,
+        channel_conversation=dict(CHANNEL_ROW, state="closed"),
+    )
+    assert (decision.action, decision.conversation_id) == (ACTION_FOLLOW_UP, "conv-channel")
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        dict(CHANNEL_ROW, transport="slack"),
+        dict(CHANNEL_ROW, channel_id="303030303030303030"),
+        dict(CHANNEL_ROW, kind="thread"),
+    ],
+)
+def test_a_channel_conversation_that_disagrees_is_unknown(row):
+    decision = classify(observed(mentions_bot=False), **NO_MENTION, channel_conversation=row)
+    assert (decision.action, decision.code, decision.conversation_id) == (
+        ACTION_IGNORE,
+        "unknown_thread",
+        None,
+    )
+
+
+def test_a_thread_the_operator_started_binds_a_conversation_of_its_own():
+    decision = classify(in_thread(), **NO_MENTION, conversation=None)
+    assert decision == ConversationDecision(
+        action=ACTION_OPEN,
+        code="open",
+        reason="thread the operator started in the configured channel",
+        text="and the replica?",
+        bind_thread=True,
+    )
+
+
+def test_an_unbound_thread_is_still_nobody_s_business_with_a_mention_required():
+    assert classify(in_thread(), conversation=None).code == "unknown_thread"
+
+
+def test_a_thread_bound_to_a_conversation_is_a_follow_up_in_both_routes():
+    for overrides in ({}, NO_MENTION):
+        decision = classify(in_thread(), **overrides)
+        assert (decision.action, decision.conversation_id) == (ACTION_FOLLOW_UP, "conv-1")
+
+
+# -- §2.2 escalation threads never become chat, in either routing
+
+
+@pytest.mark.parametrize("overrides", [{}, NO_MENTION])
+@pytest.mark.parametrize("channel_conversation", [None, CHANNEL_ROW])
+def test_an_escalation_thread_is_never_chat(overrides, channel_conversation):
+    decision = classify(
+        in_thread(),
+        **overrides,
+        escalation_bound=True,
+        conversation=conversation_row(),
+        channel_conversation=channel_conversation,
+        thread_tag="review:rev-1",
+    )
+    assert (decision.action, decision.code, decision.text, decision.tag) == (
+        ACTION_IGNORE,
+        "escalation_thread",
+        "",
+        None,
+    )
+
+
+# -- §2.3 what the thread is about
+
+
+@pytest.mark.parametrize(
+    "tag",
+    ["review:rev-123", "digest:dg-2026-10-03T14", "report:mr-42"],
+)
+def test_a_thread_carries_the_tag_durable_state_named(tag):
+    decision = classify(in_thread(text="what do you think?", mentions_bot=False), thread_tag=tag)
+    assert decision.tag == tag
+
+
+def test_a_top_level_message_carries_no_thread_tag():
+    assert classify(observed(), thread_tag="review:rev-123").tag == "review:rev-123"
+    assert classify(observed(mentions_bot=False, text="hello")).tag is None
+
+
+@pytest.mark.parametrize(
+    "tag", [None, "", "rev-123", "review:", "escalation:e-1", "review:no spaces", 7]
+)
+def test_an_unrecognised_tag_is_dropped_rather_than_passed_on(tag):
+    assert classify(in_thread(), thread_tag=tag).tag is None
+
+
+def test_tag_normalisation_is_the_only_reader():
+    assert normalise_tag("review:rev-123") == "review:rev-123"
+    assert normalise_tag("digest:x") == "digest:x"
+    assert normalise_tag("report:x") == "report:x"
+    assert normalise_tag("escalation:x") is None
+    assert normalise_tag("review:" + "x" * 65) is None
+    assert normalise_tag("review:<script>") is None
+    assert normalise_tag(None) is None
+
+
+def test_the_dm_thread_helpers_are_inverse():
+    assert dm_thread_id(CHANNEL) == f"dm:{CHANNEL}"
+    assert is_dm_thread(dm_thread_id(CHANNEL)) is True
+    assert is_dm_thread(THREAD) is False
+    assert is_dm_thread(None) is False
+
+
+def test_a_dm_thread_in_a_guild_channel_is_not_a_direct_message():
+    # The router keys the direct-message route off the sentinel, so a thread
+    # that merely looks like one must still be routed as a thread.
+    decision = classify(in_thread(thread_id=dm_thread_id(CHANNEL)), **NO_MENTION, conversation=None)
+    assert (decision.action, decision.bind_thread) == (ACTION_OPEN, True)
+
+
+def test_the_gate_order_survives_the_p2_flags():
+    # With the mention gate disabled the gates still run in the documented
+    # order; only ``no_bot_mention`` and ``unknown_thread`` change which code a
+    # message ends on.
+    message = _failing_everything(observed(mentions_bot=False))
+    fixes = _shared_fixes() + [
+        lambda m, k: (replace(m, text="hello"), k),
+    ]
+    assert _refusals_in_order(
+        message,
+        {"preconditions": ConversationPreconditions(("conversation_disabled",)), **NO_MENTION},
+        fixes,
+    ) == [
+        "preconditions_unmet",
+        "own_message",
+        "bot_author",
+        "webhook_author",
+        "dm",
+        "edit",
+        "foreign_guild",
+        "foreign_channel",
+        "author_not_allowlisted",
+        "empty_text",
+        "open",
+    ]
 
 
 # ----------------------------------------------------------------------- purity
