@@ -1554,6 +1554,9 @@ class TestClaim:
         h = scoped(handler, sid)
         initial = await h._cmd_task_claim({"next": True})
         assert initial["result"] == "claim_in_progress"
+        # The result is delivered only to a claim, never to an ended turn.
+        assert "in this same turn" in initial["instructions"]
+        assert "aq task claim --next" in initial["instructions"]
         job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
         finish.set()
         await job

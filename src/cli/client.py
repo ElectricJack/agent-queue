@@ -107,6 +107,9 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "task_close": 900.0,
     "integration_continue_close": 900.0,
     "message_wait": 90.0,
+    # Source recovery queues for the listener (60s), prepares fresh evidence
+    # (30s), then applies it (5s). Preserve the daemon's phase-specific answer.
+    "wait_source_redispatch": 120.0,
     # Binding, App token mint and two GitHub reads.
     "integration_trust_manifest": 90.0,
     # Binding, token mint, and a bounded set of reads (variables, workflow files).
