@@ -30,6 +30,17 @@ const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}, ext
 });
 
 describe("card anatomy (§3.1)", () => {
+  it.each(["DEFINED", "IN_PROGRESS", "PAUSED", "READY"])("shows a canonical held batch on a %s card", (status) => {
+    render(<TaskCard data={card(status, {}, { task: {
+      id: "held", title: "Held task", status, priority: 100, display_state: "active",
+      held_batch: { batch_id: "batch-1", state: "reviewing", structure_revision: 2,
+        source: "spec:approved", lineage: { lineage_kind: "none" } },
+    } })} />);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+    expect(screen.getByText("Batch batch-1 · revision 2")).toBeInTheDocument();
+    expect(screen.queryByText("Working")).not.toBeInTheDocument();
+  });
+
   it("leaves the main card available as the node drag surface", () => {
     render(<TaskCard data={card("READY")} />);
     expect(screen.getByRole("button", { name: "Open task Ship it" })).not.toHaveClass("nodrag");
@@ -57,6 +68,22 @@ describe("card anatomy (§3.1)", () => {
     const ready = render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 })} />);
     expect(ready.container.querySelector("[data-task-card]")).not.toHaveClass("aq-stripe");
     expect(ready.container.querySelector(".aq-pulse")).toBeNull();
+  });
+
+  it.each(["waiting", "blocked", "active"] as const)("uses the epic's computed %s state for animation and counts", (state) => {
+    const data = card("IN_PROGRESS", { runningCount: 2 }, {
+      task: { id: "task-one", title: "Ship it", status: "IN_PROGRESS", priority: 100,
+        display_state: state, display_reason: "Waiting on foundation", child_state_counts: { [state]: 2 },
+        descendant_state_counts: { DEFINED: 4 } },
+    });
+    const { container } = render(<TaskCard data={data} />);
+    const cardElement = container.querySelector("[data-task-card]")!;
+    expect(cardElement.classList.contains("aq-stripe")).toBe(state === "active");
+    expect(container.querySelector(".aq-pulse") !== null).toBe(state === "active");
+    expect(screen.getByText(state === "active" ? "Active" : state === "blocked" ? "Blocked" : "Waiting")).toBeInTheDocument();
+    expect(container.querySelector("[data-child-state-counts]")).toHaveTextContent(`2 ${state}`);
+    expect(screen.getByText("Waiting on foundation")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "0 of 4 tasks done" }).querySelector('[data-segment="running"]')).toHaveStyle({ width: "0%" });
   });
 
   it("writes one reason sentence from the loaded neighbours", () => {
@@ -354,3 +381,13 @@ function ReviewProbe() {
   const { reviewId } = useParams();
   return <p data-testid="review-page">{reviewId}</p>;
 }
+
+it("gives a delivery-held READY card a waiting pill and exact landing reason", () => {
+  const data = card("READY", { childCount: 0, descendantCount: 0 });
+  data.task.claim_readiness = { state: "waiting_on_delivery", claimable: false,
+    label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" };
+  render(<TaskCard data={data} />);
+  expect(screen.getByText("Waiting on delivery")).toBeInTheDocument();
+  expect(screen.getByText("Land source.6 on dev; refresh aq/epic")).toBeInTheDocument();
+  expect(screen.queryByText("Claimable · next in frontier")).not.toBeInTheDocument();
+});

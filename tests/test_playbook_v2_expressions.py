@@ -56,9 +56,9 @@ CONDITIONS = TypeAdapter(Condition)
 
 
 class TestValueUnion:
-    """§4.2 — the nine discriminator strings are the wire contract."""
+    """The original values and B1 collection discriminators form the wire contract."""
 
-    def test_the_union_has_exactly_nine_members(self):
+    def test_the_union_has_exactly_thirteen_members(self):
         assert set(E.ValueKind.__args__) == {
             "literal",
             "event_ref",
@@ -69,6 +69,10 @@ class TestValueUnion:
             "object",
             "template",
             "coalesce",
+            "filter",
+            "map",
+            "len",
+            "diff",
         }
 
     @pytest.mark.parametrize(
@@ -220,7 +224,7 @@ class TestConditions:
 class TestEngineContext:
     """§4.2.1 — a closed schema; there is no dynamic context."""
 
-    def test_the_schema_is_the_eight_declared_paths(self):
+    def test_the_schema_is_the_ten_declared_paths(self):
         assert set(ENGINE_CONTEXT_SCHEMA) == {
             "run_id",
             "dispatch_id",
@@ -230,7 +234,11 @@ class TestEngineContext:
             "now",
             "attempt",
             "iteration_index",
+            "observed_at",
+            "observation_id",
         }
+        assert ENGINE_CONTEXT_SCHEMA["observed_at"] == "number"
+        assert ENGINE_CONTEXT_SCHEMA["observation_id"] == "string"
 
     def test_iteration_index_is_loop_scoped(self):
         assert E.LOOP_ONLY_CONTEXT_PATHS == frozenset({"iteration_index"})
@@ -257,6 +265,9 @@ def test_expressions_module_has_no_intra_package_imports():
     assert set(imported) <= {
         "__future__",
         "collections.abc",
+        "dataclasses",
+        "decimal",
+        "math",
         "typing",
         "pydantic",
         "json",
