@@ -30,6 +30,34 @@ _MAINTENANCE = ["-c", "gc.auto=6700", "-c", "gc.autoDetach=false", "-c", "mainte
 _RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
                     ("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"))
 MAX_ATTEMPTS = 2
+# Full object-body verification is CPU/I/O bound: the 423 MB integration cache
+# takes about a minute per pass on a healthy store. Recovery needs up to four
+# passes, so neither a pass nor their shared acquisition can use the ordinary
+# short-command budget alone.
+FSCK_TIMEOUT_SECONDS = 300
+
+
+async def ensure_retained_origin(git, store, origin_url, *, lock_held=False):
+    """Repair an absent origin from configuration without rebinding another remote."""
+    if not origin_url:
+        raise GitError("retained repository origin is not configured")
+    async with _transaction(git, store, lock_held):
+        configured = await git.arun_git_result(
+            ["config", "--get", "remote.origin.url"], cwd=str(store), lock_held=True,
+        )
+        if configured.returncode not in {0, 1}:
+            raise GitError("retained repository origin cannot be read")
+        current = configured.stdout.strip()
+        if current:
+            if current != origin_url:
+                raise GitError("retained repository origin differs from configured repository")
+            return
+        result = await git.arun_git_result(
+            ["config", "--local", "remote.origin.url", origin_url],
+            cwd=str(store), lock_held=True,
+        )
+        if result.returncode:
+            raise GitError("retained repository origin could not be restored")
 
 
 def _git_dir(store: Path) -> Path:
@@ -267,7 +295,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
 
     async def fsck():
         return await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
-                                        env={"LC_ALL": "C"})
+                                        env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
 
     async def fetch(**options):
         await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
@@ -289,14 +317,24 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                     state = None
         if state is None:
             fetch_error = None
+            # Check the baseline before fetch adds verified objects. Comparing
+            # only afterwards makes every incremental pack require a full fsck.
+            reusable = await git.aretained_store_verified(str(directory))
             try:
                 if pending.exists():
                     raise GitError("retained repository recovery pending")
                 await fetch()
             except (GitError, GitHubAccessError) as exc:
                 fetch_error = exc
+            if not pending.exists() and await git.areuse_retained_verification(
+                    str(directory), extend=reusable and fetch_error is None):
+                if fetch_error:
+                    raise fetch_error
+                return
+            baseline = await git.aretained_store_baseline(str(directory))
             before = await fsck()
             if _clean(before) and not pending.exists():
+                await git.arecord_retained_store_verified(str(directory), *baseline)
                 if fetch_error:
                     raise fetch_error
                 return
@@ -355,10 +393,12 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
         if not _clean(after):
             raise GitError("retained full fsck failed after refetch")
         await _publish_local_heads(git, store, repository_url)
+        baseline = await git.aretained_store_baseline(str(directory))
         after = await fsck()
         state["checks"][-1]["after"] = _diagnostics(after)
         if not _clean(after):
             raise GitError("retained full fsck failed after publication")
+        await git.arecord_retained_store_verified(str(directory), *baseline)
         state["status"] = "recovered"
         await save()
         if state["status"] != "recovered":
@@ -368,7 +408,8 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
         logger.warning("retained cache %s recovered: incident=%s attempts=%s backup=%s",
                        store, state["id"], state["attempts"], state["backup"])
 
-    deadline = asyncio.get_running_loop().time() + git._command_timeout()
+    deadline = (asyncio.get_running_loop().time() + git._command_timeout()
+                + 4 * FSCK_TIMEOUT_SECONDS)
     async with _transaction(git, store, lock_held):
         try:
             async with asyncio.timeout_at(deadline):
@@ -409,7 +450,7 @@ async def clear_retained_recovery(git, state, *, by, record):
     journal, pending = root / "incident.json", root / "pending"
     async with _transaction(git, store, False):
         result = await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
-                                           env={"LC_ALL": "C"})
+                                           env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
         check = _diagnostics(result)
         if not _clean(result):
             return {"cleared": False, "fsck": check, "state": state}

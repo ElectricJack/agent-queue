@@ -23,6 +23,74 @@ LANDING_REVISION = "8e73e088fa5050621a165b9d13f90ef88334572d"
 BASELINE_ENGINE_LINES = 82_627
 BASELINE_OWNED_LINES = 140_499
 REPLACEMENT_ALLOWANCE = 15_000
+# Exact standing batch exception, not a new replacement allowance. Remove its
+# manifest opt-in when azure-ridge-72 restores the original transition cap.
+TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb465',
+ 'decision_message_id': 'msg-7ed85e78d1af4f3e85b485a57967e794',
+ 'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
+                          'msg-381054d695e64055979a687c4d811e7e',
+                          'msg-ab86b9766c2f42b9ba4920aba585b577',
+                          'msg-21784b3e56aa4f54bf1042b7c9af4aaf'],
+ 'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+ 'measured_source_revision': 'b65c4f58866c1569e7ed73cb3a9d306f3060e1f0',
+ 'original_owned_total_cap': 155499,
+ 'measured_owned_total': 160884,
+ 'delta': 5385,
+ 'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
+                   'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
+                   'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+                   'measured_source_revision': 'd00e25221856145f24777f8b016a008b4e954bca',
+                   'original_owned_total_cap': 155499,
+                   'measured_owned_total': 156792,
+                   'delta': 1293,
+                   'restore_task': 'azure-ridge-72',
+                   'expires_at': 's4_modules'},
+                  {'batch_id': 'train-48d0a1c1f1f8292b2977546011609db6',
+                   'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
+                   'authorized_delta': 2166,
+                   'measured_owned_total': 158958}],
+ 'batch_measured_delta': 1926,
+ 'restore_task': 'azure-ridge-72',
+ 'expires_at': 's4_modules',
+ 'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
+ 'storage_categories': ['integration_close_attempts'],
+ 'category_restore_task': 'stark-willow-95.17',
+ 'verification_task': 'stark-willow-95.18',
+ 'measured_engine_lines': 85321,
+ 'measured_table_count': 45,
+ 'delivery_method': 'operator direct integration; user request 2026-10-22',
+ 'amendments': [{'task_id': 'solid-impact-56',
+                 'decision_message_id': 'msg-ab86b9766c2f42b9ba4920aba585b577',
+                 'referenced_decision': 'msg-9f895e0d',
+                 'previous_owned_total': 160820,
+                 'previous_engine_lines': 85301,
+                 'authorized_owned_delta': 17,
+                 'authorized_engine_delta': 15,
+                 'reason': 'Memoize stack authorization inputs within one scheduler sync '
+                           'pass; supervisor approved exact net footprint after removing an '
+                           'unused parent query.',
+                 'global_request': 'msg-9f895e0d',
+                 'global_grant': 'msg-7f2f68c1',
+                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'}],
+ 'supplemental_grants': [{'task_id': 'fresh-apex-30',
+                          'approval_message_id': 'msg-4e25c0d3',
+                          'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
+                          'measured_source_revision': 'd9c50555a1d87beaefbfc8de3b13229a6ab9f061',
+                          'prior_owned_total_cap': 160820,
+                          'authorized_delta': 5,
+                          'measured_owned_total': 160825,
+                          'reason': 'Verify registered linked fixer worktrees before '
+                                    'permission bypass.'}],
+ 'merge_measurement': {'task_id': 'fresh-apex-30',
+                       'dev_source_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
+                       'dev_owned_total': 160879,
+                       'dev_engine_lines': 85316,
+                       'authorized_owned_delta': 5,
+                       'authorized_engine_delta': 5,
+                       'approval_message_id': 'msg-a10c7ab8ff2946f8b1f27528a407524c',
+                       'reason': 'Carry forward the unchanged approved fixer delta onto the '
+                                 'measured dev tree.',
+                       'decision_id': 'size-cap-delegation-2026-10-23'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
@@ -49,10 +117,10 @@ STORAGE_METHOD = re.compile(
     r"(?:task_meta|metadata|op_event|operation_event|journal)|^log_event$"
 )
 STORAGE_TABLES = {"task_metadata", "op_events", "operation_events", "events",
-                  "integration_subject_journal"}
+                  "integration_subject_journal", "system_config"}
 SQL_STORAGE_WRITE = re.compile(
     r"\b(?:insert\s+into|update|delete\s+from)\s+[\"\w.]*"
-    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal)\b",
+    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal|system_config)\b",
     re.IGNORECASE,
 )
 WRITE_CALLS = {"insert", "update", "delete"}
@@ -432,13 +500,27 @@ def inventory(root: Path, manifest: dict) -> dict:
             "unknown_sinks": unknown_sinks, "legacy_sinks": legacy_sinks}
 
 
+def transition_owned_cap(manifest: dict) -> int:
+    """Accept only the recorded batch decision; never derive a cap from counts."""
+    original = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+    exception = manifest.get("transition_exception")
+    if exception is None:
+        return original
+    if exception != TRANSITION_BATCH_EXCEPTION:
+        raise ValueError("unapproved integration transition exception")
+    return original + TRANSITION_BATCH_EXCEPTION["delta"]
+
+
 def budget_errors(report: dict, manifest: dict) -> list[str]:
     phase = manifest["phase"]
     if phase not in {"transition", "s4_modules", "final"}:
         return [f"unknown budget phase: {phase}"]
     if phase == "transition":
         engine_cap = BASELINE_ENGINE_LINES + REPLACEMENT_ALLOWANCE
-        total_cap = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+        try:
+            total_cap = transition_owned_cap(manifest)
+        except ValueError as exc:
+            return [str(exc)]
         table_cap = 45  # replacement reshapes the existing five, adds no table
     else:
         engine_cap, total_cap, table_cap = FINAL_ENGINE_CAP, FINAL_TOTAL_CAP, FINAL_TABLE_CAP

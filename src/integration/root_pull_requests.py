@@ -417,7 +417,8 @@ class RootDeliveryRedrive:
             ):
                 return {**base, "outcome": "blocked",
                         "reason": "the epic's aggregate verification has not completed; "
-                        "its parent integration run completes it"}
+                        "the integration train verifies its collected branch; "
+                        f"inspect `aq integration reverify-epic {task_id}`"}
             head = checkpoint["verified_sha"]
         else:
             source = leaf_root_source(
