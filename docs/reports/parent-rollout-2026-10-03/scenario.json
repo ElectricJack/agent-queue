@@ -1,0 +1,868 @@
+{
+  "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+  "child_heads": {
+    "epic.1": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+    "epic.2": "c2b77c101977ea4669ac566c53151470edbf9112"
+  },
+  "environment": "disposable PostgreSQL and local bare Git; not production",
+  "final_subject": {
+    "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+    "batch_id": null,
+    "budget_attempt_limit": null,
+    "budget_attempts": 0,
+    "budget_class": null,
+    "budget_deadline_at": null,
+    "budget_ordinal": null,
+    "budget_started_at": null,
+    "closed_reason": null,
+    "created_at": 1000.0,
+    "due_set_at": 1000.0,
+    "engine": "legacy",
+    "gate_id": "gate-8fc3704059de4b84",
+    "generation": 2,
+    "head_sha": "2937271713c914e14245e46cac2a04d9e722e7e7",
+    "id": "parent-subject-ba6b70f9ac3a59349b3e067d04de131d",
+    "kind": "parent_episode",
+    "last_journal_seq": 14,
+    "last_visit_at": 1000.0,
+    "max_wait_seconds": 3600,
+    "next_due_at": 1000.0,
+    "parent_episode_id": "0b1934fd-f9b7-44d7-92aa-cafc6dd24805",
+    "phase": "building",
+    "policy_artifact_sha256": "sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9",
+    "policy_playbook_id": "parent-integration",
+    "project_id": "p",
+    "refusal_streak": 0,
+    "repository_id": "repo",
+    "subject_key": "parent_episode:repo:epic:1",
+    "target_ref": "refs/heads/aq/epic",
+    "task_id": "epic",
+    "updated_at": 1000.0,
+    "version": 14,
+    "wait_reason": null,
+    "wake_requested_at": 1791017276.1185327,
+    "writer_claimed_at": null,
+    "writer_fence_token": null,
+    "writer_last_push_at": null,
+    "writer_session_id": null,
+    "writer_status": "none",
+    "writer_stop_proof": null,
+    "writer_task_id": null
+  },
+  "gate": {
+    "await_id": "integration-subject:parent-subject-ba6b70f9ac3a59349b3e067d04de131d",
+    "created_at": 1000.0,
+    "gate_type": "human",
+    "id": "gate-8fc3704059de4b84",
+    "project_id": "p",
+    "question": "A child failed. Choose retry after a fix, or hold this parent.",
+    "resolution": "hold",
+    "resolved_by": "human:local-operator",
+    "status": "resolved",
+    "timeout_at": null,
+    "title": "Integration subject parent-subject-ba6b70f9ac3a59349b3e067d04de131d"
+  },
+  "intents": [
+    {
+      "authors": [
+        {
+          "email": "seed@example.test",
+          "name": "Seed"
+        }
+      ],
+      "branch_fence_owner_id": null,
+      "branch_fence_token": null,
+      "ci_evidence_id": null,
+      "commit_metadata": {
+        "author": {
+          "email": "seed@example.test",
+          "name": "Seed"
+        },
+        "committer": {
+          "email": "agent-queue@localhost",
+          "name": "Agent Queue"
+        },
+        "message": "Integrate task epic.1\n\nAQ-Receipt: receipt-efe1150a-a3ad-549a-a39d-fd14f30f9c7f\nAQ-Intent: intent-5ff2b9d0-bcf5-517e-bf24-7f107d2fd2e3",
+        "timestamp": 1791017274
+      },
+      "committed_at": 1791017274.6090772,
+      "conflict_diagnostics": null,
+      "created_at": 1791017274.0,
+      "domain_key": "254766e941654c33842b00761ade3998c68aed4cadf2d953d8367ab7a429d9d3",
+      "expected_target": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+      "fence_owner_id": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+      "fence_token": 2,
+      "id": "intent-5ff2b9d0-bcf5-517e-bf24-7f107d2fd2e3",
+      "intent_kind": "child",
+      "operation_key": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+      "origin_url": "/tmp/pytest-of-jkern/pytest-3578/popen-gw0/test_real_eight_child_adoption0/origin.git",
+      "prepared_sha": "2937271713c914e14245e46cac2a04d9e722e7e7",
+      "project_id": "p",
+      "project_lease_fence_token": null,
+      "project_lease_owner_id": null,
+      "provenance": {
+        "kind": "local",
+        "playbook_attempt": null,
+        "playbook_run_id": null,
+        "playbook_step_id": null,
+        "principal": "local:-",
+        "profile_id": null,
+        "project_id": null,
+        "reviewer_session_attempt": null,
+        "service_name": null,
+        "session_id": null,
+        "source_branch": "aq/epic.1",
+        "task_id": null
+      },
+      "receipt_id": "receipt-efe1150a-a3ad-549a-a39d-fd14f30f9c7f",
+      "recovery_ref": "refs/aq/integration-intents/intent-5ff2b9d0-bcf5-517e-bf24-7f107d2fd2e3",
+      "remote_evidence": {
+        "kind": "prepared_reachable",
+        "remote_sha": "2937271713c914e14245e46cac2a04d9e722e7e7"
+      },
+      "repository_id": "repo",
+      "resolution_commit_shas": null,
+      "resolution_fence_owner_id": null,
+      "resolution_fence_token": null,
+      "resolution_head_sha": null,
+      "resolution_operation_id": null,
+      "resolution_push_evidence": null,
+      "resolution_push_started_at": null,
+      "resolution_recovery_evidence": null,
+      "resolution_session_id": null,
+      "resolution_session_instance_token": null,
+      "resolution_stage_ordinal": null,
+      "resolution_task_id": null,
+      "resolution_tree_sha": null,
+      "resolution_workspace_id": null,
+      "review_evidence": {
+        "created_at": 1791017274.0943742,
+        "evidence": {
+          "decision_path": "completion_proof",
+          "parent_task_id": "epic",
+          "remote_head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd"
+        },
+        "generation": 0,
+        "id": "review-c342e5e2-5be5-52e1-ac24-4cbae86736a4",
+        "repository_id": "repo",
+        "review_kind": "leaf",
+        "reviewed_head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+        "reviewed_tree_sha": "c02a90598de005bf4f2d41a72c6b8a59197d942e",
+        "reviewer_identity": "completion:epic.1",
+        "reviewer_session_attempt_id": null,
+        "reviewer_task_id": null,
+        "source_base": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+        "source_task_id": "epic.1",
+        "verdict": "approved"
+      },
+      "root_batch_id": null,
+      "root_candidate_revision": null,
+      "source_base": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+      "source_head": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+      "source_task_id": "epic.1",
+      "state": "committed",
+      "superseded_by_intent_id": null,
+      "supersedes_intent_id": null,
+      "target_branch": "aq/epic",
+      "target_task_id": "epic",
+      "updated_at": 1791017274.6090772
+    },
+    {
+      "authors": [
+        {
+          "email": "seed@example.test",
+          "name": "Seed"
+        }
+      ],
+      "branch_fence_owner_id": null,
+      "branch_fence_token": null,
+      "ci_evidence_id": null,
+      "commit_metadata": {
+        "author": {
+          "email": "seed@example.test",
+          "name": "Seed"
+        },
+        "committer": {
+          "email": "agent-queue@localhost",
+          "name": "Agent Queue"
+        },
+        "message": "Integrate task epic.2\n\nAQ-Receipt: receipt-5611778b-be0d-5d17-9dd8-cce023c88269\nAQ-Intent: intent-45a4c82c-cbb2-5959-9f5c-67ae83c5e969",
+        "timestamp": 1791017275
+      },
+      "committed_at": null,
+      "conflict_diagnostics": {
+        "base": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+        "output": "703bfe1f1380774b7aabd1c2fa04eba73a7a3c1a\n100644 df967b96a579e45a18b8251732d16804b2e56a55 1\tshared.txt\n100644 5626abf0f72e58d7a153368ba57db4c673c0e171 2\tshared.txt\n100644 f719efd430d52bcfc8566a43b2eb655688d38871 3\tshared.txt\n\nAuto-merging shared.txt\nCONFLICT (content): Merge conflict in shared.txt\n",
+        "paths": [
+          "shared.txt"
+        ],
+        "returncode": 1,
+        "source": "c2b77c101977ea4669ac566c53151470edbf9112",
+        "target": "2937271713c914e14245e46cac2a04d9e722e7e7",
+        "truncated": false
+      },
+      "created_at": 1791017275.0,
+      "domain_key": "cfe9e2c1fa96d5504ccecc9c6cb09cc61e4737a1e509ab9e1c2d715566869335",
+      "expected_target": "2937271713c914e14245e46cac2a04d9e722e7e7",
+      "fence_owner_id": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+      "fence_token": 2,
+      "id": "intent-45a4c82c-cbb2-5959-9f5c-67ae83c5e969",
+      "intent_kind": "child",
+      "operation_key": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+      "origin_url": "/tmp/pytest-of-jkern/pytest-3578/popen-gw0/test_real_eight_child_adoption0/origin.git",
+      "prepared_sha": null,
+      "project_id": "p",
+      "project_lease_fence_token": null,
+      "project_lease_owner_id": null,
+      "provenance": {
+        "kind": "local",
+        "playbook_attempt": null,
+        "playbook_run_id": null,
+        "playbook_step_id": null,
+        "principal": "local:-",
+        "profile_id": null,
+        "project_id": null,
+        "reviewer_session_attempt": null,
+        "service_name": null,
+        "session_id": null,
+        "source_branch": "aq/epic.2",
+        "task_id": null
+      },
+      "receipt_id": "receipt-5611778b-be0d-5d17-9dd8-cce023c88269",
+      "recovery_ref": null,
+      "remote_evidence": null,
+      "repository_id": "repo",
+      "resolution_commit_shas": null,
+      "resolution_fence_owner_id": null,
+      "resolution_fence_token": null,
+      "resolution_head_sha": null,
+      "resolution_operation_id": null,
+      "resolution_push_evidence": null,
+      "resolution_push_started_at": null,
+      "resolution_recovery_evidence": null,
+      "resolution_session_id": null,
+      "resolution_session_instance_token": null,
+      "resolution_stage_ordinal": null,
+      "resolution_task_id": null,
+      "resolution_tree_sha": null,
+      "resolution_workspace_id": null,
+      "review_evidence": {
+        "created_at": 1791017274.8454144,
+        "evidence": {
+          "decision_path": "completion_proof",
+          "parent_task_id": "epic",
+          "remote_head_sha": "c2b77c101977ea4669ac566c53151470edbf9112"
+        },
+        "generation": 0,
+        "id": "review-732e42ef-39f1-5974-9df8-97fd2c202719",
+        "repository_id": "repo",
+        "review_kind": "leaf",
+        "reviewed_head_sha": "c2b77c101977ea4669ac566c53151470edbf9112",
+        "reviewed_tree_sha": "bb2e7623f48ba3a81c1e9a37f615b04628de9d73",
+        "reviewer_identity": "completion:epic.2",
+        "reviewer_session_attempt_id": null,
+        "reviewer_task_id": null,
+        "source_base": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+        "source_task_id": "epic.2",
+        "verdict": "approved"
+      },
+      "root_batch_id": null,
+      "root_candidate_revision": null,
+      "source_base": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+      "source_head": "c2b77c101977ea4669ac566c53151470edbf9112",
+      "source_task_id": "epic.2",
+      "state": "conflict",
+      "superseded_by_intent_id": null,
+      "supersedes_intent_id": null,
+      "target_branch": "aq/epic",
+      "target_task_id": "epic",
+      "updated_at": 1791017275.1235623
+    }
+  ],
+  "policy_artifact_sha256": "sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9",
+  "receipts": [
+    {
+      "after_sha": "2937271713c914e14245e46cac2a04d9e722e7e7",
+      "batch_id": null,
+      "before_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+      "candidate_revision": null,
+      "created_at": 1791017274.6090772,
+      "disposition": "code",
+      "disposition_revision": null,
+      "domain_key": "254766e941654c33842b00761ade3998c68aed4cadf2d953d8367ab7a429d9d3",
+      "id": "receipt-efe1150a-a3ad-549a-a39d-fd14f30f9c7f",
+      "member_ordinal": null,
+      "parent_episode_id": "0b1934fd-f9b7-44d7-92aa-cafc6dd24805",
+      "parent_operation_id": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+      "repository_id": "repo",
+      "resolution_evidence": null,
+      "review_evidence": {
+        "authors": [
+          {
+            "email": "seed@example.test",
+            "name": "Seed"
+          }
+        ],
+        "commit": {
+          "author": {
+            "email": "seed@example.test",
+            "name": "Seed"
+          },
+          "committer": {
+            "email": "agent-queue@localhost",
+            "name": "Agent Queue"
+          },
+          "message": "Integrate task epic.1\n\nAQ-Receipt: receipt-efe1150a-a3ad-549a-a39d-fd14f30f9c7f\nAQ-Intent: intent-5ff2b9d0-bcf5-517e-bf24-7f107d2fd2e3",
+          "timestamp": 1791017274
+        },
+        "provenance": {
+          "kind": "local",
+          "playbook_attempt": null,
+          "playbook_run_id": null,
+          "playbook_step_id": null,
+          "principal": "local:-",
+          "profile_id": null,
+          "project_id": null,
+          "reviewer_session_attempt": null,
+          "service_name": null,
+          "session_id": null,
+          "source_branch": "aq/epic.1",
+          "task_id": null
+        },
+        "review": {
+          "created_at": 1791017274.0943742,
+          "evidence": {
+            "decision_path": "completion_proof",
+            "parent_task_id": "epic",
+            "remote_head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd"
+          },
+          "generation": 0,
+          "id": "review-c342e5e2-5be5-52e1-ac24-4cbae86736a4",
+          "repository_id": "repo",
+          "review_kind": "leaf",
+          "reviewed_head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+          "reviewed_tree_sha": "c02a90598de005bf4f2d41a72c6b8a59197d942e",
+          "reviewer_identity": "completion:epic.1",
+          "reviewer_session_attempt_id": null,
+          "reviewer_task_id": null,
+          "source_base": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+          "source_task_id": "epic.1",
+          "verdict": "approved"
+        }
+      },
+      "reviewed_head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+      "reviewed_tree_sha": "c02a90598de005bf4f2d41a72c6b8a59197d942e",
+      "source_pr": null,
+      "source_task_id": "epic.1",
+      "squash_sha": "2937271713c914e14245e46cac2a04d9e722e7e7",
+      "target_branch": "aq/epic",
+      "target_task_id": "epic",
+      "verification_evidence": null,
+      "workspace_kind": null
+    }
+  ],
+  "scenario": "eight_children_failed_child_real_conflict_gate_restart_rollback",
+  "shadow_decisions": [
+    {
+      "entry_kind": "decision",
+      "facts_digest": "sha256:3ebcfbaef4f94d07203f55bd1478ace0c9cfb4e47fb04714c864400dcb12aad8",
+      "generation": 2,
+      "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+      "idempotency_key": "shadow:1:decision",
+      "mode": "shadow",
+      "outcome": null,
+      "payload": {
+        "decision": {
+          "facts_digest": "sha256:3ebcfbaef4f94d07203f55bd1478ace0c9cfb4e47fb04714c864400dcb12aad8",
+          "messages": [],
+          "policy": {
+            "artifact_sha256": "sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9",
+            "playbook_id": "parent-integration"
+          },
+          "request": {
+            "primitive": "wait",
+            "reason": "refresh_parent_identity",
+            "seconds": 1
+          },
+          "rule": "refresh-identity",
+          "subject_id": "parent-subject-ba6b70f9ac3a59349b3e067d04de131d",
+          "subject_version": 1
+        },
+        "facts": {
+          "aggregate_verified": false,
+          "base_moved": false,
+          "budget": null,
+          "budget_exhausted": false,
+          "budget_expired": false,
+          "candidate": null,
+          "children": [
+            {
+              "blockers": [],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+              "pending_collection": true,
+              "receipt_ids": [
+                "receipt-efe1150a-a3ad-549a-a39d-fd14f30f9c7f"
+              ],
+              "selected_receipt_id": null,
+              "status": "COMPLETED",
+              "task_id": "epic.1"
+            },
+            {
+              "blockers": [
+                "receipt_missing"
+              ],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "c2b77c101977ea4669ac566c53151470edbf9112",
+              "pending_collection": true,
+              "receipt_ids": [],
+              "selected_receipt_id": null,
+              "status": "COMPLETED",
+              "task_id": "epic.2"
+            },
+            {
+              "blockers": [
+                "failed_child"
+              ],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "pending_collection": false,
+              "receipt_ids": [],
+              "selected_receipt_id": null,
+              "status": "FAILED",
+              "task_id": "epic.3"
+            },
+            {
+              "blockers": [
+                "receipt_missing"
+              ],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "pending_collection": false,
+              "receipt_ids": [],
+              "selected_receipt_id": null,
+              "status": "DEFINED",
+              "task_id": "epic.4"
+            },
+            {
+              "blockers": [
+                "receipt_missing"
+              ],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "pending_collection": false,
+              "receipt_ids": [],
+              "selected_receipt_id": null,
+              "status": "DEFINED",
+              "task_id": "epic.5"
+            },
+            {
+              "blockers": [
+                "receipt_missing"
+              ],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "pending_collection": false,
+              "receipt_ids": [],
+              "selected_receipt_id": null,
+              "status": "DEFINED",
+              "task_id": "epic.6"
+            },
+            {
+              "blockers": [
+                "receipt_missing"
+              ],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "pending_collection": false,
+              "receipt_ids": [],
+              "selected_receipt_id": null,
+              "status": "DEFINED",
+              "task_id": "epic.7"
+            },
+            {
+              "blockers": [
+                "receipt_missing"
+              ],
+              "disposition": null,
+              "disposition_revision": null,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "pending_collection": false,
+              "receipt_ids": [],
+              "selected_receipt_id": null,
+              "status": "DEFINED",
+              "task_id": "epic.8"
+            }
+          ],
+          "ci": [
+            {
+              "age_seconds": null,
+              "evidence_id": null,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "observed_at": null,
+              "producer": null,
+              "requested_at": null,
+              "state": "none"
+            },
+            {
+              "age_seconds": null,
+              "evidence_id": null,
+              "head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+              "observed_at": null,
+              "producer": null,
+              "requested_at": null,
+              "state": "none"
+            },
+            {
+              "age_seconds": null,
+              "evidence_id": null,
+              "head_sha": "c2b77c101977ea4669ac566c53151470edbf9112",
+              "observed_at": null,
+              "producer": null,
+              "requested_at": null,
+              "state": "none"
+            }
+          ],
+          "ci_evidence_ids": [],
+          "ci_state": "none",
+          "collection_checkpoint_head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+          "collection_current": true,
+          "collection_generation": 2,
+          "collection_generation_advanced": true,
+          "collection_head_sha": "2937271713c914e14245e46cac2a04d9e722e7e7",
+          "collection_members": [
+            {
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+              "task_id": "epic.1"
+            },
+            {
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "head_sha": "c2b77c101977ea4669ac566c53151470edbf9112",
+              "task_id": "epic.2"
+            }
+          ],
+          "collection_reopened": false,
+          "collection_state": "awaiting_children",
+          "collector_fence": {
+            "owner_id": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+            "target": {
+              "branch": "aq/epic",
+              "repository_id": "repo"
+            },
+            "token": 2
+          },
+          "conflict_count": 1,
+          "conflicts": [
+            {
+              "files": [
+                "shared.txt"
+              ],
+              "member_task_id": "epic.2"
+            }
+          ],
+          "default_branch_head": null,
+          "failed_aggregate_head_sha": null,
+          "failed_aggregate_unchanged": false,
+          "failed_child_count": 1,
+          "gate": null,
+          "head": {
+            "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+            "generation": 2,
+            "ref": "refs/heads/aq/epic",
+            "repository_id": "repo",
+            "sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5"
+          },
+          "held": false,
+          "holds": [],
+          "identity_moved": true,
+          "kind": "parent_episode",
+          "ladder_exhausted": false,
+          "legacy_repair_dossier": null,
+          "members": [
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+              "held": false,
+              "review": "approved",
+              "task_id": "epic.1"
+            },
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "c2b77c101977ea4669ac566c53151470edbf9112",
+              "held": false,
+              "review": "approved",
+              "task_id": "epic.2"
+            },
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "held": false,
+              "review": "none",
+              "task_id": "epic.3"
+            },
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "held": false,
+              "review": "none",
+              "task_id": "epic.4"
+            },
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "held": false,
+              "review": "none",
+              "task_id": "epic.5"
+            },
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "held": false,
+              "review": "none",
+              "task_id": "epic.6"
+            },
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "held": false,
+              "review": "none",
+              "task_id": "epic.7"
+            },
+            {
+              "ancestry": "unknown",
+              "base_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "ci": "none",
+              "ejected": false,
+              "generation": 0,
+              "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "held": false,
+              "review": "none",
+              "task_id": "epic.8"
+            }
+          ],
+          "no_progress": false,
+          "observed_at": 1000.0,
+          "parent_completed": false,
+          "parent_episode_id": "0b1934fd-f9b7-44d7-92aa-cafc6dd24805",
+          "parent_operation_id": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+          "pending_child_count": 2,
+          "pending_publication": null,
+          "phase": "building",
+          "readiness": "unknown",
+          "receipts": [
+            {
+              "acceptance": null,
+              "before_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+              "created_at": 1791017274.6090772,
+              "disposition_revision": null,
+              "episode_id": "0b1934fd-f9b7-44d7-92aa-cafc6dd24805",
+              "kind": "code",
+              "operation_id": "0c87ac60-bb9b-439a-b437-fdc0b5b2f9a4",
+              "receipt_id": "receipt-efe1150a-a3ad-549a-a39d-fd14f30f9c7f",
+              "scope": "direct",
+              "selected": false,
+              "source_head_sha": "10db2a7498ddcf556d7d6ef9277563f2df364abd",
+              "source_task_id": "epic.1",
+              "target_head_sha": "2937271713c914e14245e46cac2a04d9e722e7e7"
+            }
+          ],
+          "remote_heads": [
+            {
+              "ref": "refs/heads/aq/epic",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.1",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.2",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.3",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.4",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.5",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.6",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.7",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/aq/epic.8",
+              "sha": null,
+              "state": "unknown"
+            },
+            {
+              "ref": "refs/heads/main",
+              "sha": null,
+              "state": "unknown"
+            }
+          ],
+          "subject_id": "parent-subject-ba6b70f9ac3a59349b3e067d04de131d",
+          "subject_version": 1,
+          "unknown": [
+            "ancestry_unknown:epic.1",
+            "ancestry_unknown:epic.2",
+            "ancestry_unknown:epic.3",
+            "ancestry_unknown:epic.4",
+            "ancestry_unknown:epic.5",
+            "ancestry_unknown:epic.6",
+            "ancestry_unknown:epic.7",
+            "ancestry_unknown:epic.8",
+            "parent_collection_head_moved",
+            "remote_unknown:refs/heads/aq/epic",
+            "remote_unknown:refs/heads/aq/epic.1",
+            "remote_unknown:refs/heads/aq/epic.2",
+            "remote_unknown:refs/heads/aq/epic.3",
+            "remote_unknown:refs/heads/aq/epic.4",
+            "remote_unknown:refs/heads/aq/epic.5",
+            "remote_unknown:refs/heads/aq/epic.6",
+            "remote_unknown:refs/heads/aq/epic.7",
+            "remote_unknown:refs/heads/aq/epic.8",
+            "remote_unknown:refs/heads/main"
+          ],
+          "unresolved_writes": [],
+          "verification": null,
+          "verification_history": [],
+          "verifier_failed": false,
+          "verifier_task_id": null,
+          "wait_overdue": false,
+          "writer": {
+            "claimed_at": null,
+            "fence_token": null,
+            "last_push_at": null,
+            "session_id": null,
+            "status": "none",
+            "stop_proof": null,
+            "task_id": null
+          },
+          "writer_file_ordinal": 1,
+          "writer_status": "none"
+        }
+      },
+      "phase": "building",
+      "policy_artifact_sha256": "sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9",
+      "primitive": "wait",
+      "recorded_at": 1000.0,
+      "rule": "refresh-identity",
+      "seq": 1,
+      "subject_id": "parent-subject-ba6b70f9ac3a59349b3e067d04de131d",
+      "subject_version": 1,
+      "visit_id": "shadow:1"
+    }
+  ],
+  "transfers": [
+    {
+      "entry_kind": "action",
+      "facts_digest": null,
+      "generation": 2,
+      "head_sha": "80f4fbdfd97c7cc87e046dc89b111064875ccaf5",
+      "idempotency_key": "engine:2:reconciler",
+      "mode": "active",
+      "outcome": "recorded",
+      "payload": {
+        "command": "integration_engine_transfer",
+        "evidence": [
+          "fixture-shadow-journal",
+          "fixture-eight-child-scenario",
+          "fixture-approval"
+        ],
+        "from": "legacy",
+        "operator_id": "fixture-operator",
+        "reason": "disposable scenario adoption",
+        "to": "reconciler"
+      },
+      "phase": "building",
+      "policy_artifact_sha256": "sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9",
+      "primitive": "record_decision",
+      "recorded_at": 1000.0,
+      "rule": null,
+      "seq": 2,
+      "subject_id": "parent-subject-ba6b70f9ac3a59349b3e067d04de131d",
+      "subject_version": 2,
+      "visit_id": null
+    },
+    {
+      "entry_kind": "action",
+      "facts_digest": null,
+      "generation": 2,
+      "head_sha": "2937271713c914e14245e46cac2a04d9e722e7e7",
+      "idempotency_key": "engine:13:legacy",
+      "mode": "active",
+      "outcome": "recorded",
+      "payload": {
+        "command": "integration_engine_transfer",
+        "evidence": [],
+        "from": "reconciler",
+        "operator_id": "fixture-operator",
+        "reason": "disposable feature-off rollback",
+        "to": "legacy"
+      },
+      "phase": "building",
+      "policy_artifact_sha256": "sha256:5c6c36ceb9be0cea2addf4edd07fbd13bd64d03b6b384f090429b923fa0b13a9",
+      "primitive": "record_decision",
+      "recorded_at": 1000.0,
+      "rule": null,
+      "seq": 14,
+      "subject_id": "parent-subject-ba6b70f9ac3a59349b3e067d04de131d",
+      "subject_version": 13,
+      "visit_id": null
+    }
+  ]
+}
