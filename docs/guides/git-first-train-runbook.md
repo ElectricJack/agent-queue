@@ -265,20 +265,15 @@ its exact candidate before publishing. Sources:
 [root_pull_requests.py](../../src/integration/root_pull_requests.py) and
 [reviews.py](../../src/integration/reviews.py).
 
-Root batching uses the policy's optional `train` block:
-
-```yaml
-train:
-  cadence_seconds: 300
-  settling_cap_seconds: 1800
-```
-
-These are shipped defaults. The next automatic seal is the earlier of
-`latest_admission + cadence_seconds` and `first_admission + settling_cap_seconds`.
-A new eligible input extends the quiet period, but never the cap. Epic targets
-freeze immediately. `seal-now` bypasses only cadence, once; it preserves PR,
-check and publication requirements. Sources:
-[src/integration/models.py](../../src/integration/models.py) and
+Root batching follows lane occupancy, not a timer: an idle lane dispatches at
+once and a busy lane batches what becomes eligible meanwhile. The `train`
+block's `cadence_seconds` and `settling_cap_seconds` are deprecated. They stay
+parseable for stored policy snapshots and are ignored by dispatch;
+`settling_cap_seconds` survives only as the `aq doctor` no-progress alert
+threshold. Epic targets freeze immediately. Sealing now is the normal path;
+`seal-now` remains for operators and preserves PR, check and publication
+requirements. Sources:
+[src/integration/models.py](../../src/integration/models.py) (`IntegrationTrainPolicy`) and
 [train_sources.py](../../src/integration/train_sources.py) (`DatabaseBatches.open_batch`).
 
 After Git proves promotion, cleanup is tracked separately. It retires private
@@ -423,6 +418,16 @@ target.
 
 Conflict evidence in each target and batch's `detail` names the member,
 partial head, reason and files; the daemon log records the same build result.
+For a supervisor-filed fixer that works directly on an existing candidate, bind
+its publication authority before sending it to the batch branch:
+`aq task set TASK --repair-batch BATCH`. The supervisor/operator assignment grants
+that held task push access to the batch's candidate, preserving its canonical
+task branch. The fixer can use `aq git push` or explicitly name the candidate;
+the push must fast-forward the currently published candidate. Task descriptions
+and `--meta` do not grant this authority. A successful candidate push wakes the
+target's train visit, even after the automatic repair budget is exhausted;
+delivery still requires checks for the new exact SHA and unchanged operator intent.
+
 A repair claim with `needs_attention: repair_target_unpublished` found its
 remote target absent and reports an integration train defect. It does not
 consume slot-reset retries or create the ref from the worker slot.
@@ -526,9 +531,10 @@ idle. Status also lists every aborted member's disposition (`withheld`,
 ### Release a withheld source
 
 When the unchanged source should be retried on the current target, an operator
+or the owning project supervisor
 releases exactly one (task, source) pair from the aborted batch. Preview is
-read-only and returns the frozen fences; apply needs all three back and a
-human operator principal (a supervisor is refused `unauthorized`):
+read-only and returns the frozen fences; apply needs both exact SHAs back and
+a nonblank reason:
 
 ```bash
 aq integration release-withheld-source <batch-id> --task <task-id>
@@ -546,6 +552,16 @@ source acceptance applies, a writer session or workspace lock is live, the
 batch is still active, a repair task or operation is outstanding, or the repair
 budget is exhausted under `on_exhausted: human` (`repair_exhausted`: reopen the
 task with feedback or archive it).
+
+An ordinary root or development batch blocked solely by proven pre-existing
+target failures can recover automatically. The train scans pending sources for
+trusted green checks covering those failures, rechecks source admission and
+atomically freezes a replacement containing the original members and the fix.
+The old batch and checks remain history; the replacement carries the repair
+count and still needs its own green candidate checks. Visit detail reports
+`reassembly` with the replacement ID and added members, and the event log records
+`integration.batch_reassembled`. Pauses, holds and outstanding repairs prevent
+replacement; without a green fix the existing bounded suite retries continue.
 
 ### Settle a batch the target already contains
 
