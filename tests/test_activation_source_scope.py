@@ -10,17 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from src.database import Database
+from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.services import DatabaseActivationSource, is_global_event
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "scope.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("scope.db")
     yield database
-    await database.close()
 
 
 async def _activate(db, playbook_id: str, scope: str, identifier: str, digit: str) -> str:
@@ -50,6 +48,8 @@ async def _activate(db, playbook_id: str, scope: str, identifier: str, digit: st
 
 @pytest.fixture
 async def activations(db):
+    await db.create_project(Project(id="agent-queue", name="agent queue"))
+    await db.create_project(Project(id="other-project", name="other"))
     await _activate(db, "default-pipeline", "system", "", "1")
     await _activate(db, "pr-merge-sweep", "project", "agent-queue", "2")
     await _activate(db, "other-sweep", "project", "other-project", "3")
@@ -57,8 +57,95 @@ async def activations(db):
     return DatabaseActivationSource(db)
 
 
+async def test_suppressed_project_merge_sweep_stays_filtered_after_reenable(db, activations):
+    async with db.immediate() as conn:
+        await db.set_integration_legacy_suppression_on(
+            conn,
+            project_id="agent-queue",
+            generation=0,
+            merge_sweep_suppressed=True,
+            final_review_route_suppressed=True,
+            legacy_gate_creation_suppressed=True,
+            policy_snapshot={"source": "test"},
+            now=1.0,
+        )
+
+    event = {"tick_time": "2026-09-06T00:00:00+00:00", "interval": "30m"}
+    assert await _ids(activations, "timer.30m", event) == [
+        "default-pipeline",
+        "other-sweep",
+    ]
+
+    row = next(
+        item
+        for item in await db.list_playbook_activations(enabled_only=False)
+        if item["playbook_id"] == "pr-merge-sweep"
+    )
+    await db.set_playbook_activation(
+        playbook_id="pr-merge-sweep",
+        scope="project",
+        scope_identifier="agent-queue",
+        artifact_sha256=row["active_artifact_sha256"],
+        enabled=True,
+        activated_by="test-reenable",
+        health="ready",
+        reasons="[]",
+    )
+    assert "pr-merge-sweep" not in await _ids(activations, "timer.30m", event)
+
+
 async def _ids(source, event_type, event=None):
     return sorted(ref.playbook_id for ref in await source.ready_activations(event_type, event))
+
+
+async def _enable_system_integration_route(
+    db, *, project_id: str, playbook_id: str, artifact_sha256: str
+) -> None:
+    repository_id = f"repo-{project_id}"
+    await db.create_repo(
+        RepoConfig(
+            id=repository_id,
+            project_id=project_id,
+            source_type=RepoSourceType.CLONE,
+            url=f"https://github.com/acme/{project_id}.git",
+        )
+    )
+    artifact = await db.get_playbook_artifact(artifact_sha256)
+    assert artifact is not None
+    boundary = {
+        "required_checks": {
+            "version": "checks-v1",
+            "names": ["Tests (default)"],
+            "producer_id": "1234",
+        },
+        "repair": {
+            "debug_intelligence_class": "deep",
+            "debug_profile_id": "debugger",
+        },
+        "route": {
+            "playbook_id": playbook_id,
+            "scope": "system",
+            "scope_identifier": "",
+            "activation_id": None,
+            "artifact": artifact.as_dict(),
+        },
+        "primary_intelligence_class": "standard",
+        "primary_profile_id": "worker",
+    }
+    await db.update_project(
+        project_id,
+        integration_mode="pull_request",
+        integration_repository_id=repository_id,
+        hierarchical_integration_mode="hierarchy",
+        hierarchical_integration_policy={
+            "version": 1,
+            "parent": boundary,
+            "root": boundary,
+            "branchless_parent": "skip",
+            "on_failed_child": "block",
+            "cleanup": {},
+        },
+    )
 
 
 def test_global_event_families():
@@ -96,4 +183,71 @@ async def test_agent_type_scope_needs_a_project_and_matching_type(activations):
     ) == ["default-pipeline", "pr-merge-sweep", "reviewer-hook"]
     assert await _ids(activations, "timer.30m", {"agent_type": "reviewer"}) == [
         "default-pipeline", "other-sweep", "pr-merge-sweep"
+    ]
+
+
+async def test_disabled_project_does_not_admit_shared_hierarchical_delivery(db):
+    await db.create_project(Project(id="disabled", name="disabled"))
+    await _activate(db, "hierarchical-delivery", "system", "", "5")
+    source = DatabaseActivationSource(db)
+
+    assert await _ids(
+        source,
+        "task.completed",
+        {"project_id": "disabled", "task_id": "task-1", "title": "done"},
+    ) == []
+
+
+async def test_enabled_project_uses_shared_route_without_activation_id(db):
+    await db.create_project(Project(id="enabled", name="enabled"))
+    await _activate(db, "default-pipeline", "system", "", "5")
+    await _activate(db, "hierarchical-delivery", "system", "", "6")
+    await _enable_system_integration_route(
+        db,
+        project_id="enabled",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "6" * 64,
+    )
+    source = DatabaseActivationSource(db)
+
+    assert await _ids(
+        source,
+        "task.completed",
+        {"project_id": "enabled", "task_id": "task-1", "title": "done"},
+    ) == ["default-pipeline", "hierarchical-delivery"]
+
+
+@pytest.mark.parametrize("playbook_id", ["parent-integration", "root-train"])
+async def test_shared_train_route_serves_only_projects_whose_policy_names_it(db, playbook_id):
+    """One system activation of a shipped shared route must not fan out.
+
+    ``parent-integration`` subscribes to ``task.completed``; without the
+    lifecycle fence a single system activation would run integration commands
+    for every project on the install.
+    """
+    other = "root-train" if playbook_id == "parent-integration" else "parent-integration"
+    for project_id in ("disabled", "named", "elsewhere"):
+        await db.create_project(Project(id=project_id, name=project_id))
+    await _activate(db, "default-pipeline", "system", "", "5")
+    await _activate(db, playbook_id, "system", "", "6")
+    await _activate(db, other, "system", "", "7")
+    await _enable_system_integration_route(
+        db, project_id="named", playbook_id=playbook_id, artifact_sha256="sha256:" + "6" * 64
+    )
+    await _enable_system_integration_route(
+        db, project_id="elsewhere", playbook_id=other, artifact_sha256="sha256:" + "7" * 64
+    )
+    source = DatabaseActivationSource(db)
+
+    def event(project_id: str) -> dict:
+        return {"project_id": project_id, "task_id": "task-1", "title": "done"}
+
+    assert await _ids(source, "task.completed", event("disabled")) == ["default-pipeline"]
+    assert await _ids(source, "task.completed", event("named")) == [
+        "default-pipeline",
+        playbook_id,
+    ]
+    assert await _ids(source, "task.completed", event("elsewhere")) == [
+        "default-pipeline",
+        other,
     ]

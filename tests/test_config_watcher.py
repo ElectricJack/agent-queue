@@ -11,21 +11,20 @@ import pytest
 import yaml
 
 from src.config import (
-    AppConfig,
-    ConfigWatcher,
     HOT_RELOADABLE_SECTIONS,
     RESTART_REQUIRED_SECTIONS,
-    SchedulingConfig,
+    AppConfig,
     ArchiveConfig,
+    ConfigWatcher,
     DiscordConfig,
     GraphLayoutConfig,
+    SchedulingConfig,
     config_section_names,
     diff_configs,
     load_config,
 )
 from src.config_editor import classify_sections
 from src.event_bus import EventBus
-
 
 # ---------------------------------------------------------------------------
 # diff_configs tests
@@ -216,7 +215,7 @@ class TestConfigWatcher:
         """Create a temp config file."""
         config_data = {
             "workspace_dir": str(tmp_path / "workspaces"),
-            "database_path": str(tmp_path / "test.db"),
+            "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
             "discord": {
                 "bot_token": "test-token-for-validation",
                 "guild_id": "123456789",
@@ -235,16 +234,54 @@ class TestConfigWatcher:
 
     @pytest.mark.asyncio
     async def test_reload_no_changes(self, config_dir, bus):
-        tmp_path, config_path = config_dir
+        _tmp_path, config_path = config_dir
         config = load_config(str(config_path))
         watcher = ConfigWatcher(str(config_path), bus, config)
 
         result = await watcher.reload()
         assert result["changed_sections"] == []
 
+    async def test_wait_policy_reload_applies_project_canary_and_preserves_previous_config(
+        self, config_dir, bus,
+    ):
+        _, config_path = config_dir
+        data = yaml.safe_load(config_path.read_text())
+        data["wait_policy"] = {"v2_enabled": False}
+        config_path.write_text(yaml.safe_dump(data))
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+        events = []
+        bus.subscribe("config.reloaded", lambda data: events.append(data))
+        data = yaml.safe_load(config_path.read_text())
+        data["wait_policy"] = {
+            "v2_enabled": False,
+            "resume_cost_minutes": 20,
+            "projects": {"canary": {"v2_enabled": True, "resume_cost_minutes": 40}},
+        }
+        config_path.write_text(yaml.safe_dump(data))
+
+        result = await watcher.reload()
+
+        assert result["changed_sections"] == ["wait_policy"]
+        assert result["applied"] == ["wait_policy"]
+        assert result["restart_required"] == []
+        assert config.wait_policy.resolve_project("canary").v2_enabled
+        assert config.wait_policy.resolve_project("canary").resume_cost_minutes == 40
+        assert not config.wait_policy.resolve_project("other").v2_enabled
+        assert config.wait_policy.resolve_project("other").resume_cost_minutes == 20
+        assert not events[0]["previous_config"].wait_policy.resolve_project("canary").v2_enabled
+
+        # A malformed reload preserves the last validated policy.
+        data["wait_policy"]["projects"]["canary"]["resume_cost_minutes"] = -1
+        config_path.write_text(yaml.safe_dump(data))
+        rejected = await watcher.reload()
+        assert "error" in rejected
+        assert config.wait_policy.resolve_project("canary").resume_cost_minutes == 40
+        assert len(events) == 1
+
     @pytest.mark.asyncio
     async def test_reload_detects_hot_reloadable_change(self, config_dir, bus):
-        tmp_path, config_path = config_dir
+        _tmp_path, config_path = config_dir
         config = load_config(str(config_path))
         watcher = ConfigWatcher(str(config_path), bus, config)
 
@@ -291,6 +328,72 @@ class TestConfigWatcher:
         assert "workspace_dir" in restart_events[0]["changed_sections"]
 
     @pytest.mark.asyncio
+    async def test_integration_credentials_require_restart_and_cached_state_is_not_swapped(
+        self, config_dir, bus
+    ):
+        _tmp_path, config_path = config_dir
+        raw = yaml.safe_load(config_path.read_text())
+        raw["integration"] = {
+            "github_app": {
+                "client_id": "Iv1.positive",
+                "app_id": 101,
+                "installation_id": 202,
+                "private_key_path": "/run/secrets/positive.pem",
+            },
+            "scratch_probe": {
+                "repository_id": 303,
+                "repository_full_name": "acme/probe",
+                "negative_client_id": "Iv1.negative",
+                "negative_app_id": 404,
+                "negative_installation_id": 505,
+                "negative_private_key_path": "/run/secrets/negative.pem",
+            },
+        }
+        config_path.write_text(yaml.safe_dump(raw))
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+        cached_integration = watcher.config.integration
+
+        raw["integration"]["scratch_probe"]["repository_id"] = 304
+        config_path.write_text(yaml.safe_dump(raw))
+        result = await watcher.reload()
+
+        assert result["restart_required"] == ["integration"]
+        assert result["applied"] == []
+        assert watcher.config.integration is cached_integration
+        assert watcher.config.integration.scratch_probe.repository_id == 303
+
+    @pytest.mark.asyncio
+    async def test_environment_expanded_inline_key_is_rejected_without_leak_or_swap(
+        self, config_dir, bus, monkeypatch, caplog
+    ):
+        _tmp_path, config_path = config_dir
+        raw = yaml.safe_load(config_path.read_text())
+        raw["integration"] = {
+            "github_app": {
+                "client_id": "Iv1.positive",
+                "app_id": 101,
+                "installation_id": 202,
+                "private_key_path": "/run/secrets/positive.pem",
+            }
+        }
+        config_path.write_text(yaml.safe_dump(raw))
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+        cached_integration = watcher.config.integration
+        sentinel = "-----BEGIN PRIVATE KEY-----\nwatcher-secret"
+        monkeypatch.setenv("AQ_TEST_WATCHER_KEY", sentinel)
+        raw["integration"]["github_app"]["private_key_path"] = "${AQ_TEST_WATCHER_KEY}"
+        config_path.write_text(yaml.safe_dump(raw))
+
+        with caplog.at_level("WARNING"):
+            result = await watcher.reload()
+
+        assert "error" in result
+        assert sentinel not in repr(result) + caplog.text
+        assert watcher.config.integration is cached_integration
+
+    @pytest.mark.asyncio
     async def test_reload_reports_previously_blind_section(self, config_dir, bus):
         """``database`` was missing from the hand-written diff list.
 
@@ -298,13 +401,13 @@ class TestConfigWatcher:
         ``config.restart_needed`` — the operator changed the file and nothing
         at all was said (sound-bridge-70).
         """
-        tmp_path, config_path = config_dir
+        _tmp_path, config_path = config_dir
         config = load_config(str(config_path))
         watcher = ConfigWatcher(str(config_path), bus, config)
 
         config_data = yaml.safe_load(config_path.read_text())
         config_data["database"] = {
-            "url": str(tmp_path / "test.db"),
+            "url": "postgresql+asyncpg://localhost/aq_test",
             "pool_max_size": 20,
         }
         config_path.write_text(yaml.dump(config_data))
@@ -355,7 +458,7 @@ class TestConfigWatcher:
 
     @pytest.mark.asyncio
     async def test_reload_invalid_config_keeps_current(self, config_dir, bus):
-        tmp_path, config_path = config_dir
+        _tmp_path, config_path = config_dir
         config = load_config(str(config_path))
         original_window = config.scheduling.rolling_window_hours
         watcher = ConfigWatcher(str(config_path), bus, config)
@@ -396,7 +499,7 @@ class TestConfigWatcher:
 
     @pytest.mark.asyncio
     async def test_start_and_stop(self, config_dir, bus):
-        tmp_path, config_path = config_dir
+        _tmp_path, config_path = config_dir
         config = load_config(str(config_path))
         watcher = ConfigWatcher(str(config_path), bus, config, poll_interval=0.1)
 
@@ -410,7 +513,7 @@ class TestConfigWatcher:
     @pytest.mark.asyncio
     async def test_poll_detects_mtime_change(self, config_dir, bus):
         """Verify the poll loop detects file changes via mtime."""
-        tmp_path, config_path = config_dir
+        _tmp_path, config_path = config_dir
         config = load_config(str(config_path))
         watcher = ConfigWatcher(str(config_path), bus, config, poll_interval=0.05)
 
@@ -434,7 +537,7 @@ class TestConfigWatcher:
 
     @pytest.mark.asyncio
     async def test_config_property(self, config_dir, bus):
-        tmp_path, config_path = config_dir
+        _tmp_path, config_path = config_dir
         config = load_config(str(config_path))
         watcher = ConfigWatcher(str(config_path), bus, config)
         assert watcher.config is config
@@ -452,6 +555,7 @@ class TestReloadConfigCommand:
     async def test_no_watcher_returns_error(self, tmp_path):
         """When config watcher is not active, command returns error."""
         from unittest.mock import MagicMock
+
         from src.commands.handler import CommandHandler
 
         orch = MagicMock()
@@ -466,6 +570,7 @@ class TestReloadConfigCommand:
     async def test_reload_returns_summary(self, tmp_path):
         """When config changes, command returns a summary."""
         from unittest.mock import AsyncMock, MagicMock
+
         from src.commands.handler import CommandHandler
 
         # Create a mock watcher that returns a result
@@ -491,6 +596,7 @@ class TestReloadConfigCommand:
     async def test_reload_no_changes(self, tmp_path):
         """When no changes detected, returns appropriate message."""
         from unittest.mock import AsyncMock, MagicMock
+
         from src.commands.handler import CommandHandler
 
         mock_watcher = MagicMock()
@@ -528,7 +634,7 @@ async def test_reload_applies_only_hot_sections_and_emits_restart_notice(tmp_pat
         yaml.dump(
             {
                 "workspace_dir": str(tmp_path / "workspaces"),
-                "database_path": str(tmp_path / "test.db"),
+                "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
                 "discord": {"bot_token": "test-token", "guild_id": "123"},
                 "scheduling": {"rolling_window_hours": 24},
             }

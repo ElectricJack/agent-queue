@@ -15,7 +15,9 @@ Id assignment goes through :func:`assign_child_ids`: a new container's
 children get dotted ids ``<container>.1..N`` known at plan time; a graph
 created under an existing container gets provisional ``<parent>.?``
 placeholders, reserved atomically and rewritten inside ``write_plan``'s
-transaction (spec §6).
+transaction (spec §6).  A document that declares ``phases:`` is two levels
+deep instead and goes through :func:`assign_phased_ids`; it is always
+created at the project root, so it is never provisional.
 """
 
 from __future__ import annotations
@@ -27,19 +29,30 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from src.database.queries.hierarchy_queries import PHASE_KEY, HierarchyError
+from src.database.queries.task_queries import task_repository_id
 from src.database.tables import (
+    projects,
+    sessions,
     task_context,
     task_criteria,
     task_dependencies,
+    task_gates,
     task_labels,
     tasks,
 )
+from src.models import DepType, TaskStatus
 from src.task_graph.models import GraphNode, TaskGraph
-from src.task_names import generate_task_id, reserve_child_ordinal
+from src.task_names import (
+    MAX_NAMING_DEPTH,
+    MAX_STRUCTURAL_DEPTH,
+    generate_task_id,
+    naming_depth,
+    reserve_child_ordinal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +73,42 @@ NODE_STATUS = "DEFINED"
 #: where the ordinal must be reserved inside ``write_plan``'s transaction.
 PROVISIONAL_SUFFIX = ".?"
 
+#: Metadata shared by every task written by one scoped graph request.  It is
+#: deliberately task metadata, not a response-only UUID: an ambiguous client
+#: response can be inspected durably without resubmitting a non-idempotent
+#: graph request.
+GRAPH_FILING_REQUEST_META_KEY = "graph_filing_request_id"
+FILED_BY_PROFILE_META_KEY = "filed_by_profile_id"
+
+
+class GraphFilingError(Exception):
+    """A scoped graph refusal raised from the transaction that made it."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class GraphFilingContext:
+    """Trusted session facts required to file a graph below a held task.
+
+    This is assembled by the command boundary from the authenticated scope;
+    graph text and public command arguments never get to choose any of these
+    values.  :func:`write_plan` locks and rechecks every mutable fact before
+    it writes, so this preflight object cannot become an authorization cache.
+    """
+
+    session_id: str
+    session_instance_token: str | None
+    held_task_id: str
+    claim_epoch: int
+    reason: str
+    request_id: str
+    max_filings: int
+    profile_id: str | None
+
 
 def assign_child_ids(parent_id: str, keys: list[str], *, provisional: bool) -> dict[str, str]:
     """Dotted ids for every key (spec §6).
@@ -73,16 +122,53 @@ def assign_child_ids(parent_id: str, keys: list[str], *, provisional: bool) -> d
     return {key: f"{parent_id}.{i + 1}" for i, key in enumerate(keys)}
 
 
+def assign_phased_ids(
+    container_id: str, graph: TaskGraph
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Two-level ids for a graph that declares ``phases:``.
+
+    Phase *i* (1-based, document order) is ``<epic>.<i>``; the *j*-th node of
+    that phase is ``<epic>.<i>.<j>``; a node naming no phase is ``<epic>.<k>``,
+    numbered *after* the phases so the two sets never collide.  Returns
+    ``(phase ids, node ids)``, both keyed by the graph-local key.
+
+    A phased graph is always created at the project root (``graph.phases``
+    plus ``parent_id`` is refused with ``graph.phases_need_root``), so unlike
+    :func:`assign_child_ids` there is no provisional form: three levels under
+    an existing parent would break the structural-depth cap anyway.
+    """
+    phase_ids = {phase.key: f"{container_id}.{i + 1}" for i, phase in enumerate(graph.phases)}
+    node_ids: dict[str, str] = {}
+    within: dict[str, int] = {}
+    ordinal = len(phase_ids)
+    for node in graph.nodes:
+        if node.phase in phase_ids:
+            within[node.phase] = within.get(node.phase, 0) + 1
+            node_ids[node.key] = f"{phase_ids[node.phase]}.{within[node.phase]}"
+        else:
+            ordinal += 1
+            node_ids[node.key] = f"{container_id}.{ordinal}"
+    return phase_ids, node_ids
+
+
 @dataclass
 class GraphPlan:
     """Everything a graph will write, resolved but not yet persisted."""
 
     parent_id: str
     parent_row: dict | None
+    #: One task row per declared phase, document order.  Each carries the
+    #: plan-internal ``_phase_key``/``_order``/``_label`` ``write_plan`` needs
+    #: for the container flag and the ``phase`` metadata.
+    phase_rows: list[dict] = field(default_factory=list)
     node_rows: list[dict] = field(default_factory=list)
     dependency_rows: list[dict] = field(default_factory=list)
     context_rows: list[dict] = field(default_factory=list)
     criteria_rows: list[dict] = field(default_factory=list)
+    #: ``{"_key", "title", "context"}`` per declared subtask, document order.
+    #: Written through ``add_task_subtasks(..., conn=conn)`` so the checklist
+    #: commits with the task row it belongs to.
+    subtask_rows: list[dict] = field(default_factory=list)
     label_rows: list[dict] = field(default_factory=list)
     routing_task_ids: list[str] = field(default_factory=list)
     #: graph key → assigned (or provisional) task id
@@ -90,10 +176,27 @@ class GraphPlan:
     #: True when the container already existed and node ids are provisional
     #: (``<parent>.?``) until ``write_plan`` reserves ordinals.
     provisional: bool = False
+    #: The existing task a *brand-new* container is filed under, or ``None``
+    #: for a container at the project root.  Only a worker graph with a
+    #: ``parent:`` block sets it: the container's own id is then
+    #: ``<anchor>.?`` (and its nodes ``<anchor>.?.N``) until ``write_plan``
+    #: reserves the ordinal and links the container in the same transaction
+    #: as its children (bold-flare-35).
+    container_parent_id: str | None = None
 
     @property
     def task_ids(self) -> list[str]:
         return [row["id"] for row in self.node_rows]
+
+    @property
+    def phase_ids(self) -> list[str]:
+        """The phase container ids, document order.
+
+        Deliberately *not* folded into :attr:`task_ids`, which is the report's
+        "the tasks this graph created"; the phases are their own line in the
+        report.  ``write_plan`` unions the two for ``recompute_blocked``.
+        """
+        return [row["id"] for row in self.phase_rows]
 
     @property
     def project_id(self) -> str | None:
@@ -103,7 +206,7 @@ class GraphPlan:
         node, so either source answers; the container row is absent when the
         plan hangs off a pre-existing parent.
         """
-        for row in (self.parent_row, *self.node_rows):
+        for row in (self.parent_row, *self.phase_rows, *self.node_rows):
             if row is not None:
                 return row["project_id"]
         return None
@@ -203,7 +306,12 @@ def _compose_description(node: GraphNode) -> str:
 
 
 async def build_plan(
-    db: Any, graph: TaskGraph, *, project_id: str, parent_id: str | None = None
+    db: Any,
+    graph: TaskGraph,
+    *,
+    project_id: str,
+    parent_id: str | None = None,
+    container_parent_id: str | None = None,
 ) -> GraphPlan:
     """Resolve ids and materialise every row the graph will write.
 
@@ -218,11 +326,37 @@ async def build_plan(
     ``None``) and every node id is the provisional placeholder
     ``<parent>.?`` — the real ordinals are reserved atomically inside
     ``write_plan``'s transaction so concurrent graph creations never race.
+
+    *container_parent_id* plans a brand-new container that is itself filed
+    under that existing task: the container is ``<anchor>.?`` and its
+    children ``<anchor>.?.N`` until ``write_plan`` reserves the ordinal.
     """
+    if parent_id is not None and container_parent_id is not None:
+        raise ValueError("a graph goes under an existing container or a new one, not both")
     now = time.time()
+    project = await db.get_project(project_id)
+    repo_id = (
+        task_repository_id(
+            project.hierarchical_integration_mode, project.integration_repository_id
+        )
+        if project is not None
+        else None
+    )
     provisional = parent_id is not None
-    container_id = parent_id or await generate_task_id(db)
-    ids = assign_child_ids(container_id, graph.node_keys(), provisional=provisional)
+    if container_parent_id is not None:
+        container_id = f"{container_parent_id}{PROVISIONAL_SUFFIX}"
+    else:
+        container_id = parent_id or await generate_task_id(db)
+    if graph.phases:
+        if provisional:
+            # The command layer refuses this with ``graph.phases_need_root``;
+            # reaching here means a caller skipped it, and a third level under
+            # an existing parent would blow the structural-depth cap.
+            raise ValueError("a graph declaring phases must be created at the project root")
+        phase_ids, ids = assign_phased_ids(container_id, graph)
+    else:
+        phase_ids = {}
+        ids = assign_child_ids(container_id, graph.node_keys(), provisional=provisional)
 
     parent = graph.parent
     parent_row: dict | None = None
@@ -231,6 +365,7 @@ async def build_plan(
         parent_row = {
             "id": container_id,
             "project_id": project_id,
+            "repo_id": repo_id,
             "parent_task_id": None,
             "title": parent_title,
             "description": (parent.description if parent else "") or parent_title,
@@ -240,17 +375,24 @@ async def build_plan(
             "retry_count": 0,
             "max_retries": 3,
             "is_plan_subtask": 0,
-            "profile_id": parent.profile if parent else None,
             "attachments": "[]",
             "skip_verification": 0,
             "is_blocked": 0,
-            "next_child_ordinal": len(graph.nodes) + 1,
+            # Direct children of the container: the phases, plus every node
+            # that named none of them.
+            "next_child_ordinal": (
+                len(phase_ids) + sum(1 for n in graph.nodes if n.phase not in phase_ids) + 1
+            ),
             "created_at": now,
             "updated_at": now,
         }
 
     plan = GraphPlan(
-        parent_id=container_id, parent_row=parent_row, ids=ids, provisional=provisional
+        parent_id=container_id,
+        parent_row=parent_row,
+        ids=ids,
+        provisional=provisional,
+        container_parent_id=container_parent_id,
     )
 
     if parent_row is not None and parent:
@@ -258,12 +400,61 @@ async def build_plan(
             if label.strip():
                 plan.label_rows.append({"task_id": container_id, "label": label.strip()})
 
+    # One row per phase, mirroring ``phase_commands._cmd_phase_create``: a
+    # DEFINED ``plan`` task whose description is the label.  The container
+    # flag and the ``phase`` metadata are written by ``write_plan``, together
+    # with everything else, instead of in the two extra transactions the
+    # command needs (design §2.2).
+    for index, phase in enumerate(graph.phases):
+        title = phase.title or phase.key
+        label = phase.label or title
+        phase_id = phase_ids[phase.key]
+        plan.phase_rows.append(
+            {
+                "id": phase_id,
+                "project_id": project_id,
+                "repo_id": repo_id,
+                "parent_task_id": None,  # set_parent_bulk (in write_plan) writes it
+                "title": title,
+                "description": label,
+                "priority": 100,
+                "status": NODE_STATUS,
+                "verification_type": "auto_test",
+                "retry_count": 0,
+                "max_retries": 3,
+                "is_plan_subtask": 0,
+                "task_type": "plan",
+                "attachments": "[]",
+                "skip_verification": 0,
+                "is_blocked": 0,
+                "next_child_ordinal": sum(1 for n in graph.nodes if n.phase == phase.key) + 1,
+                "created_at": now,
+                "updated_at": now,
+                "_phase_key": phase.key,
+                "_order": index + 1,
+                "_label": label,
+            }
+        )
+        # A gate onto EVERY earlier phase, not only the immediate predecessor
+        # — the same rule ``phase_create`` writes, and for the same reason:
+        # deleting an abandoned middle phase must not release its successor.
+        for earlier in graph.phases[:index]:
+            plan.dependency_rows.append(
+                {
+                    "task_id": phase_id,
+                    "depends_on_task_id": phase_ids[earlier.key],
+                    "dep_type": "blocks",
+                    "description": "phase order",
+                }
+            )
+
     for node in graph.nodes:
         task_id = ids[node.key]
         plan.node_rows.append(
             {
                 "id": task_id,
                 "project_id": project_id,
+                "repo_id": repo_id,
                 "parent_task_id": None,  # set_parent (in write_plan) writes it
                 "title": node.title,
                 "description": _compose_description(node),
@@ -272,10 +463,13 @@ async def build_plan(
                 "verification_type": "auto_test",
                 "retry_count": 0,
                 "max_retries": 3,
-                    "is_plan_subtask": 0,
+                "is_plan_subtask": 0,
                 "task_type": node.task_type,
-                "profile_id": node.profile,
-                "intelligence_class": node.intelligence_class,
+                # The node's class is the filer's hint; the task is written
+                # unrouted and the router writes the route (mandatory-routing
+                # spec §5.1).
+                "class_hint": node.intelligence_class,
+                "provider_intent": "class_only",
                 "attachments": "[]",
                 "deliverables": json.dumps(node.deliverables),
                 "skip_verification": 0,
@@ -283,6 +477,9 @@ async def build_plan(
                 "created_at": now,
                 "updated_at": now,
                 "_key": node.key,
+                # Which phase container ``write_plan`` links this node under;
+                # ``None`` keeps it a direct child of the epic.
+                "_phase_id": phase_ids.get(node.phase),
             }
         )
 
@@ -297,6 +494,9 @@ async def build_plan(
                     "task_id": task_id,
                     "depends_on_task_id": depends_on,
                     "dep_type": need.dep_type,
+                    # Explicit, because the inter-phase rows carry one and a
+                    # batched insert needs every row to have the same keys.
+                    "description": None,
                     "_task_key": node.key,
                     "_dep_key": dep_key,
                 }
@@ -319,6 +519,16 @@ async def build_plan(
                 }
             )
 
+        for subtask in node.subtasks:
+            plan.subtask_rows.append(
+                {
+                    "task_id": task_id,
+                    "title": subtask.title,
+                    "context": subtask.context,
+                    "_key": node.key,
+                }
+            )
+
         for label in node.labels:
             if label.strip():
                 plan.label_rows.append(
@@ -337,7 +547,9 @@ async def _insert_task(conn, row: dict) -> None:
     """Insert one task row.
 
     Factored out — and module-level — so the single-transaction guarantee can
-    be tested by patching this to fail partway through (§12).
+    be tested by patching this to fail partway through (§12).  A graph row
+    names no profile, so it takes the column default ``route_source =
+    'unrouted'`` (mandatory-routing spec §5.1).
     """
     await conn.execute(insert(tasks).values(**_strip_private(row)))
 
@@ -355,14 +567,228 @@ def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
     for row in plan.dependency_rows:
         row["task_id"] = real.get(row.get("_task_key"), row["task_id"])
         row["depends_on_task_id"] = real.get(row.get("_dep_key"), row["depends_on_task_id"])
-    for coll in (plan.context_rows, plan.criteria_rows, plan.label_rows):
+    for coll in (plan.context_rows, plan.criteria_rows, plan.subtask_rows, plan.label_rows):
         for row in coll:
             row["task_id"] = real.get(row.get("_key"), row["task_id"])
 
 
+def _rebase_new_container(plan: GraphPlan, container_id: str) -> None:
+    """Give a planned ``<anchor>.?`` container its reserved id, and its nodes theirs.
+
+    A brand-new container's children are numbered ``1..N`` in document order
+    (``assign_child_ids``), so once the container's own ordinal is reserved
+    every id in the plan follows from it.
+    """
+    old = plan.parent_id
+    plan.parent_id = container_id
+    plan.parent_row["id"] = container_id
+    for row in plan.label_rows:
+        if row["task_id"] == old:
+            row["task_id"] = container_id
+    _rewrite_ids(plan, {key: f"{container_id}.{i + 1}" for i, key in enumerate(plan.ids)})
+
+
+def _task_from_plan_row(row: dict):
+    """Convert the graph's insert payload to the atomic filing model."""
+    from dataclasses import fields
+
+    from src.models import Task, TaskStatus, TaskType, VerificationType
+
+    values = {field.name: row[field.name] for field in fields(Task) if field.name in row}
+    values["status"] = TaskStatus(values["status"])
+    values["verification_type"] = VerificationType(values["verification_type"])
+    if values.get("task_type"):
+        values["task_type"] = TaskType(values["task_type"])
+    for name in ("attachments", "deliverables"):
+        if isinstance(values.get(name), str):
+            values[name] = json.loads(values[name])
+    return Task(**values)
+
+
+async def _file_hierarchical_plan(
+    db, conn, plan: GraphPlan, service, *, routing_manager=None
+) -> None:
+    """Reserve the root and sibling origins with the graph's transaction."""
+    from src.playbooks.routing import requires_routing_gate
+
+    def routing_policy(task) -> bool:
+        return requires_routing_gate(
+            routing_manager, task, {"parent_task_id": task.parent_task_id}
+        )
+
+    if plan.parent_row is not None:
+        old_parent_id = plan.parent_id
+        created = await service.file_root_on(
+            conn, _task_from_plan_row(plan.parent_row), routing_policy=routing_policy
+        )
+        plan.parent_id = created["task_id"]
+        plan.parent_row["id"] = plan.parent_id
+        if created.get("gate_id"):
+            plan.routing_task_ids.append(plan.parent_id)
+        # Parent labels have no node key and are not handled by _rewrite_ids.
+        for row in plan.label_rows:
+            if row["task_id"] == old_parent_id:
+                row["task_id"] = plan.parent_id
+        await db.mark_container(plan.parent_id, conn=conn)
+    children = [_task_from_plan_row(row) for row in plan.node_rows]
+    created = await service.file_prepared_children_on(
+        conn, plan.parent_id, children, routing_policy=routing_policy
+    )
+    plan.routing_task_ids.extend(
+        item["task_id"] for item in created if item.get("gate_id")
+    )
+    _rewrite_ids(plan, {
+        row["_key"]: result["task_id"]
+        for row, result in zip(plan.node_rows, created, strict=True)
+    })
+
+
+async def _graph_route(service, conn, plan: GraphPlan):
+    """The hierarchy route *plan* files through, or ``None`` for a legacy project.
+
+    A plan with a ``parent_row`` mints a new root; one without files under
+    its existing ``parent_id``.  Raises :class:`HierarchyError` for an enabled
+    project the graph cannot file into (no designated repository, a parent
+    bound elsewhere) — the same error the filing itself would raise.
+    """
+    mode = await conn.scalar(
+        select(projects.c.hierarchical_integration_mode).where(projects.c.id == plan.project_id)
+    )
+    if mode not in {"hierarchy", "train"}:
+        return None
+    existing_parent = plan.parent_id if plan.parent_row is None else None
+    return await service.graph_route(conn, plan.project_id, existing_parent)
+
+
+def _filing_cost(plan: GraphPlan) -> int:
+    """How many durable task rows a scoped graph would add."""
+    return len(plan.node_rows) + len(plan.phase_rows) + int(plan.parent_row is not None)
+
+
+async def _fence_graph_filing(
+    db, conn, plan: GraphPlan, filing: GraphFilingContext, *, reserve: bool
+) -> None:
+    """Validate and optionally reserve one session's whole graph batch.
+
+    The lock order is intentional: session first, then the project hierarchy
+    lock and held-task row supplied by ``lock_filing_scope``.  It matches the
+    claim/activation family and prevents a close, reparent, reassignment, or
+    session restart from turning an earlier command-layer preflight into an
+    authorization decision for this transaction.
+    """
+    session = (
+        await conn.execute(
+            select(
+                sessions.c.id,
+                sessions.c.project_id,
+                sessions.c.task_id,
+                sessions.c.instance_token,
+                sessions.c.state,
+                sessions.c.claim_phase,
+            )
+            .where(sessions.c.id == filing.session_id)
+            .with_for_update()
+        )
+    ).mappings().fetchone()
+    if session is None:
+        raise GraphFilingError("stale_claim", "the filing session no longer exists")
+    if (
+        not filing.session_instance_token
+        or session["instance_token"] != filing.session_instance_token
+        or session["state"] != "running"
+        or session["claim_phase"] != "active"
+        or session["task_id"] != filing.held_task_id
+        or session["project_id"] != plan.project_id
+    ):
+        raise GraphFilingError("stale_claim", "the filing session no longer holds this task")
+
+    # This takes the project hierarchy lock before re-locking the held row.
+    # Its hierarchy lock serialises every reparent that could otherwise move
+    # the held task between our parent decision and the structural write.
+    locked = await db.lock_filing_scope(conn, [filing.held_task_id])
+    if filing.held_task_id not in locked:
+        raise GraphFilingError("stale_claim", "the held task no longer exists")
+    held = (
+        await conn.execute(
+            select(
+                tasks.c.project_id,
+                tasks.c.status,
+                tasks.c.claim_epoch,
+                tasks.c.filed_count,
+            )
+            .where(tasks.c.id == filing.held_task_id)
+            .with_for_update()
+        )
+    ).mappings().one()
+    if (
+        held["project_id"] != plan.project_id
+        or held["status"] != TaskStatus.IN_PROGRESS.value
+        or held["claim_epoch"] != filing.claim_epoch
+    ):
+        raise GraphFilingError("stale_claim", "the held task's claim is no longer current")
+
+    # Three shapes are in scope: nodes directly under the held task, a new
+    # container under the held task, or a new container at the project root
+    # (a worker's root filing, admitted by the routing gate ``write_plan``
+    # attaches).  Every other placement is someone else's tree.
+    if plan.parent_row is None:
+        if plan.parent_id != filing.held_task_id:
+            raise GraphFilingError(
+                "hierarchy.parent_out_of_scope",
+                "a session graph may be filed only under the task it currently holds",
+            )
+        levels = 1
+    elif plan.container_parent_id is None:
+        levels = 0
+    elif plan.container_parent_id != filing.held_task_id:
+        raise GraphFilingError(
+            "hierarchy.parent_out_of_scope",
+            "a session graph's new container may go only under the task it holds, or root",
+        )
+    else:
+        levels = 2
+    if levels:
+        depth = await db.structural_depth(filing.held_task_id, conn=conn)
+        if (
+            depth + levels > MAX_STRUCTURAL_DEPTH
+            or naming_depth(filing.held_task_id) + levels > MAX_NAMING_DEPTH
+        ):
+            raise GraphFilingError(
+                "hierarchy.depth",
+                f"held parent '{filing.held_task_id}' cannot accept "
+                f"{'a new container and its children' if levels == 2 else 'graph children'} "
+                "at the depth cap",
+            )
+
+    cost = _filing_cost(plan)
+    if cost <= 0:
+        raise GraphFilingError("graph.empty", "a scoped graph must create at least one task")
+    if reserve:
+        reserved = await db.reserve_filing(
+            conn,
+            filing.held_task_id,
+            max_filings=filing.max_filings,
+            count=cost,
+        )
+    else:
+        reserved = int(held["filed_count"] or 0) + cost <= filing.max_filings
+    if not reserved:
+        raise GraphFilingError(
+            "filing_quota_exceeded",
+            f"task {filing.held_task_id} cannot reserve {cost} filings "
+            f"within swarm.max_filings_per_task={filing.max_filings}",
+        )
+
+
 async def write_plan(
-    db: Any, plan: GraphPlan, *, provenance: FormulaProvenance | None = None,
+    db: Any,
+    plan: GraphPlan,
+    *,
+    provenance: FormulaProvenance | None = None,
     routing_manager=None,
+    hierarchy_service=None,
+    filing: GraphFilingContext | None = None,
+    review_gate_id: str | None = None,
 ) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
 
@@ -378,6 +804,12 @@ async def write_plan(
     ignored here because a brand new (or still-open) container has nothing
     left to settle.
 
+    Enabled hierarchical integration uses ``hierarchy_service`` to file the
+    root and sibling origins/checkpoints in this same transaction instead of
+    the legacy inserts/bulk link. Reserved IDs replace plan IDs in all graph
+    metadata before it is written. Without a service the bulk-write guard
+    still refuses enabled projects.
+
     *provenance* is written to ``plan.parent_id`` — the container, whether
     brand new or pre-existing — after every other row and before
     ``recompute_blocked`` (spec §13): metadata keys upserted (latest cook
@@ -385,9 +817,60 @@ async def write_plan(
     a container cooked twice keeps both), and the ``formula:<name>`` label
     ensured with insert-or-ignore semantics (a repeat cook must not violate
     the ``(task_id, label)`` primary key).
+
+    ``filing`` turns this into a worker-scoped graph write.  Its session,
+    hierarchy, held-task and quota fence is the first operation in this
+    transaction; newly created nodes receive trusted creator fields, durable
+    request correlation, and a ``discovered-from`` edge before commit.
+
+    ``review_gate_id`` attaches every node (not the container or its phases,
+    which are never claimed) to that document review's open gate before
+    ``recompute_blocked``, so no node is claimable before its gate exists.
     """
     async with db._engine.begin() as conn:
-        if plan.parent_row is not None:
+        if filing is not None:
+            await _fence_graph_filing(db, conn, plan, filing, reserve=True)
+            for row in plan.node_rows:
+                row["created_by_kind"] = "session"
+                row["created_by_id"] = filing.session_id
+            if plan.parent_row is not None:
+                plan.parent_row["created_by_kind"] = "session"
+                plan.parent_row["created_by_id"] = filing.session_id
+                if plan.container_parent_id is None:
+                    # A worker's root filing waits for triage (§12): born
+                    # DEFINED behind the routing gate written below, so its
+                    # children stay withheld until the gate is resolved.
+                    plan.parent_row["status"] = NODE_STATUS
+        if plan.phase_rows and plan.project_id is not None:
+            # The same check ``phase_create`` makes, inside the transaction,
+            # so a caller that skipped the command layer cannot write a phase
+            # into a project whose containers own delivery branches.
+            refusal = await db.phase_mode_refusal(plan.project_id, conn=conn)
+            if refusal is not None:
+                raise HierarchyError("phases_unsupported_mode", refusal["error"])
+        hierarchical = False
+        if hierarchy_service is not None and plan.project_id is not None:
+            hierarchical = await _graph_route(hierarchy_service, conn, plan) is not None
+        if hierarchical and plan.container_parent_id is not None:
+            # ``_file_hierarchical_plan`` files a new container as a root; the
+            # command layer refuses this shape first, so never mis-place it.
+            raise HierarchyError(
+                "parent_out_of_scope",
+                "a new container under an existing task is not filed hierarchically",
+            )
+        if hierarchical:
+            await _file_hierarchical_plan(
+                db, conn, plan, hierarchy_service, routing_manager=routing_manager
+            )
+        elif plan.project_id is not None:
+            # The legacy graph writer inserts rows before linking them.  An
+            # enabled project must instead use atomic origin/checkpoint filing,
+            # so fail before even the first task insert or ordinal mutation.
+            await db.guard_hierarchy_bulk_write(plan.project_id, conn=conn)
+        if plan.parent_row is not None and not hierarchical:
+            if plan.container_parent_id is not None:
+                ordinal = await reserve_child_ordinal(conn, plan.container_parent_id)
+                _rebase_new_container(plan, f"{plan.container_parent_id}.{ordinal}")
             await _insert_task(conn, plan.parent_row)
             # ``_insert_task`` is a direct ``insert(tasks)`` that bypasses
             # ``_insert_task_row``, so the layout mark is owed here.  The
@@ -402,20 +885,44 @@ async def write_plan(
             # and its parent would never become a container at all.
             # Idempotent, so the two paths can both run.
             await db.mark_container(plan.parent_id, conn=conn)
-        if plan.provisional:
+            if plan.container_parent_id is not None:
+                # Flagged above and linked here, before any node exists: the
+                # container is never a claimable leaf, not even for the
+                # length of this transaction (bold-flare-35).
+                await db.set_parent(
+                    plan.parent_id,
+                    plan.container_parent_id,
+                    conn=conn,
+                    description=filing.reason if filing is not None else None,
+                )
+        if plan.phase_rows:
+            # Phases go in before the nodes and are linked while they are
+            # still childless leaves with no out-edges — exactly what
+            # ``set_parent_bulk`` asserts.  Their inter-phase ``blocks`` edges
+            # are written further down, after every link, or the assertion
+            # would fail with ``cycle_check_skipped``.
+            for row in plan.phase_rows:
+                await _insert_task(conn, row)
+            await db.set_parent_bulk(plan.phase_ids, plan.parent_id, conn=conn)
+        if plan.provisional and not hierarchical:
             real: dict[str, str] = {}
             for key in plan.ids:
                 ordinal = await reserve_child_ordinal(conn, plan.parent_id)
                 real[key] = f"{plan.parent_id}.{ordinal}"
             _rewrite_ids(plan, real)
         from src.playbooks.routing import requires_routing_gate
+
         for row in plan.node_rows:
-            await _insert_task(conn, row)
+            if not hierarchical:
+                await _insert_task(conn, row)
             if requires_routing_gate(routing_manager, row, {"parent_task_id": plan.parent_id}):
                 await db.create_gate(
-                    row["project_id"], "routing", "Route task",
+                    row["project_id"],
+                    "routing",
+                    "Route task",
                     question="Assign profile + intelligence class (+ workspace if profile needs one).",
-                    waiter_task_ids=[row["id"]], conn=conn,
+                    waiter_task_ids=[row["id"]],
+                    conn=conn,
                 )
                 plan.routing_task_ids.append(row["id"])
         # One bulk link for the whole batch: the nodes were just inserted as
@@ -423,9 +930,68 @@ async def write_plan(
         # precondition ``set_parent_bulk`` asserts.  Per-node ``set_parent``
         # re-validated the parent and re-read every blocking edge in the
         # database once per node — ~23 statements per node at §15.2 scale.
-        if plan.node_rows:
-            await db.set_parent_bulk(
-                [row["id"] for row in plan.node_rows], plan.parent_id, conn=conn
+        if plan.node_rows and not hierarchical:
+            # One call per destination container: the phases that got work,
+            # then whatever named no phase, which stays a child of the epic.
+            batches: dict[str | None, list[str]] = {}
+            for row in plan.node_rows:
+                batches.setdefault(row.get("_phase_id"), []).append(row["id"])
+            for phase_id, child_ids in batches.items():
+                await db.set_parent_bulk(child_ids, phase_id or plan.parent_id, conn=conn)
+        if filing is not None:
+            # A graph's structural edge and its provenance are deliberately
+            # distinct, even when both point at the held parent.  A later
+            # reparent therefore preserves where every task was discovered.
+            # ``add_dependency(..., conn=conn)`` keeps the edge, its reason,
+            # request metadata and quota reservation in this same rollback
+            # unit; a failing provenance insert cannot orphan graph rows.
+            for row in plan.node_rows:
+                await db.add_dependency(
+                    row["id"],
+                    filing.held_task_id,
+                    DepType.DISCOVERED_FROM.value,
+                    description=filing.reason,
+                    conn=conn,
+                )
+                metadata = {GRAPH_FILING_REQUEST_META_KEY: filing.request_id}
+                if filing.profile_id:
+                    metadata[FILED_BY_PROFILE_META_KEY] = filing.profile_id
+                await db._upsert_meta_many(row["id"], metadata, conn=conn)
+            if plan.parent_row is not None:
+                await db._upsert_meta(
+                    plan.parent_id, GRAPH_FILING_REQUEST_META_KEY, filing.request_id, conn=conn
+                )
+                if plan.container_parent_id is None:
+                    # A root container's only tie to the work that surfaced
+                    # it, and the gate every worker root filing is born with.
+                    await db.add_dependency(
+                        plan.parent_id,
+                        filing.held_task_id,
+                        DepType.DISCOVERED_FROM.value,
+                        description=filing.reason,
+                        conn=conn,
+                    )
+                    await db._create_gate_on(
+                        conn,
+                        plan.parent_row["project_id"],
+                        "routing",
+                        f"Route: {plan.parent_row['title']}",
+                        question="",
+                        await_id=None,
+                        timeout_at=None,
+                        waiter_task_ids=[plan.parent_id],
+                        caller_owns_conn=True,
+                    )
+                    plan.routing_task_ids.append(plan.parent_id)
+        for row in plan.phase_rows:
+            # Every phase, including one that got no children: ``set_parent_bulk``
+            # flags a phase that has work, but an unflagged childless phase is a
+            # claimable task, and the settlement guard
+            # (``childless_held_open_container``) keys on this metadata.  Both
+            # writes are idempotent, so the overlap with the flag above is free.
+            await db.mark_container(row["id"], conn=conn)
+            await db._upsert_meta(
+                row["id"], PHASE_KEY, {"order": row["_order"], "label": row["_label"]}, conn=conn
             )
         if plan.dependency_rows:
             await conn.execute(
@@ -445,6 +1011,19 @@ async def write_plan(
             await conn.execute(
                 insert(task_criteria), [_strip_private(r) for r in plan.criteria_rows]
             )
+        if plan.subtask_rows:
+            # Grouped per task so each node's checklist is one append with
+            # contiguous ordinals in document order.  ``conn=conn`` keeps it
+            # inside this transaction: the subtask write fence means a planner
+            # could never seed these after the fact (design §2.1), so they
+            # have to land with the task row or not at all.
+            per_task: dict[str, list[dict]] = {}
+            for row in plan.subtask_rows:
+                per_task.setdefault(row["task_id"], []).append(
+                    {"title": row["title"], "context": row["context"]}
+                )
+            for task_id, items in per_task.items():
+                await db.add_task_subtasks(task_id, plan.project_id, items, conn=conn)
         if plan.label_rows:
             # Duplicate (task_id, label) pairs would violate the PK; the
             # author's intent for a repeated label is one label.
@@ -476,12 +1055,25 @@ async def write_plan(
                     ),
                 )
             )
-            dialect = conn.dialect.name
-            ins = pg_insert if dialect == "postgresql" else sqlite_insert
+            ins = pg_insert
             label_stmt = ins(task_labels).values(task_id=plan.parent_id, label=provenance.label)
             label_stmt = label_stmt.on_conflict_do_nothing(index_elements=["task_id", "label"])
             await conn.execute(label_stmt)
-        await db.recompute_blocked(set(plan.task_ids), conn=conn)
+        if review_gate_id is not None and plan.node_rows:
+            await conn.execute(
+                insert(task_gates),
+                [{"task_id": task_id, "gate_id": review_gate_id} for task_id in plan.task_ids],
+            )
+        from src.object_loop.formulas import guard_formula
+
+        await guard_formula(db, conn, plan, provenance)
+        # The phases are in the projection too, or the inter-phase gate is
+        # never computed and phase 2 is claimable the moment it is released.
+        # So is a worker's gated root container, which withholds its nodes.
+        gated = {plan.parent_id} if plan.parent_id in plan.routing_task_ids else set()
+        await db.recompute_blocked(
+            set(plan.task_ids) | set(plan.phase_ids) | gated, conn=conn
+        )
 
 
 def build_report(
@@ -500,13 +1092,24 @@ def build_report(
     report = {
         "parent_id": plan.parent_id,
         "parent_title": plan.parent_row["title"] if plan.parent_row is not None else None,
-        "provisional": plan.provisional,
+        "provisional": plan.provisional or plan.container_parent_id is not None,
         "task_ids": plan.task_ids,
+        "phases": [
+            {
+                "key": row["_phase_key"],
+                "task_id": row["id"],
+                "order": row["_order"],
+                "title": row["title"],
+            }
+            for row in plan.phase_rows
+        ],
         "nodes": [
             {
                 "key": node.key,
                 "task_id": plan.ids[node.key],
                 "title": node.title,
+                "phase": node.phase,
+                "subtasks": len(node.subtasks),
                 "needs": [
                     {
                         "on": need.on,
@@ -542,23 +1145,71 @@ async def create_graph(
     dry_run: bool = False,
     parent_id: str | None = None,
     provenance: FormulaProvenance | None = None,
+    filing: GraphFilingContext | None = None,
+    container_parent_id: str | None = None,
+    review_gate_id: str | None = None,
 ) -> dict:
     """Create the graph, or report what creating it would do.
 
-    *handler* is the ``CommandHandler`` (its ``db`` property is the only
-    thing used).  Returns the report from :func:`build_report`; the caller
+    *handler* is the ``CommandHandler``, supplying the database, hierarchy
+    filing service and routing event hooks. Returns :func:`build_report`; the caller
     layers validation warnings on top.  *parent_id* creates the graph under
     an existing container instead of minting a new one.  *provenance*, when
     given, is written inside ``write_plan``'s transaction (spec §13) and
     surfaced in the report — never persisted or reported on a dry run.
+    *container_parent_id* files the graph's new container under that
+    existing task instead of at the project root.  *review_gate_id* gates
+    every node on that document review (``write_plan``).
     """
     db = handler.db
-    plan = await build_plan(db, graph, project_id=project_id, parent_id=parent_id)
+    if graph.phases:
+        # A dry run refuses what a real run refuses, the way the hierarchy
+        # route check already does below; ``write_plan`` checks again inside
+        # its transaction for callers that never come through here.
+        refusal = await db.phase_mode_refusal(project_id)
+        if refusal is not None:
+            raise HierarchyError("phases_unsupported_mode", refusal["error"])
+    plan = await build_plan(
+        db,
+        graph,
+        project_id=project_id,
+        parent_id=parent_id,
+        container_parent_id=container_parent_id,
+    )
+    hierarchy_service = (
+        handler._hierarchy_integration_service()
+        if callable(getattr(handler, "_hierarchy_integration_service", None))
+        else None
+    )
     if dry_run:
-        return build_report(graph, plan, dry_run=True, provenance=provenance)
+        from src.object_loop.formulas import guard_formula
+
+        if provenance is not None and provenance.name in {"object", "variation"}:
+            async with db._engine.connect() as conn:
+                await guard_formula(db, conn, plan, provenance, dry_run=True)
+        if hierarchy_service is not None or filing is not None:
+            # Same route check the real run performs first, so a dry run
+            # refuses what the real run would refuse instead of reporting a
+            # graph the project cannot file (keen-harbor.14).  A scoped dry
+            # run also locks and rechecks its held-task fence and batch quota,
+            # without reserving either IDs or filing capacity.
+            async with db._engine.begin() as conn:
+                if filing is not None:
+                    await _fence_graph_filing(db, conn, plan, filing, reserve=False)
+                if hierarchy_service is not None:
+                    await _graph_route(hierarchy_service, conn, plan)
+        report = build_report(graph, plan, dry_run=True, provenance=provenance)
+        if filing is not None:
+            report["request_id"] = filing.request_id
+        return report
     await write_plan(
-        db, plan, provenance=provenance,
+        db,
+        plan,
+        provenance=provenance,
         routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
+        hierarchy_service=hierarchy_service,
+        filing=filing,
+        review_gate_id=review_gate_id,
     )
     for task_id in plan.routing_task_ids:
         await handler._emit_admitted_routing_gates(task_id)
@@ -568,8 +1219,12 @@ async def create_graph(
         # may route directly instead of using the default triage recovery.
         try:
             await handler.orchestrator._emit_task_event(
-                "task.created", task, parent_task_id=task.parent_task_id,
-                profile_id=task.profile_id, created_by_kind=None, created_by_id=None,
+                "task.created",
+                task,
+                parent_task_id=task.parent_task_id,
+                profile_id=task.profile_id,
+                created_by_kind=None,
+                created_by_id=None,
             )
         except Exception:
             logger.exception("Graph task.created emission failed for %s", task_id)
@@ -582,4 +1237,7 @@ async def create_graph(
         len(plan.dependency_rows),
         project_id,
     )
-    return build_report(graph, plan, dry_run=False, provenance=provenance)
+    report = build_report(graph, plan, dry_run=False, provenance=provenance)
+    if filing is not None:
+        report["request_id"] = filing.request_id
+    return report

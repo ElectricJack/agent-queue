@@ -1,0 +1,643 @@
+diff --git a/src/git/askpass_broker.py b/src/git/askpass_broker.py
+index 660c3de4..6727abe8 100644
+--- a/src/git/askpass_broker.py
++++ b/src/git/askpass_broker.py
+@@ -5,12 +5,15 @@ from __future__ import annotations
+ import array
+ import asyncio
+ import hashlib
++import json
+ import os
++import shutil
+ import socket
+ import stat
+ import struct
+ from dataclasses import dataclass
+ from pathlib import Path
++from typing import Protocol
+ 
+ from src.git.askpass_fd import MAX_REQUEST_BYTES, request_payload
+ 
+@@ -23,6 +26,18 @@ class PinnedFile:
+     device: int
+     inode: int
+     owner: int
++    mode: int
++    digest: str | None = None
++
++
++@dataclass(frozen=True)
++class PinnedNode:
++    path: str
++    kind: str
++    device: int
++    inode: int
++    owner: int
++    mode: int
+     digest: str | None = None
+ 
+ 
+@@ -33,6 +48,162 @@ class GitCredentialTopology:
+     remote_helper_argv0: str
+     interpreter: PinnedFile
+     askpass: PinnedFile
++    remote_helper_link: PinnedNode | None = None
++    directories: tuple[PinnedNode, ...] = ()
++
++
++@dataclass(frozen=True)
++class WorkerLaunchPosture:
++    """Secret-free summary of one real routable launcher composition."""
++
++    profile_id: str
++    project_id: str
++    harness_id: str
++    lifecycle: str
++    workspace_variant: str
++    executable_path: str
++    executable_digest: str
++    effective_uid: int
++    bypass_capable: bool
++
++
++@dataclass(frozen=True)
++class WorkerAuthorityObservation:
++    """Kernel/launcher-observed worker authority over daemon trust boundaries."""
++
++    profile_id: str
++    project_id: str
++    harness_id: str
++    lifecycle: str
++    workspace_variant: str
++    executable_digest: str
++    same_uid: bool
++    bypass_capable: bool
++    protected_paths_writable: bool
++    control_plane_isolated: bool
++    policy_verified: bool
++    policy_digest: str
++
++
++class WorkerAuthorityInspector(Protocol):
++    def observe(
++        self, posture: WorkerLaunchPosture, protected_paths: tuple[str, ...]
++    ) -> WorkerAuthorityObservation: ...
++
++
++class DefaultWorkerAuthorityInspector:
++    """Describe the stock same-UID launcher honestly; it is not confinement."""
++
++    def observe(
++        self, posture: WorkerLaunchPosture, protected_paths: tuple[str, ...]
++    ) -> WorkerAuthorityObservation:
++        same_uid = posture.effective_uid == os.geteuid()
++        writable = same_uid and any(os.access(path, os.W_OK) for path in protected_paths)
++        return WorkerAuthorityObservation(
++            profile_id=posture.profile_id,
++            project_id=posture.project_id,
++            harness_id=posture.harness_id,
++            lifecycle=posture.lifecycle,
++            workspace_variant=posture.workspace_variant,
++            executable_digest=posture.executable_digest,
++            same_uid=same_uid,
++            bypass_capable=posture.bypass_capable,
++            protected_paths_writable=writable,
++            # A same-host tmux/subprocess worker can omit its bearer token and
++            # reach LOCAL_SCOPE while anonymous local API access is enabled.
++            control_plane_isolated=False,
++            policy_verified=False,
++            policy_digest="sha256:" + hashlib.sha256(b"unverified").hexdigest(),
++        )
++
++
++@dataclass(frozen=True)
++class InstalledTransportFacts:
++    git: PinnedFile
++    exec_path: str
++    remote_helper_link: PinnedNode
++    remote_helper: PinnedFile
++    interpreter: PinnedFile
++    askpass: PinnedFile
++    directories: tuple[PinnedNode, ...]
++    private_keys: tuple[PinnedFile, ...]
++    facilities: tuple[str, ...]
++    worker_authority: tuple[WorkerAuthorityObservation, ...]
++
++    def canonical_dict(self) -> dict:
++        def record(value):
++            return {
++                name: getattr(value, name)
++                for name in value.__dataclass_fields__
++            }
++
++        return {
++            "schema": "aq.integration-transport.v1",
++            "git": record(self.git),
++            "exec_path": self.exec_path,
++            "remote_helper_link": record(self.remote_helper_link),
++            "remote_helper": record(self.remote_helper),
++            "interpreter": record(self.interpreter),
++            "askpass": record(self.askpass),
++            "directories": [record(item) for item in self.directories],
++            "private_keys": [record(item) for item in self.private_keys],
++            "facilities": list(self.facilities),
++            "worker_authority": [record(item) for item in self.worker_authority],
++        }
++
++    @property
++    def fingerprint(self) -> str:
++        encoded = json.dumps(
++            self.canonical_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
++        ).encode()
++        return "sha256:" + hashlib.sha256(encoded).hexdigest()
++
++    def with_worker_authority(
++        self, observations: tuple[WorkerAuthorityObservation, ...]
++    ) -> "InstalledTransportFacts":
++        from dataclasses import replace
++
++        return replace(self, worker_authority=observations)
++
++
++@dataclass(frozen=True)
++class TransportInspectionResult:
++    facts: InstalledTransportFacts
++    blockers: tuple[str, ...]
++
++    @property
++    def ready(self) -> bool:
++        return not self.blockers
++
++    @property
++    def fingerprint(self) -> str:
++        return self.facts.fingerprint
++
++    def canonical_json(self) -> str:
++        return json.dumps(
++            {"facts": self.facts.canonical_dict(), "blockers": list(self.blockers)},
++            sort_keys=True,
++            separators=(",", ":"),
++            ensure_ascii=True,
++        )
++
++
++class TransportInspectionError(OSError):
++    pass
++
++
++@dataclass(frozen=True)
++class AcceptedTransportFingerprint:
++    value: str
++
++    def __post_init__(self) -> None:
++        if (
++            not isinstance(self.value, str)
++            or len(self.value) != 71
++            or not self.value.startswith("sha256:")
++            or any(c not in "0123456789abcdef" for c in self.value[7:])
++        ):
++            raise ValueError("transport fingerprint must be an exact sha256 digest")
+ 
+ 
+ def _pin_regular_file(
+@@ -46,16 +217,28 @@ def _pin_regular_file(
+         or details.st_mode & 0o022
+     ):
+         raise OSError("unsafe credential executable")
+-    digest = hashlib.sha256(resolved.read_bytes()).hexdigest() if include_digest else None
++    digest = (
++        "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
++        if include_digest
++        else None
++    )
+     return PinnedFile(
+         path=str(resolved),
+         device=details.st_dev,
+         inode=details.st_ino,
+         owner=owner,
++        mode=stat.S_IMODE(details.st_mode),
+         digest=digest,
+     )
+ 
+ 
++def _pin_private_key(path: Path) -> PinnedFile:
++    pinned = _pin_regular_file(path, owner=os.geteuid(), include_digest=True)
++    if pinned.mode & (stat.S_IRWXG | stat.S_IRWXO) or not pinned.mode & stat.S_IRUSR:
++        raise OSError("unsafe private key permissions")
++    return pinned
++
++
+ def _validate_root_directory_tree(path: Path) -> None:
+     resolved = path.resolve(strict=True)
+     candidates = [resolved]
+@@ -70,28 +253,307 @@ def _validate_root_directory_tree(path: Path) -> None:
+             raise OSError("unsafe Git executable path")
+ 
+ 
+-def pin_git_credential_topology(
+-    *, exec_path: Path, askpass_path: Path
++def _pin_node(path: Path, *, kind: str, include_digest: bool = False) -> PinnedNode:
++    details = path.lstat() if kind == "symlink" else path.stat()
++    actual_kind = (
++        "symlink" if stat.S_ISLNK(details.st_mode)
++        else "directory" if stat.S_ISDIR(details.st_mode)
++        else "file" if stat.S_ISREG(details.st_mode)
++        else "other"
++    )
++    if actual_kind != kind:
++        raise TransportInspectionError("unsafe credential topology node")
++    digest = None
++    if include_digest:
++        digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
++    return PinnedNode(
++        path=str(path),
++        kind=kind,
++        device=details.st_dev,
++        inode=details.st_ino,
++        owner=details.st_uid,
++        mode=stat.S_IMODE(details.st_mode),
++        digest=digest,
++    )
++
++
++def _directory_facts(paths: tuple[Path, ...], *, stop: Path) -> tuple[PinnedNode, ...]:
++    stop = stop.resolve(strict=True)
++    found: dict[str, PinnedNode] = {}
++    for path in paths:
++        current = path.resolve(strict=True)
++        if not current.is_dir():
++            current = current.parent
++        while True:
++            if current != stop and stop not in current.parents:
++                raise TransportInspectionError("credential path escaped trusted root")
++            node = _pin_node(current, kind="directory")
++            found[node.path] = node
++            if current == stop:
++                break
++            current = current.parent
++    return tuple(found[key] for key in sorted(found))
++
++
++def inspect_git_credential_topology(
++    *,
++    exec_path: Path,
++    askpass_path: Path,
++    git_path: Path = Path("/usr/bin/git"),
++    interpreter_path: Path = Path("/usr/bin/python3"),
++    expected_system_owner: int = 0,
++    trusted_root: Path = Path("/"),
+ ) -> GitCredentialTopology:
+     if not exec_path.is_absolute():
+         raise OSError("unsafe Git executable path")
+-    _validate_root_directory_tree(exec_path)
+-    git = _pin_regular_file(Path("/usr/bin/git"), owner=0)
+-    interpreter = _pin_regular_file(Path("/usr/bin/python3"), owner=0)
++    if trusted_root == Path("/"):
++        _validate_root_directory_tree(exec_path)
++    git = _pin_regular_file(git_path, owner=expected_system_owner, include_digest=True)
++    interpreter = _pin_regular_file(
++        interpreter_path, owner=expected_system_owner, include_digest=True
++    )
+     remote_argv0 = exec_path / "git-remote-https"
+     link_details = remote_argv0.lstat()
+-    if link_details.st_uid != 0:
++    if not stat.S_ISLNK(link_details.st_mode) or link_details.st_uid != expected_system_owner:
+         raise OSError("unsafe Git remote helper")
+-    remote_helper = _pin_regular_file(remote_argv0, owner=0)
++    remote_link = _pin_node(remote_argv0, kind="symlink")
++    remote_helper = _pin_regular_file(
++        remote_argv0, owner=expected_system_owner, include_digest=True
++    )
+     askpass = _pin_regular_file(
+         askpass_path, owner=os.geteuid(), include_digest=True
+     )
++    directories = _directory_facts(
++        (Path(git.path), exec_path, Path(interpreter.path), askpass_path),
++        stop=trusted_root,
++    )
+     return GitCredentialTopology(
+         git=git,
+         remote_helper=remote_helper,
+         remote_helper_argv0=str(remote_argv0),
+         interpreter=interpreter,
+         askpass=askpass,
++        remote_helper_link=remote_link,
++        directories=directories,
++    )
++
++
++def pin_git_credential_topology(
++    *, exec_path: Path, askpass_path: Path
++) -> GitCredentialTopology:
++    """Compatibility alias for the shared public installed inspector."""
++    return inspect_git_credential_topology(exec_path=exec_path, askpass_path=askpass_path)
++
++
++def _facility_facts() -> tuple[str, ...]:
++    facilities: list[str] = []
++    for name, path in (
++        ("proc_cmdline", Path("/proc/self/cmdline")),
++        ("proc_exe", Path("/proc/self/exe")),
++        ("proc_stat", Path("/proc/self/stat")),
++    ):
++        if path.exists():
++            facilities.append(name)
++    for name, attribute in (
++        ("scm_credentials", "SCM_CREDENTIALS"),
++        ("scm_rights", "SCM_RIGHTS"),
++        ("so_passcred", "SO_PASSCRED"),
++    ):
++        if hasattr(socket, attribute):
++            facilities.append(name)
++    return tuple(sorted(facilities))
++
++
++def inspect_installed_transport(
++    *,
++    exec_path: Path,
++    askpass_path: Path,
++    private_key_paths: tuple[Path, ...],
++    worker_postures: tuple[WorkerLaunchPosture, ...],
++    authority_inspector: WorkerAuthorityInspector | None = None,
++    git_path: Path = Path("/usr/bin/git"),
++    interpreter_path: Path = Path("/usr/bin/python3"),
++    expected_system_owner: int = 0,
++    trusted_root: Path = Path("/"),
++) -> TransportInspectionResult:
++    """Inspect the complete installed credential transport and worker authority.
++
++    The default authority inspector deliberately describes the current
++    same-UID/unconfined launcher as unsafe. A caller may inject a verifier only
++    when it observes an actual launcher/kernel confinement policy.
++    """
++    topology = inspect_git_credential_topology(
++        exec_path=exec_path,
++        askpass_path=askpass_path,
++        git_path=git_path,
++        interpreter_path=interpreter_path,
++        expected_system_owner=expected_system_owner,
++        trusted_root=trusted_root,
++    )
++    keys: list[PinnedFile] = []
++    for path in private_key_paths:
++        try:
++            keys.append(_pin_private_key(path))
++        except OSError as exc:
++            raise TransportInspectionError("unsafe private key path") from exc
++    directories = _directory_facts(
++        tuple(Path(item.path) for item in (topology.git, topology.remote_helper,
++                                           topology.interpreter, topology.askpass, *keys)),
++        stop=trusted_root,
++    )
++    facilities = _facility_facts()
++    required = {
++        "proc_cmdline",
++        "proc_exe",
++        "proc_stat",
++        "scm_credentials",
++        "scm_rights",
++        "so_passcred",
++    }
++    inspector = authority_inspector or DefaultWorkerAuthorityInspector()
++    protected = tuple(
++        item.path for item in (topology.askpass, *keys)
++    ) + tuple(item.path for item in directories)
++    observations = tuple(
++        inspector.observe(posture, protected)
++        for posture in sorted(
++            worker_postures,
++            key=lambda item: (
++                item.profile_id,
++                item.project_id,
++                item.harness_id,
++                item.lifecycle,
++                item.workspace_variant,
++                item.executable_digest,
++            ),
++        )
++    )
++    blockers: set[str] = set()
++    if set(facilities) != required:
++        blockers.add("worker_confinement_unverifiable")
++    if not observations:
++        blockers.add("worker_confinement_unverifiable")
++    for observation in observations:
++        if (
++            observation.same_uid
++            or observation.bypass_capable
++            or observation.protected_paths_writable
++        ):
++            blockers.add("askpass_worker_writable")
++        if not observation.policy_verified:
++            blockers.add("worker_confinement_unverifiable")
++        if not observation.control_plane_isolated:
++            blockers.add("worker_control_plane_unconfined")
++    facts = InstalledTransportFacts(
++        git=topology.git,
++        exec_path=str(exec_path.resolve(strict=True)),
++        remote_helper_link=topology.remote_helper_link,
++        remote_helper=topology.remote_helper,
++        interpreter=topology.interpreter,
++        askpass=topology.askpass,
++        directories=directories,
++        private_keys=tuple(keys),
++        facilities=facilities,
++        worker_authority=observations,
++    )
++    return TransportInspectionResult(facts=facts, blockers=tuple(sorted(blockers)))
++
++
++def collect_worker_launch_postures(
++    *,
++    profiles: tuple[object, ...],
++    projects: tuple[object, ...],
++    workspaces: tuple[object, ...],
++    harness_registry: object,
++    spec_builder: object,
++    executable_resolver=shutil.which,
++) -> tuple[WorkerLaunchPosture, ...]:
++    """Enumerate every currently routable profile/harness/workspace posture.
++
++    The real project-aware harness registry and SessionSpecBuilder argv
++    composer are authoritative. Only authority booleans and executable
++    identity survive; raw argv/environment values are discarded.
++    """
++    from src.sessions.spec import skip_permissions_allowed
++
++    variants_by_project: dict[str, set[str]] = {}
++    for workspace in workspaces:
++        project_id = str(getattr(workspace, "project_id", "") or "")
++        source = getattr(workspace, "source_type", "")
++        variant = getattr(source, "value", source)
++        if project_id and isinstance(variant, str) and variant:
++            variants_by_project.setdefault(project_id, set()).add(variant)
++    bypass_flags = frozenset(
++        {
++            "--dangerously-bypass-approvals-and-sandbox",
++            "--dangerously-skip-permissions",
++            "--full-auto",
++            "--yolo",
++        }
++    )
++    result: list[WorkerLaunchPosture] = []
++    for profile in profiles:
++        if getattr(profile, "runtime", "") not in {"", None}:
++            continue
++        profile_id = str(getattr(profile, "id", "") or "")
++        harness_id = str(getattr(profile, "harness", "") or "")
++        lifecycle = str(getattr(profile, "lifecycle", "task") or "task")
++        if not profile_id or not harness_id:
++            continue
++        for project in projects:
++            project_id = str(getattr(project, "id", "") or "")
++            harness = harness_registry.get(harness_id, project_id)
++            if harness is None:
++                continue
++            variants = (
++                {"none"}
++                if lifecycle == "named" or not getattr(profile, "needs_workspace", True)
++                else variants_by_project.get(project_id, set())
++            )
++            for variant in sorted(variants):
++                source = type("ObservedWorkspaceSource", (), {"value": variant})()
++                argv = spec_builder._compose_argv(
++                    harness=harness,
++                    profile=profile,
++                    session_id="authority-inspection",
++                    resume_key=None,
++                    prompt=None,
++                    session_name="authority-inspection",
++                    files=[],
++                    allow_skip_permissions=skip_permissions_allowed(profile, source),
++                    hook_files=[],
++                )
++                executable = executable_resolver(argv[0])
++                executable_path = str(Path(executable).resolve()) if executable else argv[0]
++                try:
++                    executable_bytes = Path(executable_path).read_bytes()
++                except OSError:
++                    executable_bytes = ("unresolved:" + executable_path).encode()
++                result.append(
++                    WorkerLaunchPosture(
++                        profile_id=profile_id,
++                        project_id=project_id,
++                        harness_id=harness.id,
++                        lifecycle=lifecycle,
++                        workspace_variant=variant,
++                        executable_path=executable_path,
++                        executable_digest="sha256:"
++                        + hashlib.sha256(executable_bytes).hexdigest(),
++                        effective_uid=os.geteuid(),
++                        bypass_capable=any(item in bypass_flags for item in argv),
++                    )
++                )
++    return tuple(
++        sorted(
++            result,
++            key=lambda item: (
++                item.profile_id,
++                item.project_id,
++                item.harness_id,
++                item.lifecycle,
++                item.workspace_variant,
++            ),
++        )
+     )
+ 
+ 
+@@ -132,7 +594,7 @@ def _parent_pid(pid: int) -> int | None:
+ def _matches_pin(path: Path, pinned: PinnedFile, *, include_digest: bool = False) -> bool:
+     try:
+         current = _pin_regular_file(
+-            path, owner=pinned.owner, include_digest=include_digest
++            path, owner=pinned.owner, include_digest=include_digest or pinned.digest is not None
+         )
+     except OSError:
+         return False
+diff --git a/src/git/manager.py b/src/git/manager.py
+index 31c30610..1e9817a6 100644
+--- a/src/git/manager.py
++++ b/src/git/manager.py
+@@ -64,6 +64,7 @@ See specs/git/git.md for the full behavioral specification.
+ from __future__ import annotations
+ 
+ import asyncio
++import inspect
+ import json
+ import logging
+ import math
+@@ -81,9 +82,10 @@ from typing import TYPE_CHECKING, AsyncIterator
+ 
+ from src.git.askpass_fd import answer_prompt
+ from src.git.askpass_broker import (
++    AcceptedTransportFingerprint,
+     GitCredentialTopology,
++    inspect_git_credential_topology,
+     make_request_channel,
+-    pin_git_credential_topology,
+     serve_one_credential,
+     zeroize,
+ )
+@@ -384,6 +386,29 @@ class GitManager:
+         # same bare cache at once.
+         self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
+         self._repository_operation_locks: dict[str, asyncio.Lock] = {}
++        self._accepted_app_transport: AcceptedTransportFingerprint | None = None
++        self._app_transport_revalidator: Callable[[], object] | None = None
++
++    def set_app_transport_revalidator(
++        self,
++        accepted: AcceptedTransportFingerprint,
++        revalidator: Callable[[], object],
++    ) -> None:
++        """Freeze the transport proof consumed by later credentialed mutations."""
++        if not isinstance(accepted, AcceptedTransportFingerprint) or not callable(revalidator):
++            raise TypeError("accepted transport fingerprint and revalidator are required")
++        self._accepted_app_transport = accepted
++        self._app_transport_revalidator = revalidator
++
++    async def _revalidate_app_transport(self) -> None:
++        """Reject a configured credential transport whose complete posture changed."""
++        if self._accepted_app_transport is None or self._app_transport_revalidator is None:
++            return
++        observed = self._app_transport_revalidator()
++        if inspect.isawaitable(observed):
++            observed = await observed
++        if observed != self._accepted_app_transport.value:
++            raise GitError("authenticated Git transport fingerprint changed")
+ 
+     def set_lock_provider(
+         self,
+@@ -2905,6 +2930,7 @@ class GitManager:
+         authority_deadline: float | None = None,
+     ) -> str:
+         """Push one immutable OID through an isolated daemon-owned Git context."""
++        await self._revalidate_app_transport()
+         loop = asyncio.get_running_loop()
+         maximum_deadline = loop.time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+         if authority_deadline is None:
+@@ -2949,6 +2975,7 @@ class GitManager:
+         authority_deadline: float | None = None,
+     ) -> str:
+         """Delete one App-bound remote head under an exact expected-old lease."""
++        await self._revalidate_app_transport()
+         loop = asyncio.get_running_loop()
+         maximum_deadline = loop.time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+         deadline = maximum_deadline if authority_deadline is None else min(
+@@ -2995,6 +3022,7 @@ class GitManager:
+         destination_ref: str,
+     ) -> str:
+         """Fetch one exact App-bound OID, then import it credential-free."""
++        await self._revalidate_app_transport()
+         return await self._afetch_exact_oid_with_app_auth_to_url(
+             destination_git_dir,
+             destination_url=f"https://github.com/{repository.full_name}.git",
+@@ -3280,7 +3308,7 @@ class GitManager:
+                 ["--exec-path"], home=home, deadline=deadline
+             )
+             exec_path = Path(raw_exec_path.decode("ascii"))
+-            topology = pin_git_credential_topology(
++            topology = inspect_git_credential_topology(
+                 exec_path=exec_path,
+                 askpass_path=Path(answer_prompt.__code__.co_filename),
+             )

@@ -7,18 +7,31 @@ from pathlib import Path
 
 from src.playbooks.authoring import PlaybookSource
 from src.playbooks.pipeline_lowering import (
+    _command_transitions,
     _value,
-    lower_assignment,
     lower_pipeline,
     shadow_compile,
 )
-from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
+from src.playbooks.proposal import (
+    DuplicateSemanticKey,
+    load_legacy_baseline_json,
+    load_semantic_body_json,
+    migrate_legacy_agent_task_routes,
+    propose,
+)
 from src.playbooks.validation import (
     NullProfileLookup,
     RegisteredEventLookup,
     RegistryContractLookup,
 )
-from tests.playbook_v2_helpers import FIXTURE_DIR, StubContracts, StubEvents, StubProfiles, twin
+from tests.playbook_v2_helpers import (
+    FIXTURE_DIR,
+    StubContracts,
+    StubEvents,
+    StubProfiles,
+    _agent_task_twin,
+    twin,
+)
 
 LOWERING = FIXTURE_DIR / "lowering"
 
@@ -141,6 +154,61 @@ def test_proposal_is_review_only_and_has_no_activation_side_effect(tmp_path):
     assert not hasattr(proposal, "activate")
 
 
+def test_proposal_migrates_legacy_agent_task_worker_profile_to_class_hint(tmp_path):
+    artifact = _agent_task_twin()
+    step = artifact["steps"]["delegate"]
+    step["profile_id"] = "fast-low-claude"
+    step["inputs"] = {"intelligence_class": {"type": "literal", "value": "fast-low"}}
+
+    proposal = propose(
+        _source(tmp_path),
+        {"rules": artifact["rules"], "steps": artifact["steps"]},
+        contracts=StubContracts(), profiles=StubProfiles(), events=StubEvents(),
+        version=2, enforce_inventory=False,
+    )
+
+    assert proposal.artifact is not None, [d.message for d in proposal.diagnostics]
+    delegated = proposal.artifact.steps["delegate"]
+    assert delegated.profile_id is None
+    assert delegated.intelligence_class == "fast-low"
+    assert "intelligence_class" not in delegated.inputs
+    assert "fast-low-claude" not in proposal.artifact.compiled_against.profiles
+    assert any(d.code == "legacy_worker_route_migrated" for d in proposal.diagnostics)
+
+
+def test_legacy_route_migration_refuses_conflicting_class_hints():
+    body = {"steps": {"check": {
+        "type": "agent_task", "profile_id": "fast-low-claude",
+        "intelligence_class": "deep-high",
+    }}}
+
+    migrated, diagnostics = migrate_legacy_agent_task_routes(body)
+
+    assert migrated["steps"]["check"]["profile_id"] == "fast-low-claude"
+    assert [d.code for d in diagnostics] == ["legacy_worker_route_conflict"]
+
+
+def test_legacy_baseline_is_read_only_and_keeps_version_for_recompile(tmp_path):
+    raw = _agent_task_twin()
+    raw["steps"]["delegate"]["profile_id"] = "fast-low-claude"
+    raw["steps"]["delegate"]["inputs"] = {
+        "intelligence_class": {"type": "literal", "value": "fast-low"}
+    }
+    original = json.dumps(raw)
+
+    baseline = load_legacy_baseline_json(original)
+    proposal = propose(
+        _source(tmp_path), {"rules": raw["rules"], "steps": raw["steps"]},
+        baseline=baseline, contracts=StubContracts(), profiles=StubProfiles(),
+        events=StubEvents(), version=baseline.version + 1, enforce_inventory=False,
+    )
+
+    assert baseline.version == raw["version"]
+    assert proposal.artifact is not None
+    assert proposal.artifact.version == raw["version"] + 1
+    assert json.loads(original)["steps"]["delegate"]["profile_id"] == "fast-low-claude"
+
+
 def test_lowering_uses_binding_outside_loop_and_loop_ref_inside_loop():
     assert _value("{{outputs.dep.id}}") == {"type": "binding_ref", "binding": "dep", "path": "id"}
     assert _value("{{outputs.dep.id}}", {"dep"}) == {
@@ -222,7 +290,32 @@ def test_command_transitions_use_closed_registered_outcomes():
     ensure = body["steps"]["per-task-review--create-review"]
     assert set(ensure["transitions"]) == {"created", "reused", "rejected", "runtime_error"}
     commit = body["steps"]["commit-on-gate-resolve--commit_proposal"]
-    assert set(commit["transitions"]) == {"committed", "rejected", "runtime_error"}
+    assert set(commit["transitions"]) == {
+        "committed",
+        "already_committed",
+        "not_approved",
+        "rejected",
+        "runtime_error",
+    }
+
+
+def test_command_transitions_route_by_registered_outcome_class():
+    # The frozen V1 graph sends both edges of the commit to one terminal, so
+    # prove the classification with distinct targets: a replay is a success,
+    # a missing approval is a failure (never a silent completion).
+    transitions = _command_transitions(
+        "task_batch_commit",
+        success_target="ok",
+        failure_target="failed",
+        contracts=RegistryContractLookup(),
+    )
+    assert transitions == {
+        "committed": "ok",
+        "already_committed": "ok",
+        "not_approved": "failed",
+        "rejected": "failed",
+        "runtime_error": "failed",
+    }
 
 
 def test_foreach_bodies_reenter_the_foreach_node():
@@ -232,42 +325,6 @@ def test_foreach_bodies_reenter_the_foreach_node():
     for loop_id, loop in loops.items():
         body_step = body["steps"][loop["body_entry"]]
         assert set(body_step["transitions"].values()) == {loop_id}
-
-
-def test_default_assignment_lowers_to_one_ai_node():
-    expected = json.loads(
-        (LOWERING / "default-assignment-routing.expected.json").read_text()
-    )
-    body, diagnostics = lower_assignment(_bundled("default-assignment-routing.md"))
-    assert diagnostics == []
-    step_types = [step["type"] for step in body["steps"].values()]
-    assert {
-        "executable_step_count": step_types.count("llm"),
-        "rule_count": len(body["rules"]),
-        "step_count": len(body["steps"]),
-        "step_types": step_types,
-    } == expected
-
-    choose = body["steps"]["assignment-route--choose"]
-    assert choose["inputs"] == {
-        "tasks": {"type": "event_ref", "path": "tasks"},
-        "options": {"type": "event_ref", "path": "options"},
-        "options_hash": {"type": "event_ref", "path": "options_hash"},
-        "catalog_hash": {"type": "event_ref", "path": "catalog_hash"},
-    }
-    assert choose["save_result_as"] == "routing_result"
-    schema = choose["output_schema"]
-    assert schema["required"] == ["decisions"]
-    assert schema["additionalProperties"] is False
-    decision = schema["properties"]["decisions"]["items"]
-    assert decision["required"] == ["task_id", "intelligence_class", "reason"]
-    assert "input_hash" not in decision["properties"]
-    assert decision["additionalProperties"] is False
-    assert body["steps"]["assignment-route--done"]["result"] == {
-        "type": "binding_ref",
-        "binding": "routing_result",
-    }
-    assert body["steps"]["assignment-route--failed"]["outcome"] == "failed"
 
 
 def test_non_loop_output_reference_lowers_to_binding_ref():
@@ -320,3 +377,89 @@ def test_duplicate_semantic_keys_are_rejected_before_authority_stripping():
         pass
     else:  # pragma: no cover - makes the security boundary explicit
         raise AssertionError("duplicate key was accepted")
+
+
+def test_source_metadata_is_validated_and_pinned_without_granting_authority(tmp_path):
+    from dataclasses import replace
+
+    source = _source(tmp_path)
+    source = replace(source, frontmatter={**source.frontmatter,
+        "required_capabilities": ["demo_command"], "state_schema_version": 2})
+    proposal = propose(source, _body(), contracts=StubContracts(), profiles=StubProfiles(),
+                       events=StubEvents(), version=1)
+    assert proposal.artifact.trusted_execution.required_capabilities == ("demo_command",)
+    assert proposal.artifact.trusted_execution.state_schema_version == 2
+    assert any(d.code == "state_namespace_migration" for d in proposal.diagnostics)
+    for field, value in [("principal", {}), ("namespace_owner", "system"),
+                         ("trusted_execution", {}), ("resolved_digest", "abc"),
+                         ("required_capabilities", "demo_command"),
+                         ("state_schema_version", True), ("state_schema_version", None),
+                         ("scripts", {"execute": {"runtime": "python", "argv": ["python"],
+                                                  "program_sha256": "a" * 64}})]:
+        invalid = replace(source, frontmatter={**source.frontmatter, field: value})
+        rejected = propose(invalid, _body(), contracts=StubContracts(), profiles=StubProfiles(),
+                           events=StubEvents(), version=1)
+        assert rejected.artifact is None, field
+
+
+def test_policy_constants_and_exact_paths_need_source_evidence(tmp_path):
+    from dataclasses import replace
+
+    source = _source(tmp_path)
+    source = replace(source, frontmatter={**source.frontmatter, "required_capabilities": []})
+    body = _body()
+    body["steps"]["act"]["inputs"]["assigned_threshold_seconds"] = {
+        "type": "literal", "value": 1800}
+    body["steps"]["act"]["inputs"]["repeat_after_seconds"] = {
+        "type": "literal", "value": None}
+    proposal = propose(source, body, contracts=StubContracts(), profiles=StubProfiles(),
+                       events=StubEvents(), version=1)
+    questions = [d for d in proposal.diagnostics if d.code == "ambiguous_prose"]
+    assert any("1800" in d.message for d in questions)
+    assert any("null" in d.message for d in questions)
+    authored = replace(source, raw=source.raw +
+        "Use `assigned_threshold_seconds` = `1800`.\n"
+        "Use `repeat_after_seconds` = `null`.\n")
+    aligned = propose(authored, body, contracts=StubContracts(), profiles=StubProfiles(),
+                      events=StubEvents(), version=1)
+    assert not [d for d in aligned.diagnostics if d.code == "ambiguous_prose"]
+    body["steps"]["act"]["inputs"]["assigned_threshold_seconds"]["value"] = 7200
+    drifted = propose(authored, body, contracts=StubContracts(), profiles=StubProfiles(),
+                      events=StubEvents(), version=1)
+    assert any("7200" in d.message for d in drifted.diagnostics)
+
+
+def test_source_loader_refuses_execution_authority_and_malformed_frontmatter(tmp_path):
+    from src.playbooks.authoring import SourceError
+
+    for frontmatter in ["- not-a-mapping", "id: demo\nscope: system\ntriggers: [task.completed]\nnamespace_owner: system"]:
+        path = tmp_path / "invalid.md"
+        path.write_text(f"---\n{frontmatter}\n---\nPolicy")
+        assert isinstance(PlaybookSource.load(path, vault_root=tmp_path), SourceError)
+
+
+def test_policy_alignment_rejects_unstated_paths_predicates_and_recipients(tmp_path):
+    from dataclasses import replace
+    from src.playbooks.proposal import _source_policy_alignment
+
+    source = _source(tmp_path)
+    body = _body()
+    body["steps"]["act"]["inputs"].update({
+        "to_id": {"type": "literal", "value": "operator"},
+        "result": {"type": "binding_ref", "binding": "observed", "path": "raw.status"},
+    })
+    body["rules"][0]["guard"] = {
+        "type": "comparison", "op": "eq",
+        "left": {"type": "event_ref", "path": "task.status"},
+        "right": {"type": "literal", "value": "READY"},
+    }
+    proposal = propose(source, body, contracts=StubContracts(), profiles=StubProfiles(),
+                       events=StubEvents(), version=1, enforce_inventory=False)
+    questions = _source_policy_alignment(source, proposal.artifact)
+    assert any("operator" in d.message for d in questions)
+    assert any("raw.status" in d.message for d in questions)
+    assert any("predicate" in d.message for d in questions)
+    authored = replace(source, raw=source.raw +
+        "Use `to_id` = `operator`.\nCompare `task.status` `eq` `READY`.\n")
+    questions = _source_policy_alignment(authored, proposal.artifact)
+    assert all("Exact result path" in d.message for d in questions)

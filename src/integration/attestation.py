@@ -1,0 +1,1354 @@
+"""Exact candidate-tree trust and GitHub App attestation publication."""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+import json
+import logging
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import quote
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+from sqlalchemy import insert, select, update
+
+from src.integration.row_query import select_row
+from src.integration.engine import root_engine_guard
+
+from src.database.tables import (
+    integration_batches,
+    integration_attestation_publications,
+    integration_candidate_publications,
+    integration_candidate_revisions,
+    integration_check_evidence,
+    integration_repair_operations,
+    integration_repair_stages,
+    projects,
+    task_integration_checkpoints,
+)
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialMode,
+    GitHubRepositoryBinding,
+    credential_identity_from_client,
+)
+from src.git.manager import GitError
+from src.integration.ci import (
+    TRUST_MANIFEST_PATH,
+    AttestationError,
+    AttestationPayload,
+    AuthenticatedGitHubObserver,
+    CIService,
+    CandidateCISubject,
+    CIReceiptPayload,
+    IntegrationCITrust,
+    IntegrationTrustManifest,
+    SubjectTrustError,
+    TrustedCIObservation,
+    ci_trust_from_policy,
+    is_numeric_producer_id,
+    select_trusted_attestation,
+)
+from src.integration.ci_producers import HostedCIProducer
+from src.integration.live_operations import ACTIVE_OPERATION_STATES
+from src.integration.promotion_contracts import RootAttestationProof, RootAttestationSubject
+from src.integration.repair import RepairService
+from src.integration.outbox import enqueue_integration_event
+
+logger = logging.getLogger(__name__)
+
+_MAX_TRUST_BYTES = 64 * 1024
+_PUBLICATION_LEASE_SECONDS = 300.0
+GitHubClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
+EnablementReader = Callable[[str], Awaitable[bool | tuple[str, ...]] | bool | tuple[str, ...]]
+
+
+class AttestationPublicationResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    outcome: Literal[
+        "published", "already_published", "not_green", "stale", "configuration_blocked"
+    ]
+    subject: RootAttestationSubject
+    proof: RootAttestationProof | None = None
+
+
+class IntegrationEnablementProbeResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    ready: bool
+    blockers: tuple[str, ...]
+
+
+class IntegrationAttestationService:
+    """Resolve exact live CI into a durable receipt; retain legacy App publication."""
+
+    def __init__(
+        self,
+        db: Any,
+        *,
+        data_dir: str | Path,
+        git_manager: Any,
+        github_client_factory: GitHubClientFactory | None,
+        protection_reader: EnablementReader | None = None,
+        probe_reader: EnablementReader | None = None,
+        debug_class_reader: EnablementReader | None = None,
+        crash_hook: Callable[[str], Awaitable[None] | None] | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.db = db
+        self.data_dir = Path(data_dir)
+        self.git = git_manager
+        self.github_client_factory = github_client_factory
+        self.protection_reader = protection_reader
+        self.probe_reader = probe_reader
+        self.debug_class_reader = debug_class_reader
+        self.crash_hook = crash_hook
+        self.clock = clock
+        self._clients: dict[GitHubRepositoryBinding, Any] = {}
+        self._owned_publications: dict[str, str] = {}
+        # Refused subject trees by operation id, for ``aq integration status``.
+        self._subject_trust: dict[str, dict[str, Any]] = {}
+
+    async def publish(
+        self, subject: RootAttestationSubject, *, producer: HostedCIProducer | None = None,
+    ) -> AttestationPublicationResult:
+        if not isinstance(subject, RootAttestationSubject):
+            raise TypeError("publish requires RootAttestationSubject")
+        if producer is not None:
+            return await self._publish_train(subject, producer)
+        initial = await self._green_state(subject, allow_promoting=False)
+        if initial is None:
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        try:
+            trust, client = await self._load_trust(initial)
+            observation = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
+                trust, subject.candidate_sha
+            )
+            if not isinstance(observation, TrustedCIObservation):
+                return AttestationPublicationResult(outcome="not_green", subject=subject)
+            payload = observation.payload
+            if payload.external_id != initial["aggregate_external_id"]:
+                return AttestationPublicationResult(outcome="not_green", subject=subject)
+
+            if isinstance(payload, CIReceiptPayload):
+                return await self._publish_daemon_receipt(subject, initial, payload)
+
+            claim_status, claim = await self._reserve_publication(initial)
+            if claim_status == "stale":
+                return AttestationPublicationResult(outcome="stale", subject=subject)
+            if claim_status == "wait":
+                return AttestationPublicationResult(
+                    outcome="configuration_blocked", subject=subject
+                )
+            if claim_status == "owner":
+                await self._crash("after_publication_reservation")
+
+            records = await self._attestation_records(client, trust, subject.candidate_sha)
+            trusted_records = self._trusted_records(records, trust)
+            if trusted_records:
+                proof = self._proof_from_records(records, trust, subject, initial)
+                if proof is None:
+                    return AttestationPublicationResult(
+                        outcome="configuration_blocked", subject=subject
+                    )
+                if not await self._finish_publication(initial, claim, proof):
+                    return AttestationPublicationResult(outcome="stale", subject=subject)
+                return AttestationPublicationResult(
+                    outcome="already_published", subject=subject, proof=proof
+                )
+
+            if claim_status in {"reconcile", "published"}:
+                return AttestationPublicationResult(
+                    outcome="configuration_blocked", subject=subject
+                )
+            if not await self._mark_publication_prewrite(initial, claim):
+                return AttestationPublicationResult(
+                    outcome="configuration_blocked", subject=subject
+                )
+
+            await AuthenticatedGitHubObserver(client).publish(trust, payload)
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
+            return AttestationPublicationResult(
+                outcome="configuration_blocked", subject=subject
+            )
+
+        await self._crash("after_attestation_publication")
+        try:
+            records = await self._attestation_records(client, trust, subject.candidate_sha)
+            proof = self._proof_from_records(records, trust, subject, initial)
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
+            return AttestationPublicationResult(
+                outcome="configuration_blocked", subject=subject
+            )
+        if proof is None:
+            return AttestationPublicationResult(
+                outcome="configuration_blocked", subject=subject
+            )
+        if not await self._finish_publication(initial, claim, proof):
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        return AttestationPublicationResult(outcome="published", subject=subject, proof=proof)
+
+    async def _publish_train(self, subject, producer) -> AttestationPublicationResult:
+        """Attest a git-first candidate without legacy candidate/progress rows."""
+        if not isinstance(producer, HostedCIProducer):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        trust = producer.trust
+        if not isinstance(trust, IntegrationTrustManifest):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        if (subject.repository_numeric_id, subject.repository_full_name,
+            subject.required_check_version) != (
+            trust.repository_id, trust.full_name, trust.required_checks.version,
+        ):
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        try:
+            identity = credential_identity_from_client(producer.client)
+            if (identity.mode is not GitHubCredentialMode.APP or
+                identity.app_id != trust.attestation_app_id):
+                return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+            observer = AuthenticatedGitHubObserver(producer.client, expected_event="push")
+            observed = await observer.observe(trust, subject.candidate_sha)
+            if not isinstance(observed, TrustedCIObservation) or not isinstance(
+                observed.payload, AttestationPayload,
+            ):
+                return AttestationPublicationResult(outcome="not_green", subject=subject)
+            record_id = await observer.publish(trust, observed.payload)
+            records = await self._attestation_records(producer.client, trust, subject.candidate_sha)
+            proof = self._proof_from_records(records, trust, subject, {
+                "aggregate_external_id": observed.payload.external_id,
+            })
+            if proof is None or proof.check_run_id != record_id:
+                return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        return AttestationPublicationResult(outcome="published", subject=subject, proof=proof)
+
+    async def resolve(self, subject: RootAttestationSubject) -> RootAttestationProof | None:
+        if not isinstance(subject, RootAttestationSubject):
+            raise TypeError("resolve requires RootAttestationSubject")
+        initial = await self._green_state(subject, allow_promoting=True)
+        if initial is None:
+            return None
+        claim = await self._published_publication(initial)
+        if claim is None:
+            return None
+        try:
+            trust, client = await self._load_trust(initial)
+            if isinstance(trust, IntegrationCITrust):
+                observation = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
+                    trust, subject.candidate_sha
+                )
+                if not isinstance(observation, TrustedCIObservation) or not isinstance(
+                    observation.payload, CIReceiptPayload
+                ):
+                    return None
+                proof = self._proof_from_observation(subject, initial, observation.payload)
+                if (
+                    proof is None
+                    or proof.check_run_id != claim["check_run_id"]
+                    or proof.external_id != claim["external_id"]
+                ):
+                    return None
+                rechecked = await self._published_publication(initial)
+                return proof if rechecked == claim else None
+            records = await self._attestation_records(client, trust, subject.candidate_sha)
+            proof = self._proof_from_records(records, trust, subject, initial)
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
+            return None
+        if (
+            proof is None
+            or proof.subject() != subject
+            or proof.check_run_id != claim["check_run_id"]
+        ):
+            return None
+        rechecked = await self._published_publication(initial)
+        if rechecked is None or rechecked["check_run_id"] != claim["check_run_id"]:
+            return None
+        return proof
+
+    @root_engine_guard("candidate", outcome="stale_subject")
+    async def handle_candidate_ci(self, row: dict[str, Any], _now: float) -> dict[str, Any]:
+        """Observe a pending candidate, then publish its exact attestation."""
+        try:
+            candidate = CandidateCISubject.model_validate(
+                {
+                    "operation_id": row["operation_id"],
+                    "batch_id": row["batch_id"],
+                    "revision": row["revision"],
+                    "candidate_sha": row["candidate_sha"],
+                }
+            )
+            pending = await self._pending_state(candidate)
+            if pending is None:
+                return {"outcome": "stale_subject"}
+            trust, client = await self._load_trust(pending)
+            if (
+                pending["candidate_state"] != "green"
+                or pending["batch_lifecycle"] == "repairing"
+            ):
+                observed = await CIService(
+                    self.db,
+                    trust,
+                    AuthenticatedGitHubObserver(client, expected_event="push"),
+                    clock=self.clock,
+                ).observe_candidate(candidate)
+                if observed["outcome"] != "green":
+                    if observed["outcome"] == "red":
+                        await self._enqueue_candidate_result(
+                            candidate,
+                            "red",
+                            tuple(observed.get("evidence_ids") or ()),
+                        )
+                    return observed
+            # An earlier observation may already have persisted exact green
+            # evidence before a retry reaches us.  Re-run only the guarded
+            # collector continuation in that case too: it is a no-op unless
+            # the current candidate is exact-green and the stage-one delegate
+            # is still merely an unattached reservation.
+            await RepairService(self.db, clock=self.clock).resume_root_collection(
+                candidate.operation_id,
+                candidate.batch_id,
+                candidate.revision,
+                candidate.candidate_sha,
+            )
+            root_subject = RootAttestationSubject(
+                repository_numeric_id=pending["repository_numeric_id"],
+                repository_full_name=pending["repository_full_name"],
+                operation_id=candidate.operation_id,
+                batch_id=candidate.batch_id,
+                revision=candidate.revision,
+                candidate_sha=candidate.candidate_sha,
+                required_check_version=pending["required_check_version"],
+            )
+            published = await self.publish(root_subject)
+            if published.outcome in {"published", "already_published"}:
+                await self._enqueue_candidate_result(candidate, "green", ())
+            return {
+                "outcome": published.outcome,
+                **(
+                    {"proof": published.proof.model_dump(mode="json")}
+                    if published.proof is not None
+                    else {}
+                ),
+            }
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
+            return {"outcome": "configuration_blocked"}
+
+    async def enablement_blockers(
+        self, canonical_repository_id: str
+    ) -> IntegrationEnablementProbeResult:
+        blockers: list[str] = []
+        if self.github_client_factory is None:
+            blockers.append("missing_trusted_integration_app")
+        repository = await self.db.get_repo(canonical_repository_id)
+        if (
+            repository is None
+            or not repository.url.startswith("https://github.com/")
+            or not repository.url.endswith(".git")
+        ):
+            blockers.append("repository_mismatch")
+        await self._project_reader(
+            self.debug_class_reader,
+            canonical_repository_id,
+            "debug_intelligence_class_unresolved",
+            blockers,
+        )
+        await self._project_reader(
+            self.protection_reader,
+            canonical_repository_id,
+            "branch_protection_incompatible",
+            blockers,
+        )
+        await self._project_reader(
+            self.probe_reader,
+            canonical_repository_id,
+            "scratch_probe_missing_or_failed",
+            blockers,
+        )
+        unique = tuple(dict.fromkeys(blockers))
+        return IntegrationEnablementProbeResult(ready=not unique, blockers=unique)
+
+    async def _load_trust(
+        self, state: dict[str, Any], *, boundary: str = "root"
+    ) -> tuple[IntegrationTrustManifest | IntegrationCITrust, Any]:
+        binding = GitHubRepositoryBinding(
+            state["repository_numeric_id"], state["repository_full_name"]
+        )
+        client = await self._client(binding)
+        identity = credential_identity_from_client(client)
+        # The frozen snapshot boundary is the only authority for the required
+        # check set and its producer (spec I3).  A subject tree can be refused
+        # on identity, but nothing it contains reaches this value.
+        authority = ci_trust_from_policy(
+            canonical_repository_id=state["canonical_repository_id"],
+            repository_id=binding.repository_id,
+            full_name=binding.full_name,
+            policy=state["policy_snapshot"],
+            boundary=boundary,
+        )
+        if identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
+            self._subject_trust.pop(state.get("operation_id"), None)
+            return authority, client
+        if not is_numeric_producer_id(authority.producer_id):
+            # A policy fault (the preflight's ci_producer_not_numeric), never
+            # blamed on the subject tree.
+            raise AttestationError("App-mode CI producer is not a numeric App id")
+        try:
+            manifest = await self._subject_manifest(state, binding)
+            mismatched = tuple(
+                field
+                for field, observed, expected in (
+                    (
+                        "canonical_repository_id",
+                        manifest.canonical_repository_id,
+                        state["canonical_repository_id"],
+                    ),
+                    ("repository_id", manifest.repository_id, binding.repository_id),
+                    ("full_name", manifest.full_name, binding.full_name),
+                    ("attestation_app_id", manifest.attestation_app_id, identity.app_id),
+                    (
+                        "ci_producer_app_id",
+                        str(manifest.ci_producer_app_id),
+                        authority.producer_id,
+                    ),
+                )
+                if observed != expected
+            )
+            if mismatched:
+                raise SubjectTrustError(
+                    "identity_mismatch",
+                    "subject trust manifest names another identity: " + ", ".join(mismatched),
+                    fields=mismatched,
+                )
+        except SubjectTrustError as exc:
+            self._record_subject_trust(state, boundary, exc)
+            raise
+        self._subject_trust.pop(state.get("operation_id"), None)
+        # The tree's check set is informational: every consumer downstream
+        # (observer name selection, payload version, attestation selection)
+        # reads the snapshot's checks through this one trust object.
+        return manifest.model_copy(update={"required_checks": authority.required_checks}), client
+
+    async def _subject_manifest(
+        self, state: dict[str, Any], binding: GitHubRepositoryBinding
+    ) -> IntegrationTrustManifest:
+        """Read the trust manifest from the exact subject tree, classifying refusals."""
+        from src.projects.storage_binding import repository_path
+
+        store = self._store(state["canonical_repository_id"])
+        if self.db is not None:
+            store = await repository_path(self.db, state["canonical_repository_id"], store)
+        destination_ref = "refs/aq/attestation-trust/" + hashlib.sha256(
+            f"{state['batch_id']}:{state['revision']}".encode()
+        ).hexdigest()
+        imported = await self.git.afetch_repository_oid(
+            str(store),
+            repository=binding,
+            oid=state["candidate_sha"],
+            destination_ref=destination_ref,
+        )
+        if imported != state["candidate_sha"]:
+            raise AttestationError("candidate trust import changed identity")
+        result = await self.git.arun_git_result(
+            ["show", f"{state['candidate_sha']}:{TRUST_MANIFEST_PATH}"],
+            cwd=str(store),
+            env={"LC_ALL": "C"},
+        )
+        if result.returncode != 0:
+            raise SubjectTrustError("missing", f"subject tree has no {TRUST_MANIFEST_PATH}")
+        raw = result.stdout.encode("utf-8")
+        if len(raw) > _MAX_TRUST_BYTES:
+            raise SubjectTrustError(
+                "too_large", f"subject trust manifest exceeds {_MAX_TRUST_BYTES} bytes"
+            )
+        return _parse_trust_manifest(raw)
+
+    def _record_subject_trust(
+        self, state: dict[str, Any], boundary: str, error: SubjectTrustError
+    ) -> None:
+        """Remember one refused subject for ``aq integration status`` (spec §5.3).
+
+        Like the external preflight, this is a live observation of provider
+        state: every poll of the subject re-derives it, and a later successful
+        load, a moved subject or an ended operation retires it.
+        """
+        operation_id = state.get("operation_id")
+        project_id = state.get("project_id")
+        if not operation_id or not project_id:
+            return
+        # The boundary picks the check set, not the subject: the train reads an
+        # epic head's parent checks under a batch identity with no parent episode.
+        parent = boundary == "parent" and "parent_task_id" in state
+        subject = (
+            {"parent_task_id": state["parent_task_id"], "generation": state["generation"]}
+            if parent
+            else {"batch_id": state["batch_id"], "revision": state["revision"]}
+        )
+        failure = {
+            "operation_id": operation_id,
+            "project_id": project_id,
+            "target_kind": "parent" if parent else "batch",
+            "subject": subject,
+            "head_sha": state["candidate_sha"],
+            "cause": error.cause,
+            "fields": list(error.fields),
+            "detail": str(error),
+        }
+        if self._subject_trust.get(operation_id) != failure:
+            logger.warning(
+                "Integration subject trust invalid for %s %s at %s: %s",
+                failure["target_kind"],
+                subject,
+                failure["head_sha"],
+                failure["detail"],
+            )
+        self._subject_trust[operation_id] = failure
+
+    async def subject_trust_blockers(self, project_id: str) -> list[dict[str, Any]]:
+        """Status blockers for refused subjects that are still current (spec I6)."""
+        failures = [
+            failure
+            for failure in list(self._subject_trust.values())
+            if failure["project_id"] == project_id
+        ]
+        if not failures:
+            return []
+        blockers: list[dict[str, Any]] = []
+        async with self.db._engine.connect() as conn:
+            for failure in failures:
+                if not await self._subject_still_current_on(conn, failure):
+                    if self._subject_trust.get(failure["operation_id"]) == failure:
+                        del self._subject_trust[failure["operation_id"]]
+                    continue
+                subject = failure["subject"]
+                named = (
+                    f"parent {subject['parent_task_id']} generation {subject['generation']}"
+                    if failure["target_kind"] == "parent"
+                    else f"batch {subject['batch_id']} revision {subject['revision']}"
+                )
+                blockers.append(
+                    {
+                        "code": "subject_trust_invalid",
+                        "detail": (
+                            f"{named} at {failure['head_sha']}: {failure['detail']}; "
+                            "refresh the branch from the default branch"
+                        ),
+                        "ref": failure["operation_id"],
+                        "target_kind": failure["target_kind"],
+                        "subject": dict(subject),
+                        "head_sha": failure["head_sha"],
+                        "cause": failure["cause"],
+                        "fields": list(failure["fields"]),
+                    }
+                )
+        return blockers
+
+    @staticmethod
+    async def _subject_still_current_on(conn: Any, failure: dict[str, Any]) -> bool:
+        operation = await select_row(
+            conn,
+            integration_repair_operations,
+            integration_repair_operations.c.id == failure["operation_id"],
+        )
+        if operation is None or operation["state"] not in ACTIVE_OPERATION_STATES:
+            return False
+        subject = failure["subject"]
+        if failure["target_kind"] == "parent":
+            checkpoint = await select_row(
+                conn,
+                task_integration_checkpoints,
+                task_integration_checkpoints.c.task_id == subject["parent_task_id"],
+            )
+            return bool(
+                checkpoint is not None
+                and operation["parent_task_id"] == subject["parent_task_id"]
+                and operation["episode_id"] == checkpoint["episode_id"]
+                and checkpoint["generation"] == subject["generation"]
+                and checkpoint["checkpoint_sha"] == failure["head_sha"]
+            )
+        row = (
+            await conn.execute(
+                select(
+                    integration_batches.c.current_revision,
+                    integration_candidate_revisions.c.head_sha,
+                )
+                .select_from(integration_batches)
+                .join(
+                    integration_candidate_revisions,
+                    (integration_candidate_revisions.c.batch_id == integration_batches.c.id)
+                    & (
+                        integration_candidate_revisions.c.revision
+                        == integration_batches.c.current_revision
+                    ),
+                )
+                .where(integration_batches.c.id == subject["batch_id"])
+            )
+        ).mappings().one_or_none()
+        return bool(
+            row is not None
+            and operation["batch_id"] == subject["batch_id"]
+            and int(row["current_revision"]) == subject["revision"]
+            and row["head_sha"] == failure["head_sha"]
+        )
+
+    async def _client(self, binding: GitHubRepositoryBinding) -> Any:
+        if self.github_client_factory is None:
+            raise AttestationError("trusted integration App is unavailable")
+        if binding in self._clients:
+            return self._clients[binding]
+        value = self.github_client_factory(binding)
+        if inspect.isawaitable(value):
+            value = await value
+        if (
+            value is None
+            or value.repository != binding
+            or value.repository.forge_host != "github.com"
+        ):
+            raise AttestationError("authenticated GitHub repository binding is invalid")
+        try:
+            credential_identity_from_client(value)
+        except ValueError as exc:
+            raise AttestationError("trusted integration App binding is invalid") from exc
+        self._clients[binding] = value
+        return value
+
+    async def _green_state(
+        self, subject: RootAttestationSubject, *, allow_promoting: bool
+    ) -> dict[str, Any] | None:
+        state = await self._locked_state(subject.batch_id, subject.revision)
+        if state is None or not self._subject_matches(subject, state):
+            return None
+        if (
+            state["candidate_state"] != "green"
+            or state["stage_state"] != "awaiting_completion"
+            or state["batch_lifecycle"] not in (
+            {"testing", "promoting"} if allow_promoting else {"testing"}
+            )
+        ):
+            return None
+        return state
+
+    async def _pending_state(self, subject: CandidateCISubject) -> dict[str, Any] | None:
+        state = await self._locked_state(subject.batch_id, subject.revision)
+        if state is None:
+            return None
+        if (
+            state["operation_id"] != subject.operation_id
+            or state["candidate_sha"] != subject.candidate_sha
+            or state["candidate_state"] not in {"built", "testing", "green"}
+            or state["batch_lifecycle"] not in {"testing", "repairing"}
+            or (
+                state["stage_state"]
+                != ("awaiting_completion" if state["candidate_state"] == "green" else "active")
+            )
+        ):
+            return None
+        return state
+
+    async def _enqueue_candidate_result(
+        self,
+        subject: CandidateCISubject,
+        outcome: Literal["green", "red"],
+        evidence_ids: tuple[str, ...],
+    ) -> bool:
+        """Emit one exact-current durable continuation from authoritative evidence."""
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            initial = (
+                await conn.execute(
+                    select(integration_batches.c.project_id).where(
+                        integration_batches.c.id == subject.batch_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if initial is None:
+                return False
+            await self.db.lock_hierarchy_project(conn, initial)
+
+            async def one(statement):
+                return (await conn.execute(statement.with_for_update())).mappings().one_or_none()
+
+            batch = await one(
+                select(integration_batches).where(integration_batches.c.id == subject.batch_id)
+            )
+            candidate = await one(
+                select(integration_candidate_revisions).where(
+                    integration_candidate_revisions.c.batch_id == subject.batch_id,
+                    integration_candidate_revisions.c.revision == subject.revision,
+                )
+            )
+            operation = await one(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == subject.operation_id,
+                    integration_repair_operations.c.batch_id == subject.batch_id,
+                    integration_repair_operations.c.episode_id == subject.batch_id,
+                )
+            )
+            stage = None
+            if operation is not None:
+                stage = await one(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == operation["id"],
+                        integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                )
+            if (
+                batch is None
+                or candidate is None
+                or operation is None
+                or stage is None
+                or batch["project_id"] != initial
+                or int(batch["current_revision"]) != subject.revision
+                or batch["lifecycle"] not in {"testing", "repairing"}
+                or operation["state"] not in {"active", "escalated"}
+                or candidate["head_sha"] != subject.candidate_sha
+            ):
+                return False
+
+            identities: tuple[str, ...]
+            if outcome == "green":
+                publication = await one(
+                    select(integration_attestation_publications).where(
+                        integration_attestation_publications.c.batch_id == subject.batch_id,
+                        integration_attestation_publications.c.revision == subject.revision,
+                    )
+                )
+                if (
+                    candidate["state"] != "green"
+                    or stage["state"] != "awaiting_completion"
+                    or candidate["ci_evidence_id"] is None
+                    or batch["ci_evidence_id"] != candidate["ci_evidence_id"]
+                    or batch["tested_candidate_sha"] != subject.candidate_sha
+                    or publication is None
+                    or publication["state"] != "published"
+                    or publication["head_sha"] != subject.candidate_sha
+                    or publication["check_run_id"] is None
+                ):
+                    return False
+                identities = (
+                    str(candidate["ci_evidence_id"]),
+                    str(publication["id"]),
+                    str(publication["check_run_id"]),
+                )
+            else:
+                if (
+                    candidate["state"] not in {"built", "testing"}
+                    or stage["state"] != "active"
+                    or not evidence_ids
+                ):
+                    return False
+                rows = (
+                    await conn.execute(
+                        select(integration_check_evidence).where(
+                            integration_check_evidence.c.id.in_(evidence_ids)
+                        )
+                    )
+                ).mappings().all()
+                if (
+                    len(rows) != len(set(evidence_ids))
+                    or any(
+                        row["operation_id"] != subject.operation_id
+                        or row["batch_id"] != subject.batch_id
+                        or int(row["candidate_revision"]) != subject.revision
+                        or row["classification"] != "conclusive"
+                        or row["conclusion"] not in {"failure", "cancelled"}
+                        for row in rows
+                    )
+                ):
+                    return False
+                identities = tuple(sorted(evidence_ids))
+                # The red event dispatches a repair delegate without evidence
+                # arguments.  Fold every terminal evidence row into the active
+                # stage's durable dossier before enqueueing so the delegate can
+                # see the failing checks, logs, hypothesis and attempt count.
+                # This mirrors the accounting ``record_result`` would apply had
+                # the root-train playbook called ``integration_record_repair``.
+                # ``record_result`` dedups via ``integration_repair_stage_evidence``;
+                # we instead dedup on the dossier itself so a repeated observation
+                # of the same evidence id does not inflate the budget.
+                dossier = dict(stage["dossier"] or {})
+                attempts = int(stage["attempts"])
+                seen_ids: set[str] = {
+                    item.get("evidence_id")
+                    for item in (dossier.get("failed_checks") or [])
+                }
+                seen_ids.update(
+                    item.get("evidence_id") for item in (dossier.get("logs") or [])
+                )
+                changed = False
+                for row in rows:
+                    if row["id"] in seen_ids:
+                        continue
+                    seen_ids.add(row["id"])
+                    evidence = dict(row)
+                    counted = (
+                        evidence["classification"] != "infrastructure"
+                        and evidence["conclusion"] in {"success", "failure"}
+                    )
+                    if counted:
+                        attempts += 1
+                    dossier = RepairService._dossier_with_evidence(
+                        dossier, evidence, attempts=attempts
+                    )
+                    changed = True
+                if changed:
+                    await conn.execute(
+                        update(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == subject.operation_id,
+                            integration_repair_stages.c.ordinal == stage["ordinal"],
+                        )
+                        .values(attempts=attempts, dossier=dossier)
+                    )
+
+            identity = json.dumps(
+                {
+                    "outcome": outcome,
+                    "operation_id": subject.operation_id,
+                    "batch_id": subject.batch_id,
+                    "revision": subject.revision,
+                    "head_sha": subject.candidate_sha,
+                    "evidence": identities,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            event_id = "integration-candidate-" + hashlib.sha256(identity.encode()).hexdigest()
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=event_id,
+                project_id=initial,
+                event_type=f"integration.candidate_{outcome}",
+                payload={
+                    "operation_id": subject.operation_id,
+                    "batch_id": subject.batch_id,
+                    "revision": subject.revision,
+                    "head_sha": subject.candidate_sha,
+                },
+                available_at=now,
+            )
+            return True
+
+    @staticmethod
+    def _publication_id(state: dict[str, Any]) -> str:
+        digest = hashlib.sha256(
+            f"{state['batch_id']}\0{state['revision']}".encode()
+        ).hexdigest()
+        return f"integration-attestation-{digest}"
+
+    @staticmethod
+    def _publication_identity(state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": IntegrationAttestationService._publication_id(state),
+            "project_id": state["project_id"],
+            "batch_id": state["batch_id"],
+            "revision": state["revision"],
+            "operation_id": state["operation_id"],
+            "head_sha": state["candidate_sha"],
+            "ci_evidence_id": state["ci_evidence_id"],
+            "external_id": state["aggregate_external_id"],
+        }
+
+    async def _reserve_publication(
+        self, state: dict[str, Any]
+    ) -> tuple[Literal["owner", "wait", "reconcile", "published", "stale"], dict[str, Any]]:
+        identity = self._publication_identity(state)
+        now = self.clock()
+        nonce = uuid.uuid4().hex
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project_id"])
+            if not await self._publication_subject_current_on(conn, state):
+                return "stale", {}
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == identity["id"],
+                lock=True,
+            )
+            if row is None:
+                await conn.execute(
+                    insert(integration_attestation_publications).values(
+                        **identity,
+                        execution_nonce=nonce,
+                        state="reserved",
+                        prewrite_at=None,
+                        check_run_id=None,
+                        expires_at=now + _PUBLICATION_LEASE_SECONDS,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                self._owned_publications[identity["id"]] = nonce
+                return "owner", {
+                    **identity,
+                    "execution_nonce": nonce,
+                    "prewrite_at": None,
+                }
+            row = dict(row)
+            if any(row[key] != value for key, value in identity.items()):
+                raise AttestationError("attestation reservation identity changed")
+            if row["state"] == "published":
+                return "published", row
+            if row["prewrite_at"] is not None:
+                if self._owned_publications.get(identity["id"]) == row["execution_nonce"]:
+                    return "reconcile", row
+                return ("wait" if float(row["expires_at"]) > now else "reconcile"), row
+            if self._owned_publications.get(identity["id"]) == row["execution_nonce"]:
+                return "owner", row
+            if float(row["expires_at"]) > now:
+                return "wait", row
+            takeover = await conn.execute(
+                update(integration_attestation_publications)
+                .where(
+                    integration_attestation_publications.c.id == identity["id"],
+                    integration_attestation_publications.c.state == "reserved",
+                    integration_attestation_publications.c.prewrite_at.is_(None),
+                    integration_attestation_publications.c.execution_nonce
+                    == row["execution_nonce"],
+                    integration_attestation_publications.c.expires_at <= now,
+                )
+                .values(
+                    execution_nonce=nonce,
+                    expires_at=now + _PUBLICATION_LEASE_SECONDS,
+                    updated_at=now,
+                )
+            )
+            if takeover.rowcount != 1:
+                return "wait", row
+            self._owned_publications[identity["id"]] = nonce
+            return "owner", {
+                **row,
+                "execution_nonce": nonce,
+                "expires_at": now + _PUBLICATION_LEASE_SECONDS,
+            }
+
+    async def _mark_publication_prewrite(
+        self, state: dict[str, Any], claim: dict[str, Any]
+    ) -> bool:
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project_id"])
+            if not await self._publication_subject_current_on(conn, state):
+                return False
+            result = await conn.execute(
+                update(integration_attestation_publications)
+                .where(
+                    integration_attestation_publications.c.id == claim["id"],
+                    integration_attestation_publications.c.state == "reserved",
+                    integration_attestation_publications.c.execution_nonce
+                    == claim["execution_nonce"],
+                    integration_attestation_publications.c.prewrite_at.is_(None),
+                    integration_attestation_publications.c.expires_at > now,
+                )
+                .values(prewrite_at=now, updated_at=now)
+            )
+            if result.rowcount != 1:
+                return False
+        claim["prewrite_at"] = now
+        return True
+
+    async def _finish_publication(
+        self,
+        state: dict[str, Any],
+        claim: dict[str, Any],
+        proof: RootAttestationProof,
+    ) -> bool:
+        now = self.clock()
+        identity = self._publication_identity(state)
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project_id"])
+            if not await self._publication_subject_current_on(conn, state):
+                return False
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == claim["id"],
+                lock=True,
+            )
+            if row is None or any(row[key] != value for key, value in identity.items()):
+                return False
+            if row["state"] == "published":
+                return (
+                    row["check_run_id"] == proof.check_run_id
+                    and row["external_id"] == proof.external_id
+                )
+            if row["execution_nonce"] != claim["execution_nonce"]:
+                return False
+            prewrite_at = row["prewrite_at"] if row["prewrite_at"] is not None else now
+            result = await conn.execute(
+                update(integration_attestation_publications)
+                .where(
+                    integration_attestation_publications.c.id == row["id"],
+                    integration_attestation_publications.c.state == "reserved",
+                    integration_attestation_publications.c.execution_nonce
+                    == claim["execution_nonce"],
+                )
+                .values(
+                    state="published",
+                    prewrite_at=prewrite_at,
+                    check_run_id=proof.check_run_id,
+                    updated_at=now,
+                )
+            )
+            return result.rowcount == 1
+
+    async def _published_publication(
+        self, state: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        identity = self._publication_identity(state)
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project_id"])
+            if not await self._publication_subject_current_on(conn, state):
+                return None
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == identity["id"],
+                integration_attestation_publications.c.state == "published",
+                lock=True,
+            )
+            if row is None or any(row[key] != value for key, value in identity.items()):
+                return None
+            return dict(row)
+
+    async def _publication_subject_current_on(
+        self, conn: Any, state: dict[str, Any]
+    ) -> bool:
+        batch = await select_row(
+            conn, integration_batches, integration_batches.c.id == state["batch_id"], lock=True
+        )
+        candidate = await select_row(
+            conn,
+            integration_candidate_revisions,
+            integration_candidate_revisions.c.batch_id == state["batch_id"],
+            integration_candidate_revisions.c.revision == state["revision"],
+            lock=True,
+        )
+        operation = await select_row(
+            conn,
+            integration_repair_operations,
+            integration_repair_operations.c.id == state["operation_id"],
+            lock=True,
+        )
+        stage = None
+        if operation is not None:
+            stage = await select_row(
+                conn,
+                integration_repair_stages,
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == operation["active_stage"],
+                lock=True,
+            )
+        return bool(
+            batch is not None
+            and candidate is not None
+            and operation is not None
+            and stage is not None
+            and batch["project_id"] == state["project_id"]
+            and batch["repository_id"] == state["canonical_repository_id"]
+            and int(batch["current_revision"]) == state["revision"]
+            and batch["lifecycle"] == state["batch_lifecycle"]
+            and batch["tested_candidate_sha"] == state["candidate_sha"]
+            and batch["ci_evidence_id"] == state["ci_evidence_id"]
+            and candidate["state"] == "green"
+            and candidate["head_sha"] == state["candidate_sha"]
+            and candidate["ci_evidence_id"] == state["ci_evidence_id"]
+            and operation["state"] in {"active", "escalated"}
+            and int(operation["active_stage"]) == int(stage["ordinal"])
+            and stage["state"] == "awaiting_completion"
+        )
+
+    async def _locked_state(self, batch_id: str, revision: int) -> dict[str, Any] | None:
+        async with self.db.immediate() as conn:
+            initial = (
+                await conn.execute(
+                    select(integration_batches.c.project_id).where(
+                        integration_batches.c.id == batch_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if initial is None:
+                return None
+            await self.db.lock_hierarchy_project(conn, initial)
+
+            async def one(statement):
+                return (await conn.execute(statement.with_for_update())).mappings().one_or_none()
+
+            project = await one(select(projects).where(projects.c.id == initial))
+            batch = await one(select(integration_batches).where(integration_batches.c.id == batch_id))
+            candidate = await one(
+                select(integration_candidate_revisions).where(
+                    integration_candidate_revisions.c.batch_id == batch_id,
+                    integration_candidate_revisions.c.revision == revision,
+                )
+            )
+            operation = await one(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.batch_id == batch_id,
+                    integration_repair_operations.c.episode_id == batch_id,
+                )
+            )
+            stage = None
+            if operation is not None:
+                stage = await one(
+                    select(integration_repair_stages).where(
+                        integration_repair_stages.c.operation_id == operation["id"],
+                        integration_repair_stages.c.ordinal == operation["active_stage"],
+                    )
+                )
+            publication = await one(
+                select(integration_candidate_publications).where(
+                    integration_candidate_publications.c.batch_id == batch_id,
+                    integration_candidate_publications.c.revision == revision,
+                )
+            )
+            evidence = None
+            if candidate is not None and candidate["ci_evidence_id"] is not None:
+                evidence = await one(
+                    select(integration_check_evidence).where(
+                        integration_check_evidence.c.id == candidate["ci_evidence_id"]
+                    )
+                )
+            if any(value is None for value in (project, batch, candidate, operation, stage, publication)):
+                return None
+            required = operation["policy_snapshot"].get("root", {}).get("required_checks", {})
+            names = required.get("names") if isinstance(required, dict) else None
+            if (
+                project["status"] != "ACTIVE"
+                or project["hierarchical_integration_mode"] != "train"
+                or project["integration_repository_id"] != batch["repository_id"]
+                or batch["project_id"] != project["id"]
+                or int(batch["current_revision"]) != revision
+                or operation["target_kind"] != "batch"
+                or operation["state"] not in {"active", "escalated"}
+                or operation["id"] != stage["operation_id"]
+                or stage["state"] not in {"active", "awaiting_completion"}
+                or publication["state"] != "pr_published"
+                or publication["repository_id"] != batch["repository_id"]
+                or publication["head_sha"] != candidate["head_sha"]
+                or not isinstance(names, list)
+                or not names
+                or any(not isinstance(name, str) or not name for name in names)
+                or required.get("version") != operation["required_check_version"]
+                or not isinstance(required.get("producer_id"), str)
+            ):
+                return None
+            if candidate["state"] == "green":
+                if (
+                    evidence is None
+                    or batch["tested_candidate_sha"] != candidate["head_sha"]
+                    or batch["ci_evidence_id"] != candidate["ci_evidence_id"]
+                    or evidence["operation_id"] != operation["id"]
+                    or evidence["batch_id"] != batch_id
+                    or int(evidence["candidate_revision"]) != revision
+                    or evidence["producer_id"] != required["producer_id"]
+                    or evidence["required_check_version"] != required["version"]
+                    or list(evidence["checks"].keys()) != names
+                    or any(value != "success" for value in evidence["checks"].values())
+                    or evidence["conclusion"] != "success"
+                    or evidence["classification"] != "conclusive"
+                ):
+                    return None
+            return {
+                "project_id": project["id"],
+                "canonical_repository_id": batch["repository_id"],
+                "repository_numeric_id": publication["repository_numeric_id"],
+                "repository_full_name": publication["repository_full_name"],
+                "batch_id": batch_id,
+                "revision": revision,
+                "batch_lifecycle": batch["lifecycle"],
+                "candidate_state": candidate["state"],
+                "stage_state": stage["state"],
+                "candidate_sha": candidate["head_sha"],
+                "operation_id": operation["id"],
+                "required_check_version": required["version"],
+                "policy_snapshot": operation["policy_snapshot"],
+                "ci_evidence_id": candidate["ci_evidence_id"],
+                "aggregate_external_id": evidence["run_id"] if evidence is not None else None,
+                "publication_id": publication["idempotency_key"],
+            }
+
+    @staticmethod
+    def _subject_matches(subject: RootAttestationSubject, state: dict[str, Any]) -> bool:
+        return bool(
+            subject.repository_numeric_id == state["repository_numeric_id"]
+            and subject.repository_full_name == state["repository_full_name"]
+            and subject.operation_id == state["operation_id"]
+            and subject.batch_id == state["batch_id"]
+            and subject.revision == state["revision"]
+            and subject.candidate_sha == state["candidate_sha"]
+            and subject.required_check_version == state["required_check_version"]
+        )
+
+    @staticmethod
+    async def _attestation_records(
+        client: Any, trust: IntegrationTrustManifest, head_sha: str
+    ) -> list[dict[str, Any]]:
+        owner, repository = trust.full_name.split("/", 1)
+        return await client.paged_items(
+            f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
+            f"?check_name={quote(trust.attestation_name, safe='')}&filter=all&per_page=100",
+            key="check_runs",
+        )
+
+    @staticmethod
+    def _trusted_records(
+        records: list[dict[str, Any]], trust: IntegrationTrustManifest
+    ) -> list[dict[str, Any]]:
+        trusted: list[dict[str, Any]] = []
+        for record in records:
+            if record.get("name") != trust.attestation_name:
+                continue
+            app = record.get("app")
+            app_id = app.get("id") if isinstance(app, dict) else None
+            if isinstance(app_id, bool) or not isinstance(app_id, int) or app_id <= 0:
+                raise AttestationError("exact-name attestation App identity is malformed")
+            if app_id == trust.attestation_app_id:
+                trusted.append(record)
+        return trusted
+
+    @classmethod
+    def _proof_from_records(
+        cls,
+        records: list[dict[str, Any]],
+        trust: IntegrationTrustManifest,
+        subject: RootAttestationSubject,
+        state: dict[str, Any],
+    ) -> RootAttestationProof | None:
+        selected = select_trusted_attestation(
+            records, trust, expected_head_sha=subject.candidate_sha
+        )
+        payload = selected.payload
+        if payload.external_id != state["aggregate_external_id"]:
+            return None
+        return RootAttestationProof(
+            **subject.model_dump(),
+            check_run_id=selected.record_id,
+            external_id=payload.external_id,
+        )
+
+    @staticmethod
+    def _proof_from_observation(
+        subject: RootAttestationSubject,
+        state: dict[str, Any],
+        payload: CIReceiptPayload,
+    ) -> RootAttestationProof | None:
+        if payload.external_id != state["aggregate_external_id"]:
+            return None
+        return RootAttestationProof(
+            **subject.model_dump(),
+            check_run_id=max(check.check_run_id for check in payload.checks),
+            external_id=payload.external_id,
+        )
+
+    async def _publish_daemon_receipt(
+        self,
+        subject: RootAttestationSubject,
+        state: dict[str, Any],
+        payload: CIReceiptPayload,
+    ) -> AttestationPublicationResult:
+        claim_status, claim = await self._reserve_publication(state)
+        if claim_status == "stale":
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        proof = self._proof_from_observation(subject, state, payload)
+        if proof is None:
+            return AttestationPublicationResult(outcome="not_green", subject=subject)
+        if claim_status == "owner":
+            await self._crash("after_publication_reservation")
+        if (
+            claim_status != "published"
+            and claim.get("prewrite_at") is None
+            and not await self._mark_publication_prewrite(state, claim)
+        ):
+            return AttestationPublicationResult(
+                outcome="configuration_blocked", subject=subject
+            )
+        if not await self._finish_publication(state, claim, proof):
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        return AttestationPublicationResult(
+            outcome="already_published" if claim_status == "published" else "published",
+            subject=subject,
+            proof=proof,
+        )
+
+    def _store(self, canonical_repository_id: str) -> Path:
+        return self.data_dir / "integration-repositories" / (
+            hashlib.sha256(canonical_repository_id.encode()).hexdigest() + ".git"
+        )
+
+    async def _crash(self, phase: str) -> None:
+        if self.crash_hook is None:
+            return
+        value = self.crash_hook(phase)
+        if inspect.isawaitable(value):
+            await value
+
+    @staticmethod
+    async def _project_reader(
+        reader: EnablementReader | None,
+        repository_id: str,
+        absent: str,
+        blockers: list[str],
+    ) -> None:
+        if reader is None:
+            blockers.append(absent)
+            return
+        try:
+            value = reader(repository_id)
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception:
+            blockers.append(absent)
+            return
+        if value is True:
+            return
+        if isinstance(value, tuple):
+            blockers.extend(value or (absent,))
+        else:
+            blockers.append(absent)
+
+
+def _parse_trust_manifest(raw: bytes) -> IntegrationTrustManifest:
+    malformed = "subject trust manifest is not a valid aq.integration-trust.v1 document"
+    try:
+        decoded = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, AttestationError) as exc:
+        raise SubjectTrustError("malformed", malformed) from exc
+    try:
+        return IntegrationTrustManifest.model_validate(decoded)
+    except ValidationError as exc:
+        # The attestation name is an identity field (spec §5.1) that the schema
+        # pins as a literal; a well-formed document naming another check is an
+        # identity mismatch, not a malformed one.
+        errors = exc.errors()
+        if all(
+            error["type"] == "literal_error" and tuple(error["loc"]) == ("attestation_name",)
+            for error in errors
+        ):
+            raise SubjectTrustError(
+                "identity_mismatch",
+                "subject trust manifest names another identity: attestation_name",
+                fields=("attestation_name",),
+            ) from exc
+        raise SubjectTrustError("malformed", malformed) from exc
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise AttestationError("candidate trust manifest contains duplicate fields")
+        value[key] = item
+    return value
+
+
+__all__ = [
+    "AttestationPublicationResult",
+    "IntegrationAttestationService",
+    "IntegrationEnablementProbeResult",
+]

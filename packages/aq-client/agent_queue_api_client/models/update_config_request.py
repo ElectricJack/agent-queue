@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -9,7 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.update_config_request_data import UpdateConfigRequestData
+    from ..models.update_config_request_data_type_0 import UpdateConfigRequestDataType0
 
 
 T = TypeVar("T", bound="UpdateConfigRequest")
@@ -20,19 +20,29 @@ class UpdateConfigRequest:
     """
     Attributes:
         section (str): Top-level section to replace (e.g. 'scheduling').
-        data (UpdateConfigRequestData): New value for the section. null to delete.
+        data (bool | float | list[Any] | None | str | UpdateConfigRequestDataType0): New value for the section. null to
+            delete.
         dry_run (bool | Unset): Validate but don't persist. Default: False.
     """
 
     section: str
-    data: UpdateConfigRequestData
+    data: bool | float | list[Any] | None | str | UpdateConfigRequestDataType0
     dry_run: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.update_config_request_data_type_0 import UpdateConfigRequestDataType0
+
         section = self.section
 
-        data = self.data.to_dict()
+        data: bool | dict[str, Any] | float | list[Any] | None | str
+        if isinstance(self.data, UpdateConfigRequestDataType0):
+            data = self.data.to_dict()
+        elif isinstance(self.data, list):
+            data = self.data
+
+        else:
+            data = self.data
 
         dry_run = self.dry_run
 
@@ -51,12 +61,33 @@ class UpdateConfigRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.update_config_request_data import UpdateConfigRequestData
+        from ..models.update_config_request_data_type_0 import UpdateConfigRequestDataType0
 
         d = dict(src_dict)
         section = d.pop("section")
 
-        data = UpdateConfigRequestData.from_dict(d.pop("data"))
+        def _parse_data(data: object) -> bool | float | list[Any] | None | str | UpdateConfigRequestDataType0:
+            if data is None:
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                data_type_0 = UpdateConfigRequestDataType0.from_dict(data)
+
+                return data_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                data_type_1 = cast(list[Any], data)
+
+                return data_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(bool | float | list[Any] | None | str | UpdateConfigRequestDataType0, data)
+
+        data = _parse_data(d.pop("data"))
 
         dry_run = d.pop("dry_run", UNSET)
 

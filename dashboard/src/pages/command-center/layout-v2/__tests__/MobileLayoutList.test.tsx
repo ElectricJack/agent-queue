@@ -1,11 +1,17 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 const list = vi.hoisted(() => vi.fn());
-vi.mock("../../../../api/graphLayout", () => ({ fetchList: list }));
+const layoutNode = vi.hoisted(() => ({ data: undefined as unknown }));
+vi.mock("../../../../api/graphLayout", () => ({ fetchList: list, useLayoutNode: () => layoutNode }));
 
 import MobileLayoutList, { MobileLayoutLists } from "../MobileLayoutList";
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="where">{location.pathname}{location.search}</output>;
+}
 
 const n = (id: string) => ({
   id, title: `Task ${id}`, status: "READY", priority: 100, is_blocked: false, x: 0, y: 0, w: 1, h: 1,
@@ -13,13 +19,12 @@ const n = (id: string) => ({
   agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0,
 });
 
-const filters = { query: "", status: "", showCompleted: false, focus: "" };
+const filters = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false };
 const props = {
-  projectId: "p1", variant: "active" as const, filters,
-  expanded: new Set<string>(), toggleExpanded: () => {}, onTaskClick: () => {},
+  projectId: "p1", variant: "active" as const, filters, onTaskClick: () => {}, setShowCompleted: vi.fn(),
 };
 
-beforeEach(() => list.mockReset());
+beforeEach(() => { list.mockReset(); layoutNode.data = undefined; props.setShowCompleted.mockReset(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("MobileLayoutList", () => {
@@ -50,6 +55,23 @@ describe("MobileLayoutList", () => {
     expect(list).toHaveBeenLastCalledWith("p1", expect.objectContaining({ q: "z", cursor: null }));
   });
 
+  it("shows the same progress bars and phase header as the canvas cards", async () => {
+    list.mockResolvedValueOnce({
+      nodes: [
+        { ...n("a"), agg_children: 2, agg_descendants: 4, agg_completed: 2, agg_running: 1, agg_blocked: 0 },
+        { ...n("b"), subtasks_total: 3, subtasks_settled: 1 },
+        { ...n("c"), phase_order: 2, phase_label: "Build" },
+      ],
+      next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} /></MemoryRouter>);
+
+    expect(await screen.findByRole("progressbar", { name: "2 of 4 tasks done" })).toBeInTheDocument();
+    expect(screen.getByTitle("2 of 4 done · 1 running")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "1 of 3 subtasks settled" })).toBeInTheDocument();
+    expect(screen.getByText("Phase 2 · Build")).toBeInTheDocument();
+  });
+
   it("waits for a building layout instead of claiming the project is empty", async () => {
     vi.useFakeTimers();
     list
@@ -65,6 +87,100 @@ describe("MobileLayoutList", () => {
     expect(screen.getByText("Task a")).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
   });
+
+  it("distinguishes all-finished work and offers to show it", async () => {
+    list.mockResolvedValue({
+      nodes: [], next_cursor: null, layout_version: 1, variant_applied: "active", empty_reason: "all_finished",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} /></MemoryRouter>);
+
+    expect(await screen.findByText("No unfinished work here.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show completed" }));
+    expect(props.setShowCompleted).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps a filtered empty response distinct from all-finished work", async () => {
+    list.mockResolvedValue({
+      nodes: [], next_cursor: null, layout_version: 1, variant_applied: "active", empty_reason: "no_matches",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} filters={{ ...filters, query: "absent" }} /></MemoryRouter>);
+
+    expect(await screen.findByText("No tasks match these filters.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show completed" })).toBeNull();
+  });
+
+  it("shows a genuine empty-project state", async () => {
+    list.mockResolvedValue({
+      nodes: [], next_cursor: null, layout_version: 1, variant_applied: "all", empty_reason: "no_work",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} variant="all" filters={{ ...filters, showCompleted: true }} /></MemoryRouter>);
+
+    expect(await screen.findByText("No tasks yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show completed" })).toBeNull();
+  });
+
+  it("shows the canvas's completed-work banner for a server fallback", async () => {
+    list.mockResolvedValue({
+      nodes: [n("child")], next_cursor: null, layout_version: 1, variant_applied: "all",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}} /></MemoryRouter>);
+
+    expect(await screen.findByText("Task child")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("completed work is shown inside this container");
+  });
+
+  it("clears a prior applied variant before the next scope response arrives", async () => {
+    list.mockResolvedValueOnce({
+      nodes: [n("child")], next_cursor: null, layout_version: 1, variant_applied: "all",
+    });
+    const view = render(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}} /></MemoryRouter>);
+    expect(await screen.findByRole("status")).toHaveTextContent("completed work is shown inside this container");
+
+    let resolveNext: (value: unknown) => void;
+    const nextPage = new Promise<unknown>((resolve) => { resolveNext = resolve; });
+    list.mockReturnValueOnce(nextPage);
+    view.rerender(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}}
+      filters={{ ...filters, query: "fresh" }} /></MemoryRouter>);
+
+    expect(screen.queryByRole("status")).toBeNull();
+    resolveNext!({ nodes: [n("fresh")], next_cursor: null, layout_version: 1, variant_applied: "active" });
+    expect(await screen.findByText("Task fresh")).toBeInTheDocument();
+  });
+});
+
+describe("entering a container on a phone", () => {
+  it("offers an enter control on a container card and no expand toggle", async () => {
+    list.mockResolvedValue({
+      nodes: [{ ...n("a"), agg_children: 2, agg_descendants: 3 }], next_cursor: null, layout_version: 1,
+    });
+    const onFocus = vi.fn();
+    render(<MemoryRouter><MobileLayoutList {...props} onFocus={onFocus} /></MemoryRouter>);
+
+    expect(await screen.findByText("Task a")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /children of/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Enter Task a" }));
+    expect(onFocus).toHaveBeenCalledWith("a");
+  });
+
+  it("asks the server for the entered container's scope, and pages it whole", async () => {
+    layoutNode.data = {
+      node: { ...n("pkg"), title: "Package", kind: "container" },
+      ancestors: [{ id: "e", title: "Epic" }],
+      layout_version: 1,
+    };
+    list.mockResolvedValue({
+      nodes: [{ ...n("g0"), container_id: "pkg" }, { ...n("g1"), container_id: "pkg" }],
+      next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} focusId="pkg" projectName="P1" onFocus={() => {}} /></MemoryRouter>);
+
+    expect(await screen.findByText("Task g0")).toBeInTheDocument();
+    expect(screen.getByText("Task g1")).toBeInTheDocument();
+    // `root`, not an `expanded` emulation: paging the project and narrowing
+    // afterwards could return a page with none of this container's children.
+    expect(list).toHaveBeenLastCalledWith("p1", expect.objectContaining({ root: "pkg", expanded: [] }));
+    expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("Package");
+  });
 });
 
 describe("MobileLayoutLists", () => {
@@ -72,20 +188,57 @@ describe("MobileLayoutLists", () => {
     list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
     render(<MemoryRouter><MobileLayoutLists
       projectIds={["p1", "p2"]} projectNames={new Map([["p1", "Alpha"], ["p2", "Beta"]])}
-      variant="active" filters={filters} expanded={new Set()} toggleExpanded={() => {}}
-      onTaskClick={() => {}} /></MemoryRouter>);
+      variant="active" filters={filters} onTaskClick={() => {}} setShowCompleted={() => {}} /></MemoryRouter>);
 
     expect(await screen.findByRole("heading", { name: "Alpha" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Beta" })).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("Task a")).toHaveLength(2));
   });
 
+  it("scopes entering to the section that owns the container", async () => {
+    list.mockResolvedValue({
+      nodes: [{ ...n("a"), agg_children: 2, agg_descendants: 3 }], next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter initialEntries={["/command-center/graph"]}><MobileLayoutLists
+      projectIds={["p1", "p2"]} projectNames={new Map([["p1", "Alpha"], ["p2", "Beta"]])}
+      variant="active" filters={filters} onTaskClick={() => {}} onFocus={() => {}} setShowCompleted={() => {}} />
+      <LocationProbe /></MemoryRouter>);
+
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Enter Task a" })).toHaveLength(2));
+    // The second section's Enter must scope THAT project, not write a global
+    // focus that narrows the first section to nothing.
+    fireEvent.click(screen.getAllByRole("button", { name: "Enter Task a" })[1]!);
+    expect(screen.getByTestId("where")).toHaveTextContent("/projects/p2/graph");
+    expect(screen.getByTestId("where")).toHaveTextContent("focus=a");
+  });
+
+  it("links a task waiting on a review straight to the review page from a phone tap", async () => {
+    const onTaskClick = vi.fn();
+    list.mockResolvedValueOnce({
+      nodes: [{ ...n("a"), status: "DEFINED", is_blocked: true, review_waits: [{
+        review_id: "brisk-lantern-7", review_state: "changes_requested", review_kind: "plan",
+        review_title: "Plan", gate_id: "g-1", gate_type: "review", gate_status: "open", blocking: true,
+      }] }],
+      next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter initialEntries={["/command-center/graph"]}>
+      <MobileLayoutList {...props} onTaskClick={onTaskClick} /><LocationProbe /></MemoryRouter>);
+
+    const link = await screen.findByRole("link", { name: /plan review brisk-lantern-7 \(changes requested\)/ });
+    expect(link).toHaveAttribute("href", "/reviews/brisk-lantern-7");
+    // A tap is touch events followed by a click; neither may open the task.
+    fireEvent.touchStart(link);
+    fireEvent.touchEnd(link);
+    fireEvent.click(link);
+    expect(screen.getByTestId("where")).toHaveTextContent("/reviews/brisk-lantern-7");
+    expect(onTaskClick).not.toHaveBeenCalled();
+  });
+
   it("omits the headings for a single project", async () => {
     list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
     render(<MemoryRouter><MobileLayoutLists
       projectIds={["p1"]} projectNames={new Map([["p1", "Alpha"]])}
-      variant="active" filters={filters} expanded={new Set()} toggleExpanded={() => {}}
-      onTaskClick={() => {}} /></MemoryRouter>);
+      variant="active" filters={filters} onTaskClick={() => {}} setShowCompleted={() => {}} /></MemoryRouter>);
 
     expect(await screen.findByText("Task a")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Alpha" })).toBeNull();

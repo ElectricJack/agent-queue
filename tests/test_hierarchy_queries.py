@@ -3,22 +3,25 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import Text, event, insert, select
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.database.tables import task_metadata
+from src.database.tables import task_dependencies, task_metadata
 from src.models import (
     Agent,
     AgentProfile,
     AgentState,
     DepType,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
@@ -27,6 +30,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 POSTGRES_DSN = ensure_worker_postgres_dsn()
@@ -34,14 +38,14 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
     await database.close()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def any_db(request, tmp_path):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
@@ -49,17 +53,8 @@ async def any_db(request, tmp_path):
     suite fast; the tests below assert the guards whose SQL genuinely
     differs per dialect (FOR UPDATE, recursive CTEs) on both backends.
     """
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "any.db"))
-        await database.initialize()
+    database = Database(lease_dsn("any.db"))
+    await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
     await database.close()
@@ -70,7 +65,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 
@@ -88,6 +83,46 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
     return tid
+
+
+@pytest.mark.parametrize("lookup", ["hierarchy_runnable_task_ids", "task_ids_with_meta"])
+async def test_runnable_candidate_reads_use_one_array_bind(db, lookup):
+    """A 10k frontier must not become 10k SQL parameters on every tick."""
+    await mktask(db, "included")
+    await mktask(db, "unmarked")
+    await mktask(db, "outside")
+    await db.set_task_meta("included", "container", False)
+    await db.set_task_meta("outside", "container", True)
+    await db.set_task_meta("unmarked", "different_key", True)
+    ids = ["included", "unmarked", "included", *[f"missing-{i}" for i in range(10_000)]]
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append((statement, parameters, context.compiled))
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        if lookup == "hierarchy_runnable_task_ids":
+            assert await db.hierarchy_runnable_task_ids(ids) == {"included", "unmarked"}
+            assert await db.hierarchy_runnable_task_ids([]) == set()
+        else:
+            # Presence matters even when the metadata value is false.
+            assert await db.task_ids_with_meta(ids, "container") == {"included"}
+            assert await db.task_ids_with_meta([], "container") == set()
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", capture)
+
+    assert len(statements) == 1  # Empty input never checks out a connection or queries.
+    statement, parameters, compiled = statements[0]
+    assert "= ANY (" in statement
+    candidate_bind = compiled.binds["task_ids"]
+    assert isinstance(candidate_bind.type, ARRAY)
+    assert isinstance(candidate_bind.type.item_type, Text)
+    assert not candidate_bind.expanding
+    arrays = [value for value in parameters if isinstance(value, list)]
+    assert len(arrays) == 1
+    assert set(arrays[0]) == set(ids)
+    assert len(parameters) < 50  # Other binds belong to the fixed eligibility predicates.
 
 
 async def test_set_parent_takes_project_hierarchy_lock(db, monkeypatch):
@@ -232,9 +267,7 @@ async def test_live_descendant_sessions_can_exclude_the_root(any_db):
         assert await db.live_descendant_sessions("container", conn=conn) == [
             ("root-1", "container")
         ]
-        assert (
-            await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
-        )
+        assert await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
 
 
 async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
@@ -244,8 +277,13 @@ async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
     await mktask(db, "root", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "leaf", status=TaskStatus.IN_PROGRESS)
     await db.create_agent(
-        Agent(id="leaf-agent", name="leaf-agent", profile_id="worker", state=AgentState.BUSY,
-              current_task_id="leaf")
+        Agent(
+            id="leaf-agent",
+            name="leaf-agent",
+            profile_id="worker",
+            state=AgentState.BUSY,
+            current_task_id="leaf",
+        )
     )
     await db.create_workspace(
         Workspace(
@@ -535,6 +573,25 @@ class TestSetParentBulk:
         async with db._engine.begin() as conn:
             assert await db.is_container("p", conn=conn)
 
+    async def test_enabled_project_rejects_bulk_parent_writer(self, db):
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="hierarchy",
+            integration_repository_id="repo",
+        )
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p.1")
+
+        async with db._engine.begin() as conn:
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["p.1"], "p", conn=conn)
+
+        assert exc.value.code == "integration_required"
+        assert (await db.get_task("p.1")).parent_task_id is None
+
     async def test_empty_batch_is_a_no_op(self, db):
         await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
         async with db._engine.begin() as conn:
@@ -710,3 +767,65 @@ class TestAbandonReleasesResources:
         assert tuple(ws) == (None, None, None, None)
         assert ag.current_task_id is None
         assert ag.state == AgentState.IDLE.value
+
+
+async def test_set_parent_cycle_check_does_not_load_the_whole_edge_table(db):
+    # 200 unrelated blocking edges elsewhere in the project, inserted
+    # directly: add_dependency's own whole-graph DAG validation is O(E) per
+    # call and is not what this test measures.
+    for i in range(200):
+        await db.create_task(Task(id=f"u{i}", project_id=PROJECT_ID, title="", description=""))
+    rows = [
+        {"task_id": f"u{i}", "depends_on_task_id": f"u{i - 1}", "dep_type": DepType.BLOCKS.value}
+        for i in range(1, 200)
+    ]
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_dependencies), rows)
+    for tid in ("parent", "child"):
+        await db.create_task(Task(id=tid, project_id=PROJECT_ID, title=tid, description=""))
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with db._engine.begin() as conn:
+            await db.set_parent("child", "parent", conn=conn)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    id_predicate = re.compile(r"\b(task_id|depends_on_task_id)\s*(=|IN\b)")
+    unfiltered = [
+        s
+        for s in statements
+        if "task_dependencies" in s
+        and "WHERE" in s
+        and not id_predicate.search(s.split("WHERE", 1)[1])
+    ]
+    assert unfiltered == [], unfiltered  # every edge read is anchored on an id
+
+
+async def test_set_parent_cycle_check_follows_long_blocking_chains(db):
+    """REACHABILITY_MAX_DEPTH must exceed any real blocking chain (fix for
+    the reviewed depth-guard finding: ``MAX_STRUCTURAL_DEPTH * 64`` (192)
+    truncated a legitimate 300-long ``blocks`` chain and let a cyclic
+    reparent through).
+    """
+    await db.create_task(Task(id="p", project_id=PROJECT_ID, title="p", description=""))
+    for i in range(300):
+        await db.create_task(Task(id=f"c{i}", project_id=PROJECT_ID, title="", description=""))
+    # The chain edges are inserted directly (bypassing add_dependency's own
+    # per-call DAG validation) because this test exercises set_parent's
+    # reachability walk, not add_dependency.
+    rows = [
+        {"task_id": f"c{i}", "depends_on_task_id": f"c{i - 1}", "dep_type": DepType.BLOCKS.value}
+        for i in range(1, 300)
+    ] + [{"task_id": "c0", "depends_on_task_id": "p", "dep_type": DepType.BLOCKS.value}]
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_dependencies), rows)
+
+    async with db._engine.begin() as conn:
+        with pytest.raises(HierarchyError, match="cycle"):
+            await db.set_parent("p", "c299", conn=conn)

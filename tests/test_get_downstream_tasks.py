@@ -3,17 +3,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 PID = "p"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "gdt.db"))
+    d = Database(lease_dsn("gdt.db"))
     await d.initialize()
     await d.create_project(Project(id=PID, name="P"))
     for tid in ("a", "b", "c", "d", "unrelated"):
@@ -33,7 +34,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "gdt.db"),
+        database=DatabaseConfig(url=lease_dsn("gdt.db")),
         data_dir=str(tmp_path / "d"),
     )
 

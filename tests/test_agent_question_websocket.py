@@ -10,6 +10,7 @@ from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.websocket import WebSocketManager
 from src.database import Database
 from src.event_bus import EventBus
+from tests.db_fixtures import lease_dsn
 
 
 QUESTION = {
@@ -66,8 +67,8 @@ async def test_live_question_events_only_send_scoped_redacted_invalidation(event
         if name not in expected:
             assert queue.empty(), f"question leaked to {name}"
             continue
-        frame = queue.get_nowait()
-        assert frame == {
+        item, wire = queue.get_nowait()
+        assert item == {
             "_event_type": event,
             "id": "q1",
             "session_id": "s1",
@@ -75,7 +76,9 @@ async def test_live_question_events_only_send_scoped_redacted_invalidation(event
             "project_id": "p1",
             "agent_id": "a1",
             "state": "answered",
+            "seq": None,
         }
+        assert json.loads(wire) == item
     assert internal[0]["question"] == "private question"
     assert internal[0]["instance_token"] == "private-token"
 
@@ -86,7 +89,7 @@ async def test_replay_question_payload_is_redacted_and_project_scoped(
 ):
     from src.api import dependencies
 
-    db = Database(str(tmp_path / "replay.db"))
+    db = Database(lease_dsn("replay.db"))
     await db.initialize()
     # Audit log FKs are deliberately soft; only this isolated file is used.
     await db.log_event("agent.question.updated", payload=json.dumps(QUESTION))

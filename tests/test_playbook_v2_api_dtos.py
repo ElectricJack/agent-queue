@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import inspect
 import json
+from typing import get_args
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from src.api import codegen
 from src.api import models as api_models
@@ -28,10 +30,12 @@ from src.commands.playbook_v2_commands import (
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
 GRAPH_COMMANDS = {
+    "playbook_commands",
     "playbook_v2_graph",
     "playbook_graph_layout_save",
     "playbook_activation_health",
     "playbook_activate",
+    "playbook_source_resync",
     "playbook_artifact_diff",
     "playbook_pending_events",
     "playbook_pending_event_action",
@@ -50,7 +54,16 @@ ARTIFACT_COMMANDS = {"playbook_artifacts"}
 
 IMPORT_COMMANDS = {"playbook_v2_import"}
 
-ALL_V2_COMMANDS = GRAPH_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS | IMPORT_COMMANDS
+#: Catalog deletion.  It has a registered response model like every other
+#: typed surface, but deliberately no membership constant in
+#: ``src/commands/playbook_v2_commands.py``: it is neither a graph read, a
+#: compiler review, nor part of the paused-playbook set, and the sets below
+#: are what the handler pauses on.
+DELETE_COMMANDS = {"playbook_delete"}
+
+ALL_V2_COMMANDS = (
+    GRAPH_COMMANDS | COMPILER_COMMANDS | ARTIFACT_COMMANDS | IMPORT_COMMANDS | DELETE_COMMANDS
+)
 
 
 def _v2_models() -> list[type[BaseModel]]:
@@ -264,10 +277,23 @@ class TestDelegationNarrowing:
 
 
 class TestHealthAndEnums:
+    def test_run_status_filter_admits_every_v2_lifecycle(self):
+        definition = next(
+            item for item in _ALL_TOOL_DEFINITIONS if item["name"] == "list_playbook_runs"
+        )
+        status = definition["input_schema"]["properties"]["status"]
+
+        assert set(status["enum"]) == set(get_args(playbook_v2.RunLifecycle))
+
+    def test_public_run_lifecycle_accepts_blocked_and_rejects_unknown_values(self):
+        adapter = TypeAdapter(playbook_v2.RunLifecycle)
+
+        assert adapter.validate_python("blocked") == "blocked"
+        with pytest.raises(ValidationError):
+            adapter.validate_python("waiting_for_magic")
+
     def test_activation_health_carries_all_six_values(self):
         """Roadmap §4's five, plus the transient ``unavailable`` §2.1 adds."""
-        from typing import get_args
-
         assert set(get_args(playbook_v2.ActivationHealthValue)) == {
             "ready",
             "question_required",

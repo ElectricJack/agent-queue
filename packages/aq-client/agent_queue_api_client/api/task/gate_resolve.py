@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GateResolveRequest,
 ) -> Response[GateResolveResponse | GateResolveResponse422]:
-    """Resolve a gate (idempotent) and report unblocked waiters.
+    """Resolve an open gate and unblock every task waiting on it.
 
-     Resolve a gate (idempotent) and report unblocked waiters.
+     Resolve an open gate and unblock every task waiting on it.
 
     Args:
         body (GateResolveRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GateResolveRequest,
 ) -> GateResolveResponse | GateResolveResponse422 | None:
-    """Resolve a gate (idempotent) and report unblocked waiters.
+    """Resolve an open gate and unblock every task waiting on it.
 
-     Resolve a gate (idempotent) and report unblocked waiters.
+     Resolve an open gate and unblock every task waiting on it.
 
     Args:
         body (GateResolveRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GateResolveRequest,
 ) -> Response[GateResolveResponse | GateResolveResponse422]:
-    """Resolve a gate (idempotent) and report unblocked waiters.
+    """Resolve an open gate and unblock every task waiting on it.
 
-     Resolve a gate (idempotent) and report unblocked waiters.
+     Resolve an open gate and unblock every task waiting on it.
 
     Args:
         body (GateResolveRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GateResolveRequest,
 ) -> GateResolveResponse | GateResolveResponse422 | None:
-    """Resolve a gate (idempotent) and report unblocked waiters.
+    """Resolve an open gate and unblock every task waiting on it.
 
-     Resolve a gate (idempotent) and report unblocked waiters.
+     Resolve an open gate and unblock every task waiting on it.
 
     Args:
         body (GateResolveRequest):

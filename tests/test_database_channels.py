@@ -8,16 +8,13 @@ Covers:
 """
 
 import pytest
-from src.database import Database
 from src.models import Project
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 class TestProjectChannelDefaults:

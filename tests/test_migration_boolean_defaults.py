@@ -85,6 +85,5 @@ def test_no_boolean_column_uses_an_integer_server_default():
 
     assert not offenders, (
         "Boolean columns with an integer server default — PostgreSQL rejects these "
-        "with DatatypeMismatchError. Use sa.false()/sa.true():\n  "
-        + "\n  ".join(offenders)
+        "with DatatypeMismatchError. Use sa.false()/sa.true():\n  " + "\n  ".join(offenders)
     )

@@ -21,6 +21,7 @@ class EnsureTaskResponse:
         restarted (bool | Unset):  Default: False.
         skipped (bool | Unset):  Default: False.
         reason (None | str | Unset):
+        parent_id (None | str | Unset):
     """
 
     created: bool
@@ -29,6 +30,7 @@ class EnsureTaskResponse:
     restarted: bool | Unset = False
     skipped: bool | Unset = False
     reason: None | str | Unset = UNSET
+    parent_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -52,6 +54,12 @@ class EnsureTaskResponse:
         else:
             reason = self.reason
 
+        parent_id: None | str | Unset
+        if isinstance(self.parent_id, Unset):
+            parent_id = UNSET
+        else:
+            parent_id = self.parent_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -69,6 +77,8 @@ class EnsureTaskResponse:
             field_dict["skipped"] = skipped
         if reason is not UNSET:
             field_dict["reason"] = reason
+        if parent_id is not UNSET:
+            field_dict["parent_id"] = parent_id
 
         return field_dict
 
@@ -101,6 +111,15 @@ class EnsureTaskResponse:
 
         reason = _parse_reason(d.pop("reason", UNSET))
 
+        def _parse_parent_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
+
         ensure_task_response = cls(
             created=created,
             success=success,
@@ -108,6 +127,7 @@ class EnsureTaskResponse:
             restarted=restarted,
             skipped=skipped,
             reason=reason,
+            parent_id=parent_id,
         )
 
         ensure_task_response.additional_properties = d

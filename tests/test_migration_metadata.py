@@ -5,11 +5,12 @@ from alembic.migration import MigrationContext
 
 from src.database import Database
 from src.database.tables import metadata
+from tests.db_fixtures import lease_dsn
 
 
 async def test_agent_profiles_overlay_config_has_no_autogenerate_drift(tmp_path):
     """The overlay column exists in both the migrated schema and metadata."""
-    database = Database(str(tmp_path / "overlay-metadata.db"))
+    database = Database(lease_dsn("overlay-metadata.db"))
     await database.initialize()
     try:
         async with database._engine.connect() as conn:

@@ -5,7 +5,9 @@ See docs/specs/implementation/session-runtime.md §3.4 and §8.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import FrozenInstanceError, asdict, dataclass, replace
+from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -13,6 +15,7 @@ from src.intelligence_classes import IntelligenceClass
 from src.sessions.env import AQ_MARKER_KEYS, STARTUP_PROMPT_DELIVERED, build_session_env
 from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.spec import (
+    WORKER_TOOL_ENV,
     SessionSpecBuilder,
     named_session_name,
     sanitize_name,
@@ -231,11 +234,15 @@ class TestSkipPermissionsGating:
         harness = replace(CLAUDE, permission_flag="")
         assert self.FLAG not in _isolated(builder, harness=harness).command
 
-    def test_a_named_session_profile_can_opt_in(self, builder):
+    @pytest.mark.parametrize("opt_in", [
+        {"permission_mode": "bypassPermissions"},
+        {"claude_dangerously_skip_permissions": True},
+    ])
+    def test_a_named_session_profile_can_opt_in(self, builder, opt_in):
         """Named sessions have no workspace; the profile opt-in is the only
         way for e.g. the supervisor (vault work_dir) to skip prompts."""
         spec = builder.build_named_spec(
-            profile=_Profile(id="supervisor", permission_mode="bypassPermissions"),
+            profile=_Profile(id="supervisor", **opt_in),
             harness=CLAUDE,
             project_id="proj-1",
             work_dir="/vault/projects/proj-1",
@@ -243,6 +250,7 @@ class TestSkipPermissionsGating:
             instance_token="t1",
         )
         assert self.FLAG in spec.command
+        assert "--permission-mode" not in spec.command
 
     def test_a_named_session_without_opt_in_is_withheld(self, builder):
         spec = builder.build_named_spec(
@@ -262,6 +270,12 @@ class TestSkipPermissionsGating:
         assert skip_permissions_allowed(_Profile(), RepoSourceType.WORKTREE) is True
         assert skip_permissions_allowed(_Profile(), RepoSourceType.LINK) is False
         assert skip_permissions_allowed(_Profile(), None) is False
+        assert skip_permissions_allowed(
+            _Profile(claude_dangerously_skip_permissions=True), None
+        ) is True
+        assert skip_permissions_allowed(
+            _Profile(harness="codex", claude_dangerously_skip_permissions=True), None
+        ) is False
         assert (
             skip_permissions_allowed(
                 _Profile(permission_mode="bypassPermissions"), None
@@ -303,6 +317,136 @@ class TestHookSettingsWiring:
             "claude declares hook_files but no settings_flag — the payload is inert"
         )
 
+    def test_claude_settings_disable_prompt_suggestions(self, builder):
+        """A suggestion is ghost text in the composer; under NO_COLOR it is
+        indistinguishable from a draft, so every idle-worker nudge deferred."""
+        import json as _json
+
+        harness = replace(
+            CLAUDE,
+            supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+            settings_flag="--settings",
+        )
+        settings = _json.loads(dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"])
+        assert settings["promptSuggestionEnabled"] is False
+
+
+class TestWorkerClaudePluginOverrides:
+    """``sessions.worker_claude_plugin_overrides`` merges as ``enabledPlugins``
+    into the rendered ``.aq/hooks/claude.json`` of worker-lifecycle Claude
+    sessions only — never supervisors, never a re-serialisation that perturbs
+    the default."""
+
+    HARNESS = replace(
+        CLAUDE,
+        supports_hooks=True,
+        hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        settings_flag="--settings",
+    )
+
+    @staticmethod
+    def _builder(overrides):
+        """A builder whose ``config.sessions`` carries *overrides*."""
+        from src.sessions.spec import SessionSpecBuilder
+
+        class _S:
+            pass
+
+        class _C(_Cfg):
+            sessions = _S()
+
+        cfg = _C()
+        cfg.sessions.worker_claude_plugin_overrides = overrides
+        return SessionSpecBuilder(cfg)
+
+    def _worker(self, overrides):
+        from src.models import RepoSourceType
+
+        return self._builder(overrides).build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=self.HARNESS,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+            epoch="e",
+            api_url="http://127.0.0.1:8081",
+            api_token="t",
+            workspace_source_type=RepoSourceType.WORKTREE,
+        )
+
+    def test_empty_map_leaves_the_hook_file_byte_identical(self):
+        import json as _json
+
+        tpl = (
+            Path(__file__).resolve().parent.parent
+            / "src" / "prime" / "templates" / "hooks" / "claude.json"
+        ).read_text(encoding="utf-8")
+        spec = self._worker({})
+        raw = dict(spec.files)[".aq/hooks/claude.json"]
+        assert raw == tpl
+        # and no invented key
+        assert "enabledPlugins" not in _json.loads(raw)
+
+    def test_override_appears_in_a_worker_claude_hook(self):
+        import json as _json
+
+        overrides = {"fast-jev-compaction@fast-jev-compaction": False}
+        spec = self._worker(overrides)
+        settings = _json.loads(dict(spec.files)[".aq/hooks/claude.json"])
+        assert settings["enabledPlugins"] == overrides
+        # the rest of the payload is untouched
+        assert settings["promptSuggestionEnabled"] is False
+        assert "SessionStart" in settings["hooks"]
+
+    def test_supervisor_named_session_never_sees_the_override(self, builder):
+        import json as _json
+
+        cfg_builder = self._builder({"fast-jev-compaction@fast-jev-compaction": False})
+        spec = cfg_builder.build_named_spec(
+            profile=_Profile(),
+            harness=self.HARNESS,
+            project_id=None,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+        )
+        if ".aq/hooks/claude.json" in dict(spec.files):
+            assert "enabledPlugins" not in _json.loads(
+                dict(spec.files)[".aq/hooks/claude.json"]
+            )
+
+    def test_no_claude_harness_gets_no_override(self):
+        """A non-Claude worker session never acquires ``enabledPlugins``."""
+        import json as _json
+
+        codex = replace(
+            CLAUDE,
+            id="codex",
+            command="codex",
+            supports_hooks=True,
+            hook_files=((".codex/hooks.json", "hooks/codex.json"),),
+            settings_flag="--settings",
+        )
+        builder = self._builder({"fast-jev-compaction@fast-jev-compaction": False})
+        from src.models import RepoSourceType
+
+        spec = builder.build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=codex,
+            work_dir="/wd",
+            session_id="sess",
+            instance_token="tok",
+            epoch="e",
+            api_url="http://127.0.0.1:8081",
+            api_token="t",
+            workspace_source_type=RepoSourceType.WORKTREE,
+        )
+        if ".codex/hooks.json" in dict(spec.files):
+            assert "enabledPlugins" not in _json.loads(dict(spec.files)[".codex/hooks.json"])
+
 
 class TestCodexHookTrust:
     """Codex discovers its hook file by path and refuses to run it untrusted."""
@@ -316,6 +460,27 @@ class TestCodexHookTrust:
         hook_files=((".codex/hooks.json", "hooks/codex.json"),),
         hook_trust_flag="--dangerously-bypass-hook-trust",
     )
+
+    async def test_known_hook_menu_continues_without_trusting(self, builder):
+        from tests.test_tmux_startup_dialogs import _Pane, _provider, _await_ready
+
+        spec = replace(
+            _build(builder, harness=self.CODEX),
+            ready_prompt_prefix="› ", ready_delay_ms=0,
+        )
+        pane = _Pane(lambda p: "› \n" if p.sent else (
+            "Hooks need review\n› 1. Review hooks\n  2. Trust all and continue\n"
+            "  3. Continue without trusting (hooks won't run)\n"
+        ))
+        await _await_ready(_provider(pane, settle=0.1), spec)
+        assert pane.sent == [("3",)]
+
+    def test_unknown_hook_menu_requires_intervention(self, builder):
+        from src.sessions.dialogs import first_match
+
+        spec = _build(builder, harness=self.CODEX)
+        rule = first_match(spec.dialogs, "Hooks need review\n3. Trust all hooks\n")
+        assert rule is not None and rule.quarantine and not rule.keys
 
     def test_the_file_is_written_into_the_work_dir_with_no_settings_flag(self, builder):
         spec = _isolated(builder, harness=self.CODEX)
@@ -338,6 +503,9 @@ class TestCodexHookTrust:
         # pre-trust that just to count sub-agents.
         assert "--dangerously-bypass-hook-trust" not in spec.command
         assert spec.hooks_provisioned is False
+        assert ".codex/hooks.json" not in dict(spec.files)
+        rule = next(r for r in spec.dialogs if r.name == "hook-review-required")
+        assert rule.quarantine and not rule.keys
 
     def test_hooks_provisioned_records_whether_the_launch_actually_wired_them(self, builder):
         assert _isolated(builder, harness=self.CODEX).hooks_provisioned is True
@@ -357,13 +525,17 @@ class TestCodexHookTrust:
         )
         assert _build(builder, harness=inert).hooks_provisioned is False
 
-    def test_the_codex_payload_wires_only_the_two_subagent_events(self, builder):
+    def test_the_codex_payload_wires_subagents_and_compaction_recovery(self, builder):
         import json as _json
 
         payload = _json.loads(
             dict(_isolated(builder, harness=self.CODEX).files)[".codex/hooks.json"]
         )
-        assert set(payload["hooks"]) == {"SubagentStart", "SubagentStop"}
+        assert set(payload["hooks"]) == {
+            "SubagentStart", "SubagentStop", "SessionStart", "PreCompact"
+        }
+        assert payload["hooks"]["PreCompact"][0]["hooks"][0]["command"] == "aq handoff --auto"
+        assert payload["hooks"]["SessionStart"][0]["matcher"] == "resume|compact"
         entry = payload["hooks"]["SubagentStart"][0]["hooks"][0]
         # Codex refuses to parse a handler without "type" and then silently
         # runs no hooks at all — measured on codex-cli 0.151.0.
@@ -386,12 +558,82 @@ class TestCodexHookTrust:
         )
 
 
+class TestCodexProjectTrust:
+    """Codex 0.162's "Trust this folder?" screen must never pass for readiness.
+
+    nimble-harbor-12: the renamed screen missed the vault rule, its
+    ``› 1. Trust and continue`` row looked like the composer, and two pool
+    sessions idled 40+ minutes.
+    """
+
+    CODEX = TestCodexHookTrust.CODEX
+    SCREEN = (
+        "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+        "  permission settings.\n\n"
+        "› 1. Trust and continue\n"
+        "  2. Back to Agent Command Center\n"
+    )
+
+    def test_an_isolated_worktree_pre_trusts_and_accepts_the_screen(self, builder):
+        from src.sessions.dialogs import first_match
+
+        spec = _isolated(builder, harness=self.CODEX)
+        assert spec.codex_project_trust is True
+        rule = first_match(spec.dialogs, self.SCREEN)
+        assert rule is not None and rule.keys == ("Enter",)
+
+    def test_a_linked_checkout_is_not_pre_trusted_and_fails_startup(self, builder):
+        from src.models import RepoSourceType
+        from src.sessions.dialogs import first_match
+
+        spec = _build(
+            builder, harness=self.CODEX, workspace_source_type=RepoSourceType.LINK
+        )
+        assert spec.codex_project_trust is False
+        rule = first_match(spec.dialogs, self.SCREEN)
+        assert rule is not None and rule.keys == () and not rule.quarantine
+
+    def test_a_harness_rule_that_already_matches_is_kept(self, builder):
+        from src.sessions.dialogs import first_match
+        from src.sessions.provider import DialogRule
+
+        own = DialogRule(name="trust-directory", pattern="Trust this folder?", keys=("Enter",))
+        harness = replace(self.CODEX, dialogs=(own,))
+        spec = _isolated(builder, harness=harness)
+        assert first_match(spec.dialogs, self.SCREEN) is own
+        assert [r.name for r in spec.dialogs].count("trust-folder") == 0
+
+    def test_the_fallback_stays_quiet_on_the_composer(self, builder):
+        from src.sessions.dialogs import first_match
+
+        spec = _isolated(builder, harness=self.CODEX)
+        assert first_match(spec.dialogs, "welcome\n\n› Trust and continue\n") is None
+
+    def test_claude_is_never_pre_trusted(self, builder):
+        spec = _isolated(builder)
+        assert spec.codex_project_trust is False
+        assert all(r.name != "trust-folder" for r in spec.dialogs)
+
+    async def test_the_screen_is_answered_not_mistaken_for_readiness(self, builder):
+        from tests.test_tmux_startup_dialogs import _await_ready, _Pane, _provider
+
+        spec = replace(
+            _isolated(builder, harness=self.CODEX), ready_prompt_prefix="› ", ready_delay_ms=0,
+        )
+        pane = _Pane(lambda p: "› \n" if p.sent else self.SCREEN)
+        await _await_ready(_provider(pane, settle=0.1), spec)
+        assert pane.sent == [("Enter",)]
+
+
 class TestArgvComposition:
     def test_codex_full_auto_profile_opt_in_adds_flag_once(self, builder):
         codex = Harness(id="codex", command="codex", args=("--quiet",))
         spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
-        assert spec.command.count("--full-auto") == 1
-        assert spec.command.index("--quiet") < spec.command.index("--full-auto")
+        assert "--full-auto" not in spec.command
+        assert spec.command.count("--ask-for-approval") == 1
+        assert spec.command[spec.command.index("--ask-for-approval") + 1] == "on-request"
+        assert spec.command[spec.command.index("--sandbox") + 1] == "workspace-write"
+        assert spec.command.index("--quiet") < spec.command.index("--ask-for-approval")
 
     def test_codex_full_auto_defaults_off(self, builder):
         codex = Harness(id="codex", command="codex")
@@ -405,7 +647,11 @@ class TestArgvComposition:
     def test_codex_full_auto_is_not_duplicated_from_harness_args(self, builder):
         codex = Harness(id="codex", command="codex", args=("--full-auto",))
         spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
-        assert spec.command.count("--full-auto") == 1
+        assert "--full-auto" not in spec.command
+        assert spec.command.count("--ask-for-approval") == 1
+        assert spec.command.count("--sandbox") == 1
+        assert spec.command[spec.command.index("--ask-for-approval") + 1] == "on-request"
+        assert spec.command[spec.command.index("--sandbox") + 1] == "workspace-write"
 
     def test_legacy_codex_bypass_takes_precedence_over_derived_full_auto(self, builder):
         bypass = "--dangerously-bypass-approvals-and-sandbox"
@@ -422,6 +668,20 @@ class TestArgvComposition:
         spec = _build(builder, harness=codex, profile=profile)
         assert spec.command.count(bypass) == 1
         assert "--full-auto" not in spec.command
+        assert "--ask-for-approval" not in spec.command
+        assert "--sandbox" not in spec.command
+
+    @pytest.mark.parametrize("args", [
+        ("--ask-for-approval", "on-request", "--sandbox", "workspace-write"),
+        ("-a", "never", "-s", "read-only"),
+        ("--ask-for-approval=never", "--sandbox=read-only"),
+    ])
+    def test_codex_full_auto_preserves_explicit_mode_args(self, builder, args):
+        codex = Harness(id="codex", command="codex", args=args)
+        spec = _build(builder, harness=codex, profile=_Profile(codex_full_auto=True))
+        assert spec.command[1:1 + len(args)] == args
+        assert spec.command.count("--ask-for-approval") == args.count("--ask-for-approval")
+        assert spec.command.count("--sandbox") == args.count("--sandbox")
 
     def test_false_codex_profile_boolean_preserves_raw_harness_arg(self, builder):
         codex = Harness(id="codex", command="codex", args=("--full-auto",))
@@ -532,6 +792,72 @@ class TestPromptDelivery:
         assert "aq session drain-ack" in spec.prompt
         assert "task-1" in spec.prompt
 
+    @pytest.mark.parametrize(
+        ("profile_id", "project_id", "supervisor_inbox"),
+        [
+            ("supervisor", "matter-engine-cpp", "session:supervisor-matter-engine-cpp"),
+            ("supervisor", None, "session:supervisor-agent-queue"),
+            ("supervisor-global", None, "session:supervisor-agent-queue"),
+            ("n-supervisor--proj-1", "proj-1", "session:supervisor-proj-1"),
+        ],
+    )
+    def test_supervisor_named_bootstrap_establishes_patrol(
+        self, builder, profile_id, project_id, supervisor_inbox
+    ):
+        spec = builder.build_named_spec(
+            profile=_Profile(id=profile_id),
+            harness=CLAUDE,
+            project_id=project_id,
+            work_dir="/wd",
+            session_id="s1",
+            instance_token="t1",
+        )
+        prompt = spec.prompt
+        assert "Never tell a worker to hold idle" in prompt
+        assert "with the train off, train controls" in prompt
+        assert "one bounded durable message wait" in prompt
+        assert "As your FIRST action on a cold start" in prompt
+        assert prompt.index("As your FIRST action") < prompt.index("Run `aq message inbox")
+        assert "list the scheduled jobs" in prompt
+        assert "Do not create a second patrol" in prompt
+        assert "CronCreate" in prompt and "~15 minutes" in prompt
+        assert "off the :00/:30 marks" in prompt
+        assert "python3 ~/.agent-queue/operator-checks/stall-sweep.py" in prompt
+        assert "aq --json message inbox --inject" in prompt
+        assert "aq --json message inbox --to profile:supervisor" in prompt
+        assert f"aq --json message inbox --to {supervisor_inbox}`" in prompt
+        if project_id is not None:
+            assert "session:supervisor-agent-queue" not in prompt
+        assert "FIX what it finds" in prompt
+        assert "no scheduler" in prompt and "start of every turn" in prompt
+        assert "re-establish it after any restart" in prompt
+        assert "SWEEP-AUTH" in prompt
+        assert "remaining checks and report that single error with its recovery command" in prompt
+        assert "aq session token <session-id> --json" in prompt
+        assert "Do not run background inbox polls or shell sleep loops" in prompt
+        assert "Do not run `aq prime`" in prompt
+        if project_id is None:
+            assert "global supervisor for ALL projects in AQ" in prompt
+            assert "Do not ask the user to select a project" in prompt
+        else:
+            assert f"You supervise project {project_id}" in prompt
+            assert "global supervisor for ALL projects" not in prompt
+
+    @pytest.mark.parametrize("profile_id", ["claude-opus", "supervisor-auditor"])
+    def test_other_named_bootstrap_has_no_patrol(self, builder, profile_id):
+        spec = builder.build_named_spec(
+            profile=_Profile(id=profile_id),
+            harness=CLAUDE,
+            project_id="proj-1",
+            work_dir="/wd",
+            session_id="s1",
+            instance_token="t1",
+        )
+        assert "recurring patrol" not in spec.prompt
+        assert "CronCreate" not in spec.prompt
+        assert "Do not run background inbox polls or shell sleep loops" in spec.prompt
+        assert "Do not run `aq prime`" in spec.prompt
+
     def test_oversized_prompt_moves_to_a_file(self, builder):
         big = "x" * 5000
         spec = _build(builder, prompt=big)
@@ -618,7 +944,7 @@ class TestEnvMarkers:
         assert spec.session_name == "n-supervisor--proj-1"
 
     def test_every_session_gets_database_isolation(self, builder):
-        """A slot's db tooling points at scratch, never at config.yaml.
+        """A slot's direct database tooling receives an explicit refusal sentinel.
 
         Both halves matter: ``AQ_DB_SCOPE`` is what makes
         ``src.database.migration_guard`` refuse a migration against the
@@ -628,7 +954,7 @@ class TestEnvMarkers:
         """
         env = _build(builder).env
         assert env["AQ_DB_SCOPE"] == "worker"
-        assert env["AQ_DATABASE_URL"] == "/wd/.aq/scratch.db"
+        assert env["AQ_DATABASE_URL"] == "aq-worker-no-direct-db://"
         assert env["AGENT_QUEUE_DB"] == env["AQ_DATABASE_URL"]
 
     def test_a_harness_may_pin_its_own_database_url(self, builder):
@@ -639,6 +965,31 @@ class TestEnvMarkers:
     def test_harness_env_is_merged(self, builder):
         harness = replace(CLAUDE, env=(("MY_FLAG", "1"),))
         assert _build(builder, harness=harness).env["MY_FLAG"] == "1"
+
+    def test_integration_app_credentials_never_enter_real_session_spec(
+        self, builder, monkeypatch, caplog
+    ):
+        private = "PRIVATE-KEY-SENTINEL"
+        token = "INSTALLATION-TOKEN-SENTINEL"
+        monkeypatch.setenv("AQ_INTEGRATION_GITHUB_APP_PRIVATE_KEY", private)
+        monkeypatch.setenv("AQ_INTEGRATION_GITHUB_APP_TOKEN", token)
+        harness = replace(
+            CLAUDE,
+            env=(
+                ("AQ_INTEGRATION_GITHUB_APP_PRIVATE_KEY", private),
+                ("AQ_INTEGRATION_GITHUB_APP_TOKEN", token),
+                ("GITHUB_TOKEN", "authorized-harness-token"),
+            ),
+        )
+
+        with caplog.at_level("DEBUG"):
+            spec = _build(builder, harness=harness)
+        serialized = repr(asdict(spec)) + caplog.text
+
+        assert spec.env["GITHUB_TOKEN"] == "authorized-harness-token"
+        assert private not in serialized
+        assert token not in serialized
+        assert all(not key.startswith("AQ_INTEGRATION_GITHUB_APP_") for key in spec.env)
 
     def test_claudecode_is_stripped(self):
         env = build_session_env(
@@ -751,6 +1102,100 @@ class TestEnvMarkers:
 
         source = inspect.getsource(spec_mod.SessionSpecBuilder._build)
         assert "config=self.config" in source
+
+
+class TestWorkerToolEnv:
+    """graft must not seed or refresh its index in a worker slot (2026-09-27).
+
+    The operator's shim and hook guard do this today; the launch env is the
+    copy an ``npm i -g`` or ``graft init`` cannot overwrite.
+    """
+
+    EXPECTED: ClassVar[dict[str, str]] = {
+        "GRAFT_NO_SEED": "1",
+        "GRAFT_NO_REFRESH": "1",
+        "DO_NOT_TRACK": "1",
+    }
+
+    @pytest.fixture(autouse=True)
+    def _clean_daemon_env(self, monkeypatch):
+        for key in self.EXPECTED:
+            monkeypatch.delenv(key, raising=False)
+
+    def _pool(self, builder, harness=CLAUDE):
+        return builder.build_pool_spec(
+            profile=_Profile(id="standard-high-claude"),
+            project=_Task(id="proj-1"),
+            agent_id="agent-1",
+            harness=harness,
+            work_dir="/wd/.aq/worktrees/slot-1",
+            session_id="sess-pool",
+            session_name="p-standard-high-claude--proj-1--n1",
+            instance_token="tok-1",
+        )
+
+    def test_the_constant_is_what_the_task_asked_for(self):
+        assert WORKER_TOOL_ENV == self.EXPECTED
+
+    def test_a_task_session_carries_it(self, builder):
+        env = _build(builder).env
+        assert {k: env.get(k) for k in self.EXPECTED} == self.EXPECTED
+
+    def test_a_pool_session_carries_it(self, builder):
+        spec = self._pool(builder)
+        assert spec.lifecycle == "pool"
+        assert {k: spec.env.get(k) for k in self.EXPECTED} == self.EXPECTED
+        # Alongside, not instead of, the pool's own markers.
+        assert spec.env["AQ_SESSION_KIND"] == "pool"
+        assert spec.env["AQ_AGENT_ID"] == "agent-1"
+
+    def test_pool_prompt_stops_repeated_blocker_polling(self, builder):
+        prompt = self._pool(builder).prompt
+        assert "three identical preparation refusals" in prompt
+        assert "respect `retry_after`" in prompt
+        assert "report the blocker ONCE" in prompt
+        assert "Wait registration is disabled" in prompt
+        assert "ONE durable message wait" not in prompt
+        assert "drain-ack" in prompt
+        assert "Do not poll claims" in prompt
+        assert "daemon_unreachable / exit code 3, keep retrying" in prompt
+
+    @pytest.mark.parametrize("global_enabled, override", [(True, None), (False, True)])
+    def test_pool_prompt_uses_effective_wait_policy(self, builder, global_enabled, override):
+        from src.config_wait_policy import WaitPolicyConfig, WaitProjectOverrides
+
+        builder.config.wait_policy = WaitPolicyConfig(v2_enabled=global_enabled)
+        if override is not None:
+            builder.config.wait_policy.projects["proj-1"] = WaitProjectOverrides(v2_enabled=override)
+        prompt = self._pool(builder).prompt
+        assert "ONE durable message wait" in prompt
+        assert "Wait registration is disabled" not in prompt
+
+    def test_a_named_session_does_not(self, builder):
+        spec = builder.build_named_spec(
+            profile=_Profile(id="supervisor"),
+            harness=CLAUDE,
+            project_id="proj-1",
+            work_dir="/vault",
+            session_id="s1",
+            instance_token="t1",
+        )
+        assert not set(self.EXPECTED) & set(spec.env)
+
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    def test_a_harness_pin_wins(self, builder, lifecycle):
+        harness = replace(CLAUDE, env=(("GRAFT_NO_REFRESH", "0"),))
+        spec = _build(builder, harness=harness) if lifecycle == "task" else self._pool(
+            builder, harness=harness
+        )
+        assert spec.env["GRAFT_NO_REFRESH"] == "0"
+        assert spec.env["GRAFT_NO_SEED"] == "1"
+
+    def test_caller_extra_env_wins(self, builder):
+        env = _build(builder, extra_env={"DO_NOT_TRACK": "0", "AQ_CLAIM_EPOCH": "3"}).env
+        assert env["DO_NOT_TRACK"] == "0"
+        assert env["AQ_CLAIM_EPOCH"] == "3"
+        assert env["GRAFT_NO_SEED"] == "1"
 
 
 class TestHookMaterial:
@@ -941,7 +1386,7 @@ class TestSpecShape:
 
     def test_spec_is_frozen(self, builder):
         spec = _build(builder)
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             spec.session_name = "other"
 
     def test_instance_token_rides_the_spec(self, builder):
@@ -977,3 +1422,155 @@ class TestSpecShape:
             instance_token="t",
         )
         assert spec.env["AQ_API_URL"] == "http://127.0.0.1:9000"
+
+
+class TestDeclaredProvider:
+    """A harness outside the shipped three resolves a model by declaring one.
+
+    ``_infer_provider_from_harness`` maps only claude/codex/gemini. Every
+    other harness returns ``""`` there, and resolution then logs and leaves
+    the launch model unset -- so the declaration on the harness file is the
+    only way an OpenCode/Ollama session gets a class-driven model.
+    """
+
+    @staticmethod
+    def _builder():
+        return SessionSpecBuilder(
+            _Cfg(),
+            intelligence_classes={
+                "deep-high": IntelligenceClass(
+                    id="deep-high",
+                    name="Deep High",
+                    description="",
+                    mapping={"ollama": {"model": "ollama/qwen3.8:27b"}},
+                )
+            },
+        )
+
+    def test_declared_provider_resolves_the_class_model(self):
+        harness = Harness(
+            id="opencode",
+            name="OpenCode",
+            command="opencode",
+            model_flag="--model",
+            provider="ollama",
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert self._builder()._resolve_model(profile, harness, None) == "ollama/qwen3.8:27b"
+
+    def test_undeclared_provider_resolves_no_model(self):
+        harness = Harness(
+            id="opencode",
+            name="OpenCode",
+            command="opencode",
+            model_flag="--model",
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert self._builder()._resolve_model(profile, harness, None) == ""
+
+
+class TestHarnessIdSlice:
+    """A harness with no derivable provider falls back to a slice keyed by its id.
+
+    A provider-agnostic CLI carries the vendor inside the model string it is
+    given (OpenCode's ``--model`` takes ``provider/model``), so naming the
+    vendor a second time on the harness asserts something that need not be
+    true. Keying the slice by the harness id lets such a CLI resolve a model
+    without claiming to *be* a vendor.
+
+    This is a fallback, not a general precedence rule: a harness whose
+    provider is known keeps reading the provider slice, so the deliberate
+    strictness around the codex slice (id *and* command must both be codex --
+    see tests/test_codex_fast_classes.py) is untouched.
+    """
+
+    @staticmethod
+    def _builder(mapping):
+        return SessionSpecBuilder(
+            _Cfg(),
+            intelligence_classes={
+                "deep-high": IntelligenceClass(
+                    id="deep-high", name="Deep High", description="", mapping=mapping
+                )
+            },
+        )
+
+    def test_unknown_harness_resolves_a_slice_keyed_by_its_id(self):
+        builder = self._builder({"opencode": {"model": "ollama/qwen3.8:27b"}})
+        harness = Harness(id="opencode", command="opencode", model_flag="--model")
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert builder._resolve_model(profile, harness, None) == "ollama/qwen3.8:27b"
+
+    def test_unknown_harness_without_a_matching_slice_resolves_nothing(self):
+        builder = self._builder({"anthropic": {"model": "claude-opus-5"}})
+        harness = Harness(id="opencode", command="opencode", model_flag="--model")
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert builder._resolve_model(profile, harness, None) == ""
+
+    def test_a_declared_provider_still_wins_over_an_id_slice(self):
+        """The id slice is the fallback, so it must not shadow a real provider."""
+        builder = self._builder(
+            {
+                "opencode": {"model": "id-slice-model"},
+                "ollama": {"model": "provider-slice-model"},
+            }
+        )
+        harness = Harness(
+            id="opencode", command="opencode", model_flag="--model", provider="ollama"
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert builder._resolve_model(profile, harness, None) == "provider-slice-model"
+
+
+@pytest.mark.parametrize("harness", [CLAUDE, replace(CLAUDE, id="codex", command="codex")])
+def test_worker_native_compaction_setting_is_applied_only_to_future_worker_specs(
+    harness, monkeypatch
+):
+    from src.config import SessionsConfig
+
+    config = _Cfg()
+    monkeypatch.setenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "20")
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "58000")
+    monkeypatch.setenv("AQ_CLAIM_EPOCH", "parent-epoch")
+    monkeypatch.setenv("AQ_FUTURE_CONTROL", "parent-policy")
+    config.sessions = SessionsConfig()
+    builder = SessionSpecBuilder(config)
+    worker = _build(builder, harness=harness)
+    for key in ("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "AQ_CLAIM_EPOCH", "AQ_FUTURE_CONTROL"):
+        assert key not in worker.env
+    if harness.id == "claude":
+        assert worker.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "160000"
+    else:
+        assert "model_auto_compact_token_limit=160000" in worker.command
+    assert worker.env["AQ_SESSION_ID"] == "sess-abc"
+    assert worker.env["AQ_TASK_ID"] == "task-1"
+    named = builder.build_named_spec(
+        profile=_Profile(), harness=harness, project_id="proj-1", work_dir="/wd",
+        session_id="named", instance_token="named-token",
+    )
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in named.env
+    assert "model_auto_compact_token_limit=160000" not in named.command
+    config.sessions.worker_context_compact_tokens = 0
+    inherited = _build(builder, harness=harness)
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in inherited.env
+    assert "model_auto_compact_token_limit=160000" not in inherited.command
+    # Constructing another spec cannot mutate an already-launched worker's spec.
+    assert worker.command != named.command
+    assert worker.env["AQ_SESSION_ID"] == "sess-abc"
+
+
+def test_worker_compaction_honors_explicit_harness_overrides_and_actual_executable():
+    from src.config import SessionsConfig
+
+    config = _Cfg()
+    config.sessions = SessionsConfig()
+    builder = SessionSpecBuilder(config)
+    claude = _build(builder, harness=replace(
+        CLAUDE, env=(("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "200000"),)))
+    assert claude.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "200000"
+    for args in (("-c", "model_auto_compact_token_limit=200000"),
+                 ("--config=model_auto_compact_token_limit=200000",)):
+        codex = _build(builder, harness=replace(CLAUDE, id="codex", command="codex", args=args))
+        assert "model_auto_compact_token_limit=160000" not in codex.command
+    other = _build(builder, harness=replace(CLAUDE, command="other-client"))
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in other.env

@@ -323,98 +323,6 @@ def _source_ref(source: PlaybookSource):
     return SourceRef(**_ref(source))
 
 
-def lower_assignment(source: PlaybookSource) -> tuple[Mapping[str, Any], list[Diagnostic]]:
-    """Lower the fixed assignment router to one AI node plus its terminal."""
-    rule_id = "assignment-route"
-    choose = "assignment-route--choose"
-    done = "assignment-route--done"
-    max_tokens = int(source.frontmatter.get("max_tokens") or 4096)
-    # ``role`` remains the V1 discriminator. V2 needs an independently
-    # resolvable profile identity as well.
-    profile_id = str(
-        source.frontmatter.get("profile_id")
-        or source.frontmatter.get("role")
-        or "assignment-routing"
-    )
-    source_ref = _ref(source, source.body_start_line, source.body.strip().splitlines()[0])
-    return {
-        "rules": [
-            {
-                "id": rule_id,
-                "name": "Assignment routing",
-                "trigger": {"event_type": "assignment.route.requested"},
-                "entry_step": choose,
-                "source": source_ref,
-            }
-        ],
-        "steps": {
-            choose: {
-                "type": "llm",
-                "rule": rule_id,
-                "title": "Choose assignment routes",
-                "source": source_ref,
-                "profile_id": profile_id,
-                "prompt": {"type": "literal", "value": source.body.strip()},
-                "inputs": {
-                    "tasks": {"type": "event_ref", "path": "tasks"},
-                    "options": {"type": "event_ref", "path": "options"},
-                    "options_hash": {"type": "event_ref", "path": "options_hash"},
-                    "catalog_hash": {"type": "event_ref", "path": "catalog_hash"},
-                },
-                "output_schema": {
-                    "type": "object",
-                    "properties": {
-                        "decisions": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "task_id": {"type": "string"},
-                                    "intelligence_class": {"type": "string"},
-                                    "provider": {"type": ["string", "null"]},
-                                    "reason": {"type": "string", "minLength": 1, "maxLength": 400},
-                                },
-                                "required": [
-                                    "task_id", "intelligence_class", "reason"
-                                ],
-                                "additionalProperties": False,
-                            },
-                        }
-                    },
-                    "required": ["decisions"],
-                    "additionalProperties": False,
-                },
-                "budget": {
-                    "max_calls": 1,
-                    "max_output_tokens": max_tokens,
-                    "max_total_tokens": max_tokens,
-                    "timeout_seconds": 300,
-                },
-                "save_result_as": "routing_result",
-                "transitions": {
-                    "completed": done,
-                    "runtime_error": "assignment-route--failed",
-                },
-            },
-            done: {
-                "type": "terminal",
-                "rule": rule_id,
-                "title": "Assignment routing complete",
-                "source": source_ref,
-                "outcome": "completed",
-                "result": {"type": "binding_ref", "binding": "routing_result"},
-            },
-            "assignment-route--failed": {
-                "type": "terminal",
-                "rule": rule_id,
-                "title": "Assignment routing failed",
-                "source": source_ref,
-                "outcome": "failed",
-            },
-        },
-    }, []
-
-
 def shadow_compile(
     sources: Iterable[PlaybookSource],
     *,
@@ -427,8 +335,6 @@ def shadow_compile(
         kind = str(source.frontmatter.get("kind") or "")
         if kind == "pipeline":
             body, diagnostics = lower_pipeline(source, contracts=contracts)
-        elif kind == "assignment-routing":
-            body, diagnostics = lower_assignment(source)
         else:
             body, diagnostics = (
                 {},

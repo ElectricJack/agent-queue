@@ -49,6 +49,7 @@ HarnessStatus = Literal["missing", "current", "stale", "edited"]
 SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
     "claude.md": frozenset(
         {
+            "ab5e3c830a07eb1c8173abf914c18ef4fbbac370af476d15054f0b77fe282c48",  # 2026-09-10 trust menu selection
             "99870ea8ee162cf7f43c4f8d2705afc645ce463f91843bbc80e9535a3d8d3b20",  # bcad7104 2026-08-19
             "df620660ea22ec2eff6096a08c2e723fabfdb403a6332b74853c75e08be043c2",  # 9244b370 2026-08-19
             "336b4e2cb4ac3bdadfde5e5d88782dd4776af4af21585023a589ba830ceb6cc4",  # 48bfab98 2026-08-20
@@ -65,10 +66,15 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "c002fa5b88f0a942a38f81649eac0cb694bb48ec8b80ef190b992ac91b15e135",  # ca7ffda9 2026-09-03
             "8ebe1887e58e23a0b68fbdaff0801414470e7e6d70adfaf06dc1d3032f2d0753",  # keen-current-10 2026-09-02 (composer_clear_keys)
             "3f4ab3f3928b7ff3444f8db6650dbed92879dadf755a2a710218fa5d64f0bd7e",  # merged main + composer_clear_keys
+            "1c2bb92d61957c2c936073c0355acf013321406c3735f7da42317ad05187fd4b",  # bold-rapids.2 2026-09-20 (dialog signal)
+            "09d2a4cfb2351e8e34325d8cdfa30a6b9a33b9acc4d71a8b7783f27315b775e2",  # quick-stone 2026-09-22 (input prompts)
+            "717e47aa1017c2dc242088530aebf800688b24d4e6957dd85d119c7e0e7160bb",  # bright-ridge-85 2026-10-03 (login-required dialog)
+            "f282a9ac5beb73fcf83cd60d12e6339f548d71a7da99bcb02123289cd687e807",  # K09 2026-10-03 (knowledge delivery through the envelope)
         }
     ),
     "codex.md": frozenset(
         {
+            "22a654b7031ae5af075e7a0256d15335867e427edf4d7499f7421d123985b847",  # PR #581 optional hook opt-out
             "b3d21d32fba38accc6320c7db07fad15d4037197f172db14b7358529ab4cc92e",  # 5e7ea1f5 2026-08-21
             "6ce63f882c66a0c0be4ef683b82f473afb78177e16e63612249a8b499ed00526",  # 334dc034 2026-08-27
             "c9c5b100a8274ac2f3a6a958b46cf0679034352fcbd3e465478421d290f97348",  # f2fc32df 2026-08-30
@@ -80,6 +86,10 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "8cc90bc5c0e99cf7e737bef15368de5e34ff0293b78044fc76aaaceda837f9a3",  # ca7ffda9 2026-09-03
             "69faf87a91c38b06871e9501aae2e978f14aa1812503f9503f6935ec2444e3d9",  # keen-current-10 2026-09-02 (composer_clear_keys)
             "b2d63549a13b54ac759e642faf5fa7347fc475020bb8e5e72e4e159fd99a84fb",  # merged main + composer_clear_keys
+            "f9dcf86290b94d59fab3369e9d9fef15fcf8aed7e4f4efab498d71fcedea5bfe",  # 84945773 2026-09-06 (--full-auto removed)
+            "9f37a9b7b9e320d840cd2085d8b40823505fc5021a92bcc2904b7353724f8d66",  # bold-rapids.2 2026-09-20 (dialog signal)
+            "0b5dcde0e19c56fadc096b4336113445ee3579b33b5c39fbe0fff3018c7fc1c1",  # quick-stone 2026-09-22 (input prompts)
+            "cd7572472cfc7f250c61ba227988b5341975067b303ff81743b7fb21991e74bd",  # nimble-harbor-12 2026-10-21 (Trust this folder?)
         }
     ),
     "gemini.md": frozenset(
@@ -87,6 +97,9 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "9a68080765918a81b14b93f645c7ab8404c5b502aef8fde1a3fecf030f5ad7f4",  # 7024d380 2026-08-22
             "3af7b3252e2dd0dc1f47aea2301ce0e4223c5561c07cffc9dd99cd484f6cbc78",  # 5e65efe9 2026-09-02 (PR #212)
             "2f962b1f0a40ff7475b04782f6b9c41b4c8da80c7d6c8162cfecb73633fc5356",  # keen-current-10 2026-09-02 (composer_clear_keys)
+            "85a26d026e3408af033523e8ac7107be7fa2af27cd6f63cb22a4225caa04781d",  # bold-rapids.2 2026-09-20 (dialog signal)
+            "6eb68609a813f4be5f4df3fac74ae942ced6590e7cdc35a58d0b96a66a1bea85",  # quick-stone 2026-09-22 (input prompts)
+            "a8c2020a97d8fb17017043b3556af09ba66fe4f986d6d1d902e6b954f510bcdd",  # K09 2026-10-03 (no-hook knowledge delivery path)
         }
     ),
 }

@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from src.database import Database
-from src.models import Project, Task, TaskStatus
+from src.database.queries.hierarchy_queries import HierarchyError
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.task_graph import parse_graph
 from src.task_graph.creator import build_plan, write_plan
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -23,7 +25,7 @@ GRAPH = {
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
@@ -31,6 +33,29 @@ async def db(tmp_path):
 
 
 class TestNewContainer:
+    async def test_enabled_project_rejects_before_graph_inserts_any_task(self, db, monkeypatch):
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="hierarchy",
+            integration_repository_id="repo",
+        )
+        plan = await build_plan(db, parse_graph(GRAPH), project_id=PROJECT_ID)
+        inserted = []
+
+        async def observed_insert(conn, row):
+            inserted.append(row["id"])
+
+        monkeypatch.setattr("src.task_graph.creator._insert_task", observed_insert)
+        with pytest.raises(HierarchyError) as exc:
+            await write_plan(db, plan)
+
+        assert exc.value.code == "integration_required"
+        assert inserted == []
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
+
     async def test_dotted_ids_known_at_plan_time(self, db):
         plan = await build_plan(db, parse_graph(GRAPH), project_id=PROJECT_ID)
         assert plan.provisional is False

@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from src.database.engine import create_sqlite_engine, run_schema_setup
+from src.database.engine import create_postgres_engine, run_schema_setup
 from src.database.migration_guard import (
     CLI,
     DAEMON,
@@ -35,13 +35,21 @@ from src.database.migration_guard import (
 
 
 @pytest.fixture
-def production_config(tmp_path, monkeypatch):
-    """A config.yaml naming *its own* SQLite file as the production database."""
-    db_path = tmp_path / "production.db"
+async def production_config(tmp_path, monkeypatch):
+    """A config.yaml naming *its own* empty Postgres database as production.
+
+    The guard compares normalised URLs, so what matters is that config.yaml
+    and the engine address the same database — not which engine it is.  The
+    database is left empty on purpose: these tests assert that a worker-scope
+    process refuses to *create* the schema.
+    """
+    from tests.pg_dsn import create_scratch_database
+
+    dsn = await create_scratch_database("migguard")
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump({"database": {"url": str(db_path)}}), encoding="utf-8")
+    config_path.write_text(yaml.safe_dump({"database": {"url": dsn}}), encoding="utf-8")
     monkeypatch.setenv("AQ_CONFIG_PATH", str(config_path))
-    return db_path
+    return dsn
 
 
 @pytest.fixture(autouse=True)
@@ -198,16 +206,18 @@ class TestMigrationDecision:
 # ---------------------------------------------------------------------------
 
 
-async def _stamped(db_path) -> list[str]:
-    import sqlite3
+async def _stamped(dsn: str) -> list[str]:
+    """Revisions ``dsn`` is stamped at; empty when it has no alembic_version."""
+    import asyncpg
 
-    if not db_path.exists():
+    conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
+    try:
+        rows = await conn.fetch("SELECT version_num FROM alembic_version")
+    except asyncpg.exceptions.UndefinedTableError:
         return []
-    with sqlite3.connect(str(db_path)) as conn:
-        try:
-            return sorted(row[0] for row in conn.execute("SELECT version_num FROM alembic_version"))
-        except sqlite3.Error:
-            return []
+    finally:
+        await conn.close()
+    return sorted(r["version_num"] for r in rows)
 
 
 class TestRunSchemaSetup:
@@ -215,7 +225,7 @@ class TestRunSchemaSetup:
         self, production_config, monkeypatch
     ):
         monkeypatch.setenv("AQ_DB_SCOPE", WORKER)
-        engine = create_sqlite_engine(str(production_config))
+        engine = create_postgres_engine(production_config)
         try:
             with pytest.raises(SchemaBehindCode, match="[Ss]chema behind code"):
                 await run_schema_setup(engine)
@@ -225,7 +235,7 @@ class TestRunSchemaSetup:
 
     async def test_refusal_names_the_operator_action(self, production_config, monkeypatch):
         monkeypatch.setenv("AQ_DB_SCOPE", WORKER)
-        engine = create_sqlite_engine(str(production_config))
+        engine = create_postgres_engine(production_config)
         try:
             with pytest.raises(SchemaBehindCode) as excinfo:
                 await run_schema_setup(engine)
@@ -239,7 +249,7 @@ class TestRunSchemaSetup:
         self, production_config, monkeypatch
     ):
         monkeypatch.setenv("AQ_DB_SCOPE", DAEMON)
-        engine = create_sqlite_engine(str(production_config))
+        engine = create_postgres_engine(production_config)
         try:
             await run_schema_setup(engine)
         finally:
@@ -249,18 +259,20 @@ class TestRunSchemaSetup:
         # The same worker call that refused above is now a silent no-op:
         # a worker may read a production database that is at head.
         monkeypatch.setenv("AQ_DB_SCOPE", WORKER)
-        engine = create_sqlite_engine(str(production_config))
+        engine = create_postgres_engine(production_config)
         try:
             await run_schema_setup(engine)
         finally:
             await engine.dispose()
 
     async def test_worker_still_migrates_its_own_scratch_database(
-        self, production_config, tmp_path, monkeypatch
+        self, production_config, monkeypatch
     ):
+        from tests.pg_dsn import create_scratch_database
+
         monkeypatch.setenv("AQ_DB_SCOPE", WORKER)
-        scratch = tmp_path / "scratch.db"
-        engine = create_sqlite_engine(str(scratch))
+        scratch = await create_scratch_database("migguard_worker")
+        engine = create_postgres_engine(scratch)
         try:
             await run_schema_setup(engine)
         finally:
@@ -271,19 +283,24 @@ class TestRunSchemaSetup:
         self, production_config, monkeypatch
     ):
         """An orphaned row is reported as such, not as "behind"."""
-        import sqlite3
+        import asyncpg
 
         monkeypatch.setenv("AQ_DB_SCOPE", DAEMON)
-        engine = create_sqlite_engine(str(production_config))
+        engine = create_postgres_engine(production_config)
         try:
             await run_schema_setup(engine)
         finally:
             await engine.dispose()
-        with sqlite3.connect(str(production_config)) as conn:
-            conn.execute("UPDATE alembic_version SET version_num = 'doesnotexist'")
+        conn = await asyncpg.connect(
+            production_config.replace("postgresql+asyncpg://", "postgresql://")
+        )
+        try:
+            await conn.execute("UPDATE alembic_version SET version_num = 'doesnotexist'")
+        finally:
+            await conn.close()
 
         monkeypatch.setenv("AQ_DB_SCOPE", WORKER)
-        engine = create_sqlite_engine(str(production_config))
+        engine = create_postgres_engine(production_config)
         try:
             with pytest.raises(RuntimeError, match="unknown revision"):
                 await run_schema_setup(engine)
@@ -318,18 +335,37 @@ class TestConftestRefusal:
 
 
 class TestWorkerSessionEnvironment:
-    def test_isolation_block_points_at_a_per_slot_scratch_file(self):
-        from src.sessions.env import session_db_isolation
+    def test_isolation_block_points_at_the_refusal_sentinel(self):
+        """It used to be a per-slot SQLite file that was never created.
+
+        A worker running a direct-DB command opened an *empty* database and
+        got a confidently wrong answer; now it gets an explanation.
+        """
+        from src.sessions.env import SCRATCH_DB_SENTINEL, session_db_isolation
 
         env = session_db_isolation("/slots/slot-3")
         assert env["AQ_DB_SCOPE"] == WORKER
-        assert env["AQ_DATABASE_URL"] == "/slots/slot-3/.aq/scratch.db"
+        assert env["AQ_DATABASE_URL"] == SCRATCH_DB_SENTINEL
         assert env["AGENT_QUEUE_DB"] == env["AQ_DATABASE_URL"]
 
-    def test_a_session_without_a_work_dir_still_gets_the_scope(self):
-        from src.sessions.env import session_db_isolation
+    def test_a_session_without_a_work_dir_gets_the_same_block(self):
+        """The sentinel does not depend on a work dir, so neither does this."""
+        from src.sessions.env import SCRATCH_DB_SENTINEL, session_db_isolation
 
-        assert session_db_isolation("") == {"AQ_DB_SCOPE": WORKER}
+        assert session_db_isolation("") == {
+            "AQ_DB_SCOPE": WORKER,
+            "AQ_DATABASE_URL": SCRATCH_DB_SENTINEL,
+            "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
+        }
+
+    def test_the_cli_refuses_the_sentinel_with_an_explanation(self, monkeypatch):
+        from src.cli.client import _resolve_db_url
+        from src.sessions.env import SCRATCH_DB_SENTINEL
+
+        monkeypatch.delenv("AGENT_QUEUE_DB", raising=False)
+        monkeypatch.setenv("AQ_DATABASE_URL", SCRATCH_DB_SENTINEL)
+        with pytest.raises(RuntimeError, match="not available inside a worker session"):
+            _resolve_db_url()
 
     def test_cli_resolves_the_scratch_url(self, monkeypatch, tmp_path):
         from src.cli.client import _resolve_db_url

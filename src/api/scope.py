@@ -8,16 +8,29 @@ happens.
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from src.api.auth import RequestScope
 
 AGENT_COMMAND_SET: frozenset[str] = frozenset(
     {
         "prime",
+        "operator_execute",
+        "operator_preflight",
+        "dry_run_playbook",
         "get_schema",
         "task_show",
         "task_set",
         "task_comment",
+        "benchmark_stage_record",
         "task_comments",
+        # Durable, non-schedulable checklist rows inside one task (graph-
+        # visibility C2). Fenced exactly like task comments: reads by
+        # project scope, writes by claim epoch.
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
         "task_close",
         "task_children",
         "task_progress",
@@ -28,13 +41,73 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # the row to ``scope.session_id`` and ignores any session named in
         # the payload.
         "subagent_event",
-        "ask_human",
+        "job_submit",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        # Handlers derive the live held object's provenance and admit only its
+        # checkpoint and retained evidence, independently of profile grants.
+        "artifact_verify",
+        "object_checkpoint_read",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "wait_explain",
+        "wait_checkpoint",
+        "wait_ack",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        # Collaboration reads and joins derive the held task and fence joins
+        # and closes by claim epoch; creation stays operator/supervisor-only.
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
         "message_send",
+        "message_wait",
         "message_inbox",
         "message_reply",
+        # The idle-session nudge (``src/messages/delivery.py:_render_nudge``)
+        # names ``aq message status <id>``.  Run by the recipient, it is the
+        # acknowledgment that marks the row read and stops the nudge retries;
+        # a ``message_inbox`` peek does not.  ``_cmd_message_status`` fences a
+        # plain session to messages addressed to its own mailboxes.
+        "message_status",
         "memory_save",
         "memory_search",
+        "read_file",
+        # Knowledge records (K03). Project-pinned reads that the profile must
+        # also grant a capability for; the record service is the independent
+        # authorization gate. Retire/restore stay supervisor-only.
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_create",
+        "knowledge_create_task",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_export",
+        "record_show",
+        "record_search",
+        "record_capabilities",
+        "link_create",
+        "link_list",
+        "link_remove",
         "task_claim",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
         # The second half of the completion protocol.  ``aq task close``
         # transitions the task; ``aq session drain-ack`` says "I am done,
         # you may kill me" — and it is the documented next move on
@@ -47,23 +120,68 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # acking anyone else's session.
         "session_drain_ack",
         "create_task",
+        # Scoped graph filing is safe for a non-elevated session only because
+        # ``_cmd_create_task_graph`` derives the held parent and filing
+        # context from the authenticated session, then rechecks both under
+        # the graph writer's transaction fence.  The profile capability is a
+        # second, independent gate, so this does not grant every worker the
+        # command.
+        "create_task_graph",
         "project_ready",
         "formula_list",
         "formula_show",
+        # Phase planning (graph-visibility A1).  Both are project-scoped
+        # reads/writes over container tasks; the ``project_id`` pin below
+        # confines a planner session to its own project, and neither command
+        # names a task, so nothing here reaches another agent's work.
+        "phase_create",
+        "phase_list",
         # A worker may move a task it filed (swarm-work-model §12): the
         # command re-derives the held task from the session and admits only
         # worker-filed tasks provenance-linked to it, moved to a parent the
         # filing path itself would have accepted.
         "reparent_task",
+        # A worker may send a task it filed back to the router with new hints
+        # (mandatory routing §7): ``_cmd_task_route`` admits a plain session
+        # only for a task that session filed.
+        "task_route",
+        "integration_status",
+        "integration_batch_fix",
+        "integration_continue_close",
+        "promote_schema",
+        "promote_validate",
+        "promote_rulesets",
+        "promote_status",
+        "promote_list",
+        # A worker's comment write is checked again against the dispatch
+        # ledger and its live held task by ReviewCommandsMixin.
+        "review_submit",
+        "review_show",
+        "review_attachment_add",
+        "review_attachment_list",
+        "review_list",
+        "review_withdraw",
+        "review_reopen",
+        "review_comment",
+        "review_feedback_complete",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
+        "report_brief",
+        "report_submit",
+        # The command checks the held revision task and Jack's explicit
+        # rejection before it reaches the repository-bound GitHub client.
+        "github_issue_close_rejected",
     }
 )
 
 #: Commands whose ``task_id`` names a task *other than* the held one, so the
-#: held-task pin below must not apply to it.  ``reparent_task`` moves a
-#: worker filing, which by construction is never the task the token holds;
-#: ``_cmd_reparent_task`` authorises the moved task against the held task.
+#: held-task pin below must not apply to it.  ``reparent_task`` moves and
+#: ``task_route`` re-routes a worker filing, which by construction is never
+#: the task the token holds; ``_cmd_reparent_task`` authorises the moved task
+#: against the held task and ``_cmd_task_route`` against its filing session.
 #: ``project_id`` and ``session_id`` stay pinned.
-_TASK_ID_UNPINNED: frozenset[str] = frozenset({"reparent_task"})
+_TASK_ID_UNPINNED: frozenset[str] = frozenset({"reparent_task", "task_route"})
 
 #: The seven project-onboarding commands (design 2026-09-03 §5), gated to
 #: the loopback CLI and the global admin (§7).  Listed literally because this
@@ -83,6 +201,101 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
     }
 )
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
+OPERATOR_INTEGRATION_CONTROLS = frozenset(
+    {
+        "integration_supersede_completion",
+        "integration_record_root_noop",
+        "integration_abort_batch",
+        "integration_settle_batch",
+        "integration_release_withheld_source",
+        "integration_pause_batch",
+        "integration_resume_batch",
+        "integration_repair_target",
+        "integration_rerequest_check",
+        "integration_seal_now",
+        "integration_eject",
+        "integration_refresh_epic",
+        "integration_reverify_epic",
+        "integration_retire_origin",
+        "integration_reevaluate_repair",
+        "integration_release_owner",
+        "integration_delegate_publication",
+        "integration_revoke_publication",
+        "integration_restore_task_origin",
+        "integration_release_stale_owners",
+        "integration_clear_retained_recovery",
+        "integration_redrive_root",
+        "integration_authorize_root",
+        "integration_redrive_child",
+        "integration_recover_completed_container",
+        "integration_reopen_collection",
+        "integration_close_delivered_pr",
+        "integration_fast_forward_pr",
+        "integration_transfer_owner",
+    }
+)
+LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})
+#: ``promote_approve`` posts its review with the daemon host's own gh login,
+#: so only the human at that host may run it.
+LOCAL_REVIEW_CONTROLS = frozenset({
+    "review_delegate", "review_import_edits", "approve_pull_request", "promote_approve",
+})
+#: ``edit_project`` fields that bind or change a project's integration
+#: configuration.  An elevated supervisor session reaches the handler, which
+#: admits only a live named supervisor of the project (``integration_operator``),
+#: exactly as for :data:`OPERATOR_INTEGRATION_CONTROLS`; everyone else is
+#: refused here.
+INTEGRATION_ROLLOUT_FIELDS = frozenset(
+    {
+        "integration_repository",
+        "integration_repository_id",
+        "integration_mode",
+        "hierarchical_integration_policy",
+        "hierarchical_integration_mode",
+        "hierarchical_integration_desired_mode",
+        "promotion_flow",
+        "hierarchical_integration_draining",
+        "hierarchical_integration_generation",
+        "expected_integration_generation",
+    }
+)
+
+
+def _forbids_project_id(command: str) -> bool:
+    """Whether *command*'s args contract declares no ``project_id``.
+
+    True only for a registered command whose ``extra="forbid"`` model omits
+    the field, so a key the gate injected would be a validation error the
+    caller cannot fix by changing its arguments.  Derived from the registry
+    rather than listed, so a contract that gains or loses the field moves with
+    it.
+
+    A command without a typed dispatch contract (``delete_project``,
+    ``edit_project``, the project and agent controls) forbids nothing, so the
+    gate keeps injecting for them: there is no model to reject the key, and the
+    project row itself is what such a command acts on.  A contractless command
+    that acts on *another* project's row has to fence it in its handler, because
+    neither branch below can: ``session_kill`` names a session by id, unique id
+    prefix, name or task and reads no ``project_id``
+    (``SessionCommandsMixin._session_project_scope_error``).
+    ``tests/test_command_scope_matrix.py`` derives the set of supervisor-granted
+    contractless commands in that position.
+
+    Only the elevated per-project branch consults this.  The agent branch below
+    still injects the whole ID triple unconditionally, because handlers there
+    read the injected ``project_id`` too, and layer 1c of
+    ``tests/test_command_scope_matrix.py`` keeps every agent-surface command
+    that validates its own args declaring all three.
+    """
+    from src.commands.contracts import CONTRACTS
+
+    registration = CONTRACTS.get(command)
+    if registration is None or registration.contract.execution.argument_mode == "json_object":
+        # Discovery-only generated models are not the handler's dispatch model.
+        # Their catalogue presence must not suppress legacy project injection.
+        return False
+    args_model = registration.contract.execution.args_model
+    return "project_id" not in args_model.model_fields
 
 
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:
@@ -98,9 +311,48 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     ``args`` is mutated in place (same object /api/execute forwards to
     ``ch.execute``).
     """
+    from src.commands.contracts.ask import (
+        ASK_ARGS, GATEWAY_COMMANDS, GLOBAL_CONTROL_COMMANDS, OPERATOR_COMMANDS,
+    )
+    if command in GATEWAY_COMMANDS:
+        return "out of scope: ask intake requires the authenticated daemon gateway"
     if scope.kind == "local":
         return None
-    if command == "edit_intelligence_class" and not (
+    if command in {"doctor_catalog", "playbook_commands"}:
+        # Registered schemas/audits carry no project data. Preserve the strict
+        # empty argument schema; capability enforcement still applies at dispatch.
+        return None
+    if command in OPERATOR_COMMANDS and not (
+        command in GLOBAL_CONTROL_COMMANDS and scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: ask gateway and operator controls are daemon/local only"
+    if command in ASK_ARGS and not scope.elevated:
+        return "out of scope: workers have no human ask authority"
+    if command == "ask_reply":
+        return "out of scope: human discussion requires an authenticated human"
+    if command == "supervisor_inbox_post":
+        return "out of scope: conversation intake is daemon-internal"
+    # The command verifies the live launch and exact stored message recipient.
+    # Project supervisors already own conversations selected by the named router.
+    if command == "supervisor_inbox_reply" and not scope.elevated:
+        return "out of scope: conversation replies require local operator or supervisor"
+    if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not (
+        scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: conversation reads require local operator or global supervisor"
+    if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
+        return "out of scope: integration control requires local operator or supervisor"
+    if command in LOCAL_TEST_SELECTION_CONTROLS:
+        return "out of scope: test-selection promotion requires local operator"
+    if command in LOCAL_REVIEW_CONTROLS:
+        return "out of scope: review control requires local operator"
+    if (
+        command == "edit_project"
+        and INTEGRATION_ROLLOUT_FIELDS.intersection(args)
+        and not scope.elevated
+    ):
+        return "out of scope: integration configuration requires local operator or supervisor"
+    if command in {"edit_intelligence_class", "delete_intelligence_class"} and not (
         scope.elevated and scope.project_id is None and scope.task_id is None
     ):
         return "out of scope: intelligence-class settings require global admin"
@@ -119,12 +371,21 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         scope.elevated and scope.project_id is None
     ):
         return PROJECT_ONBOARDING_SCOPE_ERROR
+    if command in {"bind_project_repository", "repair_repository_checkout",
+                   "repair_workspace_checkout"} and not (
+        scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: repository binding requires global admin"
     # Projectless messages are system records, not an omitted project filter.
     # Null project scope alone must never grant access to the global supervisor.
     system_message = args.get("system_only") or (
         command in {"message_send", "message_inbox"}
         and args.get("to_kind") == "session"
         and args.get("to_id") == "supervisor-global"
+        # A report retains the sender's project. The handler verifies the
+        # persisted named supervisor launch and derives its sender identity;
+        # this preliminary gate never admits reading the global mailbox.
+        and not (command == "message_send" and scope.elevated and scope.project_id is not None)
     )
     if system_message and not (scope.elevated and scope.project_id is None):
         return "out of scope: system messages require global admin"
@@ -143,7 +404,15 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         expected_pid = scope.project_id
         value = args.get("project_id")
         if value is None:
-            args["project_id"] = expected_pid
+            if not _forbids_project_id(command):
+                args["project_id"] = expected_pid
+            # Otherwise the contract forbids the key (``extra="forbid"``), and
+            # an injected one is a validation error inside the handler — the
+            # ``aq integration reserve-owner`` failure recorded on
+            # azure-journey-72.  Isolation then comes from the target the
+            # command names: ``check_request_scope`` resolves that row's
+            # project and compares it with the token's
+            # (:mod:`src.api.target_scope`).
         elif value != expected_pid:
             return "out of scope: project_id mismatch"
         return None
@@ -186,19 +455,21 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
 _WORKER_GIT_READ_COMMANDS = frozenset({
     "get_git_status", "git_diff", "git_log", "git_branch", "git_changed_files",
 })
-_WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "git_create_pr"})
-_WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS
+#: ``push_branch`` is ``git_push``'s alias; it names its head ``branch_name``.
+_WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "push_branch", "git_create_pr"})
+_WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS | {"git_pull"}
 
 
-async def worker_branches_for_session(db, scope: RequestScope) -> frozenset[str] | None:
-    """Return the branch names a live worker session may act on, else ``None``.
+async def held_task_for_session(db, scope: RequestScope):
+    """Return the task a live worker session holds, else ``None``.
 
     Authority comes from persisted state only: the session row, the task it
     holds, and the agent that holds it.  Both lifecycles are covered --
     ``task`` (pushed work) and ``pool`` (a claimed task) -- because both close
-    through the same protocol.  The branch set is the task's recorded
-    ``branch_name`` plus the conventional ``aq/<task_id>``; a client-supplied
-    branch outside it is refused.
+    through the same protocol.  A pool token is minted with no ``task_id``
+    (its task changes with every claim), so for a pool session this, not the
+    token, names the task: the session's current claim, fenced by
+    ``last_claim_epoch`` so a reclaimed task is no longer held.
     """
     from src.models import AgentState, TaskStatus
 
@@ -238,6 +509,19 @@ async def worker_branches_for_session(db, scope: RequestScope) -> frozenset[str]
         and agent.current_task_id == task.id
     ):
         return None
+    return task
+
+
+async def worker_branches_for_session(db, scope: RequestScope) -> frozenset[str] | None:
+    """Return the branch names a live worker session may act on, else ``None``.
+
+    The session must hold a task (:func:`held_task_for_session`).  The branch
+    set is that task's recorded ``branch_name`` plus the conventional
+    ``aq/<task_id>``; a client-supplied branch outside it is refused.
+    """
+    task = await held_task_for_session(db, scope)
+    if task is None:
+        return None
     branches = {f"aq/{task.id}"}
     if task.branch_name:
         branches.add(task.branch_name)
@@ -255,6 +539,8 @@ async def _check_worker_git_scope(
         return "out of scope: project_id mismatch"
     if args.get("session_id") not in (None, scope.session_id):
         return "out of scope: session_id mismatch"
+    if args.get("workspace") is not None:
+        return "out of scope: workspace mismatch"
     project = await db.get_project(scope.project_id)
     default_branch = (getattr(project, "repo_default_branch", None) or "main") if project else "main"
     # ``branch``/``name`` name the head a command would act on; ``None`` means
@@ -267,10 +553,35 @@ async def _check_worker_git_scope(
         and args["name"] not in branches
     ):
         return "out of scope: branch mismatch"
-    if command in {"git_push", "git_create_pr"}:
-        branch = args.get("branch")
-        if branch is not None and branch not in branches:
-            return "out of scope: branch mismatch"
+    if command in _WORKER_GIT_WRITE_COMMANDS:
+        branch = args.get("branch_name" if command == "push_branch" else "branch")
+        delegation_id = args.get("publication_delegation_id")
+        if delegation_id is not None:
+            if command not in {"git_push", "push_branch"}:
+                return "out of scope: publication delegation applies only to push"
+            from src.integration.publication_delegations import (
+                DELEGATION_ERRORS, PublicationDelegations,
+            )
+
+            try:
+                await PublicationDelegations(db).validate(
+                    delegation_id, scope, branch, args.get("expected_remote_oid"),
+                )
+            except DELEGATION_ERRORS as exc:
+                return f"out of scope: {exc}"
+        elif branch is not None and branch not in branches:
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            task = await held_task_for_session(db, scope)
+            try:
+                assignment = (await BatchRepairAssignments(db).get(task)
+                              if task is not None and command in {"git_push", "push_branch"}
+                              else None)
+            except GitError:
+                assignment = None
+            if assignment is None or branch != assignment["branch"]:
+                return "out of scope: branch mismatch"
     if command == "git_create_pr":
         base = args.get("base")
         if base is not None and base != default_branch:
@@ -280,12 +591,14 @@ async def _check_worker_git_scope(
     return None
 
 
-# A triage task needs to inspect and route its project's queue. These are
-# capabilities of a saved, actively assigned triage session, never elevation
-# inferred from client arguments or the worker's model/name.
+# A triage task needs to inspect its project's queue. These are capabilities
+# of a saved, actively assigned triage session, never elevation inferred from
+# client arguments or the worker's model/name.  Triage no longer routes: the
+# project's router does (mandatory routing §2), and ``task_route`` only sends
+# a task back to it.
 _TRIAGE_COMMANDS = frozenset({
     "list_tasks", "get_task", "task_show", "gate_list", "gate_show",
-    "list_profiles", "list_intelligence_classes", "task_route",
+    "list_profiles", "list_intelligence_classes",
 })
 
 _PLAYBOOK_COMPILER_COMMANDS = frozenset(
@@ -295,6 +608,180 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset(
     }
 )
 
+_SPEC_INGEST_COMMANDS = frozenset({
+    "list_tasks", "get_downstream_tasks", "task_batch_propose", "task_batch_commit", "approved_spec_packet",
+})
+
+
+async def spec_ingest_task_for_session(db, scope: RequestScope, *, legacy_receipt=False):
+    """A live, server-assigned ingestion role; client hints grant no authority."""
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    session = await db.get_session(scope.session_id)
+    if session is None or session.profile_id != "spec-ingest":
+        return None
+    task = await held_task_for_session(db, scope)
+    if (task is None or task.profile_id != "spec-ingest" or task.route_source != "role"
+            or not (task.dedup_key or "").startswith("spec-ingest:")):
+        return None
+    from src.asks.ingestion import approved_packet, task_stamp
+    from src.asks.models import AskError
+    from src.asks.operations import get_operation
+
+    async with db.immediate() as conn:
+        stamp = await task_stamp(conn, task.id)
+        if (not stamp and legacy_receipt
+                and not task.dedup_key.startswith("spec-ingest:decision:")):
+            # Compatibility grants only a previously committed receipt. The caller
+            # must still verify its exact proposal; no path confers new approval.
+            return task
+        if not stamp or task.dedup_key != f"spec-ingest:decision:{stamp.get('decision_id')}":
+            return None
+        try:
+            await approved_packet(db, stamp["decision_id"], stamp["packet_sha256"],
+                                  scope.project_id, conn=conn)
+            receipt = await get_operation(conn, stamp["decision_id"], "ingestion")
+            if (not receipt or receipt["status"] != "succeeded"
+                    or (receipt["receipt"] or {}).get("task_id") != task.id):
+                return None
+        except (AskError, KeyError):
+            return None
+    return task
+
+#: A fidelity reviewer's batch capabilities (held batches §5.2).  Each names
+#: a batch (``batch_id``; ``task_batch_update`` calls it ``proposal_id``) and
+#: reaches only the batch the reviewer was dispatched for.
+_BATCH_REVIEW_COMMANDS = frozenset({
+    "task_batch_validate", "task_batch_update", "task_batch_review_record",
+})
+_REVIEWABLE_BATCH_STATES = frozenset({"held", "reviewing", "needs_scope"})
+
+
+async def fidelity_review_task_for_session(db, scope: RequestScope, batch_id=None):
+    """The live reviewer task this session holds for *batch_id*, else ``None``.
+
+    Authority is the batch's own assignment, not a hint: the held role task
+    must carry the batch's dedup key and metadata, and the batch must name it
+    as ``reviewer_task_id``.  The first use under a claim binds the batch's
+    ``reviewer_claim_epoch``/``reviewer_session_id`` to that claim; the epoch
+    only moves forward, so a retried or rerouted claim revokes the previous
+    holder, and ``ensure_fidelity_review`` clears both on reassignment.
+    """
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    import json
+
+    from sqlalchemy import or_, select, update
+
+    from src.database.tables import ingest_batches, task_metadata
+    from src.review_keys import FIDELITY_REVIEWER_PROFILE_ID, fidelity_review_dedup_key
+
+    session = await db.get_session(scope.session_id)
+    if session is None or session.profile_id != FIDELITY_REVIEWER_PROFILE_ID:
+        return None
+    task = await held_task_for_session(db, scope)
+    if (task is None or task.profile_id != FIDELITY_REVIEWER_PROFILE_ID
+            or task.route_source != "role"):
+        return None
+    async with db.immediate() as conn:
+        meta = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task.id, task_metadata.c.key == "fidelity_review",
+        ))).scalar_one_or_none()
+        try:
+            metadata = json.loads(meta) if meta else None
+        except (TypeError, ValueError):
+            return None
+        assigned_batch = metadata.get("batch_id") if isinstance(metadata, dict) else None
+        if (not isinstance(assigned_batch, str) or not assigned_batch
+                or batch_id not in (None, assigned_batch)
+                or task.dedup_key != fidelity_review_dedup_key(assigned_batch)):
+            return None
+        batch_id = assigned_batch
+        batch = ingest_batches.c
+        await conn.execute(update(ingest_batches).where(
+            batch.batch_id == batch_id, batch.reviewer_task_id == task.id,
+            batch.project_id == scope.project_id, batch.state.in_(_REVIEWABLE_BATCH_STATES),
+            or_(batch.reviewer_claim_epoch.is_(None),
+                batch.reviewer_claim_epoch < task.claim_epoch),
+        ).values(reviewer_claim_epoch=task.claim_epoch, reviewer_session_id=session.id))
+        row = (await conn.execute(select(
+            batch.project_id, batch.state, batch.reviewer_task_id,
+            batch.reviewer_claim_epoch, batch.reviewer_session_id,
+        ).where(batch.batch_id == batch_id))).mappings().first()
+    if (row is None or row["project_id"] != scope.project_id
+            or row["state"] not in _REVIEWABLE_BATCH_STATES
+            or row["reviewer_task_id"] != task.id
+            or row["reviewer_claim_epoch"] != task.claim_epoch
+            or row["reviewer_session_id"] != session.id):
+        return None
+    return task
+
+_FIDELITY_READ_COMMANDS = frozenset({
+    "approved_spec_packet", "list_tasks", "get_downstream_tasks", "task_show",
+})
+
+
+async def fidelity_review_read_context(db, scope: RequestScope):
+    """Resolve read authority without accepting a caller-selected batch.
+
+    ``None`` means ordinary scope; an empty mapping is a revoked reviewer.
+    Handlers repeat this boundary so passing the HTTP guard never becomes
+    reusable authority for a later claim or a different batch.
+    """
+    if db is None or scope.kind != "session" or scope.elevated:
+        return None
+    session = await db.get_session(scope.session_id) if scope.session_id else None
+    if session is None or session.profile_id != "fidelity-reviewer":
+        return None
+    if scope.session_instance_token != session.instance_token:
+        return {}
+    task = await fidelity_review_task_for_session(db, scope)
+    if task is None:
+        return {}
+    from sqlalchemy import select
+
+    from src.database.queries import ingest_batch_queries as batches
+    from src.database.tables import ingest_batches, ingest_batch_members, tasks
+    from src.review_keys import fidelity_review_dedup_key
+
+    batch_id = task.dedup_key.removeprefix(fidelity_review_dedup_key(""))
+    async with db.immediate() as conn:
+        batch = (await conn.execute(select(ingest_batches).where(
+            ingest_batches.c.batch_id == batch_id,
+            ingest_batches.c.reviewer_task_id == task.id,
+            ingest_batches.c.project_id == scope.project_id,
+            ingest_batches.c.state.in_(_REVIEWABLE_BATCH_STATES),
+            ingest_batches.c.reviewer_session_id == session.id,
+            ingest_batches.c.reviewer_claim_epoch == task.claim_epoch,
+        ))).mappings().one_or_none()
+        if batch is None:
+            return {}
+        member_ids = set((await conn.execute(select(tasks.c.id).join(
+            ingest_batch_members, ingest_batch_members.c.task_id == tasks.c.id,
+        ).where(
+            ingest_batch_members.c.batch_id == batch["batch_id"],
+            ingest_batch_members.c.state == "active",
+            tasks.c.project_id == scope.project_id,
+            tasks.c.held_batch_id == batch["batch_id"],
+        ))).scalars())
+        return {"batch": dict(batch), "task_ids": member_ids,
+                "members": await batches.members(conn, batch["batch_id"], state="active")}
+
+
+def fidelity_read_args_error(command, args, scope, context):
+    if not context:
+        return "out of scope: live assigned fidelity reviewer required"
+    for key, expected in (("project_id", scope.project_id), ("session_id", scope.session_id),
+                          ("batch_id", context["batch"]["batch_id"]),
+                          ("proposal_id", context["batch"]["batch_id"])):
+        if args.get(key) not in (None, expected):
+            return f"out of scope: {key} mismatch"
+    if command in {"task_show", "get_downstream_tasks", "get_task"}:
+        if args.get("task_id") not in context["task_ids"]:
+            return "out of scope: task is not a member of the assigned batch"
+    return None
+
+
 # A reviewer task's whole job is a verdict on *another* task: read it, and
 # either approve (close its own review task) or reject.  Rejection is
 # ``reopen_with_feedback`` on the reviewed task, which is neither in
@@ -303,6 +790,7 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset(
 # they reach exactly one task: the one this review was spawned for.
 _REVIEWER_COMMANDS = frozenset({
     "reopen_with_feedback", "task_show", "get_task", "task_comments",
+    "task_subtasks", "task_subtask_get",
 })
 
 # A final review is a branch-wide verdict.  Its authority is derived from the
@@ -311,6 +799,7 @@ _REVIEWER_COMMANDS = frozenset({
 # The worker tasks must agree on one branch and PR URL; ambiguity fails closed.
 _FINAL_REVIEWER_COMMANDS = frozenset({
     "reopen_with_feedback", "task_show", "get_task", "task_comments", "pr_merge", "git_diff",
+    "task_subtasks", "task_subtask_get",
 })
 
 
@@ -543,7 +1032,40 @@ async def _has_live_triage_assignment(db, scope: RequestScope) -> bool:
     )
 
 
-async def check_request_scope(
+def _canonicalise_reroute_args(
+    command: str, args: dict, scope: RequestScope,
+) -> str | None:
+    """Replace a re-route command's *args* with the ids its handler will read.
+
+    ``provider_reroute`` and ``provider_reroute_undo`` take task ids no
+    contract declares, and their handlers split and strip them.  Validating
+    here, before any rule reads the arguments, means the target-scope check
+    resolves exactly the ids the handler acts on, and an undeclared alias such
+    as ``task_ids`` is refused instead of passing unchecked
+    (:mod:`src.providers.reroute_args`).  The trusted local caller has no
+    scope to protect, so its invalid arguments reach the handler, which
+    refuses them with the same message.
+    """
+    from src.providers.reroute_args import (
+        REROUTE_ARGUMENT_MODELS,
+        canonical_reroute_args,
+        validation_error_text,
+    )
+
+    if command not in REROUTE_ARGUMENT_MODELS:
+        return None
+    try:
+        canonical = canonical_reroute_args(command, args)
+    except ValidationError as exc:
+        if scope.kind != "session":
+            return None
+        return f"out of scope: invalid {command} arguments ({validation_error_text(exc)})"
+    args.clear()
+    args.update(canonical)
+    return None
+
+
+async def _check_request_scope(
     command: str, args: dict, scope: RequestScope, *, db=None,
 ) -> str | None:
     """Apply the normal scope, with narrowly verified triage capabilities.
@@ -552,6 +1074,59 @@ async def check_request_scope(
     task/session identity; granting queue access never grants operator commands
     or loosens the ownership checks for task mutations such as task_close.
     """
+    if (error := _canonicalise_reroute_args(command, args, scope)) is not None:
+        return error
+    if command == "task_show" and scope.kind == "session" and not scope.elevated:
+        session = await db.get_session(scope.session_id) if db and scope.session_id else None
+        if (session is not None and session.profile_id == "fidelity-reviewer"
+                and args.get("task_id") == session.task_id):
+            return check_command_scope(command, args, scope)
+    if command in _FIDELITY_READ_COMMANDS:
+        context = await fidelity_review_read_context(db, scope)
+        if context is not None:
+            error = fidelity_read_args_error(command, args, scope, context)
+            if error is None:
+                args["project_id"] = scope.project_id
+            return error
+    if scope.kind == "session" and not scope.elevated and command in _BATCH_REVIEW_COMMANDS:
+        batch_id = args.get("batch_id") or args.get("proposal_id")
+        if await fidelity_review_task_for_session(db, scope, batch_id) is not None:
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            args["project_id"] = scope.project_id
+            return None
+        # Not this batch's reviewer: a spec-ingest session or the ordinary
+        # scope may still answer for the command.
+    if scope.kind == "session" and not scope.elevated and command in _SPEC_INGEST_COMMANDS:
+        held = await spec_ingest_task_for_session(
+            db, scope, legacy_receipt=command == "task_batch_commit",
+        )
+        if held is not None:
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            args["project_id"] = scope.project_id
+            if command == "task_batch_commit":
+                from src.database.queries.proposal_queries import get_proposal
+
+                proposal = await get_proposal(db, args.get("proposal_id"))
+                if proposal is None or proposal["project_id"] != scope.project_id:
+                    return "out of scope: proposal mismatch"
+                if (proposal["payload"].get("spec_ingest") or {}).get("task_id") != held.id:
+                    return "out of scope: proposal does not belong to held ingestion task"
+                if (not held.dedup_key.startswith("spec-ingest:decision:")
+                        and proposal["status"] != "committed"):
+                    return "out of scope: legacy ingestion only permits committed receipts"
+            if command == "get_downstream_tasks":
+                task = await db.get_task(args.get("task_id"))
+                if task is None or task.project_id != scope.project_id:
+                    return "out of scope: task_id mismatch"
+            return None
+        # ``list_tasks`` is also a triage capability. A session without an
+        # ingestion assignment must still reach that independently checked grant.
     if (
         scope.kind == "session"
         and not scope.elevated
@@ -629,7 +1204,10 @@ async def check_request_scope(
                 return "out of scope: project_id mismatch"
             if args.get("session_id") not in (None, scope.session_id):
                 return "out of scope: session_id mismatch"
-            branch_bound = {"reopen_with_feedback", "task_show", "get_task", "task_comments"}
+            branch_bound = {
+                "reopen_with_feedback", "task_show", "get_task", "task_comments",
+                "task_subtasks", "task_subtask_get",
+            }
             if command == "pr_merge" and args.get("pr_url") != pr_url:
                 return "out of scope: a final reviewer may only merge its review branch PR"
             if command in branch_bound and args.get("task_id") not in worker_ids:
@@ -642,7 +1220,23 @@ async def check_request_scope(
             return None
 
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
-        return check_command_scope(command, args, scope)
+        error = check_command_scope(command, args, scope)
+        if error is not None:
+            return error
+        if (
+            scope.kind == "session"
+            and scope.elevated
+            and scope.project_id is not None
+            and _forbids_project_id(command)
+        ):
+            # A per-project supervisor on a contract that declares no
+            # ``project_id``: the gate injected nothing, so the project's
+            # isolation is the target's own.  Verified here, where a database
+            # is available, and refused if the target is somebody else's.
+            from src.api.target_scope import target_scope_error
+
+            return await target_scope_error(command, args, scope.project_id, db=db)
+        return None
 
     ordinary_args = dict(args)
     error = check_command_scope(command, ordinary_args, scope)
@@ -658,20 +1252,11 @@ async def check_request_scope(
     if args.get("session_id") not in (None, scope.session_id):
         return "out of scope: session_id mismatch"
 
-    if command in {"get_task", "task_show", "task_route"}:
+    if command in {"get_task", "task_show"}:
         task_id = args.get("task_id")
         task = await db.get_task(str(task_id)) if task_id else None
         if task is None or task.project_id != project_id:
             return "out of scope: task must belong to this triage project's queue"
-        if command == "task_route":
-            gates = await db.get_gates_for_task(task.id)
-            if not any(
-                gate["project_id"] == project_id
-                and gate["gate_type"] == "routing"
-                and gate["status"] == "open"
-                for gate in gates
-            ):
-                return "out of scope: triage may only route tasks with an open routing gate"
     elif command == "gate_show":
         gate_id = args.get("gate_id")
         gate = await db.get_gate(str(gate_id)) if gate_id else None
@@ -693,3 +1278,23 @@ async def check_request_scope(
     args["project_id"] = project_id
     args["session_id"] = scope.session_id
     return None
+
+
+async def check_request_scope(
+    command: str, args: dict, scope: RequestScope, *, db=None,
+) -> str | None:
+    """Keep transport grants and share resource ownership with every dispatcher."""
+    error = await _check_request_scope(command, args, scope, db=db)
+    if error is not None or scope.kind == "local" or db is None:
+        return error
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.commands.resource_authorization import authorize_resources
+    from src.profiles.capabilities import DENY_ALL
+
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id=scope.session_id,
+        task_id=scope.task_id, project_id=scope.project_id, elevated=scope.elevated,
+        session_instance_token=scope.session_instance_token,
+    )
+    refusal = await authorize_resources(command, args, principal, db=db)
+    return refusal["error"] if refusal is not None else None

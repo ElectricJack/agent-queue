@@ -1,0 +1,228 @@
+"""Response models for the document-review command group."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel
+
+
+class ReviewErrorResponse(BaseModel):
+    """Stable refusal envelope shared by document-review endpoints."""
+
+    model_config = {"extra": "allow"}
+    success: bool = False
+    error_code: str
+    error: str
+
+
+class ReviewRecord(BaseModel):
+    model_config = {"extra": "allow"}
+
+    id: str
+    project_id: str
+    title: str
+    kind: str
+    state: str
+    current_revision: int
+    author_task_id: str | None = None
+    vault_path: str
+    gate_id: str | None = None
+    decider: str = "user"
+    withdrawn_by: str | None = None
+    withdrawn_at: float | None = None
+    withdrawn_via: str | None = None
+    withdrawal_reason: str | None = None
+
+
+class ReviewSubmitResponse(BaseModel):
+    model_config = {"extra": "allow"}
+
+    success: bool = True
+    review_id: str
+    revision: int
+    vault_path: str
+    #: A playbook review's pin: the artifact hash approval will store.
+    playbook: dict[str, Any] | None = None
+
+
+class ReviewResponseRoute(BaseModel):
+    kind: str
+    summary: str
+    class_id: str | None = None
+    profile_id: str | None = None
+    source: str | None = None
+    selected_class: str | None = None
+    selected_profile: str | None = None
+    class_summaries: dict[str, str] = {}
+
+
+class ReviewShowResponse(BaseModel):
+    model_config = {"extra": "allow"}
+
+    success: bool = True
+    review: ReviewRecord
+    revision: dict[str, Any]
+    revisions: list[dict[str, Any]] = []
+    vault_state: str
+    comments: list[dict[str, Any]] | None = None
+    diff: list[dict[str, Any]] | None = None
+    dispatches: list[dict[str, Any]] = []
+    response_route: ReviewResponseRoute
+    attachments: list[dict[str, Any]] = []
+    dependent_task_ids: list[str] = []
+    gate: dict[str, Any] | None = None
+
+
+class ReviewAttachmentAddResponse(BaseModel):
+    success: bool = True
+    attachment: dict[str, Any]
+
+
+class ReviewAttachmentListResponse(BaseModel):
+    success: bool = True
+    attachments: list[dict[str, Any]] = []
+
+
+class ReviewListResponse(BaseModel):
+    success: bool = True
+    reviews: list[ReviewRecord] = []
+
+
+class ReviewWithdrawResponse(BaseModel):
+    success: bool = True
+    review_id: str
+    flagged_task_ids: list[str] = []
+
+
+class ReviewDecideResponse(BaseModel):
+    model_config = {"extra": "allow"}
+
+    application_state: str = "not_started"
+    decision_id: str | None = None
+    success: bool = True
+    review_id: str
+    state: str
+    unblocked_task_ids: list[str] = []
+    #: What approving a playbook review did with its pinned artifact.
+    playbook: dict[str, Any] | None = None
+
+
+class AskSourceVersion(BaseModel):
+    decision_generation: int
+    source_fingerprint: str
+    feedback_version: int
+
+
+class AskDecisionPreview(BaseModel):
+    model_config = {"extra": "allow"}
+
+    id: str
+    ask_id: str
+    decision_generation: int
+    actor_id: str
+    input_id: str | None = None
+    source_fingerprint: str
+    feedback_version: int
+    packet: dict[str, Any]
+    packet_sha256: str
+    created_at: float
+    expires_at: float
+
+
+class AskPrepareDecisionResponse(BaseModel):
+    success: bool = True
+    preview: AskDecisionPreview
+    expected: AskSourceVersion
+
+
+class AskDecideResponse(ReviewDecideResponse):
+    created: bool
+
+
+class ReviewFeedbackCompleteResponse(BaseModel):
+    success: bool = True
+    obligation_id: str
+    recorded: bool
+
+
+class PullRequestApproveResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    url: str
+    head_sha: str
+    review_id: int | None = None
+    integration_flush: dict[str, Any] | None = None
+
+
+class ReviewCommentResponse(BaseModel):
+    success: bool = True
+    comment_id: str
+
+
+class ReviewDelegateResponse(BaseModel):
+    success: bool = True
+    review_id: str
+    decider: str
+
+
+class ReviewDispatchResponse(BaseModel):
+    success: bool = True
+    review_id: str
+    dispatches: list[dict[str, Any]]
+
+
+class ReviewImportEditsResponse(BaseModel):
+    success: bool = True
+    review_id: str
+    revision: int
+
+
+class GitHubIssueTriageResponse(BaseModel):
+    success: bool = True
+    filed: list[int]
+    recovered: list[int]
+    remaining_capacity: int
+
+
+class GitHubIssueFixApprovedResponse(BaseModel):
+    success: bool = True
+    outcome: str
+    task_id: str | None = None
+
+
+class GitHubIssueCloseRejectedResponse(BaseModel):
+    success: bool = True
+    outcome: str
+    number: int
+
+
+class GitHubIssueRejectionResponse(BaseModel):
+    success: bool = True
+    outcome: str
+    number: int | None = None
+
+
+RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "review_attachment_add": ReviewAttachmentAddResponse,
+    "review_attachment_list": ReviewAttachmentListResponse,
+    "review_submit": ReviewSubmitResponse,
+    "review_show": ReviewShowResponse,
+    "review_list": ReviewListResponse,
+    "review_withdraw": ReviewWithdrawResponse,
+    "review_reopen": ReviewSubmitResponse,
+    "review_decide": ReviewDecideResponse,
+    "ask_prepare_decision": AskPrepareDecisionResponse,
+    "ask_decide": AskDecideResponse,
+    "ask_retry_operation": ReviewDecideResponse,
+    "review_feedback_complete": ReviewFeedbackCompleteResponse,
+    "approve_pull_request": PullRequestApproveResponse,
+    "review_comment": ReviewCommentResponse,
+    "review_delegate": ReviewDelegateResponse,
+    "review_dispatch": ReviewDispatchResponse,
+    "review_import_edits": ReviewImportEditsResponse,
+    "github_issue_triage": GitHubIssueTriageResponse,
+    "github_issue_fix_approved": GitHubIssueFixApprovedResponse,
+    "github_issue_close_rejected": GitHubIssueCloseRejectedResponse,
+    "github_issue_rejection": GitHubIssueRejectionResponse,
+}

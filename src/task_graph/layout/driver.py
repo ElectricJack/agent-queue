@@ -6,12 +6,15 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from typing import Literal
 
 from src.task_graph.layout.constants import (
     CARD_H,
     CARD_W,
+    DRAWN_TYPES,
     FINISHED_STATUSES,
+    ROW_ASPECT,
     HEADER_H,
     PADDING,
     RANKING_DEP_TYPES,
@@ -46,8 +49,60 @@ class LayoutRelayDepthExceeded(ValueError):
     """
 
 
-def _visible(snapshot: dict[str, SnapTask], variant: str) -> tuple[set[str], set[str]]:
-    """Return (ids present in the variant, container ids rendered as stubs)."""
+def _edge_anchored(
+    snapshot: dict[str, SnapTask],
+    candidates: set[str],
+    edges: Iterable[tuple[str, str, str]],
+) -> set[str]:
+    """Which *candidates* unfinished work still has a drawn edge into.
+
+    An edge only anchors when exactly one of its endpoints is unfinished:
+    two finished endpoints are both leaving the variant together, and two
+    unfinished endpoints cannot lie inside a candidate (a candidate has no
+    unfinished descendant). The anchor is charged to the NEAREST candidate
+    enclosing the finished endpoint, so an edge into a child keeps that
+    child's own epic as the stub; ``_visible``'s ancestor closure then
+    restores the chain above it as real containers.
+    """
+    if not candidates:
+        return set()
+    anchored: set[str] = set()
+
+    def unfinished(tid: str) -> bool:
+        t = snapshot.get(tid)
+        return t is not None and t.status not in FINISHED_STATUSES
+
+    def mark(tid: str) -> None:
+        cur: str | None = tid
+        seen: set[str] = set()
+        while cur is not None and cur in snapshot and cur not in seen:
+            seen.add(cur)
+            if cur in candidates:
+                anchored.add(cur)
+                return
+            cur = snapshot[cur].parent_id
+
+    for dep, blocker, typ in edges:
+        if typ not in DRAWN_TYPES:
+            continue
+        if unfinished(dep) and not unfinished(blocker):
+            mark(blocker)
+        elif unfinished(blocker) and not unfinished(dep):
+            mark(dep)
+    return anchored
+
+
+def _visible(
+    snapshot: dict[str, SnapTask],
+    variant: str,
+    edges: Iterable[tuple[str, str, str]],
+) -> tuple[set[str], set[str]]:
+    """Return (ids present in the variant, container ids rendered as stubs).
+
+    *edges* is required, not defaulted: the ``active`` variant decides what to
+    drop partly from them, so a caller that forgot would silently drop a
+    finished container unfinished work still points at.
+    """
     if variant == "all":
         return set(snapshot), set()
     children_of: dict[str | None, list[str]] = defaultdict(list)
@@ -65,12 +120,32 @@ def _visible(snapshot: dict[str, SnapTask], variant: str) -> tuple[set[str], set
     for t in snapshot.values():
         if t.parent_id is None:
             count(t.id)
+    # A stub is context, nothing more: the spec keeps a finished epic in the
+    # `active` variant so it stays findable (§3.3, §4.8) and so a drawn edge
+    # from unfinished work still has a far endpoint to land on (`cap_stubs`
+    # drops an edge whose far end has no row here). A container that is
+    # ITSELF finished, holds no unfinished descendant and that nothing
+    # unfinished points at is context for nothing, so it leaves the variant
+    # rather than filling the canvas with completed work the viewer asked to
+    # hide. An UNFINISHED container whose descendants have all finished is
+    # still live work and keeps its stub.
+    dropped = {
+        t.id
+        for t in snapshot.values()
+        if t.is_container
+        and t.status in FINISHED_STATUSES
+        and children_of.get(t.id)
+        and active_desc.get(t.id, 0) == 0
+    }
+    dropped -= _edge_anchored(snapshot, dropped, edges)
     present: set[str] = set()
     stubs: set[str] = set()
     for t in snapshot.values():
         if t.is_container and active_desc.get(t.id, 0) == 0:
-            # finished container: stub if it has any descendants, else keep as
-            # empty container only if it is itself unfinished
+            if t.id in dropped:
+                # An anchored descendant can still pull it back in below, as
+                # a real container rather than a stub.
+                continue
             if children_of.get(t.id):
                 present.add(t.id)
                 stubs.add(t.id)
@@ -136,6 +211,7 @@ def build_full_write_set(
     mode: Literal["tidy"] = "tidy",
     seed: int = 0,
     deadline: float | None = None,
+    row_aspect: float = ROW_ASPECT,
 ) -> tuple[WriteSet, tuple[float, float]]:
     """Lay out every container in *snapshot* from scratch (§4.7).
 
@@ -145,7 +221,7 @@ def build_full_write_set(
     barycenter placement only, skipping the tidy improvement loop — so the
     job still produces a complete, correct layout, just a less pretty one.
     """
-    present, stubs = _visible(snapshot, variant)
+    present, stubs = _visible(snapshot, variant, edges)
     children_of: dict[str | None, list[str]] = defaultdict(list)
     for tid in present:
         children_of[snapshot[tid].parent_id].append(tid)
@@ -194,8 +270,14 @@ def build_full_write_set(
             sibling_edges=rank_edges.get(container_id, []),
             child_sizes={k: sizes[k] for k in kids if k in sizes},
             stub_ids=frozenset(s for s in stubs if s in kids),
+            # ``aggs`` was computed above, before this first ``lay()``, so the
+            # tidy seed classes a container from THIS snapshot rather than
+            # from whatever the last published row happened to carry (§3.2).
+            child_aggregates={k: aggs[k] for k in kids if k in aggs},
         )
-        res = layout_container(scope, mode=container_mode, seed=seed)
+        res = layout_container(
+            scope, mode=container_mode, seed=seed, row_aspect=row_aspect
+        )
         rel_rows.update(res.rows)
         return res.allocated
 
@@ -220,19 +302,39 @@ def build_full_write_set(
 
 
 class LayoutDriver:
-    def __init__(self, db, *, seed: int = 0, tidy_job_seconds: float | None = TIDY_JOB_SECONDS):
+    def __init__(
+        self,
+        db,
+        *,
+        seed: int = 0,
+        tidy_job_seconds: float | None = TIDY_JOB_SECONDS,
+        row_aspect: float = ROW_ASPECT,
+    ):
         self.db = db
         self.seed = seed
+        self.row_aspect = row_aspect
         # Spec §4.7's overall tidy-job budget. ``None`` disables it.
         self.tidy_job_seconds = tidy_job_seconds
 
     async def _blocked_ids(self, project_id: str) -> set[str]:
-        tasks = await self.db.list_tasks(project_id=project_id)
-        return {t.id for t in tasks if getattr(t, "is_blocked", False)}
+        return await self.db.load_layout_blocked_ids(project_id)
 
     async def full_layout(
-        self, project_id: str, variant: str, *, mode: Literal["tidy"] = "tidy"
+        self,
+        project_id: str,
+        variant: str,
+        *,
+        mode: Literal["tidy"] = "tidy",
+        capture_reflows: bool = True,
     ) -> int:
+        # A Tidy/full rebuild is itself a valid compaction.  Capture before
+        # the snapshot so a request arriving while it computes has a higher
+        # generation and cannot be accidentally consumed on publication.
+        captured_reflows = (
+            await self.db.capture_layout_reflow_generations(project_id, variant)
+            if capture_reflows and variant == "active"
+            else {}
+        )
         snapshot, edges = await self.db.load_project_snapshot(project_id)
         blocked = await self._blocked_ids(project_id)
         deadline = (
@@ -247,6 +349,7 @@ class LayoutDriver:
             mode=mode,
             seed=self.seed,
             deadline=deadline,
+            row_aspect=self.row_aspect,
         )
         # Replace everything: rows no longer present (including orphans left
         # behind by a deleted task, or stray rows under this project_id/
@@ -255,18 +358,84 @@ class LayoutDriver:
         keep = {r.task_id for r in ws.upserts}
         ws.deletes = [tid for tid in existing if tid not in keep]
         return await self.db.publish_layout(
-            project_id, variant, ws, consumed_seq=None, extent=extent
+            project_id,
+            variant,
+            ws,
+            consumed_seq=None,
+            extent=extent,
+            captured_reflows=captured_reflows,
+        )
+
+    async def reflow(self, project_id: str, variant: str, claims: list[dict]) -> int:
+        """Compact claimed active scopes without changing their ordering.
+
+        The normal ``incremental`` engine mode preserves root ordinals and
+        uses canonical dependency/creation order inside task containers.
+        Starting it at only the claimed scopes (deepest first) compacts the
+        remaining siblings without applying the root's Tidy optimizer.
+        """
+        if variant != "active":
+            raise ValueError("deferred reflow is only defined for the active variant")
+        snapshot, edges = await self.db.load_project_snapshot(project_id)
+        blocked = await self._blocked_ids(project_id)
+        batch = _IncrementalBatch(self, project_id, variant, snapshot, edges, blocked, [])
+        await batch._preload_db_rows()
+
+        scopes: list[str | None] = []
+        for claim in claims:
+            scope_key = claim["scope_key"]
+            cid = None if scope_key == ROOT else scope_key
+            # A scope that was deleted, dropped, or became a stub has no
+            # visible children to compact.  It is still a successful durable
+            # acknowledgement, made atomically by the final publish below.
+            if cid is not None and (cid not in batch.present or cid in batch.stubs):
+                continue
+            if cid is not None and await batch._db_row(cid) is None:
+                continue
+            scopes.append(cid)
+
+        batch.queue = [(cid, "incremental") for cid in scopes]
+        await batch._drain()
+        await batch._relay_moved_containers()
+        await batch._refresh_aggregates()
+        batch.ws.upserts = [batch.pending[k] for k in sorted(batch.pending)]
+        batch.ws.deletes = sorted(set(batch.ws.deletes) - set(batch.pending))
+        if batch.root_extent is not None:
+            batch.ws.sizes[ROOT] = batch.root_extent
+        meta = await self.db.get_layout_meta(project_id, variant)
+        if meta is None:
+            # A concurrent project/layout cleanup removed the published
+            # variant.  There is no geometry left to compact; publishing an
+            # empty replacement would be surprising, so let the caller
+            # release the claims normally instead.
+            raise ValueError(f"active layout disappeared for {project_id}")
+        extent = batch.ws.sizes.get(ROOT, (meta["extent_w"], meta["extent_h"]))
+        return await self.db.publish_layout(
+            project_id,
+            variant,
+            batch.ws,
+            consumed_seq=None,
+            extent=extent,
+            reflow_claims=claims,
         )
 
     async def reconcile(self, project_id: str) -> int:
-        """Compare the ``all`` variant's rows to the snapshot and mark drift dirty.
+        """Compare each variant's rows to the snapshot and mark drift dirty.
 
-        Detects tasks with no row, rows with no task, rows whose
+        Detects tasks with no row, rows with no task, rows present in a
+        variant that should not hold them (and vice versa), rows whose
         ``container_id`` differs from the task's parent, and rows whose
-        ``kind`` disagrees with the container flag. Each discrepancy writes
-        a dirty mark with reason ``reconcile``; ``reconciled_at`` is then
-        stamped on both variants' meta rows. Returns the number of marks
-        enqueued.
+        ``kind`` disagrees with what the variant expects. Each discrepancy
+        writes a dirty mark with reason ``reconcile``; ``reconciled_at`` is
+        then stamped on both variants' meta rows. Returns the number of
+        marks enqueued.
+
+        Covering ``active`` as well as ``all`` is also how a rules change in
+        ``_visible`` reaches an install that is already laid out: the sweep
+        notices that the published rows no longer match what the engine
+        would publish today and retires them, with no operator action and
+        no migration. (It deliberately does not chase *geometry* drift —
+        §4.6's finished-leaf fold leaves an empty slot behind on purpose.)
         """
         from sqlalchemy import update
 
@@ -275,20 +444,29 @@ class LayoutDriver:
         if await self.db.get_layout_meta(project_id, "all") is None:
             return 0
 
-        snapshot, _ = await self.db.load_project_snapshot(project_id)
-        all_rows = await self.db.load_subtree_rows(project_id, "all")
+        snapshot, edges = await self.db.load_project_snapshot(project_id)
         bad: set[str] = set()
-        for tid, t in snapshot.items():
-            r = all_rows.get(tid)
-            if (
-                r is None
-                or r.container_id != t.parent_id
-                or (r.kind == "container") != t.is_container
-            ):
-                bad.add(tid)
-        for tid in all_rows:
-            if tid not in snapshot:
-                bad.add(tid)
+        for variant in VARIANTS:
+            if await self.db.get_layout_meta(project_id, variant) is None:
+                continue
+            rows = await self.db.load_subtree_rows(project_id, variant)
+            present, stubs = _visible(snapshot, variant, edges)
+            for tid, t in snapshot.items():
+                r = rows.get(tid)
+                if tid not in present:
+                    if r is not None:
+                        bad.add(tid)
+                    continue
+                expect_container = t.is_container and tid not in stubs
+                if (
+                    r is None
+                    or r.container_id != t.parent_id
+                    or (r.kind == "container") != expect_container
+                ):
+                    bad.add(tid)
+            for tid in rows:
+                if tid not in snapshot:
+                    bad.add(tid)
         if bad:
             async with self.db._engine.begin() as conn:
                 await self.db.mark_layout_dirty(project_id, sorted(bad), "reconcile", conn=conn)
@@ -320,7 +498,13 @@ class LayoutDriver:
         for idx, variant in enumerate(VARIANTS):
             last = idx == len(VARIANTS) - 1
             if await self.db.get_layout_meta(project_id, variant) is None:
-                out[variant] = await self.full_layout(project_id, variant)
+                # This is the five-second dirty loop's initial build, not an
+                # ordinary Tidy.  It must not read the separate deferred
+                # queue; no published active geometry exists for it to
+                # compact yet in any case.
+                out[variant] = await self.full_layout(
+                    project_id, variant, capture_reflows=False
+                )
                 continue
             batch = _IncrementalBatch(self, project_id, variant, snapshot, edges, blocked, marks)
             # Only the final variant retires the marks: if a later variant
@@ -352,11 +536,12 @@ class _IncrementalBatch:
     def __init__(self, driver, project_id, variant, snapshot, edges, blocked, marks):
         self.db = driver.db
         self.seed = driver.seed
+        self.row_aspect = driver.row_aspect
         self.project_id = project_id
         self.variant = variant
         self.snapshot = snapshot
         self.marks = marks
-        self.present, self.stubs = _visible(snapshot, variant)
+        self.present, self.stubs = _visible(snapshot, variant, edges)
         self.parent_of: dict[str, str | None] = {t.id: t.parent_id for t in snapshot.values()}
 
         all_children_of: dict[str | None, list[str]] = defaultdict(list)
@@ -474,12 +659,59 @@ class _IncrementalBatch:
         """Absolute content origin of a container row."""
         return (row.abs_x + PADDING, row.abs_y + PADDING + HEADER_H)
 
+    async def _aggregates_only(self, tid: str, reason: str) -> bool:
+        """Can this mark be folded without re-laying any container?
+
+        ``all``: every task is present whatever its status, so a status mark
+        on a leaf with a stored row changes no box — only the ancestors'
+        counters.
+
+        ``active``: a leaf that just FINISHED leaves the variant.  The
+        vanished-tasks loop in ``run()`` deletes its row (and the container
+        stays untouched) rather than re-flowing the parent (1.4 s for a
+        5,000-child root); the next ordinary pass over that container — a
+        created, moved or reopened sibling, or a tidy job — closes the gap.
+        A REOPENED leaf needs a slot, and a container's own status can turn
+        it into a stub, so both take the ordinary path.  So does a finished
+        leaf whose parent must itself flip to a stub or vanish (its own
+        LAST active child just finished): the parent needs relaying to
+        become the one-card stub in that case, not to stay a full-size
+        empty container.
+        """
+        if not reason.startswith("status."):
+            return False
+        task = self.snapshot[tid]
+        if task.is_container:
+            return False
+        row = await self._db_row(tid)
+        if row is None:
+            return False
+        if self.variant == "all":
+            return True
+        if reason != "status.finished" or tid in self.present:
+            return False
+        parent = self.parent_of.get(tid)
+        if parent is not None and (parent in self.stubs or parent not in self.present):
+            return False
+        return True
+
     # ── dirty → containers ──────────────────────────────────────────────
     async def _seed_queue(self) -> None:
         dirty: set[str | None] = set()
         for tid, reason in self.marks:
             self.dirty_tasks.add(tid)
             if tid in self.snapshot:
+                if await self._aggregates_only(tid, reason):
+                    # Geometry cannot change: ``_refresh_aggregates`` walks
+                    # ``dirty_tasks``' ancestors and rewrites the counters.
+                    # For active finished leaves that is only temporarily
+                    # true: they left a hole among their surviving siblings.
+                    # Queue a later, bounded compaction from this proven
+                    # aggregates-only seam rather than from the raw task
+                    # transition, which cannot distinguish stub/drop cases.
+                    if self.variant == "active" and reason == "status.finished":
+                        self.ws.reflow_scopes.add(self.parent_of.get(tid) or ROOT)
+                    continue
                 dirty.add(self.parent_of[tid])
                 if self.snapshot[tid].is_container:
                     # its own children may have become (in)visible
@@ -562,7 +794,9 @@ class _IncrementalBatch:
             stub_ids=frozenset(s for s in self.stubs if s in kids),
             origin=origin,
         )
-        res = await asyncio.to_thread(layout_container, scope, mode=mode, seed=self.seed)
+        res = await asyncio.to_thread(
+            layout_container, scope, mode=mode, seed=self.seed, row_aspect=self.row_aspect
+        )
         self.processed.add(cid)
         # Remember the FRAME these children were authored in, not just the
         # path: a container framed on its pending row (moved here, or created

@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class PlaybookRunOverlayResponseLifecycle(str, Enum):
+    BLOCKED = "blocked"
     CANCELLED = "cancelled"
     CANCELLING = "cancelling"
     COMPLETED = "completed"

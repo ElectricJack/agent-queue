@@ -255,3 +255,95 @@ class TestNullableScalarOptionsReachTheServer:
         )
         assert result.exit_code != 0
         assert "not a valid integer" in result.output
+
+
+class TestContractProjectionSchemas:
+    """Schemas projected from a command contract's ``args_model`` by pydantic:
+    ``T | None`` is ``anyOf: [T, null]`` and a nested model is a ``$ref`` —
+    neither carries a top-level ``type``."""
+
+    def test_a_nullable_scalar_projection_keeps_its_type(self):
+        """``integration_enable.interval_seconds`` is an int, not the text "30"."""
+        param = _schema_to_click_type(
+            {"anyOf": [{"exclusiveMinimum": 0, "type": "integer"}, {"type": "null"}]}
+        )
+        assert isinstance(param, NullableParam)
+        assert param.convert("30", None, None) == 30
+        assert param.convert("null", None, None) is EXPLICIT_NULL
+
+    def test_a_nullable_array_projection_parses_json(self):
+        """``gate_create.waiter_task_ids``."""
+        param = _schema_to_click_type(
+            {"anyOf": [{"items": {"type": "string"}, "type": "array"}, {"type": "null"}]}
+        )
+        assert param.convert('["a", "b"]', None, None) == ["a", "b"]
+
+    def test_a_nested_model_projection_parses_json(self):
+        """``delivery_promote.fence`` is a ``$ref`` into ``$defs``."""
+        param = _schema_to_click_type({"$ref": "#/$defs/Fence"})
+        assert isinstance(param, StructuredParam)
+        assert param.convert('{"epoch": 1}', None, None) == {"epoch": 1}
+
+
+def _supervisor_tool(verb):
+    from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+
+    return next(t for t in _ALL_TOOL_DEFINITIONS if t["name"] == f"supervisor_inbox_{verb}")
+
+
+def test_supervisor_history_repeatable_states_reach_the_server():
+    assert _invoke_tool(
+        _supervisor_tool("history"),
+        "history",
+        "--state",
+        "open",
+        "--state",
+        "closed",
+        "--limit",
+        "7",
+        "--before",
+        "123.5",
+        "--before-id",
+        "conv-x",
+    ) == {"states": ["open", "closed"], "limit": 7, "before": 123.5, "before_id": "conv-x"}
+    assert _invoke_tool(_supervisor_tool("history"), "history") == {}
+
+
+def test_supervisor_reply_file_is_read_before_dispatch(tmp_path):
+    text_file = tmp_path / "reply.txt"
+    text_file.write_text("A Unicode answer: é\n", encoding="utf-8")
+    assert _invoke_tool(
+        _supervisor_tool("reply"),
+        "reply",
+        "--conversation-id",
+        "conv",
+        "--input-id",
+        "input",
+        "--idempotency-key",
+        "key",
+        "--file",
+        str(text_file),
+    ) == {
+        "conversation_id": "conv",
+        "input_id": "input",
+        "idempotency_key": "key",
+        "text": "A Unicode answer: é\n",
+    }
+
+
+@pytest.mark.parametrize("text_options", [[], ["--text", "answer", "--file"]])
+def test_supervisor_reply_requires_exactly_one_text_source(tmp_path, text_options):
+    from rich.console import Console
+
+    text_file = tmp_path / "reply.txt"
+    text_file.write_text("answer", encoding="utf-8")
+    command = _make_auto_command(
+        "supervisor_inbox_reply", "reply", _supervisor_tool("reply"), Console()
+    )
+    argv = ["--conversation-id", "conv", "--input-id", "input", "--idempotency-key", "key"]
+    if text_options:
+        argv.extend([*text_options, str(text_file)])
+    with patch("src.cli.app._get_client") as client:
+        result = CliRunner().invoke(command, argv, obj={})
+    assert result.exit_code == 2 and "exactly one" in result.output
+    client.assert_not_called()

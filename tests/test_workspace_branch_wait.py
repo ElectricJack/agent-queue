@@ -13,18 +13,32 @@ slot``, which suppressed the operator notice, so the wait never surfaced.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import insert, update
 
-from src.config import AppConfig
+from src.config import AppConfig, DatabaseConfig
 from src.database import Database
+from src.database.tables import (
+    integration_branch_owners,
+    integration_parent_episodes,
+    integration_repair_operations,
+    projects,
+    task_branch_origins,
+    task_integration_checkpoints,
+)
 from src.git.manager import GitError
+from src.integration.models import BranchKey
+from src.integration.ownership import BranchOwnership, BranchOwnershipError
 from src.models import (
     KIND_MODE_WORKTREE,
     Agent,
     AgentProfile,
     Project,
+    RepoConfig,
     RepoSourceType,
     Task,
     TaskStatus,
@@ -32,6 +46,7 @@ from src.models import (
     WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.asyncio
 
@@ -48,14 +63,25 @@ class _StubSlots:
         self.exc = exc
         self.calls: list[tuple[str, str | None]] = []
 
-    async def reset_slot_for_task(self, ws, task, *, resume_branch=None, kind=None):
+    async def reset_slot_for_task(
+        self, ws, task, *, base_branch=None, resume_branch=None, kind=None
+    ):
         self.calls.append((task.id, resume_branch))
         raise self.exc
 
 
+class _SuccessfulSlots:
+    def __init__(self):
+        self.calls = []
+
+    async def reset_slot_for_task(self, ws, task, **kwargs):
+        self.calls.append((ws.id, task.id, kwargs))
+        return f"aq/{task.id}"
+
+
 @pytest.fixture
 async def env(tmp_path):
-    db = Database(str(tmp_path / "wait.db"))
+    db = Database(lease_dsn("wait.db"))
     await db.initialize()
     await db.create_project(Project(id="p", name="p"))
     await db.create_profile(AgentProfile(id="worker", name="Worker"))
@@ -79,7 +105,7 @@ async def env(tmp_path):
     await db.create_workspace(base)
     await db.create_workspace(slot)
 
-    config = AppConfig(data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("wait.db")), data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"))
     orch = Orchestrator(config)
     orch.db = db
     notices: list[str] = []
@@ -91,7 +117,12 @@ async def env(tmp_path):
     kind = WorkspaceKind(project_id="p", id="project-repo", mode=KIND_MODE_WORKTREE)
     attachment = SimpleNamespace(workspace=slot, kind=kind)
     yield SimpleNamespace(
-        db=db, orch=orch, slot=slot, attachment=attachment, notices=notices
+        db=db,
+        orch=orch,
+        base=base,
+        slot=slot,
+        attachment=attachment,
+        notices=notices,
     )
     await db.close()
 
@@ -123,6 +154,20 @@ async def test_plain_task_branch_busy_is_not_a_sibling_wait(env):
     assert env.orch._workspace_wait_reasons["calm-flare"] == "branch_held"
 
 
+async def test_hierarchy_stack_conflict_reports_its_named_workspace_wait(env):
+    from src.integration.stacked_branches import StackPrerequisitesConflict
+
+    await env.db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE))
+    await env.db.update_project("p", hierarchical_integration_mode="train",
+                                integration_repository_id="repo")
+    task = await _task(env, "stack-dependent")
+    env.orch._hierarchy_origin_and_fence = AsyncMock(side_effect=StackPrerequisitesConflict({
+        "files": ["source.py"], "repair_task_id": "repair",
+    }))
+    assert await env.orch._prepare_workspace(task, await env.db.get_agent("agent")) is None
+    assert env.orch._workspace_wait_reasons[task.id] == "stack_prerequisites_conflict"
+
+
 async def test_plan_subtask_still_waits_for_its_sibling(env):
     """The sibling wait survives for the case it was written for."""
     parent = await _task(env, "plan", branch_name="aq/plan")
@@ -142,6 +187,341 @@ async def test_plan_subtask_without_a_parent_branch_is_not_a_sibling_wait(env):
     child = await _task(env, "step-2", parent_task_id=parent.id, is_plan_subtask=True)
     assert await _run(env, child) is None
     assert env.orch._workspace_wait_reasons["step-2"] == "branch_held"
+
+
+async def test_hierarchy_transfer_winning_before_prep_prevents_branch_reset(env):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+    )
+    task = await _task(env, "child", repo_id="repo", branch_name="aq/child")
+    async with env.db.immediate() as conn:
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="origin",
+                task_id=task.id,
+                repository_id="repo",
+                parent_ref="aq/parent",
+                base_sha="a" * 40,
+                creation_generation=1,
+                reserved=True,
+                materialized=True,
+                created_at=time.time(),
+                materialized_at=time.time(),
+            )
+        )
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(
+        BranchKey(repository_id="repo", branch="aq/child"), task.id, "worker"
+    )
+    origin = await env.db.get_task_branch_origin_for_promotion(task.id, "repo")
+    await ownership.transfer(fence, "collector", "collector")
+    slots = _StubSlots(BRANCH_BUSY)
+    env.orch._worktree_slot_manager = slots
+
+    assert await env.orch._prepare_slot_workspace(
+        task,
+        await env.db.get_project("p"),
+        env.attachment,
+        integration_origin=origin,
+        integration_fence=fence,
+    ) is None
+    assert slots.calls == []
+
+
+@pytest.mark.parametrize("released", [True, False])
+async def test_reopened_producer_reacquires_only_its_released_worker_branch(env, released):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    task = await _task(env, "retry", repo_id="repo", branch_name="aq/retry")
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="retry-origin", task_id=task.id, repository_id="repo", parent_ref="aq/parent",
+            base_sha="a" * 40, creation_generation=0, reserved=True, materialized=True,
+            created_at=time.time(), materialized_at=time.time(),
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id=task.id, repository_id="repo", branch="aq/retry",
+            checkpoint_sha="a" * 40, updated_at=time.time(),
+        ))
+    ownership = BranchOwnership(env.db)
+    target = BranchKey(repository_id="repo", branch="aq/retry")
+    old = await ownership.acquire(target, task.id, "worker")
+    if released:
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == task.id
+            ).values(handoff_state="released"))
+        _, current, role = await env.orch._hierarchy_origin_and_fence(
+            task, await env.db.get_project("p")
+        )
+        assert role == "worker"
+        assert current.token > old.token
+        await ownership.assert_current(current, expected_role="worker")
+        with pytest.raises(BranchOwnershipError):
+            await ownership.assert_current(old)
+    else:
+        await ownership.transfer(old, "collector", "collector")
+        with pytest.raises(BranchOwnershipError):
+            await env.orch._hierarchy_origin_and_fence(task, await env.db.get_project("p"))
+
+
+@pytest.mark.parametrize("role", ["worker", "verifier"])
+async def test_epic_root_branch_prepares_with_recorded_checkpoint(env, monkeypatch, role):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    branch = "aq/epic/prove-disposable-train-delivery"
+    root = await _task(env, "root", repo_id="repo", branch_name=branch)
+    task = root
+    now = time.time()
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="root-origin", task_id=root.id, repository_id="repo", parent_ref="main",
+            base_sha="a" * 40, creation_generation=0, reserved=True, materialized=True,
+            created_at=now, materialized_at=now,
+        ))
+        if role == "verifier":
+            await conn.execute(insert(integration_parent_episodes).values(
+                id="episode", parent_task_id=root.id, repository_id="repo", generation=0,
+                pre_collection_checkpoint_sha="a" * 40, created_at=now,
+            ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id=root.id, repository_id="repo", branch=branch,
+            checkpoint_sha="b" * 40, episode_id="episode" if role == "verifier" else None,
+            updated_at=now,
+        ))
+    if role == "verifier":
+        task = await _task(env, "verify-root", repo_id="repo", branch_name=branch)
+        async with env.db.immediate() as conn:
+            await conn.execute(insert(integration_repair_operations).values(
+                id="operation", target_kind="parent", parent_task_id=root.id,
+                episode_id="episode", state="active", policy_snapshot={},
+                artifact_snapshot={}, required_check_version="v1",
+                verifier_task_id=task.id, created_at=now, updated_at=now,
+            ))
+        # The verifier's separate claim frontier is covered by its own tests.
+        monkeypatch.setattr(env.db, "is_hierarchy_task_runnable", AsyncMock(return_value=True))
+    fence = await BranchOwnership(env.db).acquire(
+        BranchKey(repository_id="repo", branch=branch), task.id, role
+    )
+
+    origin, current, actual_role = await env.orch._hierarchy_origin_and_fence(
+        task, await env.db.get_project("p")
+    )
+
+    assert actual_role == role
+    assert current == fence
+    assert origin["base_sha"] == ("b" if role == "verifier" else "a") * 40
+
+
+async def test_verifier_uses_its_parents_reserved_noncanonical_branch(env):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    branch = "aq/epic/scratch-delivery"
+    parent = await _task(env, "parent", repo_id="repo", branch_name=branch)
+    verifier = await _task(env, "verifier", repo_id="repo", branch_name=branch)
+    async with env.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+        ))
+        await conn.execute(insert(task_branch_origins).values(
+            id="parent-origin", task_id=parent.id, repository_id="repo",
+            parent_ref="main", base_sha="a" * 40, creation_generation=0,
+            reserved=True, materialized=True, created_at=1.0, materialized_at=1.0,
+        ))
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="episode", parent_task_id=parent.id, repository_id="repo",
+            generation=1, pre_collection_checkpoint_sha="a" * 40, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_repair_operations).values(
+            id="operation", target_kind="parent", parent_task_id=parent.id,
+            episode_id="episode", state="active", policy_snapshot={}, artifact_snapshot={},
+            required_check_version="test", verifier_task_id=verifier.id,
+            created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id=parent.id, repository_id="repo", branch=branch, generation=1,
+            checkpoint_sha="b" * 40, state="verifying", episode_id="episode",
+            updated_at=1.0,
+        ))
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(BranchKey(repository_id="repo", branch=branch),
+                                    parent.id, "worker")
+    await ownership.transfer(fence, verifier.id, "verifier")
+
+    origin, current, role = await env.orch._hierarchy_origin_and_fence(
+        verifier, await env.db.get_project("p")
+    )
+    assert role == "verifier"
+    assert current.target.branch == branch
+    assert origin["base_sha"] == "b" * 40
+
+
+async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(env):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+    )
+    parent = await _task(env, "parent", repo_id="repo", branch_name="aq/parent")
+    child = await _task(
+        env,
+        "child",
+        repo_id="repo",
+        branch_name="aq/child",
+        parent_task_id=parent.id,
+        is_plan_subtask=True,
+    )
+    async with env.db.immediate() as conn:
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="origin",
+                task_id=child.id,
+                repository_id="repo",
+                parent_task_id=parent.id,
+                parent_repository_id="repo",
+                parent_ref="aq/parent",
+                base_sha="b" * 40,
+                creation_generation=1,
+                reserved=True,
+                materialized=True,
+                created_at=time.time(),
+                materialized_at=time.time(),
+            )
+        )
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(
+        BranchKey(repository_id="repo", branch="aq/child"), child.id, "worker"
+    )
+    slots = _SuccessfulSlots()
+    env.orch._worktree_slot_manager = slots
+    origin = await env.db.get_task_branch_origin_for_promotion(child.id, "repo")
+
+    result = await env.orch._prepare_slot_workspace(
+        child,
+        await env.db.get_project("p"),
+        env.attachment,
+        integration_origin=origin,
+        integration_fence=fence,
+    )
+
+    assert result == env.slot.workspace_path
+    assert slots.calls[0][2]["base_branch"] == "b" * 40
+    assert slots.calls[0][2]["resume_branch"] is None
+
+
+async def test_hierarchy_non_slot_prep_uses_exact_origin_under_owner_fence(
+    env, monkeypatch
+):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+    )
+    task = await _task(env, "child", repo_id="repo", branch_name="aq/child")
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(
+        BranchKey(repository_id="repo", branch="aq/child"), task.id, "worker"
+    )
+    calls = []
+
+    class Git:
+        async def avalidate_checkout(self, _path):
+            return True
+
+        async def ahas_uncommitted_changes(self, _path):
+            return False
+
+        async def ahas_remote(self, _path):
+            return True
+
+        async def afetch_origin(self, _path, *, repository_url):
+            assert repository_url == ""
+
+        async def _arun(self, args, *, cwd):
+            calls.append((args, cwd))
+            return "c" * 40 if args == ["rev-parse", "HEAD"] else ""
+
+        async def aprepare_child_branch(self, workspace, branch, parent_sha):
+            calls.append((["prepare-child", branch, parent_sha], workspace))
+
+    env.orch.git = Git()
+
+    async def excluded(_path):
+        return True
+
+    monkeypatch.setattr(env.orch, "_ensure_control_files_excluded", excluded)
+    attachment = SimpleNamespace(workspace=env.base, kind=env.attachment.kind)
+    origin = {"base_sha": "c" * 40}
+
+    branch = await env.orch._prepare_exact_origin_workspace(
+        task, await env.db.get_project("p"), attachment, origin, fence
+    )
+
+    assert branch == "aq/child"
+    # A worker resumes its task branch at the pinned origin, preserving progress.
+    assert (["prepare-child", "aq/child", "c" * 40], env.base.workspace_path) in calls
+    assert not any(args[:2] == ["checkout", "-B"] for args, _cwd in calls)
+    assert not any("main" in args for args, _cwd in calls)
+
+
+async def test_hierarchy_non_slot_transfer_before_prep_runs_no_git(env):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p",
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="repo",
+    )
+    task = await _task(env, "child", repo_id="repo", branch_name="aq/child")
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(
+        BranchKey(repository_id="repo", branch="aq/child"), task.id, "worker"
+    )
+    await ownership.transfer(fence, "collector", "collector")
+    calls = []
+
+    class Git:
+        async def avalidate_checkout(self, path):
+            calls.append(path)
+            return True
+
+    env.orch.git = Git()
+    attachment = SimpleNamespace(workspace=env.base, kind=env.attachment.kind)
+
+    with pytest.raises(BranchOwnershipError):
+        await env.orch._prepare_exact_origin_workspace(
+            task,
+            await env.db.get_project("p"),
+            attachment,
+            {"base_sha": "c" * 40},
+            fence,
+        )
+
+    assert calls == []
 
 
 async def test_non_branch_git_failure_still_reports_a_git_error(env):

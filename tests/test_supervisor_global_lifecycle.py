@@ -21,6 +21,7 @@ from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.spec import SessionSpecBuilder, named_session_name
+from tests.db_fixtures import lease_dsn
 
 
 TEST_EPOCH = "epoch-globaltest"
@@ -30,7 +31,7 @@ TEST_EPOCH = "epoch-globaltest"
 async def db(tmp_path):
     from src.database import Database
 
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
@@ -143,6 +144,8 @@ class TestGlobalSupervisorColdStart:
         assert call["project_id"] is None
         assert call["elevated"] is True
         assert call["task_id"] is None
+        row = await lens._db.get_session_by_name("n-supervisor--global")
+        assert call["session_instance_token"] == row.instance_token
         # Provider actually got a start with the ``n-supervisor--global``
         # runtime name so the reconciler can adopt it.
         starts = providers.create("fake").starts
@@ -170,7 +173,7 @@ class TestGlobalSupervisorColdStart:
         # project-scoped token (elevated=True, project_id=<pid>).
         from src.models import Project
 
-        await db.create_project(Project(id="proj1", name="Proj1"))
+        await db.create_project(Project(id="proj1", name="Proj1", supervisor_enabled=True))
         ok = await lens.ensure_started(
             kind="session", target_id="supervisor-proj1", project_id="proj1"
         )
@@ -178,3 +181,5 @@ class TestGlobalSupervisorColdStart:
         call = token_store.mint.await_args.kwargs
         assert call["project_id"] == "proj1"
         assert call["elevated"] is True
+        row = await lens._db.get_session_by_name("n-supervisor--proj1")
+        assert call["session_instance_token"] == row.instance_token

@@ -4,9 +4,11 @@ import {
   CheckCircleIcon,
   ExclamationTriangleIcon,
   KeyIcon,
+  LockClosedIcon,
 } from "@heroicons/react/24/outline";
 
 import {
+  useDeploymentHistory,
   useReloadSystemConfig,
   useSystemConfig,
   useSystemConfigSchema,
@@ -22,6 +24,7 @@ interface Toast {
 
 export default function SystemConfig() {
   const { data: configData, isLoading: configLoading, error: configError } = useSystemConfig();
+  const { data: deploymentHistory, error: deploymentError } = useDeploymentHistory();
   const { data: schemaData } = useSystemConfigSchema();
   const reload = useReloadSystemConfig();
   const update = useUpdateSystemConfig();
@@ -54,6 +57,7 @@ export default function SystemConfig() {
 
   const reloadByName = useMemo(() => buildReloadIndex(configData, schemaData), [configData, schemaData]);
   const refsBySection = useMemo(() => buildRefIndex(configData), [configData]);
+  const redactedBySection = useMemo(() => buildRedactedIndex(configData), [configData]);
 
   if (configError) {
     return (
@@ -70,6 +74,8 @@ export default function SystemConfig() {
   const selectedKind: ReloadKind =
     (selected ? reloadByName[selected] : undefined) ?? "unclassified";
   const selectedRefs: ConfigEnvRef[] = selected ? (refsBySection[selected] ?? []) : [];
+  const selectedRedacted: string[] = selected ? (redactedBySection[selected] ?? []) : [];
+  const placeholder = configData?.secret_placeholder ?? "";
 
   return (
     <div className="space-y-6">
@@ -102,6 +108,46 @@ export default function SystemConfig() {
         </button>
       </div>
 
+      <section aria-label="Deployment history" className="rounded-lg border border-gray-800 p-4">
+        <h2 className="font-semibold">Deployments</h2>
+        <p className="mt-1 text-sm text-gray-400">
+          Configure deploy.track_branch to follow the installed branch automatically.
+          Checks run every deploy.poll_interval_seconds (default 300 seconds).
+          Failed commits stay held until a newer commit or an operator retry.
+          Failures after migrations require operator recovery before automatic deployment resumes.
+        </p>
+        <p className="mt-2 text-sm text-gray-300">
+          {typeof configData?.config?.deploy === "object" && configData.config.deploy !== null
+            && "track_branch" in configData.config.deploy && configData.config.deploy.track_branch
+            ? `Tracking ${String(configData.config.deploy.track_branch)}` : "Automatic deployment is off"}
+        </p>
+        {deploymentError && <p className="mt-3 text-sm text-red-300">Deployment history is unavailable.</p>}
+        {!deploymentError && (deploymentHistory?.length ?? 0) === 0 ? (
+          <p className="mt-3 text-sm text-gray-500">No deployments recorded.</p>
+        ) : !deploymentError ? (
+          <div className="mt-3 max-h-72 overflow-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-gray-500">
+                <tr><th>Time</th><th>Branch</th><th>Commit</th><th>Outcome</th><th>Details</th></tr>
+              </thead>
+              <tbody>
+                {[...(deploymentHistory ?? [])].reverse().map((entry, index) => (
+                  <tr key={`${entry.timestamp}-${index}`} className="border-t border-gray-800">
+                    <td className="py-2 pr-3 whitespace-nowrap">{new Date(entry.timestamp * 1000).toLocaleString()}</td>
+                    <td className="pr-3">{entry.branch || "—"}</td>
+                    <td className="pr-3 font-mono" title={`${entry.previous} → ${entry.target}`}>
+                      {entry.target?.slice(0, 9) || "—"}
+                    </td>
+                    <td className="pr-3">{entry.outcome.replace(/_/g, " ")}</td>
+                    <td className="break-words">{entry.message || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
+
       {toast && <ToastBanner toast={toast} onDismiss={() => setToast(null)} />}
 
       {configLoading || !configData ? (
@@ -112,6 +158,7 @@ export default function SystemConfig() {
             {allSections.map((name) => {
               const kind = reloadByName[name] ?? "unclassified";
               const refs = refsBySection[name] ?? [];
+              const hidden = redactedBySection[name] ?? [];
               const isActive = name === selected;
               return (
                 <button
@@ -126,6 +173,11 @@ export default function SystemConfig() {
                 >
                   <span className="truncate font-mono">{name}</span>
                   <span className="ml-2 flex shrink-0 items-center gap-1.5">
+                    {hidden.length > 0 && (
+                      <span title={`${hidden.length} redacted credential${hidden.length === 1 ? "" : "s"}`}>
+                        <LockClosedIcon className="h-3.5 w-3.5 text-gray-500" />
+                      </span>
+                    )}
                     {refs.length > 0 && (
                       <span title={`${refs.length} ${"${ENV_VAR}"} reference${refs.length === 1 ? "" : "s"}`}>
                         <KeyIcon className={`h-3.5 w-3.5 ${refs.some(r => !r.resolved) ? "text-amber-400" : "text-gray-500"}`} />
@@ -169,6 +221,28 @@ export default function SystemConfig() {
                   </div>
                 )}
 
+                {selectedRedacted.length > 0 && (
+                  <div className="rounded-md border border-gray-800 bg-gray-900/40 p-3 text-xs text-gray-400">
+                    <p className="mb-1.5 flex items-center gap-1.5 font-medium text-gray-300">
+                      <LockClosedIcon className="h-3.5 w-3.5 text-gray-400" />
+                      Redacted credentials
+                    </p>
+                    <ul className="space-y-0.5">
+                      {selectedRedacted.map((path) => (
+                        <li key={path} className="font-mono text-gray-300">
+                          {path}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-1.5">
+                      Shown as <span className="font-mono text-gray-300">{placeholder}</span>. Saving
+                      the section with the placeholder untouched keeps the stored value; type a real
+                      value to change the credential. Read the file on the daemon host to see the
+                      literal.
+                    </p>
+                  </div>
+                )}
+
                 <textarea
                   value={draft}
                   onChange={(e) => {
@@ -201,7 +275,7 @@ export default function SystemConfig() {
                     type="button"
                     disabled={update.isPending}
                     onClick={async () => {
-                      let parsed: unknown;
+                      let parsed: Parameters<typeof update.mutateAsync>[0]["data"];
                       try {
                         parsed = JSON.parse(draft);
                       } catch (e) {
@@ -300,6 +374,19 @@ function buildReloadIndex(
       const k = prop["x-reload"];
       if (k) out[name] = k;
     }
+  }
+  return out;
+}
+
+function buildRedactedIndex(
+  configData: ReturnType<typeof useSystemConfig>["data"],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const path of configData?.redacted ?? []) {
+    const section = path.split(".")[0]?.split("[")[0];
+    if (!section) continue;
+    if (!out[section]) out[section] = [];
+    out[section]!.push(path);
   }
   return out;
 }

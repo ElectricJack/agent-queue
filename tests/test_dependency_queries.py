@@ -8,20 +8,17 @@ from __future__ import annotations
 
 import pytest
 
-from src.database import SQLiteDatabaseAdapter
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.models import DepType, Project, Task, TaskStatus
-
 
 PROJECT = "p-dep"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = SQLiteDatabaseAdapter(str(tmp_path / "dep.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("dep.db")
     await database.create_project(Project(id=PROJECT, name="dep"))
     yield database
-    await database.close()
 
 
 async def _mktask(db, tid):
@@ -29,6 +26,31 @@ async def _mktask(db, tid):
         Task(id=tid, project_id=PROJECT, title=tid, description=tid, status=TaskStatus.DEFINED)
     )
     return tid
+
+
+@pytest.mark.parametrize("caller_connection", [False, True])
+async def test_guarded_dependency_waits_for_hierarchy_then_rechecks_target(
+    db, monkeypatch, caller_connection,
+):
+    """Classification must reflect a hierarchy move that wins the lock."""
+    await _mktask(db, "worker")
+    await _mktask(db, "target")
+    real_lock = db.lock_hierarchy_project
+
+    async def lock_then_convert(conn, project_id):
+        await real_lock(conn, project_id)
+        await db.declare_container("target", conn=conn)
+
+    monkeypatch.setattr(db, "lock_hierarchy_project", lock_then_convert)
+    with pytest.raises(HierarchyError, match="leaf task") as raised:
+        if caller_connection:
+            async with db._engine.begin() as conn:
+                await db.add_dependency("worker", "target", reject_container_target=True, conn=conn)
+        else:
+            await db.add_dependency("worker", "target", reject_container_target=True)
+    assert raised.value.code == "dependency_on_container"
+    assert await db.get_typed_dependencies("worker") == []
+    assert await db.get_task_meta("target", "container") is None  # Entire transaction rolled back.
 
 
 class TestAddDependencyIdempotent:
@@ -79,3 +101,141 @@ class TestAddDependencyIdempotent:
                 ("t2", DepType.DISCOVERED_FROM.value),
             ]
         )
+
+
+async def test_has_waiting_dependents_counts_unfinished_blocking_edges(db):
+    for tid in ("fix", "waiter", "done-waiter", "child", "note", "free"):
+        await _mktask(db, tid)
+    await db.add_dependency("done-waiter", "free", DepType.BLOCKS.value)
+    await db.add_dependency("child", "free", DepType.PARENT_CHILD.value)
+    await db.add_dependency("note", "free", DepType.DISCOVERED_FROM.value)
+    await db.update_task("done-waiter", status=TaskStatus.COMPLETED)
+    assert await db.has_waiting_dependents("free") is False
+
+    await db.add_dependency("waiter", "fix", DepType.WAITS_FOR.value)
+    assert await db.has_waiting_dependents("fix") is True
+    await db.update_task("waiter", status=TaskStatus.FAILED)
+    assert await db.has_waiting_dependents("fix") is False
+
+
+async def test_list_project_edges_returns_typed_rows_for_one_project(db):
+    await db.create_project(Project(id="p2", name="P2"))
+    for tid, pid in (("a", PROJECT), ("b", PROJECT), ("c", "p2")):
+        await db.create_task(Task(id=tid, project_id=pid, title=tid, description=""))
+    await db.add_dependency("b", "a", description="needs a")
+    await db.add_dependency("c", "a")  # cross-project edge, from p2
+
+    rows = await db.list_project_edges(PROJECT)
+
+    assert rows == [
+        {"task_id": "b", "depends_on_task_id": "a", "dep_type": "blocks", "description": "needs a"},
+    ]
+    assert await db.list_project_edges("p2") == [
+        {"task_id": "c", "depends_on_task_id": "a", "dep_type": "blocks", "description": None},
+    ]
+
+
+async def test_get_typed_dependencies_for_tasks_matches_the_per_task_reads(db):
+    for tid in ("a", "b", "c", "lonely"):
+        await db.create_task(Task(id=tid, project_id=PROJECT, title=tid, description=""))
+    await db.add_dependency("c", "b")
+    await db.add_dependency("c", "a", "waits-for")
+    await db.add_dependency("b", "a")
+
+    batched = await db.get_typed_dependencies_for_tasks(["a", "b", "c", "lonely"])
+
+    for tid in ("a", "b", "c", "lonely"):
+        assert batched[tid] == await db.get_typed_dependencies(tid), tid
+    assert batched["lonely"] == []
+
+
+async def test_get_task_statuses_returns_only_existing_ids(db):
+    await db.create_task(Task(id="a", project_id=PROJECT, title="a", description=""))
+    await db.create_task(
+        Task(id="b", project_id=PROJECT, title="b", description="", status=TaskStatus.COMPLETED)
+    )
+
+    assert await db.get_task_statuses(["a", "b", "ghost"]) == {"a": "DEFINED", "b": "COMPLETED"}
+    assert await db.get_task_statuses([]) == {}
+
+
+async def test_stuck_defined_tasks_are_listed_once_with_their_route(db):
+    """A task blocked by two failed upstreams is one row, whatever its route holds.
+
+    ``tasks.route`` was a PostgreSQL ``json`` column, which has no equality
+    operator, so a ``SELECT DISTINCT`` over whole task rows could not be
+    planned (fair-grove-86). The semi-join also avoids duplicate task rows.
+    """
+    for tid, status in (
+        ("failed-up", TaskStatus.FAILED),
+        ("blocked-up", TaskStatus.BLOCKED),
+        ("done-up", TaskStatus.COMPLETED),
+    ):
+        await db.create_task(
+            Task(id=tid, project_id=PROJECT, title=tid, description="", status=status)
+        )
+    route = {"profile_id": "standard-high-claude", "reasons": ["class standard-high"]}
+    for tid in ("stuck", "waiting", "later"):
+        await db.create_task(
+            Task(
+                id=tid,
+                project_id=PROJECT,
+                title=tid,
+                description="",
+                status=TaskStatus.DEFINED,
+                route=route,
+            )
+        )
+    await db.add_dependency("stuck", "failed-up")
+    await db.add_dependency("stuck", "blocked-up", DepType.WAITS_FOR.value)
+    await db.add_dependency("stuck", "done-up")
+    await db.add_dependency("waiting", "done-up")
+    await db.add_dependency("later", "blocked-up")
+
+    rows = await db.get_stuck_defined_tasks(threshold_seconds=3600)
+
+    assert sorted(t.id for t in rows) == ["later", "stuck"]
+    assert all(t.route == route for t in rows)
+
+
+async def test_get_stuck_defined_tasks_reads_tasks_that_carry_a_route(db):
+    """Outage 2026-09-28: with ``tasks.route`` typed ``json``, this query's
+    ``SELECT DISTINCT tasks.*`` failed every scheduler cycle (``could not
+    identify an equality operator for type json``).  The route here is not
+    null, and ``stuck`` has two failed blockers, which the old DISTINCT
+    collapsed into one row."""
+    route = {"reason": "router", "candidates": [{"profile_id": "p", "score": 1}]}
+    statuses = {
+        "failed": TaskStatus.FAILED,
+        "blocked": TaskStatus.BLOCKED,
+        "done": TaskStatus.COMPLETED,
+    }
+    for tid, status in statuses.items():
+        await db.create_task(
+            Task(id=tid, project_id=PROJECT, title=tid, description="", status=status)
+        )
+    for tid in ("stuck", "fine", "discovered", "second"):
+        await db.create_task(
+            Task(id=tid, project_id=PROJECT, title=tid, description="", route=route)
+        )
+    await db.create_task(
+        Task(
+            id="ready",
+            project_id=PROJECT,
+            title="ready",
+            description="",
+            status=TaskStatus.READY,
+            route=route,
+        )
+    )
+    await db.add_dependency("stuck", "failed")
+    await db.add_dependency("stuck", "blocked")
+    await db.add_dependency("second", "blocked")
+    await db.add_dependency("fine", "done")
+    await db.add_dependency("discovered", "failed", DepType.DISCOVERED_FROM.value)
+    await db.add_dependency("ready", "failed")
+
+    stuck = await db.get_stuck_defined_tasks(0)
+
+    assert sorted(task.id for task in stuck) == ["second", "stuck"]  # one row per task
+    assert all(task.route == route for task in stuck)
