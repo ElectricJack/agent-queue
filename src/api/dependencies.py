@@ -22,7 +22,6 @@ _health_provider: Callable[[], Awaitable[dict[str, Any]]] | None = None
 _health_monitor: HealthMonitor | None = None
 _plan_content_provider: Callable[[str], Awaitable[str | None]] | None = None
 _started_at: float | None = None
-_base_url: str = ""
 
 # aq-surface Phase S2: session-scoped API auth.  Populated by
 # :func:`src.api.app.create_app` at startup; ``TokenAuthMiddleware`` reads
