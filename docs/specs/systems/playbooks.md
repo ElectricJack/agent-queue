@@ -604,7 +604,7 @@ work waits for that landing. On the refactor branch only:
 - migrations `a00000000103`–`108`;
 - a rewritten `stuck-task-watch` (pure reviewed Markdown) plus a new
   `stuck-task-watch-reminder` bundle, with every shipped bundle's digests changed;
-- guides `playbook-building-blocks`, `playbook-script-sandbox`, `playbook-state`,
+- guides `playbook-building-blocks`, `playbook-script-runner`, `playbook-state`,
   `observation-snapshots`.
 
 ### 7.1 Open tasks that change playbooks
@@ -612,7 +612,7 @@ work waits for that landing. On the refactor branch only:
 | Task | State | What it changes |
 |---|---|---|
 | `wise-orbit-24` — refactor F3: acceptance, migration and rollback rehearsal, activation handoff | BLOCKED (on the landing, recorded only in its text) | End-to-end acceptance on this box, a migration and rollback rehearsal, and deliberate install and activation, including private-value key setup so generated invocation works. Real-host isolation acceptance was dropped. |
-| `agile-vault-38` — playbook scripts refused by default | BLOCKED (bugfix) | Scripts fail with `script_storage_or_runtime_unconfigured` unless four `scripts.*` roots are set. The fix gives the roots defaults under `~/.agent-queue`, makes digest pinning opt-in, and renames "sandbox" to "script runner". |
+| `agile-vault-38` — playbook scripts refused by default | fixed on its branch | Scripts failed with `script_storage_or_runtime_unconfigured` unless four `scripts.*` roots were set. The roots now default under `~/.agent-queue/scripts/`, host executables run without a manifest, digest pinning is opt-in through `runtime_manifest`, and the module is `src/jobs/script_runner.py`. Script steps still need `resources.jobs.enabled`, which defaults off. |
 | `clear-impact-72` — evaluate rewriting shipped playbooks onto the new building blocks | IN_PROGRESS; `.1`–`.11` READY, each blocked on `agile-stone-80` | One evaluation per bundle: ci-main-sentinel, default-assignment-routing, default-pipeline, github-issue-triage, morning-report, object-loop, promotion-continuous, promotion-request, provider-failover, provider-usage-probe, supervisor-failure-triage, using stuck-task-watch as the reference. A yes writes a vault plan `plans/2026-10-20-playbook-rewrite-<id>.md` and files one task; a no records why. None edits a playbook. The three source-less bundles are not covered. |
 | `nimble-lantern-37.2` — held ingestion L5.2 | READY | default-pipeline gains `fidelity-review-on-held` and `release-on-receipt`; the spec-ingest text changes; the `task_batch_commit` grant leaves the spec-ingest profile; the bundle is rebuilt. Ships with L1.2. `nimble-lantern-37.3` (DEFINED) documents it. |
 | `stark-willow-95.17` — fast smooth integration S4 | DEFINED | Aligns shipped factory policy, prime, templates, skills and reviewed bundles with the new integration contract; deprecates `cadence_seconds` and `settling_cap_seconds`; adds a ratchet; rebuilds the reviewed policy artifacts. |

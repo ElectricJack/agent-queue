@@ -62,6 +62,7 @@ from src.git.manager import (
     ForeignSlotClaim,
     GitError,
     RemoteRefState,
+    SlotSourceDisagreement,
     _validate_ref,
     is_valid_git_oid,
 )
@@ -463,23 +464,25 @@ class WorktreeSlotManager:
         return [by_index[i] for i in sorted(by_index)]
 
     async def _provision_slot_dir(
-        self, base_ws: Workspace, kind: WorkspaceKind, target: Path
+        self, base_ws: Workspace, kind: WorkspaceKind, target: Path, *, prune: bool = True,
     ) -> str:
         """Put a detached worktree at *target* and run the kind's setup.
 
         exclude-block → prune → fetch → ``worktree add --detach`` →
         ``worktree_setup``.  Shared by :meth:`create_slot` and
         :meth:`reprovision_slot`; returns the setup hash for the sentinel.
+        ``prune=False`` leaves every ``.git/worktrees`` registration alone.
         """
         base_path = base_ws.workspace_path
         default_branch = await self._default_branch(base_path, project_id=base_ws.project_id)
 
         async with self._git_mutex(base_path):
             await self.ensure_git_exclude(base_path)
-            try:
-                await self.git.aworktree_prune(base_path)
-            except GitError as e:
-                logger.debug("worktree prune failed in %s: %s", base_path, e)
+            if prune:
+                try:
+                    await self.git.aworktree_prune(base_path)
+                except GitError as e:
+                    logger.debug("worktree prune failed in %s: %s", base_path, e)
 
             start_ref = await self._fetch_and_resolve_start_ref(
                 base_path, default_branch, required=True, project_id=base_ws.project_id
@@ -500,19 +503,28 @@ class WorktreeSlotManager:
         await self._run_setup(target, kind.worktree_setup)
         return setup_hash
 
-    async def reprovision_slot(self, slot_ws: Workspace, kind: WorkspaceKind) -> None:
+    async def reprovision_slot(
+        self, slot_ws: Workspace, kind: WorkspaceKind, *, prune: bool = True,
+    ) -> None:
         """Re-create a slot's missing worktree in place, keeping its row id.
 
         The slot reconciler's repair for a disabled slot whose directory is
         gone (``src.orchestrator.slot_restore``).  The row, its index and its
         id survive, so nothing that references the workspace goes stale; the
         caller re-enables the row once this returns.
+
+        A continuation's fresh checkout (``src.wait_runtime.resume``) passes
+        ``prune=False``: it adopts a checkout it has just added, and other
+        slots' registrations whose directories are missing may still have
+        retained owners, so they are evidence to keep rather than prune.
+        Without a prune, a missing *target* that is still registered cannot
+        be re-added; only adopt an existing checkout that way.
         """
         base_ws = await self._base_of(slot_ws)
         if base_ws is None:
             raise OSError(f"slot {slot_ws.id} has no base workspace")
         target = Path(slot_ws.workspace_path)
-        setup_hash = await self._provision_slot_dir(base_ws, kind, target)
+        setup_hash = await self._provision_slot_dir(base_ws, kind, target, prune=prune)
         slot_index = slot_ws.slot_index or 0
         self.write_sentinel(
             target,
@@ -635,7 +647,9 @@ class WorktreeSlotManager:
                 or sentinel.base_workspace_id != (slot_ws.base_workspace_id or "")
                 or sentinel.project_id != slot_ws.project_id
             ):
-                raise GitError(f"slot {slot_ws.id} at {slot_dir} has a mismatched sentinel")
+                raise SlotSourceDisagreement(
+                    f"slot {slot_ws.id} at {slot_dir} has a mismatched sentinel"
+                )
             if slot_ws.is_slot and sentinel is not None and sentinel.branch:
                 actual = await self.git.aget_current_branch(str(slot_dir))
                 detached_predecessor = False
@@ -664,9 +678,17 @@ class WorktreeSlotManager:
                     detached_predecessor = await self._finished_predecessor(
                         slot_ws, sentinel, task,
                     )
+                if actual == "HEAD" and not detached_predecessor:
+                    # A restart can leave the slot detached at the task's own
+                    # recorded checkpoint with the branch ref gone.
+                    detached_predecessor = await self._restore_own_task_branch(
+                        slot_ws, base_ws, sentinel, task, head,
+                    )
                 if actual != sentinel.branch and not detached_predecessor:
-                    raise GitError(f"slot {slot_ws.id} branch disagrees with its source sentinel; "
-                                   "checkout left unchanged")
+                    raise SlotSourceDisagreement(
+                        f"slot {slot_ws.id} branch disagrees with its source sentinel; "
+                        "checkout left unchanged"
+                    )
             if recover_merge:
                 await self._recover_abandoned_merge(slot_ws, task)
             return
@@ -894,6 +916,53 @@ class WorktreeSlotManager:
         logger.warning(
             "Reclaiming slot %s from finished task %s (%s); sentinel branch %s is stale",
             slot_ws.id, sentinel.task_id, getattr(status, "value", status), sentinel.branch,
+        )
+        return True
+
+    async def _checkpoint_row(self, task_id: str) -> dict:
+        return await self.db.get_integration_checkpoint(task_id) or {}
+
+    async def _restore_own_task_branch(
+        self, slot_ws: Workspace, base_ws: Workspace, sentinel: WorktreeSentinel, task, head: str,
+    ) -> bool:
+        """Recreate the claimant's missing branch at its recorded checkpoint.
+
+        Applies only when the sentinel names the claimant and its branch, no
+        local branch and no diverging ``origin/<branch>`` exists, no foreign
+        binding retains the slot, and HEAD is exactly the task's recorded
+        integration checkpoint or pause head on that branch.  Creating the ref
+        at HEAD moves no commit, index or file; the reset that follows resumes
+        the branch instead of starting a fresh one from the default branch.
+        """
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        branch = sentinel.branch
+        if (sentinel.task_id != task.id or not head
+                or (getattr(task, "branch_name", None) or branch).removeprefix("refs/heads/")
+                != branch):
+            return False
+        cwd = str(slot_ws.workspace_path)
+        if await self._ref_exists(cwd, f"refs/heads/{branch}"):
+            return False
+        remote = f"refs/remotes/origin/{branch}"
+        if (await self._ref_exists(cwd, remote)
+                and await self.git.arev_parse(cwd, remote) != head):
+            return False
+        row = await self._checkpoint_row(task.id)
+        recorded = (row.get("checkpoint_sha")
+                    if row.get("branch", "").removeprefix("refs/heads/") == branch else None)
+        if recorded != head:
+            paused = await self.db.get_task_meta(task.id, CHECKPOINT_META) or {}
+            recorded = paused.get("head") if paused.get("branch") == branch else None
+        if recorded != head:
+            return False
+        if await self._slot_has_retained_binding(slot_ws.id, excluding_owner=task.id):
+            return False
+        async with self._git_mutex(base_ws.workspace_path):
+            await self.git._arun_unlocked(["switch", "-c", branch, head], cwd=cwd)
+        logger.warning(
+            "Recreated branch %s at recorded checkpoint %s in slot %s for task %s",
+            branch, head[:12], slot_ws.id, task.id,
         )
         return True
 
