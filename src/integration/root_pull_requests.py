@@ -27,7 +27,7 @@ import re
 import time
 from typing import Any
 
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, exists, func, literal, or_, select, update
 
 from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
 from src.database.tables import (
@@ -41,8 +41,11 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
+from src.integration.epics import abandoned_archive_ids
+from src.integration.row_query import select_row
 from src.logging_config import log_handled
 from src.models import TaskStatus
 from src.projects.github import GitHubError
@@ -302,9 +305,7 @@ class RootDeliveryRedrive:
     async def diagnose(self, task_id: str) -> dict[str, Any]:
         """Report what the root's delivery waits on; reads only."""
         async with self.db._engine.connect() as conn:
-            task = (
-                await conn.execute(select(tasks).where(tasks.c.id == task_id))
-            ).mappings().one_or_none()
+            task = await select_row(conn, tasks, tasks.c.id == task_id)
             if task is None:
                 return {"outcome": "not_found", "task_id": task_id}
             base = {"task_id": task_id, "project_id": task["project_id"]}
@@ -328,26 +329,22 @@ class RootDeliveryRedrive:
             if task["pr_url"] and task["pr_url"].strip():
                 return {**base, "outcome": "nothing_to_redrive", "pr_url": task["pr_url"],
                         "reason": "the root already has its pull request"}
-            checkpoint = (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == task_id
-                    )
-                )
-            ).mappings().one_or_none()
+            checkpoint = await select_row(
+                             conn,
+                             task_integration_checkpoints,
+                             task_integration_checkpoints.c.task_id == task_id,
+                         )
             if checkpoint is None:
                 return {**base, "outcome": "not_eligible",
                         "reason": "no integration checkpoint: the legacy completion "
                         "pipeline owns this root's pull request"}
-            origin = (
-                await conn.execute(
-                    select(task_branch_origins.c.base_sha).where(
-                        task_branch_origins.c.task_id == task_id,
-                        task_branch_origins.c.repository_id == task["repo_id"],
-                        task_branch_origins.c.retired_at.is_(None),
-                    )
-                )
-            ).mappings().one_or_none()
+            origin = await select_row(
+                         conn,
+                         task_branch_origins.c.base_sha,
+                         task_branch_origins.c.task_id == task_id,
+                         task_branch_origins.c.repository_id == task['repo_id'],
+                         task_branch_origins.c.retired_at.is_(None),
+                     )
             owner = (
                 await conn.execute(
                     select(
@@ -415,7 +412,8 @@ class RootDeliveryRedrive:
             ):
                 return {**base, "outcome": "blocked",
                         "reason": "the epic's aggregate verification has not completed; "
-                        "its parent integration run completes it"}
+                        "the integration train verifies its collected branch; "
+                        f"inspect `aq integration reverify-epic {task_id}`"}
             head = checkpoint["verified_sha"]
         else:
             source = leaf_root_source(
@@ -519,6 +517,25 @@ class EpicPullRequestService:
 
     async def open_for_epic(self, epic_id: str, *,
                             expected_head_sha: str | None = None) -> dict[str, Any]:
+        result = await self._open_for_epic(epic_id, expected_head_sha=expected_head_sha)
+        if result["outcome"] != "already_open":
+            return result
+        # A retained URL is descriptive state, not proof the PR remains open.
+        # Read GitHub outside the transaction and surface a recoverable blocker.
+        task = await self._db.get_task(epic_id)
+        repo = await self._db.get_repo(task.repo_id)
+        binding = await self._git.bind_github_repository(repo.url)
+        GitHubAccess.validate_pr_url(binding, result["pr_url"])
+        pull = await self._git._github_client(binding).pull_request(result["pr_url"])
+        if pull.get("state") == "closed":
+            return {**result, "outcome": "pr_closed",
+                    "reason": "stored pull request is closed; reopen it before root admission"}
+        if pull.get("state") != "open":
+            raise ValueError("GitHub pull request state is malformed")
+        return result
+
+    async def _open_for_epic(self, epic_id: str, *,
+                             expected_head_sha: str | None = None) -> dict[str, Any]:
         if expected_head_sha is None and getattr(self._db, "_delivery_observer", None) is not None:
             # The retry locates the source from the immutable completion ref,
             # rather than treating a descriptive completion row as code truth.
@@ -538,9 +555,7 @@ class EpicPullRequestService:
                     proof = await snapshot.is_delivered(requests[epic_id])
                     expected_head_sha = proof.source_oid
         async with self._db.immediate() as conn:
-            epic = (
-                await conn.execute(select(tasks).where(tasks.c.id == epic_id))
-            ).mappings().one_or_none()
+            epic = await select_row(conn, tasks, tasks.c.id == epic_id)
             if epic is None:
                 return {"outcome": "unknown_epic", "epic_id": epic_id}
             if epic["pr_url"]:
@@ -560,14 +575,16 @@ class EpicPullRequestService:
 
             active_children = (
                 await conn.execute(
-                    select(tasks.c.id, tasks.c.title, tasks.c.status)
+                    select(tasks.c.id, tasks.c.title, tasks.c.status, tasks.c.parent_task_id,
+                           literal(False).label("archived"))
                     .where(tasks.c.parent_task_id == epic_id)
                     .order_by(tasks.c.id)
                 )
             ).mappings().all()
             archived_children = (
                 await conn.execute(
-                    select(archived_tasks.c.id, archived_tasks.c.title, archived_tasks.c.status)
+                    select(archived_tasks.c.id, archived_tasks.c.title, archived_tasks.c.status,
+                           archived_tasks.c.parent_task_id, literal(True).label("archived"))
                     .where(archived_tasks.c.parent_task_id == epic_id)
                     .order_by(archived_tasks.c.id)
                 )
@@ -591,21 +608,21 @@ class EpicPullRequestService:
                 head = checkpoint["checkpoint_sha"]
             else:
                 head = checkpoint["verified_sha"] if checkpoint is not None else None
-            pending = [child["id"] for child in children if child["status"] != "COMPLETED"]
+            abandoned = await abandoned_archive_ids(conn, children, project_id=epic["project_id"])
+            pending = [child["id"] for child in children
+                       if child["id"] not in abandoned and child["status"] != "COMPLETED"]
             if pending:
                 return {"outcome": "children_incomplete", "epic_id": epic_id, "pending": pending}
             if not epic["branch_name"]:
                 return {"outcome": "branch_missing", "epic_id": epic_id}
 
-            repository = (
-                await conn.execute(
-                    select(repos).where(
-                        repos.c.id == project.integration_repository_id,
-                        repos.c.project_id == epic["project_id"],
-                        repos.c.id == epic["repo_id"],
-                    )
-                )
-            ).mappings().one_or_none()
+            repository = await select_row(
+                             conn,
+                             repos,
+                             repos.c.id == project.integration_repository_id,
+                             repos.c.project_id == epic['project_id'],
+                             repos.c.id == epic['repo_id'],
+                         )
             if repository is None or not repository["url"]:
                 return {"outcome": "repository_missing", "epic_id": epic_id}
 
@@ -679,20 +696,16 @@ class EpicPullRequestService:
     @staticmethod
     async def _source_rows_on(conn, epic):
         """The root's live checkpoint and origin, either of which may be absent."""
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints).where(
-                    task_integration_checkpoints.c.task_id == epic["id"]
-                )
-            )
-        ).mappings().one_or_none()
-        origin = (
-            await conn.execute(
-                select(task_branch_origins.c.base_sha).where(
-                    task_branch_origins.c.task_id == epic["id"],
-                    task_branch_origins.c.repository_id == epic["repo_id"],
-                    task_branch_origins.c.retired_at.is_(None),
-                )
-            )
-        ).mappings().one_or_none()
+        checkpoint = await select_row(
+                         conn,
+                         task_integration_checkpoints,
+                         task_integration_checkpoints.c.task_id == epic['id'],
+                     )
+        origin = await select_row(
+                     conn,
+                     task_branch_origins.c.base_sha,
+                     task_branch_origins.c.task_id == epic['id'],
+                     task_branch_origins.c.repository_id == epic['repo_id'],
+                     task_branch_origins.c.retired_at.is_(None),
+                 )
         return checkpoint, origin
