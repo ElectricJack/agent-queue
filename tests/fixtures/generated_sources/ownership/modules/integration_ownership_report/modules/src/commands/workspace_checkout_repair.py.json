@@ -1,0 +1,13 @@
+{
+  "shared_definitions": {
+    "src/commands/workspace_checkout_repair.py::import from src.commands.supervisor_authority import operator_or_global_supervisor": {
+      "reason": "Imports the authority guard used by the integration-aware base-checkout repair; conservatively charges the adapter's imported authorization seam."
+    },
+    "src/commands/workspace_checkout_repair.py::import from src.database.tables import integration_branch_owners, projects, sessions, workspaces": {
+      "reason": "Imports integration writer reservations so base-checkout repair cannot replace a checkout retained by an active integration owner."
+    },
+    "src/commands/workspace_checkout_repair.py::repair": {
+      "reason": "Verifies slot sentinels, common Git object store, origins and absence of integration writers before a proof-bound base path repair."
+    }
+  }
+}

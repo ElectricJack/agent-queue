@@ -469,7 +469,7 @@ class DigestScheduleService:
         open_escalations = len(
             await self.db.list_escalations(
                 project_ids=list(schedule.project_ids) if schedule.project_ids else None,
-                states=["needs_human", "reply_received"],
+                states=["needs_human"],
                 limit=500,
             )
         )
@@ -489,7 +489,9 @@ class DigestScheduleService:
             window=window,
             landed=collected["landed"],
             stuck=collected["stuck"],
+            waiting_on_delivery=collected.get("waiting_on_delivery", []),
             asks=collected["asks"],
+            waiting_on_you=collected.get("waiting_on_you", []),
             sessions_working=collected["sessions_working"],
             sessions_total=collected["sessions_total"],
             active_tasks=collected["active_tasks"],
@@ -606,7 +608,7 @@ class DigestScheduleService:
             generation=schedule.generation,
         )
         open_escalations = len(
-            await self.db.list_escalations(states=["needs_human", "reply_received"], limit=500)
+            await self.db.list_escalations(states=["needs_human"], limit=500)
         )
         inputs = await self.db.collect_digest_activity(
             window,
@@ -651,6 +653,7 @@ class DigestScheduleService:
             digest=self, conversation_adapter=self._conversation_adapter, links=self._links,
             clock=self._clock, rate_guard=self._rate_guard,
             escalation_priority=self._escalation_priority, include_outbound=self._include_outbound,
+            max_attempts=self._max_attempts,
         ).pump(schedule=schedule, report=report, limit=limit)
 
     async def _finish(

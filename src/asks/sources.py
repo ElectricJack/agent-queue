@@ -74,8 +74,9 @@ async def authorize_source(handler, source, actor, *, conn, application=False):
     if actor.provenance.get("kind") == "verified_input":
         from src.asks.authority import authorize_input_actor
 
-        await authorize_input_actor(handler.db, handler.config, source, actor,
-                                    conn=conn, application=application)
+        await authorize_input_actor(
+            handler.db, handler.config, source, actor, conn=conn, application=application
+        )
         return
     principal = current_principal() or TRUSTED_LOCAL
     if principal.project_id and principal.project_id != source.project_id:
@@ -85,27 +86,17 @@ async def authorize_source(handler, source, actor, *, conn, application=False):
         from src.database.tables import escalations, escalation_messages
 
         evidence = (
-            (
-                await conn.execute(
-                    select(escalation_messages).where(
-                        escalation_messages.c.id == actor.input_id,
-                    )
-                )
+            await conn.execute(
+                select(escalation_messages).where(escalation_messages.c.id == actor.input_id)
             )
-            .mappings()
-            .first()
-        )
+        ).mappings().first()
         incident = (
-            (
-                await conn.execute(
-                    select(escalations).where(
-                        escalations.c.id == actor.provenance.get("escalation_id"),
-                    )
+            await conn.execute(
+                select(escalations).where(
+                    escalations.c.id == actor.provenance.get("escalation_id")
                 )
             )
-            .mappings()
-            .first()
-        )
+        ).mappings().first()
         if (
             not evidence
             or not incident
@@ -551,6 +542,7 @@ class WaitAdapter(SourceAdapter):
     async def snapshot(self, source, *, conn, lock=True):
         from src.database.tables import playbook_v2_runs
         from src.playbooks.run_state import deserialize_snapshot
+        from src.playbooks.services import run_project_id
 
         row = (
             (
@@ -568,7 +560,7 @@ class WaitAdapter(SourceAdapter):
         if not row:
             raise AskError("ask.not_found", "Playbook run was not found")
         snap = deserialize_snapshot(row["snapshot"], version=row["snapshot_version"])
-        if snap.event.get("project_id") != source.project_id:
+        if await run_project_id(self.db, snap, conn=conn) != source.project_id:
             raise AskError("ask.not_found", "Playbook run was not found")
         engine = self.handler._v2_engine()
         artifact = engine._load(await engine._ref_for(snap))
@@ -777,7 +769,7 @@ class RecoveryAdapter(SourceAdapter):
         from src.database.queries.task_recovery_queries import recovery_ask_meaning
 
         meaning = recovery_ask_meaning(
-            row, incident, attempt, await self.db._recovery_owner(conn, row)
+            row, incident, attempt, await self.db._recovery_owner(conn, row), meta
         )
         return source_snapshot(
             source,
@@ -889,7 +881,10 @@ class FreeTextAdapter(SourceAdapter):
 
 def source_adapters(handler):
     """Constructed only by CommandHandler, with no caller-configurable action table."""
+    from src.asks.batch_scope import BatchScopeAdapter
+
     return [
+        BatchScopeAdapter(handler),
         HumanGateAdapter(handler),
         ProposalAdapter(handler),
         IntegrationAdapter(handler),

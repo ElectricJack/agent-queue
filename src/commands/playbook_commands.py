@@ -72,11 +72,11 @@ class PlaybookCommandsMixin:
         if not dry_run:
             prepared = await self._prepare_manual_event(event)
             if isinstance(prepared, str):
-                return {"error": prepared}
+                return {"success": False, "error": prepared}
             event = prepared
         ref = await self._v2_artifact_for(playbook_id, event.get("project_id"))
         if ref is None:
-            return {"error": f"No ready V2 artifact is active for '{playbook_id}'"}
+            return {"success": False, "error": f"No ready V2 artifact is active for '{playbook_id}'"}
         engine = self._v2_engine()
         principal = current_principal() or ExecutionPrincipal.service("playbook-command")
         if dry_run:
@@ -86,7 +86,7 @@ class PlaybookCommandsMixin:
                 max_paths=limits.v2_dry_run_max_paths,
                 max_step_visits=limits.v2_dry_run_max_step_visits,
             )
-            return {"dry_run": True, "playbook_id": playbook_id, **asdict(tree)}
+            return {"success": True, "dry_run": True, "playbook_id": playbook_id, **asdict(tree)}
 
         artifact = engine.services.artifact_store.load(ref.artifact_sha256)
         event_type = engine._event_type(event)
@@ -99,7 +99,7 @@ class PlaybookCommandsMixin:
             if engine._rule_selected(rule, event_type, event)
         ]
         if not rules:
-            return {"error": f"No rule in '{playbook_id}' matches event '{event_type}'"}
+            return {"success": False, "error": f"No rule in '{playbook_id}' matches event '{event_type}'"}
         outcomes = [await engine.run_rule(ref, rule.id, event, principal) for rule in rules]
         runs = [self._manual_run_summary(outcome, rule.id) for outcome, rule in zip(outcomes, rules)]
         failed_steps = [
@@ -108,6 +108,9 @@ class PlaybookCommandsMixin:
             for failure in run["failed_steps"]
         ]
         return {
+            "success": not failed_steps and all(
+                outcome.lifecycle.value not in {"failed", "cancelled"} for outcome in outcomes
+            ),
             "run_id": outcomes[0].run_id,
             "run_ids": [outcome.run_id for outcome in outcomes],
             "playbook_id": playbook_id,
@@ -235,19 +238,19 @@ class PlaybookCommandsMixin:
     async def _cmd_run_playbook(self, args: dict) -> dict:
         playbook_id = str(args.get("playbook_id") or "").strip()
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
         event = self._event(args, "manual")
         if isinstance(event, str):
-            return {"error": event}
+            return {"success": False, "error": event}
         return await self._run_v2_artifact(playbook_id, event)
 
     async def _cmd_dry_run_playbook(self, args: dict) -> dict:
         playbook_id = str(args.get("playbook_id") or "").strip()
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
         event = self._event(args, "dry_run")
         if isinstance(event, str):
-            return {"error": event}
+            return {"success": False, "error": event}
         # A simulation is routine worker verification, but its synthetic event
         # must not borrow another task/project's data or paid AI authority.
         from src.api.auth import RequestScope
@@ -261,20 +264,21 @@ class PlaybookCommandsMixin:
                 task_id=principal.task_id, project_id=principal.project_id,
             ))
             if task is None:
-                return {"error": "No active task for this session"}
+                return {"success": False, "error": "No active task for this session"}
             for key, expected in (("project_id", task.project_id), ("task_id", task.id)):
                 if event.get(key) not in (None, expected):
-                    return {"error": f"out of scope: event {key} mismatch"}
+                    return {"success": False, "error": f"out of scope: event {key} mismatch"}
                 event[key] = expected
             if args.get("invoke_ai"):
-                return {"error": "Worker dry runs simulate AI steps; invoke_ai requires a supervisor"}
+                return {"success": False, "error": "Worker dry runs simulate AI steps; invoke_ai requires a supervisor"}
         return await self._run_v2_artifact(
             playbook_id, event, dry_run=True, invoke_ai=bool(args.get("invoke_ai", False))
         )
 
     async def _cmd_resume_playbook(self, args: dict) -> dict:
         from src.asks.models import AskError, SourceIdentity
-        from src.playbooks.services import load_v2_snapshot
+        from src.playbooks.private_values import PrivateValueError
+        from src.playbooks.services import load_v2_snapshot, run_project_id
 
         run_id = str(args.get("run_id") or "").strip()
         snap = await load_v2_snapshot(self.db, run_id) if run_id else None
@@ -284,11 +288,13 @@ class PlaybookCommandsMixin:
             return {"success": False, "error": "Only human waits accept a decision; technical waits consume their registered event or timer"}
 
         try:
-            source = SourceIdentity(str(snap.event.get("project_id") or ""), "wait",
+            source = SourceIdentity(await run_project_id(self.db, snap), "wait",
                 snap.wait.wait_id, {"run_id": run_id, "step_id": snap.current_step_id})
             return await self._legacy_ask_decision(source, args,
                 option_key=str(args.get("human_input") or args.get("decision") or "continue"))
         except AskError as exc:
+            return {"success": False, "error_code": exc.code, "error": str(exc)}
+        except PrivateValueError as exc:
             return {"success": False, "error_code": exc.code, "error": str(exc)}
 
     async def _cmd_cancel_playbook_run(self, args: dict) -> dict:
@@ -297,12 +303,12 @@ class PlaybookCommandsMixin:
 
         run_id = str(args.get("run_id") or "").strip()
         if not run_id:
-            return {"error": "run_id is required"}
+            return {"success": False, "error": "run_id is required"}
         if await load_v2_snapshot(self.db, run_id) is None:
-            return {"error": f"Playbooks V2 run '{run_id}' not found"}
+            return {"success": False, "error": f"Playbooks V2 run '{run_id}' not found"}
         principal = current_principal() or ExecutionPrincipal.service("playbook-command")
         outcome = await self._v2_engine().cancel(run_id, principal)
-        return {"run_id": run_id, "status": outcome.lifecycle.value, "outcome": outcome.outcome}
+        return {"success": True, "run_id": run_id, "status": outcome.lifecycle.value, "outcome": outcome.outcome}
 
     async def _cmd_list_playbooks(self, args: dict) -> dict:
         rows = await self.db.list_playbook_activations(enabled_only=False)
@@ -355,7 +361,7 @@ class PlaybookCommandsMixin:
                 "running_count": active_counts.get(row["playbook_id"], 0),
                 "last_run": _last_run_summary(latest_runs.get(row["playbook_id"])),
             })
-        return {"playbooks": playbooks, "count": len(playbooks)}
+        return {"success": True, "playbooks": playbooks, "count": len(playbooks)}
 
     async def _cmd_list_playbook_runs(self, args: dict) -> dict:
         limit = int(args.get("limit", 50))
@@ -389,18 +395,18 @@ class PlaybookCommandsMixin:
                 ),
                 "error": getattr(run, "error", None),
             })
-        return {"runs": summaries, "count": len(summaries)}
+        return {"success": True, "runs": summaries, "count": len(summaries)}
 
     async def _cmd_get_playbook_source(self, args: dict) -> dict:
         from src.playbooks.definition import source_digest
 
         playbook_id = str(args.get("playbook_id") or "").strip()
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
         rows = await self.db.list_playbook_activations(enabled_only=False)
         row = next((dict(item) for item in rows if dict(item)["playbook_id"] == playbook_id), None)
         if row is None:
-            return {"error": f"Playbook '{playbook_id}' not found"}
+            return {"success": False, "error": f"Playbook '{playbook_id}' not found"}
         configured = getattr(self.config, "vault_root", None)
         vault_root = Path(configured or (Path(self.config.data_dir) / "vault")).resolve()
         scope = row["scope"]
@@ -412,16 +418,17 @@ class PlaybookCommandsMixin:
         elif scope == "agent_type":
             path = vault_root / "agent-types" / identifier / "playbooks" / f"{playbook_id}.md"
         else:
-            return {"error": f"Unsupported playbook scope: {scope}"}
+            return {"success": False, "error": f"Unsupported playbook scope: {scope}"}
         resolved = path.resolve()
         try:
             resolved.relative_to(vault_root)
         except ValueError:
-            return {"error": f"Playbook source path escapes vault: {playbook_id}"}
+            return {"success": False, "error": f"Playbook source path escapes vault: {playbook_id}"}
         if not resolved.is_file():
-            return {"error": f"Playbook source not found: {playbook_id}"}
+            return {"success": False, "error": f"Playbook source not found: {playbook_id}"}
         markdown = resolved.read_text(encoding="utf-8")
         return {
+            "success": True,
             "playbook_id": playbook_id,
             "path": str(resolved),
             "markdown": markdown,
@@ -450,9 +457,9 @@ class PlaybookCommandsMixin:
         markdown = args.get("markdown")
         expected_hash = str(args.get("expected_source_hash") or "").strip()
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
         if not isinstance(markdown, str) or not markdown:
-            return {"error": "markdown is required"}
+            return {"success": False, "error": "markdown is required"}
 
         rows = [
             dict(row)
@@ -460,7 +467,7 @@ class PlaybookCommandsMixin:
             if dict(row).get("playbook_id") == playbook_id
         ]
         if not rows:
-            return {"error": f"Playbook '{playbook_id}' not found"}
+            return {"success": False, "error": f"Playbook '{playbook_id}' not found"}
         row = rows[0]
         configured = getattr(self.config, "vault_root", None)
         vault_root = Path(configured or (Path(self.config.data_dir) / "vault")).resolve()
@@ -473,22 +480,23 @@ class PlaybookCommandsMixin:
         elif scope == "agent_type":
             path = vault_root / "agent-types" / identifier / "playbooks" / f"{playbook_id}.md"
         else:
-            return {"error": f"Unsupported playbook scope: {scope}"}
+            return {"success": False, "error": f"Unsupported playbook scope: {scope}"}
         path = path.resolve()
         try:
             path.relative_to(vault_root)
         except ValueError:
-            return {"error": f"Playbook source path escapes vault: {playbook_id}"}
+            return {"success": False, "error": f"Playbook source path escapes vault: {playbook_id}"}
         if not path.is_file():
-            return {"error": f"Playbook source not found: {playbook_id}"}
+            return {"success": False, "error": f"Playbook source not found: {playbook_id}"}
 
         try:
             current = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return {"error": f"Failed to read current source: {exc}"}
+            return {"success": False, "error": f"Failed to read current source: {exc}"}
         current_hash = source_digest(current)
         if expected_hash and current_hash != expected_hash:
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": current_hash,
                 "compiled": False,
@@ -512,12 +520,13 @@ class PlaybookCommandsMixin:
                 Path(tmp_name).unlink(missing_ok=True)
                 raise
         except OSError as exc:
-            return {"error": f"Failed to write source: {exc}"}
+            return {"success": False, "error": f"Failed to write source: {exc}"}
 
         digest = source_digest(markdown)
         loaded = PlaybookSource.load(path, vault_root=vault_root)
         if isinstance(loaded, SourceError):
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -526,6 +535,7 @@ class PlaybookCommandsMixin:
             }
         if loaded.frontmatter.get("id") != playbook_id:
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -544,6 +554,7 @@ class PlaybookCommandsMixin:
             if not errors:
                 errors = ["prose playbook requires a compiler-agent proposal"]
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -559,15 +570,18 @@ class PlaybookCommandsMixin:
                 baseline = store.load(active_sha)
             except (OSError, ValueError, PlaybookStorageError) as exc:
                 return {
+                    "success": False,
                     "playbook_id": playbook_id,
                     "source_hash": digest,
                     "compiled": False,
                     "errors": [f"active V2 artifact could not be loaded: {exc}"],
                     "retries_used": 0,
                 }
+        script_pins = await self._v2_script_pins(loaded)
         proposal = propose(
             loaded,
             body,
+            script_pins=script_pins,
             baseline=baseline,
             contracts=contracts,
             profiles=profiles,
@@ -583,6 +597,7 @@ class PlaybookCommandsMixin:
         ]
         if proposal.artifact is None or errors:
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -594,6 +609,7 @@ class PlaybookCommandsMixin:
         artifact_sha = proposal.artifact_sha256
         if artifact_sha is None:
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -603,6 +619,7 @@ class PlaybookCommandsMixin:
         artifact_scope, artifact_identifier = self._v2_scope(artifact)
         if (artifact_scope, artifact_identifier) != (scope, identifier):
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -657,6 +674,7 @@ class PlaybookCommandsMixin:
             if not isinstance(exc, Exception):
                 raise
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -681,6 +699,7 @@ class PlaybookCommandsMixin:
             if not isinstance(exc, Exception):
                 raise
             return {
+                "success": False,
                 "playbook_id": playbook_id,
                 "source_hash": digest,
                 "compiled": False,
@@ -689,6 +708,7 @@ class PlaybookCommandsMixin:
             }
 
         return {
+            "success": True,
             "playbook_id": playbook_id,
             "source_hash": digest,
             "compiled": True,
@@ -703,8 +723,8 @@ class PlaybookCommandsMixin:
         run_id = str(args.get("run_id") or "").strip()
         run = await self.db.load_run(run_id) if run_id else None
         if run is None:
-            return {"error": f"Playbooks V2 run '{run_id}' not found"}
-        return {"run": asdict(run)}
+            return {"success": False, "error": f"Playbooks V2 run '{run_id}' not found"}
+        return {"success": True, "run": asdict(run)}
 
     async def _cmd_show_playbook_graph(self, args: dict) -> dict:
         return await self._cmd_playbook_v2_graph(args)
