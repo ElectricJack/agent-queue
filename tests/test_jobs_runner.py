@@ -10,7 +10,7 @@ import pytest
 from src.jobs.artifacts import atomic_json, read_json
 from src.jobs.identity import processes, stop_tree, verified
 from src.resources.box_lock import BoxLock
-from src.resources.semaphore import SlotTimeout
+from src.resources.semaphore import SlotSemaphore, SlotTimeout, full_suite_lock_dir
 from src.sessions.proctable import kill_marked
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -153,13 +153,19 @@ async def test_cancel_and_deadline_have_distinct_receipts(tmp_path):
             await proc.wait()
 
 
-async def test_supervisor_killed_child_retains_lock_and_intent_prevents_replay(tmp_path):
+@pytest.mark.parametrize("full_suite", [False, True])
+async def test_supervisor_killed_child_retains_lock_and_intent_prevents_replay(
+    tmp_path, full_suite
+):
     command = """import pathlib, time
 p = pathlib.Path('launch-count')
 p.write_text(str(int(p.read_text()) + 1) if p.exists() else '1')
 while not pathlib.Path('release').exists(): time.sleep(.02)
 """
     job = request(tmp_path, command)
+    if full_suite:
+        job["contract"]["test_scope"] = "full"
+        atomic_json(tmp_path / "request.json", job)
     proc = await launch(tmp_path, job)
     try:
         await barrier(tmp_path / "launch-count")
@@ -179,6 +185,9 @@ while not pathlib.Path('release').exists(): time.sleep(.02)
         with pytest.raises(SlotTimeout):
             with BoxLock(tmp_path / "locks", 1).acquire(timeout=0):
                 pytest.fail("surviving child must retain capacity")
+        if full_suite:
+            full = SlotSemaphore(full_suite_lock_dir(tmp_path / "locks"), 1)
+            assert full.snapshot()["free"] == 0
         # Re-executing the supervisor is fenced by the durable launch intent.
         replacement = await launch(tmp_path, job)
         await asyncio.wait_for(replacement.wait(), 10)
@@ -189,6 +198,8 @@ while not pathlib.Path('release').exists(): time.sleep(.02)
         await proc.wait()
     with BoxLock(tmp_path / "locks", 1).acquire(timeout=0):
         pass
+    if full_suite:
+        assert full.snapshot()["free"] == 1
 
 
 async def test_leader_exit_reaps_descendants_before_completion(tmp_path):
@@ -258,6 +269,58 @@ async def test_e2e_setup_failure_stops_before_smoke_and_retains_box_lock(tmp_pat
     finally:
         await stop_tree(job["runner_nonce"], grace=0.1)
         await proc.wait()
+
+
+async def test_full_suite_holds_four_slots_while_focused_work_runs(tmp_path):
+    job = request(tmp_path, """import pathlib, time
+while not pathlib.Path('release').exists(): time.sleep(.02)
+""")
+    job.update(weight=4, project_id="agent-queue", submitter_session_id="session-full")
+    job["contract"].update(capacity=6, test_scope="full")
+    atomic_json(tmp_path / "request.json", job)
+    box = BoxLock(tmp_path / "locks", 6)
+    full = SlotSemaphore(full_suite_lock_dir(box.lock_dir), 1)
+    proc = await launch(tmp_path, job)
+    try:
+        snapshot = box.semaphore.snapshot()
+        assert snapshot["free"] == 2
+        holders = [row["holder"] for row in snapshot["slots"] if row["held"]]
+        assert all(holder["job_id"] == job["id"] and holder["scope"] == "full"
+                   and holder["project_id"] == "agent-queue" for holder in holders)
+        assert full.snapshot()["free"] == 0
+        # Foreground focused tests and other projects share this very same lock.
+        with box.acquire(weight=2, timeout=0, meta={"project_id": "matter-engine"}):
+            assert box.semaphore.snapshot()["free"] == 0
+        with pytest.raises(SlotTimeout):
+            with full.acquire(timeout=0):
+                pytest.fail("a second foreground full suite must queue")
+        (tmp_path / "release").touch()
+        assert (await finish(proc, tmp_path))["exit_code"] == 0
+        assert box.semaphore.snapshot()["free"] == 6
+        assert full.snapshot()["free"] == 1
+    finally:
+        await stop_tree(job["runner_nonce"], grace=0.1)
+        await proc.wait()
+
+
+async def test_managed_full_suite_queues_behind_foreground_without_taking_slots(tmp_path):
+    job = request(tmp_path, "from pathlib import Path; Path('launched').touch()")
+    job.update(weight=4, queue_deadline=time.time() + 0.5)
+    job["contract"].update(capacity=6, test_scope="full")
+    atomic_json(tmp_path / "request.json", job)
+    box = BoxLock(tmp_path / "locks", 6)
+    full = SlotSemaphore(full_suite_lock_dir(box.lock_dir), 1)
+    with full.acquire(timeout=0, meta={"scope": "full", "task_id": "foreground"}):
+        proc = await launch(tmp_path, job)
+        try:
+            receipt = await finish(proc, tmp_path)
+            assert receipt["infra_reason"] == "queue_timeout"
+            assert not (tmp_path / "launched").exists()
+            assert box.semaphore.snapshot()["free"] == 6
+        finally:
+            await stop_tree(job["runner_nonce"], grace=0.1)
+            await proc.wait()
+    assert full.snapshot()["free"] == 1
 
 
 @pytest.mark.parametrize("kind", ["pass", "fail", "empty"])
