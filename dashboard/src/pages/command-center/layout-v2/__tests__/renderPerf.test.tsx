@@ -23,8 +23,8 @@ import { toFlowElements, type FlowHandlers } from "../flowNodes";
 afterEach(cleanup);
 
 const COUNT = 200;
-const handlers: FlowHandlers = { onOpenTask: () => {}, onToggleChildren: () => {}, onFocus: () => {} };
-const ctx = { projectId: "p1", offsetY: 0, expanded: new Set<string>(), handlers };
+const handlers: FlowHandlers = { onOpenTask: () => {}, onFocus: () => {} };
+const ctx = { projectId: "p1", offsetY: 0, focusId: null, handlers };
 
 /** A project whose graph is mostly finished work, as the operator described. */
 function payload(mutate?: (node: Record<string, unknown>) => void) {

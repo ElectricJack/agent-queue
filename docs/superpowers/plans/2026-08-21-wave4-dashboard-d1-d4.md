@@ -1,5 +1,12 @@
 # Wave 4 — Dashboard Lane A · D1 Sessions · D2 Task explain+graph · D3 Gates · D4 Supervisor chat
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship four dashboard pages so a human can drive the daemon and the new Wave-2/3 subsystems end-to-end: D1 Sessions (list, peek, nudge, attach, live transcript stream), D2 Task explain + dependency graph, D3 Gates inbox (list + resolve), D4 Supervisor chat (per-project chat with the `supervisor-<pid>` session). This is Wave 4 lane A only. D5 Worktrees, D6 Harness editor, D7 Doctor, D8 Costs are explicitly deferred to post-MVP.

@@ -22,7 +22,9 @@ See docs/specs/implementation/session-runtime.md §8.
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import uuid
 from dataclasses import dataclass, field
 
 import pytest
@@ -105,7 +107,19 @@ def provider(case, tmp_path):
     return case.factory(config=_Cfg())
 
 
+#: Stopping a session sweeps every process still carrying its instance
+#: token (``proctable.kill_marked``), box-wide.  A literal token shared with
+#: another test file's live session — run concurrently by another xdist
+#: worker — would be swept with it, so every live token is unique per run.
+_RUN = uuid.uuid4().hex[:8]
+
+
+def _tok(base: str) -> str:
+    return f"{base}-{_RUN}"
+
+
 def _spec(case, tmp_path, name="s-t1", token="tok-1") -> SessionSpec:
+    token = _tok(token)
     return SessionSpec(
         session_name=name,
         work_dir=str(tmp_path / "wd"),
@@ -119,8 +133,27 @@ def _spec(case, tmp_path, name="s-t1", token="tok-1") -> SessionSpec:
 
 
 class TestSubprocessFailures:
-    async def test_early_exit_raises_startup_error_with_log_path(self, tmp_path):
+    @pytest.mark.parametrize("ready_delay_ms", [0, 100])
+    async def test_early_exit_raises_startup_error_with_log_path(
+        self, tmp_path, monkeypatch, ready_delay_ms
+    ):
         """A failed readiness check must not leave an addressable handle."""
+
+        spawn = asyncio.create_subprocess_exec
+
+        async def spawn_exited_child(*args, **kwargs):
+            proc = await spawn(*args, **kwargs)
+            # Synchronize on the real child's exit rather than assuming Python
+            # starts and exits within the readiness delay on a busy CI runner.
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_exited_child)
 
         class _Cfg:
             data_dir = str(tmp_path / "state")
@@ -133,13 +166,14 @@ class TestSubprocessFailures:
             env={},
             prompt=None,
             prompt_mode="none",
-            ready_delay_ms=100,
+            ready_delay_ms=ready_delay_ms,
             instance_token="early-token",
         )
 
         with pytest.raises(SessionDiedDuringStartup) as caught:
             await provider.start(spec)
 
+        assert "exited with code 7" in str(caught.value)
         assert caught.value.start_stderr_path
         assert "failed" in open(caught.value.start_stderr_path, encoding="utf-8").read()
         assert await provider.list_running("s-") == []
@@ -181,7 +215,7 @@ class TestLifecycle:
         try:
             assert handle.name == "s-t1"
             assert handle.provider == provider.name
-            assert handle.instance_token == "tok-1"
+            assert handle.instance_token == _tok("tok-1")
         finally:
             await provider.stop(handle)
 
@@ -191,6 +225,14 @@ class TestLifecycle:
         # A second stop must not raise — the reconciler can race a drain.
         await provider.stop(handle)
         assert await provider.is_running(handle) is False
+
+    async def test_confirm_stopped_checks_live_instance(self, provider, case, tmp_path):
+        handle = await provider.start(_spec(case, tmp_path, token="confirm-stop"))
+        try:
+            assert await provider.confirm_stopped(handle) is False
+        finally:
+            await provider.stop(handle)
+        assert await provider.confirm_stopped(handle) is True
 
     async def test_stop_is_instance_token_fenced(self, provider, case, tmp_path):
         """A handle for a predecessor must never kill its successor."""

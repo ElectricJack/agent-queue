@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/root_runtime.py::RootSubjectRuntime._supersede_admitting::936f2a7229cd7cfb1eb1ee8c11864166e8da1d1e4273289e6551345c6570f04e": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 711,
+      "owner": "RootSubjectRuntime._supersede_admitting",
+      "owner_fingerprint": "ceb1f45a5a5d595839b861569e2b2a3d4e688e09a1f79dd80cdf47741d7e7961",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}
