@@ -1,0 +1,46 @@
+{
+  "shared": {
+    "src/wait_runtime/service.py::WaitService.__init__": {
+      "landing_span": [
+        19,
+        62
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/service.py::WaitService.graph": {
+      "landing_span": [
+        70,
+        80
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/service.py::WaitService.lock_source": {
+      "landing_span": [
+        63,
+        69
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/service.py::import from src.waits.graph import recompute_from": {
+      "landing_span": [
+        11,
+        11
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/service.py::import from src.waits.registry import build_registry": {
+      "landing_span": [
+        8,
+        8
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/service.py::import from src.waits.source_locking import lock_database_source": {
+      "landing_span": [
+        12,
+        12
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}
