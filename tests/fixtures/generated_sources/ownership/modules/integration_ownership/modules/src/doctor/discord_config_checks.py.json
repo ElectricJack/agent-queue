@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/discord_config_checks.py::discord_config_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
