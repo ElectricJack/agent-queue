@@ -47,11 +47,11 @@ async def _locked_intent(conn, *, wait_id, continuation_id=None, generation=None
     return intent
 
 
-async def retire_task_waits(conn, task_id, *, reason, now):
-    """Tombstone execution state while retaining immutable outcomes and audit.
+async def retire_task_waits(conn, task_id, *, reason, now, wait_id=None):
+    """Retire execution state under graph/component task locks, retaining audit.
 
-    Removal callers hold the graph and component task locks before entry. Both
-    archive and deletion use this path; no later source event can resume it.
+    Archive/deletion retire all waits; ``wait_id`` selects only an orphan's state,
+    preserving replacement waits, task-level reservations and priority projection.
     """
     import json
 
@@ -65,7 +65,7 @@ async def retire_task_waits(conn, task_id, *, reason, now):
 
     waits = (await conn.execute(select(wait_records).where(
         wait_records.c.owner_kind.in_(("task", "scheduler")),
-        wait_records.c.owner_id == task_id,
+        wait_records.c.owner_id == task_id, or_(wait_id is None, wait_records.c.id == wait_id),
     ).order_by(wait_records.c.id).with_for_update())).mappings().all()
     changed_keys = {f"task:{task_id}"}
     for wait in waits:
@@ -102,21 +102,21 @@ async def retire_task_waits(conn, task_id, *, reason, now):
                 conn, {**incident, "wait_id": wait["id"]},
                 {"note": reason}, outcome="cancelled", now=now,
             )
-    await conn.execute(update(admission_reservations).where(
-        or_(admission_reservations.c.task_id == task_id,
-            admission_reservations.c.continuation_id.in_(select(continuations.c.id).where(
-                continuations.c.task_id == task_id,
-            ))), admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+    intents = select(continuations.c.id).where(
+        continuations.c.task_id == task_id, or_(wait_id is None, continuations.c.wait_id == wait_id),
+    )
+    reservations = or_(admission_reservations.c.continuation_id.in_(intents),
+                       and_(wait_id is None, admission_reservations.c.task_id == task_id))
+    await conn.execute(update(admission_reservations).where(reservations,
+        admission_reservations.c.state.in_(("pending", "overdue", "granted")),
     ).values(state="cancelled"))
-    await conn.execute(update(continuations).where(
-        continuations.c.task_id == task_id,
+    await conn.execute(update(continuations).where(continuations.c.id.in_(intents),
         continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
     ).values(resume_state="cancelled", hold_reason=reason, version=continuations.c.version + 1))
     if waits:
         await recompute_from(conn, changed_keys, now=now)
-    await conn.execute(delete(wait_priority_projection).where(
-        wait_priority_projection.c.task_id == task_id,
-    ))
+    if wait_id is None:
+        await conn.execute(delete(wait_priority_projection).filter_by(task_id=task_id))
 
 
 async def checkpoint_continuation(
