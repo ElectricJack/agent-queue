@@ -16,9 +16,10 @@ every method in this protocol.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -100,6 +101,66 @@ class DatabaseBackend(Protocol):
 
     async def count_task_subtasks(self, task_ids: list[str]) -> dict[str, tuple[int, int]]: ...
 
+    # --- Durable records (caller-owned transactions; core service authorizes) ---
+
+    async def get_record_installation_on(self, *, conn) -> UUID: ...
+    async def ensure_record_scope_on(self, *, project_id: str | None, conn) -> str: ...
+    async def get_record_on(
+        self,
+        *,
+        record_id: UUID | None = None,
+        task_id: str | None = None,
+        knowledge_alias: str | None = None,
+        lock: bool = False,
+        conn,
+    ) -> dict | None: ...
+    async def insert_record_on(self, values: dict, *, conn) -> None: ...
+    async def get_task_record_domain_on(self, task_id: str, *, conn) -> dict | None: ...
+    async def ensure_task_record_on(
+        self, task_id: str, *, actor_id: str, conn, return_inserted: bool = False
+    ) -> dict | tuple[dict, bool]: ...
+    async def begin_record_request_on(
+        self, *, scope_key, actor_key, operation, idempotency_key, request_sha256, conn
+    ) -> dict: ...
+    async def finish_record_request_on(self, receipt: dict, result: dict, *, conn) -> None: ...
+    async def current_record_links_on(self, record_id, *, conn, link_ids=()) -> list[dict]: ...
+    async def project_knowledge_search_on(
+        self, record_id, revision_id, scope_key, snapshot, updated_at, *, conn
+    ) -> None: ...
+    async def insert_knowledge_record_on(self, values: dict, *, conn) -> None: ...
+    async def append_knowledge_revision_on(
+        self,
+        revision: dict,
+        snapshot: dict,
+        *,
+        conn,
+    ) -> None: ...
+    async def advance_knowledge_head_on(
+        self,
+        record_id: UUID,
+        *,
+        expected_revision: UUID,
+        revision_id: UUID,
+        sequence: int,
+        updated_at,
+        conn,
+    ) -> bool: ...
+    async def get_knowledge_revision_on(
+        self,
+        record_id: UUID,
+        *,
+        revision_id: UUID | None = None,
+        conn,
+    ) -> dict | None: ...
+    async def list_knowledge_history_on(
+        self,
+        record_id: UUID,
+        *,
+        before_sequence: int | None = None,
+        limit: int = 25,
+        conn,
+    ) -> list[dict]: ...
+
     # --- Lifecycle ---
 
     async def initialize(self) -> None:
@@ -132,6 +193,48 @@ class DatabaseBackend(Protocol):
 
     async def pending_integration_cleanup_page(
         self, *, now: float, after: tuple[float, str, str] | None, limit: int
+    ) -> list[dict]: ...
+
+    # --- Integration subjects (src/integration/subjects.py) ---
+
+    async def ensure_integration_subject(self, values: dict) -> tuple[dict, bool]: ...
+
+    async def get_integration_subject(self, subject_id: str) -> dict | None: ...
+
+    async def get_integration_subject_by_key(
+        self, *, project_id: str, kind: str, subject_key: str
+    ) -> dict | None: ...
+
+    async def due_integration_subject_page(
+        self,
+        *,
+        now: float,
+        after: tuple[float, str] | None,
+        limit: int,
+        kinds: Sequence[str] | None = None,
+        engine: str | None = None,
+    ) -> list[dict]: ...
+
+    async def wake_integration_subjects(
+        self,
+        *,
+        now: float,
+        subject_ids: Iterable[str] = (),
+        task_ids: Iterable[str] = (),
+        writer_task_ids: Iterable[str] = (),
+        batch_ids: Iterable[str] = (),
+        gate_ids: Iterable[str] = (),
+    ) -> int: ...
+
+    async def append_integration_subject_journal(self, values: dict) -> tuple[dict, bool]: ...
+
+    async def list_integration_subject_journal(
+        self,
+        subject_id: str,
+        *,
+        after_seq: int | None = None,
+        limit: int = 100,
+        entry_kinds: Sequence[str] | None = None,
     ) -> list[dict]: ...
 
     # --- Project onboarding idempotency ---
@@ -170,7 +273,9 @@ class DatabaseBackend(Protocol):
 
     async def create_project(self, project: Project) -> None: ...
     async def get_project(self, project_id: str, *, conn=None) -> Project | None: ...
-    async def list_projects(self, status: ProjectStatus | None = None) -> list[Project]: ...
+    async def list_projects(
+        self, status: ProjectStatus | None = None, *, include_admission: bool = False,
+    ) -> list[Project]: ...
     async def update_project(self, project_id: str, **kwargs) -> None: ...
     async def delete_project(self, project_id: str) -> None: ...
 
@@ -234,6 +339,8 @@ class DatabaseBackend(Protocol):
         self,
         project_id: str | None = None,
         exclude_statuses: set[TaskStatus] | None = None,
+        *,
+        exclude_held_ready: bool = False,
     ) -> list[Task]: ...
     async def list_active_tasks_all_projects(self) -> list[Task]: ...
     async def count_tasks_by_status(
@@ -269,6 +376,7 @@ class DatabaseBackend(Protocol):
         cascade: bool = False,
         conn=None,
         branch_policy: str | None = None,
+        delivery=None,
     ) -> TransitionResult | None: ...
     async def get_task_updated_at(self, task_id: str) -> float | None: ...
     async def get_task_assignment_route(
@@ -344,13 +452,17 @@ class DatabaseBackend(Protocol):
         description: str | None = None,
         integration_authorized: bool = False,
         completed_parent_for_repair: bool = False,
+        reject_live_parent: bool = False,
     ) -> TransitionResult: ...
     async def set_parent_bulk(
         self, child_ids: list[str], parent_id: str, *, conn
     ) -> tuple[set[str], list[str]]: ...
     async def settle_containers(
-        self, seeds: set[str], *, conn, depth: int = 0
+        self, seeds: set[str], *, conn, depth: int = 0, delivery=None
     ) -> TransitionResult: ...
+    async def stale_container_delivery_children(
+        self, container_ids: list[str]
+    ) -> dict[str, set[str]]: ...
     async def open_children(self, task_id: str, *, conn=None) -> list[str]: ...
     async def discovered_from_origins(self, task_id: str, *, conn) -> list[str]: ...
     async def subtree_ids(self, root_id: str, *, conn) -> list[str]: ...
@@ -397,6 +509,7 @@ class DatabaseBackend(Protocol):
         dep_type: str = "blocks",
         *,
         description: str | None = None,
+        reject_container_target: bool = False,
         conn=None,
     ) -> set[str] | None: ...
     async def get_dependencies(
@@ -428,6 +541,7 @@ class DatabaseBackend(Protocol):
     async def get_dependents(
         self, task_id: str, dep_types: frozenset[str] | None = None
     ) -> set[str]: ...
+    async def has_waiting_dependents(self, task_id: str) -> bool: ...
     async def get_dependency_map_for_tasks(
         self,
         task_ids: list[str],
@@ -458,6 +572,8 @@ class DatabaseBackend(Protocol):
         kind: str | None = None,
         task_id: str | None = None,
     ) -> list[dict]: ...
+    async def list_review_waits_for_tasks(self, task_ids: list[str]) -> dict[str, list[dict]]: ...
+    async def list_reviews_submitted_by_task(self, task_id: str) -> list[dict]: ...
     async def transition_review(
         self,
         review_id: str,
@@ -515,7 +631,14 @@ class DatabaseBackend(Protocol):
         self,
         project_id: str | None = None,
     ) -> list[Workspace]: ...
+    async def read_workspace_owner_facts(
+        self, rows: list[Workspace]
+    ) -> dict[str, list[dict]]: ...
     async def delete_workspace(self, workspace_id: str) -> None: ...
+
+    async def remove_missing_workspace_registration(
+        self, workspace_id: str, *, expected_path: str,
+    ) -> None: ...
     async def update_workspace(self, workspace_id: str, **fields) -> int: ...
     async def acquire_workspace(
         self,
@@ -613,6 +736,13 @@ class DatabaseBackend(Protocol):
         offset: int = 0,
     ) -> list[SessionRecord]: ...
     async def update_session(self, session_id: str, *, conn=None, **fields) -> int: ...
+    async def record_failed_preparation(
+        self, session_id: str, *, instance_token: str, task_id: str, claim_epoch: int,
+        preparation_started_at: float | None, task_created_at: float, failure: dict, now: float,
+    ) -> None: ...
+    async def record_claim_refusal(
+        self, session_id: str, *, result: str, reason: str, now: float,
+    ) -> SessionRecord | None: ...
     async def update_session_instance(
         self,
         session_id: str,
@@ -623,6 +753,11 @@ class DatabaseBackend(Protocol):
     ) -> int: ...
     async def bump_session_restarts(self, session_id: str) -> int: ...
     async def touch_session_activity(self, session_id: str, ts: float, *, conn=None) -> None: ...
+    async def has_supervision_work(self, project_id: str | None = None) -> bool: ...
+    async def record_pool_claim_failure(
+        self, session_id: str, *, instance_token: str, claim_epoch: int,
+        reason: str, now: float,
+    ) -> SessionRecord | None: ...
     async def request_idle_pool_recycle(
         self, session_id: str, *, instance_token: str, stale_before: float
     ) -> bool: ...
@@ -638,10 +773,14 @@ class DatabaseBackend(Protocol):
         tokens: int,
         *,
         model: str | None = None,
+        model_source: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cache_read_tokens: int | None = None,
         cache_write_tokens: int | None = None,
+        session_id: str | None = None,
+        attempt_id: str | None = None,
+        call_id: str | None = None,
     ) -> None: ...
     async def get_cost_rollup(
         self,
@@ -702,6 +841,9 @@ class DatabaseBackend(Protocol):
         session_id: str | None = None,
         conn=None,
     ) -> dict | None: ...
+    async def get_retired_integration_writer(
+        self, task_id: str, *, conn=None
+    ) -> dict | None: ...
     async def append_integration_review_evidence(self, evidence: dict) -> dict: ...
     async def get_applicable_integration_review_evidence(
         self,
@@ -712,6 +854,7 @@ class DatabaseBackend(Protocol):
         reviewed_head_sha: str,
         current_generation: int,
     ) -> dict | None: ...
+    async def get_integration_review_evidence(self, evidence_id: str) -> dict | None: ...
     async def get_task_branch_origin_for_promotion(
         self, task_id: str, repository_id: str
     ) -> dict | None: ...
@@ -736,9 +879,6 @@ class DatabaseBackend(Protocol):
         self, intent_id: str, diagnostics: dict
     ) -> dict: ...
     async def mark_integration_promotion_pushed(self, intent_id: str, evidence: dict) -> None: ...
-    async def finalize_integration_promotion(
-        self, intent_id: str, remote_evidence: dict
-    ) -> dict: ...
     async def list_integration_delivery_receipts(
         self, *, source_task_id: str, repository_id: str, target_branch: str
     ) -> list[dict]: ...
@@ -756,6 +896,13 @@ class DatabaseBackend(Protocol):
     async def save_task_completion(self, completion: TaskCompletion) -> None: ...
     async def get_task_completion(self, task_id: str) -> TaskCompletion | None: ...
     async def get_task_completions(self, task_id: str) -> list[TaskCompletion]: ...
+    async def recover_pending_completions(self) -> list[str]: ...
+    async def accepted_close_in_flight(
+        self, task_id: str, *, session_id: str, claim_epoch: int
+    ) -> bool: ...
+    async def discard_pending_completion(
+        self, task_id: str, completion_id: str, *, keep_accepted: bool = True
+    ) -> bool: ...
 
     # --- Events ---
 
@@ -775,7 +922,7 @@ class DatabaseBackend(Protocol):
 
     async def take_claim_slot(
         self, conn, session_id: str, *, now: float, cap: int | None
-    ) -> tuple[str, SessionRecord | None]: ...
+    ) -> tuple[str, SessionRecord | None, dict | None]: ...
     async def release_claim_slot(self, conn, session_id: str) -> None: ...
     async def select_ready_for_profile(
         self,
@@ -783,8 +930,8 @@ class DatabaseBackend(Protocol):
         *,
         project_id: str,
         profile_id: str,
-        default_profile_id: str | None,
         agent_id: str,
+        router_ready: bool = False,
         task_id: str | None = None,
     ) -> str | None: ...
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None: ...
@@ -827,6 +974,7 @@ class DatabaseBackend(Protocol):
         release_workspace_lock: bool = False,
         conn=None,
     ) -> TransitionResult: ...
+    async def get_settled_pool_claim(self, session_id: str, *, conn=None) -> dict | None: ...
     async def release_historical_pool_claim(
         self,
         conn,
@@ -852,8 +1000,35 @@ class DatabaseBackend(Protocol):
     async def reserve_filing(
         self, conn, task_id: str, *, max_filings: int, count: int = 1
     ) -> bool: ...
-    async def count_ready_by_profile(self, project_id: str) -> dict[str | None, int]: ...
-    async def hierarchy_runnable_task_ids(self, task_ids: list[str]) -> set[str]: ...
+    async def count_ready_by_profile(
+        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
+        hierarchy_mode=None, pool_profiles: Mapping[str, AgentProfile] | None = None,
+        include_repair_counts: bool = False,
+    ) -> dict[str | None, int] | dict[str | None, tuple[int, int]]: ...
+
+    # --- Router (mandatory-routing spec §6.4-§6.6) ---
+
+    async def count_routed_backlog_by_profile(
+        self, *, ready_project_ids: Collection[str] = frozenset(), conn=None
+    ) -> dict[str, dict[str, int]]: ...
+    async def count_busy_sessions_by_profile(self, *, conn=None) -> dict[str, int]: ...
+    def routing_apply_lock(self, *, budget_seconds: float = ...) -> Any: ...
+    async def get_task_on(self, conn, task_id: str) -> Task | None: ...
+    async def task_has_live_session(self, conn, task_id: str) -> bool: ...
+    async def write_router_route(
+        self,
+        conn,
+        task_id: str,
+        *,
+        profile_id: str,
+        intelligence_class: str,
+        provider_intent: str,
+        route: dict,
+        task_type: str | None = None,
+    ) -> bool: ...
+    async def hierarchy_runnable_task_ids(
+        self, task_ids: list[str], *, hierarchy_modes=None
+    ) -> set[str]: ...
     async def is_hierarchy_task_runnable(self, task_id: str) -> bool: ...
 
     # --- Hooks / Hook Runs removed (playbooks spec §13 Phase 3) ---
@@ -899,7 +1074,11 @@ class DatabaseBackend(Protocol):
         abandon_undelivered: bool = False,
         abandon_reason: str | None = None,
         abandoned_by: str = "operator",
+        delivery=None,
     ) -> bool: ...
+    def set_delivery_observer(self, observer) -> None: ...
+    def set_prerequisite_observer(self, observer) -> None: ...
+    async def observe_removal_delivery(self, root_ids, *, for_mutation=False): ...
     async def archive_completed_tasks(
         self,
         project_id: str | None = None,
@@ -1009,6 +1188,9 @@ class DatabaseBackend(Protocol):
     ) -> dict: ...
 
     async def queue_agent_question_supervisor(self, question_id, body, recipient, now) -> None: ...
+    async def ensure_agent_question_answer_message(
+        self, question, message_id, body, now
+    ) -> None: ...
     async def list_overdue_supervisor_incident_messages(self, cutoff: float) -> list[dict]: ...
     async def claim_agent_question_delivery(self, question_id, token, now) -> bool: ...
     async def finish_agent_question_delivery(
@@ -1076,6 +1258,7 @@ class DatabaseBackend(Protocol):
     async def register_agent_wait(self, **kwargs) -> dict: ...
     async def register_agent_wait_in_transaction(self, conn, **kwargs) -> dict: ...
     async def get_agent_wait(self, wait_id: str) -> dict | None: ...
+    async def consume_agent_wait(self, wait_id: str, *, identity: dict, now: float) -> dict: ...
     async def list_agent_waits(self, **kwargs) -> list[dict]: ...
     async def cancel_agent_wait(self, wait_id: str, **kwargs) -> dict: ...
     async def blocking_wait_for(self, session, claim_epoch: int, now: float) -> dict | None: ...
@@ -1083,6 +1266,99 @@ class DatabaseBackend(Protocol):
     async def reconcile_agent_waits(
         self, *, now: float, limit: int = 100, wait_id: str | None = None
     ) -> dict: ...
+    # Bounded collaboration records, claims and ordered transcripts.
+    async def reconcile_collaborations(self, *, now: float) -> dict: ...
+
+    async def create_collaboration_thread(
+        self,
+        *,
+        project_id: str,
+        created_by_kind: str,
+        created_by_id: str,
+        idempotency_key: str,
+        task_ids: list[str],
+        goal: str | None = None,
+        deadline_seconds: float = 7200,
+        message_budget: int = 40,
+        now: float,
+    ) -> dict: ...
+
+    async def accept_collaboration(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        task_id: str,
+        claim_epoch: int,
+        now: float,
+    ) -> dict: ...
+
+    async def get_collaboration_thread(
+        self,
+        thread_id: str,
+        *,
+        project_id: str,
+        conn: AsyncConnection | None = None,
+    ) -> dict | None: ...
+
+    async def get_collaboration_thread_project(self, thread_id: str) -> str | None: ...
+
+    async def list_collaboration_threads(
+        self,
+        *,
+        project_id: str,
+        task_id: str | None = None,
+        state: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]: ...
+
+    async def read_collaboration_messages(
+        self,
+        thread_id: str,
+        *,
+        project_id: str,
+        after_seq: int | None = None,
+        limit: int = 20,
+        max_bytes: int = 32768,
+        conn: AsyncConnection | None = None,
+    ) -> dict | None: ...
+
+    async def append_collaboration_message(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        sender_task_id: str,
+        sender_claim_epoch: int,
+        sender_session_id: str,
+        client_key: str | None = None,
+        body: str,
+        subject: str | None = None,
+        reply_to_id: str | None = None,
+        to_task_id: str | None = None,
+        now: float,
+    ) -> dict: ...
+
+    async def close_collaboration_thread(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        reason: str,
+        note: str | None = None,
+        now: float,
+        conn: AsyncConnection | None = None,
+    ) -> dict: ...
+
+    async def remove_collaboration_member(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        task_id: str,
+        now: float,
+    ) -> dict: ...
+
     async def collect_morning_report_sources(
         self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None
     ) -> dict[str, Any]: ...

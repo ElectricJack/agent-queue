@@ -12,7 +12,9 @@ from click.testing import CliRunner
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
+from src.models import (
+    Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus,
+)
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
@@ -97,6 +99,121 @@ def worker_graph(*keys: str, parent: bool = False) -> dict:
 
 
 class TestFiling:
+    @pytest.mark.parametrize("mode", [None, "hierarchy", "train"])
+    @pytest.mark.parametrize("placement", [{"root": True}, {"parent_id": None}])
+    @pytest.mark.parametrize("routed", [False, True])
+    async def test_root_filing_only_gates_unrouted_work(
+        self, handler, db, tmp_path, monkeypatch, mode, placement, routed
+    ):
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.models import RepoConfig, RepoSourceType
+        from src.vault import ensure_default_intelligence_classes
+
+        sid = await holding_session(db)
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker", harness="claude", lifecycle="pool",
+            default_class="standard-high", needs_workspace=False,
+        ))
+        handler._caller_profile_id = "worker"
+        ensure_default_intelligence_classes(handler.config.data_dir)
+        handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+        if mode:
+            await db.create_repo(RepoConfig(
+                id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path),
+            ))
+            await db.update_project(
+                PROJECT_ID, hierarchical_integration_mode=mode,
+                integration_repository_id="repo",
+            )
+            service = HierarchyIntegration(
+                db, default_head_resolver=lambda _repo, _branch: "a" * 40
+            )
+            monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: service)
+
+        tasks_before = len(await db.list_tasks(PROJECT_ID))
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "Root finding", "description": "d", "reason": "held exposed it",
+            "intelligence_class": "standard-high", **placement,
+            **({"profile_id": "worker"} if routed else {}),
+        })
+
+        if routed:
+            # A worker files hints, never a route (mandatory routing §5.2):
+            # the named profile is refused and nothing is written.
+            assert result.get("success") is False, result
+            assert result["code"] == "routing.choice_forbidden"
+            assert result["refused"] == ["profile_id"]
+            assert len(await db.list_tasks(PROJECT_ID)) == tasks_before
+            assert (await db.get_task("held")).filed_count == 0
+            return
+        assert result.get("success") is True, result
+        task = await db.get_task(result["task_id"])
+        assert task.parent_task_id is None
+        assert task.status == TaskStatus.DEFINED
+        # Unrouted, the class is only the filer's hint (mandatory routing §5.3).
+        assert task.class_hint == "standard-high"
+        assert task.intelligence_class is None
+        assert await db.get_typed_dependencies(task.id) == [("held", "discovered-from")]
+        gates = await db.get_gates_for_task(task.id)
+        gate_events = [c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
+                       if c.args[0] == "gate.created"]
+        assert task.profile_id is None
+        assert task.is_blocked is True
+        assert [g["gate_type"] for g in gates] == ["routing"]
+        assert result["gate_id"] == gates[0]["id"]
+        assert [event["gate_id"] for event in gate_events] == [result["gate_id"]]
+        event = created_events(handler)[0]
+        assert (event["parent_task_id"], event["discovered_from"]) == (None, "held")
+        assert (await db.get_task("held")).filed_count == 1
+
+    async def test_routed_root_filing_releases_when_its_dependency_clears(self, handler, db):
+        from src.vault import ensure_default_intelligence_classes
+
+        sid = await holding_session(db)
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker", harness="claude", lifecycle="pool",
+            default_class="standard-high", needs_workspace=False,
+        ))
+        handler._caller_profile_id = "worker"
+        ensure_default_intelligence_classes(handler.config.data_dir)
+        handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+        # A worker's held task is never a valid gating need (work-graph §11;
+        # test_a_single_filing_that_depends_on_the_held_task_is_refused), so
+        # gate the routed filing on an unrelated prerequisite instead — the
+        # routing-release behaviour this test pins does not need the held task.
+        await db.create_task(Task(
+            id="prereq", project_id=PROJECT_ID, title="prereq", description="p",
+        ))
+        # A worker files hints only (mandatory routing §5.2); the route comes
+        # later, here from the operator's audited override (§7), which, like
+        # the router's apply, resolves the filing's routing gate.
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "Follow-up", "description": "d", "root": True,
+            "reason": "held exposed it", "depends_on": "prereq",
+            "intelligence_class": "standard-high",
+        })
+        assert result.get("success") is True, result
+        task_id = result["task_id"]
+        handler._current_scope = None
+        handler.config.swarm.enabled = True  # a pool has slots only while the swarm runs
+        routed = await handler._cmd_task_route_override({
+            "task_id": task_id, "profile_id": "worker", "intelligence_class": "standard-high",
+            "reason": "operator routes the filing by hand in this test",
+        })
+        assert routed.get("success") is True, routed
+        await handler.orchestrator._check_defined_tasks()
+        assert (await db.get_task(task_id)).status == TaskStatus.DEFINED
+
+        removed = await handler._cmd_remove_dependency({"task_id": task_id, "depends_on": "prereq"})
+        assert removed.get("ok") is True, removed
+        await handler.orchestrator._check_defined_tasks()
+
+        task = await db.get_task(task_id)
+        assert task.status == TaskStatus.READY
+        assert task.is_blocked is False
+        assert all(gate["status"] == "resolved" for gate in await db.get_gates_for_task(task_id))
+
     async def test_legacy_null_instance_claim_keeps_unmanaged_worker_filing_compatible(
         self, handler, db
     ):
@@ -431,6 +548,20 @@ async def test_local_task_creation_does_not_accept_spoofed_session_provenance(ha
     })
     created = await db.get_task(result["task_id"])
     assert created.created_by_kind is None and created.created_by_id is None
+
+
+async def test_worker_ensure_task_cannot_claim_an_internal_origin(handler, db):
+    # ``ensure_task`` forwards an internal filer's origin (source-CI repair) to
+    # ``create_task``, whose worker guard still owns provenance.
+    sid = await holding_session(db)
+    result = await scoped(handler, sid)._cmd_ensure_task({
+        "project_id": PROJECT_ID, "dedup_key": "claimed-origin", "title": "Claimed",
+        "reason": "found it",
+        "_created_by_kind": "source_ci_repair", "_created_by_id": "source-ci:x",
+    })
+    assert result["success"] is True, result
+    created = await db.get_task(result["task_id"])
+    assert (created.created_by_kind, created.created_by_id) == ("session", sid)
 
 
 class TestWorkerGraphContainer:
@@ -858,6 +989,93 @@ def reparent_when_filing_starts(monkeypatch, db, task_id, new_parent):
     return fired
 
 
+class TestFilingNeverGatesOnItsOwnContainer:
+    """Filed work never waits on the task that files it or on its own ancestors.
+
+    nimble-bridge, a plan task, filed every child with a ``blocks`` edge onto
+    itself. Membership already is the parent-child edge, and the plan is written
+    before filing, so the edge only ever stalled or confused the graph.
+    """
+
+    async def test_a_graph_need_on_the_held_task_is_refused_before_writes(self, handler, db):
+        sid = await holding_session(db)
+        graph = worker_graph("one", "two")
+        graph["nodes"][1]["needs"] = ["held"]
+
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": graph, "reason": "The plan names two implementation steps",
+        })
+
+        assert "nothing was created" in result["error"]
+        assert [(e["rule"], e["node"]) for e in result["errors"]] == [
+            ("dependency_on_ancestor", "two")
+        ]
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_a_graph_need_on_the_held_tasks_container_is_refused(self, handler, db):
+        sid = await holding_child_session(db)
+        graph = worker_graph("one")
+        graph["nodes"][0]["needs"] = [{"on": "epic", "dep_type": "waits-for"}]
+
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": graph, "reason": "epic.1 found follow-up work",
+        })
+
+        assert [e["rule"] for e in result["errors"]] == ["dependency_on_ancestor"]
+        assert await db.get_children("epic.1") == []
+
+    async def test_provenance_and_sibling_edges_still_file(self, handler, db):
+        sid = await holding_child_session(db)
+        await db.create_task(Task(id="elsewhere", project_id=PROJECT_ID, title="e", description="e"))
+        graph = worker_graph("one", "two")
+        graph["nodes"][0]["needs"] = [{"on": "epic.1", "dep_type": "related"}]
+        graph["nodes"][1]["needs"] = ["one", "elsewhere"]
+
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": graph, "reason": "epic.1 found two ordered fixes",
+        })
+
+        assert result.get("created") is True, result
+        assert ("elsewhere", "blocks") in await db.get_typed_dependencies("epic.1.2")
+
+    @pytest.mark.parametrize("root", [False, True])
+    async def test_a_single_filing_that_depends_on_the_held_task_is_refused(
+        self, handler, db, root
+    ):
+        sid = await holding_session(db)
+
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "implement step one", "description": "d",
+            "reason": "the plan names this step", "root": root,
+            "depends_on": [{"task_id": "held", "dep_type": "blocks"}],
+        })
+
+        assert result["success"] is False
+        assert result["code"] == "dependency_on_ancestor"
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_a_supervisor_child_that_depends_on_its_parent_is_refused(self, handler, db):
+        await db.create_task(Task(id="epic", project_id=PROJECT_ID, title="epic", description="e"))
+        await db.create_task(Task(id="epic.1", project_id=PROJECT_ID, title="c", description="c"))
+        async with db._engine.begin() as conn:
+            await db.set_parent("epic.1", "epic", conn=conn)
+        handler._current_scope = {"kind": "local"}
+
+        refused = await handler._cmd_create_task({
+            "title": "t", "description": "d", "project_id": PROJECT_ID,
+            "parent_id": "epic.1", "depends_on": "epic",
+        })
+        related = await handler._cmd_create_task({
+            "title": "t", "description": "d", "project_id": PROJECT_ID,
+            "parent_id": "epic.1", "depends_on": [{"task_id": "epic.1", "dep_type": "related"}],
+        })
+
+        assert refused["success"] is False and refused["code"] == "dependency_on_ancestor"
+        assert related["success"] is True, related
+
+
 class TestFilingScopeRace:
     """A reparent that commits after the scope pre-check must not let a
     filing land outside the scope the held task actually authorises (§12)."""
@@ -1235,6 +1453,19 @@ class TestRootFilingCLI:
         assert captured_args["container"] is True
 
 
+async def route(db, task_id):
+    """Put a legacy route on *task_id*: a profile and a class on the row."""
+    if await db.get_profile("standard-high-claude") is None:
+        await db.create_profile(
+            AgentProfile(id="standard-high-claude", name="standard-high-claude", harness="claude")
+        )
+    assert await db.update_task_routing(
+        task_id, profile_id="standard-high-claude",
+        route_source="legacy", intelligence_class="standard-high",
+        preferred_workspace_id=None,
+    )
+
+
 class TestWorkerReparent:
     """A worker may deliberately move its own unclaimed filing in scope."""
 
@@ -1309,6 +1540,87 @@ class TestWorkerReparent:
 
         assert again.get("success") is True, again
         assert len(await db.get_gates_for_task(filed)) == 1
+
+    async def test_worker_move_to_root_announces_the_routing_gate_it_attaches(
+        self, handler, db
+    ):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+
+        res = await scoped(handler, sid)._cmd_reparent_task({"task_id": filed, "root": True})
+
+        emitted = [
+            c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
+            if c.args[0] == "gate.created"
+        ]
+        assert [(e["gate_id"], e["gate_type"], e["waiter_task_ids"]) for e in emitted] == [
+            (res["gate_id"], "routing", [filed])
+        ]
+
+    async def test_worker_move_of_a_routed_filing_to_root_attaches_no_routing_gate(
+        self, handler, db
+    ):
+        """A routing gate on a routed task is one nothing resolves (clear-orbit).
+
+        ``task.route_needed`` fires only for a task missing its class or
+        profile, so the assignment playbook never sees it and the gate would
+        hold the task — and, for a container, every child — indefinitely.
+        """
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        await route(db, filed)
+
+        res = await scoped(handler, sid)._cmd_reparent_task({"task_id": filed, "root": True})
+
+        assert res.get("success") is True, res
+        assert "gate_id" not in res
+        assert await db.get_gates_for_task(filed) == []
+        moved = await db.get_task(filed)
+        assert moved.parent_task_id is None
+        assert moved.is_blocked is False
+
+    async def test_routed_epic_moved_to_root_releases_its_children_when_the_barrier_goes(
+        self, handler, db
+    ):
+        """The nimble-bridge.2 barrier recipe, end to end (clear-orbit).
+
+        A planner files a routed epic and a child under the task it holds,
+        moves the child under the epic, bars the epic on the held task, and
+        moves the epic to root so its own close is not refused.  Removing the
+        barrier must release the epic and its child without any manual status
+        edit.
+        """
+        sid = await holding_session(db)
+
+        async def file(title):
+            res = await scoped(handler, sid)._cmd_create_task({
+                "title": title, "description": "d", "reason": "held planned it",
+            })
+            assert res["success"] is True, res
+            return res["task_id"]
+
+        epic = await file("Provider allocation epic")
+        await route(db, epic)
+        child = await file("Implement one slice")
+        under = await scoped(handler, sid)._cmd_reparent_task({"task_id": child, "parent_id": epic})
+        assert under.get("success") is True, under
+        await db.add_dependency(epic, "held", "blocks")
+        moved = await scoped(handler, sid)._cmd_reparent_task({"task_id": epic, "root": True})
+        assert moved.get("success") is True, moved
+        orch = handler.orchestrator
+        await orch._check_defined_tasks()
+        assert (await db.get_task(epic)).status == TaskStatus.DEFINED
+
+        handler._current_scope = None
+        removed = await handler._cmd_remove_dependency({"task_id": epic, "depends_on": "held"})
+        assert removed.get("ok") is True, removed
+        await orch._check_defined_tasks()
+        await orch._check_defined_tasks()
+
+        released = await db.get_task(epic)
+        assert released.status == TaskStatus.IN_PROGRESS
+        assert released.assigned_agent_id is None
+        assert (await db.get_task(child)).status == TaskStatus.READY
 
     async def test_worker_may_move_a_filing_under_its_own_task(self, handler, db):
         sid = await holding_child_session(db)

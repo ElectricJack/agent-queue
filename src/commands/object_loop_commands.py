@@ -1,0 +1,937 @@
+"""Command surface for durable object-script evaluation rounds.
+
+The external scorer owns image measurements.  These commands own bounded
+identity checks, reservations, task intents and the finalization hold.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import hashlib
+import json
+import time
+
+from pydantic import ValidationError
+from sqlalchemy import insert, select, update
+
+from src.waits.sources import insert_message_with_source_event
+from src.task_templates import render_task_template
+from src.commands.contracts.object_loop import (
+    ObjectCheckpointReadArgs, ObjectLoopReconcileArgs, ObjectLoopStartArgs,
+    ObjectLoopInputsArgs, ObjectScoreRecordArgs, Reservation, Variant,
+)
+from src.database.tables import (
+    doc_review_revisions, doc_reviews, object_loops, task_completion_records, tasks,
+)
+from src.object_loop.contracts import validate_score_receipt
+
+_UNITS = ("usd", "calls", "bakes", "active_seconds")
+_TERMINAL = {"COMPLETED", "BLOCKED"}
+
+#: The round ceiling a loop row written before ``max_rounds`` existed was
+#: admitted with.  The cap is start input now; a row without the field keeps
+#: the ceiling that was in force when it was admitted, never a silent raise.
+_DEFAULT_MAX_ROUNDS = 8
+
+def _error(message: str) -> dict:
+    return {"success": False, "error": message}
+
+
+def _frozen_inputs(state: dict) -> dict:
+    """The comparison inputs fixed for this attempt, named for a worker packet."""
+    return {
+        "reference_kind": state.get("reference_kind", "calibrated"),
+        "reference_sha256": state["reference_sha256"],
+        "rig_sha256": state["rig_sha256"],
+        "scorer_sha256": state["scorer_sha256"],
+        "render_profile_sha256": state["render_profile_sha256"],
+        "policy_sha256": state["policy_sha256"],
+        "mandatory_views": list(state["mandatory_views"]),
+    }
+
+
+def _round_handoff(state: dict) -> dict:
+    """The incumbent bundle, every earlier round's changes, and the frozen inputs."""
+    return {
+        "attempt_id": state["attempt_id"],
+        "round_id": state["round_id"],
+        "incumbent": {
+            "sha256": state["incumbent_sha256"],
+            "artifact": state.get("incumbent_artifact"),
+            "capture_sha256": state.get("incumbent_capture_sha256"),
+        },
+        "prior_rounds": list(state.get("round_history") or []),
+        "frozen_inputs": _frozen_inputs(state),
+        "instructions": render_task_template("object-round-handoff", attempt_id=state["attempt_id"]),
+    }
+
+
+def _branch_and_commit(branch: str | None, commits: str | None) -> dict:
+    """The branch and head commit a close recorded, or the reason it named none."""
+    try:
+        recorded = json.loads(commits) if isinstance(commits, str) else list(commits or [])
+    except ValueError:
+        recorded = []
+    return {
+        "branch": branch,
+        "commit": recorded[-1] if recorded else None,
+    }
+
+
+async def _round_commits(conn, task_ids: list[str]) -> dict:
+    """Each candidate task's branch and commit, as its own close recorded them.
+
+    Read from the completion record rather than resolved from git here: the
+    worktree slot a round worker used is released when it settles, so the branch
+    is gone by the time the next round's packet is written, while the close that
+    named the branch and the commit is durable evidence.
+    """
+    ids = sorted(set(task_ids))
+    if not ids:
+        return {}
+    rows = await conn.execute(
+        select(
+            task_completion_records.c.task_id,
+            task_completion_records.c.branch,
+            task_completion_records.c.commits,
+        )
+        .where(task_completion_records.c.task_id.in_(ids))
+        .order_by(task_completion_records.c.completed_at.desc(), task_completion_records.c.id.desc())
+    )
+    found: dict[str, dict] = {}
+    for row in rows.mappings():
+        found.setdefault(
+            row["task_id"], _branch_and_commit(row["branch"], row["commits"])
+        )
+    return found
+
+
+def _budget(reservation: Reservation) -> dict:
+    return reservation.model_dump()
+
+
+def _zero() -> dict:
+    return {unit: 0 for unit in _UNITS}
+
+
+def _reserve(state: dict, variants: list[Variant]) -> None:
+    if not variants or len({v.variant_id for v in variants}) != len(variants):
+        raise ValueError("wave needs one to three distinct variants")
+    if state["round_id"] >= state.get("max_rounds", _DEFAULT_MAX_ROUNDS):
+        raise ValueError("round cap reached")
+    additional = {
+        unit: (sum(getattr(v.reservation, unit) for v in variants)
+               + state["score_reservation"][unit])
+        for unit in _UNITS
+    }
+    for unit in _UNITS:
+        if (state["spent"][unit] + state["reserved"][unit] +
+                state["final_reserve"][unit] + additional[unit] > state["limits"][unit]):
+            raise ValueError(f"{unit} budget would be overspent by sibling reservations")
+    state["reserved"] = additional
+    state["intent"] = {"kind": "wave", "round_id": state["round_id"],
+                       "variants": [v.model_dump() for v in variants]}
+    state["wave"] = [{"variant_id": v.variant_id, "task_id": None} for v in variants]
+    state["score_task_id"] = None
+
+
+def _charge(state: dict, spent: Reservation | None) -> None:
+    # Unknown or missing usage is charged at the reservation, never zero.
+    measured = _budget(spent) if spent is not None else dict(state["reserved"])
+    for unit in _UNITS:
+        if measured[unit] > state["reserved"][unit]:
+            raise ValueError(f"{unit} spend exceeds the reserved wave budget")
+        state["spent"][unit] += measured[unit]
+    state["reserved"] = _zero()
+
+
+def _task_settled(row) -> bool:
+    return row is not None and (
+        row.status in _TERMINAL
+        or (row.status == "FAILED" and row.retry_count >= row.max_retries)
+    )
+
+
+def _same_start(state: dict, request: ObjectLoopStartArgs) -> bool:
+    return (
+        state["attempt_id"] == request.attempt_id
+        and state["initial_incumbent_sha256"] == request.incumbent_sha256
+        and state.get("incumbent_capture_sha256") == request.incumbent_capture_sha256
+        and state.get("reference_kind", "calibrated") == request.reference_kind
+        and all(state[key] == getattr(request, key) for key in (
+            "reference_sha256", "rig_sha256", "scorer_sha256",
+            "render_profile_sha256", "policy_sha256",
+        ))
+        and state["limits"] == _budget(request.limits)
+        and state["final_reserve"] == _budget(request.final_reserve)
+        and state["score_reservation"] == _budget(request.score_reservation)
+        and state["mandatory_views"] == request.mandatory_views
+        and state["noise_band"] == request.noise_band
+        and state.get("max_rounds", _DEFAULT_MAX_ROUNDS) == request.max_rounds
+        and state["max_repair_rounds"] == request.max_repair_rounds
+        and state["max_plateau_rounds"] == request.max_plateau_rounds
+        and state["brief_checkpoint"]["review_id"] == request.brief_review_id
+        and state["brief_checkpoint"]["revision"] == request.brief_review_revision
+        and state["brief_checkpoint"]["sha256"] == request.brief_review_sha256
+    )
+
+
+async def _approval_valid(conn, project_id: str, checkpoint: dict) -> bool:
+    review = (await conn.execute(
+        select(doc_reviews).where(doc_reviews.c.id == checkpoint["review_id"])
+    )).mappings().first()
+    if review is None or review.project_id != project_id or review.kind != "other":
+        return False
+    if review.state != "approved" or review.current_revision != checkpoint["revision"]:
+        return False
+    revision = (await conn.execute(select(doc_review_revisions).where(
+        doc_review_revisions.c.review_id == review.id,
+        doc_review_revisions.c.revision == checkpoint["revision"],
+    ))).mappings().first()
+    return bool(revision and revision.content_sha256 == checkpoint["sha256"]
+                and review.decided_at is not None and review.gate_id == checkpoint["gate_id"])
+
+
+async def _review_verdict(conn, state: dict) -> bool:
+    checkpoint = state.get("checkpoint")
+    if not checkpoint:
+        return True
+    return (checkpoint["candidate_sha256"] == state["incumbent_sha256"]
+            and await _approval_valid(conn, state["project_id"], checkpoint))
+
+
+class ObjectLoopCommandsMixin:
+    async def _readable_object_loops(self, request, *, require_object: bool = True) -> list:
+        """Fence evidence reads by authenticated project and live held provenance."""
+        from src.api.auth import RequestScope
+        from src.api.scope import held_task_for_session
+        from src.commands.principal import current_principal
+
+        scope = self._job_scope()
+        principal = current_principal()
+        project_id = scope.get("project_id") or (principal.project_id if principal else None)
+        if project_id and request.project_id not in (None, project_id):
+            raise ValueError("out of scope: project_id mismatch")
+        project_id = project_id or request.project_id
+        object_id = getattr(request, "object_id", None)
+        held = None
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            held = await held_task_for_session(self.db, RequestScope(
+                kind="session", project_id=scope.get("project_id"),
+                task_id=scope.get("task_id"), session_id=scope.get("session_id"),
+            ))
+            session = await self.db.get_session(scope.get("session_id")) if held else None
+            if (held is None or (scope.get("session_instance_token")
+                    and session.instance_token != scope["session_instance_token"])):
+                raise ValueError("out of scope: object evidence requires a live held task")
+            if (request.task_id not in (None, held.id)
+                    or request.session_id not in (None, scope.get("session_id"))):
+                raise ValueError("out of scope: task/session mismatch")
+            marker = await self.db.get_task_meta(held.id, "object_experiment")
+            if not isinstance(marker, dict) or not marker.get("object_id"):
+                if not require_object:
+                    return []
+                raise ValueError("out of scope: held task has no object provenance")
+            if object_id and object_id != marker["object_id"]:
+                raise ValueError("out of scope: object_id mismatch")
+            object_id = marker["object_id"]
+        query = select(object_loops)
+        if project_id:
+            query = query.where(object_loops.c.project_id == project_id)
+        if object_id:
+            query = query.where(object_loops.c.object_id == object_id)
+        async with self.db._engine.connect() as conn:
+            rows = (await conn.execute(query)).mappings().all()
+        if held:
+            rows = [row for row in rows if (
+                held.id == row.finalization_task_id
+                or (held.created_by_kind == "object_loop" and held.created_by_id == row.object_id
+                    and held.parent_task_id == row.epic_task_id)
+                or (marker.get("purpose") == "bootstrap"
+                    and held.parent_task_id == row.epic_task_id)
+            )]
+            if not rows and require_object:
+                raise ValueError("out of scope: held task does not belong to this object loop")
+        return rows
+
+    async def _cmd_artifact_verify(self, args: dict) -> dict:
+        """Resolve a durable artifact URI and re-hash the bytes it names.
+
+        A ``ScoreReceipt`` names URIs and digests; something has to prove the
+        bytes behind them still exist and still hash true, or a receipt outlives
+        its evidence silently.  Read-only, and scoped to this store: an ``s3://``
+        or ``https://`` URI belongs to the external artifact adapter, not here.
+        """
+        from src.commands.contracts.object_loop import ArtifactVerifyArgs
+        from src.object_loop.artifacts import ArtifactError, metadata, parse_uri, verify
+        from src.object_loop.evidence import artifact_digests
+        from src.commands.principal import current_principal
+
+        try:
+            request = ArtifactVerifyArgs.model_validate(args)
+            principal = current_principal()
+            scope = self._job_scope()
+            if scope.get("kind") == "session" or (principal and principal.enforced):
+                rows = await self._readable_object_loops(request, require_object=False)
+                digest = parse_uri(request.uri)
+                project_id = scope.get("project_id") or (
+                    principal.project_id if principal else None
+                ) or request.project_id
+                allowed = bool(scope.get("elevated") and not project_id)
+                for row in rows:
+                    if allowed:
+                        break
+                    if digest in await asyncio.to_thread(
+                        artifact_digests, self.config.data_dir, row.state,
+                    ):
+                        allowed = True
+                        break
+                if not allowed:
+                    # Captures can be verified before a score names them, and
+                    # bootstrap jobs can run before the loop row exists.
+                    retained = await asyncio.to_thread(metadata, self.config.data_dir, request.uri)
+                    job_id = ((retained or {}).get("origin") or {}).get("job_id")
+                    job = await self._job_for_scope(job_id) if job_id else None
+                    allowed = bool(job and (not project_id or job["project_id"] == project_id))
+                if not allowed:
+                    return _error("out of scope: artifact does not belong to an accessible object")
+            return {"success": True, **await asyncio.to_thread(
+                verify, self.config.data_dir, request.uri, request.sha256
+            )}
+        except (ArtifactError, OSError, ValidationError, ValueError) as exc:
+            return _error(str(exc))
+
+    async def _cmd_object_loop_inputs(self, args: dict) -> dict:
+        from src.commands.principal import current_principal
+        from src.object_loop.inputs import read_inputs
+
+        try:
+            request = ObjectLoopInputsArgs.model_validate(args)
+            principal = current_principal()
+            scope = self._current_scope or {}
+            if (scope.get("kind") == "session" and not scope.get("elevated")):
+                return _error(
+                    "object_loop_inputs is not available to worker sessions; the project "
+                    "supervisor runs it (aq object_loop inputs) and cooks the object formula, "
+                    "because formula cooking and loop mutation stay out of worker scope"
+                )
+            project = (principal.project_id if principal else None) or scope.get("project_id")
+            if project and project != request.project_id:
+                return _error("object loop inputs are outside the caller project")
+            inputs = await read_inputs(self.db, request.project_id, limit=request.limit)
+        except (ValueError, KeyError, TypeError) as exc:
+            return _error(str(exc))
+        return {"success": True, **inputs}
+
+    async def _cmd_object_loop_start(self, args: dict) -> dict:
+        result = await self._start_object_loop(args)
+        if result.get("success"):
+            return result
+        result.setdefault("error_code", "object_loop.start_refused")
+        # Only validated, in-project roots can own durable refusal evidence.
+        try:
+            request = ObjectLoopStartArgs.model_validate(args)
+        except ValidationError:
+            return result
+        epic = await self.db.get_task(request.epic_task_id)
+        if epic is None or epic.project_id != request.project_id or epic.parent_task_id:
+            return result
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from src.database.tables import messages
+
+        refusal = {
+            "object_id": request.object_id, "attempt_id": request.attempt_id,
+            "error_code": result["error_code"], "error": result.get("error"),
+            "failed_at": time.time(),
+        }
+        # The same refusal across event/timer replays produces one durable notice.
+        identity = json.dumps([request.project_id, request.epic_task_id,
+                               request.attempt_id, result.get("error")])
+        message_id = "msg-object-start-" + hashlib.sha256(identity.encode()).hexdigest()
+        async with self.db.immediate() as conn:
+            await self.db._upsert_meta(epic.id, "object_start_refusal", refusal, conn=conn)
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id=message_id, project_id=request.project_id,
+                from_kind="system", from_id="object-loop",
+                to_kind="session", to_id=f"supervisor-{request.project_id}",
+                subject=f"Object loop start refused: {request.object_id}",
+                body=f"Object {request.object_id}, epic {epic.id}: {result.get('error')}",
+                created_at=time.time(),
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        return result
+
+    async def _start_object_loop(self, args: dict) -> dict:
+        try:
+            request = ObjectLoopStartArgs.model_validate(args)
+            if len(set(request.mandatory_views)) != len(request.mandatory_views):
+                raise ValueError("mandatory views must be distinct")
+            state = {
+                "object_id": request.object_id, "project_id": request.project_id,
+                "attempt_id": request.attempt_id, "round_id": 0,
+                "incumbent_sha256": request.incumbent_sha256,
+                "initial_incumbent_sha256": request.incumbent_sha256,
+                "incumbent_artifact": (request.incumbent_artifact.model_dump()
+                                       if request.incumbent_artifact else None),
+                "incumbent_capture_sha256": request.incumbent_capture_sha256,
+                "incumbent_loss": None,
+                "reference_kind": request.reference_kind,
+                "reference_sha256": request.reference_sha256, "rig_sha256": request.rig_sha256,
+                "scorer_sha256": request.scorer_sha256,
+                "render_profile_sha256": request.render_profile_sha256,
+                "policy_sha256": request.policy_sha256,
+                "brief_checkpoint": {
+                    "review_id": request.brief_review_id,
+                    "revision": request.brief_review_revision,
+                    "sha256": request.brief_review_sha256,
+                    "gate_id": None,
+                },
+                "mandatory_views": request.mandatory_views,
+                "noise_band": request.noise_band, "limits": _budget(request.limits),
+                "spent": _zero(), "reserved": _zero(),
+                "final_reserve": _budget(request.final_reserve),
+                "score_reservation": _budget(request.score_reservation),
+                "wave": [], "intent": None,
+                "score_task_id": None, "checkpoint": None, "stop_reason": None,
+                "status": "active", "decision_sha256": None,
+                "repair_count": 0, "plateau_count": 0,
+                "max_rounds": request.max_rounds,
+                "max_repair_rounds": request.max_repair_rounds,
+                "max_plateau_rounds": request.max_plateau_rounds,
+            }
+            if request.incumbent_artifact and request.incumbent_artifact.sha256 != request.incumbent_sha256:
+                raise ValueError("incumbent artifact hash does not match incumbent")
+            _reserve(state, request.variants)
+        except (ValueError, ValidationError) as exc:
+            return _error(str(exc))
+
+        async with self.db.immediate() as conn:
+            prior = (await conn.execute(select(object_loops).where(
+                object_loops.c.object_id == request.object_id
+            ))).mappings().first()
+        if prior:
+            if (prior.project_id != request.project_id or prior.epic_task_id != request.epic_task_id
+                    or not _same_start(prior.state, request)):
+                return _error("object id already has different fixed inputs")
+            return {"success": True, "object_id": request.object_id, "version": prior.version,
+                    "state": prior.state, "created": False}
+        epic = await self.db.get_task(request.epic_task_id)
+        if epic is None or epic.project_id != request.project_id or epic.parent_task_id:
+            return _error("object epic must be a root task in this project")
+        if epic.status.value in {"COMPLETED", "FAILED", "BLOCKED"}:
+            return _error("object epic is terminal")
+
+        async def bootstrap(conn, task_id, parent_id):
+            if parent_id != request.epic_task_id:
+                raise ValueError("finalization task escaped object epic")
+            await self.db._upsert_meta(task_id, "object_experiment", {
+                "object_id": request.object_id, "purpose": "finalize",
+                "publish_source": False,
+            }, conn=conn)
+            review = (await conn.execute(select(doc_reviews).where(
+                doc_reviews.c.id == request.brief_review_id,
+            ).with_for_update())).mappings().first()
+            if review is None or not review.gate_id:
+                raise ValueError("brief review gate is missing")
+            state["brief_checkpoint"]["gate_id"] = review.gate_id
+            if not await _approval_valid(conn, request.project_id, state["brief_checkpoint"]):
+                raise ValueError(
+                    f"brief review {request.brief_review_id} is not approved at the exact "
+                    f"revision: cooked start packet pins revision {request.brief_review_revision}; "
+                    f"current revision is {review.current_revision} ({review.state}). "
+                    "The brief revision/hash must match the approved revision; "
+                    "update the start packet explicitly before retrying."
+                )
+            gate_id, _created = await self.db.create_gate(
+                request.project_id, "event", f"Finalize object {request.object_id}",
+                await_id=f"object:{request.object_id}:terminal", waiter_task_ids=[task_id], conn=conn,
+            )
+            await conn.execute(insert(object_loops).values(
+                object_id=request.object_id, project_id=request.project_id,
+                epic_task_id=request.epic_task_id, finalization_task_id=task_id,
+                terminal_gate_id=gate_id, version=1, state=state,
+                created_at=time.time(), updated_at=time.time(),
+            ))
+
+        try:
+            result = await self._create_task({
+                "project_id": request.project_id,
+                "parent_id": request.epic_task_id,
+                "title": f"Finalize object {request.object_id}",
+                "description": (
+                    render_task_template("object-result-handoff") + "\nInternal inputs: "
+                    f"reference_kind={request.reference_kind}."
+                    + (render_task_template("object-self-reference")
+                       if request.reference_kind == "self" else "")
+                ),
+                "task_type": "chore",
+                "deliverables": [{"id": "result", "kind": "review", "target": "other"}],
+                "dedup_key": f"object:{request.object_id}:finalize",
+                "_after_create_on": bootstrap,
+                "_created_by_kind": "object_loop",
+                "_created_by_id": request.object_id,
+            })
+        except Exception as exc:
+            # Another start may have committed the unique object row while
+            # this transaction was creating its finalizer. Its task rolled
+            # back with this callback; return the winning loop on replay.
+            async with self.db.immediate() as conn:
+                prior = (await conn.execute(select(object_loops).where(
+                    object_loops.c.object_id == request.object_id,
+                ))).mappings().first()
+            if (prior and prior.project_id == request.project_id
+                    and prior.epic_task_id == request.epic_task_id
+                    and _same_start(prior.state, request)):
+                return {"success": True, "object_id": request.object_id,
+                        "version": prior.version, "state": prior.state, "created": False}
+            return _error(f"object loop bootstrap failed: {exc}")
+        if not result.get("success"):
+            return result
+        return {"success": True, "object_id": request.object_id, "version": 1,
+                "state": state, "created": True}
+
+    async def _cmd_object_checkpoint_read(self, args: dict) -> dict:
+        from src.object_loop.evidence import final_evidence
+
+        try:
+            request = ObjectCheckpointReadArgs.model_validate(args)
+            rows = await self._readable_object_loops(request)
+        except (ValidationError, ValueError) as exc:
+            return _error(str(exc))
+        if not rows:
+            return _error("object loop not found in project")
+        async with self.db.immediate() as conn:
+            row = (await conn.execute(select(object_loops).where(
+                object_loops.c.object_id == request.object_id,
+                object_loops.c.project_id == request.project_id,
+            ))).mappings().first()
+            if row is None:
+                return _error("object loop not found in project")
+            approved = await _review_verdict(conn, row.state)
+        evidence = await asyncio.to_thread(final_evidence, self.config.data_dir, row.state)
+        return {"success": True, "object_id": request.object_id, "version": row.version,
+                "approved": approved if row.state.get("checkpoint") else False,
+                "state": row.state, "evidence": evidence}
+
+    async def _cmd_object_loop_reconcile(self, args: dict) -> dict:
+        try:
+            request = ObjectLoopReconcileArgs.model_validate(args)
+        except ValidationError as exc:
+            return _error(str(exc))
+        # An object formula's bootstrap leaf stays held until the AQ-2 row
+        # (and therefore its finalization hold) is committed. Reconcile also
+        # recovers a crash between that commit and this separate gate release.
+        async with self.db._engine.connect() as conn:
+            registered = (await conn.execute(select(object_loops.c.object_id).where(
+                object_loops.c.object_id == request.object_id,
+                object_loops.c.project_id == request.project_id,
+            ))).first()
+        if registered:
+            for gate in await self.db.list_gates(
+                project_id=request.project_id, gate_type="event",
+                await_id=f"object:{request.object_id}:started",
+            ):
+                if gate["status"] == "open":
+                    await self.db.resolve_gate(
+                        gate["id"], resolved_by="object_loop", resolution="finalization hold committed",
+                    )
+        gate_to_release = None
+        stopped_outcome = None
+        async with self.db.immediate() as conn:
+            row = (await conn.execute(select(object_loops).where(
+                object_loops.c.object_id == request.object_id,
+                object_loops.c.project_id == request.project_id,
+            ).with_for_update())).mappings().first()
+            if row is None:
+                return _error("object loop not found in project")
+            state = copy.deepcopy(row.state)
+            if request.next_variants and request.stop_reason:
+                return _error("choose next variants or a stop reason")
+            if request.stop_reason:
+                if state["status"] == "stopped":
+                    if (request.stop_reason != state["stop_reason"] or
+                            request.expected_version != state.get("stop_request_version")):
+                        return _error("object loop already stopped with a different request")
+                else:
+                    if request.expected_version != row.version:
+                        return _error("stale object loop version")
+                    # A terminal defect/deadline report needs no product approval.
+                    # Retain the checkpoint as evidence, never label it approved.
+                    state["status"] = "stopped"
+                    state["stop_reason"] = request.stop_reason
+                    state["stop_request_version"] = request.expected_version
+                    state["intent"] = None
+            if request.next_variants and state["status"] == "stopped":
+                return _error("object loop is stopped")
+            if (state["status"] != "stopped" and not await _approval_valid(
+                conn, state["project_id"], state["brief_checkpoint"]
+            )):
+                return {"success": True, "object_id": request.object_id, "version": row.version,
+                        "state": state, "outcome": "brief_held"}
+            if request.next_variants:
+                if not state.get("checkpoint"):
+                    return _error("continuation is only accepted at a checkpoint")
+                if request.expected_version != row.version:
+                    return _error("stale object loop version")
+                if not await _review_verdict(conn, state):
+                    return _error("checkpoint is not approved for this candidate revision")
+                state["last_approved_checkpoint"] = state["checkpoint"]
+                state["checkpoint"] = None
+                state["round_id"] += 1
+                state["last_approved_checkpoint"]["released_for_round"] = state["round_id"]
+                try:
+                    _reserve(state, request.next_variants)
+                except ValueError as exc:
+                    return _error(str(exc))
+            if state["status"] == "stopped":
+                # Include children committed before an interrupted intent was recorded.
+                # This covers every wave candidate and scorer, so a reopened one
+                # keeps the terminal gate held until it settles again.
+                children = (await conn.execute(select(tasks).where(
+                    tasks.c.project_id == row.project_id,
+                    tasks.c.created_by_kind == "object_loop",
+                    tasks.c.created_by_id == row.object_id,
+                    tasks.c.id != row.finalization_task_id,
+                ))).mappings().all()
+                if all(_task_settled(child) for child in children):
+                    # The finalizer can read only its own task. Give it the
+                    # retained baseline and best captures before releasing it,
+                    # including after restart; never require sibling authority.
+                    from src.object_loop.evidence import final_evidence
+
+                    evidence = await asyncio.to_thread(final_evidence, self.config.data_dir, state)
+                    await conn.execute(update(tasks).where(
+                        tasks.c.id == row.finalization_task_id,
+                    ).values(description=render_task_template("object-result-handoff") + "\nInternal evidence (for the worker):\n"
+                             + json.dumps(evidence, sort_keys=True)))
+                    gate_to_release = row.terminal_gate_id
+                else:
+                    stopped_outcome = "waiting_for_settlement"
+            elif state.get("checkpoint") and not await _review_verdict(conn, state):
+                return {"success": True, "object_id": request.object_id, "version": row.version,
+                        "state": state, "outcome": "checkpoint_held"}
+            elif state.get("checkpoint") and not state.get("intent"):
+                return {"success": True, "object_id": request.object_id, "version": row.version,
+                        "state": state, "outcome": "checkpoint_approved"}
+            elif (state.get("intent") or {}).get("kind") == "wave":
+                for variant, member in zip(state["intent"]["variants"], state["wave"], strict=True):
+                    key = (f"object:{request.object_id}:attempt:{state['attempt_id']}:"
+                           f"round:{state['round_id']}:variant:{variant['variant_id']}:candidate")
+                    task_id = await self._ensure_object_child(
+                        conn, row, key, variant["title"],
+                        json.dumps({
+                            "object_id": request.object_id, "attempt_id": state["attempt_id"],
+                            "round_id": state["round_id"], "variant_id": variant["variant_id"],
+                            "hypothesis": variant["hypothesis"],
+                            "base_candidate_sha256": state["incumbent_sha256"],
+                            "base_artifact": state["incumbent_artifact"],
+                            "incumbent_capture_sha256": state.get("incumbent_capture_sha256"),
+                            "reference_kind": state.get("reference_kind", "calibrated"),
+                            "reference_sha256": state["reference_sha256"],
+                            "rig_sha256": state["rig_sha256"],
+                            "scorer_sha256": state["scorer_sha256"],
+                            "render_profile_sha256": state["render_profile_sha256"],
+                            "policy_sha256": state["policy_sha256"],
+                            "mandatory_views": state["mandatory_views"],
+                            "reservation": variant["reservation"],
+                            "publication": "artifact_only",
+                            "round_handoff": _round_handoff(state),
+                            "review_guidance": render_task_template("object-internal-handoff"),
+                            **({"result_interpretation": "indicative; plumbing only"}
+                               if state.get("reference_kind") == "self" else {}),
+                        }, sort_keys=True), "candidate",
+                        approval_gate_id=(state.get("last_approved_checkpoint") or
+                                          state["brief_checkpoint"])["gate_id"],
+                    )
+                    member["task_id"] = task_id
+                state["intent"] = None
+            elif state["wave"] and not state["score_task_id"]:
+                task_rows = await self._object_wave_rows(conn, state)
+                if not all(_task_settled(task_rows.get(m["task_id"])) for m in state["wave"]):
+                    return {"success": True, "object_id": request.object_id, "version": row.version,
+                            "state": state, "outcome": "waiting_for_wave"}
+                key = (f"object:{request.object_id}:attempt:{state['attempt_id']}:"
+                       f"round:{state['round_id']}:score")
+                failures = [m["task_id"] for m in state["wave"]
+                            if task_rows[m["task_id"]].status != "COMPLETED"]
+                task_id = await self._ensure_object_child(
+                    conn, row, key, f"Score object {request.object_id} round {state['round_id']}",
+                    json.dumps({"object_id": request.object_id, "round_id": state["round_id"],
+                                "wave": state["wave"], "exhausted_failures": failures,
+                                "project_id": row.project_id,
+                                "expected_version": row.version + 1,
+                                "loop_state": state,
+                                "frozen_inputs": _frozen_inputs(state),
+                                "round_handoff": _round_handoff(state),
+                                "handoff": (
+                                    render_task_template("object-score-handoff")
+                                ),
+                                "mandatory_views": state["mandatory_views"],
+                                "review_guidance": render_task_template("object-internal-handoff"),
+                                "publication": "artifact_only"}, sort_keys=True), "score",
+                    approval_gate_id=(state.get("last_approved_checkpoint") or
+                                      state["brief_checkpoint"])["gate_id"],
+                )
+                state["score_task_id"] = task_id
+            else:
+                return {"success": True, "object_id": request.object_id, "version": row.version,
+                        "state": state, "outcome": "waiting_for_score"}
+            version = row.version
+            if state != row.state:
+                version += 1
+                await conn.execute(update(object_loops).where(
+                    object_loops.c.object_id == request.object_id,
+                ).values(state=state, version=version, updated_at=time.time()))
+        if gate_to_release:
+            await self.db.resolve_gate(gate_to_release, resolved_by="object_loop",
+                                       resolution="recorded stop")
+            return {"success": True, "object_id": request.object_id,
+                    "version": version, "state": state, "outcome": "stopped"}
+        return {"success": True, "object_id": request.object_id, "version": version,
+                "state": state, "outcome": stopped_outcome or "reconciled"}
+
+    async def _object_wave_rows(self, conn, state):
+        ids = [member["task_id"] for member in state["wave"]]
+        rows = (await conn.execute(select(tasks).where(tasks.c.id.in_(ids)))).mappings().all()
+        return {row.id: row for row in rows}
+
+    async def _record_round_history(self, conn, state, receipts, promoted) -> None:
+        """Append this round's scored variants to the attempt's handoff history.
+
+        Bounded by the round ceiling and the three-variant wave, so the loop row
+        stays small. A replay of the same fingerprint returns before this runs,
+        so a round is never recorded twice.
+        """
+        commits = await _round_commits(conn, [r.task_id for r in receipts])
+        history = list(state.get("round_history") or [])
+        scored = {r.task_id for r in receipts}
+        if {entry["task_id"] for entry in history} & scored:
+            return
+        for receipt in receipts:
+            artifact = next(
+                (a for a in receipt.artifacts if a.sha256 == receipt.candidate_sha256), None
+            )
+            metrics = [m for m in receipt.per_view.values() if m is not None]
+            history.append({
+                "round_id": receipt.round_id,
+                "variant_id": receipt.variant_id,
+                "task_id": receipt.task_id,
+                "candidate_sha256": receipt.candidate_sha256,
+                "candidate_artifact": artifact.model_dump() if artifact else None,
+                "artifacts": [a.model_dump() for a in receipt.artifacts],
+                "capture_receipts": [c.model_dump() for c in receipt.capture_receipts],
+                "branch": commits.get(receipt.task_id, {}).get("branch"),
+                "commit": commits.get(receipt.task_id, {}).get("commit"),
+                "validity": receipt.validity,
+                "promoted": promoted is not None and receipt.variant_id == promoted,
+                "hypothesis": receipt.hypothesis,
+                "patch_scope": list(receipt.patch_scope),
+                "predicted_effect": receipt.predicted_effect,
+                "observed_delta": receipt.observed_delta,
+                "mean_loss": (sum(m.loss for m in metrics) / len(metrics)) if metrics else None,
+            })
+        state["round_history"] = history
+
+    async def _ensure_object_child(
+        self, conn, loop, key, title, description, purpose, *, approval_gate_id: str
+    ):
+        existing = (await conn.execute(select(tasks).where(
+            tasks.c.project_id == loop.project_id, tasks.c.dedup_key == key,
+        ).order_by(tasks.c.created_at).limit(1))).mappings().first()
+        if existing is not None:
+            if (existing.parent_task_id != loop.epic_task_id
+                    or existing.created_by_kind != "object_loop"
+                    or existing.created_by_id != loop.object_id):
+                raise ValueError("object task dedup key belongs to foreign work")
+            return existing.id
+
+        async def mark(conn, task_id, parent_id):
+            if parent_id != loop.epic_task_id:
+                raise ValueError("object child escaped its epic")
+            await self.db._upsert_meta(task_id, "object_experiment", {
+                "object_id": loop.object_id, "purpose": purpose,
+                "publish_source": False,
+            }, conn=conn)
+            await self.db.attach_gate_waiters(approval_gate_id, [task_id], conn=conn)
+
+        result = await self._create_task({
+            "project_id": loop.project_id, "parent_id": loop.epic_task_id,
+            "title": title, "description": description,
+            "task_type": "research", "dedup_key": key,
+            "_after_create_on": mark,
+            "_created_by_kind": "object_loop", "_created_by_id": loop.object_id,
+        })
+        if not result.get("success"):
+            raise ValueError(result.get("error", "object child creation failed"))
+        return result["task_id"]
+
+    async def _cmd_object_score_record(self, args: dict) -> dict:
+        try:
+            request = ObjectScoreRecordArgs.model_validate(args)
+        except ValidationError as exc:
+            return _error(str(exc))
+        fingerprint = hashlib.sha256(json.dumps(request.model_dump(), sort_keys=True,
+                                                 separators=(",", ":")).encode()).hexdigest()
+        async with self.db.immediate() as conn:
+            row = (await conn.execute(select(object_loops).where(
+                object_loops.c.object_id == request.object_id,
+                object_loops.c.project_id == request.project_id,
+            ).with_for_update())).mappings().first()
+            if row is None:
+                return _error("object loop not found in project")
+            state = dict(row.state)
+            if state.get("decision_sha256") == fingerprint:
+                return {"success": True, "object_id": request.object_id, "version": row.version,
+                        "state": state, "outcome": "reused"}
+            if row.version != request.expected_version:
+                return _error("stale object loop version")
+            if state["status"] != "active" or state["score_task_id"] != request.score_task_id:
+                return _error("score task is not the current round scorer")
+            scorer = (await conn.execute(select(tasks).where(
+                tasks.c.id == request.score_task_id,
+            ))).mappings().first()
+            if scorer is None or scorer.status != "COMPLETED":
+                if request.action != "stop" or not _task_settled(scorer):
+                    return _error("scoring task has not completed")
+                if not request.stop_reason or not request.stop_reason.strip():
+                    return _error("stop requires an explicit reason")
+                if (request.receipts or request.next_variants or request.review_id is not None
+                        or request.review_revision is not None or request.review_sha256 is not None):
+                    return _error("failed scorer stop cannot include scores, variants or a review")
+                wave_rows = await self._object_wave_rows(conn, state)
+                if not all(_task_settled(wave_rows.get(m["task_id"])) for m in state["wave"]):
+                    return _error("wave has unsettled candidates")
+                # A failed scorer cannot establish measured cost coverage or a winner.
+                _charge(state, None)
+                state["status"] = "stopped"
+                state["stop_reason"] = request.stop_reason
+                state["intent"] = None
+                state["defect_stop"] = {
+                    "score_task_id": request.score_task_id, "status": scorer.status,
+                    "retry_count": scorer.retry_count, "max_retries": scorer.max_retries,
+                }
+                state["decision_sha256"] = fingerprint
+                await conn.execute(update(object_loops).where(
+                    object_loops.c.object_id == request.object_id,
+                ).values(state=state, version=row.version + 1, updated_at=time.time()))
+                return {"success": True, "object_id": request.object_id,
+                        "version": row.version + 1, "state": state, "outcome": "stop"}
+            if (request.action != "stop" and not await _approval_valid(
+                conn, state["project_id"], state["brief_checkpoint"]
+            )):
+                return _error("brief review is no longer approved at the exact revision")
+            approved_checkpoint = state.get("last_approved_checkpoint")
+            if (approved_checkpoint and approved_checkpoint.get("released_for_round") ==
+                    state["round_id"] and not await _approval_valid(
+                        conn, state["project_id"], approved_checkpoint
+                    )):
+                return _error("checkpoint approval changed during this round")
+            wave_rows = await self._object_wave_rows(conn, state)
+            if not all(_task_settled(wave_rows.get(m["task_id"])) for m in state["wave"]):
+                return _error("wave has unsettled candidates")
+            receipts = {receipt.variant_id: receipt for receipt in request.receipts}
+            if len(receipts) != len(request.receipts):
+                return _error("duplicate variant score")
+            if set(receipts) - {member["variant_id"] for member in state["wave"]}:
+                return _error("score belongs to a foreign variant")
+            for member in state["wave"]:
+                receipt = receipts.get(member["variant_id"])
+                if wave_rows[member["task_id"]].status == "COMPLETED" and receipt is None:
+                    return _error("completed candidate is missing its score")
+                if receipt is not None:
+                    try:
+                        validate_score_receipt(
+                            receipt, state=state, task_id=member["task_id"],
+                            mandatory_views=set(state["mandatory_views"]),
+                        )
+                    except ValueError as exc:
+                        return _error(str(exc))
+            eligible = [r for r in request.receipts
+                        if wave_rows[r.task_id].status == "COMPLETED"
+                        and r.validity == "valid" and r.quality_pass
+                        and all(r.hard_gates.values())]
+            ranked = sorted(eligible, key=lambda r: (
+                sum(v.loss for v in r.per_view.values()) / len(r.per_view),
+                max(v.loss for v in r.per_view.values()), r.variant_id,
+            ))
+            winner = ranked[0] if ranked else None
+            winner_loss = (sum(v.loss for v in winner.per_view.values()) / len(winner.per_view)
+                           if winner else None)
+            if winner is not None and (state["incumbent_loss"] is None or
+                                       winner_loss + state["noise_band"] < state["incumbent_loss"]):
+                state["incumbent_sha256"] = winner.candidate_sha256
+                state["incumbent_artifact"] = next(
+                    artifact.model_dump() for artifact in winner.artifacts
+                    if artifact.sha256 == winner.candidate_sha256
+                )
+                state["incumbent_loss"] = winner_loss
+                state["best_receipt"] = winner.model_dump()
+                state["selected_variant_id"] = winner.variant_id
+                state["plateau_count"] = 0
+            else:
+                state["selected_variant_id"] = None
+                state["plateau_count"] += 1
+            # Every scored variant of this round becomes the next round's handoff:
+            # its bundle, the branch and commit that produced it, what it claimed
+            # and what it measured. A round worker that cannot read what the
+            # rounds before it changed cannot build on them.
+            await self._record_round_history(
+                conn, state, request.receipts, state.get("selected_variant_id")
+            )
+            if not eligible:
+                state["repair_count"] += 1
+            try:
+                # A partial receipt set or incomplete cost coverage leaves the
+                # measured aggregate unverified. Charge the full reservation.
+                known_spend = (len(receipts) == len(state["wave"])
+                               and all(r.cost_coverage.get("known") is True
+                                       for r in request.receipts))
+                _charge(state, request.spent if known_spend else None)
+                if request.action == "continue":
+                    if state["repair_count"] > state["max_repair_rounds"]:
+                        raise ValueError("repair round cap reached")
+                    if state["plateau_count"] >= state["max_plateau_rounds"]:
+                        raise ValueError("plateau round cap reached")
+                    if not request.next_variants:
+                        raise ValueError("continue requires next variants")
+                    if state.get("checkpoint") and not await _review_verdict(conn, state):
+                        raise ValueError("checkpoint is not approved for this candidate revision")
+                    state["round_id"] += 1
+                    _reserve(state, request.next_variants)
+                elif request.action == "checkpoint":
+                    if not (request.review_id and request.review_revision and request.review_sha256):
+                        raise ValueError("checkpoint needs review id, revision and hash")
+                    review = (await conn.execute(select(doc_reviews).where(
+                        doc_reviews.c.id == request.review_id,
+                        doc_reviews.c.project_id == request.project_id,
+                        doc_reviews.c.kind == "other",
+                    ))).mappings().first()
+                    revision = (await conn.execute(select(doc_review_revisions).where(
+                        doc_review_revisions.c.review_id == request.review_id,
+                        doc_review_revisions.c.revision == request.review_revision,
+                    ))).mappings().first()
+                    if (not review or not review.gate_id or not revision
+                            or review.current_revision != request.review_revision
+                            or revision.content_sha256 != request.review_sha256):
+                        raise ValueError("checkpoint review revision is missing or foreign")
+                    if review.decider != "supervisor":
+                        raise ValueError("internal checkpoint review must have supervisor decider")
+                    state["checkpoint"] = {"review_id": request.review_id,
+                                           "revision": request.review_revision,
+                                           "sha256": request.review_sha256,
+                                           "gate_id": review.gate_id,
+                                           "candidate_sha256": state["incumbent_sha256"]}
+                    state["intent"] = None
+                else:
+                    if not request.stop_reason:
+                        raise ValueError("stop requires an explicit reason")
+                    state["status"] = "stopped"
+                    state["stop_reason"] = request.stop_reason
+                    state["intent"] = None
+            except ValueError as exc:
+                return _error(str(exc))
+            state["decision_sha256"] = fingerprint
+            await conn.execute(update(object_loops).where(object_loops.c.object_id == request.object_id)
+                               .values(state=state, version=row.version + 1, updated_at=time.time()))
+        return {"success": True, "object_id": request.object_id, "version": row.version + 1,
+                "state": state, "outcome": request.action}

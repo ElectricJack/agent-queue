@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, create_model
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
+from src.api.models.ask import ASK_ARGS, AskErrorResponse
 from src.api.models import get_all_request_models, get_all_response_models
 from src.api.models.dashboard import (
     DashboardStateConflictResponse,
@@ -39,10 +40,10 @@ from src.api.models.system import (
 from src.api.models.task import HierarchyRefusalResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
+from src.routing.filing import GUARDED_COMMANDS, REFUSED_ROUTING_ARGS, ROUTING_CHOICE_FORBIDDEN
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
-    _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,
     _TOOL_CATEGORIES,
 )
@@ -54,7 +55,17 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
+
+    "ask_intake", "ask_button",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
+    "reconcile_collaborations",  # daemon-only expiry and retention
+    "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 
@@ -127,6 +138,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "escalation_get",
             "escalation_reply",
             "escalation_update",
+            "escalation_resolve",
             "escalation_apply_reply",
             "supervisor_inbox_reply",
             "supervisor_inbox_post",
@@ -134,6 +146,9 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "supervisor_inbox_history",
             "digest_preview",
             "digest_status",
+            "digest_facts",
+            "digest_post",
+            "digest_request",
             "test_select",
             "test_selection_recheck",
             "test_selection_observe",
@@ -143,11 +158,13 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "test_selection_promote",
             "test_selection_revoke",
             "job_submit",
+            "message_wait",
             "job_get",
             "job_list",
             "job_cancel",
             "job_result",
             "job_logs",
+            "job_retain",
             "report_request",
             "report_reconcile",
             "morning_report_preview",
@@ -157,27 +174,129 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "report_brief",
             "report_submit",
             "delete_task",
+            "remove_task",
             "archive_task",
             "delete_project",
+            "provider_allocation_apply",
+            "policy_export",
+            "policy_diff",
+            "policy_apply",
+            "wait_register", "wait_get", "wait_list", "wait_cancel",
+            "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+            "wait_decide", "wait_lift", "wait_legacy_bridge",
         }
     )
     | DASHBOARD_STATE_COMMANDS
+    | frozenset(ASK_ARGS)
 )
 
 #: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
 #: with :class:`~src.api.models.task.HierarchyRefusalResponse`.
 HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
-    {"delete_task", "archive_task", "delete_project"}
+    {"delete_task", "remove_task", "archive_task", "delete_project"}
 )
 
 # Non-default statuses keyed by the command and its stable command error code.
 ERROR_STATUS: dict[tuple[str, str], int] = {
+    ("review_reopen", "unauthorized"): 403,
     ("edit_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "class_referenced"): 409,
     **{(command, "human_required"): 403 for command in DASHBOARD_STATE_COMMANDS},
     ("dashboard_state_put", "revision_conflict"): 409,
+    # Re-preview (or review what landed) rather than resend: the body carries
+    # the fresh preview or every row of the failed apply.
+    **{
+        ("provider_allocation_apply", code): 409
+        for code in (
+            "preview_unknown",
+            "preview_stale",
+            "pinned_wait_unacknowledged",
+            "allocation_rolled_back",
+            "allocation_partial",
+        )
+    },
 }
+
+#: Worker-safe knowledge/record commands (plan §7, K03).  Their stable error
+#: codes share one HTTP status regardless of the specific verb: a missing
+#: record is always 404, a conflict always 409, a missing precondition always
+#: 428, and so on — so the mapping is per code, not per command.
+_KNOWLEDGE_RECORD_COMMANDS: tuple[str, ...] = (
+    "knowledge_create",
+    "knowledge_list",
+    "knowledge_show",
+    "knowledge_cite",
+    "knowledge_context_deliver",
+    "knowledge_update",
+    "knowledge_history",
+    "knowledge_diff",
+    "knowledge_retire",
+    "knowledge_restore",
+    "knowledge_export",
+    "knowledge_propose",
+    "knowledge_proposal_show",
+    "knowledge_proposal_decide",
+    "knowledge_verify",
+    "knowledge_authority_grant",
+    "knowledge_authority_revoke",
+    "knowledge_share",
+    "knowledge_redact",
+    "knowledge_import",
+    "record_show",
+    "record_search",
+    "record_capabilities",
+    "record_repair",
+    "link_create",
+    "link_list",
+    "link_remove",
+)
+
+_ERROR_STATUS_BY_CODE: dict[str, int] = {
+    "context.disabled": 409,
+    "context.execution_unavailable": 409,
+    "context.execution_changed": 409,
+    "context.invalidated": 409,
+    "context.expired": 410,
+    "context.required_over_budget": 422,
+    "context.over_budget": 422,
+    "context.digest_mismatch": 409,
+    "record.not_found": 404,
+    "record.forbidden": 403,
+    "knowledge.cross_project_forbidden": 403,
+    "knowledge.proposal_conflict": 409,
+    "knowledge.proposal_decided": 409,
+    "knowledge.review_required": 409,
+    "knowledge.review_binding_invalid": 409,
+    "knowledge.verification_required": 409,
+    "knowledge.read_only": 409,
+    "record.stale_claim": 409,
+    "record.revision_conflict": 409,
+    "record.idempotency_conflict": 409,
+    "record.export_diverged": 409,
+    "knowledge.disabled": 409,
+    "record.revision_unavailable": 410,
+    "record.revision_redacted": 410,
+    "record.precondition_required": 428,
+    "record.retryable": 503,
+    "record.hash_divergence": 503,
+    "record.integrity_conflict": 409,
+    "knowledge_import.forbidden": 403,
+    "knowledge_import.disabled": 409,
+    "knowledge_import.invalid_input": 422,
+    "knowledge_import.manifest_changed": 409,
+    "knowledge_import.mapping_conflict": 409,
+    "knowledge_import.source_conflict": 409,
+    "knowledge_import.source_unavailable": 410,
+}
+
+ERROR_STATUS.update(
+    {
+        (command, code): status
+        for command in _KNOWLEDGE_RECORD_COMMANDS
+        for code, status in _ERROR_STATUS_BY_CODE.items()
+    }
+)
 
 
 def _category_to_api_path(cat_name: str) -> str:
@@ -307,11 +426,27 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             # operator request into a no-op.
             for field in {"min", "max"} & body.model_fields_set:
                 args[field] = getattr(body, field)
-        if cmd_name == "edit_task":
-            # Explicit null clears routing; omitted option defaults must not.
-            for field in {"profile_id", "intelligence_class"} & body.model_fields_set:
-                if getattr(body, field) is None:
-                    args[field] = None
+        if (
+            cmd_name == "edit_task"
+            and "intelligence_class" in body.model_fields_set
+            and getattr(body, "intelligence_class", None) is None
+        ):
+            # Explicit null clears the class hint; omitted option defaults must not.
+            args["intelligence_class"] = None
+        if cmd_name in GUARDED_COMMANDS and request is not None:
+            # The request model no longer declares the routing arguments, so
+            # validation silently drops them.  Forward what the caller sent
+            # so ``CommandHandler.execute`` refuses it (routing.choice_forbidden)
+            # instead of filing a task that quietly ignored the choice.
+            try:
+                raw_body = await request.json()
+            except ValueError:
+                raw_body = None
+            if isinstance(raw_body, dict):
+                for field in REFUSED_ROUTING_ARGS:
+                    if field in raw_body and field not in args:
+                        args[field] = raw_body[field]
+        args = {key: value for key, value in args.items() if not key.startswith("_")}
         for _key in SERVER_OWNED_ARG_KEYS:
             args.pop(_key, None)
 
@@ -352,6 +487,10 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         if status is not None:
             return JSONResponse(result, status_code=status)
         if "error" in result:
+            if result.get("code") == ROUTING_CHOICE_FORBIDDEN:
+                # The refusal names what was refused and the hints to pass
+                # instead; the generic envelope below would drop both.
+                return JSONResponse(result, status_code=422)
             if result.get("error_code") == "capability_denied":
                 return JSONResponse(
                     {"error": result["error"], "error_code": "capability_denied"},
@@ -385,37 +524,20 @@ def build_category_routers() -> list[APIRouter]:
     response_models = get_all_response_models()
     request_models = get_all_request_models()
 
-    # Build complete tool map
-    tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
-    try:
-        from src.mcp_registration import _discover_all_commands
+    # All generated routes expose the legacy transport view of the shared
+    # descriptor snapshot; dedicated request DTOs remain authoritative below.
+    from src.commands.command_inventory import command_snapshot
 
-        discovered = _discover_all_commands()
-        for name, defn in discovered.items():
-            if name not in tool_map:
-                tool_map[name] = defn
-    except Exception:
-        pass
-
-    # Collect internal plugin tool definitions
-    plugin_categories: dict[str, str] = {}
-    try:
-        from src.plugins.internal import collect_internal_tool_definitions
-
-        for category, tool_defs in collect_internal_tool_definitions():
-            for defn in tool_defs:
-                name = defn["name"]
-                if name not in tool_map:
-                    tool_map[name] = defn
-                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
-                    plugin_categories[name] = category
-    except Exception:
-        pass
-
-    # ``_discover_all_commands`` already stamps ``_FALLBACK_INPUT_SCHEMAS``
-    # onto the commands that have no ``_ALL_TOOL_DEFINITIONS`` entry, so every
-    # definition in ``tool_map`` carries the real properties by the time it
-    # gets here (src/tools/definitions.py).  Plugin definitions ship their own.
+    snapshot = command_snapshot()
+    plugin_names = {plugin.name for plugin in snapshot.plugins}
+    tool_map = {
+        name: descriptor.tool_definition() for name, descriptor in snapshot.commands.items()
+        if name in snapshot.handler_names or name in snapshot.explicit_names
+        or name in plugin_names
+    }
+    plugin_categories = {
+        plugin.name: plugin.category for plugin in snapshot.plugins if plugin.category
+    }
 
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
@@ -508,7 +630,9 @@ def build_category_routers() -> list[APIRouter]:
                         422: {
                             "description": "Command error",
                             **(
-                                {"model": DashboardStateErrorResponse}
+                                {"model": AskErrorResponse}
+                                if cmd_name in ASK_ARGS
+                                else {"model": DashboardStateErrorResponse}
                                 if cmd_name in DASHBOARD_STATE_COMMANDS
                                 else {"model": JobErrorResponse}
                                 if cmd_name.startswith("job_")

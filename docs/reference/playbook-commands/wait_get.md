@@ -3,33 +3,44 @@
 
 # `wait_get`
 
-**Wait Get.** Read a durable wait and its bounded result pointer.
+**Wait Get.** Read a durable wait, optionally consuming its notification.
 
 | Property | Value |
 |---|---|
 | Capability | `wait_get` |
-| Side effect | `read` |
+| Side effect | `composite` |
 | Idempotency | natural |
 | Retry safe | yes |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait.py`](../../../src/commands/contracts/wait.py) |
-| Contract fingerprint | `sha256:f2fdc8d9cca75554e778f18651341b2f43fdd10a2ff669adb006c99e21e2240f` |
+| Contract fingerprint | `sha256:4f0ee5ddfcaf9a6dd9548e746f31d69a445fa6253b60e2e1f244f8354e484715` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `schema_version` | `1 \| 2` | no | `1` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
 | `wait_id` | `string` | yes | — | — |
+| `consume` | `boolean` | no | `false` | — |
+| `claim_epoch` | `integer \| null` | no | `null` | — |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
-| `wait` | `AgentWaitRecord` | — |
+| `wait` | `AgentWaitRecord \| object \| null` | — |
+| `wait_id` | `string \| null` | — |
+| `condition` | `object \| null` | — |
+| `evidence` | `object \| null` | — |
+| `decision` | `object \| null` | — |
+| `escalate_at` | `number \| null` | — |
+| `ceiling_at` | `number \| null` | — |
+| `continuation_id` | `string \| null` | — |
+| `warnings` | `string[]` | — |
 | `next_step` | `string \| null` | — |
 
 ## Nested objects
@@ -72,7 +83,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, task_id, session_id, wait_id | — | always |
+| Composite using schema_version, project_id, task_id, session_id, wait_id, consume, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

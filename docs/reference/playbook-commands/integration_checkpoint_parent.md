@@ -109,8 +109,8 @@ which the contract classifies as a success so a retry is harmless.
    chain is ensured, the checkpoint row is locked, its repository and branch must
    still match the task's own branch (`delivery_target_fixed` otherwise), and its
    generation must equal the requested one (`stale` otherwise).
-7. `ParentCompletion.reserve_episode_on`
-   ([`src/integration/parent_completion.py:49`](../../../src/integration/parent_completion.py))
+7. `ParentEpisodeRecords.reserve_episode_on`
+   ([`src/integration/records.py:49`](../../../src/integration/records.py))
    reserves the episode and its operation, pinning `pre_collection_checkpoint_sha`
    to the verified head.
 8. The checkpoint row is updated to the new head with state `awaiting_children`,

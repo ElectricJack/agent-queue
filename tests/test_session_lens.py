@@ -18,14 +18,14 @@ import time
 import pytest
 
 from src.messages import Activity, SessionLens, SessionManagerProto
+from src.intelligence_classes import IntelligenceClass
 from src.models import AgentProfile, Project, SessionRecord, Task
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
-from src.sessions.harness_parser import Harness
+from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionHandle
 from src.sessions.spec import SessionSpecBuilder
-from tests.db_fixtures import lease_dsn
 
 
 def _supervisor_address(project_id: str) -> str:
@@ -57,14 +57,10 @@ def _supervisor_runtime_name(project_id: str) -> str:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
-    await database.create_project(Project(id="proj1", name="Proj1"))
+async def db(reuse_database):
+    database = await reuse_database("test.db")
+    await database.create_project(Project(id="proj1", name="Proj1", supervisor_enabled=True))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -356,6 +352,87 @@ class TestActivity:
 
 
 class TestEnsureStarted:
+    @pytest.mark.parametrize("resume", [False, True])
+    async def test_disabled_project_supervisor_refuses_explicit_restart(
+        self, db, lens, providers, resume,
+    ):
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        await db.update_project("proj1", supervisor_enabled=False)
+        with pytest.raises(ValueError, match="No named supervisor session to restart"):
+            await lens.restart_supervisor(
+                target_id="supervisor-proj1", project_id="proj1", resume=resume,
+                expected_session_id=row.id,
+            )
+        fake = providers.create("fake")
+        assert await fake.is_running(handle)  # the current turn may still finish
+        assert len(fake.starts) == 1
+        assert (await db.get_session(row.id)).desired_state == "stopped"
+
+    async def test_disabled_project_refuses_cold_start_and_existing_wake(self, db, lens, providers):
+        await db.update_project("proj1", supervisor_enabled=False)
+        # Every spelling a message or button can carry, including an alias
+        # that names no project and so resolves to the message's project.
+        for target, project_id in (
+            ("supervisor-proj1", "proj1"), ("supervisor-proj1", None),
+            ("n-supervisor--proj1", "proj1"), ("supervisor-aq", "proj1"),
+        ):
+            assert not await lens.ensure_started(
+                kind="session", target_id=target, project_id=project_id,
+            )
+        assert providers.create("fake").starts == []
+        assert await lens.activity(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        ) == "absent"
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        assert not await lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        )
+        for target in ("supervisor-proj1", row.name, row.id):
+            assert not await lens.nudge(
+                kind="session", target_id=target, project_id="proj1", text="wake",
+            )
+        assert providers.create("fake").sent_nudges == []
+        assert await providers.create("fake").is_running(handle)
+
+    async def test_default_message_starts_only_global_and_opt_in_starts_project(
+        self, db, lens, providers, config,
+    ):
+        from src.config import MessagesConfig
+        from src.messages.delivery import MessageDeliveryEngine
+
+        await db.update_project("proj1", supervisor_enabled=False)
+        engine = MessageDeliveryEngine(db, lens, MessagesConfig())
+        await db.create_message(
+            project_id="proj1", from_kind="user", from_id="dashboard", to_kind="session",
+            to_id="supervisor-proj1", body="help",
+        )
+        await engine.run_delivery_pass()
+        fake = providers.create("fake")
+        assert [spec.session_name for spec in fake.starts] == ["n-supervisor--global"]
+        assert (await db.get_session_by_name("n-supervisor--global")).project_id is None
+        await db.update_project("proj1", supervisor_enabled=True)
+        assert len(fake.starts) == 1
+        await db.create_message(
+            project_id="proj1", from_kind="user", from_id="dashboard", to_kind="session",
+            to_id="supervisor-proj1", body="help locally",
+        )
+        await engine.run_delivery_pass()
+        assert [spec.session_name for spec in fake.starts] == [
+            "n-supervisor--global", "n-supervisor--proj1",
+        ]
+
+    async def test_reenable_message_reuses_a_supervisor_whose_turn_is_still_draining(
+        self, db, providers, lens,
+    ):
+        row, _ = await _seed_running_supervisor(db, providers, project_id="proj1")
+        await db.update_project("proj1", supervisor_enabled=False)
+        await db.update_project("proj1", supervisor_enabled=True)
+        assert await lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        )
+        assert (await db.get_session(row.id)).desired_state == "running"
+        assert len(providers.create("fake").starts) == 1
+
     async def test_refuses_task_kind(self, lens):
         assert await lens.ensure_started(kind="task", target_id="t1", project_id="proj1") is False
 
@@ -415,6 +492,51 @@ class TestEnsureStarted:
         assert row.project_id == "proj1"
         assert row.profile_id == "supervisor"
         assert row.state == "running"
+
+    @pytest.mark.parametrize("project_id", [None, "proj1"])
+    @pytest.mark.parametrize("harness_name", ["claude", "codex"])
+    @pytest.mark.parametrize("wake_mode", ["fresh", "resume"])
+    async def test_wake_resolves_current_profile_class_and_model(
+        self, db, providers, lens, harness_registry, spec_builder,
+        supervisor_profile, project_id, harness_name, wake_mode
+    ):
+        provider_key = "anthropic" if harness_name == "claude" else "openai"
+        harness_registry.upsert(Harness(
+            id=harness_name, command=harness_name, provider=provider_key,
+            model_flag="--model", session_id_flag="--session-id",
+            resume=ResumeSpec(style="flag" if harness_name == "claude" else "subcommand"),
+        ))
+        supervisor_profile.harness = harness_name
+        supervisor_profile.wake_mode = wake_mode
+        supervisor_profile.default_class = "old-class"
+        spec_builder._intelligence_classes.update({
+            key: IntelligenceClass(id=key, name=key, description="", mapping={
+                provider_key: {"model": model},
+            }) for key, model in (("old-class", "old-model"), ("new-class", "new-model"))
+        })
+        address = _supervisor_address(project_id or "global")
+        runtime_name = _supervisor_runtime_name(project_id or "global")
+        assert await lens.ensure_started(kind="session", target_id=address, project_id=project_id)
+        previous = await db.get_session_by_name(runtime_name)
+        assert (previous.intelligence_class, previous.model) == ("old-class", "old-model")
+        fake = providers.create("fake")
+        await fake.stop(SessionHandle(previous.name, previous.provider, previous.instance_token))
+        await db.update_session(previous.id, state="sleeping", desired_state="sleeping")
+        supervisor_profile.default_class = "new-class"
+        # Operator wake and the reconciler use this same lens start path.
+        await db.update_session(previous.id, desired_state="running")
+        assert await lens.ensure_started(kind="session", target_id=address, project_id=project_id)
+        current = await db.get_session_by_name(runtime_name)
+        assert current.id != previous.id
+        assert (current.intelligence_class, current.model) == ("new-class", "new-model")
+        argv = fake.starts[-1].command
+        assert argv[argv.index("--model") + 1] == "new-model"
+        if wake_mode == "resume":
+            assert current.session_key == previous.session_key
+            assert previous.session_key in argv
+        else:
+            assert current.session_key != previous.session_key
+        assert (await db.get_session(previous.id)).model == "old-model"
 
     async def test_concurrent_supervisor_alias_wakes_start_once(self, db, providers, lens):
         """Two concurrent wakes of the same supervisor address (message
@@ -503,7 +625,8 @@ class TestEnsureStarted:
         # The minted token was revoked for exactly the session we tried.
         assert store.minted and store.revoked == store.minted
         # No running row was left behind.
-        assert await db.get_session_by_name(runtime_name) is None
+        failed = await db.get_session_by_name(runtime_name)
+        assert failed.state == "stopped" and failed.end_reason == "launch_failed"
 
     async def test_supervisor_address_project_takes_precedence_over_caller_project(
         self, db, providers, lens
@@ -516,7 +639,7 @@ class TestEnsureStarted:
         project and the argument from another; see the delivery engine,
         which derives both from the same message row.
         """
-        await db.create_project(Project(id="proj2", name="Proj2"))
+        await db.create_project(Project(id="proj2", name="Proj2", supervisor_enabled=True))
         ok = await lens.ensure_started(
             kind="session", target_id=_supervisor_address("proj1"), project_id="proj2"
         )
@@ -615,6 +738,49 @@ class TestEnsureStarted:
 
 
 class TestNudge:
+    @pytest.mark.parametrize("harness", ["codex", "claude", "gemini", "opencode"])
+    @pytest.mark.parametrize("failure_kind", ["unsupported", "provider_error"])
+    async def test_provider_failure_is_visible_for_every_harness(
+        self, db, providers, lens, monkeypatch, caplog, harness, failure_kind
+    ):
+        from src.sessions.provider import Cap, CapabilityUnsupported
+
+        row, _ = await _seed_running_task(db, providers)
+        await db.update_session(row.id, harness=harness)
+        exc = (CapabilityUnsupported("fake", Cap.NUDGE) if failure_kind == "unsupported"
+               else RuntimeError("provider disconnected"))
+
+        async def refuse(handle, text):
+            raise exc
+
+        monkeypatch.setattr(providers.create("fake"), "nudge", refuse)
+        with caplog.at_level(logging.WARNING):
+            assert not await lens.nudge(kind="session", target_id=row.id,
+                                        project_id="proj1", text="message pointer")
+        assert lens.nudge_failure(row.id)["reason"] == str(exc)
+        assert row.name in caplog.text
+
+    async def test_global_uuid_is_resolved_without_a_project(self, db, providers, lens):
+        row, handle = await _seed_running_supervisor(db, providers, project_id=None)
+        assert await lens.nudge(kind="session", target_id=row.id,
+                                project_id="proj1", text="wake global")
+        assert providers.create("fake").sent_nudges == [(handle.name, "wake global")]
+
+    async def test_retired_uuid_cannot_nudge_same_name_successor(self, db, providers, lens):
+        row, _ = await _seed_running_task(db, providers)
+        await db.update_session(row.id, state="stopped", desired_state="stopped")
+        successor = SessionRecord(id="successor", name=row.name, project_id="proj1",
+                                  profile_id=row.profile_id, harness=row.harness,
+                                  provider=row.provider, lifecycle="named", work_dir=row.work_dir,
+                                  epoch="e2", started_at=row.started_at + 1,
+                                  instance_token="new-instance", state="running",
+                                  desired_state="running")
+        await db.create_session(successor)
+        assert not await lens.nudge(kind="session", target_id=row.id,
+                                    project_id="proj1", text="stale mail")
+        assert not await lens.ensure_started(kind="session", target_id=row.id, project_id="proj1")
+        assert providers.create("fake").sent_nudges == []
+
     async def test_nudge_delivers_and_records(self, db, providers, lens):
         row, handle = await _seed_running_task(db, providers)
         ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hello")
@@ -633,6 +799,35 @@ class TestNudge:
         assert "delivery remains pending" in caplog.text
         assert row.name in caplog.text
         assert "AQ text remains in the composer" in caplog.text
+
+    async def test_deferred_nudge_logs_and_remembers_its_reason(
+        self, db, providers, lens, caplog, monkeypatch
+    ):
+        # 2026-09-27: thousands of "was not submitted" warnings never said
+        # the composer guard was refusing an idle Codex footer.
+        from src.sessions.provider import NudgeDeferred
+
+        row, _handle = await _seed_running_task(db, providers)
+        fake = providers.create("fake")
+
+        async def refuse(h, text):
+            raise NudgeDeferred(f"terminal {h.name!r} has a draft or its input is unknown")
+
+        monkeypatch.setattr(fake, "nudge", refuse)
+        with caplog.at_level(logging.WARNING, logger="src.messages.session_lens"):
+            ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hi")
+        assert ok is False
+        assert "has a draft or its input is unknown" in caplog.text
+        failure = lens.nudge_failure(row.id)
+        assert failure["reason"].endswith("has a draft or its input is unknown")
+        assert failure["deferred"] is True
+        assert failure["at"] <= time.time()
+
+        monkeypatch.undo()
+        assert await lens.nudge(
+            kind="task", target_id=row.task_id, project_id="proj1", text="hi"
+        ) is True
+        assert lens.nudge_failure(row.id) is None
 
     async def test_nudge_returns_false_when_no_session(self, lens):
         ok = await lens.nudge(kind="task", target_id="never-existed", project_id="proj1", text="hi")
@@ -776,6 +971,79 @@ class TestTailAssistantTurn:
         )
         assert got == "fresh reply"
 
+    async def test_tool_use_only_turn_is_not_an_answer(
+        self, db, providers, lens, tmp_path, monkeypatch
+    ):
+        """A tool call is harness bookkeeping, not prose: the reader renders it
+        as ``[tool_use: X]``.  Skipping it (rather than returning it) keeps the
+        real answer inside the same window reachable."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        work_dir = "/tmp/wd-tail-tool"
+        entries = [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": None,
+                "timestamp": "2026-08-30T12:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "name": "Bash"}],
+                },
+            },
+            {
+                "type": "assistant",
+                "uuid": "a2",
+                "parentUuid": "a1",
+                "timestamp": "2026-08-30T12:00:05Z",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "Ran it; nothing to report."}],
+                },
+            },
+        ]
+        self._write_transcript(tmp_path, work_dir, "tool-tail", entries)
+        row = await self._seed_task_with_transcript(db, providers, work_dir, "tool-tail")
+
+        got = await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1", since=0.0
+        )
+        assert got == "Ran it; nothing to report."
+
+    async def test_until_closes_the_window(self, db, providers, lens, tmp_path, monkeypatch):
+        """``until`` is what keeps a resumed session's next turn from answering
+        a delivery made days earlier (2026-10-05)."""
+        from src.sessions.transcripts.base import parse_iso_ts
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        work_dir = "/tmp/wd-tail-until"
+        entries = [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": None,
+                "timestamp": "2026-08-30T12:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "answered in the window"}],
+                },
+            },
+        ]
+        self._write_transcript(tmp_path, work_dir, "until-tail", entries)
+        row = await self._seed_task_with_transcript(db, providers, work_dir, "until-tail")
+        turn_ts = parse_iso_ts("2026-08-30T12:00:00Z")
+
+        assert await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1",
+            since=turn_ts - 10.0, until=turn_ts,
+        ) == "answered in the window"
+        assert await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1",
+            since=turn_ts - 10.0, until=turn_ts - 1.0,
+        ) is None
+
     async def test_returns_none_when_nothing_newer_than_since(
         self, db, providers, lens, tmp_path, monkeypatch
     ):
@@ -899,7 +1167,7 @@ async def _seed_running_task(db, providers) -> tuple[SessionRecord, SessionHandl
 
 
 async def _seed_running_supervisor(
-    db, providers, *, project_id: str
+    db, providers, *, project_id: str | None
 ) -> tuple[SessionRecord, SessionHandle]:
     from src.sessions.provider import SessionSpec
 
@@ -961,3 +1229,240 @@ async def test_disabled_global_supervisor_does_not_cold_start(lens, db):
         kind="session", target_id="supervisor-global", project_id=None
     )
     assert await db.list_sessions(name="n-supervisor--global") == []
+
+
+# ---------------------------------------------------------------------------
+# Supervisor address validation (prime-cascade-83)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingTokenStore:
+    def __init__(self):
+        self.mints: list[dict] = []
+        self.revoked: list[str] = []
+
+    async def mint(self, *, session_id, task_id, project_id, elevated, session_instance_token=None):
+        self.mints.append({"session_id": session_id, "project_id": project_id, "elevated": elevated})
+        return "tok-" + session_id
+
+    async def revoke_session(self, session_id):
+        self.revoked.append(session_id)
+
+
+@pytest.fixture
+def token_store():
+    return _RecordingTokenStore()
+
+
+@pytest.fixture
+def scoped_lens(db, providers, spec_builder, harness_registry, config, profiles_loader, token_store):
+    return SessionLens(
+        db=db,
+        providers=providers,
+        spec_builder=spec_builder,
+        harness_registry=harness_registry,
+        config=config,
+        profiles_loader=profiles_loader,
+        epoch=TEST_EPOCH,
+        token_store=token_store,
+    )
+
+
+def _delivery_engine(db, lens):
+    from src.config import MessagesConfig
+    from src.messages.delivery import MessageDeliveryEngine
+
+    return MessageDeliveryEngine(db, lens, MessagesConfig())
+
+
+class TestSupervisorAddressValidation:
+    """A ``supervisor-<suffix>`` naming no project must never reach a launch.
+
+    The launch precedes the ``sessions`` insert, so a cold start for a missing
+    project spawned a harness, failed ``sessions_project_id_fkey``, killed it,
+    and repeated on every delivery pass (the live ``supervisor-aq`` loop).
+    """
+
+    @pytest.mark.parametrize("project_id", [None, "aq", "missing"])
+    async def test_nonexistent_project_is_absent_and_never_spawns(
+        self, db, providers, scoped_lens, token_store, caplog, project_id
+    ):
+        caplog.set_level(logging.WARNING, logger="src.messages.session_lens")
+        for _ in range(3):
+            assert await scoped_lens.activity(
+                kind="session", target_id="supervisor-aq", project_id=project_id
+            ) == "absent"
+            assert await scoped_lens.ensure_started(
+                kind="session", target_id="supervisor-aq", project_id=project_id
+            ) is False
+        assert providers.create("fake").starts == []
+        assert token_store.mints == []
+        assert await db.list_sessions(name=_supervisor_runtime_name("aq")) == []
+        assert await db.get_project("aq") is None  # no phantom project either
+        reports = [r for r in caplog.records if "supervisor-aq" in r.getMessage()]
+        assert len(reports) == 1, [r.getMessage() for r in reports]
+        assert "re-send to supervisor-<project-id>" in reports[0].getMessage()
+
+    async def test_existing_project_cold_starts_and_reports_sleeping(
+        self, db, providers, scoped_lens, token_store
+    ):
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
+        ) == "sleeping"
+        assert await scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
+        ) is True
+        assert [s.session_name for s in providers.create("fake").starts] == [
+            _supervisor_runtime_name("proj1")
+        ]
+        assert token_store.mints[0]["project_id"] == "proj1"
+        assert token_store.mints[0]["elevated"] is True
+        assert (await db.get_session_by_name(_supervisor_runtime_name("proj1"))).project_id == "proj1"
+
+    async def test_legacy_alias_reaches_running_message_project_supervisor(
+        self, db, providers, scoped_lens
+    ):
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        ) == "idle"
+        assert (await scoped_lens.session_for(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        )).id == row.id
+        assert await scoped_lens.nudge(
+            kind="session", target_id="supervisor-aq", project_id="proj1", text="wake"
+        ) is True
+        assert providers.create("fake").sent_nudges == [(handle.name, "wake")]
+        assert len(providers.create("fake").starts) == 1  # only the seed
+
+    async def test_legacy_alias_cold_starts_message_project_supervisor_once(
+        self, db, providers, scoped_lens, token_store
+    ):
+        fake = providers.create("fake")
+        gate = asyncio.Event()
+        original_start = fake.start
+
+        async def slow_start(spec):
+            await gate.wait()
+            return await original_start(spec)
+
+        fake.start = slow_start
+        alias = asyncio.create_task(scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        ))
+        canonical = asyncio.create_task(scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
+        ))
+        await asyncio.sleep(0.05)
+        gate.set()
+        assert await alias is True and await canonical is True
+        assert await scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-aq", project_id="proj1"
+        ) is True
+
+        assert [s.session_name for s in fake.starts] == [_supervisor_runtime_name("proj1")]
+        assert [m["project_id"] for m in token_store.mints] == ["proj1"]
+        assert len(await db.list_sessions(name=_supervisor_runtime_name("proj1"))) == 1
+        assert await db.list_sessions(name=_supervisor_runtime_name("aq")) == []
+
+    async def test_existing_suffix_is_never_treated_as_an_alias(self, db, providers, scoped_lens):
+        await db.create_project(Project(id="proj2", name="Proj2", supervisor_enabled=True))
+        await _seed_running_supervisor(db, providers, project_id="proj1")
+        # proj2's supervisor is asleep; proj1's live one must not answer for it.
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-proj2", project_id="proj1"
+        ) == "sleeping"
+        assert await scoped_lens.nudge(
+            kind="session", target_id="supervisor-proj2", project_id="proj1", text="x"
+        ) is False
+
+    @pytest.mark.parametrize("project_id", [None, "proj1"])
+    async def test_global_supervisor_keeps_admin_scope(
+        self, db, providers, scoped_lens, token_store, project_id
+    ):
+        # No project named "global" exists; the global address needs none.
+        assert await db.get_project("global") is None
+        assert await scoped_lens.activity(
+            kind="session", target_id="supervisor-global", project_id=project_id
+        ) == "sleeping"
+        assert await scoped_lens.ensure_started(
+            kind="session", target_id="supervisor-global", project_id=project_id
+        ) is True
+        assert token_store.mints == [
+            {"session_id": token_store.mints[0]["session_id"], "project_id": None, "elevated": True}
+        ]
+        row = await db.get_session_by_name("n-supervisor--global")
+        assert row.project_id is None
+        assert row.work_dir == "/tmp/vault"
+        assert [s.session_name for s in providers.create("fake").starts] == ["n-supervisor--global"]
+
+    async def test_cold_start_refuses_missing_project_even_past_resolution(
+        self, db, providers, scoped_lens, token_store
+    ):
+        # Restart and any future direct caller enter below ``ensure_started``.
+        assert await scoped_lens._ensure_started_locked(
+            kind="session", target_id="supervisor-aq", project_id=None
+        ) is False
+        assert providers.create("fake").starts == []
+        assert token_store.mints == []
+
+    async def test_delivery_passes_deliver_alias_rows_and_never_spawn_for_undeliverable(
+        self, db, providers, scoped_lens, monkeypatch
+    ):
+        """End to end through the delivery engine across repeated passes."""
+        _row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        from sqlalchemy import update
+
+        from src.database.tables import messages
+
+        # Inserts now canonicalise a project-less supervisor alias to the
+        # message's own supervisor, so a historical row stored under the alias
+        # (written before that) is recreated by rewriting the stored address.
+        legacy = await db.create_message(
+            project_id="proj1", from_kind="user", from_id="cli", to_kind="session",
+            to_id="supervisor-proj1", subject="historical", body="original body, preserved",
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(messages).where(messages.c.id == legacy.id).values(to_id="supervisor-aq")
+            )
+        orphan = await db.create_message(
+            project_id=None, from_kind="user", from_id="cli", to_kind="session",
+            to_id="supervisor-nowhere", subject="orphan", body="orphan body",
+        )
+        engine = _delivery_engine(db, scoped_lens)
+        fake = providers.create("fake")
+
+        results = [await engine.run_delivery_pass() for _ in range(3)]
+
+        assert [r["delivered"] for r in results] == [0, 0, 0]
+        assert fake.sent_nudges == [
+            (handle.name,
+             f"Handle `aq message status {legacy.id} --json` (running it marks the message read).")
+        ]
+        notified = await db.get_message(legacy.id)
+        assert notified.delivered_at is None and notified.read_at is None
+        assert notified.via == "nudge" and notified.notification_attempts == 1
+        assert notified.last_notified_at is not None
+        assert notified.to_id == "supervisor-aq"  # the row itself is untouched
+        assert notified.body == "original body, preserved"
+        # The undeliverable row never launched anything and stays pending.
+        assert len(fake.starts) == 1  # only the seed
+        pending = await db.get_message(orphan.id)
+        assert pending.delivered_at is None and pending.archived_at is None
+
+        # Once stale it parks to its sender with the body, like any dead session.
+        from src.messages import delivery
+
+        later = time.time() + delivery.PARK_AFTER_SECONDS + 60
+        monkeypatch.setattr(delivery.time, "time", lambda: later)
+        assert (await engine.run_delivery_pass())["parked"] == 1
+        parked = await db.get_message(orphan.id)
+        assert parked.archived_at is not None and parked.body == "orphan body"
+        notices = await db.list_messages(to_kind="user", include_archived=False, limit=10)
+        assert any(
+            n.reply_to_id == orphan.id and "orphan body" in n.body for n in notices
+        )
+        assert len(fake.starts) == 1
