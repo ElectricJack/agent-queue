@@ -1,9 +1,7 @@
-"""In-memory streamable-command registry backing the console-stream pane view.
+"""Bounded console viewers over durable managed jobs; never an executor.
 
-Not a `tables.py` row: a stream is short-lived and its output can be large.
-Mirrors src/api/sessions.py's SSE shape but backs a live subprocess instead
-of a transcript file. See
-docs/superpowers/specs/2026-08-22-pane-console-stream-design.md §8.1.
+The job id is the stream id. Readers can be discarded and reconstructed from
+retained output without affecting execution, admission, deadlines or pins.
 """
 
 from __future__ import annotations
@@ -12,9 +10,14 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import time
 import uuid
+from dataclasses import asdict
+from pathlib import Path
+
+from src.jobs.policy import JobError, TERMINAL
+from src.jobs.adapters import finite_command
+from src.jobs.artifacts import OutputStore, job_directory
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -38,7 +41,7 @@ __all__ = [
 
 StreamStatus = Literal["running", "exited", "killed"]
 FrameStream = Literal["stdout", "stderr"]
-FrameType = Literal["line", "exit", "killed"]
+FrameType = Literal["line", "exit", "killed", "gap"]
 
 
 @dataclass
@@ -49,6 +52,8 @@ class ConsoleFrame:
     text: str | None = None
     rc: int | None = None
     ts: float = field(default_factory=time.time)
+    after: int | None = None
+    next: int | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"type": self.type, "seq": self.seq, "ts": self.ts}
@@ -58,6 +63,8 @@ class ConsoleFrame:
             d["text"] = self.text
         if self.rc is not None:
             d["rc"] = self.rc
+        if self.after is not None:
+            d.update(after=self.after, next=self.next)
         return d
 
 
@@ -84,8 +91,13 @@ class StreamHandle:
     ended_at: float | None = None
     buffer: "deque[ConsoleFrame]" = field(default_factory=lambda: deque(maxlen=5000))
     buffer_max_bytes: int | None = None
-    process: "asyncio.subprocess.Process | None" = None
+    job_id: str | None = None
+    viewer: "asyncio.Task | None" = None
+    output_cursor: int = 0
+    finished: bool = False
+    reader_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     subscribers: "set[asyncio.Queue]" = field(default_factory=set)
+    subscriber_owners: dict = field(default_factory=dict)
     truncated: bool = False
     _next_seq: int = field(default=0, repr=False)
     _buffer_bytes: int = field(default=0, repr=False)
@@ -122,22 +134,32 @@ class StreamHandle:
             try:
                 q.put_nowait(frame)
             except asyncio.QueueFull:
-                pass
+                first = q.get_nowait()
+                while not q.empty():
+                    q.get_nowait()
+                cursor = first.after if first.after is not None else max(0, first.seq - 1)
+                q.put_nowait(ConsoleFrame(seq=cursor, type="gap", after=cursor, next=cursor,
+                                         text="slow reader disconnected; reconnect to resume"))
+                self.unsubscribe(q)
 
-    def subscribe(self) -> "asyncio.Queue[ConsoleFrame]":
+    def subscribe(self, principal="local") -> "asyncio.Queue[ConsoleFrame]":
+        if sum(owner == principal for owner in self.subscriber_owners.values()) >= 2:
+            raise ValueError("too many attachments")
         q: "asyncio.Queue[ConsoleFrame]" = asyncio.Queue(maxsize=1000)
         self.subscribers.add(q)
+        self.subscriber_owners[q] = principal
         return q
 
     def unsubscribe(self, q: "asyncio.Queue[ConsoleFrame]") -> None:
         self.subscribers.discard(q)
+        self.subscriber_owners.pop(q, None)
 
     def replay_from(self, after_seq: int) -> list[ConsoleFrame]:
         return [f for f in self.buffer if f.seq > after_seq]
 
 
 class StreamRegistry:
-    """``dict[str, StreamHandle]`` keyed by uuid4, hung off the orchestrator."""
+    """Bounded viewers keyed by the canonical job id; owns no execution."""
 
     def __init__(
         self,
@@ -152,11 +174,13 @@ class StreamRegistry:
 
     def create(
         self, *, title: str, session_id: str, project_id: str | None,
-        command: list[str], cwd: str,
+        command: list[str], cwd: str, job_id: str | None = None,
     ) -> StreamHandle:
-        stream_id = uuid.uuid4().hex
+        stream_id = job_id or uuid.uuid4().hex
+        if stream_id in self._streams:
+            return self._streams[stream_id]
         handle = StreamHandle(
-            stream_id=stream_id, title=title, session_id=session_id,
+            stream_id=stream_id, job_id=job_id, title=title, session_id=session_id,
             project_id=project_id, command=command, cwd=cwd,
             buffer=deque(maxlen=self._buffer_max_lines),
             buffer_max_bytes=self._buffer_max_bytes,
@@ -172,12 +196,19 @@ class StreamRegistry:
         return self._concurrency.get(session_id, 0)
 
     def finish(self, handle: StreamHandle) -> None:
+        if handle.finished:
+            return
+        handle.finished = True
         self._concurrency[handle.session_id] = max(
             0, self._concurrency.get(handle.session_id, 1) - 1
         )
 
     def evict(self, stream_id: str) -> None:
-        self._streams.pop(stream_id, None)
+        handle = self._streams.pop(stream_id, None)
+        if handle:
+            self.finish(handle)
+            if handle.viewer:
+                handle.viewer.cancel()
 
     def all_finished_before(self, cutoff: float) -> list[str]:
         return [
@@ -202,6 +233,7 @@ class StreamStartRequest(BaseModel):
     title: str | None = None
     session_id: str
     project_id: str | None = None
+    idempotency_key: str | None = None
 
 
 class StreamStartResponse(BaseModel):
@@ -229,129 +261,90 @@ class StreamMetadata(BaseModel):
     client_reconnect_attempts: int = 5
 
 
-async def _validate_cwd(cwd: str, *, db, workspace_dir: str) -> str | None:
-    """Mirrors ``CommandHandler._validate_path`` (src/commands/handler.py:526)
-    without depending on a live ``CommandHandler`` instance — this router
-    factory, like ``build_sessions_router``, takes ``db``/``config`` directly.
-    """
-    real = os.path.realpath(cwd)
-    workspace_real = os.path.realpath(workspace_dir)
-    if real.startswith(workspace_real + os.sep) or real == workspace_real:
-        return real
-    repos = await db.list_repos()
-    for repo in repos:
-        if repo.source_path:
-            repo_real = os.path.realpath(repo.source_path)
-            if real.startswith(repo_real + os.sep) or real == repo_real:
-                return real
-    workspaces = await db.list_workspaces()
-    for ws in workspaces:
-        ws_real = os.path.realpath(ws.workspace_path)
-        if real.startswith(ws_real + os.sep) or real == ws_real:
-            return real
-    return None
-
-
 def _can_start(scope) -> bool:
     return scope.kind == "local" or scope.elevated
 
 
-def _can_access(scope, handle: StreamHandle) -> bool:
-    if scope.kind == "local":
-        return True
-    if scope.session_id == handle.session_id:
-        return True
-    if scope.elevated and scope.project_id in (None, handle.project_id):
-        return True
-    return False
+def _output_frames(output):
+    records = [(c["offset"], "line", c) for c in output["chunks"]]
+    records += [(g["after"], "gap", g) for g in output["gaps"]]
+    for offset, kind, record in sorted(records, key=lambda r: r[0]):
+        if kind == "gap":
+            cursor = record["next"]
+            yield ConsoleFrame(seq=cursor, type="gap", after=offset, next=cursor,
+                               text=f"[output gap: {offset}..{cursor}]")
+        else:
+            # Preserve console rows while limiting even giant lines to the
+            # store's bounded read chunk. Offsets count original bytes.
+            for line in record["data"].splitlines(keepends=True):
+                cursor = offset + len(line)
+                yield ConsoleFrame(seq=cursor, type="line", stream="stdout",
+                                   text=line.decode("utf-8", "replace").rstrip("\r\n"),
+                                   after=offset, next=cursor)
+                offset = cursor
 
 
-async def _spawn_and_pump(handle: StreamHandle, registry: StreamRegistry) -> None:
+async def _read_output(handle, job, config, after):
+    def read():
+        store = OutputStore(
+            job_directory(Path(config.data_dir), job["id"]),
+            head_bytes=job["contract"]["head_bytes"],
+            tail_bytes=job["contract"]["tail_bytes"], readonly=True,
+        )
+        try:
+            return store.read(after, 65536)
+        finally:
+            store.close()
+
+    # Live and replay attachments share the same serialized reader.
+    async with handle.reader_lock:
+        try:
+            if job["output_retention"] != "expired":
+                return await asyncio.to_thread(read)
+        except FileNotFoundError:
+            return None  # queued jobs have no output yet
+
+
+async def _view_job(handle: StreamHandle, registry: StreamRegistry, *, db, config) -> None:
+    """One bounded reader per job. Dropping it never affects execution."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *handle.command,
-            cwd=handle.cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
-        )
-    except (FileNotFoundError, PermissionError, OSError) as exc:
-        handle.status = "exited"
-        handle.exit_code = -1
-        handle.ended_at = time.time()
-        handle.append(
-            ConsoleFrame(seq=handle.next_seq(), type="exit", rc=-1, text=f"failed to start: {exc}")
-        )
-        registry.finish(handle)
-        return
-
-    handle.process = proc
-
-    async def _pump(stream_name: FrameStream, pipe) -> None:
-        if pipe is None:
-            return
         while True:
-            line = await pipe.readline()
-            if not line:
+            job = await db.get_job(handle.job_id)
+            if not job:
+                handle.status = "exited"
+                handle.ended_at = time.time()
+                registry.finish(handle)
                 return
-            text = line.decode(errors="replace").rstrip("\n")
-            handle.append(ConsoleFrame(seq=handle.next_seq(), type="line", stream=stream_name, text=text))
 
-    stdout_task = asyncio.create_task(_pump("stdout", proc.stdout))
-    stderr_task = asyncio.create_task(_pump("stderr", proc.stderr))
-    try:
-        # A pump (or proc.wait) failure must never leak the stream as
-        # permanently "running" nor leak its concurrency slot — the
-        # ``finally`` below always marks a terminal status and always
-        # calls registry.finish, whether this succeeds or raises.
-        rc: int | None = None
-        exc: Exception | None = None
-        try:
-            rc = await proc.wait()
-            await asyncio.gather(stdout_task, stderr_task)
-        except Exception as e:  # noqa: BLE001 - must not leak the stream/slot
-            logger.warning("stream %s pump failed", handle.stream_id, exc_info=True)
-            exc = e
-            stdout_task.cancel()
-            stderr_task.cancel()
-            if proc.returncode is None:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-            rc = proc.returncode if proc.returncode is not None else -1
-
-        handle.ended_at = time.time()
-        if handle.status != "killed":
-            handle.status = "exited"
-            handle.exit_code = rc
-            frame_kwargs = {"seq": handle.next_seq(), "type": "exit", "rc": rc}
-            if exc is not None:
-                frame_kwargs["text"] = f"stream pump failed: {exc}"
-            handle.append(ConsoleFrame(**frame_kwargs))
-    finally:
-        registry.finish(handle)
-
-
-async def _kill(handle: StreamHandle, *, grace_seconds: float) -> None:
-    if handle.status != "running" or handle.process is None:
-        return
-    handle.status = "killed"
-    proc = handle.process
-    stage_seconds = max(0.1, grace_seconds / 3)
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGKILL):
-        if proc.returncode is not None:
-            break
-        try:
-            proc.send_signal(sig)
-        except ProcessLookupError:
-            break
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=stage_seconds)
-            break
-        except asyncio.TimeoutError:
-            continue
-    handle.append(ConsoleFrame(seq=handle.next_seq(), type="killed"))
+            output = await _read_output(handle, job, config, handle.output_cursor)
+            if output:
+                for frame in _output_frames(output):
+                    if frame.type == "gap":
+                        handle.truncated = True
+                    handle.append(frame)
+                handle.output_cursor = output["next"]
+                if output["next"] < output["seen"]:
+                    await asyncio.sleep(0)
+                    continue
+            if job["state"] in TERMINAL:
+                handle.status = "killed" if job["state"] == "cancelled" else "exited"
+                handle.exit_code = job.get("exit_code")
+                handle.ended_at = job.get("ended_at") or time.time()
+                handle.append(ConsoleFrame(
+                    seq=handle.output_cursor + 1,
+                    type="killed" if handle.status == "killed" else "exit",
+                    rc=handle.exit_code,
+                    text=(job.get("result") or {}).get("infra_reason"),
+                ))
+                registry.finish(handle)
+                return
+            await asyncio.sleep(0.25)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Viewer errors are not execution failures. A later attachment can
+        # resume the durable store; never signal or cancel the producer here.
+        logger.warning("job output reader %s stopped", handle.job_id, exc_info=True)
 
 
 _sweep_task: "asyncio.Task | None" = None
@@ -374,6 +367,7 @@ def _start_retention_sweep(registry: StreamRegistry, retention_seconds: float) -
 
 def build_streams_router(
     *, db, config, workspace_dir: str, registry: StreamRegistry | None = None,
+    command_handler=None,
 ) -> APIRouter:
     """Router factory so tests can wire a lightweight db without the daemon."""
 
@@ -382,6 +376,45 @@ def build_streams_router(
         buffer_max_lines=getattr(config.streams, "buffer_max_lines", 5000),
         buffer_max_bytes=getattr(config.streams, "buffer_max_bytes", 2 * 1024 * 1024),
     )
+
+    def handler():
+        if command_handler is not None:
+            return command_handler
+        from src.api.dependencies import get_command_handler
+
+        return get_command_handler()
+
+    async def command(request, name, args):
+        response = await handler().execute(name, {**args, "_scope": asdict(request.state.scope)})
+        if not response.get("success"):
+            error = response.get("error_code") or response.get("error", "job request refused")
+            code = 404 if error == "not_found" else 503 if error == "jobs.disabled" else 400
+            raise HTTPException(status_code=code, detail=error)
+        return response
+
+    def watch(job, *, title="Console"):
+        handle = reg.create(
+            title=title, session_id=job.get("submitter_session_id") or "",
+            project_id=job["project_id"], command=job["argv"], cwd=job["contract"]["cwd"],
+            job_id=job["id"],
+        )
+        handle.started_at = job.get("started_at") or job["submitted_at"]
+        if job["state"] in TERMINAL:
+            handle.status = "killed" if job["state"] == "cancelled" else "exited"
+            handle.exit_code = job.get("exit_code")
+            handle.ended_at = job.get("ended_at")
+        if handle.viewer is None or handle.viewer.done():
+            if not handle.finished:
+                handle.viewer = asyncio.create_task(_view_job(handle, reg, db=db, config=config))
+        return handle
+
+    async def resolve(stream_id, request, *, require_logs=True):
+        # Consult durable scope on every route, even for cached handles: a
+        # deleted task revokes reads immediately, and restart cannot widen it.
+        job = (await command(request, "job_get", {"job_id": stream_id}))["job"]
+        if require_logs and job["output_retention"] == "expired":
+            raise HTTPException(status_code=410, detail={"error": "logs_expired", "result": job["result"]})
+        return watch(job)
 
     @router.post("/api/streams", response_model=StreamStartResponse)
     async def start(body: StreamStartRequest, request: Request) -> StreamStartResponse:
@@ -398,32 +431,35 @@ def build_streams_router(
         ):
             raise HTTPException(status_code=400, detail="command must be a non-empty list of strings")
 
-        project_id = body.project_id
-        if scope.elevated and scope.project_id is not None:
-            if project_id is None:
-                project_id = scope.project_id
-            elif project_id != scope.project_id:
-                raise HTTPException(status_code=403, detail="out of scope: project_id mismatch")
-
-        real_cwd = await _validate_cwd(body.cwd, db=db, workspace_dir=workspace_dir)
-        if real_cwd is None:
-            raise HTTPException(status_code=403, detail="cwd is outside any accessible workspace")
-
+        try:
+            preset, argv = finite_command(body.command)
+        except JobError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        session_record = await db.get_session(body.session_id)
+        session = asdict(session_record) if session_record else None
+        if not session or not session.get("task_id"):
+            raise HTTPException(status_code=400, detail="a held task session is required")
+        project_id = body.project_id or session["project_id"]
+        if project_id != session["project_id"]:
+            raise HTTPException(status_code=403, detail="out of scope: project_id mismatch")
+        task = await db.get_task(session["task_id"])
+        ws = await db.get_workspace_for_task(session["task_id"])
+        if not task or not ws or os.path.realpath(body.cwd) != os.path.realpath(ws.workspace_path):
+            raise HTTPException(status_code=403, detail="cwd must be the held task workspace")
+        if not body.idempotency_key:
+            raise HTTPException(status_code=400, detail="idempotency_key is required")
         cap = getattr(config.streams, "max_concurrent_per_session", 3)
         if reg.concurrent_count(body.session_id) >= cap:
-            raise HTTPException(status_code=429, detail="too many concurrent streams")
-
-        handle = reg.create(
-            title=body.title or "Console", session_id=body.session_id,
-            project_id=project_id, command=list(body.command), cwd=real_cwd,
-        )
-        # Snapshot the just-created status ("running") rather than reading
-        # handle.status after the awaits below: the spawned task can race
-        # ahead and finish (e.g. a fast "echo") before this handler resumes,
-        # which would otherwise make the start response non-deterministic.
+            replay = await db.list_jobs(project_id=project_id, task_id=task.id, limit=1000)
+            if not any(j["idempotency_key"] == body.idempotency_key for j in replay):
+                raise HTTPException(status_code=429, detail="too many concurrent streams")
+        job = (await command(request, "job_submit", {
+            "project_id": project_id, "task_id": task.id, "session_id": body.session_id,
+            "claim_epoch": task.claim_epoch, "preset": preset, "argv": argv,
+            "idempotency_key": body.idempotency_key,
+        }))["job"]
+        handle = watch(job, title=body.title or "Console")
         start_status = handle.status
-        asyncio.create_task(_spawn_and_pump(handle, reg))
-
         try:
             await db.log_event(
                 "stream.started", project_id=project_id,
@@ -440,12 +476,7 @@ def build_streams_router(
 
     @router.get("/api/streams/{stream_id}", response_model=StreamMetadata)
     async def metadata(stream_id: str, request: Request) -> StreamMetadata:
-        handle = reg.get(stream_id)
-        if handle is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
-        scope = request.state.scope
-        if not _can_access(scope, handle):
-            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
+        handle = await resolve(stream_id, request, require_logs=False)
         return StreamMetadata(
             stream_id=handle.stream_id, title=handle.title, status=handle.status,
             exit_code=handle.exit_code, started_at=handle.started_at,
@@ -458,39 +489,54 @@ def build_streams_router(
 
     @router.get("/api/streams/{stream_id}/subscribe")
     async def subscribe(stream_id: str, request: Request, after_seq: int = -1) -> StreamingResponse:
-        handle = reg.get(stream_id)
-        if handle is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
-        scope = request.state.scope
-        if not _can_access(scope, handle):
-            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
+        handle = await resolve(stream_id, request)
+
+        try:
+            q = handle.subscribe(request.state.scope.session_id or "local")
+        except ValueError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
 
         async def gen():
-            replayed = handle.replay_from(after_seq)
-            first = True
-            for frame in replayed:
-                d = frame.to_dict()
-                if first and handle.truncated and after_seq < 0:
-                    d = {**d, "truncated": True}
-                first = False
-                yield f"data: {json.dumps(d)}\n\n".encode()
-                if frame.type in ("exit", "killed"):
-                    return
-
-            if handle.status != "running":
-                return
-
-            q = handle.subscribe()
-            last_heartbeat = time.monotonic()
             try:
+                last_seq = max(0, after_seq)
+                # Reconnect always reads retained ranges from the store, even
+                # when the in-memory viewer has evicted older frames.
+                while True:
+                    job = (await command(request, "job_get", {"job_id": stream_id}))["job"]
+                    output = await _read_output(handle, job, config, last_seq)
+                    if output:
+                        for frame in _output_frames(output):
+                            yield f"data: {json.dumps(frame.to_dict())}\n\n".encode()
+                        last_seq = output["next"]
+                        if last_seq < output["seen"]:
+                            continue
+                    if job["state"] in TERMINAL:
+                        terminal = ConsoleFrame(
+                            seq=last_seq + 1,
+                            type="killed" if job["state"] == "cancelled" else "exit",
+                            rc=job.get("exit_code"),
+                            text=(job.get("result") or {}).get("infra_reason"),
+                        )
+                        yield f"data: {json.dumps(terminal.to_dict())}\n\n".encode()
+                        return
+                    break
+
+                last_heartbeat = time.monotonic()
                 while True:
                     if await request.is_disconnected():
                         return
                     try:
                         frame = await asyncio.wait_for(q.get(), timeout=1.0)
+                        if frame.seq <= last_seq and frame.text != (
+                            "slow reader disconnected; reconnect to resume"
+                        ):
+                            continue
+                        last_seq = frame.seq
                         yield f"data: {json.dumps(frame.to_dict())}\n\n".encode()
                         last_heartbeat = time.monotonic()
-                        if frame.type in ("exit", "killed"):
+                        if frame.type in ("exit", "killed") or frame.text == (
+                            "slow reader disconnected; reconnect to resume"
+                        ):
                             return
                     except asyncio.TimeoutError:
                         pass
@@ -508,31 +554,27 @@ def build_streams_router(
 
     @router.get("/api/streams/{stream_id}/tail")
     async def tail(stream_id: str, request: Request, after_seq: int = -1) -> dict:
-        handle = reg.get(stream_id)
-        if handle is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
-        scope = request.state.scope
-        if not _can_access(scope, handle):
-            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
-        frames = handle.replay_from(after_seq)
+        handle = await resolve(stream_id, request)
+        job = (await command(request, "job_get", {"job_id": stream_id}))["job"]
+        output = await _read_output(handle, job, config, max(0, after_seq))
+        frames = list(_output_frames(output)) if output else []
+        status = "running"
+        if job["state"] in TERMINAL and (not output or output["next"] == output["seen"]):
+            status = "killed" if job["state"] == "cancelled" else "exited"
+            frames.append(ConsoleFrame(seq=(output or {}).get("next", 0) + 1,
+                                       type="killed" if status == "killed" else "exit",
+                                       rc=job.get("exit_code")))
         return {
-            "frames": [f.to_dict() for f in frames],
-            "status": handle.status,
-            "exit_code": handle.exit_code,
+            "frames": [f.to_dict() for f in frames], "status": status,
+            "exit_code": job.get("exit_code"),
         }
 
     @router.post("/api/streams/{stream_id}/kill", response_model=StreamKillResponse)
     async def kill(stream_id: str, request: Request) -> dict:
-        handle = reg.get(stream_id)
-        if handle is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
-        scope = request.state.scope
-        if not _can_access(scope, handle):
-            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
+        handle = await resolve(stream_id, request, require_logs=False)
         if handle.status != "running":
             return {"stream_id": stream_id, "status": handle.status}
-        grace = getattr(config.streams, "kill_grace_seconds", 5.0)
-        await _kill(handle, grace_seconds=grace)
+        await command(request, "job_cancel", {"job_id": handle.job_id})
         try:
             await db.log_event(
                 "stream.killed", project_id=handle.project_id,
@@ -581,7 +623,10 @@ def _build_default_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
         if registry is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+            registry = orch.stream_registry = StreamRegistry(
+                buffer_max_lines=getattr(orch.config.streams, "buffer_max_lines", 5000),
+                buffer_max_bytes=getattr(orch.config.streams, "buffer_max_bytes", 2 * 1024 * 1024),
+            )
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
             registry=registry,
@@ -598,7 +643,10 @@ def _build_default_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
         if registry is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+            registry = orch.stream_registry = StreamRegistry(
+                buffer_max_lines=getattr(orch.config.streams, "buffer_max_lines", 5000),
+                buffer_max_bytes=getattr(orch.config.streams, "buffer_max_bytes", 2 * 1024 * 1024),
+            )
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
             registry=registry,
@@ -615,7 +663,10 @@ def _build_default_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
         if registry is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+            registry = orch.stream_registry = StreamRegistry(
+                buffer_max_lines=getattr(orch.config.streams, "buffer_max_lines", 5000),
+                buffer_max_bytes=getattr(orch.config.streams, "buffer_max_bytes", 2 * 1024 * 1024),
+            )
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
             registry=registry,
@@ -632,7 +683,10 @@ def _build_default_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
         if registry is None:
-            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+            registry = orch.stream_registry = StreamRegistry(
+                buffer_max_lines=getattr(orch.config.streams, "buffer_max_lines", 5000),
+                buffer_max_bytes=getattr(orch.config.streams, "buffer_max_bytes", 2 * 1024 * 1024),
+            )
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
             registry=registry,
@@ -641,6 +695,12 @@ def _build_default_router() -> APIRouter:
             if getattr(route, "path", None) == "/api/streams/{stream_id}/kill":
                 return await route.endpoint(stream_id=stream_id, request=request)
         raise HTTPException(status_code=500, detail="streams router misconfigured")
+
+    @router.get("/api/jobs/{job_id}/output")
+    async def output(job_id: str, request: Request, after: int = 0) -> StreamingResponse:
+        if after < 0:
+            raise HTTPException(status_code=400, detail="invalid output cursor")
+        return await subscribe(stream_id=job_id, request=request, after_seq=after)
 
     return router
 
