@@ -40,6 +40,7 @@ class SessionSummary(BaseModel):
     claim_failure_reason: str | None = None
     claim_failure_at: float | None = None
     failed_preparation: dict[str, Any] | None = None
+    supervisor_health: dict[str, Any] | None = None
     quarantined_at: float | None = None
     sleep_reason: str | None = None
     # ``sessions.epoch`` is a Text column (AQ_DAEMON_EPOCH — a hex string

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from src.observations.models import SnapshotValue
 
 
 class ProjectSummary(BaseModel):
@@ -141,7 +142,7 @@ class WorkspaceListDiagnostics(BaseModel):
     authority: str
 
 
-class ListProjectsResponse(BaseModel):
+class ListProjectsResponse(SnapshotValue):
     projects: list[ProjectSummary] = []
 
 
@@ -233,6 +234,15 @@ class WorkspaceRetireClaimResponse(BaseModel):
     reason: str | None = None
 
 
+class WorkspaceClearSentinelResponse(BaseModel):
+    workspace_id: str
+    cleared: bool = False
+    detail: str | None = None
+    holder_task_id: str | None = None
+    branch: str | None = None
+    reason: str | None = None
+
+
 class EditWorkspaceResponse(BaseModel):
     updated: str
     fields: list[str] = []
@@ -319,6 +329,20 @@ class RepairWorkspaceCheckoutResponse(BaseModel):
     event_id: int | None = None
 
 
+class ProjectRelocateResponse(BaseModel):
+    success: bool
+    preview: bool | None = None
+    digest: str | None = None
+    plan: dict[str, Any] | None = None
+    blockers: list[str] = []
+    already_applied: bool = False
+    binding: dict[str, Any] | None = None
+    recovery_manifest: str | None = None
+    rollback: str | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
 class SetActiveProjectResponse(BaseModel):
     active_project: str | None = None
     name: str | None = None
@@ -338,11 +362,13 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "resume_project": ResumeProjectResponse,
     "set_default_branch": SetDefaultBranchResponse,
     "get_project": GetProjectResponse,
+    "project_relocate": ProjectRelocateResponse,
     "add_workspace": AddWorkspaceResponse,
     "list_workspaces": ListWorkspacesResponse,
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
     "workspace_retire_claim": WorkspaceRetireClaimResponse,
+    "workspace_clear_sentinel": WorkspaceClearSentinelResponse,
     "edit_workspace": EditWorkspaceResponse,
     "workspace_cutover": WorkspaceCutoverResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,
