@@ -980,9 +980,11 @@ See [branch tracking](design/branch-tracking-deployment.md).
 Maps to `WaitPolicyConfig`. This section is hot reloadable. Values are read
 at each wait decision; registry consumers snapshot the three rollout flags
 once per cycle. All flags (`v2_enabled`, `hibernation_enabled`,
-`scheduler_waits_enabled`) default to `false`; declaring this section does not
-activate the wait v2 runtime. `v1_bodies` defaults to `translate` and also
-accepts `refuse`.
+`scheduler_waits_enabled`) default to `true`. `v1_bodies` defaults to `refuse` and
+also accepts `translate` for rollout/rollback compatibility. Explicit false
+configuration continues to gate new admission; persisted waits and continuations
+keep draining. See [the cutover runbook](../guides/hibernation-cutover-runbook.md)
+for existing installations and rollback ordering.
 
 Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
 `resume_cost_minutes: 10`, `min_samples: 5`, `loop_window_registrations: 3`,
@@ -1007,7 +1009,8 @@ fields inherit the global value. `WaitPolicyConfig.resolve_project(id)`
 returns an independent effective policy in project → global → default order.
 This supports one project's v2 canary while global rollout flags stay off;
 `src.waits.decision.project_policy` resolves through it, so per-project
-`v2_enabled` gates honour a canary (hibernation gates read the global flag).
+registration, hibernation and scheduler admission gates all honour the effective
+project policy. A global listener also starts for any enabled project canary.
 
 `metrics` maps to `WaitMetricsConfig`: an operator-supplied pre-rollout
 cohort (`pre_rollout_turn_rate` in turns per minute,

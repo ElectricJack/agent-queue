@@ -1021,9 +1021,9 @@ class ExecutionMixin:
         if resuming:
             await self.wait_service.lifecycle.resume.bind_launch(action, launch_record)
 
-        hierarchy_enabled = getattr(
-            project, "hierarchical_integration_mode", "disabled"
-        ) in {"hierarchy", "train"}
+        from src.integration.train_policy import worker_integration_enabled
+
+        hierarchy_enabled = await worker_integration_enabled(self.db, project)
         integration_ownership = None
         integration_fence = None
         if hierarchy_enabled:
@@ -1567,10 +1567,9 @@ class ExecutionMixin:
             try:
                 children = await self.db.get_children(task.id, limit=1)
                 checkpoint = await self.db.get_integration_checkpoint(task.id)
-                hierarchy_enabled = (
-                    getattr(project, "hierarchical_integration_mode", "disabled")
-                    in {"hierarchy", "train"}
-                )
+                from src.integration.train_policy import worker_integration_enabled
+
+                hierarchy_enabled = await worker_integration_enabled(self.db, project)
                 managed_parent = bool(
                     hierarchy_enabled
                     and (children or checkpoint and checkpoint.get("episode_id") is not None)
@@ -1947,6 +1946,30 @@ class ExecutionMixin:
                 if (accepted_close is not None and isinstance(draft, dict)
                         and draft.get("identity") == accepted_close):
                     draft["completion"]["commits"] = completion_commits
+                    await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
+        close_merge_result = None
+        if (git_completion and completion_source and task.parent_task_id
+                and completion_id and outcome == "pass" and completed_ok):
+            from src.integration.close_runtime import DaemonClose
+
+            close_runtime = DaemonClose(self)
+            operation = await close_runtime.store.get(completion_id)
+            if operation is not None:
+                try:
+                    close_merge_result = await close_runtime.run(completion_id)
+                except Exception as exc:
+                    return {"status": task.status.value, "pipeline_ok": False,
+                            "verification_retry": True, "issues": [str(exc)],
+                            "feedback": "Retain the source and candidate; continue this close."}
+                if not close_merge_result["completed"]:
+                    return {"status": task.status.value, "pipeline_ok": False,
+                            "verification_retry": True, "close_merge": close_merge_result}
+                # Source S, never integration candidate M, is the completion.
+                from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+
+                draft = await self.db.get_task_meta(task.id, PENDING_COMPLETION_KEY)
+                if draft and draft.get("identity") == accepted_close:
+                    draft["completion"]["commits"] = [completion_source]
                     await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
         if managed_parent_suspended:
             new_status = TaskStatus.PAUSED
@@ -2502,6 +2525,8 @@ class ExecutionMixin:
             # archive path for nothing.
             "slot_restored": slot_restored,
         }
+        if close_merge_result is not None:
+            response["close_merge"] = close_merge_result
         if repair_writer_closed:
             # The canonical ref may be absent from the base checkout used by
             # task close. Preserve the head proved under the repair writer's

@@ -795,6 +795,16 @@ async def detach_slot_for_integration_handoff(
     )
 
 
+async def detach_task_slot(db, orch, task, workspace, branch: str, **options) -> bool:
+    """Detach *task*'s slot through its repository binding; False without proof."""
+    project = await db.get_project(task.project_id)
+    repository = await db.get_repo(task.repo_id or project.integration_repository_id)
+    return bool(repository and await detach_slot_for_integration_handoff(
+        db, orch.git, orch._git_mutex, workspace, expected_branch=branch,
+        repository_url=repository.url, default_branch=repository.default_branch, **options,
+    ))
+
+
 async def _probe_workspace_checkout(
     git,
     git_mutex: Callable,

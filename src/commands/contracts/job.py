@@ -81,7 +81,11 @@ class JobRetainArgs(JobGetArgs):
 
 class JobValue(CommandValue):
     job: dict[str, Any]
-    wait: AgentWaitRecord | None = None
+    wait: AgentWaitRecord | dict[str, Any] | None = None
+    wait_id: str | None = None
+    decision: dict[str, Any] | None = None
+    continuation_id: str | None = None
+    generation: int | None = None
     next_step: str | None = None
 
 
