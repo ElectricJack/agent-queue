@@ -111,11 +111,14 @@ class HostedCIProducer:
         *,
         requester: HostedRequester | None = None,
         expected_event: str | None = "push",
+        allow_push_fallback: bool = False,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.client, self.trust = client, trust
         self.requester, self.clock = requester, clock
-        self.observer = AuthenticatedGitHubObserver(client, expected_event=expected_event)
+        self.observer = AuthenticatedGitHubObserver(
+            client, expected_event=expected_event, allow_push_fallback=allow_push_fallback,
+        )
         self.required_check_version = trust.required_checks.version
 
     def _trust_error(self, head: HeadIdentity) -> str | None:

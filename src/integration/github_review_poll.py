@@ -251,7 +251,10 @@ class RootPullRequestGate:
                 state = await review_state()
                 if state != "approved":
                     return defer(state)
-            exact = await self.checks(target, replace(member, source_sha=checked_sha), policy, binding)
+            exact = await self.checks(
+                target, replace(member, source_sha=checked_sha), policy, binding,
+                pr_head_sha=pull["head"]["sha"],
+            )
             if exact is None:
                 raise ValueError("PR required checks observer is unavailable")
             result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,

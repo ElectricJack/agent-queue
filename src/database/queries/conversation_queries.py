@@ -157,17 +157,40 @@ class ConversationQueriesMixin:
     async def resolve_conversation_supervisor(
         self, project_id: str = "", *, conn=None
     ) -> tuple[str | None, str | None]:
-        """Resolve the addressed named supervisor even when it needs waking.
+        """Address human chat to global, independently of the ask project scope.
 
-        A stopped project supervisor keeps its address instead of handing the
-        conversation to a different live supervisor. Only a missing supervisor
-        falls back to global, then the unassigned queue.
+        Stopped/sleeping named sessions retain their address so delivery can
+        wake them. A missing global session queues chat; projects never take over.
         """
         from src.sessions.spec import named_session_name
 
         if conn is None:
             async with self._engine.connect() as connection:
-                return await self.resolve_conversation_supervisor(project_id, conn=connection)
+                return await self.resolve_conversation_supervisor(conn=connection)
+        supervisor = await conn.scalar(
+            select(sessions.c.id).where(
+                sessions.c.name == named_session_name("supervisor", "global"),
+                sessions.c.profile_id == "supervisor",
+                sessions.c.lifecycle == "named",
+                sessions.c.project_id.is_(None),
+            ).limit(1)
+        )
+        return (SUPERVISOR_RECIPIENT if supervisor is not None else None), None
+
+    async def resolve_ask_supervisor(
+        self, project_id: str = "", *, conn=None
+    ) -> tuple[str | None, str | None]:
+        """Resolve project-scoped ask discussion/interpretation ownership.
+
+        A stopped project supervisor keeps its address instead of handing the
+        ask to a different live supervisor. Only a missing supervisor falls
+        back to global, then the caller's existing missing-owner policy.
+        """
+        from src.sessions.spec import named_session_name
+
+        if conn is None:
+            async with self._engine.connect() as connection:
+                return await self.resolve_ask_supervisor(project_id, conn=connection)
         if not project_id:
             project_ids = list((await conn.execute(select(projects.c.id).limit(2))).scalars())
             if len(project_ids) == 1:
@@ -190,7 +213,11 @@ class ConversationQueriesMixin:
         return None, project_id or None
 
     async def route_queued_conversation_inputs(self, project_id: str = "") -> int:
-        """Drain only unassigned notices; assigned envelopes retain their recipient."""
+        """Route pending chat and reference notices to global, including legacy mail.
+
+        Consumed/archived history is preserved; reply authority is global even
+        for those older inputs. Ask discussions retain their project routing.
+        """
         recipient, scope = await self.resolve_conversation_supervisor(project_id)
         if recipient is None:
             return 0
@@ -199,8 +226,14 @@ class ConversationQueriesMixin:
                 update(messages)
                 .where(
                     messages.c.to_kind == "session",
-                    messages.c.to_id == QUEUED_SUPERVISOR_RECIPIENT,
-                    messages.c.body_kind == "conversation_input",
+                    messages.c.to_id != recipient,
+                    or_(
+                        messages.c.body_kind == "conversation_input",
+                        and_(
+                            messages.c.from_id == "discord-intake",
+                            messages.c.id.startswith("msg-reference-"),
+                        ),
+                    ),
                     messages.c.delivered_at.is_(None),
                     messages.c.archived_at.is_(None),
                 )
@@ -1175,14 +1208,14 @@ class ConversationQueriesMixin:
                 .mappings()
                 .one_or_none()
             )
-            sender = notice["to_id"] if notice is not None else SUPERVISOR_RECIPIENT
+            sender = SUPERVISOR_RECIPIENT
             reply = (
                 (
                     await insert_message_with_source_event(conn,
                         pg_insert(messages)
                         .values(
                             id=reply_message_id,
-                            project_id=notice["project_id"] if notice is not None else None,
+                            project_id=None,
                             from_kind="session",
                             from_id=sender,
                             to_kind="user",

@@ -3451,7 +3451,7 @@ class DaemonLanes:
         cache[batch.id] = (key, now + PROMOTION_RESOLUTION_TTL_SECONDS, trust, client)
         return trust, client
 
-    async def _pr_checks(self, target, member, policy, binding):
+    async def _pr_checks(self, target, member, policy, binding, *, pr_head_sha=None):
         """The required checks a root PR member's head must pass to be admitted."""
         batch = Batch("pr-admission-" + member.task_id, target.project_id,
                       target.repository_id, target.target_ref)
@@ -3470,7 +3470,8 @@ class DaemonLanes:
                 await retain_train_candidate(self.git, store, batch, member.source_sha)
             return self._local_checks(target, store, ci, policy, batch, requested=True)
         return await self._hosted(policy, binding, target, batch, member.source_sha,
-                                  expected_event="pull_request")
+                                  expected_event="pull_request",
+                                  allow_push_fallback=pr_head_sha == member.source_sha)
 
     async def _policy(self, project_id: str) -> dict:
         async with self.db._engine.connect() as conn:
@@ -3617,7 +3618,7 @@ class DaemonLanes:
                            on_change=self._checks_changed)
 
     async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None,
-                      expected_event="push"):
+                      expected_event="push", allow_push_fallback=False):
         from src.integration.checks import ExactChecks, HostedChecks
         from src.integration.ci_producers import HostedCIProducer
 
@@ -3643,7 +3644,8 @@ class DaemonLanes:
             return await self._workflow_diagnostic(retained, head)
 
         return ExactChecks(self.db, HostedChecks(
-            HostedCIProducer(client, trust, expected_event=expected_event),
+            HostedCIProducer(client, trust, expected_event=expected_event,
+                             allow_push_fallback=allow_push_fallback),
             diagnose=diagnose if retained is not None else None,
         ), clock=self.clock, on_change=self._checks_changed)
 
