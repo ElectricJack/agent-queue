@@ -1,0 +1,75 @@
+{
+  "chrome": "Chrome/150.0.7871.46",
+  "results": [
+    {
+      "check": "compact-shell",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 4295
+    },
+    {
+      "check": "compact-shell",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 2848
+    },
+    {
+      "check": "compact-shell",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 1121
+    },
+    {
+      "check": "compact-shell",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 1056
+    },
+    {
+      "check": "compact-shell",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 2794
+    },
+    {
+      "check": "desktop-baseline",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 1281
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "phone-320",
+      "ok": false,
+      "ms": 1157,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n'false' !== 'true'\n\n    at Module.run (file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/checks/tasks-tab.check.mjs:19:10)\n    at async file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/run.mjs:61:9"
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "phone-390",
+      "ok": false,
+      "ms": 1313,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n'false' !== 'true'\n\n    at Module.run (file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/checks/tasks-tab.check.mjs:19:10)\n    at async file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/run.mjs:61:9"
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "phone-landscape",
+      "ok": false,
+      "ms": 1271,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n'false' !== 'true'\n\n    at Module.run (file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/checks/tasks-tab.check.mjs:19:10)\n    at async file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/run.mjs:61:9"
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "desktop",
+      "ok": false,
+      "ms": 1194,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n'false' !== 'true'\n\n    at Module.run (file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/checks/tasks-tab.check.mjs:19:10)\n    at async file:///home/jkern/dev/agent-queue2/.aq/worktrees/slot-1/dashboard/layout-checks/run.mjs:61:9"
+    },
+    {
+      "check": "tasks-tab",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 1500
+    }
+  ]
+}
