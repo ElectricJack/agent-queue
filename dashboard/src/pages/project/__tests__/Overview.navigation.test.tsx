@@ -6,7 +6,17 @@ import ProjectOverview from "../Overview";
 
 vi.mock("../../../api/hooks", () => ({
   useProject: () => ({ data: { id: "p1", name: "Project one" } }),
-  useTasks: () => ({ data: [{ id: "failed", status: "FAILED" }, ...Array.from({ length: 9 }, (_, i) => ({ id: `task-${i}`, title: `Task ${i}`, status: "READY" }))] }),
+  useTasks: () => ({
+    data: {
+      display_mode: "active",
+      tasks: [{ id: "failed", status: "FAILED" }, ...Array.from({ length: 9 }, (_, i) => ({ id: `task-${i}`, title: `Task ${i}`, status: "READY" }))],
+      total: 10,
+      hidden_completed: 0,
+      filtered: false,
+    },
+    isPending: false,
+    isError: false,
+  }),
   useAgents: () => ({ data: [] }),
   useWorkspaces: () => ({ data: [{ id: "w1" }, { id: "w2" }] }),
 }));
@@ -34,6 +44,10 @@ describe("project overview navigation", () => {
     expect(screen.getByRole("link", { name: "Workspaces tab" })).toHaveAttribute("href", "/projects/p1/workspaces?q=keep&completed=1");
     expect(screen.getByRole("link", { name: "Open task graph" })).toHaveAttribute("href", "/projects/p1/graph?q=keep&completed=1");
     expect(screen.getByRole("link", { name: "Open agent flock" })).toHaveAttribute("href", "/agents");
+    expect(screen.getByRole("link", { name: "Open messaging settings" })).toHaveAttribute(
+      "href",
+      "/settings/messaging",
+    );
     expect(screen.queryByRole("link", { name: /chat/i })).not.toBeInTheDocument();
   });
 

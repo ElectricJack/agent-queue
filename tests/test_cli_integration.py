@@ -9,8 +9,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from click.testing import CliRunner
 
-from src.cli.exceptions import CommandError, ScopeDeniedError
-
 
 def _client(result):
     client = AsyncMock()
@@ -22,101 +20,324 @@ def _client(result):
     return client
 
 
-@pytest.mark.parametrize(
-    ("argv", "command", "args"),
-    [
-        (["status", "p"], "integration_status", {"project_id": "p"}),
-        (["flush", "p"], "integration_flush", {"project_id": "p"}),
-        (
-            [
-                "resolve-candidate-member",
-                "--resolved-head-sha",
-                "a" * 40,
-                "--resolved-tree-sha",
-                "b" * 40,
-                "--repair-commit-sha",
-                "c" * 40,
-                "--repair-commit-sha",
-                "a" * 40,
-                "--claim-epoch",
-                "7",
-            ],
-            "integration_resolve_candidate_member",
-            {
-                "resolved_head_sha": "a" * 40,
-                "resolved_tree_sha": "b" * 40,
-                "repair_commit_shas": ["c" * 40, "a" * 40],
-                "claim_epoch": 7,
-            },
-        ),
-        (
-            [
-                "enable",
-                "p",
-                "--mode",
-                "train",
-                "--interval-seconds",
-                "600",
-                "--expected-generation",
-                "7",
-                "--reason",
-                "roll out",
-                "--waiver-id",
-                "waiver-1",
-            ],
-            "integration_enable",
-            {
-                "project_id": "p",
-                "mode": "train",
-                "interval_seconds": 600,
-                "expected_generation": 7,
-                "reason": "roll out",
-                "waiver_id": "waiver-1",
-            },
-        ),
-        (
-            [
-                "waive-history",
-                "p",
-                "--reason",
-                "accepted history",
-                "--blocker-digest",
-                "sha256:" + "a" * 64,
-            ],
-            "integration_waive_history",
-            {
-                "project_id": "p",
-                "reason": "accepted history",
-                "blocker_digest": "sha256:" + "a" * 64,
-            },
-        ),
-        (["resume", "op-1"], "integration_resume", {"operation_id": "op-1"}),
-        (
-            ["abort", "op-1", "--reason", "operator decision"],
-            "integration_abort",
-            {"operation_id": "op-1", "reason": "operator decision"},
-        ),
-        (
-            ["retry-cleanup", "batch-1"],
-            "integration_retry_cleanup",
-            {"batch_id": "batch-1"},
-        ),
-    ],
-)
-def test_integration_commands_use_generic_execute_and_json_envelope(argv, command, args):
+def test_continue_close_forwards_only_operation_identity():
     from src.cli.app import cli
 
-    response = {"outcome": "status", "project_id": "p", "generation": 7}
-    client = _client(response)
+    client = _client({"success": True, "outcome": "completed", "operation_id": "op"})
     with patch("src.cli.integration._get_client", return_value=client):
-        result = CliRunner().invoke(cli, ["--json", "integration", *argv])
-
+        result = CliRunner().invoke(cli, ["integration", "continue-close", "--operation-id", "op"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output) == {"schema_version": 1, "data": response}
-    client.execute.assert_awaited_once_with(command, args)
+    assert client.execute.call_args.args == ("integration_continue_close", {"operation_id": "op"})
 
 
-def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
+@pytest.mark.parametrize("apply", [False, True])
+def test_redrive_child_explicit_source_adoption(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "would_advance"})
+    argv = ["integration", "redrive-child", "epic.1", "--adopt-source"]
+    if apply:
+        argv += ["--apply", "--head", "a" * 40, "--reason", "recover old completion"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_redrive_child"
+    assert args["adopt_source"] is True
+    assert args["dry_run"] is not apply
+
+
+@pytest.mark.parametrize("target", [["--task-id", "task"], ["--owner-row-id", "owner"]])
+@pytest.mark.parametrize("flags", [[], ["--dry-run"], ["--apply"]])
+def test_release_owner_defaults_to_preview(target, flags):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "release-owner", *target, *flags])
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_release_owner"
+    assert args["dry_run"] is ("--apply" not in flags)
+    assert args[target[0][2:].replace("-", "_")] == target[1]
+
+
+@pytest.mark.parametrize("flags", [[], ["--apply"]])
+def test_release_owner_no_push_is_forwarded_only_when_set(flags):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["integration", "release-owner", "--task-id", "task", "--no-push", *flags],
+        )
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args[1] == {
+            "dry_run": not flags, "no_push": True, "task_id": "task",
+        }
+        CliRunner().invoke(cli, ["integration", "release-owner", "--task-id", "task", *flags])
+    assert "no_push" not in client.execute.call_args.args[1]
+
+
+def test_release_owner_refuses_conflicting_preview_and_apply_flags():
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "release-owner", "--task-id", "task",
+                                         "--dry-run", "--apply"])
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output
+    client.execute.assert_not_awaited()
+
+
+def test_restore_task_origin_previews_and_requires_exact_apply_fences():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    argv = ["integration", "restore-task-origin", "--task-id", "task"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args == ("integration_restore_task_origin", {
+            "task_id": "task", "dry_run": True, "reason": "",
+        })
+        client.reset_mock()
+        result = CliRunner().invoke(cli, argv + ["--apply"])
+        assert result.exit_code == 2
+        client.execute.assert_not_awaited()
+        result = CliRunner().invoke(cli, argv + ["--apply", "--origin-id", "origin",
+            "--expected-remote-oid", "a" * 40, "--expected-fence-token", "5",
+            "--reason", "remove contamination"])
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args[1] == {
+            "task_id": "task", "dry_run": False, "origin_id": "origin",
+            "expected_remote_oid": "a" * 40, "expected_fence_token": 5,
+            "reason": "remove contamination",
+        }
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_release_owner_self_owned_is_explicit_and_keeps_preview_default(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [
+            "integration", "release-owner", "--task-id", "task", "--self-owned",
+            *(["--apply"] if apply else []),
+        ])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_release_owner", {
+        "task_id": "task", "self_owned": True, "dry_run": not apply,
+    })
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_provenance_namespace_migration_defaults_to_preview(tmp_path, apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "migrated" if apply else "preview"})
+    argv = ["integration", "migrate-provenance-refs", "p", "--limit", "12",
+            "--checkout", str(tmp_path)]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + (["--apply"] if apply else []))
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_migrate_provenance_refs", {
+        "project_id": "p", "dry_run": not apply, "limit": 12, "checkout": str(tmp_path),
+    })
+
+
+
+def test_cutover_transmits_saved_plan_and_defaults_to_preview(tmp_path):
+    from src.cli.app import cli
+
+    flow = tmp_path / "flow.yaml"
+    flow.write_text("promotion_flow: [{id: release, source: dev, target: main}]\n")
+    baseline = {"project_id": "p", "generation": 7, "aborted_members": []}
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "data": {"plan": baseline}}))
+    client = _client({"success": True, "outcome": "preview"})
+    argv = ["integration", "cutover", "--project", "p", "--flow", str(flow)]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[1]["dry_run"] is True
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + ["--apply", "--expected-generation", "7",
+                                                "--plan", str(plan)])
+    assert result.exit_code == 0, result.output
+    args = client.execute.call_args.args[1]
+    assert args["dry_run"] is False and args["baseline"] == baseline
+
+
+def test_cutover_apply_requires_preview_and_generation_before_transport(tmp_path):
+    from src.cli.app import cli
+
+    flow = tmp_path / "flow.yaml"
+    flow.write_text("[]\n")
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "cutover", "--project", "p",
+            "--flow", str(flow), "--apply", "--expected-generation", "7"])
+    assert result.exit_code == 2 and "--plan FILE" in result.output
+    client.execute.assert_not_awaited()
+
+def test_root_noop_previews_then_applies_exact_head_with_reason():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "record-root-noop", "root"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_record_root_noop", {
+        "task_id": "root", "dry_run": True, "reason": "",
+    })
+    client.reset_mock()
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "record-root-noop", "root", "--apply",
+                                        "--head", "a" * 40, "--reason", "no code"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[1] == {
+        "task_id": "root", "dry_run": False, "expected_head_sha": "a" * 40, "reason": "no code",
+    }
+
+
+@pytest.mark.parametrize("extra", [[], ["--head", "a" * 40], ["--reason", "no code"]])
+def test_root_noop_apply_requires_exact_head_and_reason(extra):
+    from src.cli.app import cli
+
+    client = _client({"success": True})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "record-root-noop", "root", "--apply", *extra])
+    assert result.exit_code == 2
+    client.execute.assert_not_called()
+
+
+
+@pytest.mark.parametrize("leaf,identity,extra,command", [
+    ("abort-batch", "batch", [], "integration_abort_batch"),
+    ("settle-batch", "batch", ["--target-sha", "a" * 40], "integration_settle_batch"),
+    ("retire-origin", "task", ["--origin-id", "origin"], "integration_retire_origin"),
+])
+def test_train_controls_default_to_preview_and_apply_with_reason(leaf, identity, extra, command):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", leaf, identity])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[0] == command
+    assert client.execute.call_args.args[1]["dry_run"] is True
+    client.reset_mock()
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", leaf, identity, "--apply", *extra,
+                                         "--reason", "delivered work"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[1]["dry_run"] is False
+    assert client.execute.call_args.args[1]["reason"] == "delivered work"
+
+
+def test_release_withheld_source_previews_and_applies_only_exact_shas():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    base = ["integration", "release-withheld-source", "batch", "--task", "t"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, base)
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args == ("integration_release_withheld_source", {
+            "batch_id": "batch", "task_id": "t", "expected_source_sha": None,
+            "expected_target_sha": None, "reason": "", "dry_run": True})
+        client.reset_mock()
+        refused = CliRunner().invoke(cli, [*base, "--apply", "--reason", "re-batch it"])
+        assert refused.exit_code == 2
+        client.execute.assert_not_called()
+        result = CliRunner().invoke(cli, [*base, "--apply", "--source-sha", "b" * 40,
+                                          "--target-sha", "a" * 40, "--reason", "re-batch it"])
+    assert result.exit_code == 0, result.output
+    arguments = client.execute.call_args.args[1]
+    assert arguments["dry_run"] is False and arguments["expected_source_sha"] == "b" * 40
+
+
+@pytest.mark.parametrize("argv", [
+    ["abort-batch", "batch", "--apply"],
+    ["settle-batch", "batch", "--apply", "--reason", "delivered"],
+    ["settle-batch", "batch", "--apply", "--target-sha", "a" * 40],
+    ["retire-origin", "task", "--apply", "--reason", "delivered"],
+])
+def test_train_controls_require_apply_arguments_before_transport(argv):
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv])
+    assert result.exit_code == 2, result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_refresh_epic_control_preview_and_apply(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview" if not apply else "pending"})
+    argv = ["integration", "refresh-epic", "--task", "epic"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + (["--apply"] if apply else []))
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == (
+        "integration_refresh_epic", {"task_id": "epic", "dry_run": not apply})
+
+
+def test_reevaluate_repair_apply_requires_exact_preview():
+    from src.cli.app import cli
+
+    client = _client({"outcome": "reevaluated"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "reevaluate-repair", "operation", "--apply"])
+    assert result.exit_code == 2
+    assert "--apply requires --head, --generation, --stage, --fence, --snapshot and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_reverify_epic_control_forwards_preview_source(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "visited" if apply else "preview"})
+    args = ["integration", "reverify-epic", "epic"]
+    if apply:
+        args += ["--apply", "--head", "a" * 40, "--reason", "verify aggregate"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_reverify_epic", {
+        "task_id": "epic", "dry_run": not apply,
+        "expected_head_sha": "a" * 40 if apply else None,
+        "reason": "verify aggregate" if apply else "",
+    })
+
+
+def test_reverify_epic_apply_requires_preview_source_and_reason():
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "reverify-epic", "epic", "--apply"])
+    assert result.exit_code == 2 and "--head and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "ci_source",
+    [
+        None,
+        {"root": "hosted", "epic": "hosted", "promotion": "hosted", "origin": "default"},
+        {"root": "local", "epic": "local", "promotion": "hosted", "origin": "policy"},
+    ],
+    ids=["absent", "default-hosted", "policy-local"],
+)
+def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail(ci_source):
     from src.cli.app import cli
 
     response = {
@@ -129,9 +350,18 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "ready": False,
         "blockers": [{"code": "human_hold", "detail": "needs operator", "ref": "op"}],
         "blocker_digest": "sha256:" + "b" * 64,
+        "warnings": [{"code": "audit_workflow_missing", "detail": "warns", "ref": "repo"}],
+        "promotion_flow": {"state": "misconfigured", "chain": "dev -> main"},
         "schedule": {"next_due_at": 123.0},
         "members": [{"task_id": "t"}],
+        "github": {
+            "scope": "daemon", "window_seconds": 60, "retry_at": 123.0,
+            "api_calls_per_minute": {"GET repos/acme/widgets": 3},
+            "gh_commands_per_minute": {},
+        },
     }
+    if ci_source is not None:
+        response["ci_source"] = ci_source
     client = _client(response)
     with patch("src.cli.integration._get_client", return_value=client):
         result = CliRunner().invoke(
@@ -142,6 +372,7 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
     data = json.loads(result.output)["data"]
     assert data == {
         "outcome": "status",
+        "projection_kind": None,
         "project_id": "p",
         "operation_id": None,
         "batch_id": None,
@@ -152,6 +383,13 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "ready": False,
         "blockers": response["blockers"],
         "blocker_digest": response["blocker_digest"],
+        # Non-blocking App-mode warnings stay visible in the brief projection.
+        "warnings": response["warnings"],
+        "github": response["github"],
+        # The promotion chain and its misconfigured marking stay visible too.
+        "promotion_flow": response["promotion_flow"],
+        # The chosen CI runner and its origin remain visible when reported.
+        "ci_source": ci_source,
         "state": None,
         "stage": None,
         "count": None,
@@ -160,113 +398,26 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
     assert "members" not in data
 
 
-@pytest.mark.parametrize(
-    ("error", "exit_code", "code"),
-    [
-        (
-            CommandError(
-                "integration_enable",
-                "stale generation",
-                {"generation": 12, "blockers": [{"code": "stale"}]},
-            ),
-            1,
-            "command_error",
-        ),
-        (ScopeDeniedError("integration_enable", "LOCAL authority required"), 4, "out_of_scope"),
-    ],
-)
-def test_integration_errors_keep_structured_details_and_authorization_exit(error, exit_code, code):
+
+
+
+
+
+
+@pytest.mark.parametrize("command", [
+    "rebind-repair", "rebind-detached-repair", "recover-preserved-repair",
+    "resolve-candidate-member", "recover-candidate-member", "development-engine-transfer",
+])
+def test_retired_recovery_commands_never_reach_transport(command):
     from src.cli.app import cli
 
-    client = _client(error)
+    client = _client({"outcome": "rebound"})
     with patch("src.cli.integration._get_client", return_value=client):
-        result = CliRunner().invoke(
-            cli,
-            [
-                "--json",
-                "integration",
-                "enable",
-                "p",
-                "--mode",
-                "train",
-                "--expected-generation",
-                "11",
-                "--reason",
-                "roll out",
-            ],
-        )
+        result = CliRunner().invoke(cli, ["integration", command, "--help"])
 
-    assert result.exit_code == exit_code, result.output
-    error_payload = json.loads(result.output)["error"]
-    assert error_payload["code"] == code
-    if isinstance(error, ScopeDeniedError):
-        assert "LOCAL authority" in error_payload["message"]
-    else:
-        assert error_payload["details"] == error.details
-
-
-def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
-    from src.cli.app import cli
-    from src.cli.auto_commands import HANDCRAFTED_COVERAGE
-
-    expected = {
-        "integration_status",
-        "integration_flush",
-        "integration_enable",
-        "integration_waive_history",
-        "integration_resume",
-        "integration_abort",
-        "integration_retry_cleanup",
-        "integration_resolve_candidate_member",
-    }
-    assert expected <= HANDCRAFTED_COVERAGE
-
-    result = CliRunner().invoke(cli, ["integration", "--help"])
-    assert result.exit_code == 0, result.output
-    for command in (
-        "status",
-        "flush",
-        "enable",
-        "waive-history",
-        "resume",
-        "abort",
-        "retry-cleanup",
-        "resolve-candidate-member",
-    ):
-        assert command in result.output
-    assert "probe" not in result.output
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["--mode", "train", "--interval-seconds", "0"],
-        ["--mode", "train", "--interval-seconds", "-1"],
-        ["--mode", "observe", "--interval-seconds", "60"],
-    ],
-)
-def test_integration_enable_rejects_invalid_interval_before_transport(argv):
-    from src.cli.app import cli
-
-    client = _client({"outcome": "enabled"})
-    with patch("src.cli.integration._get_client", return_value=client):
-        result = CliRunner().invoke(
-            cli,
-            [
-                "integration",
-                "enable",
-                "p",
-                *argv,
-                "--expected-generation",
-                "0",
-                "--reason",
-                "cadence",
-            ],
-        )
-
-    assert result.exit_code == 2, result.output
-    assert "interval" in result.output.lower()
-    client.execute.assert_not_awaited()
+    assert result.exit_code == 2
+    assert "No such command" in result.output
+    client.execute.assert_not_called()
 
 
 def test_operator_guide_uses_only_real_operational_commands_and_options():
@@ -277,14 +428,7 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
     ).read_text()
     required = (
         "aq integration status PROJECT_ID",
-        "aq integration flush PROJECT_ID",
-        "aq integration enable PROJECT_ID --mode observe --expected-generation GENERATION --reason REASON",
-        "aq integration enable PROJECT_ID --mode train --interval-seconds SECONDS --expected-generation GENERATION --reason REASON",
-        "aq integration waive-history PROJECT_ID --reason REASON --blocker-digest BLOCKER_DIGEST",
-        "aq integration resume OPERATION_ID",
-        "aq integration abort OPERATION_ID --reason REASON",
-        "aq integration retry-cleanup BATCH_ID",
-        "aq integration resolve-candidate-member",
+        "aq integration seal-now",
         "aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON",
         "aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON",
     )
@@ -294,13 +438,301 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
 
     for leaf in (
         "status",
-        "flush",
-        "enable",
-        "waive-history",
-        "resume",
-        "abort",
-        "retry-cleanup",
-        "resolve-candidate-member",
+        "seal-now",
+        "pause-batch",
+        "resume-batch",
     ):
         result = CliRunner().invoke(cli, ["integration", leaf, "--help"])
         assert result.exit_code == 0, (leaf, result.output)
+
+
+def test_no_code_receipts_are_documented_and_granted_to_supervisors():
+    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
+    from src.commands.integration_commands import _SUPERVISOR_REDRIVE_CAPABILITIES
+    from src.profiles.parser import parse_profile
+
+    root = Path(__file__).parents[1]
+    guide = (root / "docs/guides/hierarchical-integration-trains.md").read_text()
+    paragraph = guide.split("The controls keyed by a task, operation, batch or reservation")[1]
+    paragraph = paragraph.split("\n\n")[0]
+    assert "`record-noop`" in paragraph
+    assert "global supervisor" in paragraph
+    section = guide.split("### No-code child receipts")[1].split("\n## ")[0]
+    assert "live elevated named supervisor" in section
+    assert "ordinary worker" in section
+    supervisor = parse_profile((root / "src/profiles/defaults/supervisor/profile.md").read_text())
+    assert supervisor.errors == []
+    assert "integration_record_noop" in supervisor.capabilities["aq_commands"]
+    assert "integration_record_noop" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_record_noop" in _SUPERVISOR_REDRIVE_CAPABILITIES
+
+
+
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["redrive-root", "r1", "--apply", "--reason", "stuck"],
+        ["redrive-root", "r1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["redrive-child", "c1", "--apply", "--reason", "stuck"],
+        ["redrive-child", "c1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["reopen-collection", "p1", "--apply", "--reason", "stuck"],
+        ["reopen-collection", "p1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    ),
+)
+def test_redrive_root_apply_needs_the_head_and_a_reason(argv):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "opened"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv])
+
+    assert result.exit_code != 0
+    assert "--apply requires --head and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
+
+
+
+
+@pytest.mark.parametrize("options", [[], ["--reason", "resume"], ["--expected-version", "1"],
+                                     ["--expected-version", "1", "--reason", "   "]])
+def test_release_held_gate_apply_requires_exact_version_and_reason(options):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "release-held-gate", "subject", "gate",
+                                          "--apply", *options])
+    assert result.exit_code != 0
+    assert "--apply needs --expected-version and a nonblank --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "expected", (["root"], ["root:-1"], ["root:seven"], ["root:7", "root:9"])
+)
+def test_every_engine_transfer_rejects_an_unusable_expected_subject(expected):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "preview"})
+    argv = ["integration", "engine-transfer", "repo", "--engine", "reconciler"]
+    for item in expected:
+        argv += ["--expected-subject", item]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code != 0
+    assert "SUBJECT_ID:VERSION" in result.output
+    client.execute.assert_not_awaited()
+
+
+def test_integration_help_excludes_retired_controls():
+    from src.cli.app import cli
+    result = CliRunner().invoke(cli, ["integration", "--help"])
+    assert result.exit_code == 0, result.output
+    commands = cli.commands["integration"].commands
+    for retired in ("flush", "enable", "resume", "abort", "retry-cleanup",
+                    "develop", "adopt", "onboard-train", "shadow-report",
+                    "adopt-legacy-deliveries", "bind-legacy-repositories", "materialize-root",
+                    "resolve-candidate-member", "recover-candidate-member", "rebind-repair",
+                    "rebind-detached-repair", "recover-preserved-repair", "recover-parent-head",
+                    "build-candidate", "promote-main", "seal", "schedule-due",
+                    "resolve-conflict", "push-conflict-resolution", "reconcile-promotion",
+                    "development-engine-transfer"):
+        assert retired not in commands
+    assert {"status", "engine-transfer", "release-held-gate", "pause-batch", "resume-batch",
+            "eject", "seal-now"} <= commands.keys()
+
+
+@pytest.mark.parametrize("argv,command,identity", [
+    (["pause-batch", "batch"], "integration_pause_batch", {"batch_id": "batch"}),
+    (["resume-batch", "batch"], "integration_resume_batch", {"batch_id": "batch"}),
+    (["eject", "--batch", "batch", "--task", "task"], "integration_eject",
+     {"batch_id": "batch", "task_id": "task"}),
+    (["seal-now", "--project", "p"], "integration_seal_now", {"project_id": "p"}),
+])
+@pytest.mark.parametrize("apply", [False, True])
+def test_train_controls_preview_and_apply_transport(argv, command, identity, apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    extra = ["--apply"] if apply else ["--dry-run"]
+    if command == "integration_eject" and apply:
+        extra += ["--reason", "isolate member"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv, *extra])
+    assert result.exit_code == 0, result.output
+    called, values = client.execute.call_args.args
+    assert called == command
+    assert all(values[key] == value for key, value in identity.items())
+    assert values["dry_run"] is not apply
+
+
+def test_train_eject_apply_requires_reason_before_transport():
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "eject", "--batch", "b",
+                                         "--task", "t", "--apply"])
+    assert result.exit_code == 2
+    client.execute.assert_not_awaited()
+
+
+def test_train_brief_status_keeps_batch_intent_and_ejection_disposition():
+    from src.cli.app import cli
+
+    response = {"outcome": "status", "project_id": "p", "batches": [
+        {"id": "old", "intent": "aborted", "member_disposition": "pending"},
+        {"id": "new", "intent": "paused", "member_disposition": "paused"},
+    ]}
+    client = _client(response)
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "status", "p", "--json", "--brief"])
+    assert result.exit_code == 0
+    assert json.loads(result.output)["data"]["batches"] == response["batches"]
+
+
+@pytest.mark.parametrize("incident", [[], ["--incident-id", "abc"]])
+def test_clear_retained_recovery_names_the_project_and_optional_incident(incident):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "cleared"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "clear-retained-recovery",
+                                         "--project-id", "p", *incident])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == (
+        "integration_clear_retained_recovery",
+        {"project_id": "p", **({"incident_id": "abc"} if incident else {})},
+    )
+
+
+def test_delegate_publication_preserves_explicit_grantee_and_fences():
+    from src.cli.app import cli
+
+    args = dict(id="grant", project_id="p", repository_id="r", task_id="t", session_id="worker",
+                claim_epoch=7, target_branch="aq/epic", expected_target_oid="a" * 40,
+                expected_owner_fence=3, ttl_seconds=60, reason="aggregate")
+    argv = ["integration", "delegate-publication"]
+    for key, value in args.items():
+        argv += ["--" + key.replace("_", "-"), str(value)]
+    client = _client({"success": True, "outcome": "issued", "delegation_id": "grant"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [*argv, "--json"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_delegate_publication", args)
+
+
+def test_revoke_publication_uses_native_control():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "revoked"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "revoke-publication", "--id", "grant",
+                                         "--project-id", "p", "--reason", "cancel"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_revoke_publication", dict(
+        id="grant", project_id="p", reason="cancel",
+    ))
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_repair_target_cli_preserves_exact_preview_heads(apply):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "repairing" if apply else "preview"})
+    args = ["integration", "repair-target", "batch", "--candidate-sha", "a" * 40,
+            "--target-sha", "b" * 40, "--reason", "Repair sealed target"]
+    if apply:
+        args.append("--apply")
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_repair_target", {
+        "batch_id": "batch", "expected_candidate_sha": "a" * 40,
+        "expected_target_sha": "b" * 40, "reason": "Repair sealed target", "dry_run": not apply,
+    })
+
+
+@pytest.mark.parametrize("options", [[], ["--candidate-sha", "a" * 40],
+                                     ["--target-sha", "b" * 40, "--reason", "Repair"]])
+def test_repair_target_cli_apply_requires_both_heads_and_reason(options):
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "repair-target", "batch", "--apply",
+                                          *options])
+    assert result.exit_code == 2
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_redrive_child_obsolete_disposition_forwards_pinned_proof(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "would_advance"})
+    argv = ["integration", "redrive-child", "epic.1", "--dispose-obsolete",
+            "--superseded-by", "c" * 40]
+    if apply:
+        argv += ["--apply", "--head", "a" * 40, "--parent-head", "b" * 40,
+                 "--reason", "parent removed the path"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_redrive_child"
+    assert args["dispose_obsolete"] is True
+    assert args["superseded_by"] == "c" * 40
+    assert args["dry_run"] is not apply
+    if apply:
+        assert args["expected_parent_head_sha"] == "b" * 40
+
+
+@pytest.mark.parametrize("options", [
+    {}, {"superseded_by": "a"},
+    {"superseded_by": "a" * 40, "adopt_source": True},
+    {"superseded_by": "a" * 40, "dry_run": False,
+     "expected_head_sha": "b" * 40, "reason": "superseded"},
+])
+def test_obsolete_disposition_requires_exact_proof_and_both_apply_heads(options):
+    from pydantic import ValidationError
+
+    from src.commands.contracts.integration import IntegrationRedriveChildArgs
+
+    with pytest.raises(ValidationError):
+        IntegrationRedriveChildArgs(task_id="child", dispose_obsolete=True, **options)
+
+
+@pytest.mark.parametrize("extra", [[], ["--head", "a" * 40], ["--reason", "adopt"]])
+def test_fast_forward_pr_apply_requires_head_and_reason(extra):
+    from src.cli.app import cli
+
+    client = _client({"success": True})
+    argv = ["integration", "fast-forward-pr", "--task-id", "repair", "--pr", "41", "--apply"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + extra)
+    assert result.exit_code == 2
+    assert "--apply requires --head and --reason" in result.output
+    client.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_fast_forward_pr_defaults_to_a_dry_run(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "would_publish"})
+    argv = ["integration", "fast-forward-pr", "--task-id", "repair", "--pr", "41"]
+    if apply:
+        argv += ["--apply", "--head", "a" * 40, "--reason", "adopt repair"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_fast_forward_pr"
+    assert args == {"task_id": "repair", "pr_number": 41, "dry_run": not apply,
+                    **({"expected_head_sha": "a" * 40, "reason": "adopt repair"} if apply else {})}

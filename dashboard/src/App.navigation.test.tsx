@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Outlet, useLocation, useParams, useNavigate } from "react-router-dom";
 import { useShellPaneStore } from "./panes/store";
 import { useRightSurface } from "./shell/useRightSurface";
 import App from "./App";
 import ActivityDrawer from "./shell/ActivityDrawer";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { SHELL_PREFERENCE_DEFAULTS, type ShellPrefs } from "./shell/useShellPreferences";
+import {
+  createFakeDashboardStateServer,
+  TestDashboardState,
+  testQueryClient,
+  type FakeDashboardStateServer,
+} from "./testUtils/dashboardState";
 
 const actions = vi.hoisted(() => ({ pause: vi.fn(), resume: vi.fn(), remove: vi.fn() }));
+const capabilities = vi.hoisted(() => ({ knowledgeAvailable: false }));
 const projects = [{ id: "p1", name: "First project" }, { id: "p2", name: "Second project" }];
 const initialProjects = projects.map((project) => ({ ...project }));
 vi.mock("./panes/registry", () => ({ PANE_REGISTRY: {
@@ -22,17 +31,42 @@ vi.mock("./api/hooks", () => ({
   usePauseProject: () => ({ mutate: actions.pause, isPending: false }),
   useResumeProject: () => ({ mutate: actions.resume, isPending: false }),
   useDeleteProject: () => ({ mutateAsync: actions.remove, isPending: false }),
+  useTask: (id: string) => ({ data: { id, title: `Task ${id}` }, isError: false, refetch: vi.fn() }),
 }));
-vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {} }));
+vi.mock("./api/reviews", () => ({
+  useWaitingReviewCount: () => 0,
+  useReviews: () => ({ data: { reviews: [] } }),
+}));
+vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {}, useRawEventSubscription: () => {} }));
 vi.mock("./panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("./shell/AgentFlock", () => ({ default: () => <div>Global flock sidebar</div> }));
 vi.mock("./shell/TopBar", () => ({ default: () => null }));
+// The outage banner polls provider availability; this suite is about routing.
+vi.mock("./shell/ProviderAvailabilityBanner", () => ({ default: () => null }));
 vi.mock("./shell/RightSurface", () => ({ default: () => <PaneProbe /> }));
-vi.mock("./shell/palette/Palette", () => ({ Palette: () => null }));
+vi.mock("./shell/palette/Palette", async () => {
+  const { useActions } = await import("./shell/palette/registerActions");
+  return {
+    Palette: () => <>{useActions().map((action) => (
+      <button key={action.id} type="button" onClick={action.run}>{action.label}</button>
+    ))}</>,
+  };
+});
 vi.mock("./shell/hotkeys/CheatSheetModal", () => ({ default: () => null }));
+// The focus shell has no pane surface; its banner is on every focus route, so it
+// carries the pane-store probe there (inside App's ShellPaneProvider).
+vi.mock("./components/ConnectionBanner", async (importOriginal) => {
+  const { default: Banner } = await importOriginal<typeof import("./components/ConnectionBanner")>();
+  return { default: () => <><Banner /><PaneState /></> };
+});
 vi.mock("./pages/command-center/Graph", () => ({ default: () => <WorkspaceProbe title="Command Center graph" /> }));
-vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Command Center tasks" /> }));
-vi.mock("./pages/command-center/TaskWorkspace", () => ({ TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</> }));
+vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Tasks & Knowledge" /> }));
+vi.mock("./pages/command-center/TaskWorkspace", () => ({
+  TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  useTaskWorkspace: () => capabilities,
+}));
+vi.mock("./pages/knowledge/KnowledgeRoute", () => ({ default: () => <WorkspaceProbe title="Knowledge records" /> }));
+vi.mock("./pages/records/RecordsRoute", () => ({ default: () => <WorkspaceProbe title="Tasks & Knowledge" /> }));
 vi.mock("./pages/command-center/TaskToolbar", () => ({ default: () => <div role="toolbar" aria-label="Task controls" /> }));
 vi.mock("./pages/project/Overview", () => ({ default: () => <WorkspaceProbe title="Project overview" /> }));
 vi.mock("./pages/project/Workspaces", () => ({ default: () => <WorkspaceProbe title="Project workspaces" /> }));
@@ -46,7 +80,16 @@ vi.mock("./pages/system/Playbooks", () => ({ default: () => <h1>Settings playboo
 vi.mock("./pages/system/Profiles", () => ({ default: () => <h1>Settings profiles</h1> }));
 vi.mock("./pages/system/Config", () => ({ default: () => <h1>Settings config</h1> }));
 vi.mock("./pages/settings/IntelligenceClassesStub", () => ({ default: () => <h1>Settings intelligence classes</h1> }));
+vi.mock("./pages/PlanPage", () => ({ default: function PlanStub() { return <h1>Plan for {useParams().taskId}</h1>; } }));
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
+vi.mock("./pages/reports/MorningReportPage", () => ({ default: () => <h1>Morning report read page</h1> }));
+vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
+// The focus home's sections read agents, pools, usage and task graphs; this
+// suite is about routing, so the home renders its chrome around empty sections.
+vi.mock("./pages/focus/ActiveSessions", () => ({ default: () => null }));
+vi.mock("./pages/metrics/ProviderUsage", () => ({ default: () => null }));
+vi.mock("./pages/focus/FocusTaskList", () => ({ default: () => null }));
+vi.mock("./panes/task-detail/TaskDetailBody", () => ({ default: () => <p>Task detail body</p> }));
 
 function WorkspaceProbe({ title }: { title: string }) {
   const { projectId } = useParams();
@@ -68,19 +111,39 @@ function PaneProbe() {
     <button onClick={() => pane.open("contextual-settings", { subject: "project", subjectId: "p1" })}>Open settings pane</button></>;
 }
 
+function PaneState() {
+  return <output aria-label="Pane state">{useShellPaneStore().state.kind}</output>;
+}
+
 function Location() {
   const location = useLocation();
   return <output aria-label="Current location">{location.pathname}{location.search}</output>;
 }
 
+let server: FakeDashboardStateServer;
+
 function renderApp(path: string) {
-  return render(<MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>);
+  return render(
+    <QueryClientProvider client={testQueryClient()}>
+      <TestDashboardState server={server}>
+        <MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>
+      </TestDashboardState>
+    </QueryClientProvider>,
+  );
 }
+
+it("opens the plan deep link without redirecting into the command center", async () => {
+  renderApp("/plans/solid-grove.13");
+  expect(await screen.findByRole("heading", { name: "Plan for solid-grove.13" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Current location")).toHaveTextContent("/plans/solid-grove.13");
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
+  capabilities.knowledgeAvailable = false;
+  server = createFakeDashboardStateServer();
+  delete document.documentElement.dataset.theme;
   projects.splice(0, projects.length, ...initialProjects.map((project) => ({ ...project })));
-  window.localStorage.clear();
   actions.remove.mockImplementation(async ({ project_id }: { project_id: string }) => {
     const index = projects.findIndex((project) => project.id === project_id);
     if (index >= 0) projects.splice(index, 1);
@@ -90,33 +153,70 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
+  it("keeps the combined tab available before knowledge activation", async () => {
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    const tabs = screen.getByRole("navigation", { name: "Command Center views" });
+    expect(tabs).toHaveTextContent("Tasks & Knowledge");
+    expect(within(tabs).queryByRole("link", { name: "Tasks" })).toBeNull();
+    expect(within(tabs).queryByRole("link", { name: "Knowledge" })).toBeNull();
+    expect(tabs).not.toHaveTextContent("All records");
+  });
+
+  it("opens the opt-in All records route and preserves its URL selection", async () => {
+    capabilities.knowledgeAvailable = true;
+    renderApp("/projects/p1/records?kind=all&recordKind=knowledge&record=finding&revision=exact&view=graph");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByRole("link", { name: "Tasks & Knowledge" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "Knowledge" })).toBeNull();
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("record=finding&revision=exact&view=graph");
+    expect(screen.queryByRole("toolbar", { name: "Task controls" })).toBeNull();
+  });
+
+  it("mounts the separate supervisor conversation route and retains the thread URL", async () => {
+    renderApp("/conversations?conversation=conv-one");
+    await screen.findByRole("heading", { name: "Former Home chat" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/conversations?conversation=conv-one");
+  });
+
+  it("keeps the morning report deep link on its read page", async () => {
+    renderApp("/reports/morning-2026-09-25");
+    expect(await screen.findByRole("heading", { name: "Morning report read page" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/reports/morning-2026-09-25");
+  });
+
+  it("routes the Reviews nav destination", async () => {
+    renderApp("/reviews");
+    expect(await screen.findByRole("heading", { name: "Reviews inbox" })).toBeInTheDocument();
+  });
+
   it("restores a task pane after returning from a session and permits closing it", async () => {
     renderApp("/agents");
     await screen.findByRole("heading", { name: "Agent flock" });
     await userEvent.click(screen.getByRole("button", { name: "Return from session history" }));
-    await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=kept");
-    expect(screen.getByLabelText("Current pane")).toHaveTextContent('"taskId":"task-p1"');
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks-knowledge?q=kept");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("task=task-p1");
     await userEvent.click(screen.getByRole("button", { name: "Close task pane" }));
     expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
   });
 
   it.each([
     ["/system", "/projects/p1/graph"],
-    ["/tasks", "/projects/p1/tasks"],
+    ["/tasks", "/projects/p1/tasks-knowledge"],
     ["/playbooks", "/settings/playbooks"],
     ["/system/playbooks", "/settings/playbooks"],
     ["/system/profiles", "/settings/profiles"],
     ["/projects/p1/profiles", "/projects/p1/config"],
     ["/system/config", "/settings/config"],
     ["/system/intelligence-classes", "/settings/intelligence-classes"],
-    ["/work", "/projects/p1/tasks"],
-    ["/work/tasks", "/projects/p1/tasks"],
+    ["/work", "/projects/p1/tasks-knowledge"],
+    ["/work/tasks", "/projects/p1/tasks-knowledge"],
     ["/work/agents", "/agents"],
     ["/work/sessions", "/agents"],
   ])("redirects legacy route %s to %s while preserving filters", async (from, to) => {
     renderApp(from + "?q=needle&status=READY");
-    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(to + "?q=needle&status=READY"));
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(to + "?q=needle&status=READY" + (to.endsWith("tasks-knowledge") ? "&kind=task" : "")));
   });
 
   it("keeps profile overrides under Config rather than a separate project tab", async () => {
@@ -141,17 +241,17 @@ describe("Dashboard navigation", () => {
     ["/work/gates", "No open gates."],
   ])("routes legacy %s to tasks and opens the requested activity tab", async (path, content) => {
     renderApp(path + "?q=needle");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=needle");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks-knowledge?q=needle&kind=task");
     expect(screen.getByLabelText("Current surface")).toHaveTextContent("drawer");
     expect(await screen.findByText(content)).toBeInTheDocument();
   });
 
   it("requires a project for bare Command Center routes and preserves filters", async () => {
-    renderApp("/projects/p1/tasks?q=needle&status=READY");
-    await screen.findByRole("heading", { name: "Command Center tasks" });
+    renderApp("/projects/p1/tasks-knowledge?q=needle&status=READY");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
     expect(screen.getByLabelText("Current location")).toHaveTextContent(
-      "/projects/p1/tasks?q=needle&status=READY",
+      "/projects/p1/tasks-knowledge?q=needle&status=READY",
     );
     expect(screen.queryByRole("link", { name: "All projects" })).not.toBeInTheDocument();
   });
@@ -173,7 +273,7 @@ describe("Dashboard navigation", () => {
     expect(projectsToggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "First project" })).toBeInTheDocument();
     await userEvent.click(projectsToggle);
-    expect(projectsToggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(projectsToggle).toHaveAttribute("aria-expanded", "false"));
     expect(screen.queryByRole("link", { name: "First project" })).not.toBeInTheDocument();
   });
 
@@ -189,7 +289,7 @@ describe("Dashboard navigation", () => {
     renderApp("/command-center/graph");
     await screen.findByRole("heading", { name: "Command Center graph" });
     expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute("href", "/projects/p1/graph");
-    expect(screen.getByRole("link", { name: "Tasks" })).toHaveAttribute("href", "/projects/p1/tasks");
+    expect(screen.getByRole("link", { name: "Tasks & Knowledge" })).toHaveAttribute("href", "/projects/p1/tasks-knowledge");
     expect(screen.queryByRole("link", { name: "Agents" })).not.toBeInTheDocument();
   });
 
@@ -229,6 +329,12 @@ describe("Dashboard navigation", () => {
 
 
 describe("Shared project workspace navigation", () => {
+  it.each(["task=t1", "record=k1&recordKind=knowledge&revision=old"])("drops selection %s when switching projects and keeps filters", async (selection) => {
+    renderApp(`/projects/p1/tasks-knowledge?q=needle&status=READY&${selection}`);
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    await userEvent.click(screen.getByRole("link", { name: "Second project" }));
+    expect(screen.getByLabelText("Current location").textContent).toBe("/projects/p2/tasks-knowledge?q=needle&status=READY");
+  });
   it("uses the same Graph/Tasks tabs and controls for the selected sidebar project", async () => {
     renderApp("/projects/p1/graph?q=needle&status=READY&completed=1");
     await screen.findByRole("heading", { name: "Command Center graph" });
@@ -237,12 +343,12 @@ describe("Shared project workspace navigation", () => {
     expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("toolbar", { name: "Task controls" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Chat" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("link", { name: "Tasks" }));
-    await screen.findByRole("heading", { name: "Command Center tasks" });
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks?q=needle&status=READY&completed=1");
+    await userEvent.click(screen.getByRole("link", { name: "Tasks & Knowledge" }));
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/tasks-knowledge?q=needle&status=READY&completed=1");
     await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Workspace project")).toHaveTextContent("p2");
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/tasks?q=needle&status=READY&completed=1");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/tasks-knowledge?q=needle&status=READY&completed=1");
   });
 
   it("keeps resource tabs scoped and returns to the selected project tab", async () => {
@@ -283,8 +389,8 @@ describe("Shared project workspace navigation", () => {
     renderApp("/projects/p1/graph");
     await screen.findByRole("heading", { name: "Command Center graph" });
     await userEvent.click(screen.getByRole("button", { name: "Open task pane" }));
-    await userEvent.click(screen.getByRole("link", { name: "Tasks" }));
-    expect(screen.getByLabelText("Current pane")).toHaveTextContent("task-p1");
+    await userEvent.click(screen.getByRole("link", { name: "Tasks & Knowledge" }));
+    expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
     await userEvent.click(screen.getByRole("link", { name: "Second project" }));
     expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"closed"');
     await userEvent.click(screen.getByRole("button", { name: "Open settings pane" }));
@@ -315,3 +421,178 @@ describe("Shared project workspace navigation", () => {
     await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph"));
   });
 });
+
+describe("Roaming shell preferences", () => {
+  const saved = (patch: Partial<ShellPrefs>): ShellPrefs => ({ ...SHELL_PREFERENCE_DEFAULTS, ...patch });
+  const savedSurface = (patch: Partial<ShellPrefs["right_surface"]>) =>
+    saved({ right_surface: { ...SHELL_PREFERENCE_DEFAULTS.right_surface, ...patch } });
+
+  it("returns to the user's last project from the server", async () => {
+    server.write("shell_preferences", saved({ last_project_id: "p2" }));
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/graph");
+  });
+
+  it("follows the user's last project to another dashboard", async () => {
+    const first = renderApp("/projects/p2/tasks-knowledge");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({ last_project_id: "p2" }));
+    first.unmount();
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/graph");
+  });
+
+  it("falls back to the first project when the remembered one is gone and repairs the preference", async () => {
+    server.write("shell_preferences", saved({ last_project_id: "deleted-project" }));
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph");
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({ last_project_id: "p1" }));
+  });
+
+  it("keeps the Projects disclosure the user chose on every dashboard", async () => {
+    const first = renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    await userEvent.click(screen.getByRole("button", { name: "Projects" }));
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({ projects_section_open: false }));
+    first.unmount();
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false"));
+  });
+
+  it("reopens the activity drawer on the tab the user last left open", async () => {
+    server.write("shell_preferences", savedSurface({ kind: "drawer", activity_tab: "events" }));
+    renderApp("/projects/p1/tasks-knowledge");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    await waitFor(() => expect(screen.getByLabelText("Current surface")).toHaveTextContent("drawer"));
+    expect(await screen.findByText("Waiting for events…")).toBeInTheDocument();
+  });
+
+  it("lets a one-shot ?openDrawer= command win over the saved tab, then saves it", async () => {
+    server.write("shell_preferences", savedSurface({ kind: "drawer", activity_tab: "events" }));
+    renderApp("/system/gates");
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    expect(await screen.findByText("No open gates.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({
+        right_surface: { kind: "drawer", activity_tab: "gates" },
+      }));
+    expect(screen.getByLabelText("Current location")).not.toHaveTextContent("openDrawer");
+  });
+
+  it("applies the theme preference and resets every shell preference from the palette", async () => {
+    server.write("shell_preferences", saved({ theme: "light", projects_section_open: false }));
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+    expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(screen.getByRole("button", { name: "Reset shell preferences" }));
+    await waitFor(() => expect(server.document("shell_preferences")).toMatchObject({ exists: false }));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("resolves the system theme and follows operating-system changes", async () => {
+    const originalMatchMedia = window.matchMedia;
+    const media = Object.assign(new EventTarget(), {
+      matches: true,
+      media: "(prefers-color-scheme: light)",
+    });
+    const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation((query) =>
+      query === media.media ? media as unknown as MediaQueryList : originalMatchMedia(query));
+    try {
+      server.write("shell_preferences", saved({ theme: "system" }));
+      renderApp("/projects/p1/graph");
+      await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+      act(() => {
+        media.matches = false;
+        media.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+      });
+      await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it("shows the defaults and keeps navigating when preferences are unavailable", async () => {
+    server.failWith(new Error("API 503: daemon unavailable"));
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph");
+    expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
+  });
+});
+
+describe("focus routes", () => {
+  function renderFocus(path: string) {
+    return render(
+      <QueryClientProvider client={testQueryClient()}>
+        <TestDashboardState server={server}>
+          <MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>
+        </TestDashboardState>
+      </QueryClientProvider>,
+    );
+  }
+  beforeEach(() => {
+    // A desktop left the task pane and a wide surface open (roaming).
+    server.write("shell_preferences", {
+      ...SHELL_PREFERENCE_DEFAULTS,
+      right_surface: { ...SHELL_PREFERENCE_DEFAULTS.right_surface, kind: "pane", width: 760,
+        pane: { view: "task-detail", args: { taskId: "task-p1" } } },
+    });
+  });
+  const puts = () => server.calls.filter((call) => call.op === "put");
+
+  it.each(["/focus", "/focus/tasks/t1", "/focus/sessions/s1", "/focus/reports/r1"])(
+    "%s renders the focus shell, not the rail", async (path) => {
+      renderFocus(path);
+      expect(await screen.findByRole("banner")).toBeInTheDocument();
+      expect(screen.queryByText("Global flock sidebar")).toBeNull();
+    });
+
+  it("never restores or writes the roaming pane on a focus route", async () => {
+    renderFocus("/focus/tasks/t1");
+    await screen.findByRole("link", { name: "Open in full dashboard" });
+    await waitFor(() => expect(server.calls.some((call) => call.op === "list")).toBe(true));
+    await act(async () => { await new Promise((done) => setTimeout(done, 50)); });
+    expect(screen.getByLabelText("Pane state")).toHaveTextContent("closed");
+    expect(puts()).toEqual([]);
+  });
+
+  it("still restores the roaming pane on a desktop route", async () => {
+    renderFocus("/agents");
+    await waitFor(() => expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"open"'));
+  });
+
+  it("Back from a cold deep link, and an unknown focus path, land on the focus home", async () => {
+    renderFocus("/focus/tasks/t1");
+    act(() => screen.getByRole("button", { name: "Back" }).click());
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(/^\/focus$/));
+    cleanup();
+    renderFocus("/focus/nope");
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(/^\/focus$/));
+  });
+});
+
+ describe("retired project tabs", () => {
+  it.each(["tasks", "knowledge", "records"])("redirects %s with its filters and selection", async (tab) => {
+    renderApp(`/projects/p1/${tab}?q=needle&record=finding&revision=exact&status=READY`);
+    await screen.findByRole("heading", { name: "Tasks & Knowledge" });
+    const location = screen.getByLabelText("Current location").textContent!;
+    expect(location.startsWith("/projects/p1/tasks-knowledge?")).toBe(true);
+    const params = new URLSearchParams(location.split("?")[1]);
+    expect(params.get("q")).toBe("needle");
+    expect(params.get("status")).toBe("READY");
+    expect(params.get("record")).toBe("finding");
+    expect(params.get("revision")).toBe("exact");
+    if (tab === "knowledge") expect(params.get("recordKind")).toBe("knowledge");
+    if (tab !== "records") expect(params.get("kind")).toBe(tab === "tasks" ? "task" : "knowledge");
+  });
+ });

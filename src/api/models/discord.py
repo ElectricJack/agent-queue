@@ -1,4 +1,4 @@
-"""Response models for Discord channel and thread housekeeping."""
+"""Response models for explicit Discord channel housekeeping."""
 
 from __future__ import annotations
 
@@ -25,32 +25,6 @@ class DiscordPurgeChannelResponse(BaseModel):
     note: str | None = None
 
 
-class DiscordCleanupThreadsResponse(BaseModel):
-    """Result of ``discord_cleanup_threads``.
-
-    ``skipped_live`` is reported rather than inferred: the useful question
-    after a cleanup is "what did it leave alone, and why", and the answer is
-    threads whose task is still running.
-    """
-
-    success: bool = True
-    channel: str
-    dry_run: bool = False
-    mode: str | None = None
-    threads_found: int | None = None
-    would_archive: int | None = None
-    would_delete: int | None = None
-    archived: int | None = None
-    deleted: int | None = None
-    failed: int | None = None
-    skipped_live: int = 0
-    note: str | None = None
-    #: Set when archived threads could not be listed — the counts above then
-    #: describe only the active ones.
-    warning: str | None = None
-
-
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "discord_purge_channel": DiscordPurgeChannelResponse,
-    "discord_cleanup_threads": DiscordCleanupThreadsResponse,
 }
