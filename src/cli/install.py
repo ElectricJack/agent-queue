@@ -1,0 +1,906 @@
+"""``aq install`` — the common installer interface.
+
+This command runs before a daemon exists, so unlike almost every other ``aq``
+command it does not talk to the REST API: it builds a step registry, runs
+:class:`src.install.engine.InstallEngine` in-process and prints the result.
+
+The published contract — flags, JSON payload and exit codes — is
+``docs/reference/cli/install.md``; the design it implements is
+``docs/plans/install-onboarding/contract.md``.  Everything the command knows
+about *what* to install comes from the registry, so a platform or provider
+adapter is added by registering steps, not by editing this file.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from collections.abc import Sequence
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import click
+from rich.console import Console
+from rich.markup import escape
+
+from src.install import (
+    InstallEngine,
+    InstallOptions,
+    InstallOutcome,
+    InstallResult,
+    LifecycleMode,
+    PlanAction,
+    ProgressEvent,
+    StepRegistry,
+    StepSpec,
+    StepState,
+    build_registry,
+    default_state_path,
+    describe_host,
+    exit_code,
+)
+from src.install.results import RESULT_SCHEMA_VERSION
+from src.install.wizard import (
+    OnboardingSummary,
+    Question,
+    capabilities_for,
+    default_project_folder,
+    summarize,
+)
+
+from .app import cli, console
+
+#: Recognised keys in the ``--config`` install input file.  An unknown key is
+#: a usage error rather than a silent no-op: an unattended run that quietly
+#: ignored a misspelled ``capabilities:`` would install the wrong thing.
+_CONFIG_KEYS = frozenset({"version", "capabilities", "approve", "settings"})
+
+_STATE_STYLE = {
+    StepState.SUCCEEDED: ("green", "OK"),
+    StepState.SKIPPED: ("dim", "--"),
+    StepState.NEEDS_USER: ("yellow", "!!"),
+    StepState.FAILED: ("bold red", "XX"),
+}
+
+_OUTCOME_STYLE = {
+    InstallOutcome.READY: "bold green",
+    InstallOutcome.NEEDS_USER: "bold yellow",
+    InstallOutcome.INVALID_INPUT: "bold red",
+    InstallOutcome.UNSUPPORTED_HOST: "bold red",
+    InstallOutcome.FAILED: "bold red",
+}
+
+
+class InstallInputError(click.ClickException):
+    """A bad flag or input file — reported as ``invalid_input``, not a crash."""
+
+    exit_code = exit_code(InstallOutcome.INVALID_INPUT)
+
+
+def installer_version() -> str:
+    """The version of the installer that is running."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version("agent-queue")
+    except PackageNotFoundError:  # pragma: no cover - source checkout without metadata
+        from . import __version__
+
+        return __version__
+    except Exception:  # noqa: BLE001 - pragma: no cover; version is never fatal
+        return "unknown"
+
+
+def load_install_input(path: Path) -> dict[str, Any]:
+    """Read and validate the unattended install input file.
+
+    YAML or JSON — a caller that generates the file from a script should not
+    have to depend on a YAML writer.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise InstallInputError(f"cannot read install input {path}: {error}") from error
+    try:
+        import yaml
+
+        payload = yaml.safe_load(text)
+    except Exception as error:
+        raise InstallInputError(f"install input {path} is not valid YAML/JSON: {error}") from error
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise InstallInputError(f"install input {path} must be a mapping at the top level")
+    unknown = sorted(set(payload) - _CONFIG_KEYS)
+    if unknown:
+        raise InstallInputError(
+            f"install input {path} has unknown key(s): {', '.join(unknown)} "
+            f"(recognised: {', '.join(sorted(_CONFIG_KEYS))})"
+        )
+    version = payload.get("version", 1)
+    if version not in (1, "1"):
+        raise InstallInputError(
+            f"install input {path} declares version {version}; this installer reads version 1"
+        )
+    for key in ("capabilities", "approve"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, list):
+            raise InstallInputError(f"install input {path}: '{key}' must be a list")
+    settings = payload.get("settings")
+    if settings is not None and not isinstance(settings, dict):
+        raise InstallInputError(f"install input {path}: 'settings' must be a mapping")
+    return payload
+
+
+def build_options(
+    registry: StepRegistry,
+    *,
+    interactive: bool,
+    dry_run: bool,
+    resume: bool,
+    fresh: bool,
+    restart_from: str | None,
+    capabilities: tuple[str, ...],
+    approve: tuple[str, ...],
+    assume_yes: bool,
+    config_path: Path | None,
+    state_path: Path | None,
+    target_version: str | None = None,
+    mode: LifecycleMode = LifecycleMode.INSTALL,
+    git_name: str | None = None,
+    git_email: str | None = None,
+) -> InstallOptions:
+    """Fold flags and the optional input file into one validated options value.
+
+    Flags win over the file: a script that passes both is asking for an
+    override, and silently preferring the file would make the override
+    invisible.  ``--git-name``/``--git-email`` therefore replace
+    ``settings.git_identity`` as a pair.
+    """
+    payload = load_install_input(config_path) if config_path else {}
+    settings = _git_identity_settings(
+        dict(payload.get("settings") or {}), git_name=git_name, git_email=git_email
+    )
+    selected = list(payload.get("capabilities") or []) + list(capabilities)
+    approved = list(payload.get("approve") or []) + list(approve)
+    if assume_yes:
+        approved.append("*")
+
+    known = set(registry.capabilities())
+    unknown_caps = sorted({str(name) for name in selected} - known)
+    if unknown_caps:
+        raise InstallInputError(
+            f"unknown capability: {', '.join(unknown_caps)}"
+            + (f" (available: {', '.join(sorted(known))})" if known else "")
+        )
+    unknown_steps = sorted({str(name) for name in approved if name != "*"} - set(registry.ids()))
+    if unknown_steps:
+        raise InstallInputError(f"--approve names unknown step(s): {', '.join(unknown_steps)}")
+    if restart_from and restart_from not in registry:
+        raise InstallInputError(
+            f"--restart-from names an unknown step: {restart_from} "
+            f"(known steps: {', '.join(registry.ids())})"
+        )
+    if fresh and restart_from:
+        raise InstallInputError("--fresh and --restart-from are mutually exclusive")
+    if fresh and mode.reconciles:
+        # ``--fresh`` starts a new record; repair and upgrade reconcile the
+        # existing one.  Accepting both would silently discard the ownership
+        # record the repair was supposed to act on.
+        raise InstallInputError(f"--fresh and --{mode.value} are mutually exclusive")
+
+    version = installer_version()
+    return InstallOptions(
+        installer_version=version,
+        target_version=target_version or version,
+        interactive=interactive,
+        dry_run=dry_run,
+        resume=resume and not fresh,
+        fresh=fresh,
+        restart_from=restart_from,
+        mode=mode,
+        capabilities=frozenset(str(name) for name in selected),
+        approve=frozenset(str(name) for name in approved),
+        settings=settings,
+        state_path=state_path,
+    )
+
+
+def _git_identity_settings(
+    settings: dict[str, Any], *, git_name: str | None, git_email: str | None
+) -> dict[str, Any]:
+    """Merge ``--git-name``/``--git-email`` into *settings* and validate the result.
+
+    An unusable identity is ``invalid_input`` before anything runs, exactly
+    like an unknown capability: an unattended run that quietly dropped a
+    misspelled email would commit as the fallback identity instead.
+    """
+    from src.install.git_identity import SOURCE_MANUAL, parse_setting
+
+    if (git_name is None) != (git_email is None):
+        raise InstallInputError("--git-name and --git-email must be given together")
+    if git_name is not None:
+        settings["git_identity"] = {"name": git_name, "email": git_email, "source": SOURCE_MANUAL}
+    try:
+        parsed = parse_setting(settings.get("git_identity"))
+    except ValueError as error:
+        raise InstallInputError(f"invalid Git identity: {error}") from error
+    if parsed is None and git_name is not None:
+        raise InstallInputError("--git-name and --git-email must not be empty")
+    return settings
+
+
+def _consent() -> Any:
+    def ask(step: StepSpec) -> bool:
+        # Prompts go to stderr: a caller that combines --interactive with
+        # --json is parsing stdout, and a consent question printed there would
+        # break ``json.loads`` on the first line.
+        return click.confirm(step.consent_prompt or f"{step.title}?", default=True, err=True)
+
+    return ask
+
+
+def _progress(target: Console) -> Any:
+    def report(event: ProgressEvent) -> None:
+        if event.phase == "start":
+            if event.action is PlanAction.WOULD_RUN:
+                target.print(f"[dim][{event.index}/{event.total}][/dim] would run {event.title}")
+            return
+        style, mark = _STATE_STYLE.get(event.state or StepState.SKIPPED, ("dim", "--"))
+        target.print(
+            f"[dim][{event.index}/{event.total}][/dim] [{style}]{mark}[/{style}] {event.title}"
+        )
+
+    return report
+
+
+def ask_questions(questions: Sequence[Question], target: Console) -> dict[str, bool]:
+    """Put the wizard's questions to the operator and collect the answers.
+
+    Questions go to stderr for the same reason consent does: a caller that
+    combines an interactive run with ``--json`` parses stdout, and a prompt
+    printed there would break it.  Every question has a default, so pressing
+    Enter through the list is the supported "just install it" path.
+    """
+    answers: dict[str, bool] = {}
+    if not questions:
+        return answers
+    for question in questions:
+        if question.detail:
+            click.echo(f"  ({question.detail})", err=True)
+        answers[question.id] = click.confirm(
+            f"  {question.prompt}", default=question.default, err=True
+        )
+    click.echo("", err=True)
+    return answers
+
+
+def wizard_questions() -> tuple[Question, ...]:
+    """Build every choice the install makes from what this machine already has.
+
+    The probes are read-only: which harness executables exist, whether a
+    PostgreSQL server answers, and whether graft (or npm to install it) is
+    here.  They decide the *defaults*, never the answers;
+    :func:`src.install.wizard.questions_to_ask` decides which are put to a person.
+    """
+    import shutil
+
+    from src.install.graft import probe_graft
+    from src.install.logins import probe_all
+    from src.install.postgres import PostgresSettings, tcp_open
+    from src.install.providers import user_bin_aware_which
+    from src.install.wizard import question_plan
+
+    settings = PostgresSettings()
+    # The same lookup the graft steps use: npm's user prefix is ~/.local/bin.
+    which = user_bin_aware_which(shutil.which)
+    return question_plan(
+        probes=probe_all(),
+        postgres_reachable=tcp_open(settings.host, settings.port, timeout=1.0),
+        graft=probe_graft(which=which),
+        npm_available=which("npm") is not None,
+    )
+
+
+def _reserved_folders() -> tuple[Path, ...]:
+    """AQ's own directories, which can never be the projects folder."""
+    from src.install.dashboard import source_checkout_root
+    from src.install.onboarding import DEFAULT_WORKSPACE_DIR
+    from src.install.state import default_state_dir
+
+    folders = [default_state_dir(), Path(DEFAULT_WORKSPACE_DIR), Path.home() / ".local"]
+    checkout = source_checkout_root()
+    if checkout is not None:
+        folders.append(checkout)
+    return tuple(folders)
+
+
+def configured_project_roots() -> list[str]:
+    """The project roots the existing configuration already has, if any."""
+    from src.install.onboarding import _read_config, config_path_for
+
+    roots = _read_config(config_path_for()).get("project_roots") or []
+    return [str(root.get("path")) for root in roots if isinstance(root, dict)]
+
+
+def configured_git_identity() -> Any:
+    """The installation's Git identity the existing configuration holds, or ``None``."""
+    from src.install.git_identity import configured_identity
+    from src.install.onboarding import _read_config, config_path_for
+
+    return configured_identity(_read_config(config_path_for()))
+
+
+def git_identity_discovery() -> Any:
+    """Probe ``gh`` and ``git config`` for identity suggestions.
+
+    Read-only, short timeouts, no terminal: a missing, signed-out or offline
+    ``gh`` yields no GitHub suggestion and the person types one instead.
+    """
+    from src.install.git_identity import discover
+
+    return discover()
+
+
+def ask_git_identity() -> Any:
+    """Suggest a commit identity and let the person confirm, edit or skip it.
+
+    Returns the :class:`~src.install.git_identity.Choice`, or ``None`` to set
+    it up later (``aq system config git-identity``).
+    """
+    from src.install.git_identity import interview
+
+    click.echo("  (looking up your GitHub account with gh...)", err=True)
+    return interview(git_identity_discovery())
+
+
+def _git_identity_note(result: InstallResult) -> str | None:
+    """The "not configured" note when this run left the identity unset."""
+    from src.install.git_identity import NOT_CONFIGURED_NOTE
+    from src.install.onboarding import STEP_GIT_IDENTITY
+
+    for step in result.steps:
+        if step.step_id != STEP_GIT_IDENTITY:
+            continue
+        if step.detail.get("configured") is False and "would_set" not in step.detail:
+            return NOT_CONFIGURED_NOTE
+    return None
+
+
+def resolve_project_folder(
+    chosen: Path | None,
+    *,
+    dry_run: bool,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    roots: list[str] | None = None,
+) -> Path | None:
+    """The projects folder this run should record, if any.
+
+    An answer the person gave wins.  When nobody was asked -- a piped bootstrap,
+    ``--non-interactive``, a repair -- and no root is configured yet, the wizard's
+    own default stands in: without it the install finished "ready" and *then*
+    reported that no project root was configured, leaving one manual edit between
+    the operator and their first project.  A configured root is left alone, and a
+    dry run proposes nothing it would not also write.
+    """
+    if chosen is not None:
+        return chosen
+    if dry_run:
+        return None
+    if roots is None:
+        roots = configured_project_roots()
+    if roots:
+        return None
+    return default_project_folder(
+        cwd or Path.cwd(), home or Path.home(), reserved=_reserved_folders()
+    )
+
+
+def ask_project_folder() -> Path:
+    """Ask where the code projects live, re-asking until the answer is usable."""
+    from src.install.wizard import default_project_folder, validate_project_folder
+
+    home = Path.home()
+    reserved = _reserved_folders()
+    default = default_project_folder(Path.cwd(), home, reserved=reserved)
+    shown = f"~/{default.relative_to(home)}" if default.is_relative_to(home) else str(default)
+
+    def check(value: str) -> Path:
+        try:
+            return validate_project_folder(value, home, reserved=reserved)
+        except ValueError as error:
+            raise click.BadParameter(str(error)) from error
+
+    click.echo("  (AQ creates and works on projects inside this folder)", err=True)
+    return click.prompt(
+        "  Where do your code projects live?",
+        default=shown,
+        value_proc=check,
+        err=True,
+    )
+
+
+def describe_plan(
+    questions: Sequence[Question],
+    answers: dict[str, bool],
+    *,
+    project_folder: Path | None,
+    system: str,
+    git_identity: str | None = None,
+) -> list[str]:
+    """What the install is about to do, in the words a person decides on.
+
+    ``git_identity`` is the plan's line about the commit identity, when the
+    wizard asked for one.
+    """
+    from src.config_tuning import MachineResources
+    from src.install.providers import provider_installers
+    from src.install.wizard import capabilities_for
+
+    selected = capabilities_for(questions, answers)
+    agents = [
+        installer.title for installer in provider_installers() if installer.capability in selected
+    ]
+    managed = next((q for q in questions if q.id == "postgres-managed"), None)
+    install_database = managed is not None and managed.capability in selected
+    machine = MachineResources.detect()
+    lines = [
+        f"Coding agents: {', '.join(agents)}",
+        (
+            "Database: install PostgreSQL and start it with this machine"
+            if install_database
+            else "Database: use the PostgreSQL server already running on this machine"
+        ),
+        f"Settings tuned for this machine ({machine.cores} cores, {machine.memory_gb:.0f} GiB)",
+        "Start AQ in the background, build the dashboard and open it in your browser",
+    ]
+    graft = next((q for q in questions if q.id == "graft"), None)
+    if graft is not None and graft.capability in selected:
+        lines.append(
+            "graft in each project's main checkout, telemetry off (never global, never in "
+            "worker worktrees)"
+        )
+    if project_folder is not None:
+        home = Path.home()
+        shown = (
+            f"~/{project_folder.relative_to(home)}"
+            if project_folder.is_relative_to(home)
+            else str(project_folder)
+        )
+        lines.append(f"Projects folder: {shown}")
+    if git_identity:
+        lines.append(git_identity)
+    if system == "darwin":
+        lines.append("Anything missing (tmux, Git) comes from Homebrew")
+    return lines
+
+
+def render_summary(summary: OnboardingSummary, target: Console) -> None:
+    """Print the closing summary: what is ready, where things live, what next."""
+    style = "bold green" if summary.ready else "bold yellow"
+    target.print(f"\n[{style}]{summary.headline}[/{style}]")
+
+    if summary.locations:
+        target.print("\n[bold]Where AQ stores your data[/bold]")
+        for location in summary.locations:
+            target.print(f"  {location.label:<14} {location.path}")
+            if location.note:
+                target.print(f"                 [dim]{location.note}[/dim]")
+
+    if summary.dashboard:
+        target.print("\n[bold]Dashboard[/bold]")
+        if summary.dashboard.url:
+            target.print(f"  {summary.dashboard.url}")
+        if summary.dashboard.hint:
+            target.print(f"  [dim]{summary.dashboard.hint}[/dim]")
+
+    if summary.readiness:
+        style = "green" if summary.readiness.ready else "yellow"
+        label = "ready for a live first task" if summary.readiness.ready else "needs attention"
+        target.print(f"\n[bold]First-task readiness[/bold] [{style}]{label}[/{style}]")
+        for check in summary.readiness.checks:
+            mark = "OK" if check.ready else "!!"
+            check_style = "green" if check.ready else "yellow"
+            target.print(f"  [{check_style}]{mark}[/{check_style}] {check.label}: {check.detail}")
+            if check.remediation:
+                target.print(f"     [dim]next: {check.remediation}[/dim]")
+
+    if summary.drift:
+        target.print("\n[bold]Drift (reported, not changed)[/bold]")
+        for line in summary.drift:
+            target.print(f"  [yellow]![/yellow] {escape(line)}")
+
+    if summary.skipped:
+        target.print("\n[bold]Not installed (optional)[/bold]")
+        for line in summary.skipped:
+            target.print(f"  [dim]-[/dim] {line}")
+
+    if summary.next_steps:
+        target.print("\n[bold]Next[/bold]")
+        for index, step in enumerate(summary.next_steps, start=1):
+            target.print(f"  {index}. {step}")
+
+
+def render_result(result: InstallResult, target: Console) -> None:
+    """Print the human view of a run: what happened, then what to do next."""
+    if result.dry_run:
+        target.print("\n[bold]Plan[/bold] (dry run — nothing was changed)")
+        for row in result.plan:
+            target.print(
+                f"  [dim]{row.action.value:<18}[/dim] {row.step_id}  [dim]{row.reason}[/dim]"
+            )
+
+    for step in result.steps:
+        if step.state is StepState.SUCCEEDED:
+            continue
+        style, mark = _STATE_STYLE[step.state]
+        target.print(f"\n[{style}]{mark} {step.step_id}[/{style}]: {step.summary}")
+        if step.remediation:
+            target.print(f"   [bold]next:[/bold] {step.remediation}")
+
+    for message in result.messages:
+        target.print(f"[dim]note:[/dim] {message}")
+
+    style = _OUTCOME_STYLE[result.outcome]
+    target.print(
+        f"\n[{style}]{result.outcome.value}[/{style}] "
+        f"(exit {result.exit_code}) — host {result.platform.get('host_path', 'unknown')}"
+    )
+    if result.state_path:
+        target.print(f"[dim]resume record: {result.state_path}[/dim]")
+    if result.next_action and not result.blocking_step:
+        target.print(f"[bold]next:[/bold] {result.next_action}")
+
+
+@cli.command("install")
+@click.option(
+    "--interactive/--non-interactive",
+    default=None,
+    help="Prompt for consent (default), or run unattended and never read a terminal.",
+)
+@click.option("--dry-run", is_flag=True, help="Report the plan and run only read-only checks.")
+@click.option("--json", "as_json", is_flag=True, help="Print one machine-readable JSON object.")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Unattended install input file (YAML or JSON).",
+)
+@click.option(
+    "--with",
+    "capabilities",
+    multiple=True,
+    help="Select an optional capability (repeatable).",
+)
+@click.option(
+    "--approve",
+    "approve",
+    multiple=True,
+    help="Approve one mutating step by id in an unattended run (repeatable).",
+)
+@click.option("--yes", "-y", "assume_yes", is_flag=True, help="Approve every mutating step.")
+@click.option(
+    "--resume/--no-resume",
+    default=True,
+    help="Continue from the existing resume record (default), or ignore it for this run.",
+)
+@click.option("--fresh", is_flag=True, help="Start a new resume record, leaving the old one.")
+@click.option(
+    "--repair",
+    is_flag=True,
+    help="Reconcile the installation against this host: re-run steps that cannot be verified.",
+)
+@click.option(
+    "--upgrade",
+    is_flag=True,
+    help="Repair, and record a durable version transition an interrupted run can resume.",
+)
+@click.option("--restart-from", metavar="STEP", help="Redo STEP and the steps that depend on it.")
+@click.option(
+    "--state-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help=f"Resume record path (default: {default_state_path()}).",
+)
+@click.option("--list-steps", is_flag=True, help="Print the registered steps and exit.")
+@click.option(
+    "--advanced",
+    is_flag=True,
+    help=(
+        "Full control: ask every choice (database, daemon, Discord) and approve each step. "
+        "Without it AQ asks only which coding agents to use and where your projects live."
+    ),
+)
+@click.option(
+    "--git-name",
+    metavar="NAME",
+    help="Commit name for AQ's commits (with --git-email); replaces a configured one.",
+)
+@click.option(
+    "--git-email",
+    metavar="EMAIL",
+    help="Commit email for AQ's commits (with --git-name); replaces a configured one.",
+)
+@click.pass_context
+def install(
+    ctx: click.Context,
+    interactive: bool | None,
+    dry_run: bool,
+    as_json: bool,
+    config_path: Path | None,
+    capabilities: tuple[str, ...],
+    approve: tuple[str, ...],
+    assume_yes: bool,
+    resume: bool,
+    fresh: bool,
+    repair: bool,
+    upgrade: bool,
+    restart_from: str | None,
+    state_file: Path | None,
+    list_steps: bool,
+    advanced: bool,
+    git_name: str | None,
+    git_email: str | None,
+) -> None:
+    """Set up this machine to run AQ, from prerequisites to a ready dashboard.
+
+    Run with no options on a terminal and it asks a short set of questions with
+    good defaults, then installs what you selected, writes a configuration
+    tuned for this box, starts the daemon and tells you where your data lives.
+
+    Reruns are the normal recovery path: the command records what it completed
+    and what it owns, revalidates a completed step instead of repeating it, and
+    stops at the first step that needs attention — including a harness login,
+    which you finish in your own terminal before rerunning.
+
+    `--repair` goes further: it re-runs even the steps it cannot re-verify, so
+    an installation is reconciled against the host rather than against the
+    record.  `--upgrade` repairs and records the version transition durably —
+    an upgrade killed halfway leaves a record the next run finds, reports and
+    resumes.  Neither removes anything; `aq uninstall` is the only command that
+    does.  Exit codes: 0 ready, 10 needs_user, 11 invalid_input,
+    12 unsupported_host, 20 failed.
+    """
+    if repair and upgrade:
+        raise InstallInputError(
+            "--repair and --upgrade are mutually exclusive; --upgrade already repairs"
+        )
+    mode = (
+        LifecycleMode.UPGRADE
+        if upgrade
+        else LifecycleMode.REPAIR
+        if repair
+        else LifecycleMode.INSTALL
+    )
+
+    support = describe_host()
+    registry = build_registry(support)
+    if list_steps:
+        _emit_steps(registry, as_json=as_json)
+        return
+
+    if interactive is None:
+        interactive = sys.stdin.isatty() and not as_json
+
+    # The wizard asks only when nothing else has already spoken for the
+    # selection: an explicit ``--with``/``--config`` is the caller choosing,
+    # ``--yes`` means "do the sensible thing without asking me", and ``--json``
+    # is a script driving consent rather than a newcomer being onboarded.
+    # A repair or an upgrade reconciles what is already selected. Re-asking the
+    # newcomer's questions would let a plain Enter silently *deselect* a
+    # capability the operator installed on purpose, so the record's own
+    # selection is what those modes carry forward.
+    project_folder: Path | None = None
+    # The commit identity is asked once, by the fresh-install wizard, and only
+    # while none is configured: a rerun never re-asks and never overwrites an
+    # existing choice.  An explicit --git-name/--git-email has already answered.
+    git_choice: Any = None
+    if interactive and not as_json and not capabilities and not config_path and not mode.reconciles:
+        from src.install.providers import provider_installers
+        from src.install.wizard import questions_to_ask
+
+        questions = wizard_questions()
+        answers: dict[str, bool] = {}
+        if not assume_yes:
+            agent_capabilities = {installer.capability for installer in provider_installers()}
+            click.echo(
+                "Setting up AQ on this machine. Press Enter to accept each default.", err=True
+            )
+            while True:
+                answers = ask_questions(questions_to_ask(questions, advanced=advanced), console)
+                if advanced or agent_capabilities & capabilities_for(questions, answers):
+                    break
+                # An install with no coding agent cannot run a single task:
+                # that is a machine set up wrong, not a choice worth allowing
+                # outside --advanced.
+                click.echo("  AQ needs at least one coding agent to run tasks.\n", err=True)
+            if not configured_project_roots():
+                project_folder = ask_project_folder()
+            identity_line: str | None = None
+            if git_name is None and git_email is None and configured_git_identity() is None:
+                from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+                click.echo("", err=True)
+                git_choice = ask_git_identity()
+                identity_line = (
+                    f"Commit as: {git_choice.formatted()}"
+                    if git_choice is not None
+                    else NOT_CONFIGURED_NOTE
+                )
+            click.echo("", err=True)
+            if not advanced:
+                click.echo("AQ will:", err=True)
+                for line in describe_plan(
+                    questions,
+                    answers,
+                    project_folder=project_folder,
+                    system=support.facts.system,
+                    git_identity=identity_line,
+                ):
+                    click.echo(f"  • {line}", err=True)
+                if not dry_run and not click.confirm("Go ahead?", default=True, err=True):
+                    click.echo("Nothing was changed. Run `aq install` again when ready.", err=True)
+                    return
+                click.echo("", err=True)
+                # The person just approved the whole plan; asking again before
+                # each of its thirty steps is noise, not consent.  --advanced
+                # keeps the per-step prompts.
+                assume_yes = True
+        capabilities = tuple(sorted(capabilities_for(questions, answers)))
+
+    options = build_options(
+        registry,
+        interactive=interactive,
+        dry_run=dry_run,
+        resume=resume,
+        fresh=fresh,
+        restart_from=restart_from,
+        capabilities=capabilities,
+        approve=approve,
+        assume_yes=assume_yes,
+        config_path=config_path,
+        state_path=state_file,
+        mode=mode,
+        git_name=git_name,
+        git_email=git_email,
+    )
+    if git_choice is not None:
+        options = replace(
+            options, settings={**options.settings, "git_identity": git_choice.as_setting()}
+        )
+    options = _carry_forward_capabilities(options, state_file)
+    project_folder = resolve_project_folder(project_folder, dry_run=dry_run)
+    if project_folder is not None:
+        options = replace(
+            options, settings={**options.settings, "project_root": str(project_folder)}
+        )
+
+    quiet = as_json
+    engine = InstallEngine(
+        registry,
+        options,
+        support=support,
+        consent=_consent() if interactive else None,
+        progress=None if quiet else _progress(console),
+    )
+    result = engine.run()
+
+    # Provider availability is a host fact, not a credential.  A real install
+    # or repair refreshes the catalog so a later project default cannot select
+    # a removed or unauthenticated provider.  Dry-runs remain write-free.
+    probes = ()
+    activations = ()
+    pools = None
+    if not dry_run:
+        from src.install.logins import probe_all
+        from src.profiles.catalog import evaluate_catalog, refresh_catalog_profiles
+
+        # ``--state-file`` is a resume-record override, not a request to put
+        # profiles beside an arbitrary file.  AQ's configured install home
+        # remains the profile catalog location.
+        state_path = default_state_path()
+        probes = probe_all()
+        refresh_catalog_profiles(
+            state_path.parent,
+            probes,
+            facts=support.facts,
+            interactive=interactive,
+        )
+        guidance: dict[str, str] = {}
+        from src.intelligence_classes import load_intelligence_classes
+
+        # The same class set `refresh_catalog_profiles` seeded rungs from: an
+        # operator's own class yields rungs, so it must yield pools too.
+        activations = evaluate_catalog(
+            probes,
+            facts=support.facts,
+            interactive=interactive,
+            classes=load_intelligence_classes(str(state_path.parent)) or None,
+        )
+
+        # Tasks run only on pools, and every rung is seeded as a task profile,
+        # so a fresh install needs its first pools made here -- after the
+        # activation record, which is what says which rungs can run at all.
+        from src.install.onboarding import _read_config
+        from src.install.pools import ensure_default_pools
+
+        pools = ensure_default_pools(
+            state_path.parent,
+            activations,
+            _read_config(state_path.parent / "config.yaml"),
+        )
+        for activation in activations:
+            if not activation.active:
+                guidance.setdefault(
+                    activation.profile.provider_id,
+                    f"{activation.reason}. {activation.remediation or ''}".strip(),
+                )
+        if guidance:
+            result = replace(
+                result,
+                messages=result.messages
+                + tuple(f"Profile activation: {message}" for message in guidance.values()),
+            )
+
+    # An install that left the commit identity unset says so, and names the
+    # command that sets it, in both the human output and the JSON messages.
+    identity_note = _git_identity_note(result)
+    if identity_note:
+        result = replace(result, messages=result.messages + (identity_note,))
+
+    # The summary is derived from the result, so a human and a script are told
+    # the same things: what is ready, where the data lives, which URL to open
+    # and what was deliberately left out.
+    summary = summarize(result, probes=probes, activations=activations, pools=pools)
+    if as_json:
+        payload = result.to_dict()
+        payload["onboarding"] = summary.to_dict()
+        click.echo(json.dumps(payload, ensure_ascii=False))
+    else:
+        render_result(result, console)
+        render_summary(summary, console)
+    ctx.exit(result.exit_code)
+
+
+def _carry_forward_capabilities(options: InstallOptions, state_file: Path | None) -> InstallOptions:
+    """Give a repair/upgrade the capabilities the recorded install selected.
+
+    Without this, ``aq install --repair`` on a machine that selected Discord
+    would plan every Discord step as ``skip_not_selected`` and quietly narrow
+    the installation it was asked to reconcile.  An explicit ``--with`` still
+    wins: the operator naming a capability is choosing, not reconciling.
+    """
+    if not options.mode.reconciles or options.capabilities:
+        return options
+    from src.install.state import StateError, load_state
+
+    try:
+        state = load_state(state_file or default_state_path())
+    except StateError:
+        return options
+    if state is None or not state.capabilities:
+        return options
+    return replace(options, capabilities=frozenset(state.capabilities))
+
+
+def _emit_steps(registry: StepRegistry, *, as_json: bool) -> None:
+    rows = registry.describe()
+    if as_json:
+        click.echo(
+            json.dumps(
+                {"schema_version": RESULT_SCHEMA_VERSION, "steps": rows},
+                ensure_ascii=False,
+            )
+        )
+        return
+    for row in rows:
+        flags = []
+        if row["mutating"]:
+            flags.append("mutating")
+        if row["capability"]:
+            flags.append(f"capability={row['capability']}")
+        suffix = f" [dim]({', '.join(flags)})[/dim]" if flags else ""
+        console.print(f"[bold]{row['id']}[/bold] — {row['title']}{suffix}")
+        if row["depends_on"]:
+            console.print(f"   [dim]after: {', '.join(row['depends_on'])}[/dim]")

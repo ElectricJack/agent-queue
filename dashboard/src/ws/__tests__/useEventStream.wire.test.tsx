@@ -21,6 +21,7 @@ afterAll(() => vi.unstubAllGlobals());
 
 describe("WebSocket wire discriminators", () => {
   it("normalizes live and replay bus frames before notifying subscribers and task caches", () => {
+    vi.useFakeTimers();
     const client = new QueryClient();
     client.setQueryData(["tasks", "p1"], []);
     client.setQueryData(["task", "t1"], {});
@@ -31,9 +32,13 @@ describe("WebSocket wire discriminators", () => {
     renderHook(() => useEventStream({ onEvent: seen }), { wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
     transport.instance.onmessage?.({ data: JSON.stringify({ _event_type: "task.updated", project_id: "p1", task_id: "t1", seq: 2 }) });
     expect(seen).toHaveBeenCalledWith(expect.objectContaining({ _event_type: "task.updated", event_type: "task.updated", seq: 2 }));
-    for (const key of [["tasks", "p1"], ["task", "t1"], ["task", "t1", "comments", 0], ["agents"]]) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    for (const key of [["tasks", "p1"], ["task", "t1"], ["task", "t1", "comments", 0]]) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
     expect(client.getQueryState(["task", "other", "comments", 0])?.isInvalidated).toBe(false);
+    // The flock refresh is coalesced over a one-second window.
+    vi.advanceTimersByTime(1_000);
+    expect(client.getQueryState(["agents"])?.isInvalidated).toBe(true);
     client.clear();
+    vi.useRealTimers();
   });
 
   it("preserves unknown event payloads and ignores hello/heartbeat or malformed frames", () => {
@@ -72,5 +77,58 @@ describe("WebSocket wire discriminators", () => {
     expect(client.getQueryState(["sessions", "pool"])?.isInvalidated).toBe(true);
     expect(client.getQueryState(["sessions", "task"])?.isInvalidated).toBe(false);
     client.clear();
+  });
+
+  it("refreshes profile names and pool views on an audited rename", () => {
+    const client = new QueryClient();
+    const keys = [["pools", "all"], ["profiles"], ["profile", "worker"], ["effective-profile"]];
+    for (const key of keys) client.setQueryData(key, {});
+    renderHook(() => useEventStream(), {
+      wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    });
+    transport.instance.onmessage?.({ data: JSON.stringify({
+      _event_type: "pool.renamed", profile_id: "worker", name: "Space Bunny",
+      old_name: "Worker", backup_path: "/vault/profile.md.bak-1", seq: 10,
+    }) });
+    for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    client.clear();
+  });
+
+  it("refreshes routing and profile views after deletion from another client", () => {
+    const client = new QueryClient();
+    const keys = [["pools"], ["profiles"], ["profile", "worker"], ["effective-profile"], ["agents"], ["tasks"], ["sessions", "pool"], ["providers", "allocation"]];
+    for (const key of keys) client.setQueryData(key, {});
+    renderHook(() => useEventStream(), {
+      wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    });
+    transport.instance.onmessage?.({ data: JSON.stringify({
+      _event_type: "pool.deleted", profile_id: "worker", depth: "directory", sessions: [], warnings: [], seq: 11,
+    }) });
+    for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    client.clear();
+  });
+
+  it("refreshes the provider allocation view on pool and session frames", () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    renderHook(() => useEventStream(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+
+    client.setQueryData(["providers", "allocation"], {});
+    transport.instance.onmessage?.({
+      data: JSON.stringify({ _event_type: "pool.lifecycle_changed", profile_id: "worker", request_id: "alloc-1" }),
+    });
+    expect(client.getQueryState(["providers", "allocation"])?.isInvalidated).toBe(true);
+
+    client.setQueryData(["providers", "allocation"], {});
+    transport.instance.onmessage?.({ data: JSON.stringify({ _event_type: "session.exited", session_id: "s1" }) });
+    // A session burst refreshes the provider supply once, like the pool rows.
+    vi.advanceTimersByTime(1_000);
+    expect(client.getQueryState(["providers", "allocation"])?.isInvalidated).toBe(true);
+    client.clear();
+    vi.useRealTimers();
   });
 });
