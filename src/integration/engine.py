@@ -28,8 +28,7 @@ from src.database.tables import (
 )
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import (
-    AdmissionPredicate,
+from src.integration.runtime_contracts import (
     Decision,
     EjectArgs,
     Subject,
@@ -45,7 +44,6 @@ class EngineRefused(RuntimeError):
 _scope: ContextVar[tuple[Any, str, SubjectEngine, asyncio.Task | None, Any] | None] = ContextVar(
     "root_engine_scope", default=None
 )
-_admission: ContextVar[AdmissionPredicate | None] = ContextVar("root_admission", default=None)
 _ejection: ContextVar[RootPolicyEjection | None] = ContextVar("root_policy_ejection", default=None)
 
 
@@ -167,22 +165,6 @@ def current_policy_ejection(db, batch_id, task_id, reason) -> RootPolicyEjection
     ):
         return None
     return authority
-
-
-@contextmanager
-def root_admission(predicate: AdmissionPredicate):
-    token = _admission.set(predicate)
-    try:
-        yield
-    finally:
-        _admission.reset(token)
-
-
-def current_admission() -> AdmissionPredicate | None:
-    scope = _scope.get()
-    if scope and scope[2] is SubjectEngine.RECONCILER and scope[3] is asyncio.current_task():
-        return _admission.get()
-    return None
 
 
 def lock_key(repository_id: str, *, publisher: bool = False) -> int:
@@ -463,7 +445,7 @@ class RootEngineOwnership:
 
 def root_engine_guard(
     resource: str, *, outcome="wait", result_model=None, refusal=None, publisher=False,
-    aborted_pr_cleanup=False,
+    aborted_pr_cleanup=False, promoted_train_cleanup=False,
 ):
     """Require an active root visit for shared mutation primitives.
 
@@ -513,6 +495,11 @@ def root_engine_guard(
             # owner must not strand this independent, immutable cleanup work.
             if (aborted_pr_cleanup and batch is not None and batch["lifecycle"] == "aborted"
                     and bound.get("kind", "audit_pr") == "audit_pr"):
+                return await method(self, *args, **kwargs)
+            # Train cleanup uses immutable inputs and its own per-ref leases,
+            # without a legacy root subject or promotion intent.
+            if (promoted_train_cleanup and batch is not None
+                    and batch["target_ref"] is not None and batch["lifecycle"] == "promoted"):
                 return await method(self, *args, **kwargs)
             try:
                 async with RootEngineOwnership(db).operation(repository_id, publisher=publisher):

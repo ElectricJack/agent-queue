@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/doctor/pool_checks.py::_find_stranded_feature_branches": {
+      "baseline_span": [
+        695,
+        786
+      ],
+      "landing_span": [
+        695,
+        786
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/pool_checks.py::_project_checkouts": {
+      "baseline_span": [
+        673,
+        694
+      ],
+      "landing_span": [
+        673,
+        694
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

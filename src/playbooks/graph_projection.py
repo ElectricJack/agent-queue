@@ -12,6 +12,7 @@ from src.api.models.playbook_v2 import PlaybookV2GraphResponse, StepExplanationD
 from src.playbooks.definition import (
     AgentTaskStep,
     CommandStep,
+    ScriptStep,
     DecisionStep,
     ForEachStep,
     LlmStep,
@@ -30,6 +31,7 @@ class GraphProjectionError(ValueError):
 
 
 STEP_LABELS = {
+    "script": "Script",
     "command": "Command",
     "llm": "AI",
     "agent_task": "Delegated task",
@@ -102,6 +104,9 @@ def _json(value: Any) -> str:
 
 def project_value(value: Any, *, redacted: bool = False, type_name: str | None = None) -> dict:
     """Project one typed expression without resolving it against run data."""
+    from src.playbooks.private_values import contains_reference
+
+    redacted = redacted or contains_reference(value)
     if redacted:
         return {
             "kind": "redacted",
@@ -123,7 +128,8 @@ def project_value(value: Any, *, redacted: bool = False, type_name: str | None =
     elif kind in {"binding_ref", "loop_ref"}:
         binding = getattr(value, "binding", raw.get("binding"))
         path = getattr(value, "path", raw.get("path"))
-        display = f"{binding}{'.' + path if path else ''}"
+        index = raw.get("index", False)
+        display = f"{binding}#index" if index else f"{binding}{'.' + path if path else ''}"
         dto_kind = kind
     elif kind == "template":
         parts = getattr(value, "parts", raw.get("parts", ()))
@@ -133,6 +139,24 @@ def project_value(value: Any, *, redacted: bool = False, type_name: str | None =
         path = getattr(value, "path", raw.get("path"))
         display = f"this run's {str(path).replace('.', ' ')}"
         dto_kind = "expression"
+    elif kind in {"filter", "map"}:
+        collection = project_value(raw["collection"])["display"]
+        binding = raw["item_binding"]
+        body = (
+            _condition_text(raw["predicate"]) if kind == "filter"
+            else project_value(raw["value"])["display"]
+        )
+        display = f"{kind}({collection}, {binding} => {body})"
+        dto_kind = kind
+    elif kind == "len":
+        display = f"len({project_value(raw['collection'])['display']})"
+        dto_kind = kind
+    elif kind == "diff":
+        left = project_value(raw["left"])["display"]
+        right = project_value(raw["right"])["display"]
+        key = f", key_path={_json(raw['key_path'])}" if raw.get("key_path") else ""
+        display = f"diff({left}, {right}{key})"
+        dto_kind = kind
     elif kind == "coalesce":
         options = getattr(value, "options", raw.get("options", ()))
         display = " or else ".join(project_value(option)["display"] for option in options)
@@ -742,7 +766,18 @@ def _canonical_explanation(step_id: str, step: Any, definition: PlaybookDefiniti
     metadata here — but the card is not therefore empty: every family projects
     the values it reads, the binding it writes, and what it does with them.
     """
-    if isinstance(step, LlmStep):
+    if isinstance(step, ScriptStep):
+        summary = f"Run {step.program.script or step.program.executable} and wait for its job"
+        effects = [_effect("creates", "process", "Runs an ordinary process with bounded output")]
+        effects.extend(_binds_effect(step))
+        inputs = [
+            _row("Program", LiteralValue(value=step.program.shell or step.program.script
+                                         or step.program.executable)),
+            _row("Working directory", LiteralValue(value=step.program.cwd)),
+            _row("Limits", LiteralValue(value=step.program.limits.model_dump())),
+            _row("Environment names", LiteralValue(value=sorted(step.environment))),
+        ]
+    elif isinstance(step, LlmStep):
         summary, effects, inputs = _llm_explanation(step)
     elif isinstance(step, AgentTaskStep):
         summary, effects, inputs = _agent_task_explanation(step)
@@ -976,6 +1011,9 @@ def _node(
         typed_step["inputs"] = {
             name: {"type": "unresolved"} for name in typed_step.get("inputs", {})
         }
+    if isinstance(step, ScriptStep):
+        typed_step = {**typed_step, "environment": {
+            name: {"type": "redacted"} for name in step.environment}}
     retry = getattr(step, "retry", None)
     retry_dto = _plain(retry) if retry is not None else None
     idempotency = None
@@ -1006,6 +1044,7 @@ def _node(
     if isinstance(step, ForEachStep):
         loop = {
             "collection": project_value(step.collection),
+            "max_iterations": step.max_iterations,
             "item_binding": step.item_binding,
             "failure_policy": step.failure_policy,
             "body_entry_step_id": step.body_entry,
@@ -1021,7 +1060,24 @@ def _node(
             "timeout_step_id": step.transitions.get("timed_out"),
         }
     badges = _badges(step, registration=registration, retry=retry, diagnostics=diagnostics)
+    script = None
+    if isinstance(step, ScriptStep):
+        metadata = definition.trusted_execution
+        pin = metadata.scripts.get(step_id) if metadata else None
+        script = {
+            "program": step.program.model_dump(mode="json"),
+            "source_revision": pin.source_revision if pin else None,
+            "program_sha256": pin.program_sha256 if pin else None,
+            "runtime_sha256": pin.runtime_sha256 if pin else None,
+            "executable_sha256": pin.executable_sha256 if pin else None,
+            "input_pins": [item.model_dump() for item in pin.inputs] if pin else [],
+            "environment_names": sorted(step.environment),
+        }
+        advanced["idempotency"] = {"supported": False, "retry_safe": False}
+        badges.append({"kind": "timeout", "label": "Timeout",
+                       "value": f"{step.program.limits.wall_seconds}s"})
     return {
+        **({"script": script} if script is not None else {}),
         "id": step_id,
         "rule_id": rule.id,
         "step_kind": step.type,
@@ -1176,6 +1232,13 @@ def project_graph(
         "artifact": _artifact_dict(artifact),
         "activation": _activation_dict(activation, definition),
         "purpose": definition.purpose,
+        "execution_requirements": {
+            "required_features": list(definition.required_features),
+            "required_capabilities": list(definition.trusted_execution.required_capabilities)
+                if definition.trusted_execution else [],
+            "state_schema_version": definition.trusted_execution.state_schema_version
+                if definition.trusted_execution else None,
+        },
         "event_groups": event_groups,
         "rules": rules,
         "nodes": nodes,
