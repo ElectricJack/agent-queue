@@ -281,18 +281,30 @@ async def execute_workspace_release(conn, statement):
     return result
 
 
-async def record_pool_observations(db, measurement, now):
-    """Persist sizing inputs at the cycle boundary; size_pools remains pure policy."""
+async def record_pool_observations(db, measurement, now, *, last_observations):
+    """Publish changed inputs, retaining a ten-minute time-predicate keep-alive.
+
+    The orchestrator owns the process-local hash/time cache. Advance it only after
+    commit, so failed writes retry and a daemon restart publishes its first cycle.
+    """
     from dataclasses import asdict
 
     observations = []
+    committed = {}
     for key, supply in measurement.supply.items():
-        observations.append(resource_invalidation(
+        event = resource_invalidation(
             producer="pool", identity=key.profile_id, revision=str(now),
             outcome_ref=f"pool:{key.profile_id}", occurred_at=now,
             payload={"profile_id": key.profile_id, "supply": asdict(supply),
                      "demand": measurement.demand.get(key, 0),
                      "bounds": list(measurement.bounds[key])},
-        ))
+        )
+        fingerprint = payload_hash(event["payload"])
+        previous = last_observations.get(key.profile_id)
+        if previous and previous[0] == fingerprint and 0 <= now - previous[1] < 600:
+            continue
+        observations.append(event)
+        committed[key.profile_id] = (fingerprint, now)
     if observations:
         await db.wait_source_batch_commit(observations)
+        last_observations.update(committed)

@@ -135,6 +135,7 @@ def validate_class_text(identifier: str, text: str) -> None:
 
 
 def collect_classes(data_dir: str) -> dict[str, str]:
+    from src.intelligence_classes import is_class_source
     from src.portable_config import PortableBundleError, sanitize_policy_text
 
     result = {}
@@ -142,6 +143,8 @@ def collect_classes(data_dir: str) -> dict[str, str]:
     for path in sorted(root.glob("*.md")):
         if path.is_symlink() or path.resolve().parent != root.resolve():
             raise PortableBundleError("intelligence class path contains a symlink")
+        if not is_class_source(path):
+            continue
         text = sanitize_policy_text(path.read_text(encoding="utf-8"))
         validate_class_text(path.stem, text)
         result[path.stem] = text
