@@ -2453,7 +2453,9 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
     commands.config = SimpleNamespace(integration=SimpleNamespace(default_mode="pull_request"))
     commands.orchestrator = SimpleNamespace(
         _task_control_lock=lambda _task_id: asyncio.Lock(), claim_waiters={},
-        _worktree_slots=lambda: SimpleNamespace(reset_slot_for_task=AsyncMock(return_value="aq/parent")),
+        _worktree_slots=lambda: SimpleNamespace(
+            prefetch_slot_for_task=AsyncMock(),
+            reset_slot_for_task=AsyncMock(return_value="aq/parent")),
         _hierarchy_origin_and_fence=AsyncMock(return_value=({"base_sha": STARTING_SHA}, fence, "repair")),
         _hierarchy_repair_start=AsyncMock(return_value=STARTING_SHA),
         _emit_task_event=AsyncMock(), bus=SimpleNamespace(emit=AsyncMock()),
