@@ -10,6 +10,19 @@ const node = { id: "e", title: "Epic", status: "IN_PROGRESS", priority: 100, is_
   container_id: null, kind: "container", context_only: false, agg_children: 3, agg_descendants: 5, agg_completed: 2, agg_running: 1, agg_blocked: 0, agg_active: 3 };
 
 describe("ContainerNode", () => {
+  it("shows a waiting phase without a running pulse or container lifecycle counts", () => {
+    const { container } = render(<ContainerNode id="e" data={{ node: {
+      ...node, display_state: "waiting", display_reason: "Needs you: waiting on a decision",
+      child_state_counts: { completed: 1, waiting: 2 }, descendant_state_counts: { COMPLETED: 1, DEFINED: 3 },
+    }, projectId: "p1" }} /> as never);
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+    expect(container.querySelector(".aq-pulse")).toBeNull();
+    expect(container.querySelector("[data-count-line]")).toHaveTextContent("1 of 4 done");
+    expect(container.querySelector("[data-count-line]")).not.toHaveTextContent("running");
+    expect(container.querySelector("[data-child-state-counts]")).toHaveTextContent("1 completed · 2 waiting");
+    expect(screen.getByText("Needs you: waiting on a decision")).toBeInTheDocument();
+  });
+
   it("shows aggregates and wires enter and open", async () => {
     const onFocus = vi.fn(), onOpenTask = vi.fn();
     const { container } = render(<ContainerNode id="e" data={{ node, projectId: "p1", onFocus, onOpenTask }} selected={false} /> as never);

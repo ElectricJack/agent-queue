@@ -168,6 +168,8 @@ class PluginRegistry:
         self._commands: dict[str, Callable] = {}
         self._tools: dict[str, dict] = {}
         self._event_types: set[str] = set()
+        self.command_generation = 0
+        self._descriptor_commands = {}
 
         # Cron-scheduled plugin methods
         self._cron_jobs: list[_CronJob] = []
@@ -327,6 +329,7 @@ class PluginRegistry:
                     install_path="<internal>",
                     status=PluginStatus.ACTIVE,
                 )
+                self._refresh_command_inventory()
 
                 loaded += 1
                 logger.info("Loaded internal plugin: %s", plugin_name)
@@ -544,6 +547,7 @@ class PluginRegistry:
             install_path=install_path,
             status=PluginStatus.ACTIVE,
         )
+        self._refresh_command_inventory()
 
         # Collect @cron-decorated methods
         for attr_name in dir(instance):
@@ -637,6 +641,7 @@ class PluginRegistry:
         self._clear_plugin_services(name)
 
         del self._plugins[name]
+        self._refresh_command_inventory()
         logger.info("Unloaded plugin: %s", name)
 
         await self._bus.emit("plugin.unloaded", {"plugin": name})
@@ -993,6 +998,32 @@ class PluginRegistry:
     # Command / Tool Lookups (Integration API)
     # ------------------------------------------------------------------
 
+    def _refresh_command_inventory(self) -> None:
+        """Publish a generation after load/unload; keep unavailable names visible."""
+        from dataclasses import replace
+
+        from src.commands.descriptors import PluginCommand
+
+        entries = {name: replace(p, available=False) for name, p in self._descriptor_commands.items()}
+        for owner, loaded in self._plugins.items():
+            for name, command in getattr(loaded.context, "_registered_commands", {}).items():
+                if self._commands.get(name) is not command:
+                    continue
+                definition = self._tools.get(name) or self._tools.get(name.rsplit(".", 1)[-1])
+                if definition:
+                    entries[name] = PluginCommand.from_definition(
+                        dict(definition, name=name), plugin=owner,
+                        category=definition.get("_category"),
+                    )
+                else:
+                    entries[name] = PluginCommand(name, owner)
+        self._descriptor_commands = entries
+        self.command_generation += 1
+
+    def command_inventory(self):
+        """Frozen plugin metadata; no callable or mutable schema escapes."""
+        return tuple(self._descriptor_commands[name] for name in sorted(self._descriptor_commands))
+
     def get_command(self, name: str) -> Callable | None:
         """Look up a plugin command handler by name.
 
@@ -1204,6 +1235,7 @@ class PluginRegistry:
             install_path="<in-memory>",
             status=PluginStatus.ACTIVE,
         )
+        self._refresh_command_inventory()
 
     # ------------------------------------------------------------------
     # Circuit Breaker
