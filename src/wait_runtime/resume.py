@@ -174,6 +174,8 @@ class ResumeTransaction:
             await self.orch._worktree_slots().reprovision_slot(
                 replace(workspace, workspace_path=target), kind, prune=False,
             )
+            # A restart may have landed before the old folder was retired.
+            await self.retire_checkout(stage['old_path'], target, base)
             return target
         path = await self.orch._prepare_workspace_locked(task, agent)
         workspace = await self.db.get_workspace_for_task(task.id)
@@ -213,13 +215,26 @@ class ResumeTransaction:
         # setup and ownership sentinel. It never copies an old agent folder.
         await self.orch._worktree_slots().reprovision_slot(fresh, kind, prune=False)
         await git._arun(['merge-base', '--is-ancestor', intent['saved_head'], 'HEAD'], cwd=target)
-        # Old detached folder is clean and unowned after the atomic path update.
-        # Removal failure is harmless retained disk, never a second writer.
+        await self.retire_checkout(path, target, base)
+        return target
+
+    async def retire_checkout(self, old_path, target, base):
+        """Remove the superseded detached folder once no row names it.
+
+        The old folder is clean and unowned after the atomic path update;
+        ``worktree remove`` without ``--force`` refuses anything else, so a
+        failure is harmless retained disk, never a second writer.
+        """
+        old = Path(old_path)
+        if old.resolve() == Path(target).resolve() or not old.is_dir():
+            return
+        for row in await self.db.list_workspaces():
+            if row.workspace_path and Path(row.workspace_path).resolve() == old.resolve():
+                return
         try:
-            await git._arun(['worktree', 'remove', path], cwd=base.workspace_path)
+            await self.orch.git._arun(['worktree', 'remove', str(old)], cwd=base.workspace_path)
         except Exception:
             pass
-        return target
 
     async def dispatch(self, args, *, principal, scope, handler):
         async with self.db._engine.connect() as conn:
