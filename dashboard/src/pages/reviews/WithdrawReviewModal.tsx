@@ -30,9 +30,10 @@ export default function WithdrawReviewModal({ review, onClose, onWithdrawn }: Pr
     <Modal open onClose={onClose} title="Close review">
       <div className="space-y-4">
         <p className="text-sm text-gray-300">
-          Close <strong>{review.title}</strong>? It is withdrawn with no decision. Its gate
-          stays open, so nothing waiting on it is released, and the waiting tasks are flagged
-          for attention. The author task gets a comment with your reason.
+          Close <strong>{review.title}</strong>? Its approval gate will be cancelled and
+          dependent tasks flagged for attention. They still require approval. The author
+          and project supervisor receive your reason. You can reopen this review later
+          with the same dependent tasks.
         </p>
         <label className="block text-xs text-gray-400">
           Reason (optional)

@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import integration_branch_owners
@@ -26,12 +27,16 @@ from src.integration.ownership import BranchOwnership, BranchOwnershipError, Sta
 from src.integration.regeneration import (
     DEFAULT_REGENERATE_COMMAND,
     GeneratedMergeConflict,
+    GeneratedRegenerationFailure,
     MissingRegenerator,
+    RegenerationFailure,
+    generated_paths,
     merge_generated_tree,
+    regenerated_tree,
 )
 from src.integration.source_trailer import source_identity, with_source_trailers
 from src.integration.source_ancestry import effective_source_base
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     AncestryArgs,
     MaterializeRefArgs,
     MergeMembersArgs,
@@ -136,6 +141,13 @@ class SubjectGitAuthority:
         deadline, so an expired grant cannot finish a new authenticated push.
         """
         async with self.db.immediate() as conn:
+            from src.database.tables import projects
+
+            mode = await conn.scalar(select(projects.c.hierarchical_integration_mode).where(
+                projects.c.id == subject.project_id,
+            ))
+            if mode in {"disabled", "observe"}:
+                raise StaleFence("automatic integration is off")
             row = await self.db.lock_integration_subject_on(conn, subject.id)
             self._subject_current(subject, row)
             deadline = None
@@ -492,7 +504,8 @@ class GitOperations:
         """
         await self.validate_repository(repo)
         await self.exact(repo, base_sha)
-        current, results = base_sha, []
+        current, results, regenerations = base_sha, [], []
+        last_merge = None
         for member in members:
             try:
                 await self.exact(repo, member.head_sha)
@@ -534,6 +547,7 @@ class GitOperations:
                             self.git, repo.store, args, command=repo.regenerate,
                             timeout_seconds=repo.regenerate_timeout_seconds,
                             regenerate=regenerate_generated,
+                            defer_regeneration=True, regenerations=regenerations,
                         )
                 except MissingRegenerator as exc:
                     # A missing regenerator is the project's configuration, not a
@@ -550,24 +564,74 @@ class GitOperations:
                             "member": member.task_id, "files": files,
                             "reason": exc.reason or "merge_conflict",
                             "error": str(exc)[:4000], **evidence}
-                # Attribute-driven regeneration can change the raw merge tree.
-                regenerated = bool(repo.regenerate and regenerate_generated)
                 stamp = f"@{int(created_at)} +0000"
                 parents = ["-p", current] + ([] if squash else ["-p", member.head_sha])
+                message = with_source_trailers(
+                    f"Integrate {member.task_id} ({member.head_sha})\n\n"
+                    f"Source-base: {member.base_sha}\n"
+                    f"Effective-merge-base: {effective_base}",
+                    [source_identity(member.task_id, member.head_sha)],
+                )
                 head = await self.run(
                     repo, *self.git.resolve_commit_identity().config_args(),
-                    "commit-tree", tree, *parents, "-m",
-                    with_source_trailers(f"Integrate {member.task_id} ({member.head_sha})\n\n"
-                                         f"Source-base: {member.base_sha}\n"
-                                         f"Effective-merge-base: {effective_base}",
-                                         [source_identity(member.task_id, member.head_sha)]),
+                    "commit-tree", tree, *parents, "-m", message,
                     env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
                 )
+                last_merge = (parents, message, len(results))
             key = hashlib.sha256(f"{base_sha}:{current}:{member.head_sha}:{head}".encode()).hexdigest()
             await self.run(repo, "update-ref", f"refs/aq/batch-objects/{key}", head)
             results.append({"member": member.task_id, "source": member.head_sha,
                             "head": head, "regenerated": regenerated, **evidence})
             current = head
+        # Source-only changes can invalidate any derived artifact. Rebuild the
+        # whole registered set once, even if no branch committed generated output.
+        files = set()
+        if results and regenerate_generated:
+            files = await generated_paths(self.git, repo.store, current)
+            files.update(path for item in regenerations for path in item["files"])
+        if files:
+            files = sorted(files)
+            current_tree = await self.git.atree_sha(str(repo.store), current)
+            try:
+                with commit_identity(self.git.resolve_commit_identity()):
+                    tree = await regenerated_tree(
+                        self.git, repo.store,
+                        current_tree,
+                        command=repo.regenerate,
+                        timeout_seconds=repo.regenerate_timeout_seconds,
+                    )
+            except MissingRegenerator as exc:
+                return {"outcome": "no_regenerator", "head": base_sha,
+                        "members": [], "reason": exc.reason}
+            except RegenerationFailure as exc:
+                if exc.retryable:
+                    raise GeneratedRegenerationFailure(
+                        f"generated regeneration failed: {exc.reason}", files,
+                    ) from exc
+                # The intermediate combined tree has not passed regeneration.
+                # Keep the previous published repair overlay as the start; a
+                # candidate containing every source must not bypass this failure
+                # on the next visit merely through ancestry.
+                return {"outcome": "conflict", "head": base_sha, "members": [],
+                        "member": results[-1]["member"],
+                        "files": files, "reason": f"generated regeneration failed: {exc.reason}",
+                        "error": str(exc)[:4000]}
+            # Fold the combined sweep into the final unpublished merge. Keep its
+            # exact parents, source trailers and merge-base evidence intact.
+            parents, message, index = last_merge or (
+                ["-p", current], "Rebuild generated artifacts from batch sources", 0,
+            )
+            if last_merge is not None or tree != current_tree:
+                stamp = f"@{int(created_at)} +0000"
+                current = await self.run(
+                    repo, *self.git.resolve_commit_identity().config_args(),
+                    "commit-tree", tree, *parents, "-m", message,
+                    env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+                )
+            key = hashlib.sha256(f"{base_sha}:{current}:regenerated".encode()).hexdigest()
+            await self.run(repo, "update-ref", f"refs/aq/batch-objects/{key}", current)
+            for item in results[index:]:
+                item.update(head=current, regenerated=True)
         return {"outcome": "merged", "head": current, "members": results}
 
     async def merge_members(self, subject: Subject, args: MergeMembersArgs):
