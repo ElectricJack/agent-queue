@@ -48,6 +48,7 @@ def replay_routes(records: list[dict], policy: RoutingPolicy, digest: str) -> di
                 lifecycle=c["lifecycle"], default_class=c["intelligence_class"],
                 classes=frozenset({c["intelligence_class"]}), slots=slots,
                 enabled=p.get("enabled", True) if p else True,
+                quarantined=p.get("quarantine_until") is not None if p else False,
             ))
             busy[c["profile_id"]] = s["busy"] if s else p["busy"]
             backlog[c["profile_id"]] = s["backlog"] if s else p["routed_backlog"]
