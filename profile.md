@@ -16,7 +16,7 @@ Agent Queue is a self-improving orchestration platform for AI coding agents. It 
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (SQLite default, PostgreSQL supported). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
+Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (PostgreSQL only). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
 
 ```
 asyncio event loop
@@ -154,11 +154,11 @@ Part II claims/pools/worker-filed work). Off by default (`swarm.enabled: false`)
 | `src/database/hierarchy_migration.py` | Snapshot → canonicalise → validate → apply migration for the parent-edge/column drift |
 | `src/database/queries/claim_queries.py` | The one-transaction claim (session-slot CAS → work query → holder rows), `release_claim`, `terminate_pool_session` |
 | `src/commands/claim_commands.py` | `_cmd_task_claim` (`task_claim`) — admission checks, long-poll, attempt-outcome resolution |
-| `src/orchestrator/pools.py` | `_reconcile_pools` cascade step — demand/supply aggregation, pool session launch/terminate |
-| `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` — pool sizing, table-tested, no I/O |
+| `src/orchestrator/pools.py` | `_measure_pools` (`PoolMeasurement`) and the `_reconcile_pools` cascade step — fleet-wide demand/supply aggregation, placement, pool session launch/terminate |
+| `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` (fleet-wide, one pool per profile) and `place_pool_actions(...)` (which project each start/drain applies to) — table-tested, no I/O |
 | `src/sessions/reconciler.py` | (also) pool carve-outs on the session reconciler steps — `_step_prepare_timeout`, pool branches of `_step_orphans`/`_step_exits` |
-| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `claims.holder_consistency` (report-only) |
-| `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`max_claims_per_session` parsing |
+| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `pools.global_bounds_migration`, `pools.floor_exceeds_max`, `pools.placement_starved`, `claims.holder_consistency` (report-only), `agents.dangling_current_task` (fixable — resets a BUSY-or-not agent whose `current_task_id` names a missing/non-live task via `reset_stale_busy_agent`), `claims.container_held` (fixable — releases an agent holding a container whose children it did not file; the pool reconcile step does the same for pool holders every tick) |
+| `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`min_per_project`/`max_claims_per_session` parsing |
 
 ### Formulas (Swarm Work Model, Part III)
 
@@ -195,14 +195,14 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 | Directory | Purpose |
 |-----------|---------|
 | `src/adapters/` | Agent adapter interface + Claude Code implementation |
-| `src/discord/` | Bot, slash commands, notifications, channel routing |
+| `src/discord/` | Notification-only Discord adapter: hourly digest and escalation post/thread delivery out, escalation-thread replies in. One explicit `/delete-task` operator action; the six legacy slash commands and channel routing remain retired |
 | `src/git/` | Clone, branch, worktree, push/pull, serialized shared-repo ops |
 | `src/tokens/` | Token budget calculation, usage ledger, rate limit tracking |
 | `src/llm/` | Direct LLM path — `LLMClient`, provider adapters (Anthropic, Google, OpenAI/Ollama), `LLMCallSpec` |
 | `src/prompts/` | System prompts and templates (Mustache-style `{{placeholder}}`) |
 | `src/messaging/` | Messaging transport port + adapter factory (`discord`, `none`) |
 | `src/plugins/` | Plugin system for extensibility |
-| `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
+| `src/embedded_mcp.py`, `src/mcp_registration.py` | MCP server, embedded in the daemon — auto-exposes all CommandHandler commands as MCP tools |
 | `packages/aq-client/` | Typed API client (generated) for CLI and external tools |
 | `docs/specs/` | Behavioral specifications (source of truth) |
 | `docs/specs/design/` | Design specs (playbooks, memory, self-improvement, coordination, vault, profiles, roadmap) |
@@ -221,14 +221,14 @@ Not all knowledge is needed at all times. L0/L1 are cheap (always loaded, ~250 t
 ### Why files as source of truth?
 Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-queue/vault/`. This makes them browsable in Obsidian, editable by hand, diffable with git, and transparent. The database and Milvus are derived indexes, not canonical stores.
 
-### Why SQLite (with PostgreSQL supported)?
+### Why PostgreSQL only?
 Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
 
-### Why Discord as control plane?
-Users manage from their phone. Discord slash commands and threads front the same `CommandHandler` used by CLI and MCP. Each task gets a thread for live streaming. Reply to threads to unblock agents.
+### Why Discord is *not* the control plane
+It was one, and the surface grew faster than it could be trusted: 122 mirrored slash commands, task buttons and per-task streaming threads all mutating work from a chat client. The dashboard, CLI and MCP now own browsing, controls, gates and logs; Discord is primarily the phone-shaped notification surface — one shared channel carrying an hourly activity digest and one thread per human decision. A reply in that thread is evidence for the owning project supervisor, never a direct task mutation. See `docs/guides/discord-commands.md` and `docs/guides/discord-migration.md`.
 
 ### Why the Command Pattern?
-`CommandHandler` is the single execution point for all operations. Discord slash commands, playbook nodes, MCP tools, and CLI all delegate here — ensures feature parity and consistent error handling across all interfaces.
+`CommandHandler` is the single execution point for all operations. Playbook nodes, MCP tools, the dashboard API and the CLI all delegate here — ensures feature parity and consistent error handling across all interfaces. The Discord adapter follows the same rule: it calls `escalation_reply` and the explicit operator `delete_task` action; it never touches the database or a session directly. The deletion exception is specified in `docs/superpowers/specs/2026-10-11-unified-task-delete.md`.
 
 ### Why plugins?
 Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
@@ -304,7 +304,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
-- **Dependencies:** sqlalchemy[asyncio], aiosqlite, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
+- **Dependencies:** sqlalchemy[asyncio], asyncpg, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
 
 ## Infrastructure
 

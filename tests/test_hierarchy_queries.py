@@ -7,10 +7,11 @@ import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import event, insert, select
+from sqlalchemy import Text, event, insert, select
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import task_dependencies, task_metadata
@@ -29,6 +30,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 POSTGRES_DSN = ensure_worker_postgres_dsn()
@@ -36,14 +38,14 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 @pytest.fixture
 async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
+    database = Database(lease_dsn("test.db"))
     await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
     await database.close()
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture
 async def any_db(request, tmp_path):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
@@ -51,17 +53,8 @@ async def any_db(request, tmp_path):
     suite fast; the tests below assert the guards whose SQL genuinely
     differs per dialect (FOR UPDATE, recursive CTEs) on both backends.
     """
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "any.db"))
-        await database.initialize()
+    database = Database(lease_dsn("any.db"))
+    await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
     await database.close()
@@ -72,7 +65,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 
@@ -90,6 +83,46 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
     return tid
+
+
+@pytest.mark.parametrize("lookup", ["hierarchy_runnable_task_ids", "task_ids_with_meta"])
+async def test_runnable_candidate_reads_use_one_array_bind(db, lookup):
+    """A 10k frontier must not become 10k SQL parameters on every tick."""
+    await mktask(db, "included")
+    await mktask(db, "unmarked")
+    await mktask(db, "outside")
+    await db.set_task_meta("included", "container", False)
+    await db.set_task_meta("outside", "container", True)
+    await db.set_task_meta("unmarked", "different_key", True)
+    ids = ["included", "unmarked", "included", *[f"missing-{i}" for i in range(10_000)]]
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append((statement, parameters, context.compiled))
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        if lookup == "hierarchy_runnable_task_ids":
+            assert await db.hierarchy_runnable_task_ids(ids) == {"included", "unmarked"}
+            assert await db.hierarchy_runnable_task_ids([]) == set()
+        else:
+            # Presence matters even when the metadata value is false.
+            assert await db.task_ids_with_meta(ids, "container") == {"included"}
+            assert await db.task_ids_with_meta([], "container") == set()
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", capture)
+
+    assert len(statements) == 1  # Empty input never checks out a connection or queries.
+    statement, parameters, compiled = statements[0]
+    assert "= ANY (" in statement
+    candidate_bind = compiled.binds["task_ids"]
+    assert isinstance(candidate_bind.type, ARRAY)
+    assert isinstance(candidate_bind.type.item_type, Text)
+    assert not candidate_bind.expanding
+    arrays = [value for value in parameters if isinstance(value, list)]
+    assert len(arrays) == 1
+    assert set(arrays[0]) == set(ids)
+    assert len(parameters) < 50  # Other binds belong to the fixed eligibility predicates.
 
 
 async def test_set_parent_takes_project_hierarchy_lock(db, monkeypatch):
@@ -234,9 +267,7 @@ async def test_live_descendant_sessions_can_exclude_the_root(any_db):
         assert await db.live_descendant_sessions("container", conn=conn) == [
             ("root-1", "container")
         ]
-        assert (
-            await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
-        )
+        assert await db.live_descendant_sessions("container", conn=conn, exclude_root=True) == []
 
 
 async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
@@ -246,8 +277,13 @@ async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
     await mktask(db, "root", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "leaf", status=TaskStatus.IN_PROGRESS)
     await db.create_agent(
-        Agent(id="leaf-agent", name="leaf-agent", profile_id="worker", state=AgentState.BUSY,
-              current_task_id="leaf")
+        Agent(
+            id="leaf-agent",
+            name="leaf-agent",
+            profile_id="worker",
+            state=AgentState.BUSY,
+            current_task_id="leaf",
+        )
     )
     await db.create_workspace(
         Workspace(

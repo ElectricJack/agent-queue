@@ -9,19 +9,18 @@ import asyncio
 import time
 
 import pytest
+from sqlalchemy import insert, update
 
-from src.database import Database
 from src.database.queries.session_queries import InvalidSessionTransition
-from src.models import Project, SessionRecord
+from src.database.tables import integration_batches, playbook_artifacts, playbook_v2_runs
+from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 def _session(**overrides) -> SessionRecord:
@@ -44,6 +43,83 @@ def _session(**overrides) -> SessionRecord:
     return SessionRecord(**base)
 
 
+class TestSupervisionWork:
+    @pytest.mark.parametrize("status", list(TaskStatus))
+    async def test_unfinished_work_includes_waiting_blocked_and_failed_tasks(self, db, status):
+        await db.create_task(Task(
+            id="work", project_id="p1", title="Work", description="", status=status,
+        ))
+        assert await db.has_supervision_work() is (status != TaskStatus.COMPLETED)
+        assert await db.has_supervision_work("p1") is (status != TaskStatus.COMPLETED)
+        assert not await db.has_supervision_work("unrelated")
+
+    @pytest.mark.parametrize("status", [ProjectStatus.PAUSED, ProjectStatus.ARCHIVED])
+    async def test_paused_projects_count_but_archived_projects_do_not(self, db, status):
+        await db.update_project("p1", status=status)
+        await db.create_task(Task(id="work", project_id="p1", title="Work", description=""))
+        assert await db.has_supervision_work() is (status == ProjectStatus.PAUSED)
+
+    async def test_open_gate_counts_without_an_active_task(self, db):
+        gate_id, _ = await db.create_gate("p1", "human", "Decision")
+        assert await db.has_supervision_work()
+        assert await db.has_supervision_work("p1")
+        assert not await db.has_supervision_work("unrelated")
+        await db.resolve_gate(gate_id, resolved_by="test", resolution="approved")
+        assert not await db.has_supervision_work()
+
+    async def test_busy_session_counts_until_drain_even_after_task_completion(self, db):
+        await db.create_task(Task(
+            id="work", project_id="p1", title="Work", description="", status=TaskStatus.COMPLETED,
+        ))
+        await db.update_project("p1", status=ProjectStatus.ARCHIVED)
+        await db.create_session(_session(task_id="work", state="draining"))
+        assert await db.has_supervision_work()
+        assert not await db.has_supervision_work("unrelated")
+        await db.update_session("sess1", state="stopped")
+        assert not await db.has_supervision_work()
+
+    async def test_idle_pool_and_named_sessions_do_not_keep_supervisor_awake(self, db):
+        await db.create_session(_session(lifecycle="pool"))
+        await db.create_session(_session(id="supervisor", name="n-supervisor--global",
+                                        lifecycle="named", project_id=None))
+        assert not await db.has_supervision_work()
+
+    async def test_integration_counts_until_cleanup_finishes(self, db):
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(integration_batches).values(
+                id="batch", project_id="p1", repository_id="repo", request_id="request",
+                source_manifest_digest="digest", base_sha="base", integration_branch="branch",
+                lifecycle="cleanup_pending", policy_snapshot={}, artifact_snapshot={},
+                cleanup_state="pending", created_at=1, updated_at=1,
+            ))
+        assert await db.has_supervision_work()
+        assert await db.has_supervision_work("p1")
+        assert not await db.has_supervision_work("unrelated")
+        async with db._engine.begin() as conn:
+            await conn.execute(update(integration_batches).values(lifecycle="promoted"))
+        assert not await db.has_supervision_work()
+
+    @pytest.mark.parametrize("mode,lifecycle,expected", [
+        ("live", "running", True), ("live", "paused", True),
+        ("live", "cancelling", True), ("live", "completed", False),
+        ("live", "failed", False), ("dry_run", "running", False),
+    ])
+    async def test_global_supervisor_accounts_for_live_playbook_work(
+        self, db, mode, lifecycle, expected
+    ):
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(playbook_artifacts).values(
+                artifact_sha256="artifact", playbook_id="playbook", source_digest="source",
+                contract_fingerprint="contract", compiler_build="test", path="/unused", created_at=1,
+            ))
+            await conn.execute(insert(playbook_v2_runs).values(
+                run_id="run", playbook_id="playbook", artifact_sha256="artifact", rule_id="rule",
+                mode=mode, lifecycle=lifecycle, started_at=1, updated_at=1,
+            ))
+        assert await db.has_supervision_work() is expected
+        assert not await db.has_supervision_work("unrelated")
+
+
 class TestCrud:
     async def test_create_then_get_round_trips_every_column(self, db):
         row = _session(
@@ -52,6 +128,8 @@ class TestCrud:
             restarts=2,
             quarantined_at=99.0,
             sleep_reason="rate_limit",
+            claim_refusal={"result": "prepare_failed", "reason": "checkout", "count": 1,
+                           "retry_at": 200.0},
         )
         await db.create_session(row)
         got = await db.get_session("sess1")
@@ -80,6 +158,48 @@ class TestCrud:
         await db.create_session(_session())
         await db.delete_session("sess1")
         assert await db.get_session("sess1") is None
+
+
+class TestClaimRefusal:
+    @pytest.mark.parametrize("phase", [None, "preparing"])
+    async def test_slot_cas_cannot_bypass_a_newly_recorded_cooldown(self, db, phase):
+        await db.create_session(_session(lifecycle="pool", claim_phase=phase))
+        saved = await db.record_claim_refusal(
+            "sess1", result="prepare_failed", reason="checkout", now=100,
+        )
+        async with db.immediate() as conn:
+            kind, row, _binding = await db.take_claim_slot(conn, "sess1", now=101, cap=None)
+        assert kind == "claim_refusal"
+        assert row.claim_phase == phase
+        assert row.claim_refusal == saved.claim_refusal
+
+    async def test_concurrent_cooldown_replays_count_once_and_preserve_deadline(self, db):
+        await db.create_session(_session(lifecycle="pool"))
+        results = await asyncio.gather(*(
+            db.record_claim_refusal("sess1", result="prepare_failed", reason="checkout", now=100)
+            for _ in range(8)
+        ))
+        assert all(row.claim_refusal == results[0].claim_refusal for row in results)
+        assert results[0].claim_refusal == {
+            "result": "prepare_failed", "reason": "checkout", "count": 1, "retry_at": 160,
+        }
+        results = await asyncio.gather(*(
+            db.record_claim_refusal("sess1", result="prepare_failed", reason="checkout", now=161)
+            for _ in range(8)
+        ))
+        assert all(row.desired_state == "stopped" for row in results)
+        assert all(row.claim_refusal == {
+            "result": "prepare_failed", "reason": "checkout", "count": 2, "retry_at": 461,
+        } for row in results)
+
+    async def test_late_failure_cannot_drain_a_successfully_activated_claim(self, db):
+        await db.create_task(Task(id="work", project_id="p1", title="Work", description=""))
+        await db.create_session(_session(lifecycle="pool", task_id="work", claim_phase="active"))
+        row = await db.record_claim_refusal(
+            "sess1", result="prepare_failed", reason="stale failure", now=100,
+        )
+        assert row.claim_refusal is None
+        assert (row.desired_state, row.task_id, row.claim_phase) == ("running", "work", "active")
 
 
 class TestNameResolution:
@@ -149,6 +269,18 @@ class TestListing:
         await db.create_session(_session(id="a", started_at=100.0, name="s-a"))
         await db.create_session(_session(id="b", started_at=300.0, name="s-b"))
         assert [r.id for r in await db.list_sessions()] == ["b", "a"]
+
+    async def test_pages_filtered_sessions_with_stable_ties(self, db):
+        await db.create_session(_session(id="a", started_at=100.0, state="running", name="s-a"))
+        await db.create_session(_session(id="b", started_at=200.0, state="stopped", name="s-b"))
+        await db.create_session(_session(id="c", started_at=200.0, state="running", name="s-c"))
+        await db.create_session(_session(id="d", started_at=200.0, state="running", name="s-d"))
+
+        assert [r.id for r in await db.list_sessions(limit=2)] == ["d", "c"]
+        assert [r.id for r in await db.list_sessions(limit=2, offset=2)] == ["b", "a"]
+        assert [r.id for r in await db.list_sessions(state="running", limit=2, offset=1)] == [
+            "c", "a"
+        ]
 
 
 class TestStateMachine:
