@@ -66,7 +66,17 @@ discord:
 | `digest.catchup_hours` | `24` | How far back one labelled catch-up window may reach after an outage, 1–168. A window older than this is dropped rather than posted as stale news. |
 | `escalation.mention_user_ids` / `mention_role_ids` | empty | The **only** source of a ping. Applied to the first post of an incident and nowhere else. |
 | `escalation.reminder_minutes` | `0` (off) | Optional nag interval for an unanswered incident, 5–1440 when set. |
-| `escalation.supervisor_delivery_timeout_minutes` | `15` | How long an internal supervisor notice may stay undelivered before the watchdog raises an operational incident about it. |
+| `escalation.supervisor_delivery_timeout_minutes` | `15` | How long an internal supervisor notice may stay undelivered before the watchdog raises an operational incident. Also the interval for reminding the owner about an answered, unresolved escalation. |
+
+Once a verified reply is recorded, routine human notifications stop. The
+escalation remains open until a supervisor records the action or decision;
+answered incidents do not appear in the digest's human attention count. If the
+answer remains unresolved after the configured timeout, the owning supervisor
+receives an internal reminder. Reminders survive daemon restarts and never
+stack behind an undelivered notice. The authenticated global supervisor can
+resolve or cancel escalations in any project; a project supervisor can act only
+within its own project. Resolving still requires a verified answer and revision
+checks; cancelling an unanswered question withdraws it without inventing one.
 
 Settings → Messaging in the dashboard edits the same values and shows a live
 preview; the config file is the source of truth either way.
@@ -320,12 +330,13 @@ returns the receipt and never repeats the action.
 Three sources, all of them a supervisor's judgement rather than an automatic
 reflex:
 
-* **A blocked task.** The shipped system playbook
-  [`blocked-task-escalation`](../../src/prompts/default_playbooks/blocked-task-escalation.md)
-  turns every `task.failed` event whose status is `BLOCKED` into exactly one
-  message to `session:supervisor-<project>`, telling it to read the session
-  log tail with `aq session logs` and decide: retry, hold, follow up, or ask
-  the human. The playbook itself repairs nothing.
+* **A failed task.** The shipped system playbook
+  [`supervisor-failure-triage`](../../src/prompts/default_playbooks/supervisor-failure-triage.md)
+  reconciles every `task.failed` event with the task's durable failure incident.
+  Only a new actionable incident wakes the project supervisor to read the
+  evidence and decide: retry, hold, follow up, or ask the human. The retired
+  `blocked-task-escalation` recording remains available for audit, but its
+  source is no longer installed at startup.
 * **A worker question.** A question a supervisor cannot answer is escalated
   with `aq question escalate <question-id> --reason "…"`, which creates or
   reuses a durable escalation with the question as its source. A human
