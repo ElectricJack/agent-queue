@@ -48,6 +48,43 @@ def service_source_commit(handler, service):
 
 
 class WaitV2CommandsMixin:
+    async def recover_continuation_incident(self, args):
+        """Route task recovery IDs from resume holds to their existing fenced owner."""
+        from src.commands.principal import TRUSTED_LOCAL
+        from src.database.tables import continuations, escalations
+
+        async with self.db._engine.connect() as conn:
+            incident = (await conn.execute(select(escalations).where(
+                escalations.c.id == args.get('incident_id'),
+                escalations.c.source_kind == 'continuation',
+            ))).mappings().first()
+            if incident is None:
+                return None
+            intent = (await conn.execute(select(continuations).where(
+                continuations.c.task_id == args['task_id'],
+                continuations.c.facts['hold_escalation_id'].astext == incident['id'],
+                continuations.c.resume_state == 'held',
+            ))).mappings().first()
+        if intent is None or incident['task_id'] != args['task_id']:
+            return refusal('task_recovery.refused', 'Continuation incident is stale or not found')
+        if (args['decision'] != 'retry' or args.get('operator_release')
+                or args.get('expected_hold_at') is not None):
+            return refusal('task_recovery.refused',
+                           'Continuation resume holds use decision retry; inspect aq wait explain')
+        service = getattr(self.orchestrator, 'wait_service', None)
+        if service is None:
+            return refusal('wait.unavailable', 'Continuation recovery service is unavailable')
+        try:
+            result = await service.lifecycle.resume.requeue({
+                'wait_id': intent['wait_id'], 'continuation_id': intent['id'],
+                'expected_generation': intent['suspension_generation'], 'note': args['reason'].strip(),
+            }, principal=current_principal() or TRUSTED_LOCAL, scope=self._current_scope or {},
+                handler=self, incident_id=incident['id'])
+        except WaitError as exc:
+            return refusal(exc.code, str(exc), **exc.details)
+        return {**result, 'task_id': args['task_id'], 'incident_id': incident['id'],
+                'decision': 'retry'}
+
     async def repair_wait_orphans(self, *, project_id=None):
         """Doctor's mutating command boundary; never a public worker tool."""
         from src.waits.recovery import repair_orphans
