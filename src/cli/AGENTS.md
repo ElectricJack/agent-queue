@@ -53,7 +53,10 @@ playbook.py        `aq playbook` — compile, run, HITL, health
 pool_provider.py   `aq pool provider` — generated status/apply and structured preview flags
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
-promote.py         `aq promote {schema,validate}` — read-only promotion flows and YAML/JSON files
+policy.py          `aq policy export|diff|apply` and the shared per-item import selection
+promote.py         `aq promote {schema,validate,prepare,request,hotfix,approve,cancel,repair,status,list}` — flow
+                   validation, pinned step PRs, and cached promotion history
+promote_rulesets.py `aq promote rulesets` — print chain/tag rulesets and workflow triggers
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
 reports.py         `aq report {morning,request,brief,submit}` — evidence preview, durable reads and file submission
 reviews.py         `aq review` — document-review queue, decisions, revisions, and comments
@@ -73,7 +76,8 @@ uninstall.py       `aq uninstall` — plans and removes installer-owned resource
 update.py          `aq update` — stop the daemon, fast-forward the source checkout, then hand
                    reinstall / rebuild / restart to a fresh process on the new code
                    (src/install/update_finish.py); rolls back on any failure (src/install/update.py)
-waits.py           `aq wait {register,show,list,cancel}` — typed, claim-fenced durable waits
+waits.py           `aq wait {register,show,list,cancel,explain,graph,checkpoint,ack,decide,lift,bridge}`
+                   — versioned conditions, evidence and claim-fenced durable waits
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 
