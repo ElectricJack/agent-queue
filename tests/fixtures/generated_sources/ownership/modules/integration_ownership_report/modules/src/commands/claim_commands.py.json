@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/commands/claim_commands.py::ClaimCommandsMixin._observation_budget": {
+      "fingerprint": "b54332f5b5a5d149c0a6c183b382e55486ebe154e467adc179f30956e35957c8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/commands/claim_commands.py::ClaimCommandsMixin._attempt_claim_once": {
       "baseline_span": [

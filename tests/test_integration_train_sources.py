@@ -619,6 +619,11 @@ async def test_pair_conflict_exclusion_survives_restart_until_either_head_change
 
     train, _, _ = await hosted_train(world)
     source = await pair_conflict_branch(world, "bad", "source")
+    # conflicting-source-batches.md: target movement AFTER freeze is A6 build
+    # work; an already-conflicting source would be refused at admission.
+    service = (await train.lane_for(MAIN)).service
+    selected = await train.batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None
     origin = world.origin
     git(origin.clone, "checkout", "-q", "-B", "main", "origin/main")
     (origin.clone / "base.txt").write_text("target\n")
@@ -652,7 +657,11 @@ async def test_pair_conflict_exclusion_survives_restart_until_either_head_change
         await world.db.transition_task("bad", TaskStatus.IN_PROGRESS, force=True)
         await close(world.db, "bad", [git(origin.clone, "rev-parse", "HEAD")],
                     close_id="close-bad-refreshed", origin=origin)
-    assert await fixture_batches(world.db).pending(MAIN, await snapshot(world)) is not None
+    blockers = []
+    assert await fixture_batches(world.db).pending(
+        MAIN, await snapshot(world), blockers=blockers) is None
+    # A changed pair clears A6 exclusion but does not authorize dirty admission.
+    assert [b["code"] for b in blockers] == ["pr_conflicting"]
 
 
 async def test_build_conflict_drops_each_bad_member_without_a_batch_fixer(world):
@@ -1442,9 +1451,15 @@ async def test_pending_members_are_exact_undelivered_sources(world, conflicting_
         github.pr_runs.clear()
         github.mergeability.update({url: "dirty" for url in github.pulls})
         batches = train.batches
-    members, requests, dependencies = await batches.pending(
-        MAIN, await snapshot(world)
-    )
+    blockers = []
+    pending = await batches.pending(MAIN, await snapshot(world), blockers=blockers)
+    if conflicting_pr:
+        # conflicting-source-batches.md: root source admission refuses dirty PRs,
+        # including suppressed workflows; undelivered never means admissible.
+        assert pending is None
+        assert {b["task_id"] for b in blockers if b["code"] == "pr_conflicting"} == {"a", "b", "after"}
+        return
+    members, requests, dependencies = pending
     base = world.origin.clone
     assert {m.task_id: (m.source_sha, m.source_base_sha) for m in members} == {
         "a": (a, git(base, "rev-parse", f"{a}^")),
@@ -7874,23 +7889,29 @@ async def test_red_source_requires_exact_admitted_repair_and_combined_candidate(
     assert git(world.origin.url, "rev-parse", "main") == observed.candidate_sha
 
 
-async def test_root_pr_gate_admits_suppressed_checks_without_changing_source(world):
+@pytest.mark.parametrize("mergeable", [False, None])
+async def test_root_pr_gate_refuses_suppressed_checks_without_changing_source(world, mergeable):
+    # conflicting-source-batches.md: root source admission refuses dirty PRs
+    # even when GitHub suppresses their workflows; push CI cannot admit them.
     head = await completed(world, "leaf")
     train, github, _ = await hosted_train(world)
     url = (await world.db.get_task("leaf")).pr_url
     github.pr_runs.clear()
-    github.runs[head] = "success"  # Push checks do not replace PR or candidate CI.
+    github.runs[head] = "success"
     github.mergeability[url] = "dirty"
+    pull_request = github.pull_request
+
+    async def dirty_pull(url):
+        return {**await pull_request(url), "mergeable": mergeable}
+
+    github.pull_request = dirty_pull
     main = git(world.origin.url, "rev-parse", "main")
     visit = await train.visit(MAIN)
-    assert visit.state == "testing", visit
-    assert [(m.task_id, m.source_sha) for m in await BatchStore(world.db).members(
-        visit.batch_id)] == [("leaf", head)]
+    assert visit.batch_id is None and visit.repair is None, visit
+    assert visit.detail["blockers"][0]["code"] == "pr_conflicting"
     assert git(world.origin.url, "rev-parse", "aq/leaf") == head
     assert git(world.origin.url, "rev-parse", "main") == main
     assert github.records == []
-    github.runs[visit.candidate_sha] = "success"
-    assert (await train.visit(MAIN)).state == "delivered"
 
 
 @pytest.mark.parametrize("condition,code", [
@@ -7907,11 +7928,17 @@ async def test_root_pr_gate_admits_suppressed_checks_without_changing_source(wor
     ("review_missing", "pr_review_missing"),
     ("changes_requested", "pr_changes_requested"),
 ])
-async def test_conflicting_pr_does_not_hide_checks_or_review_refusals(world, condition, code):
+@pytest.mark.parametrize("conflicting", [False, True])
+async def test_conflicting_pr_does_not_hide_checks_or_review_refusals(
+    world, condition, code, conflicting,
+):
     head = await completed(world, "leaf")
     train, github, _ = await hosted_train(world)
     url = (await world.db.get_task("leaf")).pr_url
-    github.mergeability[url] = "dirty"
+    # conflicting-source-batches.md retains ordinary CI/review gates; missing
+    # PR runs on a clean PR remain pending, while dirty suppressed runs refuse.
+    if conflicting:
+        github.mergeability[url] = "dirty"
     github.pr_runs.clear()
     if condition in {"red", "running", "cancelled"}:
         github.pr_runs[head] = {
@@ -7927,6 +7954,7 @@ async def test_conflicting_pr_does_not_hide_checks_or_review_refusals(world, con
             "transport_unavailable", "required-check observation unavailable",
         ))
     else:
+        github.pr_runs[head] = "success"
         policy = (await world.db.get_project("p")).hierarchical_integration_policy
         policy["root"]["admission"] = "reviewed"
         await world.db.update_project("p", hierarchical_integration_policy=policy)
@@ -8079,22 +8107,24 @@ async def test_existing_repair_keeps_every_conflicting_source_until_combined_can
         head = git(origin.clone, "rev-parse", "HEAD")
         await completed(world, tid, head=head, source_base=base)
         sources.append(head)
+    train, github, _ = await hosted_train(world)
+    policy = (await world.db.get_project("p")).hierarchical_integration_policy
+    policy["root"]["admission"] = "reviewed"
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    for index, (tid, head) in enumerate(zip(("a", "b", "c"), sources, strict=True)):
+        github.reviews.append({"id": index + 1, "commit_id": head, "state": "APPROVED",
+                               "user": {"login": ("alice", "bob", "jack")[index],
+                                        "type": "User"}})
+    # conflicting-source-batches.md: conflicts introduced after admission stay
+    # frozen candidate work, including a retained older daemon repair.
+    service = (await train.lane_for(MAIN)).service
+    selected = await train.batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None
     git(origin.clone, "checkout", "-q", "-B", "main", "origin/main")
     (origin.clone / "base.txt").write_text("main edit\n")
     git(origin.clone, "commit", "-qam", "main conflicts with all sources")
     git(origin.clone, "push", "-q", "origin", "main")
     target = git(origin.clone, "rev-parse", "HEAD")
-    train, github, _ = await hosted_train(world)
-    policy = (await world.db.get_project("p")).hierarchical_integration_policy
-    policy["root"]["admission"] = "reviewed"
-    await world.db.update_project("p", hierarchical_integration_policy=policy)
-    github.pr_runs.clear()
-    for index, (tid, head) in enumerate(zip(("a", "b", "c"), sources, strict=True)):
-        url = (await world.db.get_task(tid)).pr_url
-        github.mergeability[url] = "dirty"
-        github.reviews.append({"id": index + 1, "commit_id": head, "state": "APPROVED",
-                               "user": {"login": ("alice", "bob", "jack")[index],
-                                        "type": "User"}})
     # Recover a repair already started by an older daemon. A6 must not replace
     # a batch while its existing repair writer owns the candidate.
     train.batches.drop_conflict = AsyncMock(return_value=None)
@@ -8240,54 +8270,41 @@ async def conflicting_epic_pr(case, *, content_conflict=False):
 
 @pytest.mark.parametrize("content_conflict", [False, True])
 async def test_conflicting_epic_does_not_block_unrelated_root(collected_epic, content_conflict):
-    from src.commands.integration_commands import IntegrationCommandsMixin
-    from src.database.tables import messages
-
+    # conflicting-source-batches.md, root source admission: refuse dirty epics,
+    # mechanically refresh clean merges and reopen originals on source conflict.
     case = collected_epic
     head, default, _ = await conflicting_epic_pr(case, content_conflict=content_conflict)
+    original = await case.db.get_task("epic")
     leaf = await completed(case.world, "leaf")
     case.github.reviews.append({"id": 100, "state": "APPROVED", "commit_id": leaf,
                                "user": {"login": "alice", "type": "User"}})
-    handler = IntegrationCommandsMixin()
-    handler.db = case.db
-    case.train.batches.refresh_conflict = handler.refresh_integration_pair_conflict
+    case.train.batches.conflict_handler = root_pr_refresher(case.world)
     visit = await case.train.visit(MAIN)
-    assert visit.state == "testing", visit
+    assert visit.state == "testing" and visit.repair is None, visit
     members = await BatchStore(case.db).members(visit.batch_id)
-    assert [(m.task_id, m.source_sha) for m in members] == (
-        [("leaf", leaf)] if content_conflict else [("epic", head), ("leaf", leaf)])
-    async with case.db._engine.connect() as conn:
-        assert not (await conn.execute(select(integration_batches.c.id).where(
-            integration_batches.c.id.like("train-epic-refresh-%")))).first()
-        assert not (await conn.execute(select(events.c.id).where(
-            events.c.event_type == "integration.epic_refresh"))).first()
-    assert git(case.origin.url, "rev-parse", "aq/epic") == head
-    assert git(case.origin.url, "rev-parse", "main") == default
+    assert [(m.task_id, m.source_sha) for m in members] == [("leaf", leaf)]
+    [blocker] = [b for b in visit.detail["blockers"] if b.get("task_id") == "epic"]
+    assert blocker["code"] == "pr_conflicting"
+    assert blocker["refresh"]["outcome"] == ("reopened" if content_conflict else "refreshed")
+    assert not visit.detail.get("ejections")  # Refused before freezing, unlike A6.
+    after = await case.db.get_task("epic")
+    assert after.created_at == original.created_at
+    assert after.pr_url == original.pr_url and after.branch_name == original.branch_name
     if content_conflict:
-        assert visit.repair is None
-        [ejection] = visit.detail["ejections"]
-        assert ejection["code"] == "pair_conflict:epic"
-        old = await case.db.get_integration_batch(ejection["batch_id"])
-        assert old["ejection_record"]["pair_conflict"]["refresh_result"]["outcome"] == (
-            "supervisor_notified")
-        again = await case.train.visit(MAIN)
-        assert again.batch_id == visit.batch_id and again.state == "testing", again
-        async with case.db._engine.connect() as conn:
-            notices = (await conn.execute(select(messages).where(
-                messages.c.body_kind == "integration_pair_conflict"))).mappings().all()
-        assert len(notices) == 1 and "Refresh ejected source epic" == notices[0]["subject"]
-        assert (await case.db.get_task("epic")).status == TaskStatus.COMPLETED
-        case.github.runs[visit.candidate_sha] = "success"
-        delivered = await case.train.visit(MAIN)
-        assert (delivered.state == "delivered"
-                or delivered.detail.get("settled_batch_id") == visit.batch_id), delivered
-        assert git(case.origin.url, "rev-parse", "main") == visit.candidate_sha
-        git(case.origin.url, "merge-base", "--is-ancestor", leaf, "main")
+        assert after.status is TaskStatus.READY
+        assert "base.txt" in after.description and default in after.description
+        assert git(case.origin.url, "rev-parse", "aq/epic") == head
     else:
-        case.github.runs[visit.candidate_sha] = "success"
-        assert (await case.train.visit(MAIN)).state == "delivered"
-        for source in (head, leaf, default):
-            git(case.origin.url, "merge-base", "--is-ancestor", source, "main")
+        assert after.status is TaskStatus.COMPLETED
+        refreshed = git(case.origin.url, "rev-parse", "aq/epic")
+        assert git(case.origin.url, "show", "-s", "--format=%P", refreshed).split() == [head, default]
+    assert git(case.origin.url, "rev-parse", "main") == default
+    case.github.runs[visit.candidate_sha] = "success"
+    delivered = await case.train.visit(MAIN)
+    assert (delivered.state == "delivered"
+            or delivered.detail.get("settled_batch_id") == visit.batch_id), delivered
+    assert git(case.origin.url, "rev-parse", "main") == visit.candidate_sha
+    git(case.origin.url, "merge-base", "--is-ancestor", leaf, "main")
 
 
 async def test_explicit_conflicting_epic_refresh_still_files_one_ordinary_repair(collected_epic):
@@ -8570,7 +8587,7 @@ async def test_legacy_delivery_doctor_reports_unreachable_shas_without_writing(w
 @pytest.mark.parametrize("suppressed", [False, True])
 @pytest.mark.parametrize("mismatch", ["closed", "head", "branch", "base", "fork", "draft"])
 async def test_root_pr_gate_requires_exact_open_same_repository_identity(world, mismatch, suppressed):
-    await completed(world, "leaf")
+    head = await completed(world, "leaf")
     now = [1000.0]
     train, github, _ = await hosted_train(world, clock=lambda: now[0])
     url = (await world.db.get_task("leaf")).pr_url
@@ -8597,6 +8614,10 @@ async def test_root_pr_gate_requires_exact_open_same_repository_identity(world, 
     assert blocked.batch_id is None and blocked.detail["blockers"][0]["code"] == code
     assert github.observed == []  # Don't read CI for a different proposal.
     github.pull_request = original
+    if suppressed:
+        # conflicting-source-batches.md requires a clean proposal with exact PR CI.
+        github.mergeability.pop(url)
+        github.pr_runs[head] = "success"
     now[0] += 61
     assert (await train.visit(MAIN)).state == "testing"
 
@@ -10342,6 +10363,7 @@ async def test_root_pr_recovery_refuses_same_head_already_reopened_by_source_ci(
 
 @pytest.mark.parametrize("conflicting_pr", [False, True])
 async def test_original_pr_1910_pending_members_are_exact_undelivered_sources(world, conflicting_pr):
+    # conflicting-source-batches.md: root source admission refuses dirty PRs.
     db = world.db
     await completed(world, "landed", land=True)
     a = await completed(world, "a")
@@ -10588,12 +10610,21 @@ async def test_bot_refresh_regenerates_and_retains_source_admission_without_ci_r
     first = await train.visit(MAIN)
     assert first.batch_id is None
     [blocker] = first.detail["blockers"]
+    # conflicting-source-batches: observed red CI keeps its refusal precedence;
+    # a bot refresh only carries admission from an otherwise eligible source.
+    if checks == "red":
+        assert blocker["code"] == "pr_checks_red" and "refresh" not in blocker
+        assert git(origin.url, "rev-parse", "aq/source") == source
+        assert (await world.db.get_task("source")).status is TaskStatus.COMPLETED
+        return
     assert blocker["refresh"]["outcome"] == "refreshed", blocker
     merged = git(origin.url, "rev-parse", "aq/source")
     assert git(origin.url, "show", "-s", "--format=%P", merged).split() == [source, target]
     modules = json.loads(git(origin.url, "show", f"{merged}:{Catalogue.CATALOGUE_PATH}"))["modules"]
     assert set(modules) == {f"tests/test_{name}.py" for name in ("base", "alpha", "beta")}
-    assert merged not in github.pr_runs and github.observed == []
+    assert merged not in github.pr_runs
+    assert github.observed == [source, source]
+    github.observed.clear()
     after = await world.db.get_task("source")
     assert after.status is TaskStatus.COMPLETED and after.pr_url == task.pr_url
     assert after.created_at == task.created_at
@@ -10759,53 +10790,20 @@ async def test_root_pr_gate_refuses_conflicts_without_changing_source(world, mer
     assert git(world.origin.url, "rev-parse", "aq/leaf") == head
     assert git(world.origin.url, "rev-parse", "main") == main
     assert github.records == []
-    assert github.observed == []  # A conflict needs no required-check queries.
+    # Admission still observes exact CI before the conflicting-source refusal.
+    assert github.observed == [head, head]
 
 
 
-@pytest.mark.parametrize("condition", [
-    "red", "running", "cancelled", "push_red", "push_running", "push_cancelled",
-    "push_neutral", "push_skipped", "push_timeout", "check_outage", "review_missing",
-    "changes_requested",
-])
-async def test_conflicting_pr_is_refused_before_checks_or_reviews(world, condition):
-    head = await completed(world, "leaf")
-    train, github, _ = await hosted_train(world)
-    url = (await world.db.get_task("leaf")).pr_url
-    github.mergeability[url] = "dirty"
-    github.pr_runs.clear()
-    if condition in {"red", "running", "cancelled"}:
-        github.pr_runs[head] = {
-            "red": "failure", "running": "pending", "cancelled": "cancelled",
-        }[condition]
-    elif condition.startswith("push_"):
-        github.runs[head] = {
-            "push_red": "failure", "push_running": "pending", "push_cancelled": "cancelled",
-            "push_neutral": "neutral", "push_skipped": "skipped", "push_timeout": "timed_out",
-        }[condition]
-    elif condition == "check_outage":
-        github.paged_items = AsyncMock(side_effect=GitHubAccessError(
-            "transport_unavailable", "required-check observation unavailable",
-        ))
-    else:
-        policy = (await world.db.get_project("p")).hierarchical_integration_policy
-        policy["root"]["admission"] = "reviewed"
-        await world.db.update_project("p", hierarchical_integration_policy=policy)
-        if condition == "changes_requested":
-            github.reviews.append({"id": 1, "commit_id": head, "state": "CHANGES_REQUESTED",
-                                   "user": {"login": "bob", "type": "User"}})
-    visit = await train.visit(MAIN)
-    assert visit.batch_id is None, visit
-    assert visit.detail["blockers"][0]["code"] == "pr_conflicting"
-    assert github.observed == []
-    assert git(world.origin.url, "rev-parse", "aq/leaf") == head
 
 
 
-async def test_one_repair_keeps_every_frozen_source_when_target_moves_into_conflict(world):
-    """After freezing, main moves into conflict with all three sources, including
-    generated artifacts. Partial repair, trailers and green partial CI cannot
-    deliver; one worker retains the whole frozen batch through final checks."""
+async def test_target_move_ejects_every_conflicting_frozen_source_without_a_fixer(world):
+    """A6 drops conflicts found after freeze, retaining each exact pair as evidence.
+
+    Legacy repairs already allocated retain the full-batch ancestry/trailer checks
+    in test_existing_repair_keeps_every_conflicting_source_until_combined_candidate_passes.
+    """
     origin = world.origin
     catalogue_repository(origin)
     base = git(origin.url, "rev-parse", "main")
@@ -10841,95 +10839,28 @@ async def test_one_repair_keeps_every_frozen_source_when_target_moves_into_confl
                                "user": {"login": ("alice", "bob", "jack")[index],
                                         "type": "User"}})
     first = await train.visit(MAIN)
-    assert first.state == "repair", first
-    frozen = await BatchStore(world.db).members(first.batch_id)
+    assert first.state == "blocked" and first.repair is None, first
+    assert [item["code"] for item in first.detail["ejections"]] == [
+        "pair_conflict:a", "pair_conflict:b", "pair_conflict:c"]
+    for item, tid, head in zip(first.detail["ejections"], ("a", "b", "c"), sources,
+                               strict=True):
+        row = await world.db.get_integration_batch(item["batch_id"])
+        pair = row["ejection_record"]["pair_conflict"]
+        assert row["intent"] == "aborted" and row["repair_attempt_count"] == 0
+        assert pair["target_sha"] == target and pair["sources"][tid] == head
+        assert item["ejected_members"] == [tid]
+        assert (await world.db.get_task(tid)).status is TaskStatus.COMPLETED
+        assert git(origin.url, "rev-parse", f"aq/{tid}") == head
+    frozen = await BatchStore(world.db).members("frozen-before-target-move")
     assert [(m.task_id, m.source_sha) for m in frozen] == list(zip(("a", "b", "c"), sources))
-    repair = await world.db.get_task(first.repair["task_id"])
-    assert all(head in repair.description for head in sources)
-    assert "once" in repair.description and "ancestor" in repair.description
-    ref = candidate_ref(first.batch_id)
-    fence = Fence.model_validate(first.repair["fence"])
-    locks = BranchLock(world.db)
-    git(origin.clone, "fetch", "-q", "origin")
-    git(origin.clone, "checkout", "-q", "--detach", first.candidate_sha)
-
-    async def merge_source(index):
-        result = subprocess.run(
-            ["git", "merge", "--no-ff", "--no-commit", sources[index]],
-            cwd=origin.clone, capture_output=True, text=True, check=False,
-        )
-        assert result.returncode == 1, result.stdout + result.stderr
-        conflicts = git(origin.clone, "diff", "--name-only", "--diff-filter=U").splitlines()
-        assert "base.txt" in conflicts
-        if Catalogue.CATALOGUE_PATH in conflicts:
-            git(origin.clone, "checkout", "--ours", Catalogue.CATALOGUE_PATH)
-        (origin.clone / "base.txt").write_text(
-            "main edit\n" + "".join(f"{tid} edit\n" for tid in ("a", "b", "c")[:index + 1]),
-        )
-        git(origin.clone, "add", "base.txt", Catalogue.CATALOGUE_PATH)
-        # A trailer claiming unmerged sources is deliberately not sufficient.
-        message = "repair source conflict"
-        if index == 0:
-            message += "\n\n" + "\n".join(
-                f"AQ-Source: {tid}@{head}" for tid, head in zip(("b", "c"), sources[1:])
-            )
-        git(origin.clone, "commit", "-qm", message)
-        candidate = git(origin.clone, "rev-parse", "HEAD")
-        old = git(origin.url, "rev-parse", ref)
-        await locks.fenced_push(
-            fence, git=train.lane_for.git, checkout_path=str(origin.clone),
-            repository=GitHubRepositoryBinding(123, github.full_name),
-            tip_oid=candidate, expected_old_oid=old,
-        )
-        return candidate
-
-    partial = await merge_source(0)
-    github.runs[partial] = "success"
-    train = IntegrationTrain(
-        targets=DatabaseTargets(world.db), batches=train.batches, lane_for=train.lane_for,
-        repair=OrdinaryRepairService(world.db),
-    )
-    partial_visit = await train.visit(MAIN)
-    assert partial_visit.state == "repair", partial_visit
-    assert partial_visit.repair["task_id"] == repair.id
-    assert partial_visit.repair["attempt_count"] == 1
-    assert git(origin.url, "rev-parse", "main") == target
-    assert git(origin.url, "rev-parse", ref) == partial
-    for index in (1, 2):
-        await merge_source(index)
-    subprocess.run([sys.executable, "scripts/generate-selection-catalogue.py"],
-                   cwd=origin.clone, check=True, capture_output=True)
-    git(origin.clone, "add", Catalogue.CATALOGUE_PATH)
-    git(origin.clone, "commit", "-qm", "regenerate after every source is merged")
-    repaired = git(origin.clone, "rev-parse", "HEAD")
-    await locks.fenced_push(
-        fence, git=train.lane_for.git, checkout_path=str(origin.clone),
-        repository=GitHubRepositoryBinding(123, github.full_name),
-        tip_oid=repaired, expected_old_oid=git(origin.url, "rev-parse", ref),
-    )
-    github.runs[target] = "success"
-    github.runs[repaired] = "failure"
-    red = await train.visit(MAIN)
-    assert (red.state, red.checks) == ("repair", "red"), red
-    assert red.repair["task_id"] == repair.id
     assert git(origin.url, "rev-parse", "main") == target
     assert not github.records
-    await close(world.db, repair.id, [repaired], origin=origin)
-    await locks.release(fence)
-    github.runs[repaired] = "success"
-    delivered = await train.visit(MAIN)
-    assert delivered.state == "delivered", delivered
-    assert delivered.candidate_sha == delivered.target_sha == repaired
-    assert github.records[-1]["head_sha"] == repaired
-    assert git(origin.url, "rev-parse", "main") == repaired
-    for tid, head in zip(("a", "b", "c"), sources, strict=True):
-        git(origin.url, "merge-base", "--is-ancestor", head, repaired)
-        assert git(origin.url, "rev-parse", f"aq/{tid}") == head
-    git(origin.url, "merge-base", "--is-ancestor", target, repaired)
-    modules = set(json.loads(git(origin.url, "show", f"{repaired}:{Catalogue.CATALOGUE_PATH}"))[
-        "modules"])
-    assert modules == {f"tests/test_{module}.py" for module in ("base", "alpha", "beta", "gamma")}
-
+    assert {t.id for t in await world.db.list_tasks(project_id="p")} == {"a", "b", "c"}
+    # Durable pair exclusions prevent a restart from allocating a batch fixer.
+    blockers = []
+    assert await fixture_batches(world.db).pending(
+        MAIN, await snapshot(world), blockers=blockers) is None
+    assert {b["code"] for b in blockers} == {f"pair_conflict:{tid}" for tid in ("a", "b", "c")}
 
 
 async def test_original_pr_1910_root_pr_gate_retries_unknown_mergeability_soon_then_backs_off(world):
@@ -10950,14 +10881,13 @@ async def test_original_pr_1910_root_pr_gate_retries_unknown_mergeability_soon_t
     github.mergeability[url] = "unknown"
     github.pr_runs[head] = "success"
     now[0] += 601
-    # Still-computing mergeability defers even with green checks.
-    assert (await train.visit(MAIN)).detail["blockers"][0]["mergeable"] == "unknown"
-    github.mergeability[url] = "clean"
-    now[0] += 601
+    # A4 exact green CI settles transient null mergeability; the pending
+    # observation above still receives the short retry and bounded backoff.
     assert (await train.visit(MAIN)).state == "testing"
 
 
 
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
 @pytest.mark.parametrize("content_conflict", [False, True])
 async def test_conflicting_epic_refreshes_or_reopens_original_without_blocking_clean_root(collected_epic, content_conflict):
     case = collected_epic
@@ -10996,8 +10926,14 @@ async def test_conflicting_epic_refreshes_or_reopens_original_without_blocking_c
     if not content_conflict:
         case.github.mergeability[url] = "clean"
         case.github.pr_runs[head] = "success"
+        pending = await case.train.visit(MAIN)
+        assert pending.state == "blocked" and pending.batch_id is None
+        assert pending.detail["blockers"][0]["code"] == "awaiting_pr_checks"
+        # A4 retains the pending exact-source CI observation until its poll is
+        # due; updating the remote fixture alone must not bypass that fence.
+        case.now[0] += 601
         next_visit = await case.train.visit(MAIN)
-        assert next_visit.state == "testing", next_visit
+        assert next_visit.state == "testing", next_visit.detail
         [member] = await BatchStore(case.db).members(next_visit.batch_id)
         assert member.task_id == "epic"
         assert member.source_sha == git(case.origin.url, "rev-parse", "aq/epic")
@@ -11042,10 +10978,12 @@ async def test_original_pr_1910_root_pr_gate_requires_exact_open_same_repository
     assert (await train.visit(MAIN)).state == "testing"
 
 
-async def test_one_repair_keeps_every_conflicting_source_until_combined_candidate_passes(world):
-    """Three completed branches conflict with main and each other, including
-    generated artifacts. Partial repair, trailers and green partial CI cannot
-    deliver; one worker retains the whole frozen batch through final checks."""
+async def test_conflicting_roots_reopen_originals_before_any_batch_is_frozen(world):
+    """conflicting-source-batches: admission refuses dirty sources before A6.
+
+    The original workers receive real source conflicts; generated overlap does
+    not authorize a new whole-batch fixer or bypass the admission gate.
+    """
     origin = world.origin
     catalogue_repository(origin)
     base = git(origin.url, "rev-parse", "main")
@@ -11074,128 +11012,35 @@ async def test_one_repair_keeps_every_conflicting_source_until_combined_candidat
         github.reviews.append({"id": index + 1, "commit_id": head, "state": "APPROVED",
                                "user": {"login": ("alice", "bob", "jack")[index],
                                         "type": "User"}})
+    train.batches.conflict_handler = root_pr_refresher(world)
+    originals = {tid: await world.db.get_task(tid) for tid in ("a", "b", "c")}
     first = await train.visit(MAIN)
-    assert first.state == "repair", first
-    frozen = await BatchStore(world.db).members(first.batch_id)
-    assert [(m.task_id, m.source_sha) for m in frozen] == list(zip(("a", "b", "c"), sources))
-    repair = await world.db.get_task(first.repair["task_id"])
-    assert all(head in repair.description for head in sources)
-    assert "once" in repair.description and "ancestor" in repair.description
-    ref = candidate_ref(first.batch_id)
-    fence = Fence.model_validate(first.repair["fence"])
-    locks = BranchLock(world.db)
-    git(origin.clone, "fetch", "-q", "origin")
-    git(origin.clone, "checkout", "-q", "--detach", first.candidate_sha)
-
-    async def merge_source(index):
-        result = subprocess.run(
-            ["git", "merge", "--no-ff", "--no-commit", sources[index]],
-            cwd=origin.clone, capture_output=True, text=True, check=False,
-        )
-        assert result.returncode == 1, result.stdout + result.stderr
-        conflicts = git(origin.clone, "diff", "--name-only", "--diff-filter=U").splitlines()
-        assert "base.txt" in conflicts
-        if Catalogue.CATALOGUE_PATH in conflicts:
-            git(origin.clone, "checkout", "--ours", Catalogue.CATALOGUE_PATH)
-        (origin.clone / "base.txt").write_text(
-            "main edit\n" + "".join(f"{tid} edit\n" for tid in ("a", "b", "c")[:index + 1]),
-        )
-        git(origin.clone, "add", "base.txt", Catalogue.CATALOGUE_PATH)
-        # A trailer claiming unmerged sources is deliberately not sufficient.
-        message = "repair source conflict"
-        if index == 0:
-            message += "\n\n" + "\n".join(
-                f"AQ-Source: {tid}@{head}" for tid, head in zip(("b", "c"), sources[1:])
-            )
-        git(origin.clone, "commit", "-qm", message)
-        candidate = git(origin.clone, "rev-parse", "HEAD")
-        old = git(origin.url, "rev-parse", ref)
-        await locks.fenced_push(
-            fence, git=train.lane_for.git, checkout_path=str(origin.clone),
-            repository=GitHubRepositoryBinding(123, github.full_name),
-            tip_oid=candidate, expected_old_oid=old,
-        )
-        return candidate
-
-    partial = await merge_source(0)
-    github.runs[partial] = "success"
-    train = IntegrationTrain(
-        targets=DatabaseTargets(world.db), batches=train.batches, lane_for=train.lane_for,
-        repair=OrdinaryRepairService(world.db),
-    )
-    partial_visit = await train.visit(MAIN)
-    assert partial_visit.state == "repair", partial_visit
-    assert partial_visit.repair["task_id"] == repair.id
-    assert partial_visit.repair["attempt_count"] == 1
-    assert git(origin.url, "rev-parse", "main") == target
-    assert git(origin.url, "rev-parse", ref) == partial
-    for index in (1, 2):
-        await merge_source(index)
-    subprocess.run([sys.executable, "scripts/generate-selection-catalogue.py"],
-                   cwd=origin.clone, check=True, capture_output=True)
-    git(origin.clone, "add", Catalogue.CATALOGUE_PATH)
-    git(origin.clone, "commit", "-qm", "regenerate after every source is merged")
-    repaired = git(origin.clone, "rev-parse", "HEAD")
-    await locks.fenced_push(
-        fence, git=train.lane_for.git, checkout_path=str(origin.clone),
-        repository=GitHubRepositoryBinding(123, github.full_name),
-        tip_oid=repaired, expected_old_oid=git(origin.url, "rev-parse", ref),
-    )
-    github.runs[target] = "success"
-    github.runs[repaired] = "failure"
-    red = await train.visit(MAIN)
-    assert (red.state, red.checks) == ("repair", "red"), red
-    assert red.repair["task_id"] == repair.id
+    assert first.state == "blocked" and first.batch_id is None and first.repair is None, first
+    assert not first.detail.get("ejections")
+    assert {b["task_id"] for b in first.detail["blockers"]} == {"a", "b", "c"}
+    for blocker in first.detail["blockers"]:
+        tid = blocker["task_id"]
+        original = originals[tid]
+        source = sources[("a", "b", "c").index(tid)]
+        assert blocker["code"] == "pr_conflicting"
+        assert blocker["source_sha"] == source and blocker["default_sha"] == target
+        assert blocker["refresh"]["outcome"] == "reopened"
+        task = await world.db.get_task(tid)
+        assert task.status is TaskStatus.READY
+        assert (task.pr_url, task.branch_name, task.created_at) == (
+            original.pr_url, original.branch_name, original.created_at)
+        assert source in task.description and target in task.description
+        assert "base.txt" in task.description
+        assert git(origin.url, "rev-parse", f"aq/{tid}") == source
     assert git(origin.url, "rev-parse", "main") == target
     assert not github.records
-    await close(world.db, repair.id, [repaired], origin=origin)
-    await locks.release(fence)
-    github.runs[repaired] = "success"
-    delivered = await train.visit(MAIN)
-    assert delivered.state == "delivered", delivered
-    assert delivered.candidate_sha == delivered.target_sha == repaired
-    assert github.records[-1]["head_sha"] == repaired
-    assert git(origin.url, "rev-parse", "main") == repaired
-    for tid, head in zip(("a", "b", "c"), sources, strict=True):
-        git(origin.url, "merge-base", "--is-ancestor", head, repaired)
-        assert git(origin.url, "rev-parse", f"aq/{tid}") == head
-    git(origin.url, "merge-base", "--is-ancestor", target, repaired)
-    modules = set(json.loads(git(origin.url, "show", f"{repaired}:{Catalogue.CATALOGUE_PATH}"))[
-        "modules"])
-    assert modules == {f"tests/test_{module}.py" for module in ("base", "alpha", "beta", "gamma")}
-
-
-
-@pytest.mark.parametrize("content_conflict", [False, True])
-async def test_conflicting_epic_joins_root_batch_without_author_refresh(collected_epic, content_conflict):
-    case = collected_epic
-    head, default, _ = await conflicting_epic_pr(case, content_conflict=content_conflict)
-    leaf = await completed(case.world, "leaf")
-    case.github.reviews.append({"id": 100, "state": "APPROVED", "commit_id": leaf,
-                               "user": {"login": "alice", "type": "User"}})
-    visit = await case.train.visit(MAIN)
-    assert visit.state == ("repair" if content_conflict else "testing"), visit
-    members = await BatchStore(case.db).members(visit.batch_id)
-    assert [(m.task_id, m.source_sha) for m in members] == [("epic", head), ("leaf", leaf)]
-    async with case.db._engine.connect() as conn:
-        assert not (await conn.execute(select(integration_batches.c.id).where(
-            integration_batches.c.id.like("train-epic-refresh-%")))).first()
-        assert not (await conn.execute(select(events.c.id).where(
-            events.c.event_type == "integration.epic_refresh"))).first()
-    assert git(case.origin.url, "rev-parse", "aq/epic") == head
-    assert git(case.origin.url, "rev-parse", "main") == default
-    if content_conflict:
-        repair = await case.db.get_task(visit.repair["task_id"])
-        assert repair.branch_name == candidate_ref(visit.batch_id).removeprefix("refs/heads/")
-        assert head in repair.description and leaf in repair.description
-        again = await case.train.visit(MAIN)
-        assert again.repair["task_id"] == repair.id and again.repair["attempt_count"] == 1
-    else:
-        case.github.runs[visit.candidate_sha] = "success"
-        assert (await case.train.visit(MAIN)).state == "delivered"
-        for source in (head, leaf, default):
-            git(case.origin.url, "merge-base", "--is-ancestor", source, "main")
-
+    assert {t.id for t in await world.db.list_tasks(project_id="p")} == {"a", "b", "c"}
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches.c.id))).first()
+    descriptions = {tid: (await world.db.get_task(tid)).description for tid in originals}
+    again = await train.visit(MAIN)
+    assert again.batch_id is None and again.repair is None
+    assert {t.id: t.description for t in await world.db.list_tasks(project_id="p")} == descriptions
 
 
 @pytest.mark.parametrize(
@@ -11381,8 +11226,7 @@ async def test_train_surfaces_obsolete_child_without_claiming_delivery(
 
 
 @pytest.mark.parametrize("earlier", ["source_ci", "legacy_delegate", "root_pr"])
-async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, earlier):
-    from src.database.tables import messages
+async def test_root_pr_recovery_changed_head_uses_current_budget(world, earlier):
     from src.integration.root_pr_recovery import RECOVERY_KEY
 
     train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
@@ -11401,13 +11245,16 @@ async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, e
                                        "debug_intelligence_class": "standard-high"}
             await conn.execute(update(projects).values(hierarchical_integration_policy=policy))
     github.pr_runs[source] = "failure"
-    for _ in range(2):
-        blocked = await train.visit(MAIN, seal_now=True)
-        assert blocked.detail["blockers"][0]["code"] == "source_ci_repair_exhausted"
+    # root-pr-check-recovery.md: successive changed heads and historical
+    # delegates use the root primary budget; only an already-repaired exact
+    # head is refused (covered by the cross-path same-head test above).
+    blocked = await train.visit(MAIN, seal_now=True)
+    assert blocked.detail["blockers"][0]["code"] == "pr_checks_red"
+    assert blocked.detail["blockers"][0]["recovery"]["outcome"] == "reopened"
     task = await world.db.get_task("root")
-    assert task.status is TaskStatus.COMPLETED
+    assert task.status is TaskStatus.READY
     assert task.pr_url == original.pr_url and task.branch_name == original.branch_name
-    async with world.db._engine.connect() as conn:
-        notices = (await conn.execute(select(messages).where(
-            messages.c.id == "msg-source-ci-budget-root"))).mappings().all()
-    assert len(notices) == 1
+    history = await world.db.get_task_meta("root", RECOVERY_KEY)
+    assert history["heads"] == (["f" * 40, source] if earlier == "root_pr" else [source])
+    assert (await train.visit(MAIN, seal_now=True)).state == "idle"
+    assert (await world.db.get_task_meta("root", RECOVERY_KEY)) == history

@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/orchestrator/workspace_attachments.py::detach_task_slot": {
+      "fingerprint": "1d07dba0eb8b092b6e8cb81fec26a6716042368db97b92d08aa8138808bb37e0",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/orchestrator/workspace_attachments.py::_mark_orphaned_integration_pool_handoff_released_on": {
       "baseline_span": [

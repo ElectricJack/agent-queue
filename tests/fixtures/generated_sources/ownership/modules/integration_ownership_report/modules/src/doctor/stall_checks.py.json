@@ -1,4 +1,14 @@
 {
+  "reconciliation_definitions": {
+    "src/doctor/stall_checks.py::_delivery_stuck_findings": {
+      "fingerprint": "9456a38c5a679cd2d2a265f076b9aa328666c4ade0a2641e47409b895fcb3dc7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/doctor/stall_checks.py::_stranded_promotion_findings": {
+      "fingerprint": "b7e2eb40653a85fcb1ebc479533338eff89afd0f12f4a27f3050cfa3ab31500d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/doctor/stall_checks.py::_branch_findings": {
       "baseline_span": [

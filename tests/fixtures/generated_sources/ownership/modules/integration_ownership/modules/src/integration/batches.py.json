@@ -4,18 +4,27 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 414,
+      "line": 545,
       "owner": "BatchStore.eject",
-      "owner_fingerprint": "82d2471ea5cb12b7874011a25f73751fb38169f4d0220aef68eef863c0e43022",
+      "owner_fingerprint": "62a300d18519b5a8f21ebd8e14074377c1197e6b38fdbe9c7e7e8668f00b1058",
       "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
+    },
+    "src/integration/batches.py::BatchStore.reassemble::d5c9659229fbd1c20968daa9af0ba70bc514ac8ab9a77410d85fb433459d14a7": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 704,
+      "owner": "BatchStore.reassemble",
+      "owner_fingerprint": "6d77da83e387409ebb404bbc2d80c856e9001df92c351510c2989a6b0d1baa87",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 571,
+      "line": 758,
       "owner": "BatchStore.set_intent",
-      "owner_fingerprint": "fe442b147c2c1c47d3cb73fa8ec908047163c4128f91de9f45fba45b54c12e26",
+      "owner_fingerprint": "4bd64ebb54cb1f4b56149f7a1a189f60c6a7df66d3d3f3b3a1432ece6810cb82",
       "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {

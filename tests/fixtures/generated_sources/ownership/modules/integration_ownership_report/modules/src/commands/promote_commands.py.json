@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, fail_stranded_promotion_tasks_on, promotion_ref, promotion_task_defect": {
+      "fingerprint": "ad6d4a0a391ae6f4258668944b00a83526e1fcc8755fe8b2dab231553ba41ced",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_backmerge_source": {
       "reason": "Authors owed lower-branch sources after freshly observing the released head; each source enters its own frozen batch and PR gate, or records configured disabled backmerge debt."

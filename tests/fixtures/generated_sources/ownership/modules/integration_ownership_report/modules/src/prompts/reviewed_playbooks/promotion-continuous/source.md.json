@@ -1,4 +1,14 @@
 {
+  "reconciliation_definitions": {
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::# Promotion continuous": {
+      "fingerprint": "e79839c6894489ebd3163f6d2ee98a8bed1dcda5384b08994fe50b93ff05e2bc",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::<header>": {
+      "fingerprint": "6b1ebbfe65b125027ccf7948f671a09e93b9710c9b2e5dcceee97f211e3d63c0",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/prompts/reviewed_playbooks/promotion-continuous/source.md::## Rule: advance-source": {
       "reason": "Reviewed promotion policy reacts to durable source settlement using daemon-derived source and backmerge debt; continuous steps cancel only unpublished stale intents before requesting the newer exact source."

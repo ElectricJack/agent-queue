@@ -3,6 +3,12 @@
     "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
   },
+  "reconciliation_definitions": {
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_heartbeat": {
+      "fingerprint": "b4a2ea5386c320fc58123882b97e219a59c0451746bfe746eff28b5e2ac6e1e7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/commands/session_commands.py::SessionCommandsMixin._close_task_obsolete": {
       "baseline_span": [

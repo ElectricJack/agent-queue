@@ -43,36 +43,36 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 367,
+      "line": 383,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
-      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "owner_fingerprint": "0167603a081be2a6066b2c5bde32d08bb897dc0b9fa1b65f3ea7636cfa8c8303",
       "reason": "Audits removal of an ordinary task label; label history does not control Git integration or branch reservations."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 374,
+      "line": 390,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
-      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "owner_fingerprint": "0167603a081be2a6066b2c5bde32d08bb897dc0b9fa1b65f3ea7636cfa8c8303",
       "reason": "Stores the task work_dir display/context field through the scoped task-set command; it does not release workspace locks or integration owners."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 379,
+      "line": 395,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
-      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "owner_fingerprint": "0167603a081be2a6066b2c5bde32d08bb897dc0b9fa1b65f3ea7636cfa8c8303",
       "reason": "Writes task-set metadata through the command's key/authority checks and set_task_meta protections; the generic adapter creates no separate integration journal."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 360,
+      "line": 376,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
-      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "owner_fingerprint": "0167603a081be2a6066b2c5bde32d08bb897dc0b9fa1b65f3ea7636cfa8c8303",
       "reason": "Audits addition of an ordinary task label; the event contains only the label and grants no delivery authority."
     }
   }

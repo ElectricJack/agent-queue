@@ -861,7 +861,7 @@
     "helper_producers": {
       "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3",
       "_attempt_claim": "sha256:6890561d4fa4ab5c653cdb9d9d108ad6aef2278e0f509fbce8f1c4418d72c12b",
-      "_attempt_claim_once": "sha256:3036d42ed65aecd2f2a5f640e1a85cb028bfbb60b8f084262d4960493e62d24d",
+      "_attempt_claim_once": "sha256:6f0fe6eabd83a5bcf0598e97603fee5498408e394c2efccb0ed3af89ead0d9ba",
       "_claim_precondition_refusal": "sha256:43692f096a7f7a1c94305812d7f4090d90ea2a53de5d6924659e30310d648b7d",
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
@@ -896,7 +896,7 @@
         "return": "await self._close_task_obsolete(args, dispositions[0])"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Fast-smooth completion merge: the next-claim helper uses the merged AdmissionView and dev preparation-result fences without changing the close return protocol.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Fast-smooth completion merge: the next-claim helper uses the merged AdmissionView and dev preparation-result fences without changing the close return protocol. Hand-integration reconciliation: reviewed _attempt_claim_once independent-candidate first pass and full dependent fallback from b13bf05af/PR1845; both paths retain the existing boolean claim envelopes, source snapshot fences, original-principal gates and preparation ownership. No new return protocol.",
     "schema_quality": "declared",
     "source_digest": "sha256:fb2726483301443e8e36942c0d9e3c5d79b68636697e6443ee66669bb29ce077",
     "tests": [
