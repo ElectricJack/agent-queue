@@ -8,6 +8,12 @@ cooldown: 3600
 
 # VibeCop Weekly Scan
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 Scan all active project workspaces for code quality issues using the
 vibecop static analysis tool. This playbook replaces the former
 `@cron("0 6 * * 1")` hook on the VibeCop plugin (see playbooks spec §16).

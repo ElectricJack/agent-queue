@@ -9,7 +9,7 @@ not a claim that the system has passed acceptance.
 - [ ] Ready work starts on compatible enabled workers without repeated manual intervention.
 - [ ] Failed preparation, stopped sessions, stale claim files, branch handoffs,
       daemon restarts, and repair escalation recover without losing work or bypassing fences.
-- [ ] The keen-harbor CLI epic completes all 15 children, collection, aggregate
+- [ ] The keen-harbor CLI epic completes all 16 children, collection, aggregate
       verification, review, and delivery.
 - [ ] The noble-ridge Discord epic completes all 12 children and its dependency
       graph, collection, aggregate verification, review, and delivery.
@@ -39,17 +39,20 @@ automatic recovery acceptance.
 
 ## Current gaps to close
 
-- Stopped-slot claim retirement and interrupted preparation recovery are verified
-  live. The pool-principal resolution fix (`91902d7c`, 59 promotion tests passed)
-  allowed the stage-1 repair to finish through its authenticated worker session.
-- Candidate adoption creates a new revision, but the background continuation needs
-  to recover its publication before attempting CI attestation.
-- As of the latest task inventory, keen-harbor has seven completed children and
-  one running child; noble-ridge.1 is running. These counts are snapshots, not
-  delivery receipts.
-- Matter Engine now has two real feature epics (`nimble-dune` and `smart-dune`)
-  covering agent-facing selection and procedural command automation; see `matter-engine-plan.md`.
-  Its scheduling is paused pending new-pipeline configuration, not implementation completion.
+Latest operator snapshot, 2026-09-09: these are task states, not proof of delivery.
+
+- CLI epic `keen-harbor`: 16/16 children completed; parent BLOCKED with
+  `integration_repair_exhausted`. Verifier ownership handoff is still pending,
+  and operation `81d0aaee-0c3a-482c-b04c-d3afe6631cbe` requires guarded recovery.
+- Discord epic `noble-ridge`: 11/12 children completed, final acceptance READY.
+  The malformed immutable resolution reservation still requires audited recovery.
+- Matter Engine: `nimble-dune` has 1/6 children completed and its second child
+  READY; `smart-dune` has 0/6 complete and depends on the first epic.
+  Both are real AQ task graphs in `matter-engine-cpp`. The next Matter claim
+  is blocked by stale branch ownership after workspace reuse.
+- Root candidate repair still needs recovery of its pushed rejected resolution.
+- Automatic recovery, aggregate delivery, upstream delivery of all operator fixes,
+  and hundreds-of-tasks/day throughput remain unproven.
 
 Each acceptance item requires current persisted state, Git/PR/CI evidence, and
 appropriate focused or scale-test results before it can be checked off.
@@ -803,3 +806,388 @@ The corrected `wise-nexus` worker closed at `4ff4db60` with 34 handoff and
 179 related tests reported passing. Its isolated swarm was 7/8: S7 timed out
 waiting for two fresh sessions before reaching its race assertion. That
 limitation is recorded and is not counted as successful swarm acceptance.
+
+### 2026-09-09 — candidate member repair command loaded
+
+Published task `quick-falcon` at `83570c0d` was merged into the operator
+checkout as `21639491`, preserving source ancestry. The combined candidate,
+repair, CLI, contract, scope and profile suite passed 500 tests with 10 skips
+in 112.48 seconds; changed-file Ruff and whitespace checks passed. Evidence:
+`/tmp/aq-candidate-member-rollout-tests.log`. The merge is published at
+`aq/operator-candidate-member-cli-20260909`; remote main was not changed.
+
+AQ restart completed with PID 948596. The new public command
+`aq integration resolve-candidate-member` is available, and a live invocation
+without an authenticated repair session returned the expected structured
+unauthorized error and exit status 1. The current frozen root-batch delegate
+has been given the command instructions through its task record. Actual
+member resolution and batch delivery remain unverified: the delegate is
+waiting for compatible deep-worker capacity.
+
+Current CLI epic progress is 15/16: `.8` has completed its correction, while
+`.13` was reopened by review to correct final acceptance revision provenance.
+The report must distinguish the pre-report parent head from the actual
+source containing the report, inventory and test-wrapper correction. Discord
+is 10/12, with lifecycle acceptance running. Matter's first child remains in
+rework after the exact native CI failure. `sharp-glacier` was rejected again
+for omitting guarded ownership recovery on the already-green retry path;
+its new source has not been loaded into the operator daemon.
+
+Post-restart doctor confirms current schema and consistent claim holders.
+Integration warnings and other configuration warnings remain; a running
+daemon is not evidence that the end-to-end goal is complete.
+
+### 2026-09-09 — native feature CI passed; missing review recovered
+
+GitHub run `34345801131` completed successfully at exact Matter Engine head
+`870fcc84fcfee94dcfd5daf685ea1aa3b3d01ff7`. This independently verifies the
+replacement native run after the source-census correction. Fresh review and
+child delivery are still required; native green alone is not epic acceptance.
+
+Doctor identified completed `prime-ridge` / PR476 at `50050ae8` without a
+current review task. Durable evidence contained only two older rejections.
+Public replay of `default-pipeline` with the current hydrated task created
+`nimble-falcon` and `fair-ember`, including their blocking review dependency.
+Successful run IDs: `8ff3efbfd5cb4c97af209e6c5cb2c4fb` and
+`b2efcb737e1443aa9ec09e565ac6d37b`; all command step receipts passed. The
+reviewer subsequently became IN_PROGRESS automatically after its branch
+materialized. No review approval or merge was bypassed.
+
+The initial manual replay without hydrated task fields produced terminal
+completed runs with `input_resolution_failed` command steps and no tasks.
+That attempt is explicitly not success evidence. Inspection of step receipts
+was necessary to distinguish the successful recovery from the failed attempt.
+
+### 2026-09-09 — CLI child .8 delivered through the guarded path
+
+Receipt `receipt-6bdf59a4-8082-57d9-b8ad-397d322212cf` records
+`keen-harbor.8` delivered to `keen-harbor` at
+`c5071ec35dcaba2a1620e92b7cde76cf10b4dc61`. Independent `git ls-remote`
+confirmed that exact parent head. The collector reported 1,053 passing
+area tests with two skips after fixing the stale inventory expectation for
+the retired plugin-log command. Final epic acceptance remains pending `.13`.
+
+Task `stark-cascade` records the manual replay hydration/partial-failure
+reporting defect exposed during the missing-review recovery, with scoped
+public-command regressions and normal AQ delivery required.
+
+### 2026-09-09 — exact-green retry rollout and remaining publication blocker
+
+Operator merge `6990d853` includes `sharp-glacier` source `76242c6e` and a
+combined-tree correction: candidate replay activates the original budget only
+at stage zero, retaining stage one's frozen start, deadline and attempts.
+The first area run caught two failures (313 passed); after correcting replay
+and cancellation-order assertions, all 315 CI/repair/control/promotion/service/
+candidate tests passed in 97.84 seconds. Ruff and whitespace checks passed.
+Evidence: `/tmp/aq-green-retry-final-tests.log`. Source is published at
+`aq/operator-green-ci-retry-20260909`; daemon PID1058647 loaded it.
+
+Public resume of Matter batch `integration-batch-b5798e8c7f47c25214349df9e0b5567b`
+succeeded at stage one with deadline 1788958575.1058476. A public transfer
+returned its unattached repair reservation from fence4 to collector fence5.
+Rebuild then progressed beyond stale mutation identity / initial-stage replay
+and failed with `GitHub CLI request failed` during candidate publication.
+PR9 is CLOSED at `7a39e65a5321f0e6c7864068703d29940b2f117c`, the prior no-op
+candidate head. `sharp-glacier` was reopened with this exact remaining case
+and a required provider/publication regression. This batch is not delivered.
+
+`bright-grove` was also reopened because its passing close reported tests
+blocked before execution; its claim/pool changes require focused PostgreSQL
+tests and the isolated swarm before rollout. Discord lifecycle `.10` and
+Matter protocol `.1` completed; review and aggregate acceptance remain open.
+
+### 2026-09-09 — abandoned claim-loop recovery loaded
+
+Operator merge `7aabdd39` preserves `bright-grove` source `92971ae8` and adds
+an instance-token check after the recycle CAS, preventing a same-ID successor
+from being terminated between the decision and teardown. Combined validation:
+198 area tests, eight targeted abandonment/race tests, and 8/8 isolated swarm
+scenarios passed. The private daemon1110696 was stopped and cleaned up.
+Logs: `/tmp/aq-claim-loop-rollout-tests.log`,
+`/tmp/aq-claim-loop-race-tests.log`, `/tmp/aq-claim-loop-rollout-e2e.log`.
+Published source: `aq/operator-claim-loop-recovery-20260909`; daemon1139624
+loaded the fix. This is not yet evidence of sustained throughput.
+
+The CLI final-child collector reserved its resolution, then hit deadline
+expiry while correcting rejected command arguments. Public guarded resume
+of operation81d0aaee-0c3a-482c-b04c-d3afe6631cbe succeeded with deadline
+1788959437.8776863. Final-child receipt was still pending at the observation.
+`noble-torrent` is actively fixing epoch-one untouched container collection
+and prerequisite delivery gating; Matter `.2` remains deliberately paused.
+
+### 2026-09-09 — final CLI child received and aggregate verification started
+
+Receipt `receipt-a34a0f2d-e830-5903-a855-190509672559` delivers
+`keen-harbor.13` into `keen-harbor` at
+`bd054e4129b2a66a859408f0fa2b76b62a5d670e`. Independent remote-ref inspection
+matched that exact parent SHA. AQ reports 16/16 children complete and
+automatically claimed `verify-81d0aaee-0c3a-482c-b04c-d3afe6631cbe` to verify
+the aggregate. Parent remains PAUSED until verified settlement; root delivery
+to main remains unproven.
+
+The priority-one root batch repair was claimed by session
+`4baaded6-3206-41a7-b9eb-564d473c74b2`, which is inspecting the current frozen
+member and supported CLI. Discord reports 11/12 children complete; final
+acceptance and remaining parent receipts are still outstanding.
+
+Task `agile-current` tracks ordinary AQ review/delivery of the operator's
+post-CAS successor-instance protection from7aabdd39, in addition to the
+original bright-grove implementation.
+
+
+## September 9: prerequisite-delivery review and verifier close defect
+
+Integrated noble-torrent with operator corrections in `abef631e`, published as
+`aq/operator-prerequisite-delivery-20260909`. Current-incarnation session
+attempts refuse container bootstrap even with absent or changed project IDs;
+pre-incarnation attempts do not. Receipt gating is scoped to hierarchy/train.
+Crash after checkpoint reservation before ownership transfer is covered.
+Validation: 60 hierarchy tests passed (35.75s); 160 claims, isolated workspace,
+integration-service and hierarchy-query tests passed (37.51s); focused Ruff passed.
+The isolated swarm run `/tmp/aq-prerequisite-swarm.log` remains live at this
+observation; no passing swarm result or production rollout is claimed.
+
+The keen-harbor aggregate verifier was rejected by ordinary PR-to-main checks.
+Priority-one AQ bug `keen-bridge` requires exact aggregate verification and
+close dispatch regression coverage without bypassing guarded parent completion.
+
+Discord repair operation `640ced19-c324-4f6f-b50d-8f0181d181b7` expired and was
+resumed through the public command with deadline 1788960673.5155663. Root batch
+`integration-batch-2c484c0890ebecbbf98b0b12fd5469ff` resume instead correctly
+refused unresolved resolution/writer evidence. Its resolution
+`d3b49b4e-3651-50cf-94ee-c6650ac6687f` is pushed, and independent remote inspection
+confirms `50edaa1990c840a63efe3f7f3b9ca9c38e72fc10` at the reserved repair ref.
+Acceptance is still pending; the matching external write is not proof of delivery.
+
+
+### Prerequisite rollout result
+
+The isolated swarm completed 8/8 successfully and cleaned up its private daemon.
+Restart completed with production daemon PID 1240921, loading abef631e (plus
+report-only 041dd06d). Startup reports degraded health; doctor is being collected.
+Both Matter containers now have awaiting_children episodes. nimble-dune.1
+received a parent delivery receipt with after_sha
+`dc8a61acdd78bfebd62de4499162ece70a6d20c8`, independently confirmed at remote
+`refs/heads/aq/nimble-dune`. Public resume moved nimble-dune.2 to READY;
+actual claim and prepared prerequisite contents remain to verify.
+Priority-one `fleet-harbor` tracks recovery of the root batch pushed-resolution
+acceptance failure, including diagnostic reasons and already-contained sources.
+
+
+### Closed audit revision recovery
+
+465842b9 passed 168 tests and was deployed, but live replay still failed because
+PR9 retained revision0 marker while revision1 expected a different marker.
+Operator correction 3f61fb0b reuses a closed same-batch audit PR only with exact
+candidate/head/branch identity and authenticated main-head equality. It retains
+the expected PR state through marker PATCH. 98 candidate/provider tests and a
+final 24-test provider run passed. Published source:
+`aq/operator-closed-audit-recovery-20260909`; daemon PID1296927 loaded correction.
+Public build retry now succeeds with already_built, revision1 at 7a39e65a and
+PR9. Read-only database evidence confirms revision1 pr_published. Exact CI
+observation and final batch delivery remain separate acceptance steps.
+
+Matter nimble-dune.2 claim attempted but failed on old attached ownership:
+worker fence1 retains stopped session36cb470b despite session task_id now NULL.
+Public transfer refused stopped/detached proof. Priority-one fresh-rapids tracks
+safe existing-state recovery and prevention at failed claim release. keen-bridge
+is actively implementing verifier close repair; private test helper supplied.
+
+
+### Main receipt and remaining live repair findings
+
+Matter baseline batch b5798e8 is now promoted. Receipt for sharp-nexus targets
+refs/heads/main, revision1, after7a39e65a; two conclusive success check-evidence
+rows and independently queried remote main agree. The prior stale_subject was
+a post-promotion observation, not an outstanding CI failure.
+
+Initial keen-bridge source e61c23d4 is integrated locally at936ca29f but NOT
+loaded: 4 failed/118 passed in session-command and parent-completion tests.
+Fixture Git methods and manual-pause modeling failed, and completed-parent
+final-close replay needs correction. Task was reopened and is running.
+
+Discord collector is blocked on an immutable malformed resolution: intent
+2f290cf6 reserved nonexistent de34e9653111a3c98224e7d94b727af0290c12ff;
+actual local resolution de34e965e1fda18329bf95f5dd98df7f2fa69571. Guarded push
+refused before remote mutation. bright-journey tracks pre-reservation validation
+and explicitly guarded recovery preserving old evidence.
+
+
+### Verifier correction ready for swarm validation
+
+Final operator verifier source afd54e73 combines0d36f367 replay support with a
+locked explicit manual_pause metadata refusal. The row-local transition guard
+also refuses integration-owned untimed PAUSED rows, so the internal transition
+flag remains necessary after that explicit check. Public manual-pause and
+integration-pause fixtures are now distinct. All124 session/parent tests passed
+41.38s; three focused ordinary/replay/operator-hold close cases passed5.72s.
+Source published aq/operator-verifier-close-20260909. Isolated swarm run
+/tmp/aq-verifier-rollout-swarm.log is live; no production rollout claimed yet.
+
+The prior verifier session da613545 remains running with its verifier task and
+ws-hidden-hall locked to it, despite task READY. A guarded stop/detach is needed
+before replacement claim. No lock was forcibly cleared.
+
+Pre-reservation object/lineage validation6e8d4748 is published on
+ aq/operator-resolution-prevalidation-20260909. Promotion area63 pass plus
+corrected final two focused cases pass; malformed input now fails before
+immutable reservation. Existing-record recovery remains bright-journey work.
+Container hold regressiona18e68c8 passes both crash recovery and pause-after-
+reservation cases; unsafe follow-up noble-torrent was reopened.
+
+
+### Verifier rollout and handoff refusal
+
+The verifier isolated swarm passed8/8 and cleaned its private daemon1370445.
+Production restarted PID1379980 with afd54e73 plus pre-reservation validation.
+Public verifier transfer at fence27 refused stopped/detached proof and left
+handoff_pending. Sessionda613545 still running with verifier task and matching
+workspace locks. Actual slot0 checkout is detached at e1390040, rather than the
+published aggregatebd054e41. This mismatch is recorded on fresh-rapids; no force
+unlock, checkout reset, or fabricated completion was performed.
+
+
+### Handoff review and complete promotion validation
+
+The operator rejected fresh-rapids d8721d0e: its passing close explicitly said
+no DB-backed assertions ran. Its snapshot transaction also ends before Git
+detach, allowing successor reuse before the final CAS. Reopened through
+`aq task reopen-with-feedback` with private test-helper instructions and actual
+live-case requirements. The pending operator merge was saved to
+`/tmp/aq-fresh-rapids-operator-merge-review.patch` and aborted; none of this
+unverified source was deployed.
+
+Current read-only ownership evidence: CLI session da613545 is now stopped/stopped
+but retains the verifier task and workspace locks, owner fence27 handoff_pending.
+The stopped-pool recovery helper currently excludes verifier roles. Matter
+session36cb470b is stopped/stopped with task NULL, while its workspace has a
+DIFFERENT current agent lock; owner fence1 remains handoff_pending. Neither case
+justifies force-unlocking or detaching a successor.
+
+The full focused promotion file now passes on operator HEAD4698ec6e:
+`.venv/bin/python /tmp/aq_goal_test.py tests/test_integration_promotion.py`
+— 64 passed, 9 warnings, 57.76s. Log:
+`/tmp/aq-resolution-prevalidation-complete-tests.log`. This closes the earlier
+split-run validation gap for6e8d4748; it does not prove recovery of already
+malformed production reservations.
+
+AQ explain reports fresh-rapids and bright-journey waiting for standard-high
+capacity (2 busy, 0 idle, maximum2). fleet-harbor and noble-torrent are the
+currently assigned repairs. The latter was told to reconcile existing operator
+runtime wiring rather than register a duplicate materialization tick.
+
+### Stopped verifier correction and post-restart attachment case
+
+Operator source415f9ba1 is published on
+`aq/operator-stopped-verifier-recovery-20260909`. The exact retired stopped
+verifier case now uses guarded recovery. A different detached HEAD is accepted
+only if it exactly matches a fresh origin HEAD query and the aggregate's local
+and remote tips match; the checkout is preserved. All57 handoff tests passed
+26.32s, including real Git published/unpublished detached preservation. Private
+swarm92903a9686 passed8/8 and cleaned daemon1478244.
+
+AQ restarted successfully as PID1497622 with degraded operational health.
+Public CLI verifier transfer at fence27 still refused: current workspace locks
+are now BOTH NULL while the stopped session keeps its task binding and the
+retired agent keeps current_task_id. Owner remains handoff_pending. This is an
+additional unlocked-but-stale attachment state, recorded on fresh-rapids. The
+locked-case correction is deployed; successful live verifier recovery is NOT
+claimed. Recovery must preserve successor exclusion and avoid any checkout
+mutation in an unlocked workspace.
+
+### Unlocked verifier rollout and historical reuse evidence
+
+886b8d92 adds detached-only recovery for unlocked retired verifier attachments,
+with atomic workspace and newer same-workdir session revalidation. All60 handoff
+tests passed28.94s; isolated swarm3246e5f381 passed8/8 and cleaned daemon1519314.
+Source published on the stopped-verifier operator branch and loaded PID1548297.
+
+Live transfer remains busy for a now-confirmed reason: two newer sessions used
+slot0 after verifierda613545: d5d05053 (nimble-flare) and37ef780c (solid-delta),
+both agent-a4980eeb0ef0 and currently stopped. The workspace is unlocked, clean,
+and detached at current remote maine1390040. Refusal protects historical reuse;
+next recovery must confirm each exact later provider instance and atomically
+reject unseen/new/live successors, while preserving all successor records.
+Recorded on fresh-rapids. No live recovery success claimed.
+
+Fleet-harbor a1209069 was reopened despite136 functional+2 migration tests:
+its rejected-delegate exemption could exempt a newer owner of the same task
+using an older stopped reservation. Also missing fresh remote evidence for
+rejection. Source was reviewed but neither merged nor deployed.
+
+### Historical-user proof deployed; active successor respected
+
+Operator a409458f confirms each later same-workdir provider instance and passes
+its exact token/start identity to locked final revalidation. The unlocked
+verifier path preserves later rows and rejects live, unconfirmed, and unseen
+sessions. All64 handoff tests passed30.80s; private swarmaec968ff4c passed8/8
+and cleaned daemon1578780. Source published and loaded PID1624114.
+
+Current public handoff remains busy for a legitimate active successor:
+steady-current / sessionbfe18890 is running in slot0 and holds its workspace
+locks. Exact tmux s-steady-current has a live pane (PID1626861, pane_dead0).
+This reviewer is reviewing fair-willow. Wait for normal release; do not stop or
+clear the active successor for the stale verifier.
+
+Fair-willow25d31d88 was reopened: its proposed doctor repair snapshots eligibility
+then CASes only owner identity/state, not session/workspace/task eligibility;
+it can erase a newly attached successor and lacks provider/Git proof. Its
+reported1323 tests do not prove those missing safety predicates. No source from
+that task was merged or deployed.
+
+### Live CLI verifier handoff succeeded
+
+After steady-current completed and released slot0, the public
+integration-transfer-owner command succeeded at expected fence27, returning
+verifier fence28. Read-only DB confirms owner verify-81d0aaee, role verifier,
+state reserved, session_id/workspace_id NULL. This is actual live recovery of
+the stale attachment through a409458f, not a test-only claim.
+
+Public integration resume then returned invalid_state. Stage1 remains expired
+with writer_kind repair_delegate and its old READY delegate. The recovery
+helper _restore_completed_delegate_on accepts only reserved old repair or
+collector ownership; it rejects the exact now-reserved verifier. Filed
+bright-vault through AQ with bounded exact verifier/episode/head resume
+requirements and regression cases. Parent remains BLOCKED; verification and
+final delivery are not yet achieved.
+
+### Red aggregate confirmed; CLI repair resumed through existing public controls
+
+GitHub run34349629710 independently confirms exact aggregatebd054e41 failed
+required default, migration-and-slow, and postgres-integration suites;
+cli-conformance passed. This is repair work, not a green verifier-only replay.
+The old verifier summary identifies DSN-required environment leakage, the
+stateful CLI test assuming local PostgreSQL port5533 versus CI5432, and stale
+migration-head/claim-budget assertions; the delegate must verify exact logs.
+
+Public recovery succeeded without a code change: released verifier fence28 ->
+collector operation81d0aaee fence29; integration resume returned escalated stage1
+deadline1788965436.7216296; collector -> existing repair delegate fence30.
+Task description now leads with the confirmed aggregate CI repair target and
+preserved ancestry/exact-head validation requirements. AQ explain reports
+waiting for deep-high capacity (project2 busy, fleet2 busy+1 idle, maximum3).
+
+bright-vault was corrected to actionable resume diagnostics and documentation
+of this existing guarded sequence. Do not relax owner checks to re-verify a red
+aggregate. CLI repair is resumed; repaired CI and parent delivery remain open.
+
+### CLI repair assigned after resolving blocked pool demand
+
+Public session sleep exposed a pool bug: idle Matter session8e6ee stayed running
+with desired_state sleeping because _step_drain_ack only handles stopped pool
+intent. Filed agile-crest. Used public instance-fenced kill after confirming it
+held no task; its tmux handle disappeared and state became stopped. Scheduler
+initially replaced it in Matter because nimble-dune.2 still advertised READY
+while failing ownership preparation. Operator paused .2 explicitly until
+fresh-rapids recovery is deployed, recorded the resume requirement, then stopped
+its new taskless idle sessiona9548689 through the public command.
+
+Without increasing limits, AQ placed deep-high sessionfa6bcd59 in agent-queue.
+It successfully claimed repair-81d0aaee-...-1: task IN_PROGRESS, agent-eb5e4f506853,
+session running, claim_phase active, last_claim_result claimed. Exact tmux
+p-deep-high-codex--agent-queue--80bb85cb has live pane1693240. CLI aggregate
+repair is now actually running, not merely resumed/READY. Its final CI and
+parent delivery remain unverified.
+
+Matter .2 must be explicitly resumed after guarded ownership recovery. This
+pause is temporary; the Matter epics remain required acceptance workloads.

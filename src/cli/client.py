@@ -11,14 +11,18 @@ typed routes again without rediscovering how.
 
 Plugin operations still need direct database access (filesystem ops that
 don't belong in CommandHandler), so ``PluginClient`` is provided as a
-separate class for that purpose.
+separate class for that purpose. ``PluginConfigReader`` is the deliberately
+read-only counterpart used by lazy plugin CLI configuration; it connects
+without schema setup or data migrations.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
+from urllib.parse import quote
 import pkgutil
 from typing import Any
 
@@ -87,10 +91,59 @@ _DEFAULT_TIMEOUT = 30.0
 # Per-command read timeouts (seconds) for commands that run an LLM or other
 # long operations server-side. Anything not listed uses _DEFAULT_TIMEOUT.
 _COMMAND_TIMEOUTS: dict[str, float] = {
+    # These diagnostics measure the whole fleet, even when their output is
+    # filtered to one project/task. Each project's cached prerequisite view
+    # has its own 10s bound, so a busy fleet can outlast the default 30s read.
+    "pool_status": 120.0,
+    "explain_task": 120.0,
+    # Fleet-wide failover/spill snapshots, including observational dry runs.
+    "provider_reroute": 120.0,
+    "session_cleanup": 600.0,
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
     "task_claim": 180.0,
-    "task_close": 180.0,
+    # Author close may regenerate a candidate (600s) before returning a wait.
+    "task_close": 900.0,
+    "integration_continue_close": 900.0,
+    "message_wait": 90.0,
+    # Binding, App token mint and two GitHub reads.
+    "integration_trust_manifest": 90.0,
+    # Binding, token mint, and a bounded set of reads (variables, workflow files).
+    "integration_app_verify": 180.0,
+    # A namespace-migration page validates, copies and leases each old head's deletion.
+    "integration_migrate_provenance_refs": 600.0,
+    # Doctor runs every check concurrently, each under its own timeout (the
+    # longest, git.stale_branches, integration.legacy_deliveries and
+    # integration.completed_undelivered, allow 300s);
+    # the read timeout must outlast them or a
+    # full `aq doctor` reports "no complete response" while checks still run.
+    "doctor": 330.0,
+    # Train controls observe the root target first: a git fetch plus a PR
+    # check read for every pending root, which on a busy install outlasts 30s
+    # (seal-now's preview, refresh-epic --apply, retire-origin all timed out
+    # live on 2026-10-06). The daemon finishes the command either way, so a
+    # short read timeout only hides the answer from the operator.
+    "integration_seal_now": 300.0,
+    "integration_refresh_epic": 300.0,
+    "integration_retire_origin": 300.0,
+    # Repair adoption and root redrive fetch authenticated remote history and
+    # prove exact heads before either preview or apply can return.
+    "integration_fast_forward_pr": 300.0,
+    "integration_redrive_root": 300.0,
+    # Recovery confirms the provider and verifies remote Git even in dry runs.
+    "integration_release_owner": 300.0,
+    "integration_restore_task_origin": 300.0,
+    "integration_pause_batch": 180.0,
+    "integration_resume_batch": 180.0,
+    "integration_settle_batch": 180.0,
+    "integration_release_withheld_source": 180.0,
+    "integration_abort_batch": 180.0,
+    "integration_eject": 180.0,
+    # Completed-container recovery, preview included, proves the exact head under
+    # the retained repository's transaction lock: a full retained fetch (120s Git
+    # budget, then fsck), two authenticated ls-remote reads and ancestry checks
+    # before the preview or CAS answers. Read-only previews timed out live at 30s.
+    "integration_recover_completed_container": 300.0,
 }
 
 
@@ -185,6 +238,8 @@ class CLIClient:
         )
         try:
             resp = await self._http.get("/api/health")
+            if getattr(resp, "status_code", 200) in (401, 403):
+                raise ScopeDeniedError("health", _relay_error(resp))
             resp.raise_for_status()
         except httpx.RequestError as exc:
             await self._http.aclose()
@@ -283,7 +338,11 @@ class CLIClient:
         except httpx.RequestError as exc:
             # A read/write failure can occur after the daemon committed the
             # command. Do not turn it into the daemon-start-and-retry path.
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(
+                command,
+                failure_kind=type(exc).__name__,
+                read_timeout_seconds=timeout if isinstance(exc, httpx.ReadTimeout) else None,
+            ) from exc
 
         if resp.status_code in (401, 403):
             # aq-surface §4.1 exit code 4: auth/scope denial is not a command
@@ -293,11 +352,11 @@ class CLIClient:
         try:
             data = resp.json()
         except ValueError as exc:
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(command, failure_kind="invalid_json") from exc
         if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="invalid_envelope")
         if resp.status_code >= 400 and data.get("ok"):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="http_status_mismatch")
         if not data.get("ok"):
             raise CommandError(
                 command,
@@ -306,12 +365,33 @@ class CLIClient:
             )
         return data.get("result", {})
 
+    async def download_review_attachment(
+        self, review_id: str, revision: int, attachment_id: str,
+    ) -> bytes:
+        """Download revision-pinned evidence through the authenticated API."""
+        assert self._http is not None, "CLIClient not connected"
+        path = (
+            f"/api/reviews/{quote(review_id, safe='')}/revisions/{revision}"
+            f"/attachments/{quote(attachment_id, safe='')}"
+        )
+        try:
+            response = await self._http.get(path)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        except httpx.RequestError as exc:
+            raise CommandResponseError("review_attachment_download") from exc
+        if response.status_code in (401, 403):
+            raise ScopeDeniedError("review_attachment_download", _relay_error(response))
+        if response.status_code != 200:
+            raise CommandError("review_attachment_download", _relay_error(response))
+        return response.content
+
     async def send_message(self, args: dict[str, Any]) -> dict:
         """POST a general message through the explicit message API route."""
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.post("/api/messages/send", json=args, timeout=_DEFAULT_TIMEOUT)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
         if resp.status_code in (401, 403):
             raise ScopeDeniedError("message_send", _relay_error(resp))
@@ -352,8 +432,10 @@ class CLIClient:
             payload["subject"] = subject
         try:
             resp = await self._http.post(f"/api/sessions/{name}/message", json=payload)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("message_send", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("message_send", _relay_error(resp))
         return resp.json()
@@ -375,29 +457,61 @@ class CLIClient:
             params["since"] = since
         try:
             resp = await self._http.get(f"/api/sessions/{name}/messages", params=params)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("message_list", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("message_list", _relay_error(resp))
         return resp.json()
 
     # -- Streams (console-stream pane view) --------------------------------
+
+    async def job_output(self, job_id: str, *, after: int = 0):
+        """Yield retained-output SSE frames with logical byte cursors."""
+        try:
+            async with self._http.stream(
+                "GET", f"/api/jobs/{job_id}/output", params={"after": after}, timeout=None,
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    detail = payload.get("detail") if isinstance(payload, dict) else None
+                    if isinstance(detail, dict) and detail.get("error"):
+                        # 410 carries the immutable result; name the error only.
+                        raise CommandError("job_output", detail["error"])
+                    raise CommandError("job_output", _relay_error(response))
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        yield json.loads(line[6:])
+        except httpx.ConnectError as exc:
+            raise DaemonNotRunningError(str(exc)) from exc
+
     # Bespoke router, not /api/execute — mirrors send_session_message's
     # direct-httpx pattern above.
 
     async def start_stream(
         self, command: list[str], cwd: str, *,
         title: str | None = None, session_id: str, project_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         assert self._http is not None, "CLIClient not connected"
-        payload: dict = {"command": command, "cwd": cwd, "session_id": session_id}
+        import uuid
+
+        payload: dict = {
+            "command": command, "cwd": cwd, "session_id": session_id,
+            "idempotency_key": idempotency_key or "stream-" + uuid.uuid4().hex,
+        }
         if title:
             payload["title"] = title
         if project_id:
             payload["project_id"] = project_id
         try:
             resp = await self._http.post("/api/streams", json=payload)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
         if resp.status_code in (401, 403):
             raise ScopeDeniedError("stream_start", _relay_error(resp))
@@ -409,8 +523,10 @@ class CLIClient:
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.get(f"/api/streams/{stream_id}")
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("stream_metadata", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("stream_metadata", _relay_error(resp))
         return resp.json()
@@ -421,8 +537,10 @@ class CLIClient:
             resp = await self._http.get(
                 f"/api/streams/{stream_id}/tail", params={"after_seq": after_seq}
             )
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("stream_tail", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("stream_tail", _relay_error(resp))
         return resp.json()
@@ -431,8 +549,10 @@ class CLIClient:
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.post(f"/api/streams/{stream_id}/kill")
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("stream_kill", _relay_error(resp))
         if resp.status_code >= 400:
             raise CommandError("stream_kill", _relay_error(resp))
         return resp.json()
@@ -442,9 +562,12 @@ class CLIClient:
         assert self._http is not None, "CLIClient not connected"
         try:
             resp = await self._http.get("/api/tools")
-            resp.raise_for_status()
+            if resp.status_code in (401, 403):
+                raise ScopeDeniedError("list_tools", _relay_error(resp))
+            if resp.status_code >= 400:
+                raise CommandError("list_tools", _relay_error(resp))
             return resp.json()
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        except httpx.TransportError as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
 
 
@@ -468,8 +591,18 @@ class PluginClient:
     async def connect(self) -> None:
         if is_postgres_url(self._db_url):
             from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+            from src.database.migration_guard import SchemaAheadPolicy
 
-            self._db = PostgreSQLDatabaseAdapter(self._db_url, pool_min=1, pool_max=2)
+            db_config = _resolve_db_config() or {}
+            self._db = PostgreSQLDatabaseAdapter(
+                self._db_url,
+                pool_min=1,
+                pool_max=2,
+                schema_ahead_policy=SchemaAheadPolicy(
+                    db_config.get("schema_ahead_migrations", ""),
+                    db_config.get("schema_ahead_max_revisions"),
+                ),
+            )
         else:
             from src.database import Database
 
@@ -526,6 +659,69 @@ class PluginClient:
 
     async def delete_plugin_data_all(self, plugin_id: str) -> None:
         await self.db.delete_plugin_data_all(plugin_id)
+
+
+class PluginConfigReader:
+    """Read one installed plugin's configuration without schema mutation.
+
+    Unlike :class:`PluginClient`, this capability does not expose any writes
+    and never calls ``Database.initialize()``.  Its caller owns the timeout,
+    because the useful bound includes both connection establishment and the
+    query rather than either step in isolation.
+    """
+
+    def __init__(self, db_url: str | None = None):
+        self._db_url = db_url or _resolve_db_url()
+        self._engine = None
+
+    async def connect(self) -> None:
+        if not is_postgres_url(self._db_url):
+            raise RuntimeError(
+                "plugin configuration requires a PostgreSQL database URL; "
+                "set database.url in ~/.agent-queue/config.yaml"
+            )
+        from src.database.engine import create_postgres_engine
+
+        # Engine construction is lazy: the actual connection is opened by
+        # get_config(), inside app.py's whole-operation timeout.
+        self._engine = create_postgres_engine(self._db_url, pool_min=1, pool_max=1)
+
+    async def close(self) -> None:
+        if self._engine is not None:
+            await self._engine.dispose()
+            self._engine = None
+
+    async def __aenter__(self) -> PluginConfigReader:
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.close()
+
+    async def get_config(self, plugin_id: str) -> dict | None:
+        """Return parsed JSON config for *plugin_id*, or ``None`` if absent."""
+        import json
+
+        from sqlalchemy import select
+
+        from src.database.tables import plugins
+
+        if self._engine is None:
+            raise RuntimeError("PluginConfigReader not connected")
+        async with self._engine.connect() as conn:
+            result = await conn.execute(
+                select(plugins.c.config).where(plugins.c.id == plugin_id)
+            )
+            raw = result.scalar_one_or_none()
+        if raw is None:
+            return None
+        try:
+            config = json.loads(raw or "{}")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(f"stored config is not valid JSON: {exc}") from exc
+        if not isinstance(config, dict):
+            raise RuntimeError("stored config is not a JSON object")
+        return config
 
 
 def _resolve_db_config() -> dict | None:

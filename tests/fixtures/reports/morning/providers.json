@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "provider": "openai",
+    "from_state": "available",
+    "to_state": "usage_limited",
+    "reason_code": "quota",
+    "reason": "Quota exhausted",
+    "generation": 1,
+    "at": 90006,
+    "actor": "system",
+    "detail": {}
+  }
+]
