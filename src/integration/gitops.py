@@ -1,33 +1,42 @@
-"""Shared retained-repository mechanisms (review rev-agile-ridge §3.4, rows 3–7).
+"""Shared retained-repository mechanisms for the Git-first batch pipeline.
 
 These ports do not activate an engine or select policy. The calling command owns
-admission; the durable subject, branch fence and trusted CI producer authorize
-mutations. Existing engines remain available during the incremental cutover.
+admission and fenced publication. Subject adapters preserve the existing engine
+during cutover; the shared merge and transport carry no progress journal.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import integration_branch_owners, integration_subject_journal
+from src.database.tables import integration_branch_owners
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager, commit_identity
 from src.integration.development import DevelopmentBusy, publisher_exclusion
 from src.integration.migration_heads import declaration
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, BranchOwnershipError, StaleFence
-from src.integration.regeneration import RegenerationFailure, regenerated_tree
-from src.integration.subjects import (
+from src.integration.regeneration import (
+    DEFAULT_REGENERATE_COMMAND,
+    GeneratedMergeConflict,
+    GeneratedRegenerationFailure,
+    MissingRegenerator,
+    RegenerationFailure,
+    generated_paths,
+    merge_generated_tree,
+    regenerated_tree,
+)
+from src.integration.source_trailer import source_identity, with_source_trailers
+from src.integration.source_ancestry import effective_source_base
+from src.integration.runtime_contracts import (
     AncestryArgs,
     MaterializeRefArgs,
     MergeMembersArgs,
@@ -52,63 +61,11 @@ class RetainedRepository:
     store: Path
     binding: GitHubRepositoryBinding
     default_branch: str
-    regenerate: str | None = None
+    #: Command that rebuilds the paths ``.gitattributes`` marks generated.
+    #: ``None`` is a deliberate configuration gap the merge reports as
+    #: ``no_regenerator``; it never becomes an empty command.
+    regenerate: str | None = DEFAULT_REGENERATE_COMMAND
     regenerate_timeout_seconds: int = 600
-
-
-class GitJournal(Protocol):
-    """Committed, immutable entries; a returned write has survived a crash."""
-
-    async def read(self, subject: Subject, key: str) -> dict | None: ...
-
-    async def append(
-        self, subject: Subject, key: str, primitive: Primitive, outcome: str, payload: dict
-    ) -> dict: ...
-
-
-class SubjectGitJournal:
-    """Use the foundation's append-only journal, without another mutation table."""
-
-    def __init__(self, db, *, clock=time.time):
-        self.db, self.clock = db, clock
-
-    async def read(self, subject, key):
-        async with self.db._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_subject_journal).where(
-                            integration_subject_journal.c.subject_id == subject.id,
-                            integration_subject_journal.c.idempotency_key == key,
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        return dict(row["payload"]) if row else None
-
-    async def append(self, subject, key, primitive, outcome, payload):
-        row, _ = await self.db.append_integration_subject_journal(
-            {
-                "subject_id": subject.id,
-                "entry_kind": "action",
-                "idempotency_key": key,
-                "mode": "active",
-                "policy_artifact_sha256": subject.policy.artifact_sha256,
-                "subject_version": subject.version,
-                "phase": subject.phase.value,
-                "head_sha": subject.head_sha,
-                "generation": subject.generation,
-                "primitive": primitive.value,
-                "outcome": outcome,
-                "payload": payload,
-                "recorded_at": self.clock(),
-            }
-        )
-        if row["payload"] != payload:
-            raise StaleFence("git journal identity differs from the committed entry")
-        return dict(row["payload"])
 
 
 class SubjectGitAuthority:
@@ -143,7 +100,6 @@ class SubjectGitAuthority:
         if (
             current.engine is not SubjectEngine.RECONCILER
             or current.schedule.state in {SubjectState.HELD, SubjectState.DONE}
-            or current.version != subject.version
             or current.generation != subject.generation
             or current.policy != subject.policy
             or current.repository_id != subject.repository_id
@@ -185,6 +141,13 @@ class SubjectGitAuthority:
         deadline, so an expired grant cannot finish a new authenticated push.
         """
         async with self.db.immediate() as conn:
+            from src.database.tables import projects
+
+            mode = await conn.scalar(select(projects.c.hierarchical_integration_mode).where(
+                projects.c.id == subject.project_id,
+            ))
+            if mode in {"disabled", "observe"}:
+                raise StaleFence("automatic integration is off")
             row = await self.db.lock_integration_subject_on(conn, subject.id)
             self._subject_current(subject, row)
             deadline = None
@@ -233,16 +196,6 @@ class SubjectGitAuthority:
         return owner is None or owner["handoff_state"] == "released"
 
 
-def operation_key(subject: Subject, primitive: Primitive, payload: dict) -> str:
-    identity = {"generation": subject.generation, "primitive": primitive.value, **payload}
-    return (
-        "git:"
-        + hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-    )
-
-
 def branch(ref: str) -> str:
     if not ref.startswith("refs/heads/") or not ref.removeprefix("refs/heads/"):
         raise ValueError("remote mutation requires a fully qualified branch ref")
@@ -254,8 +207,17 @@ class GitOperations:
 
     ``exclusion`` must be the repository-wide publisher fence. By default this
     is the *same* PostgreSQL advisory lock used by the development publisher,
-    so old and new engines cannot publish concurrently during the cutover.
-    Authority and journal ports are mandatory; tests may inject real-Git ports.
+    so old and new engines cannot publish concurrently during the cutover. It
+    is called as ``exclusion(repository_id, subject)``: a repository the
+    reconciler engine owns admits no unnamed root mutation, so the fence has to
+    carry the exact subject the primitive acts for.
+    ``repository`` is subject-scoped (a frozen ``Batch`` also qualifies: it carries
+    the same ``repository_id``) for the same reason: the retained clone a
+    primitive acts in is the one carrying *that* subject's own pinned settings,
+    so it is resolved through the subject rather than through a bare repository
+    id a caller could answer from anything else.
+    Authority is mandatory; batch construction uses immutable Git inputs and
+    writes no journal. Tests may inject real-Git ports.
     """
 
     def __init__(
@@ -263,14 +225,15 @@ class GitOperations:
         db,
         *,
         git: GitManager,
-        repository: Callable[[str], Awaitable[RetainedRepository]],
+        repository: Callable[[Subject], Awaitable[RetainedRepository]],
         authority: SubjectGitAuthority,
-        journal: GitJournal | None = None,
         exclusion=None,
     ):
         self.git, self.repository, self.authority = git, repository, authority
-        self.journal = journal if journal is not None else SubjectGitJournal(db)
-        self.exclusion = exclusion or (lambda rid: publisher_exclusion(db, rid))
+        self.db = db
+        self.exclusion = exclusion or (
+            lambda rid, subject=None: publisher_exclusion(db, rid, subject=subject)
+        )
 
     def bind(self, ports: PrimitivePorts):
         for primitive, method in (
@@ -286,9 +249,25 @@ class GitOperations:
         rid = repository_id or subject.repository_id
         if rid != subject.repository_id:
             raise StaleFence("request names another repository")
-        repo = await self.repository(rid)
-        if repo.repository_id != rid:
+        return await self.retained(subject)
+
+    async def retained(self, subject_or_repository_id):
+        """The validated retained clone for a subject, or for a bare repository id.
+
+        The subject runtimes resolve by subject so the clone carries that
+        subject's own pinned settings. Batch construction names a repository
+        instead: its members are immutable Git facts with no subject to scope
+        by, and the batch's own lease is the authority for its writes.
+        """
+        repository_id = getattr(subject_or_repository_id, "repository_id",
+                                subject_or_repository_id)
+        repo = await self.repository(subject_or_repository_id)
+        if repo.repository_id != repository_id:
             raise StaleFence("retained repository binding mismatch")
+        return await self.validate_repository(repo)
+
+    async def validate_repository(self, repo):
+        """Reject mutable ancestry customization for both batch and legacy calls."""
         common = Path(await self.run(repo, "rev-parse", "--git-common-dir"))
         common = common if common.is_absolute() else repo.store / common
         grafts = common / "info" / "grafts"
@@ -356,34 +335,19 @@ class GitOperations:
     async def _transfer(
         self, subject, repo, primitive, ref, sha, expected, *, fence=None, green=False
     ):
-        """An immutable intent precedes I/O; replay always reads the remote first."""
-        payload = {
-            "repository_id": repo.repository_id,
-            "ref": ref,
-            "expected_old_sha": expected,
-            "new_sha": sha,
-            "fence": fence.model_dump(mode="json") if fence else None,
-        }
-        key = operation_key(subject, primitive, payload)
-        await self.journal.append(subject, key, primitive, "prepared", payload)
+        """Read-back and expected-old transport settle retries without a journal."""
         try:
             actual = await self.remote(repo, ref)
         except Exception as exc:
-            return "unknown_after_push", {"intent": key, "reason": str(exc)}
+            return "unknown_after_push", {"reason": str(exc)}
         if actual == sha:
-            await self.journal.append(subject, key + ":applied", primitive, "applied", payload)
             return "published", {
-                "intent": key,
                 "head": sha,
                 "observed_sha": actual,
                 "replayed": True,
             }
         if (actual or ZERO) != expected:
-            return "target_moved", {"intent": key, "observed_sha": actual}
-        # A recorded applied write must never be replayed over a later deletion
-        # or rewind. Its receipt is history, not authority to recreate the ref.
-        if await self.journal.read(subject, key + ":applied") is not None:
-            return "target_moved", {"intent": key, "observed_sha": actual}
+            return "target_moved", {"observed_sha": actual}
         await self.authority(subject, fence)
         if green and not await self.authority.trusted_green(subject, sha):
             raise StaleFence("trusted exact-head green changed before push")
@@ -398,19 +362,18 @@ class GitOperations:
         try:
             actual = await self.remote(repo, ref)
         except Exception as exc:
-            return "unknown_after_push", {"intent": key, "reason": str(exc), "error": error}
+            return "unknown_after_push", {"reason": str(exc), "error": error}
         if actual == sha:
-            await self.journal.append(subject, key + ":applied", primitive, "applied", payload)
-            return "published", {"intent": key, "head": sha, "observed_sha": actual}
+            return "published", {"head": sha, "observed_sha": actual}
         if (actual or ZERO) != expected:
-            return "target_moved", {"intent": key, "observed_sha": actual, "error": error}
-        return "unknown_after_push", {"intent": key, "observed_sha": actual, "error": error}
+            return "target_moved", {"observed_sha": actual, "error": error}
+        return "unknown_after_push", {"observed_sha": actual, "error": error}
 
     async def materialize_ref(self, subject: Subject, args: MaterializeRefArgs):
         p = args.primitive
         try:
             repo = await self._repository(subject, args.repository_id)
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.exact(repo, args.base_sha)
                 fence = await self._fence(subject, args.ref)
                 # The default branch always goes through publish's green guard.
@@ -438,7 +401,7 @@ class GitOperations:
         p = args.primitive
         try:
             repo = await self._repository(subject, args.repository_id)
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.authority(subject)
                 await self.exact(repo, args.sha)
                 ref = args.retention_ref
@@ -449,8 +412,6 @@ class GitOperations:
                 actual = await self.remote(repo, ref)
                 if actual == args.sha:
                     evidence = {"ref": ref, "head": args.sha}
-                    key = operation_key(subject, p, evidence)
-                    await self.journal.append(subject, key + ":exists", p, "exists", evidence)
                     return PrimitiveOutcome(primitive=p, outcome="exists", detail=evidence)
                 if actual is not None:
                     return PrimitiveOutcome.unknown(p, "retention_ref_moved", observed_sha=actual)
@@ -468,7 +429,7 @@ class GitOperations:
             ref = args.fence.target.branch
             if ref != subject.target_ref or args.new_sha != subject.head_sha:
                 raise StaleFence("publication differs from the subject's exact target/head")
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.authority(subject, args.fence)
                 await self.exact(repo, args.new_sha)
                 if (
@@ -515,10 +476,10 @@ class GitOperations:
                 heads.append(declaration(path, await self.run(repo, "show", f"{sha}:{path}")))
         return heads
 
-    async def _migration_conflicts(self, repo, current, member):
+    async def _migration_conflicts(self, repo, current, member, effective_base):
         ours = await self._migrations(repo, current)
         theirs = await self._migrations(repo, member.head_sha)
-        base = {h.path: h for h in await self._migrations(repo, member.base_sha)}
+        base = {h.path: h for h in await self._migrations(repo, effective_base)}
         added = [h for h in theirs if h.path not in base]
         conflicts = []
         for h in added:
@@ -533,221 +494,180 @@ class GitOperations:
                     conflicts.extend((h.path, other.path))
         return sorted(set(conflicts))
 
-    async def _generated(self, repo, tree, paths):
-        # Attribute lookup refers to the exact tree, not the retained clone's
-        # arbitrary checked-out branch (Git 2.43+ supports --source).
-        result = await self.git.arun_git_result(
-            ["check-attr", f"--source={tree}", "-z", "--stdin", "merge"],
-            cwd=str(repo.store),
-            stdin="\0".join(paths) + "\0",
-        )
-        if result.returncode:
-            raise GitError(result.stderr or "generated attribute probe failed")
-        fields = result.stdout.split("\0")
-        return {fields[i] for i in range(0, len(fields) - 2, 3) if fields[i + 2] == "aq-generated"}
+    async def merge_sources(self, repo, base_sha, members, *, created_at, squash=False,
+                            regenerate_generated=True):
+        """One deterministic merge path for every target, without progress records.
+
+        Source bases and heads are frozen retained inputs. Generated conflicts
+        rebuild from merged sources; colliding migration heads become ordinary
+        repair work. Local object pins retain computation, never delivery truth.
+        """
+        await self.validate_repository(repo)
+        await self.exact(repo, base_sha)
+        current, results, regenerations = base_sha, [], []
+        last_merge = None
+        for member in members:
+            try:
+                await self.exact(repo, member.head_sha)
+                await self.exact(repo, member.base_sha)
+                if not await self.is_ancestor(repo, member.base_sha, member.head_sha):
+                    raise ValueError("recorded source base is not an ancestor")
+                if await self.git.areserved_paths_in_diff(
+                    str(repo.store), member.base_sha, member.head_sha
+                ):
+                    raise ValueError("source changes reserved AQ bookkeeping paths")
+            except (GitError, ValueError, TypeError) as exc:
+                return {"outcome": "source_moved", "head": current, "members": results,
+                        "member": member.task_id, "reason": str(exc)}
+            effective_base = await effective_source_base(
+                self.git, str(repo.store), member.base_sha, current, member.head_sha
+            )
+            evidence = {"source_base_sha": member.base_sha,
+                        "effective_base_sha": effective_base, "target_head_sha": current}
+            try:
+                if effective_base != member.base_sha and await self.git.areserved_paths_in_diff(
+                    str(repo.store), effective_base, member.head_sha
+                ):
+                    raise ValueError("source changes reserved AQ bookkeeping paths")
+            except (GitError, ValueError, TypeError) as exc:
+                return {"outcome": "source_moved", "head": current, "members": results,
+                        "member": member.task_id, "reason": str(exc), **evidence}
+            head, regenerated = current, False
+            if not await self.is_ancestor(repo, member.head_sha, current):
+                collisions = await self._migration_conflicts(repo, current, member, effective_base)
+                if collisions:
+                    return {"outcome": "conflict", "head": current, "members": results,
+                            "member": member.task_id, "files": collisions,
+                            "reason": "alembic_head_collision", **evidence}
+                args = ["--no-replace-objects", "merge-tree", "--write-tree",
+                        f"--merge-base={effective_base}", current, member.head_sha]
+                try:
+                    with commit_identity(self.git.resolve_commit_identity()):
+                        tree = await merge_generated_tree(
+                            self.git, repo.store, args, command=repo.regenerate,
+                            timeout_seconds=repo.regenerate_timeout_seconds,
+                            regenerate=regenerate_generated,
+                            defer_regeneration=True, regenerations=regenerations,
+                        )
+                except MissingRegenerator as exc:
+                    # A missing regenerator is the project's configuration, not a
+                    # member's content: it must never park the member.
+                    return {"outcome": "no_regenerator", "head": current,
+                            "members": results, "member": member.task_id,
+                            "reason": exc.reason, **evidence}
+                except GeneratedMergeConflict as exc:
+                    files = sorted(set(exc.files) | {line.split("\t", 1)[1]
+                                    for line in exc.stdout.splitlines()[1:]
+                                    if "\t" in line and
+                                    line.split("\t", 1)[0].endswith((" 1", " 2", " 3"))})
+                    return {"outcome": "conflict", "head": current, "members": results,
+                            "member": member.task_id, "files": files,
+                            "reason": exc.reason or "merge_conflict",
+                            "error": str(exc)[:4000], **evidence}
+                stamp = f"@{int(created_at)} +0000"
+                parents = ["-p", current] + ([] if squash else ["-p", member.head_sha])
+                message = with_source_trailers(
+                    f"Integrate {member.task_id} ({member.head_sha})\n\n"
+                    f"Source-base: {member.base_sha}\n"
+                    f"Effective-merge-base: {effective_base}",
+                    [source_identity(member.task_id, member.head_sha)],
+                )
+                head = await self.run(
+                    repo, *self.git.resolve_commit_identity().config_args(),
+                    "commit-tree", tree, *parents, "-m", message,
+                    env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+                )
+                last_merge = (parents, message, len(results))
+            key = hashlib.sha256(f"{base_sha}:{current}:{member.head_sha}:{head}".encode()).hexdigest()
+            await self.run(repo, "update-ref", f"refs/aq/batch-objects/{key}", head)
+            results.append({"member": member.task_id, "source": member.head_sha,
+                            "head": head, "regenerated": regenerated, **evidence})
+            current = head
+        # Source-only changes can invalidate any derived artifact. Rebuild the
+        # whole registered set once, even if no branch committed generated output.
+        files = set()
+        if results and regenerate_generated:
+            files = await generated_paths(self.git, repo.store, current)
+            files.update(path for item in regenerations for path in item["files"])
+        if files:
+            files = sorted(files)
+            current_tree = await self.git.atree_sha(str(repo.store), current)
+            try:
+                with commit_identity(self.git.resolve_commit_identity()):
+                    tree = await regenerated_tree(
+                        self.git, repo.store,
+                        current_tree,
+                        command=repo.regenerate,
+                        timeout_seconds=repo.regenerate_timeout_seconds,
+                        verified_merges=tuple(
+                            (item["effective_base_sha"], item["target_head_sha"], item["source"])
+                            for item in results
+                        ),
+                    )
+            except MissingRegenerator as exc:
+                return {"outcome": "no_regenerator", "head": base_sha,
+                        "members": [], "reason": exc.reason}
+            except RegenerationFailure as exc:
+                if exc.retryable:
+                    raise GeneratedRegenerationFailure(
+                        f"generated regeneration failed: {exc.reason}", files,
+                    ) from exc
+                # The intermediate combined tree has not passed regeneration.
+                # Keep the previous published repair overlay as the start; a
+                # candidate containing every source must not bypass this failure
+                # on the next visit merely through ancestry.
+                return {"outcome": "conflict", "head": base_sha, "members": [],
+                        "member": results[-1]["member"],
+                        "files": files, "reason": f"generated regeneration failed: {exc.reason}",
+                        "error": str(exc)[:4000]}
+            # Fold the combined sweep into the final unpublished merge. Keep its
+            # exact parents, source trailers and merge-base evidence intact.
+            parents, message, index = last_merge or (
+                ["-p", current], "Rebuild generated artifacts from batch sources", 0,
+            )
+            if last_merge is not None or tree != current_tree:
+                stamp = f"@{int(created_at)} +0000"
+                current = await self.run(
+                    repo, *self.git.resolve_commit_identity().config_args(),
+                    "commit-tree", tree, *parents, "-m", message,
+                    env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+                )
+            key = hashlib.sha256(f"{base_sha}:{current}:regenerated".encode()).hexdigest()
+            await self.run(repo, "update-ref", f"refs/aq/batch-objects/{key}", current)
+            for item in results[index:]:
+                item.update(head=current, regenerated=True)
+        return {"outcome": "merged", "head": current, "members": results}
 
     async def merge_members(self, subject: Subject, args: MergeMembersArgs):
+        """Compatibility primitive; the batch pipeline shares its merge implementation."""
         p = args.primitive
         try:
             repo = await self._repository(subject)
-            async with self.exclusion(repo.repository_id):
+            async with self.exclusion(repo.repository_id, subject):
                 await self.authority(subject)
                 if args.target_ref != subject.target_ref:
                     raise StaleFence("merge target differs from subject")
                 actual = await self.remote(repo, args.target_ref)
                 if actual != args.base_sha:
-                    return PrimitiveOutcome(
-                        primitive=p, outcome="base_moved", detail={"observed_sha": actual}
-                    )
-                await self.exact(repo, args.base_sha)
-                current, results = args.base_sha, []
-                for ordinal, member in enumerate(args.members):
-                    try:
-                        await self.exact(repo, member.head_sha)
-                        if member.base_sha is None:
-                            raise ValueError("member needs its recorded source base")
-                        await self.exact(repo, member.base_sha)
-                        if not await self.is_ancestor(repo, member.base_sha, member.head_sha):
-                            raise ValueError("recorded source base is not an ancestor")
-                        if await self.git.areserved_paths_in_diff(
-                            str(repo.store), member.base_sha, member.head_sha
-                        ):
-                            raise ValueError("source changes reserved AQ bookkeeping paths")
-                    except (GitError, ValueError) as exc:
-                        return PrimitiveOutcome(
-                            primitive=p,
-                            outcome="source_moved",
-                            detail={
-                                "member": member.task_id,
-                                "head": current,
-                                "reason": str(exc),
-                                "members": results,
-                            },
-                        )
-                    identity = {
-                        "base": args.base_sha,
-                        "partial": current,
-                        "ordinal": ordinal,
-                        "member": member.model_dump(mode="json"),
-                        "regenerate": repo.regenerate if args.regenerate_generated else None,
-                    }
-                    key = operation_key(subject, p, identity)
-                    previous = await self.journal.read(subject, key + ":merged")
-                    if previous:
-                        current = await self.exact(repo, previous["head"])
-                        results.append(previous)
-                        continue
-                    await self.journal.append(subject, key, p, "prepared", identity)
-                    if await self.is_ancestor(repo, member.head_sha, current):
-                        head, regenerated = current, False
-                    else:
-                        collisions = await self._migration_conflicts(repo, current, member)
-                        if collisions:
-                            return await self._conflict(
-                                subject,
-                                key,
-                                member,
-                                current,
-                                results,
-                                collisions,
-                                "alembic_head_collision",
-                            )
-                        merged = await self.git.arun_git_result(
-                            [
-                                "--no-replace-objects",
-                                "merge-tree",
-                                "--write-tree",
-                                "-z",
-                                f"--merge-base={member.base_sha}",
-                                current,
-                                member.head_sha,
-                            ],
-                            cwd=str(repo.store),
-                        )
-                        if merged.returncode not in {0, 1}:
-                            raise GitError(merged.stderr or "merge-tree failed")
-                        fields = merged.stdout.split("\0")
-                        tree = fields[0].strip()
-                        conflicts = sorted(
-                            {
-                                f.split("\t", 1)[1]
-                                for f in fields[1:]
-                                if "\t" in f and f.split("\t", 1)[0].endswith((" 1", " 2", " 3"))
-                            }
-                        )
-                        ours = set(
-                            (
-                                await self.run(
-                                    repo, "diff", "--name-only", "-z", member.base_sha, current
-                                )
-                            ).split("\0")
-                        ) - {""}
-                        theirs = set(
-                            (
-                                await self.run(
-                                    repo,
-                                    "diff",
-                                    "--name-only",
-                                    "-z",
-                                    member.base_sha,
-                                    member.head_sha,
-                                )
-                            ).split("\0")
-                        )
-                        overlaps = sorted((ours & theirs) | set(conflicts))
-                        generated = (
-                            await self._generated(repo, tree, overlaps) if overlaps else set()
-                        )
-                        if merged.returncode and (
-                            not conflicts
-                            or set(conflicts) - generated
-                            or not args.regenerate_generated
-                            or not repo.regenerate
-                        ):
-                            return await self._conflict(
-                                subject,
-                                key,
-                                member,
-                                current,
-                                results,
-                                conflicts,
-                                merged.stderr or "merge conflict",
-                            )
-                        regenerated = bool(
-                            generated and args.regenerate_generated and repo.regenerate
-                        )
-                        if regenerated:
-                            try:
-                                with commit_identity(self.git.resolve_commit_identity()):
-                                    tree = await regenerated_tree(
-                                        self.git,
-                                        repo.store,
-                                        tree,
-                                        command=repo.regenerate,
-                                        timeout_seconds=repo.regenerate_timeout_seconds,
-                                    )
-                            except RegenerationFailure as exc:
-                                return await self._conflict(
-                                    subject, key, member, current, results, overlaps, str(exc)
-                                )
-                        stamp = f"@{int(subject.created_at)} +0000"
-                        identity_args = self.git.resolve_commit_identity().config_args()
-                        head = await self.run(
-                            repo,
-                            *identity_args,
-                            "commit-tree",
-                            tree,
-                            "-p",
-                            current,
-                            "-p",
-                            member.head_sha,
-                            "-m",
-                            f"Integrate {member.task_id} ({member.head_sha})",
-                            env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
-                        )
-                    await self.authority(subject)
-                    # Pin before recording progress: a crash cannot leave a
-                    # journal head whose object has been collected.
-                    await self.run(repo, "update-ref", f"refs/aq/subjects/{key[4:]}", head)
-                    result = {
-                        "member": member.task_id,
-                        "source": member.head_sha,
-                        "head": head,
-                        "regenerated": bool(regenerated),
-                    }
-                    await self.journal.append(subject, key + ":merged", p, "merged", result)
-                    results.append(result)
-                    current = head
-                # Sources are immutable objects; an advancing branch does not
-                # invalidate a frozen reviewed SHA. The target is a live CAS.
+                    return PrimitiveOutcome(primitive=p, outcome="base_moved",
+                                            detail={"observed_sha": actual})
+                result = await self.merge_sources(
+                    repo, args.base_sha, args.members, created_at=subject.created_at,
+                    regenerate_generated=args.regenerate_generated,
+                )
                 await self.authority(subject)
                 actual = await self.remote(repo, args.target_ref)
                 if actual != args.base_sha:
-                    return PrimitiveOutcome(
-                        primitive=p,
-                        outcome="base_moved",
-                        detail={"head": current, "observed_sha": actual, "members": results},
-                    )
-                return PrimitiveOutcome(
-                    primitive=p, outcome="merged", detail={"head": current, "members": results}
-                )
+                    result.update(outcome="base_moved", observed_sha=actual)
+                outcome = result.pop("outcome")
+                if outcome == "no_regenerator":
+                    # The closed primitive outcomes cannot carry a project
+                    # configuration gap; ``unknown`` keeps it out of the
+                    # conflict route that would park a member.
+                    return PrimitiveOutcome.unknown(p, str(result.get("reason")))
+                return PrimitiveOutcome(primitive=p, outcome=outcome, detail=result)
         except (GitError, BranchOwnershipError, DevelopmentBusy, ValueError) as exc:
             return PrimitiveOutcome.unknown(p, str(exc))
-
-    async def _conflict(self, subject, key, member, current, results, files, reason):
-        detail = {
-            "member": member.task_id,
-            "files": files,
-            "head": current,
-            "members": results,
-            "reason": reason,
-        }
-        await self.journal.append(
-            subject, key + ":conflict", Primitive.GIT_MERGE_MEMBERS, "conflict", detail
-        )
-        return PrimitiveOutcome(
-            primitive=Primitive.GIT_MERGE_MEMBERS, outcome="conflict", detail=detail
-        )
 
     async def ancestry(self, subject: Subject, args: AncestryArgs):
         p = args.primitive

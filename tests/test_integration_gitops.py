@@ -4,14 +4,20 @@ import asyncio
 import subprocess
 import sys
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, update
 
-from src.database import Database
-from src.database.tables import integration_branch_owners, integration_subjects, playbook_artifacts
+from src.database.tables import (
+    integration_branch_owners,
+    integration_subjects,
+    playbook_artifacts,
+    projects,
+)
 from src.git.github_contracts import GitHubRepositoryBinding
-from src.git.manager import GitError, GitManager
+from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.cleanup import SubjectCleanup, SubjectCleanupItem
 from src.integration.development import DevelopmentBusy, publisher_exclusion
 from src.integration.gitops import (
@@ -21,7 +27,8 @@ from src.integration.gitops import (
 )
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import (
+from src.integration.source_ancestry import effective_source_base
+from src.integration.runtime_contracts import (
     AncestryArgs,
     AncestryQuery,
     CleanupArgs,
@@ -41,7 +48,8 @@ from src.integration.subjects import (
     WriterLease,
     WriterStatus,
 )
-from tests.db_fixtures import lease_dsn
+from src.models import Project, RepoConfig, RepoSourceType
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 ARTIFACT = "sha256:" + "1" * 64
 NOW = 1700000000.0
@@ -63,6 +71,56 @@ def commit(path, files, *, base=None):
     git(path, "add", "-A")
     git(path, "commit", "-m", "source change")
     return git(path, "rev-parse", "HEAD")
+
+
+def inherited_source(path, base, scenario):
+    """A stale origin, a real parent merge, and subsequent target movement."""
+    recorded = base
+    if scenario == "generated":
+        recorded = commit(path, {
+            ".gitattributes": "generated.txt merge=aq-generated\n",
+            "generated.txt": "base\n",
+        }, base=base)
+    inherited = commit(path, {"base.txt": "inherited parent\n"}, base=recorded)
+    own = commit(path, {"own.txt": "own change\n"}, base=recorded)
+    git(path, "merge", "--no-ff", "-m", "inherit newer parent", inherited)
+    head = git(path, "rev-parse", "HEAD")
+    if scenario == "conflict":
+        head = commit(path, {"base.txt": "source change\n"})
+    elif scenario == "revert":
+        head = commit(path, {"base.txt": "base\n"})
+    elif scenario == "generated":
+        head = commit(path, {"generated.txt": "source\n"})
+    current = commit(path, {"target.txt": "target moved on\n"} if scenario == "revert" else {
+        "base.txt": "target moved on\n",
+        **({"generated.txt": "target\n"} if scenario == "generated" else {}),
+    }, base=inherited)
+    assert git(path, "merge-base", current, head) == inherited
+    assert git(path, "merge-base", "--is-ancestor", own, head) == ""
+    return recorded, inherited, current, head
+
+
+def reserved_restoration_source(path, base):
+    """The recorded delta hides a restoration of target-deleted bookkeeping."""
+    recorded = commit(path, {".aq/claim.json": "{}\n"}, base=base)
+    git(path, "rm", ".aq/claim.json")
+    git(path, "commit", "-m", "target deletes bookkeeping")
+    inherited = git(path, "rev-parse", "HEAD")
+    commit(path, {"own.txt": "own change\n"}, base=recorded)
+    git(path, "merge", "--no-ff", "-m", "inherit target deletion", inherited)
+    head = commit(path, {".aq/claim.json": "{}\n"})
+    current = commit(path, {"target.txt": "target change\n"}, base=inherited)
+    assert git(path, "diff", "--name-only", recorded, head) == "own.txt"
+    assert ".aq/claim.json" in git(path, "diff", "--name-only", inherited, head).splitlines()
+    return recorded, inherited, current, head
+
+
+def stacked_member_sources(path, base):
+    """Child P's own delta excludes Q1; Q must subsequently land Q1 and Q2."""
+    intermediate = commit(path, {"q1.txt": "Q1\n"}, base=base)
+    child = commit(path, {"p.txt": "P\n"})
+    source = commit(path, {"q2.txt": "Q2\n"}, base=intermediate)
+    return intermediate, child, source
 
 
 class LocalGit(GitManager):
@@ -139,18 +197,24 @@ class LocalGit(GitManager):
 
 
 @pytest.fixture
-async def setup(tmp_path):
+def git_history_template(tmp_path):
+    """Build fresh repositories and history for this scenario."""
     remote = tmp_path / "remote.git"
-    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    init_bare_seed(remote)
     store = tmp_path / "retained"
-    git(tmp_path, "clone", str(remote), str(store))
+    clone_seed(remote, store)
     git(store, "config", "user.name", "Tester")
     git(store, "config", "user.email", "tester@example.test")
     base = commit(store, {"base.txt": "base\n"})
     git(store, "push", "origin", "HEAD:main")
     head = commit(store, {"new.txt": "new\n"})
-    db = Database(lease_dsn("gitops"))
-    await db.initialize()
+    return remote, store, base, head
+
+
+@pytest.fixture
+async def setup(tmp_path, reuse_database, git_history_template):
+    remote, store, base, head = git_history_template
+    db = await reuse_database("gitops")
     async with db._engine.begin() as conn:
         await conn.execute(
             insert(playbook_artifacts).values(
@@ -188,8 +252,10 @@ async def setup(tmp_path):
     await db.ensure_integration_subject(subject.to_row())
     repo = RetainedRepository("r", store, GitHubRepositoryBinding(123, "test/repo"), "main")
 
-    async def resolver(rid):
-        assert rid == "r"
+    async def resolver(subject):
+        # GitOperations resolves a subject for the subject runtimes and a bare
+        # repository id for batch construction; both must name this clone.
+        assert getattr(subject, "repository_id", subject) == "r"
         return repo
 
     green = {head}
@@ -205,7 +271,6 @@ async def setup(tmp_path):
         authority=SubjectGitAuthority(db, trusted_green=trusted_green),
     )
     yield db, ops, subject, fence, repo, base, head, green
-    await db.close()
 
 
 def merge_args(subject, base, *heads):
@@ -235,14 +300,42 @@ async def test_merge_replay_preserves_exact_source_ancestry_and_pins(setup):
     assert git(repo.store, "show", f"{final}:new.txt") == "new"
     assert git(repo.store, "show", f"{final}:other.txt") == "other"
     rows = await journal_rows(db)
-    assert len(rows) == 4
+    assert rows == []
     assert (
-        len(git(repo.store, "for-each-ref", "--format=%(refname)", "refs/aq/subjects").split()) == 2
+        len(git(repo.store, "for-each-ref", "--format=%(refname)", "refs/aq/batch-objects").split()) == 2
     )
     assert (await ops.merge_members(s, args)) == first
     assert len(await journal_rows(db)) == len(rows)
     # Construction never changes the remote target.
     assert git(ops.git.remote_path, "rev-parse", "main") == base
+
+
+async def test_each_merged_member_records_one_exact_source_trailer(setup):
+    """One AQ-Source per member merge, on that member's whole head only."""
+    from src.integration.source_trailer import SourceIdentity, parse_source_trailers
+
+    _db, ops, s, _fence, repo, base, head, _green = setup
+    other = commit(repo.store, {"other.txt": "other\n"}, base=base)
+    result = await ops.merge_members(s, merge_args(s, base, head, other))
+    assert result.outcome == "merged", result
+    merges = git(
+        repo.store, "rev-list", "--reverse", "--min-parents=2", f"{base}..{result.detail['head']}"
+    ).split()
+    assert len(merges) == 2
+    for sha, head_sha in zip(merges, (head, other), strict=True):
+        message = git(repo.store, "show", "-s", "--format=%B", sha)
+        task_id = "t0" if head_sha == head else "t1"
+        assert parse_source_trailers(message) == {SourceIdentity(task_id, head_sha)}
+        assert [line for line in message.splitlines() if line.startswith("AQ-Source:")] == [
+            f"AQ-Source: {task_id}@{head_sha}"
+        ]
+        assert f"Integrate {task_id} ({head_sha})" in message
+    # Neither merge names the other's member, and the subject line each
+    # recorded before this change is unchanged.
+    recorded = set().union(*(
+        parse_source_trailers(git(repo.store, "show", "-s", "--format=%B", sha)) for sha in merges
+    ))
+    assert recorded == {SourceIdentity("t0", head), SourceIdentity("t1", other)}
 
 
 async def test_real_conflict_records_partial_head_and_paths(setup):
@@ -255,7 +348,137 @@ async def test_real_conflict_records_partial_head_and_paths(setup):
     assert result.detail["files"] == ["base.txt"]
     assert result.detail["members"][0]["source"] == a
     assert (await ops.merge_members(s, merge_args(s, base, a, b))) == result
-    assert (await journal_rows(db))[-1]["outcome"] == "conflict"
+    assert await journal_rows(db) == []
+
+
+@pytest.mark.parametrize("scenario", ("clean", "conflict", "generated", "revert"))
+async def test_merge_uses_inherited_target_base_and_records_evidence(setup, scenario):
+    _, ops, _, _, repo, base, *_ = setup
+    recorded, inherited, current, head = inherited_source(repo.store, base, scenario)
+    regen = repo.store.parent / "regenerate.py"
+    regen.write_text("from pathlib import Path\nPath('generated.txt').write_text('rebuilt')\n")
+    repo = replace(repo, regenerate=f"{sys.executable} {regen}")
+    members = (MemberRef(task_id="inherited", head_sha=head, base_sha=recorded),)
+
+    result = await ops.merge_sources(repo, current, members, created_at=NOW)
+    assert result["outcome"] == ("conflict" if scenario == "conflict" else "merged"), result
+    evidence = result if scenario == "conflict" else result["members"][0]
+    assert evidence["source_base_sha"] == recorded
+    assert evidence["effective_base_sha"] == inherited
+    assert evidence["target_head_sha"] == current
+    if scenario == "conflict":
+        assert result["files"] == ["base.txt"]
+        assert result["head"] == current
+    else:
+        merged = result["head"]
+        expected = "base" if scenario == "revert" else "target moved on"
+        assert git(repo.store, "show", f"{merged}:base.txt") == expected
+        assert git(repo.store, "show", f"{merged}:own.txt") == "own change"
+        assert git(repo.store, "show", "-s", "--format=%P", merged).split() == [current, head]
+        message = git(repo.store, "show", "-s", "--format=%B", merged)
+        assert f"Source-base: {recorded}" in message
+        assert f"Effective-merge-base: {inherited}" in message
+        if scenario == "generated":
+            assert git(repo.store, "show", f"{merged}:generated.txt") == "rebuilt"
+        elif scenario == "clean":
+            forced = await ops.git.arun_git_result([
+                "merge-tree", "--write-tree", f"--merge-base={recorded}", current, head,
+            ], cwd=str(repo.store))
+            assert forced.returncode == 1  # The old construction really conflicts.
+    assert await ops.merge_sources(repo, current, members, created_at=NOW) == result
+
+
+async def test_source_base_outside_target_history_keeps_only_recorded_delta(setup):
+    _, ops, _, _, repo, base, *_ = setup
+    recorded = commit(repo.store, {"unreviewed.txt": "exclude me\n"}, base=base)
+    source = commit(repo.store, {"own.txt": "own change\n"})
+    current = commit(repo.store, {"target.txt": "target change\n"}, base=base)
+    member = MemberRef(task_id="divergent", head_sha=source, base_sha=recorded)
+    result = await ops.merge_sources(repo, current, (member,), created_at=NOW)
+    assert result["outcome"] == "merged", result
+    assert result["members"][0]["effective_base_sha"] == recorded
+    assert git(repo.store, "ls-tree", "--name-only", result["head"]).splitlines() == [
+        "base.txt", "own.txt", "target.txt",
+    ]
+
+
+async def test_effective_base_does_not_hide_inherited_reserved_paths(setup):
+    _, ops, _, _, repo, base, *_ = setup
+    inherited = commit(repo.store, {".aq/claim.json": "{}\n"}, base=base)
+    head = commit(repo.store, {"own.txt": "own change\n"})
+    member = MemberRef(task_id="reserved", head_sha=head, base_sha=base)
+    result = await ops.merge_sources(repo, inherited, (member,), created_at=NOW)
+    assert result["outcome"] == "source_moved", result
+    assert "reserved AQ bookkeeping paths" in result["reason"]
+    assert result["head"] == inherited
+
+
+async def test_effective_base_refuses_restored_reserved_path(setup):
+    _, ops, _, _, repo, base, *_ = setup
+    recorded, inherited, current, head = reserved_restoration_source(repo.store, base)
+    member = MemberRef(task_id="reserved-restoration", head_sha=head, base_sha=recorded)
+    result = await ops.merge_sources(repo, current, (member,), created_at=NOW)
+    assert result["outcome"] == "source_moved", result
+    assert "reserved AQ bookkeeping paths" in result["reason"]
+    assert result["head"] == current
+    assert result["source_base_sha"] == recorded
+    assert result["effective_base_sha"] == inherited
+    assert result["members"] == []
+
+
+async def test_effective_base_keeps_source_changes_after_stacked_child_lands_first(setup):
+    _, ops, _, _, repo, base, *_ = setup
+    intermediate, child, source = stacked_member_sources(repo.store, base)
+    members = (
+        MemberRef(task_id="P", head_sha=child, base_sha=intermediate),
+        MemberRef(task_id="Q", head_sha=source, base_sha=base),
+    )
+    result = await ops.merge_sources(repo, base, members, created_at=NOW)
+    assert result["outcome"] == "merged", result
+    partial = result["members"][0]["head"]
+    assert git(repo.store, "merge-base", partial, source) == intermediate
+    assert intermediate not in git(repo.store, "rev-list", "--first-parent", partial).split()
+    assert git(repo.store, "ls-tree", "--name-only", partial).splitlines() == ["base.txt", "p.txt"]
+    assert result["members"][1]["effective_base_sha"] == base
+    assert git(repo.store, "show", f"{result['head']}:q1.txt") == "Q1"
+    assert git(repo.store, "show", f"{result['head']}:q2.txt") == "Q2"
+    assert git(repo.store, "show", f"{result['head']}:p.txt") == "P"
+
+
+async def test_effective_base_keeps_real_migration_collisions(setup):
+    _, ops, _, _, repo, base, *_ = setup
+    inherited = commit(repo.store, {
+        "migrations/versions/parent.py": "revision = 'parent'\ndown_revision = None\n",
+    }, base=base)
+    own = commit(repo.store, {"own.txt": "own change\n"}, base=base)
+    git(repo.store, "merge", "--no-ff", "-m", "inherit parent migration", inherited)
+    head = commit(repo.store, {
+        "migrations/versions/source.py": "revision = 'same'\ndown_revision = 'parent'\n",
+    })
+    current = commit(repo.store, {
+        "migrations/versions/target.py": "revision = 'same'\ndown_revision = 'parent'\n",
+    }, base=inherited)
+    member = MemberRef(task_id="migrations", head_sha=head, base_sha=base)
+    result = await ops.merge_sources(repo, current, (member,), created_at=NOW)
+    assert result["outcome"] == "conflict", result
+    assert result["reason"] == "alembic_head_collision"
+    assert result["effective_base_sha"] == inherited
+    assert result["files"] == ["migrations/versions/source.py", "migrations/versions/target.py"]
+    assert git(repo.store, "merge-base", "--is-ancestor", own, head) == ""
+
+
+@pytest.mark.parametrize("probe", ("merge_base", "ancestry", "first_parent"))
+async def test_effective_base_probe_error_never_becomes_an_ancestry_proof(probe):
+    ok = SimpleNamespace(returncode=0, stdout="b" * 40, stderr="")
+    failed = SimpleNamespace(returncode=128, stdout="", stderr="objects unavailable")
+    manager = SimpleNamespace(arun_git_result=AsyncMock(
+        side_effect={
+            "merge_base": [failed], "ancestry": [ok, failed],
+            "first_parent": [ok, ok, ok, ok, failed],
+        }[probe],
+    ))
+    with pytest.raises(GitError, match="objects unavailable"):
+        await effective_source_base(manager, "store", "a" * 40, "c" * 40, "d" * 40)
 
 
 @pytest.mark.parametrize("invalid", ["missing", "unrelated_base"])
@@ -360,16 +583,82 @@ async def test_generated_conflict_rebuilds_merged_sources_and_rejects_stray_writ
     assert "non-generated" in result.detail["reason"]
 
 
+@pytest.mark.parametrize("changed_output", [True, False])
+async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup, changed_output):
+    """A repository with no regenerate command is a project configuration gap.
+
+    The member's content is fine, so the merge must not park it: the batch
+    merge answers ``no_regenerator`` and the closed subject primitive answers
+    ``unknown``, which no decision table routes to repair.
+    """
+    db, ops, s, _, repo, base, *_ = setup
+    common = commit(
+        repo.store,
+        {".gitattributes": "generated.txt merge=aq-generated\n", "generated.txt": "base\n"},
+        base=base,
+    )
+    git(repo.store, "push", "origin", f"{common}:main")
+    a = commit(repo.store, {"a.txt": "a\n", **(
+        {"generated.txt": "ours\n"} if changed_output else {}
+    )}, base=common)
+    b = commit(repo.store, {"b.txt": "b\n", **(
+        {"generated.txt": "theirs\n"} if changed_output else {}
+    )}, base=common)
+    unconfigured = replace(repo, regenerate=None)
+
+    async def resolver(_):
+        return unconfigured
+
+    ops.repository = resolver
+    merged = await ops.merge_sources(unconfigured, common,
+                                      merge_args(s, common, a, b).members,
+                                      created_at=NOW)
+    assert merged["outcome"] == "no_regenerator", merged
+    # Even the first member's output must be regenerated from combined sources.
+    assert merged["members"] == []
+    if changed_output:
+        assert merged["member"] == "t0"
+    assert is_valid_git_oid(merged["head"])
+
+    result = await ops.merge_members(s, merge_args(s, common, a, b))
+    assert result.is_unknown and "regenerate" in result.reason
+    # Neither answer changed the remote target, and no journal row was written.
+    assert git(repo.store, "rev-parse", "origin/main") == common
+    assert await journal_rows(db) == []
+
+
+async def test_declined_regeneration_keeps_the_generated_conflict(setup):
+    """``regenerate_generated: false`` is a policy choice, not a gap.
+
+    The generated overlap is then an ordinary conflict with its own evidence,
+    because the policy — not the configuration — refused the rebuild.
+    """
+    _db, ops, s, _, repo, base, *_ = setup
+    common = commit(
+        repo.store,
+        {".gitattributes": "generated.txt merge=aq-generated\n", "generated.txt": "base\n"},
+        base=base,
+    )
+    git(repo.store, "push", "origin", f"{common}:main")
+    a = commit(repo.store, {"generated.txt": "ours\n", "a.txt": "a\n"}, base=common)
+    b = commit(repo.store, {"generated.txt": "theirs\n", "b.txt": "b\n"}, base=common)
+    result = await ops.merge_sources(
+        repo, common, merge_args(s, common, a, b).members, created_at=NOW,
+        regenerate_generated=False,
+    )
+    assert result["outcome"] == "conflict", result
+    assert result["files"] == ["generated.txt"]
+    assert "regeneration is disabled" in result["reason"]
+
+
 async def test_ambiguous_publish_reads_back_and_replays_without_second_push(setup):
     db, ops, s, fence, repo, base, head, _ = setup
     ops.git.ambiguous = True
 
-    async def check_intent():
-        rows = await journal_rows(db)
-        assert rows[-1]["outcome"] == "prepared"
-        assert rows[-1]["payload"]["expected_old_sha"] == base
+    async def check_no_journal():
+        assert await journal_rows(db) == []
 
-    ops.git.push_hook = check_intent
+    ops.git.push_hook = check_no_journal
     args = PublishArgs(fence=fence, expected_old_sha=base, new_sha=head)
     result = await ops.publish(s, args)
     assert result.outcome == "published", result
@@ -377,8 +666,9 @@ async def test_ambiguous_publish_reads_back_and_replays_without_second_push(setu
     assert ops.git.pushes == 1
     assert (await ops.publish(s, args)).outcome == "published"
     assert ops.git.pushes == 1
-    assert len(await journal_rows(db)) == 2
-    git(ops.git.remote_path, "update-ref", "refs/heads/main", base)
+    assert await journal_rows(db) == []
+    moved = commit(repo.store, {"moved.txt": "moved"}, base=head)
+    git(repo.store, "push", "origin", f"{moved}:main")
     assert (await ops.publish(s, args)).outcome == "target_moved"
     assert ops.git.pushes == 1
 
@@ -484,13 +774,18 @@ async def test_materialization_and_preservation_are_exact_and_do_not_overwrite(s
     assert git(ops.git.remote_path, "rev-parse", "aq/preserved/s") == head
 
 
-async def test_repository_publisher_fence_is_shared_with_legacy_and_independent_of_ref(setup):
+async def test_repository_publisher_exclusion_is_shared_and_independent_of_ref(setup):
     db, ops, s, fence, _, base, head, _ = setup
+    # Shared Git cleanup can take exclusion without acquiring root authority.
     async with publisher_exclusion(db, "r"):
+        pass
+    # The primitives take that same lock, naming the subject they act for, so a
+    # publisher already holding it is exactly the "already running" outcome.
+    async with publisher_exclusion(db, "r", s):
         result = await ops.publish(s, PublishArgs(fence=fence, expected_old_sha=base, new_sha=head))
         assert result.is_unknown and "already running" in result.reason
         with pytest.raises(DevelopmentBusy):
-            async with publisher_exclusion(db, "r"):
+            async with publisher_exclusion(db, "r", s):
                 pass
         async with publisher_exclusion(db, "other-repository"):
             pass
@@ -571,8 +866,46 @@ async def test_cleanup_retention_expected_old_ambiguous_delete_and_replay(setup)
     assert result.detail["pending"][0]["reason"] == "cleanup ref moved"
     assert ops.git.deletes == 1
     result = await cleanup(s, CleanupArgs(max_tries=1))
-    assert result.detail["pending"][0]["reason"] == "retry_exhausted"
+    assert result.detail["pending"][0]["reason"] == "cleanup ref moved"
     assert ops.git.deletes == 1
+
+
+@pytest.mark.parametrize("mode", ["development", "disabled"])
+async def test_subject_cleanup_keeps_default_and_every_flow_target(setup, mode):
+    db, ops, s, _, repo, _, head, _ = setup
+    await db.create_project(Project(id="p", name="Promotion cleanup"))
+    await db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(ops.git.remote_path), default_branch="dev",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            promotion_flow=[{"target": "staging"}, {"target": "aq/release"}],
+            hierarchical_integration_mode=mode, integration_repository_id="r",
+        ))
+    protected = ("dev", "staging", "aq/release", "gh-pages")
+    items = []
+    for branch in (*protected, "aq/ordinary"):
+        ref = f"refs/heads/{branch}"
+        git(repo.store, "push", "origin", f"{head}:{ref}")
+        items.append(SubjectCleanupItem("remote_ref", ref, head, successful_source=True))
+    s = await cleanup_subject(db, s)
+
+    async def inventory(subject):
+        return items
+
+    async def held(subject, item):
+        return False
+
+    result = await SubjectCleanup(ops, inventory=inventory, held=held)(s, CleanupArgs())
+    assert result.outcome == ("clean" if mode == "development" else "pending"), result
+    assert result.detail["retained"] == [f"refs/heads/{branch}" for branch in protected]
+    assert result.detail["deleted"] == (["refs/heads/aq/ordinary"] if mode == "development" else [])
+    assert ops.git.deletes == (1 if mode == "development" else 0)
+    if mode == "disabled":
+        assert await ops.git.aremote_branch_head(repository=repo.binding, branch="aq/ordinary") == head
+    for branch in protected:
+        assert await ops.git.aremote_branch_head(repository=repo.binding, branch=branch) == head
 
 
 async def test_ports_register_only_owned_mechanisms(setup):
@@ -623,39 +956,40 @@ async def test_subject_collector_can_publish_without_a_repair_writer(setup):
 
 async def test_merge_crash_after_pin_before_result_replays_the_same_commit(setup):
     db, ops, s, _, repo, base, head, _ = setup
-    original = ops.journal
+    original = ops.run
 
-    class CrashJournal:
-        read = original.read
+    async def crash_after_pin(repo, *args, **kwargs):
+        result = await original(repo, *args, **kwargs)
+        if args[0] == "update-ref":
+            raise RuntimeError("simulated crash after pin")
+        return result
 
-        async def append(self, subject, key, primitive, outcome, payload):
-            if key.endswith(":merged"):
-                raise RuntimeError("simulated crash after pin")
-            return await original.append(subject, key, primitive, outcome, payload)
-
-    ops.journal = CrashJournal()
+    ops.run = crash_after_pin
     with pytest.raises(RuntimeError, match="simulated crash"):
         await ops.merge_members(s, merge_args(s, base, head))
-    pinned = git(repo.store, "for-each-ref", "--format=%(objectname)", "refs/aq/subjects")
+    pinned = git(repo.store, "for-each-ref", "--format=%(objectname)", "refs/aq/batch-objects")
     assert pinned
-    assert len(await journal_rows(db)) == 1
-    ops.journal = original
+    assert await journal_rows(db) == []
+    ops.run = original
     result = await ops.merge_members(s, merge_args(s, base, head))
     assert result.outcome == "merged"
     assert result.detail["head"] == pinned
 
 
-async def test_green_rechecked_after_intent_and_before_push(setup):
+async def test_green_rechecked_before_push_without_intent_record(setup):
     db, ops, s, fence, _, base, head, _ = setup
+    calls = 0
 
     async def green(subject, sha):
-        return not await journal_rows(db)
+        nonlocal calls
+        calls += 1
+        return calls == 1
 
     ops.authority.trusted_green = green
     result = await ops.publish(s, PublishArgs(fence=fence, expected_old_sha=base, new_sha=head))
     assert result.is_unknown and "green changed" in result.reason
     assert ops.git.pushes == 0
-    assert (await journal_rows(db))[0]["outcome"] == "prepared"
+    assert await journal_rows(db) == []
 
 
 @pytest.mark.parametrize("tamper", ["replace", "graft"])
@@ -782,15 +1116,18 @@ async def test_cleanup_local_refs_and_pr_port_preserve_holds_and_replay(setup):
     ]
     closes = []
     hold = True
+    pr_open = True
 
     async def inventory(subject):
-        return items
+        return [item for item in items if item.kind != "pull_request" or pr_open]
 
     async def held(subject, item):
         return hold
 
     async def close_pr(repo, item):
+        nonlocal pr_open
         closes.append((repo.binding.full_name, item.identity, item.expected_sha))
+        pr_open = False
         return True
 
     cleanup = SubjectCleanup(ops, inventory=inventory, held=held, close_pr=close_pr)

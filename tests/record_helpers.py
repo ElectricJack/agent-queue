@@ -13,6 +13,38 @@ from src.records.identity import knowledge_identity
 NOW = datetime(2026, 10, 1, tzinfo=UTC)
 
 
+async def generation_setup(reuse_database, tmp_path):
+    from src.config import AppConfig
+    from src.database.tables import metadata
+    from src.knowledge.capture import KnowledgeCapture
+    from src.knowledge.extraction_schema import EXTRACTION_TABLE_NAMES
+    from src.knowledge.extraction_store import ExtractionStore
+
+    db = await reuse_database()
+    async with db.immediate() as conn:
+        await conn.run_sync(lambda sync: metadata.create_all(
+            sync, tables=[metadata.tables[name] for name in EXTRACTION_TABLE_NAMES]
+        ))
+    (tmp_path / "vault").mkdir()
+    config = AppConfig(data_dir=str(tmp_path))
+    config.knowledge = knowledge_config()
+    config.memory.enabled = True
+    for feature in (config.knowledge.extraction, config.knowledge.consolidation):
+        feature.enabled = True
+        feature.provider_id = "fake"
+        feature.allowed_providers = ["fake"]
+        feature.daily_microusd = 1000
+        feature.daily_tokens = 100000
+    now = [NOW]
+    store = ExtractionStore(clock=lambda: now[0])
+    for project in ("p", "q"):
+        await seed_project(db, project)
+        async with db.immediate() as conn:
+            await db.ensure_record_scope_on(project_id=project, conn=conn)
+    capture = KnowledgeCapture(db, lambda: config, store=store)
+    return db, config, now, store, capture
+
+
 def knowledge_config(**changes):
     from src.config import KnowledgeConfig
 
