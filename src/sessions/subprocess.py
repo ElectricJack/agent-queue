@@ -190,6 +190,16 @@ class SubprocessProvider(SessionProvider):
         running = self._get(h)
         return bool(running and running.proc.returncode is None)
 
+    async def confirm_stopped(self, h: SessionHandle) -> bool:
+        from src.sessions.proctable import scan_by_env_marker
+
+        if not h.instance_token or await self.is_running(h):
+            return False
+        return not any(
+            process.marker == h.instance_token
+            for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")
+        )
+
     async def list_running(self, prefix: str) -> list[SessionHandle]:
         return [
             r.handle
