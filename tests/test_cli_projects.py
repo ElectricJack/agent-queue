@@ -50,12 +50,10 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     """Plan 17: exact arg forwarding, not-found exit, key coercion, JSON errors."""
     from src.cli.app import cli
 
-    # -- details success: composes list_projects + list_tasks -------------
+    # Both calls are pinned to the project for project-scoped supervisors.
     client = _client({
-        "list_projects": {"projects": [
-            {"id": "p1", "name": "P One", "status": "ACTIVE",
-             "max_concurrent_agents": 2, "credit_weight": 1.0},
-        ]},
+        "get_project": {"id": "p1", "name": "P One", "status": "ACTIVE",
+                        "max_concurrent_agents": 2, "credit_weight": 1.0},
         "list_tasks": {"tasks": [
             {"status": "DEFINED"}, {"status": "DEFINED"}, {"status": "COMPLETED"},
         ]},
@@ -65,12 +63,14 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     assert result.exit_code == 0, result.output
     assert "p1" in result.output and "P One" in result.output
     assert "DEFINED" in result.output
+    assert client.execute.await_args_list[0].args == ("get_project", {"project_id": "p1"})
     assert client.execute.await_args_list[1].args == (
         "list_tasks", {"project_id": "p1", "include_completed": True},
     )
 
     # -- details unknown project: nonzero exit, no crash -------------------
-    client = _client({"list_projects": {"projects": []}, "list_tasks": {"tasks": []}})
+    client = _client({"get_project": {"success": False, "error": "Project not found"},
+                      "list_tasks": {"tasks": []}})
     with patch("src.cli.projects._get_client", return_value=client):
         result = runner.invoke(cli, ["project", "details", "nope"])
     assert result.exit_code == 1
