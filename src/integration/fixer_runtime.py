@@ -15,7 +15,7 @@ from src.git.manager import GitError
 from src.integration.lock import BranchLock, PublishWithdrawn
 from src.integration.manual_control import enabled_train_write
 from src.integration.models import BranchKey
-from src.models import SessionRecord
+from src.models import RepoSourceType, SessionRecord
 from src.sessions.env import session_db_isolation
 from src.sessions.launch import launch_session
 from src.sessions.provider import SessionHandle
@@ -23,6 +23,9 @@ from src.sessions.provider import SessionHandle
 
 class FixerCapacityUnavailable(ValueError):
     """No process or checkout was created; retry the same identity when due."""
+
+
+FIXER_INPUT_FILE = ".aq/tmp/batch-fixer-input.json"
 
 
 class DaemonFixerRuntime:
@@ -190,14 +193,8 @@ class DaemonFixerRuntime:
         if previous is not None:
             raise ValueError("fixer launch already registered; preserve it for reconciliation")
         repo = await self.repository(state)
-        # A single retained checkout of the existing batch branch, independent
-        # of task slots/preparation. Never reset or replace it on another red.
-        root = Path(orch.config.data_dir).expanduser().resolve() / "batch-fixers"
-        path = root / state["session_name"]
-        if root.is_symlink() or path.is_symlink():
-            raise ValueError("fixer checkout must be a private retained directory")
-        if path.exists():
-            raise ValueError("fixer checkout already exists; preserve it for inspection")
+        # Allocation shares the fleet routing lock with session registration.
+        # Previous fixers require both durable release and a stopped process.
         branch = state["target_ref"].removeprefix("refs/heads/")
         # Selection and registration share the ordinary fleet routing lock.
         # Registered starting sessions count before process creation.
@@ -206,11 +203,28 @@ class DaemonFixerRuntime:
             harness = orch.harness_registry.get(profile.harness, project_id=state["project_id"])
             if harness is None:
                 raise ValueError("fixer harness is not registered")
-            await self.git.afetch_repository_oid(
-                str(repo.store), repository=repo.binding, oid=state["starting_sha"],
-                destination_ref=state["target_ref"],
+            await self._pin(str(repo.store), repo, state["starting_sha"])
+            from src.warm_workspaces import WarmWorkspacePool, primary_store
+
+            store = await primary_store(self.db, self.git, state["project_id"],
+                                        state["repository_id"], repo.store, state["starting_sha"])
+            from src.projects.storage_binding import bound_path, read_binding
+
+            root = bound_path(await read_binding(self.db, state["project_id"]),
+                              Path(orch.config.data_dir) / "batch-fixers")
+            pool = WarmWorkspacePool(self.git, store, root)
+            path = await pool.acquire(
+                {"session_id": state["session_id"], "instance_token": state["instance_token"]},
+                state["starting_sha"], released=self._checkout_released, branch=branch,
             )
-            await self.git.aworktree_add(str(repo.store), str(path), ref=branch, detach=False)
+            registered = await self.git.aworktree_list(str(store))
+            if (not (path / ".git").is_file()
+                    or not any(Path(w["path"]).resolve() == path.resolve() for w in registered)):
+                raise ValueError("fixer checkout is not a registered linked worktree")
+            actual_branch, dirty = await self.git.aread_status_summary(str(path))
+            if (actual_branch != branch or dirty
+                    or await self.git.arev_parse(str(path), "HEAD") != state["starting_sha"]):
+                raise ValueError("fixer preparation changed; preserve it for inspection")
             token = await orch.token_store.mint(
                 session_id=state["session_id"], session_instance_token=state["instance_token"],
                 task_id=None, project_id=state["project_id"], elevated=False,
@@ -222,6 +236,7 @@ class DaemonFixerRuntime:
                 work_dir=str(path), session_id=state["session_id"],
                 instance_token=state["instance_token"], epoch=orch.daemon_epoch,
                 api_token=token, prompt=fixer_prompt(state),
+                workspace_source_type=RepoSourceType.WORKTREE,
             )
             env = dict(spec.env)
             for key in ("AQ_TASK_ID", "AQ_CLAIM_EPOCH"):
@@ -229,7 +244,10 @@ class DaemonFixerRuntime:
             env.update(session_db_isolation(str(path)))
             env.update(identity.env())
             env.update(AQ_SESSION_NAME=state["session_name"], AQ_SESSION_KIND="named")
-            spec = replace(spec, session_name=state["session_name"], env=env)
+            spec = replace(
+                spec, session_name=state["session_name"], env=env,
+                files=(*spec.files, (FIXER_INPUT_FILE, json.dumps(state, indent=2, sort_keys=True))),
+            )
             row = SessionRecord(
                 id=state["session_id"], project_id=state["project_id"], task_id=None,
                 profile_id=profile.id, harness=harness.id, provider=orch.config.sessions.provider,
@@ -243,8 +261,12 @@ class DaemonFixerRuntime:
             current = (await conn.execute(select(integration_batches).where(
                 integration_batches.c.id == state["batch_id"],
             ).with_for_update())).mappings().one()
-            if (current["intent"] != "open" or current["fixer_state"]["status"] != "launching"
-                    or current["fixer_state"]["session_id"] != row.id):
+            binding = current["fixer_state"] or {}
+            if (current["intent"] != "open" or binding.get("status") != "launching"
+                    or binding.get("session_id") != row.id
+                    or binding.get("instance_token") != row.instance_token
+                    or binding.get("launch_started_at")
+                    != state.get("launch_started_at")):
                 raise PublishWithdrawn("fixer registration authority was withdrawn")
             await self.db.create_session(row, conn=conn)
             # Commit the checkout/session binding before the harness can call
@@ -262,6 +284,53 @@ class DaemonFixerRuntime:
         await launch_session(self.db, provider, spec, row, registered=True,
                              bus=getattr(orch, "bus", None))
         return {"work_dir": str(path), "route": route}
+
+    async def _pin(self, checkout, repo, oid):  # exact fetches land only under refs/aq/
+        await self.git.afetch_repository_oid(await self.git.aget_git_path(checkout, "."),
+            repository=repo.binding, oid=oid, destination_ref=f"refs/aq/fixer-sources/{oid}")
+
+    async def _checkout_released(self, manifest, path, head):
+        """Unknown, live and unpublished owners retain their checkout."""
+        owner = manifest["owner"]
+        if not owner.get("session_id") or not owner.get("instance_token"):
+            return False
+        session = await self.db.get_session(owner["session_id"])
+        if (session is None or session.instance_token != owner["instance_token"]
+                or session.work_dir != str(path) or session.state != "stopped"
+                or session.desired_state != "stopped"):
+            return False
+        provider = self.orchestrator.session_providers.create(session.provider)
+        if await provider.is_running(SessionHandle(session.name, session.provider,
+                                                   session.instance_token)):
+            return False
+        from src.database.tables import job_workspace_pins, workspaces
+
+        async with self.db._engine.connect() as conn:
+            if await conn.scalar(select(sessions.c.id).where(
+                sessions.c.work_dir == str(path), sessions.c.state != "stopped",
+            ).limit(1)):
+                return False
+            if await conn.scalar(select(workspaces.c.id).where(
+                workspaces.c.workspace_path == str(path),
+                workspaces.c.enabled.is_(True) | workspaces.c.locked_by_task_id.is_not(None)
+                | workspaces.c.locked_by_agent_id.is_not(None),
+            ).limit(1)):
+                return False
+            if await conn.scalar(select(job_workspace_pins.c.job_id).join(
+                workspaces, workspaces.c.id == job_workspace_pins.c.workspace_id,
+            ).where(workspaces.c.workspace_path == str(path)).limit(1)):
+                return False
+            rows = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.fixer_state["session_id"].astext == session.id,
+            ))).mappings().all()
+        if len(rows) != 1:
+            return False
+        batch = rows[0]
+        state = batch["fixer_state"]
+        return (batch["lifecycle"] in {"promoted", "aborted", "failed", "empty"}
+                and state.get("instance_token") == session.instance_token
+                and state.get("work_dir") == str(path)
+                and head == state.get("published_sha", state.get("starting_sha")))
 
     async def alive(self, state):
         row = await self.db.get_session(state["session_id"])
@@ -423,9 +492,8 @@ class DaemonFixerRuntime:
                     }:
                         raise PublishWithdrawn("save and publish all fixes before rebinding")
                     if branch != new_ref.removeprefix("refs/heads/"):
-                        await self.git.afetch_repository_oid(str(repo.store),
-                            repository=repo.binding, oid=new_head, destination_ref=new_ref)
-                        await self.git.acheckout_branch(path, new_ref.removeprefix("refs/heads/"))
+                        await self._pin(path, repo, new_head)
+                        await self.git._arun(["checkout", "-B", new_ref[11:], new_head], cwd=path)
                     members = await BatchStore(self.db).members(destination)
                     state = {**bound, "batch_id": destination, "status": "active",
                              "target_ref": new_ref, "starting_sha": new_head, "head_sha": new_head,
@@ -449,6 +517,20 @@ class DaemonFixerRuntime:
 
 
 def fixer_prompt(state):
+    # Every failure group carries the complete frozen member file proof. Large
+    # refreshes repeat hundreds of KB per group; retain those bytes on disk.
+    evidence = state.get("failure_evidence") or {}
+    preview = {key: state.get(key) for key in (
+        "batch_id", "target_ref", "delivery_ref", "starting_sha", "head_sha", "brief", "members",
+    )}
+    preview.update(check_count=len(evidence.get("checks") or []),
+                   failure_group_count=len(evidence.get("groups") or []))
+    summary = json.dumps(preview, indent=2, sort_keys=True).encode("utf-8")
+    limit = 12 * 1024
+    if len(summary) > limit:
+        summary = summary[:limit].decode("utf-8", errors="ignore") + "\n[preview truncated]"
+    else:
+        summary = summary.decode("utf-8")
     return (
         "You are the single in-place integration fixer for this batch. You have no task "
         "or claim. Work in this retained checkout on the existing batch branch. "
@@ -463,5 +545,8 @@ def fixer_prompt(state):
         "`aq integration batch-fix --action rebind`; never switch branches yourself. "
         "On a green message stop editing. On a blocker report it once to the project "
         "supervisor and preserve your work. Budget expiry does not create a successor.\n\n"
-        "Frozen batch input:\n" + json.dumps(state, indent=2, sort_keys=True)
+        f"The complete frozen batch input and failure evidence are in {FIXER_INPUT_FILE}. "
+        "Inspect relevant JSON fields as needed before repairing; avoid dumping repeated "
+        "ownership proofs into your context. The preview below is bounded; all members "
+        "and ownership proofs remain in that file.\n\nBatch preview:\n" + summary
     )

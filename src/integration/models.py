@@ -84,17 +84,6 @@ class PromotionValue(BaseModel):
     prepared_sha: str | None = None
 
 
-class ConflictResolutionInput(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    intent_id: str
-    operation_id: str
-    resolved_head_sha: str
-    resolved_tree_sha: str
-    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
-    fence: Fence
-
-
 class RequiredCheckSet(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -149,16 +138,27 @@ def validate_policy_producers(raw_policy: Any) -> None:
                          "as strings (GitHub Actions: 15368)")
 
 
+def repair_deadline(started_at: float, seconds: int) -> float | None:
+    """Zero is an unlimited repair duration, stored without an absolute deadline."""
+    return started_at + seconds if seconds else None
+
+
+def repair_deadline_due(deadline_at: float | None, now: float) -> bool:
+    return deadline_at is not None and now >= deadline_at
+
+
 class RepairPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Playbook-owned policy for task-free repair; legacy task repairs ignore these.
     split_attributed: bool = True
     deferred_revisit_seconds: int = Field(default=300, gt=0)
-    primary_seconds: int = Field(default=1800, gt=0)
-    primary_attempts: int = Field(default=3, gt=0)
-    debug_seconds: int = Field(default=3600, gt=0)
-    debug_attempts: int = Field(default=3, gt=0)
+    # Zero disables the corresponding time or attempt limit. Positive values
+    # retain their existing meaning, including in frozen operation snapshots.
+    primary_seconds: int = Field(default=1800, ge=0)
+    primary_attempts: int = Field(default=3, ge=0)
+    debug_seconds: int = Field(default=3600, ge=0)
+    debug_attempts: int = Field(default=3, ge=0)
     debug_intelligence_class: str
     conflict_scope: Literal["member", "batch"] = "member"
     on_exhausted: Literal["human", "continue"] = "human"
@@ -168,7 +168,7 @@ class RepairPolicy(BaseModel):
     # backoff, and names a blocker once this many consecutive observations have
     # all been infrastructure.  A run with any genuine failing required check
     # is still red, whatever else was cancelled.
-    source_ci_infra_attempts: int = Field(default=3, gt=0)
+    source_ci_infra_attempts: int = Field(default=3, ge=0)
     source_ci_infra_backoff_seconds: float = Field(default=300.0, gt=0)
     source_ci_infra_backoff_max_seconds: float = Field(default=3600.0, gt=0)
     # Deprecated and ignored: mandatory routing files repairs with the
@@ -180,9 +180,9 @@ class RepairPolicy(BaseModel):
 
     def allocation_stage(self, filed_attempts: int) -> Literal["primary", "debug", "human"]:
         """Escalate the next ordinary filing; green observations spend no budget."""
-        if filed_attempts < self.primary_attempts:
+        if not self.primary_attempts or filed_attempts < self.primary_attempts:
             return "primary"
-        if (filed_attempts >= self.primary_attempts + self.debug_attempts
+        if (self.debug_attempts and filed_attempts >= self.primary_attempts + self.debug_attempts
                 and self.on_exhausted == "human"):
             return "human"
         return "debug"
@@ -290,10 +290,11 @@ class IntegrationCleanupPolicy(BaseModel):
 
 
 class IntegrationTrainPolicy(BaseModel):
-    """Legacy timing fields remain readable; dispatch follows lane occupancy."""
+    """Deprecated timing fields only parse old snapshots; dispatch follows lane occupancy."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    playbook_id: str | None = Field(default=None, min_length=1)
     cadence_seconds: int = Field(default=300, gt=0)
     settling_cap_seconds: int = Field(default=1800, gt=0)
     speculative_ci: bool = False
@@ -317,6 +318,8 @@ class IntegrationTrainPolicy(BaseModel):
     @model_serializer(mode="wrap")
     def omit_speculative_defaults(self, handler: SerializerFunctionWrapHandler):
         dumped = handler(self)
+        if self.playbook_id is None:
+            dumped.pop("playbook_id", None)
         if not self.speculative_ci:
             dumped.pop("speculative_ci", None)
         if not self.speculative_public_hosted:
@@ -412,6 +415,26 @@ class IntegrationCIPolicy(BaseModel):
                      or (self.source_for(kind) == "hybrid" and kind != "promotion"))
 
 
+class DeliveryWatchdogPolicy(BaseModel):
+    """Per-project stuck-delivery threshold: max(floor, multiplier x p90 batch CI).
+
+    ``stuck_after_seconds`` replaces the measured value outright.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    min_seconds: float = Field(default=1800, gt=0, allow_inf_nan=False)
+    ci_multiplier: float = Field(default=2, gt=0, allow_inf_nan=False)
+    stuck_after_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class CloseMergePolicy(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    author_assist: bool = True
+    author_budget_seconds: float = Field(default=1200, gt=0, allow_inf_nan=False)
+
+
 class HierarchicalIntegrationPolicy(BaseModel):
     """Validated project policy consumed when reserving an operation."""
 
@@ -424,7 +447,11 @@ class HierarchicalIntegrationPolicy(BaseModel):
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
     cross_epic_prerequisites: Literal["default_branch", "completed"] = "default_branch"
-    prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = None
+    prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = Field(
+        default=None,
+        description=("Unset stacks completed same-repository sources; "
+                     "wait-for-parent is an explicit opt-out."),
+    )
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
     train: IntegrationTrainPolicy | None = None
     max_wait_seconds: float = Field(
@@ -432,6 +459,8 @@ class HierarchicalIntegrationPolicy(BaseModel):
     )
     #: Unset is hosted for every target kind.
     ci: IntegrationCIPolicy | None = None
+    delivery_watchdog: DeliveryWatchdogPolicy | None = None
+    close_merge: CloseMergePolicy = Field(default_factory=CloseMergePolicy)
 
     @model_validator(mode="after")
     def local_commands_cover_required_checks(self) -> HierarchicalIntegrationPolicy:
@@ -471,6 +500,13 @@ class HierarchicalIntegrationPolicy(BaseModel):
             dumped.pop("train", None)
         if self.ci is None:
             dumped.pop("ci", None)
+        if self.delivery_watchdog is None:
+            dumped.pop("delivery_watchdog", None)
+        close = self.close_merge.model_dump(exclude_defaults=True)
+        if close:
+            dumped["close_merge"] = close
+        else:
+            dumped.pop("close_merge", None)
         return dumped
 
 

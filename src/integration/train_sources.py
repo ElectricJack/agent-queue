@@ -18,14 +18,13 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, replace
+from pathlib import Path
 from typing import Any
 
 import yaml
 from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from src.waits.sources import execute_task_status_mutation
-from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -52,6 +51,7 @@ from src.integration.batches import (
     BatchStore,
     SupersedeMemberUnavailable,
     candidate_ref,
+    pair_conflict_sources_query,
     released_repair_attempts_on,
     withheld_source_blocker,
     withheld_sources_query,
@@ -70,20 +70,28 @@ from src.integration.delivery_truth import (
     superseded_source_repairs_on,
     undeliverable_repairs_on,
 )
-from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks
-from src.integration.git_truth import GitTruth, GitTruthSnapshot
+from src.integration.epics import (
+    EpicGraphReader,
+    EpicPolicy,
+    EpicReadinessEvaluator,
+    HeadChecks,
+    playbook_epic_checks_on,
+)
+from src.integration.git_truth import GitTruth, GitTruthSnapshot, merge_noop
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.manual_control import train_write
 from src.integration.models import (
-    BranchKey, RepairPolicy, integration_ci_policy,
+    BranchKey,
+    RepairPolicy,
+    integration_ci_policy,
 )
 from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND, generated_paths
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
-from src.integration.selection_metrics import selection_count, selection_stage
 from src.integration.runtime_contracts import Subject
+from src.integration.selection_metrics import selection_count, selection_stage
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -92,6 +100,7 @@ from src.integration.train import (
     TrainTarget,
 )
 from src.projects.github import GitHubError
+from src.waits.sources import execute_batch_mutation, execute_task_status_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +110,11 @@ TRAIN_HOLDER = "service:integration-train"
 # detached validation clone sees it. Never pushed.
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
-# Leave time in the existing visit deadline to freeze and advance an admitted
-# prefix. This is a cooperative quantum, not a deadline for a fenced writer.
+# Leave time in the visit deadline to freeze and advance an admitted prefix: a
+# cooperative quantum (not a fenced writer's deadline) that red or conflicting roots do not spend.
 SELECTION_WORK_SECONDS = 60.0
+_REFUNDED_PR_REFUSALS = frozenset({"pr_conflicting", "pr_checks_red", "source_ci_repair_exhausted", "source_ci_repair_unchanged",
+    "root_pr_checks_need_repair", "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted"})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
 #: refetch S's manifest each time. S is immutable; the key carries the policy.
@@ -175,7 +186,7 @@ def _branch(ref: str) -> str:
 
 
 async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int | None) -> list[str]:
-    """Completed tasks with a live branch origin in the repository, newest first."""
+    """Completed tasks with a known filing base, preferring their live origin."""
     from src.integration.promotion_routing import cutover_origin_clause
 
     flow, cutover = (await conn.execute(select(projects.c.promotion_flow,
@@ -183,12 +194,18 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
     promotion_refs = {
         ref for name in flow_targets(flow) for ref in (name, _branch(name))
     }
+    retained = task_branch_origins.alias("pending_retained_origin")
+    latest_origin = select(retained.c.id).where(
+        retained.c.task_id == tasks.c.id,
+        retained.c.repository_id == repository_id,
+    ).order_by(retained.c.retired_at.is_(None).desc(),
+               retained.c.creation_generation.desc()).limit(1).correlate(tasks).scalar_subquery()
     rows = await conn.execute(
         select(tasks.c.id)
         .select_from(tasks.join(task_branch_origins, and_(
             task_branch_origins.c.task_id == tasks.c.id,
             task_branch_origins.c.repository_id == repository_id,
-            task_branch_origins.c.retired_at.is_(None),
+            task_branch_origins.c.id == latest_origin,
         )))
         .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
                or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
@@ -276,22 +293,29 @@ async def _source_ci_prerequisites_on(conn, ids, bases, *, repository_id) -> dic
             bindings.setdefault(repair_id, set()).add(source_id)
     return bindings
 
-async def _epic_branches_on(conn, ids):
-    """Keep closed containers visitable even after their child origins retire."""
+async def _epic_branches_on(conn, ids=(), *, target=None):
+    """Select containers by task IDs or a completed target, including archived children."""
     from src.database.queries.hierarchy_queries import container_flag_exists
+    from src.routing.sources import ROLE
 
+    identity = tasks.c.id.in_(ids) if target is None else and_(
+        tasks.c.project_id == target.project_id, tasks.c.status == "COMPLETED",
+        or_(tasks.c.repo_id == target.repository_id, tasks.c.repo_id.is_(None)),
+        tasks.c.branch_name.in_((target.target_ref, target.target_ref.removeprefix("refs/heads/"))),
+        tasks.c.route_source != ROLE,
+    )
     child, archived = tasks.alias("epic_child"), archived_tasks.alias("epic_archived_child")
     return dict((await conn.execute(select(tasks.c.id, tasks.c.branch_name).where(
-        tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
+        identity, tasks.c.branch_name.is_not(None),
         container_flag_exists() | select(child.c.id).where(
             child.c.parent_task_id == tasks.c.id).exists() | select(archived.c.id).where(
             archived.c.parent_task_id == tasks.c.id).exists(),
-    ))).all())
+    ).order_by(tasks.c.id))).all())
 
 
-async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
+async def project_snapshot(db, target, *, read=False, cached_only=False) -> GitTruthSnapshot | None:
     """Observe the project root through the daemon's isolated delivery store."""
-    from src.integration.delivery_observer import prerequisite_observer
+    from src.integration.delivery_observer import DeliveryObserver, prerequisite_observer
 
     observer = prerequisite_observer(db) or getattr(db, "_delivery_observer", None)
     if observer is None:
@@ -299,9 +323,9 @@ async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
     repo = await db.get_repo(target.repository_id)
     observed = await observer.snapshot(DeliveryTarget(
         target.project_id, target.repository_id, repo.url, target.target_ref,
-    ))
+    ), max_age=DeliveryObserver.READ_MAX_AGE if read else 0.0, cached_only=cached_only)
     return observed if isinstance(observed, GitTruthSnapshot) else GitTruthSnapshot(
-        GitTruth(observer.git), observed,
+        GitTruth(observer.git), observed, cached_only=cached_only,
     )
 
 
@@ -312,6 +336,8 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
     proves delivery. An ordinary worker's provenance marker alone never does.
     Historical delivery attestations must name this project/repository/root
     and cover the current completion, never a later reopened generation.
+    Legacy epic closes without a retained marker may use their exact passing
+    completion head, proven contained or adding no changes to this target.
     """
     requests = await load_delivery_requests(
         db, ids, repository_id=repository_id, target_ref=target_ref, reduced=True,
@@ -343,6 +369,7 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
     observed = snapshot.observation
     provenance = GitProvenance(observed.git, observed.store,
                                repository_url=observed.repository_url)
+    missing = {}
     for task_id, request in requests.items():
         if task_id in delivered or request.task_status != "COMPLETED":
             continue
@@ -352,6 +379,7 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
                 request.completion_id or request.legacy_generation,
             ))
             if record is None:
+                missing[task_id] = request
                 continue
             source = record["source_oid"]
             facts = snapshot.truth._pair(observed, source)
@@ -362,6 +390,31 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
         except (GitError, OSError, ValueError, KeyError, TypeError):
             # Unknown root evidence never suppresses owed work.
             continue
+    # Historical aggregates can have an ordinary completion head without a
+    # provenance ref. Only a completed container may use this compatibility
+    # locator; neither a mutable branch tip nor an older close can supply it.
+    if not missing:
+        return delivered
+    async with db._engine.connect() as conn:
+        epics = await _epic_branches_on(conn, list(missing))
+    for task_id in epics:
+        request = missing[task_id]
+        source = request.reported_source
+        if (request.completion_outcome != "pass" or not is_valid_git_oid(source or "")
+                or request.lifecycle_disposition is not None):
+            continue
+        contained = await snapshot.strictly_contains_source(source)
+        if contained is True:
+            delivered.add(task_id)
+        elif contained is False and not snapshot.cached_only:
+            try:
+                facts = snapshot.truth._pair(observed, source)
+                if facts.merge_noop is None:
+                    facts.merge_noop = await merge_noop(observed, source, snapshot.target_oid)
+                if facts.merge_noop:
+                    delivered.add(task_id)
+            except (GitError, OSError, ValueError):
+                continue
     return delivered
 
 
@@ -380,18 +433,35 @@ class DatabaseTargets:
     parent branches its completed work routes to, and any open batch's target."""
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, snapshot=project_snapshot,
-                 probe_timeout_seconds: float = 5.0, flow_problems=None) -> None:
+                 probe_timeout_seconds: float = 5.0, flow_problems=None,
+                 refresh_seconds: float = 0) -> None:
         self.db, self.limit = db, limit
         self.snapshot = snapshot
         self.probe_timeout_seconds = probe_timeout_seconds
         self.flow_problems = flow_problems
         self.retired_targets: set[tuple[str, str, str]] = set()
         self.deferred_revisits: dict[tuple[str, str, str], float] = {}
+        self.refresh_seconds = refresh_seconds
+        self._cached_targets = None
+        self._refresh_at = 0.0
+        self._generation = 0
 
-    async def targets(self, now: float) -> list[TrainTarget]:
+    def invalidate(self):
+        self._generation += 1
+        self._refresh_at = 0.0
+
+    async def targets(self, now: float, *, project_id: str | None = None) -> list[TrainTarget]:
+        if (project_id is None and self._cached_targets is not None
+                and now < self._refresh_at):
+            return list(self._cached_targets)
+        generation = self._generation
+        # A scoped read (one control's own project) probes only that project's
+        # origin and leaves the fleet-wide retirement set to the tick.
         found: dict[tuple[str, str, str], TrainTarget] = {}
-        self.retired_targets.clear()
-        self.deferred_revisits.clear()
+        retired = self.retired_targets if project_id is None else set()
+        retired.clear()
+        deferred = self.deferred_revisits if project_id is None else {}
+        deferred.clear()
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
@@ -400,17 +470,30 @@ class DatabaseTargets:
                 .select_from(projects.join(
                     repos, repos.c.id == projects.c.integration_repository_id))
                 .where(projects.c.hierarchical_integration_mode.in_(TRAIN_MODES),
-                       projects.c.status == "ACTIVE")
+                       projects.c.status == "ACTIVE",
+                       *([projects.c.id == project_id] if project_id else []))
                 .order_by(projects.c.id)
             )).mappings().all()
+        from src.integration.train_policy import load_train_policy
+
+        active = []
+        for row in rows:
+            if (await load_train_policy(self.db, row["id"])).reason != "train_playbook_disabled":
+                active.append(row)
+        rows = active
         # Root probes run concurrently and outside a held database connection.
         # A stalled probe leaves work owed; visits perform their own root proof.
-        for targets in await asyncio.gather(*(self._project_targets(row) for row in rows)):
+        for targets in await asyncio.gather(*(
+                self._project_targets(row, retired, deferred) for row in rows)):
             for target in targets:
                 found.setdefault(target.key, target)
-        return [found[key] for key in sorted(found)]
+        result = [found[key] for key in sorted(found)]
+        if project_id is None and generation == self._generation:
+            self._cached_targets = result
+            self._refresh_at = now + self.refresh_seconds
+        return result
 
-    async def _project_targets(self, row):
+    async def _project_targets(self, row, retired_sink, deferred_sink):
         project_id, repository_id = row["id"], row["repository_id"]
         default = _branch(row["default_branch"])
         kind = "development" if row["hierarchical_integration_mode"] == "development" else "root"
@@ -441,8 +524,8 @@ class DatabaseTargets:
                 queue = batch["fixer_queue"] or {}
                 if queue.get("status") == "deferred":
                     key = (project_id, repository_id, batch["target_ref"])
-                    self.deferred_revisits[key] = min(
-                        self.deferred_revisits.get(key, float("inf")), queue["revisit_at"],
+                    deferred_sink[key] = min(
+                        deferred_sink.get(key, float("inf")), queue["revisit_at"],
                     )
             completed = (await conn.execute(select(tasks.c.id).where(
                 tasks.c.project_id == project_id,
@@ -518,7 +601,7 @@ class DatabaseTargets:
         # A frozen batch still needs its recovery diagnostics, even if its
         # container has since completed or its remote target disappeared.
         retired -= {default, *promotions, *(batch["target_ref"] for batch in batches)}
-        self.retired_targets.update((project_id, repository_id, ref) for ref in retired)
+        retired_sink.update((project_id, repository_id, ref) for ref in retired)
         refs = {default, *(batch["target_ref"] for batch in batches)}
         refs.update(target.target_ref for task_id, target in routed.items()
                     if task_id not in delivered and
@@ -540,30 +623,26 @@ def _conflict_action(refusal, snapshot, *, epic: bool, refresh=None):
     """Name who resolves a root PR that conflicts with the default branch."""
     if refusal.get("code") != "pr_conflicting":
         return refusal
-    action = "merge the default branch into the task branch, push it and close the task again"
+    action = "the train tries a mechanical merge, then reopens the original task for real conflicts"
     detail = {}
-    if epic:
-        action = "the train will try to refresh the epic from the default branch"
-        if refresh is not None:
-            action = {
-                "started": "the train started an epic refresh from the default branch",
-                "running": "an epic refresh is running on the epic branch",
-                "pending": "another batch owns the epic; the train will retry its refresh "
-                           "after that batch settles",
-                "settled": "the refresh for this head pair has settled; the epic still needs "
-                           "a conflict-free PR with green exact-head checks",
-                "current": "the epic already contains the default branch; its PR still needs "
-                           "green exact-head checks",
-                "unavailable": f"the epic refresh is unavailable ({refresh.get('reason')}); "
-                               "the train will retry",
-            }[refresh["outcome"]]
-            detail["refresh"] = refresh
-            if refresh["outcome"] == "unavailable":
-                detail.update(code="refresh_unavailable", retry_at=refresh["retry_at"],
-                              retry_seconds=refresh["retry_seconds"])
+    if refresh is not None:
+        detail["refresh"] = refresh
+        outcome = refresh.get("outcome")
+        action = {
+            "reopened": "the original task was reopened on its branch; run targeted tests only",
+            "refreshed": "the bot merged and pushed the default branch; reobserve the new source",
+            "already_handled": "this head/default pair was already handled; awaiting a new head",
+            "stale": "source or default tip changed; reobserve before refreshing",
+        }.get(outcome, "mechanical refresh unavailable; the train will retry")
+        if not refresh.get("success"):
+            detail["code"] = "refresh_unavailable"
+            detail.update({key: refresh[key] for key in ("retry_at", "retry_seconds")
+                           if key in refresh})
     return {**refusal, **detail, "default_sha": snapshot.target_oid, "epic": epic, "action": action,
             "detail": f"root {refusal['task_id']} PR conflicts with the default branch at "
                       f"{snapshot.target_oid}: {action}"}
+
+
 class BackmergeAdmission:
     """Daemon-authored immutable sources use the lower branch's ordinary PR gate."""
 
@@ -731,12 +810,13 @@ class DatabaseBatches:
     STACK_CACHE_LIMIT = 256
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time,
-                 pr_gate: Callable | None = None, cleanup=None):
+                 pr_gate: Callable | None = None, cleanup=None, refresh_conflict=None):
         self.db, self.limit, self.clock = db, limit, clock
         self._stack_scan = {}
         self.pr_gate = pr_gate
         self.repaired_source_gate = getattr(pr_gate, "admit_repaired_source", None)
         self.cleanup = cleanup
+        self.refresh_conflict = refresh_conflict
         self._refresh_snapshots = {}
         # Scheduling hints only: every continuation reloads rows and Git proof.
         # Advance before awaiting a candidate so cancellation cannot pin a prefix.
@@ -745,66 +825,182 @@ class DatabaseBatches:
         # Refusal diagnostics only, never input to admission or publication.
         # Frozen visits retain explicitly dated observations without rescanning.
         self._frontier_observations: dict[tuple[str, str, str], tuple[dict, ...]] = {}
-        #: epic task id -> ((epic head, default head), refresh detail)
-        self._conflict_refreshes: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
+        self.conflict_handler = None
+        self._refresh_backoff = {}
 
-    async def _refresh_conflicting_epics(self, target, snapshot, blockers) -> None:
-        """Start one epic refresh per conflicting (epic head, default head) pair.
+    async def refresh_pair_conflicts(self, target):
+        """Retry the durable source-refresh request, never a batch fixer."""
+        if self.refresh_conflict is None:
+            return
+        table = integration_batches
+        async with self.db._engine.connect() as conn:
+            records = (await conn.execute(select(table.c.id, table.c.ejection_record).where(
+                table.c.project_id == target.project_id,
+                table.c.repository_id == target.repository_id,
+                table.c.target_ref == target.target_ref,
+                table.c.intent == "aborted",
+                table.c.ejection_record["pair_conflict"]["refresh_status"].astext == "pending",
+            ))).all()
+        for batch_id_, record in records:
+            try:
+                result = await self.refresh_conflict(batch_id_, record)
+            except Exception:
+                logger.warning("Source refresh for conflict batch %s will retry", batch_id_,
+                               exc_info=True)
+                continue
+            if not result.get("success"):
+                continue
+            conflict = {**record["pair_conflict"], "refresh_status": "requested",
+                        "refresh_result": result}
+            async with self.db.immediate() as conn:
+                await conn.execute(update(table).where(
+                    table.c.id == batch_id_, table.c.ejection_record == record,
+                ).values(ejection_record={**record, "pair_conflict": conflict}))
 
-        GitHub runs no pull_request checks for a PR that conflicts with its
-        base, so the root PR of a stale epic would wait for them forever. The
-        refresh is the attested one ``refresh-epic --apply`` starts: a frozen
-        batch on the epic that this train's own visits test and publish. The
-        refreshed head then needs its own exact-head PR checks.
+    async def drop_conflict(self, target, batch, members, observation, snapshot, service):
+        """Replace a root batch with its dependency-closed healthy remainder.
+
+        Rebuild from the target, never the partial candidate: an earlier member
+        may itself depend on the rejected member. Refresh/promotion and existing
+        repair writers retain their own publication and recovery semantics.
         """
-        from src.integration.stacked_branches import EpicRefresh
+        if (target.kind not in {"root", "development"} or batch.epic_sync or batch.epic_refresh
+                or batch.repair_attempt_count):
+            return None
+        detail = observation.detail or {}
+        # A regenerator's unsafe output is a batch/configuration fault, not
+        # evidence that this member conflicts. Keep its existing repair path.
+        if detail.get("reason") not in {"merge_conflict", "alembic_head_collision"}:
+            return None
+        task_id = detail.get("member")
+        frozen = {m.task_id: m for m in members}
+        if task_id not in frozen:
+            return None
+        row = await self.db.get_integration_batch(batch.id)
+        if row["fixer_state"] or row["fixer_queue"]:
+            return None
+
+        async def dependency_edges():
+            async with self.db._engine.connect() as conn:
+                return set((await conn.execute(select(
+                    task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+                ).join(tasks, tasks.c.id == task_dependencies.c.task_id).where(
+                    tasks.c.project_id == batch.project_id,
+                    task_dependencies.c.dep_type == "blocks",
+                ))).all())
+
+        edges = await dependency_edges()
+        repo = await service.gitops.repository(batch)
+        removed = {task_id}
+        checked = set()
+        while True:
+            # Include paths through a prerequisite outside this batch too.
+            while True:
+                closure = removed | {tid for tid, need in edges if need in removed}
+                if closure == removed:
+                    break
+                removed = closure
+            unchecked = (removed & frozen.keys()) - checked
+            if not unchecked:
+                break
+            for tid in sorted(unchecked):
+                for member in members:
+                    if member.task_id not in removed and await service.gitops.is_ancestor(
+                        repo, frozen[tid].source_sha, member.source_sha,
+                    ):
+                        removed.add(member.task_id)
+            checked |= unchecked
+        removed &= frozen.keys()
+        remaining = tuple(replace(m, order=i) for i, m in enumerate(
+            m for m in members if m.task_id not in removed))
+        replacement = None
+        trees = {}
+        if remaining:
+            digest = hashlib.sha256(repr((batch.id, task_id, remaining,
+                                         snapshot.target_oid)).encode()).hexdigest()
+            replacement = replace(batch, id="train-pair-" + digest[:32], created_at=self.clock())
+            requests = await load_delivery_requests(
+                self.db, [m.task_id for m in remaining], repository_id=batch.repository_id,
+                target_ref=batch.target_ref, reduced=True,
+            )
+            remaining, trees = await service.freeze_inputs(
+                replacement, remaining, requests=requests, snapshot=snapshot)
+
+        async def authorize():
+            return (await service._authorized(batch, members)
+                    and await dependency_edges() == edges
+                    and await service.gitops.remote(repo, batch.target_ref) == snapshot.target_oid
+                    and await service.gitops.remote(repo, candidate_ref(batch.id))
+                    == observation.candidate_sha)
+
+        reason = "pair_conflict:" + task_id
+        source_requests = await load_delivery_requests(
+            self.db, [task_id], repository_id=batch.repository_id,
+            target_ref=batch.target_ref, reduced=True,
+        )
+        conflict = {"task_id": task_id, "target_sha": snapshot.target_oid,
+                    "sources": {tid: frozen[tid].source_sha for tid in sorted(removed)},
+                    "completion_id": source_requests[task_id].completion_id,
+                    "files": detail.get("files", []), "refresh_status": "pending"}
+        await service.store.eject(
+            batch, task_id, replacement, remaining, trees=trees, authorize=authorize,
+            dry_run=False, operator_id=TRAIN_HOLDER, reason=reason,
+            dependent_ids=removed - {task_id}, pair_conflict=conflict,
+        )
+        await self.refresh_pair_conflicts(target)
+        return BatchSelection(batch=replacement, members=remaining, blockers=({
+            "code": reason, "task_id": task_id, "batch_id": batch.id,
+            "ejected_members": sorted(removed), "target_sha": snapshot.target_oid,
+            "replacement_batch_id": replacement.id if replacement else None,
+        },))
+
+    async def _refresh_conflicting_prs(self, target, snapshot, blockers, service) -> None:
+        """Let CommandHandler merge first and dispatch only a real source conflict."""
+        if self.conflict_handler is None:
+            return
+        from src.integration.root_pr_refresh import RootPRConflict
 
         for index, blocker in enumerate(blockers):
-            if blocker.get("code") != "pr_conflicting" or not blocker.get("epic"):
+            if blocker.get("code") not in {"pr_conflicting", "root_pr_refresh_pending"}:
                 continue
             task_id = blocker["task_id"]
-            pair = (blocker["source_sha"], blocker["default_sha"])
-            cached = self._conflict_refreshes.get(task_id)
-            previous = cached[1] if cached is not None and cached[0] == pair else None
-            refresh = previous
+            pair = (task_id, blocker["source_sha"], blocker.get("default_sha", snapshot.target_oid))
+            previous = self._refresh_backoff.get(pair)
+            if previous and self.clock() < previous["retry_at"]:
+                blockers[index] = _conflict_action({**blocker, "code": "pr_conflicting"}, snapshot,
+                    epic=blocker.get("epic", False), refresh=previous)
+                continue
+            async with self.db._engine.connect() as conn:
+                request = (await load_delivery_requests(self.db, [task_id],
+                    repository_id=target.repository_id, target_ref=target.target_ref,
+                    conn=conn, reduced=True)).get(task_id)
+                project = (await conn.execute(select(projects).where(
+                    projects.c.id == target.project_id))).mappings().one()
+                base = await conn.scalar(select(task_branch_origins.c.base_sha).where(
+                    task_branch_origins.c.task_id == task_id,
+                    task_branch_origins.c.repository_id == target.repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                ).limit(1))
+            if request is None or not base or not blocker.get("pr_url"):
+                continue
             try:
-                if refresh is not None and refresh["outcome"] in {"started", "running"}:
-                    async with self.db._engine.connect() as conn:
-                        open_id = await conn.scalar(_open_batch_rows(
-                            target.project_id, target.repository_id,
-                        ).with_only_columns(integration_batches.c.id).where(
-                            integration_batches.c.id == refresh["batch_id"]))
-                    # A running batch can belong to an older head pair. Once
-                    # it settles, start() must reconsider this pair. Its durable
-                    # batch identity still prevents repeating a settled pair.
-                    refresh = {**refresh, "outcome": "running"} if open_id else None
-                if (refresh is not None and refresh["outcome"] == "unavailable"
-                        and self.clock() >= refresh["retry_at"]):
-                    refresh = None
-                if refresh is None:
-                    result = await EpicRefresh(self.db, clock=self.clock).start(
-                        task_id, snapshot=snapshot)
-                    refresh = {key: result[key] for key in ("outcome", "batch_id") if key in result}
-                    if result["outcome"] == "started":
-                        await self.db.log_event(
-                            "integration.epic_refresh", project_id=target.project_id,
-                            task_id=task_id, payload=json.dumps({
-                                **result, "trigger": "pr_conflicting", "pr_url": blocker["pr_url"]}))
+                result = await self.conflict_handler(RootPRConflict(
+                    request, blocker["source_sha"], base,
+                    blocker.get("default_sha", snapshot.target_oid), blocker["pr_url"],
+                    project["hierarchical_integration_generation"],
+                    project["hierarchical_integration_policy"] or {},
+                ), service.gitops, snapshot)
             except Exception as exc:
-                # A local refresh failure withholds only this epic, allowing
-                # unrelated roots through their own PR gates. Retry with capped
-                # backoff; exception text can contain credentials or DB inputs.
-                logger.warning("Automatic epic refresh unavailable for %s", task_id,
-                               exc_info=True)
+                logger.warning("Mechanical root refresh unavailable for %s", task_id, exc_info=True)
+                result = {"success": False, "outcome": "unavailable", "reason": type(exc).__name__}
+            if not result.get("success"):
                 delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
-                refresh = {"outcome": "unavailable", "reason": type(exc).__name__,
-                           "retry_at": self.clock() + delay, "retry_seconds": delay}
-            # An ordinary child batch still owns the epic: try again next visit.
-            if refresh["outcome"] == "pending":
-                self._conflict_refreshes.pop(task_id, None)
+                result = {**result, "retry_at": self.clock() + delay, "retry_seconds": delay}
+                self._refresh_backoff[pair] = result
             else:
-                self._conflict_refreshes[task_id] = (pair, refresh)
-            blockers[index] = _conflict_action(blocker, snapshot, epic=True, refresh=refresh)
+                self._refresh_backoff.pop(pair, None)
+            blockers[index] = _conflict_action({**blocker, "code": "pr_conflicting"}, snapshot,
+                                               epic=blocker.get("epic", False), refresh=result)
 
     async def prepare_speculative(self, target, service, parent, base, snapshot):
         frozen = await service.store.members(parent.id)
@@ -852,6 +1048,7 @@ class DatabaseBatches:
         # One fetched observation per serialized visit. Eligibility is called
         # again inside publication locks and must only read these local facts.
         self._refresh_snapshots[target.key] = snapshot
+        await _finish_on_cancel(self.refresh_pair_conflicts(target))
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db, clock=self.clock)
@@ -873,6 +1070,14 @@ class DatabaseBatches:
                     "incident_ids": [item["id"] for item in incidents],
                 },))
         frozen_members = await service.store.members(current.id) if current is not None else ()
+        if current is not None and current.repair_attempt_count:
+            from src.integration.repair import OrdinaryRepairService
+
+            # Selection and rebuilding may refuse before _visit_batch reaches
+            # recovery. A stopped repair must retain a path back to the frontier.
+            await OrdinaryRepairService(self.db).recover_published_reservation(
+                current, frozen_members, snapshot, service,
+            )
         if (target.kind == "epic" and current is not None and frozen_members
                 and current.intent == "open" and not (current.epic_sync or current.epic_refresh)
                 and await _finish_on_cancel(self._settle_project_delivered(
@@ -950,7 +1155,9 @@ class DatabaseBatches:
                                              evaluated_ids=evaluated_ids,
                                              selection_deadline=(self._selection_clock() + SELECTION_WORK_SECONDS
                                                                  if current is None else None))
-            await _finish_on_cancel(self._refresh_conflicting_epics(target, snapshot, blockers))
+            if current is None:
+                await _finish_on_cancel(self._refresh_conflicting_prs(
+                    target, snapshot, blockers, service))
             if current is None:
                 self._frontier_observations[target.key] = tuple({
                     **blocker, "observation": "last_selection", "observed_at": self.clock(),
@@ -1020,6 +1227,12 @@ class DatabaseBatches:
                 await self._clear_admissions(target,
                     evaluated_ids=evaluated_ids if blockers else None)
             return BatchSelection(blockers=tuple(blockers))
+        from src.integration.train_policy import load_train_policy
+
+        view = await load_train_policy(self.db, target.project_id)
+        if not view.enabled or (view.policy and view.policy.action("idle") == "wait"):
+            return BatchSelection(detail={"reason": view.reason or "train_policy_wait",
+                "retry_at": self.clock() + (view.policy.wait_seconds if view.policy else 30)})
         members, requests, dependencies = pending
         now = self.clock()
         # A live batch above owns the lane until settlement. With no live batch,
@@ -1211,8 +1424,12 @@ class DatabaseBatches:
 
     async def _supersede_removed_checks(self, target, snapshot, service, batch, members):
         """Release obsolete check pins without rewriting frozen policy or sources."""
+        from src.integration.train_policy import load_train_policy
         from src.operator_decisions import OperatorDecisions
 
+        # Live playbook policy applies to this same candidate, without a requeue.
+        if (await load_train_policy(self.db, target.project_id)).policy is not None:
+            return None
         boundary = "parent" if target.kind == "epic" else "root"
         removed = await service.store.removed_required_checks(batch, boundary)
         if not removed:
@@ -1408,8 +1625,7 @@ class DatabaseBatches:
                 blockers.append({
                     "code": "selection_deferred", "ref": target.target_ref,
                     "detail": "Candidate window capped; remaining sources need a fresh visit",
-                    "remaining": len(ids) - self.limit,
-                    "after_task_id": after or None,
+                    "remaining": len(ids) - self.limit, "after_task_id": after or None,
                 })
             return list(dict.fromkeys([*ids[:self.limit], *sorted(include_ids or ())]))
         async with self.db._engine.connect() as conn:
@@ -1421,17 +1637,50 @@ class DatabaseBatches:
                 ids = list(dict.fromkeys([*ids, *frozen_ids]))
         return ids
 
+    async def _local_pr_conflict(self, snapshot, member):
+        """Screen exact fetched inputs without running source code or reading GitHub.
+
+        Like gitops, read generated-path attributes from the merged tree. Those
+        artifacts are rebuilt during construction; only source conflicts need
+        an author refresh. An unavailable probe withholds admission as unknown.
+        """
+        observed = snapshot.observation
+        blocker = {"task_id": member.task_id, "ref": member.task_id,
+                   "source_sha": member.source_sha}
+        try:
+            result = await observed.git.arun_git_result(
+                ["--no-replace-objects", "merge-tree", "--write-tree", "--name-only", "-z",
+                 snapshot.target_oid, member.source_sha], cwd=observed.store,
+            )
+            if result.returncode not in {0, 1}:
+                raise GitError(result.stderr or "local PR merge inspection failed")
+            tree = result.stdout.split("\0", 1)[0]
+            if not is_valid_git_oid(tree):
+                raise GitError("local PR merge inspection did not produce a tree OID")
+            if result.returncode:
+                conflicts = set(result.stdout.split("\0\0", 1)[0].split("\0")[1:]) - {""}
+                if not conflicts:
+                    raise GitError("local PR merge inspection did not name conflicting files")
+                generated = await generated_paths(observed.git, Path(observed.store), tree, conflicts)
+                if conflicts - generated:
+                    return {**blocker, "code": "pr_conflicting", "files": sorted(conflicts - generated),
+                            "detail": "Source conflicts with the fetched target"}
+        except (GitError, OSError, ValueError) as exc:
+            return {**blocker, "code": "unknown", "detail": "Local PR merge inspection unavailable",
+                    "reason": str(exc)}
+        return None
+
     async def pending(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
-        blockers: list[dict[str, Any]] | None = None,
-        gate_pr: bool = True,
+        blockers: list[dict[str, Any]] | None = None, gate_pr: bool = True,
         include_ids: set[str] | None = None,
         candidate_ids: list[str] | None = None,
-        delivered_ids: set[str] | None = None,
-        selection_deadline: float | None = None,
+        delivered_ids: set[str] | None = None, selection_deadline: float | None = None,
         evaluated_ids: set[str] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
+        from src.integration.github_review_poll import root_pr_target_scope
+
         if target.kind == "promotion":
             return None
         delivered_to_project = set(delivered_ids or ())
@@ -1460,12 +1709,25 @@ class DatabaseBatches:
                 if not ids:
                     return None
             epics = await _epic_branches_on(conn, ids)
+            pr_urls = dict((await conn.execute(select(tasks.c.id, tasks.c.pr_url).where(
+                tasks.c.id.in_(ids),
+            ))).all())
+            from src.integration.root_pr_refresh import REFRESH_KEY
+
+            refreshes = {tid: json.loads(value) for tid, value in (await conn.execute(
+                select(task_metadata.c.task_id, task_metadata.c.value).where(
+                    task_metadata.c.task_id.in_(ids), task_metadata.c.key == REFRESH_KEY,
+                ))).all()} if gate_pr and target.kind == "root" else {}
             # The latest aborted batch still withholding each exact source.
             # Only its ejection or an explicit operator release frees it.
             withheld = {(row.task_id, row.source_sha): row for row in (await conn.execute(
                 withheld_sources_query(target).where(
                     integration_batch_members.c.task_id.in_(ids))
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
+            )).all()}
+            pair_conflicts = {(row.task_id, row.source_sha): row for row in (await conn.execute(
+                pair_conflict_sources_query(target, snapshot.target_oid).where(
+                    integration_batch_members.c.task_id.in_(ids))
             )).all()}
             repairs = set((await conn.execute(select(task_metadata.c.task_id).where(
                 task_metadata.c.task_id.in_(ids), task_metadata.c.key == "stack_repair_for",
@@ -1475,9 +1737,9 @@ class DatabaseBatches:
                 select(task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
                        task_branch_origins.c.creation_generation)
                 .where(task_branch_origins.c.task_id.in_(ids),
-                       task_branch_origins.c.repository_id == target.repository_id,
-                       task_branch_origins.c.retired_at.is_(None))
-                .order_by(task_branch_origins.c.creation_generation)
+                       task_branch_origins.c.repository_id == target.repository_id)
+                .order_by(task_branch_origins.c.retired_at.is_(None),
+                          task_branch_origins.c.creation_generation)
             )).all():
                 bases[task_id] = base
             edges: dict[str, set[str]] = {}
@@ -1526,6 +1788,7 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
+        selection_count("candidates_eligible", len(ids))
         for index, task_id in enumerate(ids):
             if (index and selection_deadline is not None
                     and self._selection_clock() >= selection_deadline):
@@ -1538,6 +1801,8 @@ class DatabaseBatches:
                         "after_task_id": self._selection_after.get(target.key),
                     })
                 break
+            candidate_started = self._selection_clock()
+            selection_count("candidates_evaluated")
             if selection_deadline is not None:
                 self._selection_after[target.key] = task_id
             if evaluated_ids is not None:
@@ -1552,10 +1817,20 @@ class DatabaseBatches:
             if request is None or not is_valid_git_oid(base or ""):
                 if blockers is not None:
                     blockers.append({
-                        "code": "source_identity_unavailable", "ref": task_id,
-                        "task_id": task_id,
+                        "code": "source_identity_unavailable", "ref": task_id, "task_id": task_id,
                         "detail": "Completed source needs a current delivery request and exact origin base",
                     })
+                continue
+            prepared = next((pair for pair in refreshes.get(task_id, {}).get("pairs", {}).values()
+                if pair["outcome"] == "prepared"
+                and pair["source_sha"] == request.reported_source
+                and pair["source_completion_id"] == request.completion_id), None)
+            if prepared is not None:
+                if blockers is not None:
+                    blockers.append({"code": "root_pr_refresh_pending", "ref": task_id,
+                        "task_id": task_id, "source_sha": prepared["source_sha"],
+                        "default_sha": prepared["default_sha"], "pr_url": pr_urls.get(task_id),
+                        "epic": task_id in epics, "detail": "Finish the prepared bot refresh"})
                 continue
             with selection_stage("target_delivery", items=1):
                 evidence = await snapshot.strict_is_delivered(request, source_base=base)
@@ -1596,8 +1871,7 @@ class DatabaseBatches:
                 if evidence.error_detail:
                     detail += f": {evidence.error_detail}"
                 blockers.append({
-                    "code": evidence.reason, "ref": task_id, "task_id": task_id,
-                    "detail": detail,
+                    "code": evidence.reason, "ref": task_id, "task_id": task_id, "detail": detail,
                     "repository_id": target.repository_id, "target_ref": target.target_ref,
                 })
             source = evidence.source_oid
@@ -1605,11 +1879,30 @@ class DatabaseBatches:
                     or evidence.reason != "source_not_contained"
                     or not is_valid_git_oid(source or "")):
                 continue
+            if target.kind == "epic":
+                from src.integration.obsolete_children import obsolete_child_blocker
+
+                obsolete = await obsolete_child_blocker(
+                    snapshot.observation, task_id=task_id, source_base=base, source_oid=source,
+                )
+                if obsolete is not None:
+                    if blockers is not None:
+                        blockers.append(obsolete)
+                    continue
             if (task_id, source) in withheld:
                 withheld_ids.add(task_id)
                 if blockers is not None:
                     blockers.append(withheld_source_blocker(
                         target, task_id, source, withheld[task_id, source]))
+                continue
+            if (task_id, source) in pair_conflicts:
+                conflict = pair_conflicts[task_id, source]
+                withheld_ids.add(task_id)
+                if blockers is not None:
+                    blockers.append({"code": conflict.human_abort_reason,
+                        "task_id": task_id, "ref": task_id, "source_sha": source,
+                        "target_sha": snapshot.target_oid, "batch_id": conflict.batch_id,
+                        "detail": "Build conflict; source or target head must change before retry"})
                 continue
             with selection_stage("stack_source", items=1):
                 stack_valid = (await stacks.current(task_id, source_sha=source)
@@ -1623,12 +1916,20 @@ class DatabaseBatches:
                 continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
-                with selection_stage("pr_admission", items=1):
-                    refusal = (await self.pr_gate(target, member) if self.pr_gate else {
-                        "code": "unknown", "ref": task_id, "task_id": task_id,
-                        "detail": "root PR admission observer is unavailable",
-                    })
+                with selection_stage("local_pr_merge", items=1):
+                    refusal = await self._local_pr_conflict(snapshot, member)
                 if refusal:
+                    refusal["pr_url"] = pr_urls.get(task_id)
+                else:
+                    with (selection_stage("pr_admission", items=1),
+                          root_pr_target_scope(target, snapshot.target_oid)):
+                        refusal = (await self.pr_gate(target, member) if self.pr_gate else {
+                            "code": "unknown", "ref": task_id, "task_id": task_id,
+                            "detail": "root PR admission observer is unavailable",
+                        })
+                if refusal:
+                    if selection_deadline is not None and refusal["code"] in _REFUNDED_PR_REFUSALS:
+                        selection_deadline += self._selection_clock() - candidate_started
                     if refusal["code"] == "pr_checks_red":
                         refused_sources[task_id] = (member, refusal)
                     if blockers is not None:
@@ -1649,7 +1950,9 @@ class DatabaseBatches:
                     member, refusal = refused_sources[source_id]
                     if member.source_sha != bases.get(repair_id):
                         continue
-                    if await admit_repaired(target, member) is None:
+                    with root_pr_target_scope(target, snapshot.target_oid):
+                        repaired_refusal = await admit_repaired(target, member)
+                    if repaired_refusal is None:
                         members[source_id] = member
                         paired_sources.setdefault(source_id, set()).add(repair_id)
                         if blockers is not None and refusal in blockers:
@@ -1886,9 +2189,15 @@ class DatabaseBatches:
                 row = await EpicRefresh(self.db).identity(members[0].task_id, conn=conn)
                 active = await conn.scalar(select(projects.c.status).where(
                     projects.c.id == batch.project_id))
+                # Repair filings may share the epic ref. Recheck holds against
+                # the frozen epic identity rather than rediscovering it by ref.
+                graph = await EpicGraphReader(self.db, policy_on=epic_policy_on,
+                    source_base_on=epic_source_base_on).read_on(conn, row["id"]) if row else None
             if not (row and active == "ACTIVE" and row["project_id"] == batch.project_id
                     and row["repo_id"] == batch.repository_id
                     and _branch(row["branch_name"]) == batch.target_ref):
+                return False
+            if graph.project_holds or any(node.required and node.holds for node in graph.nodes):
                 return False
             key = (batch.project_id, batch.repository_id, batch.target_ref)
             observed = self._refresh_snapshots.get(key)
@@ -1919,6 +2228,10 @@ class DatabaseBatches:
             from src.integration.promotion_routing import cutover_origin_clause
 
             cutover = None if mode is None else mode.default_branch_cutover
+            recorded_origins = set((await conn.scalars(select(task_branch_origins.c.task_id).where(
+                task_branch_origins.c.task_id.in_(ids),
+                task_branch_origins.c.retired_at.is_(None),
+            ))).all())
             live = set((await conn.execute(
                 select(task_branch_origins.c.task_id)
                 .select_from(task_branch_origins.join(
@@ -1949,8 +2262,16 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
+        snapshot = self._refresh_snapshots.get(
+            (batch.project_id, batch.repository_id, batch.target_ref))
         for member in members:
-            if not await stacks.current(member.task_id, source_sha=member.source_sha):
+            if (member.task_id not in recorded_origins
+                    and await stacks.completed_source_matches(
+                        member.task_id, member.source_sha, snapshot)):
+                live.add(member.task_id)
+            if not await stacks.current(member.task_id, source_sha=member.source_sha,
+                                        snapshot=snapshot, included_sources={
+                                            item.task_id: item.source_sha for item in members}):
                 return False
         source_types = {}
         async with self.db._engine.connect() as conn:
@@ -1982,11 +2303,7 @@ class DatabaseBatches:
     async def closed_epic_graph(self, target):
         """Current closed-container identity, including archived/retired children."""
         async with self.db._engine.connect() as conn:
-            ids = (await conn.execute(select(tasks.c.id).where(
-                tasks.c.project_id == target.project_id, tasks.c.status == "COMPLETED",
-                tasks.c.branch_name.in_((target.target_ref,
-                                        target.target_ref.removeprefix("refs/heads/"))),
-            ))).scalars().all()
+            ids = list(await _epic_branches_on(conn, target=target))
             if len(ids) != 1:
                 return None
             graph = await EpicGraphReader(self.db, policy_on=epic_policy_on,
@@ -2020,7 +2337,7 @@ class DatabaseBatches:
             members.append(BatchMember(child.task_id, proof.source_oid,
                                        child.source_base or proof.source_oid))
             requests[child.task_id] = request
-        return (members, requests) if members else None
+        return members, requests
 
     async def _epic_current_on(self, conn, task_id, generation, *, source=None,
                                snapshot=None) -> bool:
@@ -2037,9 +2354,18 @@ class DatabaseBatches:
             notes = json.loads(record["notes"])
             if source is not None and json.loads(record["commits"]) != [source]:
                 return False
-            if notes["graph_sha256"] != epic_graph_digest(graph):
+            if refresh := notes.get("root_pr_refresh"):
+                # The bot merge inherits the exact collected epic and its
+                # unchanged child graph. Its new combined tree owes batch-tip
+                # CI, rather than another pre-admission full check/review.
+                return await self._epic_current_on(conn, task_id, refresh["completion_id"],
+                                                   source=refresh["source_sha"])
+            if snapshot is None and notes["graph_sha256"] != epic_graph_digest(graph):
                 return False
             if snapshot is not None:
+                # Saved graph hashes include disposable origin/review projections.
+                # Fresh exact-source readiness proves the actual graph below; a
+                # stale hash cannot override that proof or conceal a real hold.
                 # The completion row describes a decision; it cannot prove
                 # today's children are in today's epic branch.
                 async def cached_checks(repository_id, head, policy):
@@ -2058,7 +2384,7 @@ class DatabaseBatches:
 
                 readiness = await EpicReadinessEvaluator(self.db, EpicGraphReader(self.db,
                     policy_on=epic_policy_on, source_base_on=epic_source_base_on,
-                ), TreeReviews(self.db), checks=cached_checks).evaluate(graph, snapshot)
+                ), TreeReviews(self.db, allow_missing=True), checks=cached_checks).evaluate(graph, snapshot)
                 if not readiness.ready or readiness.head_sha != source:
                     return False
                 for subject_id, _, _ in epic_heads(readiness):
@@ -2068,7 +2394,7 @@ class DatabaseBatches:
                 return True
             for subject_id, head, tree in notes["heads"]:
                 policy = graph.node(subject_id).policy
-                if policy.check_names:
+                if policy.checks_required and policy.check_names:
                     green = set((await conn.execute(select(
                         integration_check_evidence.c.check_name,
                     ).where(integration_check_evidence.c.repository_id == graph.repository_id,
@@ -2078,7 +2404,7 @@ class DatabaseBatches:
                         integration_check_evidence.c.conclusion == "success"))).scalars())
                     if not set(policy.check_names) <= green:
                         return False
-                review = await TreeReviews(self.db).verdict_on(conn, ReviewSubject(
+                review = await TreeReviews(self.db, allow_missing=True).verdict_on(conn, ReviewSubject(
                     graph.project_id, graph.repository_id, subject_id, tree), policy.reviews)
                 if not review.satisfied:
                     return False
@@ -2167,20 +2493,25 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
     supply identities here; automatic admission never supplies a tree review.
     """
     policy = project["hierarchical_integration_policy"] or {}
+    # The stored parent checks are advisory: read and shown, never a gate. Only
+    # explicit, current project playbook data requires epic checks (6.4).
     required = (policy.get("parent") or {}).get("required_checks") or {}
+    explicit = (await playbook_epic_checks_on(conn, project["id"])
+                if project.get("id") else None)
+    if explicit is not None:
+        required = explicit.model_dump(mode="json")
     boundary = "parent" if row["parent_task_id"] else "root"
     reviewed = (policy.get(boundary) or {}).get("admission") == "reviewed"
     reviewers = set()
-    if reviewed:
-        for identity, evidence in (await conn.execute(select(
-            integration_review_evidence.c.reviewer_identity,
-            integration_review_evidence.c.evidence,
-        ).where(integration_review_evidence.c.source_task_id == row["id"],
-                integration_review_evidence.c.repository_id == project["integration_repository_id"]
-        ))).all():
-            if evidence.get("decision_path") in {"github_pull_request", "review_task_close",
-                                                  "reopen_with_feedback", "tree_review"}:
-                reviewers.add(identity)
+    for identity, evidence in (await conn.execute(select(
+        integration_review_evidence.c.reviewer_identity,
+        integration_review_evidence.c.evidence,
+    ).where(integration_review_evidence.c.source_task_id == row["id"],
+            integration_review_evidence.c.repository_id == project["integration_repository_id"]
+    ))).all():
+        if evidence.get("decision_path") in {"github_pull_request", "review_task_close",
+                                              "reopen_with_feedback", "tree_review"}:
+            reviewers.add(identity)
     trust = str(required.get("producer_id") or "")
     ci = integration_ci_policy(policy)
     if ci is not None and ci.source_for("epic") != "hosted":
@@ -2188,23 +2519,29 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
         from src.integration.checks import hybrid_checks_producer_id, local_checks_producer_id
 
         names = tuple(required.get("names") or ())
-        trust = local_checks_producer_id(
-            scope="epic", names=names, version=str(required.get("version") or ""),
-            commands=tuple(ci.commands[name] for name in names),
-            queue_seconds=ci.queue_seconds, run_seconds=ci.run_seconds,
-        )
-        if ci.requires_hosted("epic"):
-            trust = hybrid_checks_producer_id(trust, str(required.get("producer_id") or ""))
+        if set(names) <= set(ci.commands):
+            trust = local_checks_producer_id(
+                scope="epic", names=names, version=str(required.get("version") or ""),
+                commands=tuple(ci.commands[name] for name in names),
+                queue_seconds=ci.queue_seconds, run_seconds=ci.run_seconds,
+            )
+            if ci.requires_hosted("epic"):
+                trust = hybrid_checks_producer_id(trust, str(required.get("producer_id") or ""))
+        else:
+            # local_commands_cover_required_checks: no local producer exists, so
+            # a required check names its missing producer and an advisory one
+            # is shown as unknown.
+            trust = ""
     return EpicPolicy(tuple(required.get("names") or ()), trust,
                       ReviewRequirements(reviewed, frozenset(reviewers)),
-                      str(required.get("version") or ""))
+                      str(required.get("version") or ""), explicit is not None)
 
 
 async def epic_source_base_on(conn, row):
     return await conn.scalar(select(task_branch_origins.c.base_sha).where(
         task_branch_origins.c.task_id == row["id"],
-        task_branch_origins.c.retired_at.is_(None),
-    ).order_by(task_branch_origins.c.creation_generation.desc()).limit(1))
+    ).order_by(task_branch_origins.c.retired_at.is_(None).desc(),
+               task_branch_origins.c.creation_generation.desc()).limit(1))
 
 
 def epic_graph_digest(graph) -> str:
@@ -2212,6 +2549,9 @@ def epic_graph_digest(graph) -> str:
     data = asdict(graph)
     data["dependencies"] = [tuple(edge) for edge in graph.dependencies]
     for node in data["nodes"]:
+        if not node["policy"]["checks_required"]:
+            # Advisory is the default, so completions fenced before 6.4 stay current.
+            node["policy"].pop("checks_required")
         if node["request"]["task_id"] in {graph.epic_id, graph.node(graph.epic_id).parent_id}:
             node["request"]["completion_id"] = None
             node["request"]["completed_at"] = None
@@ -2245,17 +2585,16 @@ class EpicCompletions:
         if target.kind != "epic":
             return ()
         async with self.db._engine.connect() as conn:
-            ids = (await conn.execute(select(tasks.c.id).where(
-                tasks.c.project_id == target.project_id,
-                tasks.c.branch_name.in_((target.target_ref, target.target_ref.removeprefix(
-                    "refs/heads/"))),
-                tasks.c.status == "COMPLETED",
-            ))).scalars().all()
+            ids = list(await _epic_branches_on(conn, target=target))
             if len(ids) != 1:
+                logger.info("Skipping epic completion for %s: expected one completed container, "
+                            "found %s (%s)", target.key, len(ids), ids)
                 return ()
             graph = await self.evaluator.graph_reader.read_on(conn, ids[0])
         node = graph.node(graph.epic_id)
         if not node.container or (graph.project_id, graph.repository_id) != target.key[:2]:
+            logger.warning("Skipping epic completion for %s: task %s has mismatched container "
+                           "or repository identity", target.key, graph.epic_id)
             return ()
         # Collection readiness gates work still owed; it cannot undo delivery.
         # Retired epic refs are expected after landing, so use the designated
@@ -2294,18 +2633,9 @@ class EpicCompletions:
             if not await self.evaluator.current_on(conn, readiness, snapshot):
                 return ({"code": "epic_changed", "task_id": node.task_id, "ref": node.task_id,
                          "detail": "epic readiness changed before completion was recorded"},)
-            # The source origin is also what admits this completion to its next
-            # lane. Never synthesize one from a branch that happens to exist.
-            origin = await conn.scalar(select(task_branch_origins.c.id).where(
-                task_branch_origins.c.task_id == node.task_id,
-                task_branch_origins.c.repository_id == graph.repository_id,
-                task_branch_origins.c.branch_name.in_((node.branch_ref,
-                    node.branch_ref.removeprefix("refs/heads/"))),
-                task_branch_origins.c.retired_at.is_(None),
-            ))
-            if not origin:
-                return ({"code": "epic_origin_missing", "task_id": node.task_id,
-                         "ref": node.task_id, "detail": "epic has no live branch origin"},)
+            # The fetched aggregate and retained completion ref already bind
+            # this task/repository/head. A missing live origin is disposable
+            # bookkeeping; selection still requires a real retained filing base.
             latest = await conn.scalar(select(task_completion_records.c.completed_at).where(
                 task_completion_records.c.task_id == node.task_id,
             ).order_by(task_completion_records.c.completed_at.desc()).limit(1))
@@ -2473,6 +2803,8 @@ class DaemonLanes:
         self.truth = GitTruth(orchestrator.git, share_fetches=True)
         self.store = BatchStore(self.db, clock=clock, require_enabled=True)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
+        if self.batches is not None:
+            self.batches.conflict_handler = getattr(orchestrator, "_refresh_root_pr", None)
         if self.batches is not None and self.batches.pr_gate is None:
             from src.integration.github_review_poll import RootPullRequestGate
 
@@ -2617,8 +2949,16 @@ class DaemonLanes:
 
             return (await exact.refresh(candidate_head(batch, sha))).green
 
+        async def current_gate(batch, candidate_sha, tree_sha):
+            # Rechecked inside the publisher fence, including edits made while
+            # this visit was waiting for CI. Never publish using obsolete green.
+            current = await self._policy(target.project_id)
+            if current != policy:
+                return False
+            return await checks.gate(batch, candidate_sha, tree_sha)
+
         service = BatchService(self.store, gitops, publish=self.publish,
-                               eligible=self.batches.eligible, gate=checks.gate,
+                               eligible=self.batches.eligible, gate=current_gate,
                                attest=None if unattested else attest,
                                require_attestation=not unattested,
                                observe_deferred=observe_deferred)
@@ -2638,7 +2978,7 @@ class DaemonLanes:
                 if snapshot.error or not snapshot.target_oid:
                     return None
                 inputs = await self.batches.sync_inputs(target, snapshot)
-                if inputs is None:
+                if inputs is None or not inputs[0]:
                     return None
                 members, requests = inputs
                 identity = (target.key, snapshot.target_oid, tuple(
@@ -2698,7 +3038,12 @@ class DaemonLanes:
                     return await self.batches.prepare_speculative(
                         target, service, parent, base, snapshot)
 
+        from src.integration.train_policy import load_train_policy
+
+        view = await load_train_policy(self.db, target.project_id)
         return TrainLane(snapshot=snapshot, service=service, checks=checks,
+                         train_policy=view.policy, train_policy_enabled=view.enabled,
+                         train_policy_reason=view.reason,
                          repair_policy=(RepairPolicy.model_validate(repair_policy)
                                         if repair_policy else None),
                          complete_epic=complete_epic, sync_default_branch=sync_default_branch,
@@ -2793,6 +3138,31 @@ class DaemonLanes:
             logger.info("integration batch %s default-branch sync evidence unavailable", batch.id)
             return None
 
+    async def _advisory_epic_checks(self, target, binding, retained, ci, policy, node, batch,
+                                    head, repository_id, resolved):
+        """Show recorded advisory results; never run, wait for or refuse on one.
+
+        An advisory epic check holds nothing (6.4): a local result is read from
+        evidence a train already recorded, a hosted one is observed, and an
+        unavailable producer leaves the head's result unknown.
+        """
+        from src.integration.runtime_contracts import HeadIdentity
+
+        resolved[(head, node.policy)] = None
+        try:
+            if ci is not None and ci.source_for("epic") != "hosted":
+                exact = self._local_checks(target, retained.store, ci, policy, batch)
+            else:
+                exact = await self._hosted(policy, binding, target, batch, head)
+                if exact is not None:
+                    await exact.refresh(HeadIdentity(repository_id=repository_id,
+                                                     ref=node.branch_ref, sha=head, generation=0))
+        except Exception:
+            logger.info("Advisory checks for epic %s at %s are unavailable", node.task_id, head,
+                        exc_info=True)
+            return
+        resolved[(head, node.policy)] = exact
+
     def _epic_completion(self, target, binding, retained):
         from src.integration.checks import HostedChecks, HybridChecks
         from src.integration.runtime_contracts import HeadIdentity
@@ -2801,9 +3171,16 @@ class DaemonLanes:
 
         async def refresh(graph, snapshot):
             policy = await self._policy(target.project_id)
+            async with self.db._engine.connect() as conn:
+                explicit = await playbook_epic_checks_on(conn, target.project_id)
+            if explicit is not None:
+                # The playbook's parent checks replace the stored advisory set.
+                policy = {**policy, "parent": {**(policy.get("parent") or {}),
+                                               "required_checks": explicit.model_dump(mode="json")}}
             ci = integration_ci_policy(policy)
             local = ci is not None and ci.source_for("epic") != "hosted"
             refused: list[dict] = []
+            pending_checks = []
             for node in graph.nodes:
                 head = snapshot.for_target(node.branch_ref).target_oid if node.branch_ref else None
                 if not node.required or not node.container or not head:
@@ -2813,6 +3190,14 @@ class DaemonLanes:
                     continue
                 batch = Batch("epic-readiness-" + node.task_id, target.project_id,
                               target.repository_id, node.branch_ref)
+                if not node.policy.checks_required:
+                    await self._advisory_epic_checks(target, binding, retained, ci, policy, node,
+                                                     batch, head, graph.repository_id, resolved)
+                    continue
+                if not node.policy.check_trust:
+                    # The evaluator names the missing producer; nothing can run.
+                    resolved[(head, node.policy)] = None
+                    continue
                 try:
                     if local:
                         await retain_train_candidate(self.git, retained.store, batch, head)
@@ -2835,20 +3220,54 @@ class DaemonLanes:
                     continue
                 resolved[(head, node.policy)] = exact
                 if exact is not None:
-                    identity = HeadIdentity(repository_id=graph.repository_id,
-                                            ref=node.branch_ref, sha=head, generation=0)
-                    # A published epic head is usually the candidate its train
-                    # already ran locally; green evidence there runs nothing.
-                    if isinstance(exact, HybridChecks):
-                        if exact.hosted is not None:
-                            await exact.hosted.refresh(identity)
-                        if not (await exact.local.read(identity)).green:
-                            await exact.local.request(identity)
-                            await exact.local.refresh(identity)
-                    elif (isinstance(exact.provider, HostedChecks)
-                            or not (await exact.read(identity)).green):
-                        await exact.request(identity)
-                        await exact.refresh(identity)
+                    pending_checks.append((exact, HeadIdentity(
+                        repository_id=graph.repository_id, ref=node.branch_ref,
+                        sha=head, generation=0)))
+            # Conclusive red heads retain the existing bounded baseline-sync
+            # and repair path. A refresh must not allocate a parallel repair.
+            node = graph.node(graph.epic_id)
+            exact = resolved.get((snapshot.target_oid, node.policy))
+            known_red = exact is not None and (await _exact_head_verdict(exact, HeadIdentity(
+                repository_id=graph.repository_id, ref=target.target_ref,
+                sha=snapshot.target_oid, generation=0))).state.value == "red"
+            # A closed, collected epic may predate the default branch's trust
+            # configuration. Refresh it before requesting aggregate checks;
+            # waiting for a conflicting root PR cannot help until those checks
+            # have produced the very completion that opens the PR.
+            if (not snapshot.error and snapshot.target_oid and not known_red
+                    and await self.batches.sync_inputs(target, snapshot) is not None):
+                from src.integration.stacked_branches import EpicRefresh
+
+                try:
+                    refreshed = await _finish_on_cancel(EpicRefresh(
+                        self.db, clock=self.clock).start(graph.epic_id, snapshot=snapshot))
+                except (GitError, OSError, ValueError) as exc:
+                    logger.warning("Collected epic refresh unavailable for %s", graph.epic_id,
+                                   exc_info=True)
+                    return ({"code": "epic_refresh_unavailable", "task_id": graph.epic_id,
+                             "ref": target.target_ref, "reason": type(exc).__name__,
+                             "detail": "Collected epic refresh will be retried"},)
+                if refreshed["outcome"] not in {"current", "skipped"}:
+                    if refreshed["outcome"] == "started":
+                        await self.db.log_event("integration.epic_refresh",
+                            project_id=target.project_id, task_id=graph.epic_id,
+                            payload=json.dumps({**refreshed, "trigger": "aggregate_readiness"}))
+                    return ({"code": "epic_refresh_pending", "task_id": graph.epic_id,
+                             "ref": target.target_ref, "refresh": refreshed,
+                             "detail": "Aggregate verification waits for the default-branch refresh"},)
+            for exact, identity in pending_checks:
+                # A published epic head is usually the candidate its train
+                # already ran locally; green evidence there runs nothing.
+                if isinstance(exact, HybridChecks):
+                    if exact.hosted is not None:
+                        await exact.hosted.refresh(identity)
+                    if not (await exact.local.read(identity)).green:
+                        await exact.local.request(identity)
+                        await exact.local.refresh(identity)
+                elif (isinstance(exact.provider, HostedChecks)
+                        or not (await exact.read(identity)).green):
+                    await exact.request(identity)
+                    await exact.refresh(identity)
             return tuple(refused)
 
         async def head_checks(repository_id, head, policy):
@@ -2864,7 +3283,7 @@ class DaemonLanes:
 
         evaluator = EpicReadinessEvaluator(self.db, EpicGraphReader(self.db,
             policy_on=epic_policy_on, source_base_on=epic_source_base_on,
-        ), TreeReviews(self.db), checks=head_checks)
+        ), TreeReviews(self.db, allow_missing=True), checks=head_checks)
         from src.integration.root_pull_requests import EpicPullRequestService
 
         completions = EpicCompletions(self.db, evaluator, refresh=refresh, clock=self.clock,
@@ -2962,7 +3381,10 @@ class DaemonLanes:
     async def _observe_promotion_source(self, target, retained, gitops, snapshot):
         """Notify reviewed continuous policy when exact source push CI becomes green."""
         from src.integration.promotion_steps import (
-            FlowSchema, PromotionSourceRefusal, check_source_green, promotion_policy_event,
+            FlowSchema,
+            PromotionSourceRefusal,
+            check_source_green,
+            promotion_policy_event,
             step_required_checks,
         )
         from src.playbooks.services import resolve_integration_route
@@ -3056,7 +3478,10 @@ class DaemonLanes:
                 select(projects.c.hierarchical_integration_policy)
                 .where(projects.c.id == project_id)
             )).scalar_one_or_none()
-        return policy if isinstance(policy, dict) else {}
+        from src.integration.train_policy import current_checks, load_train_policy
+
+        return current_checks(policy if isinstance(policy, dict) else {},
+                              await load_train_policy(self.db, project_id))
 
     async def _settings(self, policy: dict) -> tuple[Any, str | None]:
         from src.integration.development_policy import (
@@ -3080,9 +3505,9 @@ class DaemonLanes:
         Candidate trees must match the boundary's configured CI producer. The
         default branch itself supplies promotion trust, as in promote_request.
         """
+        from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
         from src.integration.attestation import _MAX_TRUST_BYTES, _parse_trust_manifest
         from src.integration.ci import TRUST_MANIFEST_PATH
-        from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
 
         if not is_valid_git_oid(sha):
             raise SubjectTrustError("identity_mismatch", "subject head is not a Git OID")
@@ -3161,7 +3586,7 @@ class DaemonLanes:
         )
         producer = LocalCIProducer(
             self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
-            store=store, plan=plan, clock=self.clock,
+            store=store, plan=plan, clock=self.clock, workspace_batch_id=batch.id,
         )
         checks = RequestedChecks if requested else ExactChecks
         return checks(self.db, LocalChecks(producer, project_id=target.project_id,
@@ -3186,7 +3611,7 @@ class DaemonLanes:
         )
         producer = LocalCIProducer(
             self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
-            store=retained.store, plan=plan, clock=self.clock,
+            store=retained.store, plan=plan, clock=self.clock, workspace_batch_id=batch.id,
         )
         return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id),
                            on_change=self._checks_changed)
@@ -3284,6 +3709,7 @@ class TrainCommandDriver:
         self.train, self._commands = train, commands
 
     def wake(self, project_id, repository_id=None):
+        self.train.targets.invalidate()
         return self.train.wake(project_id, repository_id)
 
     def set_wake_callback(self, callback):
@@ -3303,22 +3729,27 @@ class TrainCommandDriver:
         await self.train.stop()
 
 
-def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> IntegrationTrain | None:
-    """The train when ``integration.git_first`` is ``active``; otherwise None."""
-    config = orchestrator.config.integration
-    if getattr(config, "git_first", "shadow") != "active":
-        return None
-    from src.integration.fixers import BatchFixerService
-    from src.integration.fixer_runtime import DaemonFixerRuntime
+def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> IntegrationTrain:
+    """Construct the Git-first train, the delivery engine on every install."""
     from src.integration.dispatch_waits import DispatchWaits
+    from src.integration.fixer_runtime import DaemonFixerRuntime
+    from src.integration.fixers import BatchFixerService
+
+    async def refresh_conflict(batch_id_, record):
+        handler = getattr(orchestrator, "_command_handler", None)
+        if handler is None:
+            return {"success": False, "outcome": "unavailable"}
+        return await handler.refresh_integration_pair_conflict(batch_id_, record)
 
     batches = DatabaseBatches(orchestrator.db, clock=clock,
-                             cleanup=getattr(orchestrator, "integration_cleanup_service", None))
+                             cleanup=getattr(orchestrator, "integration_cleanup_service", None),
+                             refresh_conflict=refresh_conflict)
     lanes = DaemonLanes(orchestrator, batches=batches, clock=clock)
     waits = DispatchWaits(orchestrator, lanes=lanes, clock=clock)
     return IntegrationTrain(
         targets=DatabaseTargets(
             orchestrator.db,
+            refresh_seconds=30,
             flow_problems=lambda: getattr(orchestrator, "promotion_flow_problems", None),
         ),
         batches=batches,
