@@ -56,6 +56,7 @@ export function useAttachReviewImage(): UseMutationResult<unknown, Error, Attach
     })).data,
     onSuccess: (_data, input) => {
       void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["asks"] });
     },
   });
 }
@@ -122,6 +123,7 @@ export function useDecideReview(): UseMutationResult<ReviewDecideResponse, Error
     onSuccess: (_data, input) => {
       void queryClient.invalidateQueries({ queryKey: ["reviews"] });
       void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["asks"] });
       void queryClient.invalidateQueries({ queryKey: ["tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["gates"] });
     },
@@ -141,6 +143,7 @@ export function useReopenReview(): UseMutationResult<
     onSuccess: (_data, input) => {
       void queryClient.invalidateQueries({ queryKey: ["reviews"] });
       void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["asks"] });
       void queryClient.invalidateQueries({ queryKey: ["tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["gates"] });
     },
@@ -162,6 +165,7 @@ export function useWithdrawReview(): UseMutationResult<
     onSuccess: (_data, input) => {
       void queryClient.invalidateQueries({ queryKey: ["reviews"] });
       void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["asks"] });
       void queryClient.invalidateQueries({ queryKey: ["tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["gates"] });
     },
@@ -169,6 +173,7 @@ export function useWithdrawReview(): UseMutationResult<
 }
 
 type CommentInput = {
+  source_discussion_id?: string;
   review_id: string;
   revision: number;
   quote?: string | null;
@@ -186,6 +191,7 @@ export function useCommentReview(): UseMutationResult<ReviewCommentResponse, Err
     onSuccess: (_data, input) => {
       void queryClient.invalidateQueries({ queryKey: ["reviews"] });
       void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["asks"] });
     },
   });
 }
@@ -206,6 +212,7 @@ export function useImportReviewEdits(): UseMutationResult<
     onSuccess: (_data, input) => {
       void queryClient.invalidateQueries({ queryKey: ["reviews"] });
       void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["asks"] });
     },
   });
 }
