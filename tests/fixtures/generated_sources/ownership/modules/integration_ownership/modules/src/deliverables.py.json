@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/deliverables.py::evaluate_deliverables": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/deliverables.py::parse_unmet_reasons": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/deliverables.py::resolve_task_deliverables": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/deliverables.py::review_revision_guidance": "Generic document-review publication instructions shared by worker prime and task close; formats guidance only, with no integration state, storage or delivery authority. The task-close adapter remains charged independently.",
+    "src/deliverables.py::review_submit_guidance": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

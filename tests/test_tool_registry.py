@@ -114,6 +114,8 @@ def test_registry_has_categories(registry):
     assert cat_names == {
         "files",
         "git",
+        "ci",
+        "integration",
         "project",
         "agent",
         "supervisor",
@@ -147,6 +149,7 @@ def test_registry_has_categories(registry):
         "job",
         "artifact",
         "policy",
+        "operator",
     }
 
     for cat in categories:
@@ -409,6 +412,8 @@ def test_retired_ask_human_is_unknown_without_plugin_backend():
 
     assert handler.has_command("ask_human") is False
     assert asyncio.run(handler.execute("ask_human", {"question": "Continue?"})) == {
+        "success": False,
+        "error_code": "unknown_command",
         "error": "Unknown command: ask_human"
     }
 
@@ -831,6 +836,8 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
+    # Re-derive a vault source from its active reviewed artifact.
+    "playbook_source_resync",
     # Activation artifacts and the pending-event queue (Package 5).
     "playbook_artifacts",
     "playbook_artifact_diff",

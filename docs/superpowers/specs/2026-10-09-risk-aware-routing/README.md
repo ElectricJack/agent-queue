@@ -1,8 +1,11 @@
 # Risk-aware routing: draft revision of `default-assignment-routing`
 
-**Status:** draft for Jack's review. Nothing is activated: the vault playbook,
-the shipped reviewed bundle and the live router are unchanged. Task
-`smart-beacon-29`.
+**Status:** approved (`rev-azure-flare`); drafted in task `smart-beacon-29`.
+Steps 1 and 2 of "Activating after approval" landed in `solid-apex-59`, with
+Jack's answers to the open questions applied (see "Decisions"). Where this
+document and its draft (`default-assignment-routing.md`, `bundle/`) say
+priority is a ceiling, or that a missing risk answer applies no floor, the
+decisions below and the shipped source supersede them.
 
 ## What changes
 
@@ -55,7 +58,7 @@ How each of the five agreed points is met:
 |---|---|
 | [`default-assignment-routing.md`](default-assignment-routing.md) | The revised playbook source, drafted against the shipped reviewed copy (`src/prompts/reviewed_playbooks/default-assignment-routing/source.md`). |
 | [`bundle/`](bundle/) | The draft compiled by the reviewed-bundle compiler: `artifact.json`, `diagnostics.json` (empty), `manifest.md`. |
-| [`dry-run.py`](dry-run.py), [`dry-run.md`](dry-run.md) | The worked examples run through `plan_route` under the shipped and the draft policy. |
+| [`dry-run.py`](dry-run.py), [`dry-run.md`](dry-run.md) | The worked examples run through `plan_route` under the installed policy (the approval-time run compared the pre-revision policy with the draft). |
 | `src/routing/policy.py`, `src/routing/planner.py` | The mechanism the draft needs (below). Inert: a policy without the new keys plans exactly as before. |
 | `tests/test_routing_planner.py`, `tests/test_routing_router.py` | 14 tests for the mechanism, including the shipped policy's unchanged digest. |
 | `src/commands/routing_commands.py` | `task_route_apply` copies `class_raised_for_risk` into the route record. |
@@ -96,24 +99,27 @@ deterministically, and every threshold above lives in the reviewed markdown.
 
 ## Worked examples
 
-[`dry-run.py`](dry-run.py) runs each example through `plan_route` under the
-shipped policy and the draft, on a model fleet: one rung per class on `claude`
-and `codex`, three local OpenCode rungs and the three free hosted Zen rungs at
-`standard-high`, all idle unless the row says the local slots are busy. The
-risk and flags are the classifier answers I would expect; the seven
-fleet-ridge-45 rows use the real subtasks' kind (`feature`, `chore` for 45.7),
-class hint and priority 230. Recorded output: [`dry-run.md`](dry-run.md).
-Under the draft every row asks the classifier `narrow`, `risk` and
+[`dry-run.py`](dry-run.py) runs each example through `plan_route` on a model
+fleet: one rung per class on `claude` and `codex`, three local OpenCode rungs
+and the three free hosted Zen rungs at `standard-high`, all idle unless the
+row says the local slots are busy. The risk and flags are the classifier
+answers I would expect; the seven fleet-ridge-45 rows use the real subtasks'
+kind (`feature`, `chore` for 45.7), class hint and priority 230. *Before* is
+the pre-revision policy as recorded at approval; *Installed* is the policy as
+shipped after Jack's decisions (*Decisions* below), recorded in
+[`dry-run.md`](dry-run.md). The approved draft routed the two rows marked †
+to `standard-high-codex` and `fast-high-codex`: its priority ceilings kept
+them off the cheap lanes. Every row asks the classifier `narrow`, `risk` and
 `test_verified`.
 
-| Example | Prio | Risk | Shipped route | Draft route |
+| Example | Prio | Risk | Before | Installed |
 |---|---|---|---|---|
 | fleet-ridge-45.1 recovery resumes on the task's own branch | 230 | very_high | `standard-high-codex` | `deep-low-codex` — raised from standard-high |
 | fleet-ridge-45.2 delete branches on land | 230 | very_high | `standard-high-opencode-zen` (lane narrow-hosted) | `standard-high-codex` |
 | fleet-ridge-45.3 delete branches on abandon + audit table | 230 | very_high | `standard-high-codex` | `deep-low-codex` — raised from standard-high |
 | fleet-ridge-45.4 hand-landing merges, never rebases | 230 | high | `standard-high-opencode-zen` (lane narrow-hosted) | `standard-high-codex` |
 | fleet-ridge-45.4 docs-only slice (guide text) | 100 | low | `standard-high-opencode` (lane narrow) | `standard-high-opencode` (lane narrow) |
-| fleet-ridge-45.4 docs-only slice at the epic's priority | 230 | low | `standard-high-opencode-zen` (lane narrow-hosted) | `standard-high-codex` |
+| fleet-ridge-45.4 docs-only slice at the epic's priority † | 230 | low | `standard-high-opencode-zen` (lane narrow-hosted) | `standard-high-opencode` (lane narrow) |
 | fleet-ridge-45.5 provenance refs off refs/heads | 230 | high | `standard-high-opencode-zen` (lane narrow-hosted) | `standard-high-codex` |
 | fleet-ridge-45.6 daily backstop branch sweep | 230 | very_high | `standard-high-codex` | `deep-low-codex` — raised from standard-high |
 | fleet-ridge-45.7 one-time backlog branch cleanup | 230 | very_high | `fast-high-codex` | `deep-low-codex` — raised from fast-high |
@@ -125,7 +131,7 @@ Under the draft every row asks the classifier `narrow`, `risk` and
 | same tweak in shared code (medium risk) | 100 | medium | `standard-high-opencode` (lane narrow) | `standard-high-codex` |
 | trivial chore: bump a pinned version | 100 | low | `fast-low-opencode` (lane narrow) | `fast-low-opencode` (lane narrow) |
 | trivial chore (local OpenCode busy) | 100 | low | `fast-high-codex` | `standard-high-opencode-zen` (lane narrow-hosted) |
-| same chore at priority 200 | 200 | low | `fast-high-codex` | `fast-high-codex` |
+| same chore at priority 200 † | 200 | low | `fast-high-codex` | `fast-low-opencode` (lane narrow) |
 
 What it shows:
 
@@ -136,8 +142,8 @@ What it shows:
   `deep-low`, 45.7 up from its `fast-high` hint. 45.2 is very high risk but
   narrow and tested, so the relax rule keeps it at `standard-high` on Codex.
   The provenance ref migration (45.5) and the hand-landing change (45.4) are
-  high risk: `standard-high` on Codex. A docs-only slice stays on local
-  OpenCode at default priority, and leaves the cheap lanes at the epic's 230.
+  high risk: `standard-high` on Codex. A low-risk docs-only slice stays on
+  local OpenCode at any priority, the epic's 230 included.
 - **quilt-trader.** A narrow, tested order-path fix goes to local OpenCode
   today; the draft sends it to `standard-high` on Codex. A new strategy was
   already deep and stays there.
@@ -149,8 +155,8 @@ What it shows:
   to Codex, and the trivial chore goes to the hosted model's one
   `standard-high` rung. That is point 5: trivial chores only, until a record
   is earned.
-- **Priority is only a ceiling.** The same chore at priority 200 never takes
-  a cheap lane, and its class does not change.
+- **Priority does not route.** The same chore at priority 200 routes exactly
+  as at the default of 100.
 
 ## Validation
 
@@ -194,6 +200,33 @@ module, 1 in the router module.
    mechanism line if you want it.
 4. **Track-record numbers.** 10 clean passes, a 14-day look-back, and 2
    reworks in the last 10 to fall back to probation are proposals.
+
+## Decisions
+
+Jack answered the open questions in review `rev-wise-impact` (2026-10-09),
+which also made that review's approval the step-3 go-live approval (A1):
+
+1. **Priority does not route.** A task's priority never chooses its model,
+   class or lane: no lane and no `local_models` rule names a priority, and the
+   planner is not given one. A lane admits work only by its classes and its
+   `narrow`, `test_verified` and `max_risk` requirements, so low-risk, narrow,
+   test-verified work still takes the cheap lanes, and train repairs stay off
+   local models through `local_models.train_kinds`. A policy that still writes
+   `below_priority` is refused by name; the `high_priority_local_model` stall
+   check is gone with the rule it checked. (Jack first answered that lower
+   numbers are more important, as on the claim frontier, then removed priority
+   from routing once the filing history showed urgent work numbered 230–298.)
+   Two worked examples change: the fleet-ridge docs slice at the epic's 230
+   and the chore at 200 now route as at the default priority, to local
+   OpenCode (`standard-high-opencode`, `fast-low-opencode`). The other 16
+   route as approved.
+2. **`very_high` floors at `deep-low`**, relaxed to `standard-high` when
+   narrow and test-verified, as drafted.
+3. **No risk answer is treated as `medium`.** In a policy that reads risks, a
+   classification that answered no risk, or failed, gets the medium floor and
+   harnesses; the plan records `class_raised_for_risk.assumed: true`. Before
+   the classifier runs, the risk stays unknown and is still asked for.
+4. **Track-record numbers stand** as drafted.
 
 ## Activating after approval
 
