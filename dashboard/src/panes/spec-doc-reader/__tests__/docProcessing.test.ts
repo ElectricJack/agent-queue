@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractToc, parseFrontmatter, resolveTitle } from "../docProcessing";
+import { extractToc, parseFrontmatter, resolveTitle, stripLeadingH1 } from "../docProcessing";
 
 describe("extractToc", () => {
   it("extracts only ## and ### headings", () => {
@@ -35,6 +35,33 @@ describe("parseFrontmatter", () => {
     const { data, content } = parseFrontmatter(raw);
     expect(data).toEqual({ status: "design", date: "2026-08-22" });
     expect(content.trim()).toBe("## Body");
+  });
+
+  it("parses fenced YAML without a Node Buffer global", () => {
+    const globals = globalThis as typeof globalThis & { Buffer?: unknown };
+    const originalBuffer = globals.Buffer;
+    globals.Buffer = undefined;
+
+    try {
+      expect(parseFrontmatter("---\ntitle: Browser safe\n---\nbody")).toEqual({
+        data: { title: "Browser safe" },
+        content: "body",
+      });
+    } finally {
+      globals.Buffer = originalBuffer;
+    }
+  });
+
+  it("removes an empty fenced YAML block", () => {
+    expect(parseFrontmatter("---\n---\n## Body\n")).toEqual({
+      data: null,
+      content: "## Body\n",
+    });
+  });
+
+  it("does not treat a later thematic break as frontmatter", () => {
+    const raw = "# Intro\n\n---\ntitle: later\n---\nbody";
+    expect(parseFrontmatter(raw)).toEqual({ data: null, content: raw });
   });
 
   it("returns null data when there is no frontmatter of either kind", () => {
@@ -104,5 +131,41 @@ describe("resolveTitle", () => {
   it("humanizes the last path segment of a URL fallback", () => {
     const t = resolveTitle({ frontmatter: null, body: "", fallbackName: "/api/specs/checkout_flow.md" });
     expect(t).toBe("Checkout Flow");
+  });
+});
+
+describe("stripLeadingH1", () => {
+  it("strips a leading h1 and the blank lines after it from LF content", () => {
+    expect(stripLeadingH1("# Title\n\n## Goal\n\nbody\n")).toBe("## Goal\n\nbody\n");
+  });
+
+  it("strips a leading h1 and the blank lines after it from CRLF content", () => {
+    expect(stripLeadingH1("# Title\r\n\r\n## Goal\r\n\r\nbody\r\n")).toBe(
+      "## Goal\r\n\r\nbody\r\n",
+    );
+  });
+
+  it("strips a leading h1 from CR-only content", () => {
+    expect(stripLeadingH1("# Title\r\rbody\r")).toBe("body\r");
+  });
+
+  it("strips the h1 left at the top of a CRLF body after YAML frontmatter", () => {
+    const raw = "---\r\nstatus: draft\r\n---\r\n# Original plan\r\n\r\n## Goal\r\n\r\nbody\r\n";
+    const { data, content } = parseFrontmatter(raw);
+    expect(data).toEqual({ status: "draft" });
+    expect(resolveTitle({ frontmatter: data, body: content, fallbackName: "x.md" })).toBe(
+      "Original plan",
+    );
+    expect(stripLeadingH1(content)).toBe("## Goal\r\n\r\nbody\r\n");
+  });
+
+  it("strips only the first h1 and leaves later h1s alone", () => {
+    expect(stripLeadingH1("# One\r\n\r\n# Two\r\n")).toBe("# Two\r\n");
+  });
+
+  it("leaves content whose first block is not an h1 unchanged", () => {
+    for (const content of ["## Goal\r\n# Later\r\n", "body\n\n# Later\n", "#NoSpace\r\nbody"]) {
+      expect(stripLeadingH1(content)).toBe(content);
+    }
   });
 });

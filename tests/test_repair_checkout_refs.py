@@ -26,25 +26,55 @@ async def test_checkpoint_accepts_same_canonical_full_ref(prefix):
 
 
 @pytest.mark.parametrize('ancestor', [True, False])
-async def test_repair_retry_fetches_published_tip_with_exact_ref(ancestor):
+async def test_repair_retry_fetches_published_tip_from_authorized_repository(ancestor):
     head = 'b' * 40
     git = SimpleNamespace(
-        _arun=AsyncMock(side_effect=['', head]),
+        _arun=AsyncMock(return_value=head),
+        afetch_origin=AsyncMock(),
         ais_ancestor=AsyncMock(return_value=ancestor),
+        _apush_oid=AsyncMock(),
     )
     orch = SimpleNamespace(git=git)
     fence = Fence(target=BranchKey(repository_id='repo', branch='refs/heads/aq/integration/batch'), owner_id='repair', token=4)
     if ancestor:
         assert await WorkspaceMixin._hierarchy_repair_start(
-            orch, '/slot', {'base_sha': 'a' * 40}, fence
+            orch, '/slot', {'base_sha': 'a' * 40}, fence,
+            repository_url='git@github.com:acme/widgets.git',
         ) == head
     else:
-        with pytest.raises(GitError, match='frozen starting commit'):
-            await WorkspaceMixin._hierarchy_repair_start(
-                orch, '/slot', {'base_sha': 'a' * 40}, fence
-            )
-    assert git._arun.await_args_list[0].args[0][-1] == (
-        '+refs/heads/aq/integration/batch:refs/remotes/origin/aq/integration/batch'
+        # A superseded prior stage's tip is reset to the frozen start under
+        # a lease on the observed tip (main hotfix #1062).
+        assert await WorkspaceMixin._hierarchy_repair_start(
+            orch, '/slot', {'base_sha': 'a' * 40}, fence,
+            repository_url='git@github.com:acme/widgets.git',
+        ) == 'a' * 40
+        git._apush_oid.assert_awaited_once()
+        assert git._apush_oid.await_args.kwargs['expected_old_oid'] == head
+    git.afetch_origin.assert_awaited_once_with(
+        '/slot', repository_url='git@github.com:acme/widgets.git'
+    )
+
+
+@pytest.mark.parametrize('state', [RemoteRefState.ABSENT, RemoteRefState.ERROR])
+async def test_ordinary_repair_checks_remote_even_with_stale_tracking_ref(state):
+    from src.integration.repair import UnpublishedRepairTarget
+
+    git = SimpleNamespace(
+        afetch_origin=AsyncMock(), _arun=AsyncMock(return_value='b' * 40),
+        als_remote_ref=AsyncMock(return_value=RemoteRefResult(state, error='unavailable')),
+    )
+    fence = Fence(target=BranchKey(repository_id='repo', branch='aq/batches/missing'),
+                  owner_id='repair', token=1)
+    error = UnpublishedRepairTarget if state is RemoteRefState.ABSENT else GitError
+    with pytest.raises(error) as raised:
+        await WorkspaceMixin._hierarchy_repair_start(
+            SimpleNamespace(git=git), '/slot', {'ordinary_repair': True}, fence,
+            repository_url='/authorized',
+        )
+    assert isinstance(raised.value, UnpublishedRepairTarget) is (state is RemoteRefState.ABSENT)
+    git._arun.assert_not_awaited()
+    git.als_remote_ref.assert_awaited_once_with(
+        '/slot', 'aq/batches/missing', repository_url='/authorized',
     )
 
 
