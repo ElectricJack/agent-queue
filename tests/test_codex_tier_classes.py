@@ -1,4 +1,9 @@
-"""Standard/deep Codex tiers use the requested current model families."""
+"""Codex tiers launch the requested current model families at the class effort.
+
+The shipped set is seven classes (``src/prompts/default_intelligence_classes``):
+``fast-{low,high}``, ``standard-high``, ``deep-{low,high}`` and the OpenAI-only
+``astra-{low,high}``.  Every ``-high`` class spends Codex's *extra*-high effort.
+"""
 import json
 from types import SimpleNamespace
 
@@ -10,8 +15,24 @@ from src.sessions.harness_parser import Harness
 from src.sessions.spec import SessionSpecBuilder
 from src.vault import ensure_default_intelligence_classes
 
-TIERS = [("standard", "gpt-5.6-terra"), ("deep", "gpt-5.6-sol")]
-LEVELS = [("off", "low"), ("low", "low"), ("medium", "medium"), ("high", "high")]
+#: (class id, Codex model, ``model_reasoning_effort``) for every shipped class
+#: with an OpenAI slice above the fast tier.
+CLASSES = [
+    ("standard-high", "gpt-5.6-terra", "xhigh"),
+    ("deep-low", "gpt-5.6-sol", "low"),
+    ("deep-high", "gpt-5.6-sol", "xhigh"),
+    ("astra-low", "gpt-6-astra", "low"),
+    ("astra-high", "gpt-6-astra", "xhigh"),
+]
+
+#: The classes that also existed in the retired tier x level matrix, with the
+#: historical bundled OpenAI slice a pre-cutover vault still carries.  Astra
+#: is new and has no legacy slice to upgrade from.
+LEGACY = [
+    ("standard-high", "gpt-5.6-terra", "high", "xhigh"),
+    ("deep-low", "gpt-5.6-sol", "low", "low"),
+    ("deep-high", "gpt-5.6-sol", "high", "xhigh"),
+]
 
 
 def make_profile(cid, pin=None):
@@ -33,16 +54,15 @@ def write_class(tmp_path, cid, mapping):
     return path
 
 
-@pytest.mark.parametrize(("tier", "model"), TIERS)
-@pytest.mark.parametrize(("level", "effort"), LEVELS)
+@pytest.mark.parametrize(("cid", "model", "effort"), CLASSES)
 @pytest.mark.parametrize("lifecycle", ["task", "named", "pool"])
-def test_current_codex_tiers_reach_launch_and_flock_snapshot(tmp_path, tier, model, level, effort, lifecycle):
+def test_current_codex_tiers_reach_launch_and_flock_snapshot(tmp_path, cid, model, effort, lifecycle):
     ensure_default_intelligence_classes(str(tmp_path))
     specs = make_builder(load_intelligence_classes(str(tmp_path)))
-    profile = make_profile(f"{tier}-{level}")
+    profile = make_profile(cid)
     harness = Harness(id="codex", command="codex", model_flag="-m")
-    kwargs = dict(profile=profile, harness=harness, work_dir="/wd", session_id="s",
-                  instance_token="instance", prompt="start")
+    kwargs = {"profile": profile, "harness": harness, "work_dir": "/wd", "session_id": "s",
+              "instance_token": "instance", "prompt": "start"}
     if lifecycle == "named":
         spec = specs.build_named_spec(project_id=None, **kwargs)
     elif lifecycle == "pool":
@@ -55,59 +75,69 @@ def test_current_codex_tiers_reach_launch_and_flock_snapshot(tmp_path, tier, mod
     assert spec.command[spec.command.index("-m") + 1] == model
     assert spec.command[spec.command.index("-c") + 1] == f'model_reasoning_effort="{effort}"'
     assert resolve_launch_settings(profile, harness, specs) == {
-        "llm_provider": "openai", "model": model, "intelligence_class": f"{tier}-{level}",
+        "llm_provider": "openai", "model": model, "intelligence_class": cid,
     }
 
 
-@pytest.mark.parametrize(("tier", "model"), TIERS)
-@pytest.mark.parametrize(("level", "effort"), LEVELS)
-def test_legacy_bundled_tiers_upgrade_api_without_touching_vault(tmp_path, tier, model, level, effort):
-    cid = f"{tier}-{level}"
-    original = {"openai": {"model": "gpt-5", "reasoning_effort": "minimal" if level == "off" else level},
+@pytest.mark.parametrize(("cid", "model", "legacy_effort", "effort"), LEGACY)
+def test_legacy_bundled_tiers_upgrade_api_without_touching_vault(tmp_path, cid, model, legacy_effort, effort):
+    original = {"openai": {"model": "gpt-5", "reasoning_effort": legacy_effort},
                 "anthropic": {"model": "custom-anthropic", "thinking": "custom"}}
     path = write_class(tmp_path, cid, original)
     content = path.read_bytes()
     cls = load_intelligence_classes(str(tmp_path))[cid]
     assert cls.mapping == {**original,
-                           "openai": {"model": model, "reasoning_effort": "none" if level == "off" else level},
+                           "openai": {"model": model, "reasoning_effort": effort},
                            "codex": {"model": model, "reasoning_effort": effort}}
     assert cls.name == "User name" and path.read_bytes() == content
 
 
-@pytest.mark.parametrize(("tier", "model"), TIERS)
+@pytest.mark.parametrize(("cid", "model", "legacy_effort", "effort"), LEGACY)
 @pytest.mark.parametrize("case", ["model", "effort", "extra", "codex", "empty_codex"])
-def test_custom_tier_slices_are_not_overridden(tmp_path, tier, model, case):
-    mapping = {"openai": {"model": "gpt-5", "reasoning_effort": "low"}}
+def test_custom_tier_slices_are_not_overridden(tmp_path, cid, model, legacy_effort, effort, case):
+    mapping = {"openai": {"model": "gpt-5", "reasoning_effort": legacy_effort}}
     if case == "model":
         mapping["openai"]["model"] = "custom-openai"
     elif case == "effort":
-        mapping["openai"]["reasoning_effort"] = "high"
+        mapping["openai"]["reasoning_effort"] = "medium"
     elif case == "extra":
         mapping["openai"]["custom"] = True
     elif case == "codex":
         mapping["codex"] = {"model": "custom-codex", "reasoning_effort": "high"}
     else:
         mapping["codex"] = {}
-    path = write_class(tmp_path, f"{tier}-low", mapping)
+    path = write_class(tmp_path, cid, mapping)
     content = path.read_bytes()
+    # An explicit Codex entry (even an empty one) never acquires the bundled
+    # Codex slice, while the untouched historical API slice still upgrades.
     expected = mapping if case not in {"codex", "empty_codex"} else {
-        **mapping, "openai": {"model": model, "reasoning_effort": "low"},
+        **mapping, "openai": {"model": model, "reasoning_effort": effort},
     }
-    assert load_intelligence_classes(str(tmp_path))[f"{tier}-low"].mapping == expected
+    assert load_intelligence_classes(str(tmp_path))[cid].mapping == expected
     assert path.read_bytes() == content
 
 
-@pytest.mark.parametrize(("tier", "model"), TIERS)
-def test_current_tiers_preserve_agent_pins_and_other_provider_behavior(tmp_path, tier, model):
+@pytest.mark.parametrize(("cid", "model", "effort"), CLASSES)
+def test_current_tiers_preserve_agent_pins_and_other_provider_behavior(tmp_path, cid, model, effort):
     ensure_default_intelligence_classes(str(tmp_path))
     classes = load_intelligence_classes(str(tmp_path))
     specs = make_builder(classes)
-    profile = make_profile(f"{tier}-low", pin="operator-pin")
+    profile = make_profile(cid, pin="operator-pin")
     harness = Harness(id="codex", command="codex", model_flag="-m")
     assert specs._resolve_model(profile, harness, None) == "operator-pin"
-    profile = make_profile(f"{tier}-low")
+    profile = make_profile(cid)
     api_harness = SimpleNamespace(id="api", command="api", provider="openai")
-    assert specs._resolve_class_config(profile, api_harness, None) == {"model": model, "reasoning_effort": "low"}
+    assert specs._resolve_class_config(profile, api_harness, None) == {"model": model, "reasoning_effort": effort}
     custom = SimpleNamespace(id="codex", command="codex", provider="local")
-    classes[f"{tier}-low"].mapping["local"] = {"model": "local-model"}
+    classes[cid].mapping["local"] = {"model": "local-model"}
     assert specs._resolve_class_config(profile, custom, None) == {"model": "local-model"}
+
+
+@pytest.mark.parametrize("cid", ["astra-low", "astra-high"])
+def test_astra_has_no_model_for_a_non_codex_harness(tmp_path, cid):
+    """Astra is OpenAI-only: a Claude harness on it resolves nothing, not a stand-in."""
+    ensure_default_intelligence_classes(str(tmp_path))
+    specs = make_builder(load_intelligence_classes(str(tmp_path)))
+    profile = make_profile(cid)
+    claude = SimpleNamespace(id="claude", command="claude", provider="anthropic")
+    assert specs._resolve_class_config(profile, claude, None) == {}

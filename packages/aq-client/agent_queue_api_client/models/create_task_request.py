@@ -24,15 +24,24 @@ class CreateTaskRequest:
         integration_mode (None | str | Unset): Integration-policy override: 'pull_request' pushes the task branch and
             opens a PR (review pipeline owns the merge); 'direct' merges into the default branch on completion. Omit to
             inherit the project/system policy.
-        task_type (None | str | Unset): Categorize the task type for display and filtering (optional)
-        profile_id (None | str | Unset): Agent profile ID to configure the agent with specific tools/capabilities
-            (optional)
-        intelligence_class (None | str | Unset): Execution intelligence class id, e.g. deep-high or standard-medium. Use
-            list_intelligence_classes for current IDs. Set profile_id and this field together at creation to route work
-            atomically.
+        task_type (None | str | Unset): The kind of work, a hint to the router (optional): design is code or system
+            design, art is art-heavy design, operator is scoped project setup
+        intelligence_class (None | str | Unset): Intelligence-class hint for the router, e.g. deep-high or standard-
+            high. Use list_intelligence_classes for current IDs. The task is stored unrouted with this class as its
+            class_hint; the project's routing playbook picks the profile, provider and final class within its policy. A task
+            never names its profile, provider, model or pin: those are refused (routing.choice_forbidden). An unknown class
+            is refused.
         preferred_workspace_id (None | str | Unset): Workspace ID to prefer when assigning this task to an agent. Use
             this when the task must run in a specific workspace (e.g. one that contains a merge conflict). Get the ID from
             find_merge_conflict_workspaces or list_workspaces.
+        prefer (None | str | Unset): Routing preference for the router to weigh before scoring: a harness id (e.g.
+            'codex') or a worker profile id. Unlike a profile pin this does NOT choose the route — the project's routing
+            playbook still does, and the preference decides only whether it may route elsewhere. Naming a target keeps the
+            task's stored mode; an empty value clears both. An unknown name, a disabled profile and a non-worker profile are
+            refused.
+        prefer_mode (str | Unset): How the router may refuse 'prefer': 'soft' (default) routes to it when it has
+            headroom and routes normally when it does not; 'strict' admits only that harness or profile and holds the task
+            rather than falling back to another one. Default: 'soft'.
         attachments (list[Any] | None | Unset): List of absolute file paths to images or files that the agent should
             have access to when working on this task. These are typically paths to Discord attachment images that were
             downloaded locally. The agent will be told to read these files using the Read tool.
@@ -40,7 +49,9 @@ class CreateTaskRequest:
             Target shapes: file -> a path under the worktree; test -> a test module path, or the command line that runs the
             suites (met by a matching recorded --test); command -> a command line (met by a matching recorded
             --command/--test; '<placeholder>' matches any arguments) or a single identifier found in the repo;
-            flag/registration -> an identifier found in the repo.
+            flag/registration -> an identifier found in the repo; review -> spec, plan, other or any (met by a document
+            review the task submitted with review_submit). Research and design tasks carry an implicit {id: review, kind:
+            review, target: any} item.
         skip_verification (bool | Unset): If true, skip git verification on task completion. Use for
             investigation/research tasks that don't produce code changes requiring git cleanup. Default: False.
         affinity_agent_id (None | str | Unset): Preferred agent ID for context continuity. The scheduler will prefer
@@ -59,6 +70,15 @@ class CreateTaskRequest:
         parent_id (None | str | Unset): Create as a child of this container; the id becomes <parent>.<n>
         root (bool | Unset): For worker-filed work, create at project root instead of defaulting beside the held task.
             Mutually exclusive with parent_id. Default: False.
+        parent_key (None | str | Unset): File under the standing container keyed by this name, creating it if none is
+            open (e.g. 'maintenance'), so automated work does not accumulate in the project root. Mutually exclusive with
+            parent_id and root, and refused for worker sessions, which already file under the task they hold.
+        parent_title (None | str | Unset): Title for the standing container when parent_key has to create one. Defaults
+            to the key, title-cased.
+        container (bool | Unset): Create the task as a container (an epic whose children are filed or reparented under
+            it afterwards). It is flagged in the creation transaction, so no worker ever claims it, and it stays open until
+            its children finish. Refused for worker sessions, which file an epic with its children through create_task_graph
+            and a document-level parent block. Default: False.
         depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).
@@ -66,6 +86,8 @@ class CreateTaskRequest:
             when creating work from inside another task; stored on the parent-child or discovered-from edge back to its
             origin.
         dedup_key (None | str | Unset): Idempotency key for find-or-create semantics (see ensure_task).
+        after_review (None | str | Unset): Attach this task to the named document review's gate until the review is
+            approved.
     """
 
     title: str
@@ -74,9 +96,10 @@ class CreateTaskRequest:
     priority: int | Unset = 100
     integration_mode: None | str | Unset = UNSET
     task_type: None | str | Unset = UNSET
-    profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
+    prefer: None | str | Unset = UNSET
+    prefer_mode: str | Unset = "soft"
     attachments: list[Any] | None | Unset = UNSET
     deliverables: list[Any] | None | Unset = UNSET
     skip_verification: bool | Unset = False
@@ -86,10 +109,14 @@ class CreateTaskRequest:
     requires_kinds: list[Any] | None | Unset = UNSET
     parent_id: None | str | Unset = UNSET
     root: bool | Unset = False
+    parent_key: None | str | Unset = UNSET
+    parent_title: None | str | Unset = UNSET
+    container: bool | Unset = False
     depends_on: list[Any] | None | Unset = UNSET
     discovered_from: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
     dedup_key: None | str | Unset = UNSET
+    after_review: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,12 +148,6 @@ class CreateTaskRequest:
         else:
             task_type = self.task_type
 
-        profile_id: None | str | Unset
-        if isinstance(self.profile_id, Unset):
-            profile_id = UNSET
-        else:
-            profile_id = self.profile_id
-
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
             intelligence_class = UNSET
@@ -138,6 +159,14 @@ class CreateTaskRequest:
             preferred_workspace_id = UNSET
         else:
             preferred_workspace_id = self.preferred_workspace_id
+
+        prefer: None | str | Unset
+        if isinstance(self.prefer, Unset):
+            prefer = UNSET
+        else:
+            prefer = self.prefer
+
+        prefer_mode = self.prefer_mode
 
         attachments: list[Any] | None | Unset
         if isinstance(self.attachments, Unset):
@@ -194,6 +223,20 @@ class CreateTaskRequest:
 
         root = self.root
 
+        parent_key: None | str | Unset
+        if isinstance(self.parent_key, Unset):
+            parent_key = UNSET
+        else:
+            parent_key = self.parent_key
+
+        parent_title: None | str | Unset
+        if isinstance(self.parent_title, Unset):
+            parent_title = UNSET
+        else:
+            parent_title = self.parent_title
+
+        container = self.container
+
         depends_on: list[Any] | None | Unset
         if isinstance(self.depends_on, Unset):
             depends_on = UNSET
@@ -221,6 +264,12 @@ class CreateTaskRequest:
         else:
             dedup_key = self.dedup_key
 
+        after_review: None | str | Unset
+        if isinstance(self.after_review, Unset):
+            after_review = UNSET
+        else:
+            after_review = self.after_review
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -238,12 +287,14 @@ class CreateTaskRequest:
             field_dict["integration_mode"] = integration_mode
         if task_type is not UNSET:
             field_dict["task_type"] = task_type
-        if profile_id is not UNSET:
-            field_dict["profile_id"] = profile_id
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not UNSET:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
+        if prefer is not UNSET:
+            field_dict["prefer"] = prefer
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
         if attachments is not UNSET:
             field_dict["attachments"] = attachments
         if deliverables is not UNSET:
@@ -262,6 +313,12 @@ class CreateTaskRequest:
             field_dict["parent_id"] = parent_id
         if root is not UNSET:
             field_dict["root"] = root
+        if parent_key is not UNSET:
+            field_dict["parent_key"] = parent_key
+        if parent_title is not UNSET:
+            field_dict["parent_title"] = parent_title
+        if container is not UNSET:
+            field_dict["container"] = container
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
         if discovered_from is not UNSET:
@@ -270,6 +327,8 @@ class CreateTaskRequest:
             field_dict["reason"] = reason
         if dedup_key is not UNSET:
             field_dict["dedup_key"] = dedup_key
+        if after_review is not UNSET:
+            field_dict["after_review"] = after_review
 
         return field_dict
 
@@ -316,15 +375,6 @@ class CreateTaskRequest:
 
         task_type = _parse_task_type(d.pop("task_type", UNSET))
 
-        def _parse_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
-
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -342,6 +392,17 @@ class CreateTaskRequest:
             return cast(None | str | Unset, data)
 
         preferred_workspace_id = _parse_preferred_workspace_id(d.pop("preferred_workspace_id", UNSET))
+
+        def _parse_prefer(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer = _parse_prefer(d.pop("prefer", UNSET))
+
+        prefer_mode = d.pop("prefer_mode", UNSET)
 
         def _parse_attachments(data: object) -> list[Any] | None | Unset:
             if data is None:
@@ -434,6 +495,26 @@ class CreateTaskRequest:
 
         root = d.pop("root", UNSET)
 
+        def _parse_parent_key(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_key = _parse_parent_key(d.pop("parent_key", UNSET))
+
+        def _parse_parent_title(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_title = _parse_parent_title(d.pop("parent_title", UNSET))
+
+        container = d.pop("container", UNSET)
+
         def _parse_depends_on(data: object) -> list[Any] | None | Unset:
             if data is None:
                 return data
@@ -478,6 +559,15 @@ class CreateTaskRequest:
 
         dedup_key = _parse_dedup_key(d.pop("dedup_key", UNSET))
 
+        def _parse_after_review(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        after_review = _parse_after_review(d.pop("after_review", UNSET))
+
         create_task_request = cls(
             title=title,
             project_id=project_id,
@@ -485,9 +575,10 @@ class CreateTaskRequest:
             priority=priority,
             integration_mode=integration_mode,
             task_type=task_type,
-            profile_id=profile_id,
             intelligence_class=intelligence_class,
             preferred_workspace_id=preferred_workspace_id,
+            prefer=prefer,
+            prefer_mode=prefer_mode,
             attachments=attachments,
             deliverables=deliverables,
             skip_verification=skip_verification,
@@ -497,10 +588,14 @@ class CreateTaskRequest:
             requires_kinds=requires_kinds,
             parent_id=parent_id,
             root=root,
+            parent_key=parent_key,
+            parent_title=parent_title,
+            container=container,
             depends_on=depends_on,
             discovered_from=discovered_from,
             reason=reason,
             dedup_key=dedup_key,
+            after_review=after_review,
         )
 
         create_task_request.additional_properties = d
