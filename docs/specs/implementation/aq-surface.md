@@ -11,6 +11,8 @@ tags: [implementation, cli, mcp, api, auth, prime, surface]
 > Start at [the documentation home](../../README.md) for what AQ does today, and
 > see [historical material](../../history/README.md) for how this material is
 > organised.
+> Current command dispatch, discovery and authorization:
+> [daemon-core](../systems/daemon-core.md#24-the-command-handler).
 
 **Status:** Draft — approved direction (2026-08-19)
 **Related:** [../design/aq-surface](../design/aq-surface.md) (design), [../design/session-runtime](../design/session-runtime.md), [../design/work-graph](../design/work-graph.md), [../design/supervisor-agent](../design/supervisor-agent.md), [../design/feature-pauses](../design/feature-pauses.md), [../design/trust-and-ops](../design/trust-and-ops.md), [../../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md)
