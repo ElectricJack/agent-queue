@@ -217,6 +217,14 @@ The reconciler builds the **desired set** of named sessions each tick from profi
 `lifecycle: named` (per project where project-scoped) and converges: missing+wanted →
 start (or wake), present+unwanted → drain, config drift → recycle via handoff.
 
+Wait maintenance, including the startup legacy bridge and scheduler wait audit, runs
+in one background task. A cycle waits at most five seconds when starting that task;
+later cycles continue without queueing another pass while it runs. Dead-process
+classification, workspace release and pool starts must continue during a slow pass.
+Shutdown cancels and awaits the background task; durable bridge receipts permit
+restart recovery. Held or refused project bridge passes retry after five minutes,
+while completed project receipts suppress repeat migration.
+
 **The state machine is enforced** (2026-08-27). `update_session` validates every write to
 `state` against the transition table in `session_queries.py` and raises
 `InvalidSessionTransition` on an illegal edge; re-writing the state a row already has is a

@@ -5,21 +5,86 @@ plus the `object` and `variation` formulas. It does not establish operational
 readiness for autonomous generation. The approved proposal is Matter review
 `rev-amber-zenith`, revision 2; artifact approval and activation are separate.
 
-The current source, canonical artifact, contract/grant manifest and diagnostics
-are in `src/prompts/reviewed_playbooks/object-loop/`, mirrored in
-`tests/fixtures/playbooks/v2/object-loop/`. Read `artifact.sha256` for the hash to
-review; at the 2026-10-22 audit it is
-`sha256:f83489a7c46bfa11eaaaa3bc98e642f25452a302909de97a680378118d966f1c`.
+The recorded artifact is
+`sha256:ecedcd7f954c072a56cbb90396e79842284ad844dc0586ee79b3d886882af573`.
+Its source, canonical artifact, contract/grant manifest, compiler diagnostics
+and live/dry traces are in `src/prompts/reviewed_playbooks/object-loop/`.
+The byte-identical test recording is in `tests/fixtures/playbooks/v2/object-loop/`.
+`traces.json` records real AQ commands against disposable PostgreSQL, followed
+by write-free preview replay with identical command arguments and results.
+The prior budget trace is retained separately as historical evidence in
+`tests/fixtures/object-loop-refactor/past-budget-trace.json`. Neither recording
+constitutes artifact approval or activation.
 
-The retained `traces.json` records the older artifact
-`sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0`.
-Those traces are historical evidence, not acceptance of the current bytes. They
-record real AQ commands against disposable PostgreSQL, followed by write-free
-preview replay with identical command arguments and results.
 Capture measurements are synthetic fixtures, not renderer or visual-quality
 evidence. The tests cover improvement, ties, invalid captures, scorer exhaustion,
 provider pause/deadline, review rejection/withdrawal/revision, budget/round/plateau
 stops, multiple objects and restart recovery.
+
+## Collection-filter refactor
+
+The replacement has 95 nodes instead of 105, with the same five event rules
+and five command grants. It requires `collections_v1`. No live source or
+activation is updated by installing this checkout; existing vault content is
+write-if-absent and activation remains a separate exact-hash decision.
+
+| Old node(s), in each rule | Replacement or retained feature | Reason |
+|---|---|---|
+| `read` | Typed `object_loop_inputs`, unchanged | Bounded durable observations, including lost-event recovery. |
+| `starts`, `start-check` | `filter` then bounded `foreach` | Approved proposal and exact policy identity are eligibility predicates, not separate action nodes. |
+| `start`, `start-reconcile` | Typed commands, unchanged | Atomic admission and finalizer hold must precede bootstrap release. |
+| `loops`, `policy` | `filter` then bounded `foreach` | Ignore foreign policy identities without extra decision nodes; preserve input order. |
+| `choose` | Ordered V2 decision cases, unchanged | Preserve stopped/deadline/failure/checkpoint/score precedence. |
+| `reconcile`, `deadline`, `scorer-stop` | Typed commands, unchanged | Preserve settlement, reservation charging and defect stops. |
+| `checkpoint`, `checkpoint-choice`, `checkpoint-stop`, `adopt`, `adopt-stop` | Exact review read and bounded continuation fallback, unchanged | An event or human-wait answer cannot substitute for current revision/hash/candidate approval. |
+| `score`, `score-refused`, `score-stop` | Typed score and one stop fallback, unchanged | Preserve evidence validation, tie retention, costs and all round limits. |
+| `done`, `failed` | V2 terminals and existing command retry policy | Fail visibly; retry only runtime errors within the existing bound. |
+
+The source groups executable clauses into one ordered table and names exact
+paths and comparisons for the stronger collection-feature authoring checks.
+The $100 cap remains a whole-attempt approved start input, including scoring,
+retries and finalization; the refactor neither resets it each round nor
+rewrites other approved budgets. The three-round pilot is still an explicit
+`max_rounds: 3` input.
+
+The other newer building blocks were considered deliberately:
+
+* Scripts run ordinary bounded host jobs with private outputs and durable job
+  waits. This sweep has no shell or image-computation step to replace; moving
+  atomic object commands into a script would add a second execution path.
+  Rendering stays in the existing finite `matter_render` jobs.
+* Private values protect generated-command/script outputs when those features
+  are used. This policy uses existing typed command results and retained
+  image URIs; it introduces no generated-command result or plaintext log path.
+* Durable waits suspend one run. Replacing the five wake hints and timer with
+  waits would alter concurrent-object progress and recovery cadence. Existing
+  task settlement and exact checkpoint reads remain authoritative. The optional
+  stuck-task watch stays a separate system policy; its observation producer is
+  system-scoped and cannot be copied into this project sweep.
+* Human-wait routing does not replace supervisor critique/checkpoint reviews.
+  Internal reviews remain supervisor-only; Jack still receives one plain-English
+  brief and one final result with paired Before/After images. Only a required
+  human action is escalated.
+* `fast-smooth-train` demonstrates compact source-authored policy, but its
+  `integration-policy` tables accept Git integration primitives. Object scoring
+  is not one of those primitives. The existing V2 decision step is the supported
+  bounded table here; no new runtime or broad compiler extension is necessary.
+
+The authorized baseline is the supervisor-supplied reviewed artifact
+`sha256:e1630040e3ffaebb52ba917826bfdf1755e05d20410e2690d5b500bc31fec27a`,
+retained at `tests/fixtures/object-loop-refactor/baseline.artifact.json`.
+The active Matter policy was not compared. The source's raw file digest differs
+from its manifest because AQ hashes normalized Markdown; `source_digest` matches
+the manifest. Fresh compilation changes timestamps and source-reference paths,
+so the supplied artifact remains the behavioral baseline.
+
+Each live fixture round is replayed without command writes through both the new
+artifact and that baseline, comparing every command argument, result and order.
+Only the policy's own hash is remapped for baseline replay. The retained past
+budget trace is also checked for its command/outcome sequence. It is synthetic
+capture evidence and contains no original argument/result payloads: this is
+historical trace comparison plus exact replay of reconstructed fixture rounds,
+not a replay of a paid Matter render or a claim about visual improvement.
 
 ## From a finished render to a startable loop
 
@@ -244,3 +309,13 @@ attempt/reason, including across timer retries and daemon restarts. Playbook
 failure receipts and failed terminal run records retain the command's reason.
 `stall.sweep` reports `object_bootstrap_stalled` when that root has failed starts,
 no registered loop, and its bootstrap gate remains open for more than 15 minutes.
+
+## Retained authoring-port recording
+
+The independently recorded 105-node authoring port from PR #1851 remains in
+`tests/fixtures/playbooks/object-loop-port/ported.artifact.json`, with its exact
+source and manifest. Its graph/authority and command-boundary scenarios remain
+pinned to those bytes. The current 95-node collection-filter recording retains
+the same typed commands, finite foreach bounds and legacy authority. Its own
+refactor traces cover the changed traversal. Both recordings remain inactive
+until the separate exact-hash review and activation decisions described above.

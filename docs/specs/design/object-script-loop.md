@@ -321,6 +321,23 @@ the entire JSON document (never prose extraction), verifies scope/identity,
 and leaves measurement validation and version fencing to `object_score_record`.
 Workers receive no loop-mutator or sibling-task authority.
 
+The reviewed sweep uses the V2 `collections_v1` feature: a lexical `filter`
+selects approved starts bound to the running artifact and another selects
+registered loops bound to it, before each bounded `foreach`. The producer's
+32-object ceiling applies before selection. Filters preserve order; the
+typed input bridge supplies every eligibility field. All five event rules
+remain independent closed graphs with the same recovery timer. Selection
+does not migrate another policy's objects or grant approval. The ordered
+decision table remains stopped, deadline, failed scorer, checkpoint, score,
+then reconciliation; command calls and continuation fallbacks are unchanged.
+
+The $100 operating budget is the approved start packet's whole-attempt
+`limits.usd`, not a new per-round budget or a hard-coded replacement for
+other approved budgets. Forward that packet and its round ceiling unchanged;
+the existing reservation commands enforce them. Script execution, additional
+human waits, and integration-only policy primitives are not substitutes for
+the object's atomic validation and settlement commands.
+
 The artifact chooses continuation, checkpoint, defect and deadline stops.
 Rejected continuation is retried once as a score-bearing stop, preserving a
 valid winner when a cap binds. No repeated provider calls occur in the policy;

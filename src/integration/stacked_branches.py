@@ -777,7 +777,13 @@ class StackedBranches:
         ids = view.required(task_id)
         if not ids and parent_base is None:
             return None
-        if not await view.fresh():
+        if any(not row["authorized"] for row in view.rows):
+            raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
+        currentness = await view.currentness()
+        if currentness.state == "unavailable":
+            # Unknown delivery cannot veto a worker: no overlay; the agent merges via Git.
+            return None
+        if not currentness.current:
             raise StackPreparationChanged("prerequisite stack changed during preparation")
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
@@ -789,8 +795,6 @@ class StackedBranches:
                     tasks.c.id == task.parent_task_id,
                 )
             )
-        if any(not row["authorized"] for row in view.rows):
-            raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
         if set(proofs) != ids:
             # Delivered sources may have had their task refs cleaned up. The
             # established parent proof remains a valid preparation route.

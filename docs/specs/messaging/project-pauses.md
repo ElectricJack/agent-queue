@@ -1,5 +1,8 @@
 # Project pause and human notifications
 
+This is a current delivery contract. See the [messaging-and-human-asks system
+spec](../systems/messaging-and-human-asks.md) for ask ownership and transport modes.
+
 Project status `PAUSED` holds external human requests as well as new task
 assignments. Escalations and review revisions may still be recorded by an
 already running worker, but their durable outboxes must remain silent until
@@ -23,6 +26,8 @@ the project resumes. Human gates use the same escalation delivery boundary.
   project, including workers holding durable waits. Workers stop at the next
   safe point, preserve their progress and claim, and wait for resume before
   submitting reviews or human asks. Resume sends a corresponding notice.
+  Routine notices to a worker in a verified wait remain subject to its held-mail
+  fence; writing a pause notice does not itself wake or satisfy that wait.
   Prime documents repeat the pause instruction, including with local overrides.
 - Pausing also stops the project's supervisor agent. The session lens refuses
   to cold-start or wake it, and reconciliation drains the running one after its

@@ -1468,8 +1468,9 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
 
     # S17 covers the phased development graph; S18 runs the command-only
     # durable failure-triage path; and S19 exercises planner-scoped graph
-    # filing under the fake provider; S20 proves ordinary train delivery.
-    assert set(by_key) == {f"S{number}" for number in range(1, 21)}
+    # filing under the fake provider; S20 proves ordinary train delivery;
+    # S21 proves held ingestion, assigned fidelity review and release replay.
+    assert set(by_key) == {f"S{number}" for number in range(1, 22)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
@@ -1482,6 +1483,7 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
     assert by_key["S20"].families == ("integration/train/provenance",)
+    assert by_key["S21"].families == ("ingestion/recovery/fidelity",)
 
 
 def test_ci_scenario_groups_cover_every_scenario_once():

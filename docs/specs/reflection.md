@@ -16,9 +16,10 @@ tags: [spec, reflection, self-improvement]
 > class described below were **deleted** in the llm-direct-path cutover
 > (2026-08-30), along with the `Supervisor` whose action-reflect cycle it
 > managed. There is no per-interaction self-verification pass anymore.
-> No automatic reflection playbook ships today: `coding-reflection` and
-> `task-outcome` were retired. [design/self-improvement](design/self-improvement.md)
-> preserves the earlier proposal, not a running reflection service. See
+> No periodic reflection playbook is shipped to replace it. The loop in
+> [design/self-improvement](design/self-improvement.md) is historical intent.
+> Current optional generation produces unverified knowledge proposals; see
+> [knowledge records](../guides/knowledge-records.md). See
 > `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` and
 > `docs/specs/design/supervisor-agent.md` for the cutover. The depth/prompt
 > tables below are kept as historical reference for the deleted
@@ -26,9 +27,8 @@ tags: [spec, reflection, self-improvement]
 
 The ReflectionEngine managed the [Supervisor](supervisor.md) (deleted)'s action-reflect cycle — a per-interaction self-verification pass that checked whether the Supervisor actually accomplished what it intended.
 
-The periodic reflection proposal in [design/self-improvement](design/self-improvement.md)
-is also historical. Inspect installed activations before assuming an operator has
-provided a replacement policy.
+The periodic reflection design in [self-improvement](design/self-improvement.md)
+is also historical; it is not an active task-close or scheduled reflection pass.
 
 ## Class: ReflectionEngine (src/reflection.py) — deleted, historical reference
 

@@ -1195,44 +1195,8 @@ async def _validation_findings(ctx: DoctorContext | None = None) -> list[dict]:
 
 
 async def _stranded_child_findings(ctx: DoctorContext, now: float) -> list[dict]:
-    """Completed children whose container cannot deliver their pushed branch.
-
-    Both existing pull-request lines require a pull request to already be on the
-    row, so neither sees a completed task with ``pr_url`` NULL -- which is
-    exactly how bright-rapids-84.1/.2/.3/.4/.7/.9 stranded.  This line reports
-    the missing one and names which part of the container's path is gone.
-
-    Quiet under ``git_first: active``: the train collects every child into its
-    parent branch without a parent Subject, so "no collector" would be false;
-    ``aq integration status`` names a train lane's blockers instead.
-    """
-    integration = getattr(ctx.config, "integration", None)
-    if getattr(integration, "git_first", "shadow") == "active":
-        return []
-    from src.integration.stranded_children import (
-        STRANDED_CHILD_AFTER_SECONDS,
-        stranded_child_statement,
-    )
-
-    async with ctx.db._engine.connect() as conn:
-        rows = await _mapping_rows(conn, stranded_child_statement(
-            completed_before=now - STRANDED_CHILD_AFTER_SECONDS,
-        ))
-    return [
-        _finding(
-            "stranded_child",
-            row["project_id"],
-            f"{row['task_id']} completed {int((now - row['updated_at']) / 60)}m ago "
-            f"on branch {row['branch']} with "
-            f"no pull request and no delivery, and its container {row['parent_task_id']} "
-            f"is {row['parent_status']} "
-            f"(checkpoint {_row(row, 'parent_state')}, operation "
-            f"{_row(row, 'operation_state')}, Subject {_row(row, 'subject_phase')}); "
-            "no collector will carry it",
-            **{key: value for key, value in row.items() if key != "project_id"},
-        )
-        for row in rows
-    ]
+    """The train collects children without Subjects; its status names blockers."""
+    return []
 
 
 def _row(row, key: str) -> str:

@@ -213,6 +213,24 @@ class HibernationTransaction:
             ))).mappings().first()
         if parked:
             return await self.cleanup(dict(parked))
+        # Checkpoint collection reads Git, transcripts and other DB connections.
+        # Gather it before the graph transaction; degrade_checkpoint repeats the
+        # generation/claim/summary fences before accepting these observations.
+        async with self.db._engine.connect() as conn:
+            pending = (await conn.execute(select(continuations).where(
+                continuations.c.wait_id == wait_id,
+                continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
+            ))).mappings().first()
+            checkpoint_session = await conn.scalar(select(wait_records.c.session_id).where(
+                wait_records.c.id == wait_id,
+            ))
+        checkpoint_facts = None
+        if (pending and pending["summary"] is None and not pending["summary_degraded"]
+                and now >= pending["created_at"] + policy.transition_budget_seconds):
+            current_task = await self.db.get_task(pending["task_id"])
+            current_session = await self.db.get_session(checkpoint_session)
+            if current_task is not None and current_session is not None:
+                checkpoint_facts = await collect_checkpoint_facts(self.db, current_task, current_session)
         async with self.db._engine.begin() as conn:
             task, wait, intent = await locked_suspension(conn, wait_id)
             if intent["stopped_at"] is not None:
@@ -233,13 +251,17 @@ class HibernationTransaction:
             if intent["summary"] is None and not intent["summary_degraded"]:
                 if now < intent["created_at"] + policy.transition_budget_seconds:
                     return {"success": True, "next_step": "checkpoint_then_end_turn"}
-                current_task = await self.db.get_task(task["id"])
-                current_session = await self.db.get_session(session["id"])
-                facts = await collect_checkpoint_facts(self.db, current_task, current_session)
+                if (checkpoint_facts is None or pending["id"] != intent["id"]
+                        or pending["suspension_generation"] != intent["suspension_generation"]
+                        or checkpoint_session != session["id"]
+                        or current_session.instance_token != session["instance_token"]
+                        or current_task.claim_epoch != task["claim_epoch"]
+                        or current_task.branch_name != task["branch_name"]):
+                    raise WaitError("continuation.stale_generation", "checkpoint observation changed")
                 await degrade_checkpoint(
                     conn, task_id=task["id"], wait_id=wait_id, continuation_id=intent["id"],
                     generation=intent["suspension_generation"], now=now,
-                    transition_budget_seconds=policy.transition_budget_seconds, facts=facts,
+                    transition_budget_seconds=policy.transition_budget_seconds, facts=checkpoint_facts,
                 )
                 intent = dict((await conn.execute(
                     select(continuations).where(c.id == intent["id"]))).mappings().one())

@@ -20,19 +20,19 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
 |---|---|---|
 | Orchestrator cycle, workspaces, pools | `orchestrator.py`, `src/orchestrator/` | `docs/specs/design/agent-coordination.md`, `docs/guides/worker-pools.md` |
 | Commands (the single entry point) | `src/commands/` (handler + mixins, `contracts/builtin.py`) | `docs/specs/design/aq-surface.md` |
-| Task graph: hierarchy, phases, subtasks, formulas | `src/database/queries/hierarchy_queries.py`, `src/task_graph/`, `src/commands/phase_commands.py`, `task_subtask_commands.py` | `docs/specs/design/work-graph.md` |
+| Task graph: hierarchy, phases, subtasks, formulas | `src/database/queries/hierarchy_queries.py`, `src/task_graph/`, `src/commands/phase_commands.py`, `task_subtask_commands.py` | [current task-graph system map](docs/specs/systems/task-graph.md), `docs/specs/design/work-graph.md` |
 | Claims and the frontier | `src/database/queries/claim_queries.py`, `src/orchestrator/pools.py`, `src/claim_file.py` | `docs/guides/worker-pools.md`, `docs/guides/e2e-swarm.md` |
 | Playbooks (V2 only) | `src/playbooks/`; shipped markdown and reviewed bundles in `src/prompts/` | `docs/concepts/playbooks.md`, `docs/guides/playbook-building-blocks.md` |
 | Profiles, intelligence classes, MCP registry | `src/profiles/`, `src/intelligence_classes/`, `src/prompts/default_intelligence_classes/` | `docs/specs/design/profiles.md`, `docs/guides/worker-pools.md` §7b |
 | Sessions and harnesses | `src/sessions/` (`default_harnesses/`) | `docs/specs/design/session-runtime.md`, `docs/reference/harnesses.md` |
 | Integration, delivery, branch cleanup | `src/integration/`, `src/commands/ci_commands.py` | `docs/guides/hierarchical-integration-trains.md` |
 | Provider availability and failover | `src/providers/` | `docs/specs/provider-failover.md` |
-| Escalations, digest, Discord, messages | `src/escalations/`, `src/digest/`, `src/discord/`, `src/messages/` | `docs/guides/escalations.md` |
+| Messages, human asks, Discord, reports | `src/messages/`, `src/asks/`, `src/conversations/`, `src/delivery/`, `src/escalations/`, `src/digest/`, `src/reports/`, `src/discord/` | `docs/specs/systems/messaging-and-human-asks.md`, `docs/guides/escalations.md` |
 | Resource gating, fleet metrics | `src/resources/`, `src/metrics/` | `docs/guides/resource-gating.md`, `docs/specs/design/fleet-metrics.md` |
 | Graph layout | `src/task_graph/layout/`, `src/api/graph_layout.py`, `dashboard/src/pages/command-center/layout-v2/` | `docs/superpowers/specs/2026-09-01-task-graph-spatial-layout-design.md` |
 | API, generated clients, dashboard server | `src/api/` (`spec.py`), `packages/`, `src/dashboard_server/` | `docs/contributing/codegen.md`, `docs/specs/dashboard-server.md` |
 | Config, secrets, tuning | `src/config.py`, `config_editor.py`, `config_secrets.py`, `config_tuning.py` | `docs/specs/config.md`, `docs/guides/default-tuning.md` |
-| Plugins (internal: files, git, inbox, notes, vibecop; external `aq-memory`) | `src/plugins/` | `docs/specs/plugin-system.md`, `docs/specs/design/memory-plugin.md` |
+| Plugins (internal: files, git, inbox, notes, vibecop; legacy `aq-memory` loads fenced) | `src/plugins/` | `docs/specs/plugin-system.md`, `docs/specs/design/memory-plugin.md` |
 
 ## Invariants and gotchas
 
@@ -75,7 +75,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   playbook-commands index, playbook schema, `openapi.json`, `packages/aq-client/`) all
   come from `scripts/regenerate-generated.sh`. On a merge or rebase conflict in one, take
   either side, resolve the sources, run it and commit what it writes; `--check` is the
-  drift check. The development publisher does the same at merge time
+  drift check. The integration train does the same at merge time
   ([docs/contributing/codegen.md](docs/contributing/codegen.md#one-command-and-never-a-hand-merge)).
 - **Async first.** Use `GitManager`'s `a`-prefixed API; never `subprocess.run()` in
   production code.

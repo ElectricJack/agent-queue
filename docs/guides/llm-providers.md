@@ -16,8 +16,9 @@ first:
 | You want… | You need |
 |---|---|
 | Agents to write code | A coding-agent CLI installed and logged in: `claude`, `codex` or `gemini`. AQ does not hold these credentials — the CLI does. |
-| Playbooks with `llm` steps, plugin `invoke_llm`, vault summaries | An `llm:` block with a credential the daemon itself can use. |
-| Quota cards on the dashboard | Nothing for Codex. For Claude, the `provider-usage-probe` playbook activated. |
+| API-transport playbook `llm` steps, plugin `invoke_llm`, vault summaries | An `llm:` block with a credential the daemon itself can use. |
+| Tool-free playbook `llm` steps using a subscription | `transport: cli` and a profile naming a logged-in harness and intelligence class. |
+| Quota cards on the dashboard | Nothing for Codex. Claude uses the required `provider-usage-probe` system activation; config can disable the probe. |
 | Costs in dollars | A `pricing:` table. It ships empty. |
 
 All configuration below lives in `~/.agent-queue/config.yaml`. `providers:` and
@@ -48,7 +49,7 @@ Which CLI a given agent uses is the profile's `harness` field, covered in
 ## Give the daemon a provider
 
 This is the `llm:` block, and it applies only to the direct LLM path: playbook
-`llm` steps, plugin `invoke_llm`, reference-stub enrichment and
+`llm` steps with `transport: api` (the default), plugin `invoke_llm`, reference-stub enrichment and
 `aq vault rebuild-index --with-summaries`. It has no effect on coding-agent
 sessions.
 
@@ -145,6 +146,47 @@ need not carry any of them ([`pyproject.toml`](../../pyproject.toml)):
 pip install -e ".[anthropic]"     # or [google], [openai], or [llm] for all three
 ```
 
+## Use a subscription login for a playbook step
+
+Set `transport: cli` on a tool-free `llm` step. Its `profile_id` must resolve
+under the invoking principal's authority and name both a supported harness
+(`claude`, `codex`, `gemini`) and `default_class`. The class must contain a
+model for that harness; Codex first tries the `codex` slice, then `openai`.
+See the [playbook design reference](../specs/design/playbooks.md) for the surrounding
+step schema.
+
+The executor calls the CLI once per attempt in an empty temporary directory,
+with tools disabled, and validates its final JSON against `output_schema`.
+It creates no AQ task or tmux session. It enforces the declared call, token
+and timeout budgets and returns typed outcomes such as `invalid_output`,
+`provider_error`, `timed_out` and `budget_exceeded`. Unreported usage fails the
+total-token check after the call. API credentials, the `llm` availability gate
+and `llm.fallback` do not apply to this transport. These calls do not write
+`llm.jsonl` or the transcript token ledger.
+
+## Configure a second API credential
+
+An optional `llm.fallback` serves direct API calls while the reserved `llm`
+provider is unavailable. It is not a retry of every failed request: the
+availability gate must already be blocking the primary credential.
+
+```yaml
+llm:
+  provider: anthropic
+  fallback:
+    provider: openai
+    api_key: ${OPENAI_API_KEY}
+    default_class: standard-high
+```
+
+The fallback has its own `provider`, `model`, `api_key`, `base_url` and
+`default_class`; only the output ceiling is shared with the primary. A class
+with no slice on the fallback provider, or an explicit model tied to another
+vendor, refuses with `provider_unavailable` rather than choosing a different
+tier. A fallback identical to the primary provider/key/endpoint is rejected
+by config validation. Once the primary recovers, new API calls use it again.
+Changes to either credential block require an operator restart.
+
 ## Choose which model each tier means
 
 You rarely name a model directly. Callers name an **intelligence class**, and
@@ -236,9 +278,12 @@ curl -s http://localhost:8081/api/providers/usage
 ```
 
 The doctor check is report-only on purpose. There is no `--fix`: a stalled
-timer needs a playbook activated and a moved CLI wording needs a human editing
-a regex, and a `--fix` that "helpfully" ran one probe would paper over exactly
-the stalled timer the check exists to surface.
+timer needs its required activation repaired, and moved CLI wording
+needs a human editing a regex. Running one probe would hide a stalled timer.
+Inspect `aq playbook activation-health --playbook-id provider-usage-probe`;
+the activation should be `ready` and enabled. Startup reconciles the reviewed
+bundle. Also check `aq doctor --check providers.usage_activity_gap` when a
+quota feed trails active sessions by more than 30 minutes.
 
 ## Give the cost rollup some prices
 
@@ -332,7 +377,7 @@ sweep, along with the analytics flush.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Playbook `llm` steps return `unavailable` | No credential resolved for `llm.provider`, or the vendor SDK is not installed | Run the [resolution check](#check-that-it-resolved); install the SDK extra; restart after editing `llm:` |
-| Steps return `budget_exceeded` with no tokens spent | The step sets `max_total_tokens` and the adapter does not report usage | Use a reporting provider, or drop `max_total_tokens` |
+| API steps return `budget_exceeded` with no tokens spent | The adapter does not report usage | Use a reporting provider; `max_total_tokens` is required |
 | A class edit did nothing | The file failed to parse, so the previous entry is still in memory | `aq doctor --check intelligence_classes.parse`, then `aq system reload-config` |
 | Requests go to the wrong vendor | Anthropic's fixed credential order matched something in the environment (Vertex, then Bedrock, then key, then OAuth) | Unset the stray variable, or set the one you want higher in the order |
 | The Claude quota card never appears | The CLI is missing, the account is API-key billed, or the probe was disabled | `aq doctor --check providers.claude_usage` names which |

@@ -111,6 +111,17 @@ registration cannot reset the age. Human waits have no automatic deadline and
 require hibernation support. The supervisor resolves one with verified human
 evidence or an explicit `aq wait lift --response ...`; a worker cannot lift it.
 
+Operational wait and continuation incidents remain internal during Discord
+reconciliation and delivery retries. Only a committed `escalate_to_human` decision
+authorizes a wait incident's human delivery. Unread supervisor notices follow the
+message delivery engine's existing global-supervisor fallback.
+
+The wait service periodically refreshes pending CI subscriptions independently of
+train visits, including after activation is disabled for new waits. GitHub quota
+failures retain the subscription and retry after the provider's backoff; they are
+not source-unavailable outcomes. Remote verification is bounded so a stalled
+GitHub request cannot indefinitely retain the wait graph fence.
+
 Managed job admission remains opt-in (`resources.jobs.enabled`). Job results and
 logs remain under the job owner; inspect `aq job result JOB_ID --json`. Matter
 capture and editor pinning are documented in the [object-loop guide](object-loop.md).
