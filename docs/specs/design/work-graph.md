@@ -430,6 +430,14 @@ An open gate blocks its waiters **exactly like a blocking dependency**: the `is_
 
 A new deterministic step `_sweep_gates()` runs each cycle between approvals and DEFINED-promotion so a freshly resolved gate unblocks dependents in the same tick. It: resolves satisfied `timer`/`task` gates (pure SQL + clock); polls `pr-merged`/`ci-run` gates on the approvals mixin's existing throttle (60 s) reusing its `gh` logic; re-checks `event` gates against events persisted since the gate's creation; marks gates past `timeout_at` as `expired`. Zero LLM calls; each resolution logs `gate.resolved` with `resolved_by="sweep"`.
 
+The live event-gate listener caches open gates' event-type interest for at most
+five seconds. Event-gate creation, resolution and expiry notifications invalidate
+that cache immediately. Unmatched event types skip gate queries while it is fresh;
+matching events always reread open gates before resolution. Query failures do not
+establish empty interest, and mutations during a read prevent that read from
+publishing a stale cache. Expiry and the persisted-event sweep recover missed
+mutation notifications; direct database writes do not promise immediate live delivery.
+
 ### 5.4 Expiry
 
 `expired` **continues to block** (fail-safe: a timed-out approval must not silently self-approve) but fires `gate.expired` for escalation (Discord ping, `needs_attention`). A human clears it with `gate resolve --resolution timeout-override` or by resolving normally.

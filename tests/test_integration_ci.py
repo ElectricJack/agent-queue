@@ -368,6 +368,82 @@ async def test_candidate_push_failure_cannot_be_overridden_by_newer_pr_success()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pr_conclusion", [None, "success", "failure", "pending"])
+async def test_root_pr_push_fallback_is_per_name_and_preserves_existing_pr_check(pr_conclusion):
+    done = {"head_sha": SHA, "status": "completed", "conclusion": "success"}
+    repo = {"id": 303, "full_name": "acme/widgets"}
+    push = {"id": 11, "name": "unit", "app": {"id": 404},
+            "check_suite": {"id": 21}, **done}
+    postgres = {**push, "id": 12, "name": "postgres", "check_suite": {"id": 22}}
+    workflows = [
+        {"id": 31, "workflow_id": 301, "run_attempt": 1, "check_suite_id": 21,
+         "event": "push", "repository": repo, "head_repository": repo, **done},
+        {"id": 32, "workflow_id": 302, "run_attempt": 1, "check_suite_id": 22,
+         "event": "pull_request", "repository": repo, "head_repository": repo, **done},
+    ]
+    unit = [push]
+    if pr_conclusion is not None:
+        # Even an older PR check takes precedence over a newer successful push.
+        unit.append({**push, "id": 10, "check_suite": {"id": 22},
+                     "status": "in_progress" if pr_conclusion == "pending" else "completed",
+                     "conclusion": None if pr_conclusion == "pending" else pr_conclusion})
+    observer = AuthenticatedGitHubObserver(
+        FakeGitHubClient({"unit": unit, "postgres": [postgres]}, workflows),
+        expected_event="pull_request", allow_push_fallback=True,
+    )
+    if pr_conclusion == "pending":
+        from src.integration.ci import CIObservationDeferred
+
+        with pytest.raises(CIObservationDeferred) as exc:
+            await observer.observe(trust(), SHA)
+        assert exc.value.classification == "pending"
+    else:
+        observed = await observer.observe(trust(), SHA)
+        if pr_conclusion == "failure":
+            assert isinstance(observed, FailedCIObservation)
+            assert observed.checks[0]["check_run_id"] == 10
+        else:
+            assert isinstance(observed, TrustedCIObservation)
+            checks = observed.payload.checks
+            assert [(c.name, c.check_run_id) for c in checks] == [
+                ("unit", 11 if pr_conclusion is None else 10), ("postgres", 12),
+            ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["check_head", "workflow_head", "app", "event"])
+async def test_root_pr_push_fallback_rejects_foreign_evidence(invalid):
+    done = {"head_sha": SHA, "status": "completed", "conclusion": "success"}
+    check = {"id": 11, "name": "unit", "app": {"id": 404},
+             "check_suite": {"id": 21}, **done}
+    workflow = {"id": 31, "workflow_id": 301, "run_attempt": 1,
+                "check_suite_id": 21, "event": "push", **done}
+    pr = {**workflow, "id": 32, "check_suite_id": 22, "event": "pull_request"}
+    if invalid == "check_head":
+        check["head_sha"] = "b" * 40
+    elif invalid == "workflow_head":
+        workflow["head_sha"] = "b" * 40
+    elif invalid == "app":
+        check["app"] = {"id": 999}
+    else:
+        workflow["event"] = "workflow_dispatch"
+    manifest = trust().model_copy(update={
+        "required_checks": trust().required_checks.model_copy(update={"names": ("unit",)}),
+    })
+    observer = AuthenticatedGitHubObserver(
+        FakeGitHubClient({"unit": [check]}, [workflow, pr]),
+        expected_event="pull_request", allow_push_fallback=True,
+    )
+    if invalid == "check_head":
+        with pytest.raises(AttestationError, match="not conclusive"):
+            await observer.observe(manifest, SHA)
+    else:
+        observed = await observer.observe(manifest, SHA)
+        assert isinstance(observed, FailedCIObservation)
+        assert observed.checks[0]["conclusion"] == "missing"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("producer_id", ["15368", "github-actions"])
 async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt(producer_id):
     # The numeric id is canonical; the legacy slug keeps matching for frozen snapshots.

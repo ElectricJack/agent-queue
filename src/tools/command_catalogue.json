@@ -676,6 +676,11 @@
             "type": "string",
             "description": "Filter by project ID (optional, but required for tree/compact modes)"
           },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum tasks in a flat live listing, after filtering. The total remains uncapped. Use page_size for snapshots."
+          },
           "status": {
             "type": "string",
             "description": "Filter by exact status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc. When provided, show_all, include_completed, and completed_only are ignored."
@@ -5510,7 +5515,7 @@
     },
     {
       "name": "message_inbox",
-      "description": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
+      "description": "List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor aliases and the current named session UUID share an inbox. With inject=true, return only undelivered messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed additionally returns other consumed rows for this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -12807,6 +12812,38 @@
       }
     },
     {
+      "name": "wait_source_redispatch",
+      "description": "Reobserve one durable source event in a supervisor project.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_seq": {
+            "minimum": 1,
+            "title": "Source Seq",
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_seq",
+          "note"
+        ],
+        "title": "WaitSourceRedispatchArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "playbook_script_run",
       "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
       "input_schema": {
@@ -15910,6 +15947,35 @@
           "reason"
         ],
         "title": "IntegrationQuiesceArgs",
+        "type": "object"
+      }
+    },
+    "integration_rebind_batch_authority": {
+      "name": "integration_rebind_batch_authority",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
         "type": "object"
       }
     },
@@ -21424,6 +21490,7 @@
     "wait_ack": "wait",
     "wait_decide": "wait",
     "wait_lift": "wait",
+    "wait_source_redispatch": "wait",
     "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",

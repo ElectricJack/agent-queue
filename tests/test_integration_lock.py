@@ -485,22 +485,53 @@ async def test_body_timeout_inside_exclusion_is_not_relabelled(env):
 
 
 @pytest.mark.parametrize("connection_owned", [False, True])
-async def test_repair_exclusion_budget_is_bounded_by_lease(env, connection_owned):
-    from src.integration.lock import BranchLockTimeout
+@pytest.mark.parametrize("preparation", ["repair", "slot"])
+async def test_preparation_exclusion_budget_is_bounded_by_lease(env, connection_owned, preparation):
+    from src.config import WorktreesConfig
+    from src.integration.lock import BranchLockTimeout, slot_preparation_timeout_seconds
 
     fence = await env.lock.acquire(TARGET, "repair", ttl_seconds=0.05, role="repair")
     ownership = BranchOwnership(env.db, clock=lambda: env.now)
+    budget = 1 if preparation == "repair" else slot_preparation_timeout_seconds(WorktreesConfig(), "p")
+    repository_lock = asyncio.Lock()
+    await repository_lock.acquire()
+    mutations = []
+
+    async def reset():
+        async with repository_lock:
+            mutations.append("reset")
+
     with pytest.raises(BranchLockTimeout) as raised:
         if connection_owned:
             async with env.db.immediate() as conn:
                 async with ownership.mutation_exclusion_on(
-                    conn, fence, expected_role="repair", timeout_seconds=1,
+                    conn, fence, expected_role="repair", timeout_seconds=budget,
                 ):
-                    await asyncio.Event().wait()
+                    await reset()
         else:
             async with ownership.mutation_exclusion(
-                fence, expected_role="repair", timeout_seconds=1,
+                fence, expected_role="repair", timeout_seconds=budget,
             ):
-                await asyncio.Event().wait()
+                await reset()
+    repository_lock.release()
+    assert not mutations
     assert raised.value.seconds < 0.1
     assert (await env.lock.get(TARGET)).grant() == fence
+
+
+@pytest.mark.parametrize("stale", ["expired", "superseded"])
+async def test_slot_preparation_rejects_stale_fence_before_reset(env, stale):
+    from src.config import WorktreesConfig
+    from src.integration.lock import slot_preparation_timeout_seconds
+
+    fence = await env.lock.acquire(TARGET, "worker", ttl_seconds=10)
+    env.now += 10
+    if stale == "superseded":
+        await env.lock.acquire(TARGET, "successor")
+    reset = AsyncMock()
+    with pytest.raises(StaleFence):
+        async with env.lock.exclusion(
+            fence, timeout_seconds=slot_preparation_timeout_seconds(WorktreesConfig(), "p"),
+        ):
+            await reset()
+    reset.assert_not_awaited()
