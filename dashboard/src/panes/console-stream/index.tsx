@@ -3,6 +3,7 @@ import type { PaneViewProps } from "../types";
 import { useConsoleStream, type ConsoleLine, type ConsoleStreamStatus } from "./hooks";
 import type { ConsoleStreamArgs } from "./manifest";
 import { ansiToSpans, stripAnsi } from "./ansi";
+import { readDeviceLocal } from "../../deviceLocal";
 
 const ROW_HEIGHT = 20;
 const OVERSCAN = 10;
@@ -23,16 +24,13 @@ function useElapsed(startedAt: number | null, endedAt: number | null): string {
 }
 
 /**
- * The dashboard's own authenticated session identity. Stubbed via
- * localStorage until a shared shell-level identity hook exists — the shell
- * spec's identity plumbing is out of scope for this plan (Deviation #1).
+ * The dashboard's own authenticated session identity. Stubbed via a
+ * device-local key (`../../deviceLocal`; production never writes it) until a
+ * shared shell-level identity hook exists — the shell spec's identity plumbing
+ * is out of scope for this plan (Deviation #1).
  */
 function useOwnSessionId(): string | null {
-  try {
-    return window.localStorage.getItem("aq:session:id");
-  } catch {
-    return null;
-  }
+  return readDeviceLocal("aq:session:id");
 }
 
 export default function ConsoleStreamPane({
@@ -157,6 +155,7 @@ export default function ConsoleStreamPane({
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100 font-mono text-xs">
       <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-1">
         <StatusChip status={stream.status} exitCode={stream.exitCode} elapsed={elapsed} />
+        {stream.truncated && <span className="text-amber-400">Some output was omitted</span>}
       </div>
       <div
         ref={scrollRef}
