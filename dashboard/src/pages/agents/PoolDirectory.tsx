@@ -1,8 +1,9 @@
 import { UsersIcon } from "@heroicons/react/24/outline";
+import { Link, useNavigate } from "react-router-dom";
 import { usePoolSetEnabled } from "../../api/hooks";
 import EnableToggle from "./EnableToggle";
 import { PoolBadge, PoolOutsidePools, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
-import type { PoolEntry } from "./pools";
+import { poolDisplayName, poolSettingsHref, type PoolEntry } from "./pools";
 
 /**
  * Every configured pool, busy or idle, as an openable list.
@@ -12,10 +13,11 @@ import type { PoolEntry } from "./pools";
  * and therefore where an idle pool is switched off (a fable-tier pool low on
  * remaining usage, say) and back on again.
  */
-export default function PoolDirectory({ entries, onOpen }: { entries: PoolEntry[]; onOpen: (key: string) => void }) {
+export default function PoolDirectory({ entries }: { entries: PoolEntry[] }) {
   // One mutation for the list: only one row can be in flight at a time, and
   // ``variables`` says which, so a refusal is reported on the row that caused it.
   const setEnabled = usePoolSetEnabled();
+  const navigate = useNavigate();
   if (entries.length === 0) return null;
   return (
     <section aria-label="Worker pools" className="shrink-0 rounded-xl border border-gray-800">
@@ -28,16 +30,20 @@ export default function PoolDirectory({ entries, onOpen }: { entries: PoolEntry[
           const live = entry.pool.running_idle + entry.pool.running_busy;
           const enabled = entry.pool.enabled !== false;
           const target = setEnabled.variables?.profile_id === entry.profileId;
+          const name = poolDisplayName(entry.pool);
+          const href = poolSettingsHref(entry.profileId);
           return (
-            <li key={entry.key} className="flex items-start gap-2 px-3 py-2 hover:bg-gray-800/60">
-              <button
-                type="button"
-                aria-label={"Open pool " + entry.profileId}
-                onClick={() => onOpen(entry.key)}
+            <li key={entry.key} className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-gray-800/60"
+              onClick={(event) => {
+                if (!(event.target as HTMLElement).closest("a, button, input")) navigate(href);
+              }}>
+              <Link
+                to={href}
+                aria-label={"Open pool " + name}
                 className="flex min-w-0 flex-1 flex-col gap-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
               >
                 <span className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium text-gray-200">{entry.profileId}</span>
+                  <span className="truncate text-sm font-medium text-gray-200" title={entry.profileId}>{name}</span>
                   <span className="flex shrink-0 items-center gap-2">
                     <span className={"text-[10px] " + (entry.pool.running_busy > 0 ? "text-emerald-400" : "text-gray-500")}>
                       {!enabled ? "disabled" : entry.pool.running_busy > 0 ? "busy" : live > 0 ? "idle" : "no workers"}
@@ -54,10 +60,12 @@ export default function PoolDirectory({ entries, onOpen }: { entries: PoolEntry[
                     Disabled — no new work is claimed; workers already on a task finish it.
                   </span>
                 )}
-              </button>
+              </Link>
+              <Link to={href} aria-label={"Settings for " + name}
+                className="rounded px-2 py-1 text-xs text-indigo-300 hover:bg-gray-800">Settings</Link>
               <EnableToggle
                 enabled={enabled}
-                subject={entry.profileId + " pool"}
+                subject={name + " pool"}
                 pending={setEnabled.isPending && target}
                 error={target && setEnabled.error ? setEnabled.error.message : null}
                 onChange={(next) => setEnabled.mutate({ profile_id: entry.profileId, enabled: next })}
