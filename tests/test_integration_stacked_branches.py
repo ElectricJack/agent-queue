@@ -32,6 +32,7 @@ from src.integration.stacked_branches import (
     StackedBranches,
     merge_heads,
     observe_stacks,
+    shared_stack_inputs,
     stacked_policy,
 )
 from src.integration.train import TrainTarget
@@ -50,6 +51,12 @@ async def generation(db, tid):
                 task_integration_checkpoints.c.task_id == tid
             )
         )
+
+
+async def test_child_conflict_without_origin_keeps_plain_feedback(stack, monkeypatch):
+    branches = StackedBranches(stack.db)
+    monkeypatch.setattr(branches, "_origin", AsyncMock(return_value=None))
+    assert await branches.reserve_child_conflict("child", None, "unused") is None
 
 
 async def checkpoint(db, tid, head):
@@ -1197,6 +1204,71 @@ async def test_stack_view_revalidates_incarnation_and_remote(stack):
         assert await view.verified_on(conn) == {}
     git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/first")
     assert await view.fresh()  # the frozen source is independent of its branch tip
+
+
+@pytest.mark.parametrize("interruption", [None, RuntimeError, asyncio.CancelledError])
+async def test_shared_stack_inputs_are_per_project_and_reset_after_exit(monkeypatch, interruption):
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    conn = object()
+    first, second = StackView(None, "p"), StackView(None, "q")
+    first.proofs = second.proofs = {"source": {"task_id": "source"}}
+
+    async def scoped():
+        async with shared_stack_inputs():
+            for _ in range(3):
+                await first.verified_on(conn)
+                await second.verified_on(conn)
+            assert read.await_count == 2
+            if interruption:
+                raise interruption()
+
+    if interruption:
+        with pytest.raises(interruption):
+            await scoped()
+    else:
+        await scoped()
+    for _ in range(2):
+        await first.verified_on(conn)
+    assert read.await_args_list == [((conn, "p"),), ((conn, "q"),),
+                                   ((conn, "p"), {"source_ids": {"source"}}),
+                                   ((conn, "p"), {"source_ids": {"source"}})]
+
+
+async def test_shared_stack_inputs_isolate_overlapping_passes(monkeypatch):
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    entered, finished = asyncio.Event(), asyncio.Event()
+    conn = object()
+    view = StackView(None, "p")
+    view.proofs = {"source": {"task_id": "source"}}
+
+    async def first_pass():
+        async with shared_stack_inputs():
+            await view.verified_on(conn)
+            entered.set()
+            await finished.wait()
+            await view.verified_on(conn)
+
+    async def second_pass():
+        await entered.wait()
+        async with shared_stack_inputs():
+            await view.verified_on(conn)
+            await view.verified_on(conn)
+        finished.set()
+
+    await asyncio.gather(first_pass(), second_pass())
+    assert read.await_count == 2
+
+
+async def test_stack_verification_reads_only_requested_proof_sources(monkeypatch):
+    proof = {"task_id": "source", "retained": True}
+    read = AsyncMock(return_value=({"task_id": "source"},))
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    view = StackView(None, "p", proofs={"source": proof, "other": {"task_id": "other"}})
+    conn = object()
+    assert await view.verified_on(conn, {"source"}) == {"source": proof}
+    read.assert_awaited_once_with(conn, "p", source_ids={"source"})
 
 
 async def test_stack_withholds_prerequisite_when_local_object_validation_fails(stack, monkeypatch):

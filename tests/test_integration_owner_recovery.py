@@ -1607,12 +1607,18 @@ async def _pool_daemon(env, tmp_path, slot):
     """A daemon over *env*'s database whose fake provider runs the ``writer`` session."""
     from src.commands.handler import CommandHandler
     from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.models import AgentProfile
     from src.orchestrator import Orchestrator
     from src.sessions import SessionProviderRegistry
     from src.sessions.fake import FakeProvider
     from src.sessions.provider import SessionSpec
     from tests.db_fixtures import lease_dsn
 
+    # Owner recovery exercises a live pool's drain, not profile deletion.
+    if await env.db.get_profile("worker") is None:
+        await env.db.create_profile(AgentProfile(
+            id="worker", name="Worker", harness="claude", lifecycle="pool",
+        ))
     provider = FakeProvider()
     await provider.start(SessionSpec(
         session_name="n-writer", work_dir=str(slot), command=("claude",),

@@ -205,6 +205,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
         "integration_supersede_completion",
         "integration_record_root_noop",
+        "integration_record_noop",
         "integration_abort_batch",
         "integration_settle_batch",
         "integration_release_withheld_source",
@@ -230,6 +231,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
+        "integration_fast_forward_pr",
         "integration_transfer_owner",
     }
 )
