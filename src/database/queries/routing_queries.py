@@ -1,0 +1,569 @@
+"""Reads and the route writes of the router (mandatory-routing spec §6.4-§7, §10).
+
+``count_routed_backlog_by_profile`` and ``count_busy_sessions_by_profile`` are
+the load half of the planner's snapshot.  ``routing_apply_lock`` and
+``write_router_route`` are ``task_route_apply``'s critical section: the lock
+serialises every apply fleet-wide, so each apply's fresh snapshot sees the
+routes the applies before it committed.  ``write_override_route`` is the
+audited emergency override (§7), and ``latest_router_run_for_task`` is what
+``aq task explain`` reads to say why the router has not routed a task (§10).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import random
+import time
+from collections.abc import AsyncIterator, Collection, Mapping
+from contextlib import asynccontextmanager
+from typing import Any
+
+from sqlalchemy import Text, and_, case, cast, exists, func, literal, or_, select, update
+
+from src.database.tables import (
+    agent_profiles, agents, playbook_v2_runs, sessions, task_metadata,
+    task_session_attempts, tasks,
+)
+from src.models import Task, TaskStatus
+from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROUTER, UNROUTED
+
+#: The statuses the routed backlog counts (§6.4 step 5): work routed to a
+#: profile that is waiting for, or has been handed to, a worker.
+ROUTED_BACKLOG_STATUSES: tuple[str, ...] = (
+    TaskStatus.READY.value,
+    TaskStatus.ASSIGNED.value,
+)
+#: The statuses a router may route (spec I5): queued, not started.
+ROUTABLE_STATUSES: tuple[str, ...] = (
+    TaskStatus.DEFINED.value,
+    TaskStatus.READY.value,
+    TaskStatus.BLOCKED.value,
+)
+#: The statuses an override may route: queued work, and a paused task, which
+#: runs on the override once it is resumed.
+OVERRIDABLE_STATUSES: tuple[str, ...] = (*ROUTABLE_STATUSES, TaskStatus.PAUSED.value)
+#: How many recent router runs whose snapshot mentions a task are decoded
+#: before ``latest_router_run_for_task`` gives up.
+_ROUTER_RUN_SCAN_LIMIT = 50
+_LIVE_SESSION_STATES = ("starting", "running", "draining")
+#: ``pg_try_advisory_xact_lock(namespace, key)`` for the fleet-wide routing
+#: key: one number per lock family in this codebase ("ROUT").
+ROUTING_LOCK_NAMESPACE = 0x524F5554
+ROUTING_LOCK_KEY = 1
+#: How long an apply waits for the routing lock before giving up.
+ROUTING_LOCK_BUDGET_SECONDS = 30.0
+
+# Explicit work verdicts only. Session loss, launch/close errors and provider
+# outages are deliberately absent: they say nothing about the worker's ability.
+# Review feedback reworks a passing attempt, so ``reopen_with_feedback`` re-plans
+# the route without journaling a failure.
+ROUTING_FAILURE_CONTEXTS = frozenset({
+    "retry", "max_retries", "session_close_hard_failure", "verification_reopen",
+    "verification_failed",
+})
+ROUTING_RETRY_CONTEXTS = ROUTING_FAILURE_CONTEXTS | {
+    "restart_task", "supervisor_recovery", "reopen_with_feedback",
+}
+ROUTING_FAILURES_KEY = "routing_failed_attempts"
+
+
+class RoutingBusyError(RuntimeError):
+    """The routing lock stayed held for the whole wait budget."""
+
+
+def _active_session():
+    return (
+        select(sessions.c.id)
+        .where(sessions.c.task_id == tasks.c.id, sessions.c.state.in_(_LIVE_SESSION_STATES))
+        .exists()
+    )
+
+
+def _eligible_backlog_predicate(ready_project_ids: Collection[str]):
+    """The routed backlog the planner's load admits: the claim frontier's.
+
+    The same acceptance rules as the pool claim frontier (shared, not
+    duplicated) plus the project-aware route filter: a READY task that a pool
+    worker could actually claim.  An ASSIGNED row is load through its live
+    session (``count_busy_sessions_by_profile``), never the backlog, and a
+    task that fails any frontier rule — dependency, hold, origin, container —
+    is blocked, not runnable: counting it here is what made one unclaimable
+    verifier fill a one-slot pool.
+    """
+    from src.database.queries.blocked_state import apply_label_filters
+    from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in
+
+    return and_(
+        tasks.c.status == TaskStatus.READY.value,
+        *(_frontier_predicates().values()),
+        route_claimable_in(ready_project_ids),
+        apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
+    )
+
+
+def _routed_backlog_statement(ready_project_ids: Collection[str]):
+    eligible = _eligible_backlog_predicate(ready_project_ids)
+    return (
+        select(
+            tasks.c.profile_id,
+            func.count().label("total"),
+            func.count().filter(eligible).label("eligible"),
+        )
+        .where(
+            tasks.c.status.in_(ROUTED_BACKLOG_STATUSES),
+            tasks.c.profile_id.is_not(None),
+            ~_active_session(),
+        )
+        .group_by(tasks.c.profile_id)
+    )
+
+
+class RoutingQueryMixin:
+    async def record_routing_retry_on(
+        self, conn, task_id: str, *, context: str, previous_status: TaskStatus,
+        new_status: TaskStatus,
+    ) -> bool:
+        """Journal a work failure and invalidate a retry route in its transaction.
+
+        Called only after the transition's claim/status guards matched. A
+        router-owned route is re-planned on retry; role routes and audited
+        overrides retain their authority. Infrastructure incidents create no
+        work-failure evidence, even when an operator subsequently restarts them.
+        """
+        if context not in ROUTING_RETRY_CONTEXTS:
+            return False
+        row = (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().one()
+        if row["route_source"] not in {ROUTER, LEGACY}:
+            return False
+        substantive = (
+            context in ROUTING_FAILURE_CONTEXTS
+            # A COMPLETED task passed; reopening it is rework, not a failure.
+            and previous_status in {
+                TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.FAILED,
+                TaskStatus.BLOCKED,
+            }
+        )
+        if substantive and context in {"retry", "max_retries"}:
+            failure_class = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "failure_class",
+            ))).scalar_one_or_none()
+            substantive = failure_class != json.dumps("transient")
+        if substantive:
+            attempt = (await conn.execute(
+                select(task_session_attempts)
+                .where(
+                    task_session_attempts.c.task_id == task_id,
+                    task_session_attempts.c.started_at >= row["created_at"],
+                )
+                .order_by(task_session_attempts.c.started_at.desc(), task_session_attempts.c.id.desc())
+                .limit(1)
+            )).mappings().first()
+            raw = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == ROUTING_FAILURES_KEY,
+            ))).scalar_one_or_none()
+            failures = json.loads(raw) if raw else []
+            identity = attempt["id"] if attempt else f"claim:{row['claim_epoch']}"
+            if not any(failure["attempt_id"] == identity for failure in failures):
+                failures.append({
+                    "attempt_id": identity,
+                    "session_id": attempt["session_id"] if attempt else None,
+                    "claim_epoch": row["claim_epoch"],
+                    "intelligence_class": (
+                        attempt["intelligence_class"] if attempt else row["intelligence_class"]
+                    ),
+                    "profile_id": attempt["profile_id"] if attempt else row["profile_id"],
+                    "reason": context,
+                    "previous_status": previous_status.value, "status": new_status.value,
+                    "failed_at": row["updated_at"],
+                })
+                await self._upsert_meta(task_id, ROUTING_FAILURES_KEY, failures, conn=conn)
+        if new_status != TaskStatus.READY:
+            return False
+        # Preserve constraints and provenance, but remove the previous class:
+        # it is a routing result, not the filer's class_hint.
+        route = {
+            key: value for key, value in (row["route"] or {}).items()
+            if key in {"constraints", "legacy"}
+        }
+        if row["route_source"] == LEGACY:
+            route.setdefault("legacy", {
+                "profile_id": row["profile_id"],
+                "intelligence_class": row["intelligence_class"],
+                "provider_intent": row["provider_intent"],
+            })
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            profile_id=None, intelligence_class=None, provider_intent="class_only",
+            route_source=UNROUTED, route=route or None,
+        ))
+        return True
+
+    async def routing_supply(self, *, now: float, stall_seconds: float, conn=None) -> dict:
+        """Grouped worker observations, without task titles, terminals or session tokens.
+
+        Starting, draining, preparing and unresponsive workers are never idle supply.
+        Project/fleet totals include them conservatively: a draining process still
+        occupies resources until it stops. Pending launches are folded in by the caller.
+        """
+        bucket = case(
+            (or_(sessions.c.state == "draining", sessions.c.desired_state == "stopped"),
+             "draining"),
+            (sessions.c.state == "starting", "starting"),
+            (or_(sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None)), "busy"),
+            (and_(sessions.c.lifecycle == "pool", func.coalesce(
+                func.nullif(sessions.c.last_activity, 0), sessions.c.started_at
+            ) <= now - stall_seconds), "unresponsive"),
+            (or_(agents.c.enabled.is_(False), agents.c.deleted_at.is_not(None)), "unresponsive"),
+            else_="idle",
+        ).label("bucket")
+        supply = (
+            select(sessions.c.project_id, sessions.c.profile_id, sessions.c.lifecycle,
+                   bucket, func.count().label("count"),
+                   func.array_agg(sessions.c.id).label("session_ids"))
+            .select_from(sessions.outerjoin(agents, sessions.c.agent_id == agents.c.id))
+            .where(sessions.c.state.in_(_LIVE_SESSION_STATES),
+                   sessions.c.lifecycle.in_(("pool", "task")))
+            .group_by(sessions.c.project_id, sessions.c.profile_id, sessions.c.lifecycle, bucket)
+        )
+        kinds = (
+            select(tasks.c.task_type, func.count().label("count"))
+            .where(_active_session())
+            .group_by(tasks.c.task_type)
+        )
+        live_agent = select(sessions.c.id).where(
+            sessions.c.state.in_(_LIVE_SESSION_STATES),
+            or_(sessions.c.agent_id == agents.c.id, sessions.c.task_id == agents.c.current_task_id),
+        ).exists()
+        reservations = (
+            select(tasks.c.project_id, agents.c.profile_id,
+                   literal("task").label("lifecycle"), literal("busy").label("bucket"),
+                   func.count().label("count"),
+                   func.array_agg(cast(literal(None), Text)).label("session_ids"))
+            .select_from(agents.join(tasks, agents.c.current_task_id == tasks.c.id)
+                         .join(agent_profiles, agents.c.profile_id == agent_profiles.c.id))
+            .where(agents.c.enabled.is_(True), agents.c.deleted_at.is_(None),
+                   agents.c.role == "worker", agent_profiles.c.lifecycle == "task",
+                   tasks.c.status.in_((TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)),
+                   ~live_agent)
+            .group_by(tasks.c.project_id, agents.c.profile_id)
+        )
+        async def read(connection):
+            # Reservations and sessions share one SQL snapshot, so a reservation
+            # becoming a session between reads cannot disappear from both counts.
+            rows = [dict(r) for r in (
+                await connection.execute(supply.union_all(reservations))
+            ).mappings()]
+            # Deduplicate pending launches against the SAME supply read. A second
+            # query could see a just-inserted id that the first query never counted.
+            ids = {sid for row in rows for sid in row.pop("session_ids") if sid is not None}
+            return {
+                "supply": rows,
+                "active_kinds": {r[0] or "unknown": int(r[1])
+                                 for r in (await connection.execute(kinds)).fetchall()},
+                "session_ids": ids,
+            }
+
+        if conn is not None:
+            return await read(conn)
+        async with self._engine.connect() as connection:
+            return await read(connection)
+
+    async def count_routed_backlog_by_profile(
+        self, *, ready_project_ids: Collection[str] = frozenset(), conn=None
+    ) -> dict[str, dict[str, int]]:
+        """Fleet-wide routed backlog, split eligible vs blocked, per profile.
+
+        Returns ``{profile_id: {"eligible": n, "blocked": m}}``.
+
+        *eligible* is the routed READY backlog the planner's load admits:
+        the claim frontier's acceptance rules (dependency, plan-subtask,
+        origin, container, siblings, retired-delegate) plus the project-
+        aware route filter and the ``hold:*`` label filter.  *blocked* is
+        the rest of the READY/ASSIGNED rows — work that is routed but not
+        currently claimable.
+
+        Unlike ``count_busy_sessions_by_profile`` (live sessions), an
+        ASSIGNED row counts as *blocked* here: it is load through its live
+        session, never the runnable backlog.  Counting every row as load is
+        what made one unclaimable verifier fill a one-slot pool.
+        """
+        statement = _routed_backlog_statement(ready_project_ids)
+        if conn is not None:
+            rows = (await conn.execute(statement)).fetchall()
+        else:
+            async with self._engine.connect() as connection:
+                rows = (await connection.execute(statement)).fetchall()
+        return {
+            str(profile_id): {
+                "eligible": int(eligible or 0),
+                "blocked": int(total or 0) - int(eligible or 0),
+            }
+            for profile_id, total, eligible in rows
+        }
+
+    async def count_busy_sessions_by_profile(self, *, conn=None) -> dict[str, int]:
+        """Live sessions holding a task, per profile, fleet-wide.
+
+        The same rule as the pool measurement's ``running_busy`` (a live
+        session with ``task_id`` set), read in one grouped query so an apply
+        can take it inside its lock.
+        """
+        statement = (
+            select(sessions.c.profile_id, func.count())
+            .where(
+                sessions.c.state.in_(_LIVE_SESSION_STATES),
+                sessions.c.task_id.is_not(None),
+            )
+            .group_by(sessions.c.profile_id)
+        )
+        if conn is not None:
+            rows = (await conn.execute(statement)).fetchall()
+        else:
+            async with self._engine.connect() as connection:
+                rows = (await connection.execute(statement)).fetchall()
+        return {str(profile_id): int(count) for profile_id, count in rows}
+
+    @asynccontextmanager
+    async def routing_apply_lock(
+        self, *, budget_seconds: float = ROUTING_LOCK_BUDGET_SECONDS
+    ) -> AsyncIterator[Any]:
+        """A transaction holding the fleet-wide routing lock; yields its connection.
+
+        ``pg_try_advisory_xact_lock`` in a bounded retry loop that closes the
+        connection between attempts, as ``_standing_parent_lock`` does:
+        blocking in ``pg_advisory_xact_lock`` would hold a pooled connection
+        per waiting apply, and a 20-node graph routes 20 tasks at once.  The
+        lock is released when the transaction ends, after the route commits.
+
+        Raises :class:`RoutingBusyError` when the budget is spent.
+        """
+        deadline = time.monotonic() + budget_seconds
+        while True:
+            async with self._engine.begin() as conn:
+                held = bool(
+                    (
+                        await conn.execute(
+                            select(
+                                func.pg_try_advisory_xact_lock(
+                                    ROUTING_LOCK_NAMESPACE, ROUTING_LOCK_KEY
+                                )
+                            )
+                        )
+                    ).scalar()
+                )
+                if held:
+                    yield conn
+                    return
+            if time.monotonic() >= deadline:
+                raise RoutingBusyError("the routing lock is busy")
+            await asyncio.sleep(0.02 + random.random() * 0.08)
+
+    async def list_queued_router_routes(self, project_id: str) -> list[dict[str, Any]]:
+        """Queued, unassigned tasks in *project_id* whose route the router wrote.
+
+        What ``aq pool provider apply`` returns to the router when a project
+        prefers a provider (spec §6.8): only the routing columns are read.
+        """
+        statement = (
+            select(
+                tasks.c.id,
+                tasks.c.project_id,
+                tasks.c.profile_id,
+                tasks.c.status,
+                tasks.c.provider_intent,
+                tasks.c.route_source,
+            )
+            .where(
+                tasks.c.project_id == project_id,
+                tasks.c.route_source == ROUTER,
+                tasks.c.status.in_(ROUTABLE_STATUSES),
+                tasks.c.assigned_agent_id.is_(None),
+                ~_active_session(),
+            )
+            .order_by(tasks.c.priority, tasks.c.created_at, tasks.c.id)
+        )
+        async with self._engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_task_on(self, conn, task_id: str) -> Task | None:
+        """Lock and read the task whose route this transaction will write.
+
+        The fleet advisory lock serializes applies, but route resets do not
+        take it. Keep a reset's new preference from being overwritten by an
+        apply that already read the previous routing inputs.
+        """
+        row = (
+            await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update())
+        ).mappings().fetchone()
+        return self._row_to_task(row) if row is not None else None
+
+    async def task_has_live_session(self, conn, task_id: str) -> bool:
+        statement = select(
+            select(sessions.c.id)
+            .where(sessions.c.task_id == task_id, sessions.c.state.in_(_LIVE_SESSION_STATES))
+            .exists()
+        )
+        return bool((await conn.execute(statement)).scalar())
+
+    async def write_router_route(
+        self,
+        conn,
+        task_id: str,
+        *,
+        profile_id: str,
+        intelligence_class: str,
+        provider_intent: str,
+        route: Mapping[str, Any],
+        task_type: str | None = None,
+    ) -> bool:
+        """Write a router route in one update, under the "no worker holds it" guard.
+
+        The predicate repeats every re-check ``task_route_apply`` makes, so a
+        claim or a route that lands between the read and this write turns the
+        write into a no-op (``False``) rather than retargeting held work.
+        """
+        values: dict[str, Any] = {
+            "profile_id": profile_id,
+            "intelligence_class": intelligence_class,
+            "provider_intent": provider_intent,
+            "route_source": ROUTER,
+            "route": dict(route),
+            "updated_at": time.time(),
+        }
+        if task_type:
+            values["task_type"] = task_type
+        result = await conn.execute(
+            update(tasks)
+            .where(
+                tasks.c.id == task_id,
+                tasks.c.status.in_(ROUTABLE_STATUSES),
+                tasks.c.assigned_agent_id.is_(None),
+                tasks.c.route_source.in_((UNROUTED, LEGACY)),
+                ~_active_session(),
+            )
+            .values(**values)
+        )
+        return result.rowcount == 1
+
+    async def write_override_route(
+        self,
+        task_id: str,
+        *,
+        profile_id: str,
+        intelligence_class: str,
+        route: Mapping[str, Any],
+    ) -> bool:
+        """Write an audited emergency override (spec §7) under the claim guard.
+
+        ``route_source='override'`` and ``provider_intent='pinned'``: failover
+        holds the task rather than moving it, and *route*'s single candidate
+        keeps spill and reroute on it too (§6.8).  Any route but a role's may
+        be overridden; a task that is claimed, assigned, running, finished or
+        in a live session is left alone and ``False`` is returned.
+        """
+        values: dict[str, Any] = {
+            "profile_id": profile_id,
+            "intelligence_class": intelligence_class,
+            "provider_intent": "pinned",
+            "route_source": OVERRIDE,
+            "route": dict(route),
+            "updated_at": time.time(),
+        }
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                update(tasks)
+                .where(
+                    tasks.c.id == task_id,
+                    tasks.c.status.in_(OVERRIDABLE_STATUSES),
+                    tasks.c.assigned_agent_id.is_(None),
+                    tasks.c.route_source != ROLE,
+                    ~_active_session(),
+                )
+                .values(**values)
+            )
+        return result.rowcount == 1
+
+    async def task_is_container(self, task_id: str) -> bool:
+        """Whether the router never routes *task_id*: it is a container (§6.1).
+
+        The same two rules as route-needed emission and the claim frontier:
+        the ``container`` flag, or a child.  A container is never leased
+        (work-graph §13a), so it needs no route.
+        """
+        from src.database.queries.hierarchy_queries import container_flag_exists
+
+        child = tasks.alias("routing_child")
+        statement = select(
+            or_(
+                container_flag_exists(),
+                exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
+            )
+        ).where(tasks.c.id == task_id)
+        async with self._engine.connect() as connection:
+            return bool((await connection.execute(statement)).scalar())
+
+    async def latest_router_run_for_task(
+        self, playbook_id: str, task_id: str, *, since: float
+    ) -> dict[str, Any] | None:
+        """The newest ``task.route_needed`` run of *playbook_id* for *task_id*, or ``None``.
+
+        Runs carry no task column: the task is the triggering event's
+        ``task_id`` inside the run snapshot.  A substring filter on the
+        snapshot text narrows the scan to runs that mention the task, started
+        at or after *since*, and the event is decoded to confirm it.  Returns
+        the run's id, lifecycle, error, times and step ``bindings``.
+        """
+        escaped = task_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        statement = (
+            select(
+                playbook_v2_runs.c.run_id,
+                playbook_v2_runs.c.lifecycle,
+                playbook_v2_runs.c.error,
+                playbook_v2_runs.c.error_code,
+                playbook_v2_runs.c.started_at,
+                playbook_v2_runs.c.completed_at,
+                playbook_v2_runs.c.snapshot,
+            )
+            .where(
+                playbook_v2_runs.c.playbook_id == playbook_id,
+                playbook_v2_runs.c.event_type == "task.route_needed",
+                playbook_v2_runs.c.started_at >= since,
+                playbook_v2_runs.c.snapshot.like(f"%{escaped}%", escape="\\"),
+            )
+            .order_by(playbook_v2_runs.c.started_at.desc())
+            .limit(_ROUTER_RUN_SCAN_LIMIT)
+        )
+        async with self._engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().fetchall()
+        for row in rows:
+            try:
+                snapshot = json.loads(row["snapshot"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            event = snapshot.get("event") if isinstance(snapshot, dict) else None
+            if not isinstance(event, dict) or event.get("task_id") != task_id:
+                continue
+            bindings = snapshot.get("bindings")
+            return {
+                "run_id": row["run_id"],
+                "lifecycle": row["lifecycle"],
+                "error": row["error"] or snapshot.get("error"),
+                "error_code": row["error_code"] or snapshot.get("error_code"),
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "bindings": bindings if isinstance(bindings, dict) else {},
+            }
+        return None
+
+
+__all__ = [
+    "OVERRIDABLE_STATUSES",
+    "ROUTABLE_STATUSES",
+    "ROUTED_BACKLOG_STATUSES",
+    "ROUTING_LOCK_BUDGET_SECONDS",
+    "RoutingBusyError",
+    "RoutingQueryMixin",
+]
