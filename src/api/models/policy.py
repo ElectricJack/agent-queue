@@ -10,6 +10,12 @@ class PolicyFilePreview(BaseModel):
     content: str
 
 
+class PolicyExportWarning(BaseModel):
+    item_id: str
+    playbook_id: str | None = None
+    message: str
+
+
 class PolicyExportResponse(BaseModel):
     success: bool = True
     bundle: Bundle
@@ -17,6 +23,7 @@ class PolicyExportResponse(BaseModel):
     files: list[PolicyFilePreview]
     written: list[str] = []
     archive: str
+    warnings: list[PolicyExportWarning] = []
 
 
 class PolicyDiffResponse(BaseModel):
@@ -38,6 +45,7 @@ class PolicyApplyResponse(BaseModel):
     applied: list[str]
     reviews: list[PolicyReviewReceipt] = []
     pending_configuration: list[str] = []
+    configured_integration: list[str] = []
     activated: bool = False
     items: list[DiffItem]
 
