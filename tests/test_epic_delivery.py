@@ -353,9 +353,13 @@ def test_work_finished_outside_the_train_is_not_tracked():
         "not_tracked", "Completed outside the train", "untracked",
     )
     cancelled = _classify(_facts(status="COMPLETED", operation=None, collection_cancelled=True))
-    assert cancelled["state"] == "not_tracked"
+    assert cancelled["state"] == "queued"
     unverified = _classify(_facts(status="COMPLETED", operation=None, checkpoint={**VERIFYING, "episode_id": None}))
-    assert unverified["state"] == "not_tracked"
+    assert unverified["state"] == "queued"
+    assert unverified["label"] == "Waiting for aggregate verification"
+    assert unverified["display_status"] == "Queued"
+    assert unverified["responsible"]["label"] == "Integration train"
+    assert unverified["remedy"] == "aq integration reverify-epic epic"
     orphaned = _classify(
         _facts(status="COMPLETED", operation=None, parent_task_id="root", parent_status="COMPLETED")
     )
@@ -364,6 +368,25 @@ def test_work_finished_outside_the_train_is_not_tracked():
         _facts(status="COMPLETED", operation=None, parent_task_id="root", parent_status="PAUSED")
     )
     assert waiting["label"] == "Waiting for parent collection"
+
+
+@pytest.mark.parametrize("mode", ["train", "development"])
+def test_completed_root_branch_without_checkpoint_does_not_display_completed(mode):
+    facts = _facts(status="COMPLETED", checkpoint=None, operation=None, branch_name="aq/epic",
+                   mode=mode)
+    missing = _classify(facts)
+    assert (missing["state"], missing["display_status"], missing["evidence"]) == (
+        "unknown", "Delivery unknown", "unavailable",
+    )
+    pending = _classify(replace(facts, canonical=CanonicalDelivery(
+        state="pending", reason="completion", source="a" * 40, target_ref="refs/heads/dev",
+    )))
+    assert pending["state"] == "queued"
+    assert "not in dev" in pending["reason"]
+    delivered = _classify(replace(facts, canonical=CanonicalDelivery(
+        state="contained", reason="completion", source="a" * 40, target_ref="refs/heads/dev",
+    )))
+    assert delivered["state"] == "delivered"
 
 
 def test_implementation_and_untracked_modes():
@@ -434,7 +457,8 @@ def test_a_canonically_adopted_epic_is_delivered_where_no_receipt_exists():
     assert delivered["links"] == []
 
 
-def test_operator_equivalence_is_named_rather_than_absorbed():
+@pytest.mark.parametrize("leaf_state", ["contained", "no_change"])
+def test_operator_equivalence_is_named_rather_than_absorbed(leaf_state):
     equivalent = _classify(replace(_complete(), canonical=replace(
         ADOPTED, acceptance="operator_equivalent",
     )))
@@ -442,7 +466,8 @@ def test_operator_equivalence_is_named_rather_than_absorbed():
     assert equivalent["reason"].endswith("(operator accepted this source as equivalent)")
 
     leaf = CanonicalDelivery(
-        state="contained", reason="git_completion", source="a" * 40,
+        state=leaf_state, reason="git_no_change" if leaf_state == "no_change" else "git_completion",
+        source="a" * 40,
         target_ref="refs/heads/main", target_oid="c" * 40,
         completion_id="close-epic-2", since=NOW - 5,
     )
@@ -764,6 +789,29 @@ async def test_get_task_reports_delivery_for_an_epic_only(db, tmp_path):
 
     leaf = GetTaskResponse.model_validate(await handler._cmd_get_task({"task_id": "parent.1"}))
     assert leaf.delivery_status is None
+
+
+async def test_get_task_cold_delivery_cache_reports_unavailable_without_network(db, tmp_path):
+    await _plain_epic(db)
+    await _close_epic(db, "close-parent-1")
+    transport = GitManager()
+    transport.afetch_origin = AsyncMock(side_effect=AssertionError("diagnostics must not fetch"))
+    transport.acreate_checkout = AsyncMock(side_effect=AssertionError("must not clone"))
+    transport.als_remote_ref = AsyncMock(side_effect=AssertionError("must not query remote"))
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "observer")
+    db.set_delivery_observer(observer)
+    orch = MagicMock(db=db)
+    orch._emit_notify = AsyncMock()
+    config = MagicMock(vault_root=str(tmp_path / "vault"))
+    handler = CommandHandler(orch, config)
+    result = await handler._cmd_get_task({"task_id": "parent"})
+    delivery = result["delivery_status"]
+    assert (delivery["state"], delivery["evidence"]) == ("unknown", "unavailable")
+    assert "Delivery evidence not loaded yet" in delivery["reason"]
+    assert "nothing is recorded" not in delivery["reason"]
+    transport.afetch_origin.assert_not_awaited()
+    transport.acreate_checkout.assert_not_awaited()
+    transport.als_remote_ref.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
