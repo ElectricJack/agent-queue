@@ -98,7 +98,7 @@ def environment(base: Path, native: Path, node: Path | None, ruff: Path) -> dict
 
 
 def run(command: list[str], root: Path, env: dict[str, str]) -> str:
-    result = subprocess.run(command, cwd=root, env=env, text=True, stdout=subprocess.PIPE,
+    result = subprocess.run(command, cwd=root, env=env, text=True, check=False, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=600)
     if result.returncode:
         raise RuntimeError(f"generator failed ({result.returncode}): {command}\n{result.stdout}")
@@ -172,9 +172,12 @@ def execute(args: argparse.Namespace) -> None:
             run([bash, "scripts/regenerate-generated.sh"], root, env)
             export(root, paths, output)
         else:
-            if upstream is None or npm is None or node is None:
-                raise ValueError("TypeScript generation needs declared OpenAPI, npm and Node inputs")
-            shutil.copyfile(upstream / "openapi.json", root / "openapi.json")
+            if npm is None or node is None:
+                raise ValueError("TypeScript generation needs declared npm and Node inputs")
+            if upstream is not None:
+                shutil.copyfile(upstream / "openapi.json", root / "openapi.json")
+            elif args.kind != "typescript" or not (root / "openapi.json").is_file():
+                raise ValueError("TypeScript generation needs a declared OpenAPI input or artifact")
             (root / "node_modules").symlink_to(npm)
             if args.kind == "typescript":
                 run([bash, "scripts/regenerate-ts-client.sh", "--from-file"], root, env)

@@ -7,7 +7,8 @@ snapshot per repository, and supplies an ephemeral allowed set to consumers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import logging
+from dataclasses import dataclass, field, fields, replace
 from functools import lru_cache
 from types import MappingProxyType
 
@@ -34,6 +35,21 @@ from src.integration.delivery_truth import (
 )
 from src.integration.delivery_observer import DeliveryTarget
 from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY, legacy_artifact
+
+logger = logging.getLogger(__name__)
+
+
+def _request_changes(before, after):
+    """Name exact source fields, including bookkeeping omitted from the fence."""
+    for task_id in sorted(before.keys() | after.keys()):
+        old, new = before.get(task_id), after.get(task_id)
+        if old is None or new is None:
+            yield task_id, "presence", old is not None, new is not None
+            continue
+        for member in fields(DeliveryRequest):
+            prior, current = getattr(old, member.name), getattr(new, member.name)
+            if prior != current:
+                yield task_id, member.name, prior, current
 
 
 class OrdinaryAdmissionChanged(Exception):
@@ -382,7 +398,11 @@ async def _inputs(db, candidate_ids, conn):
         frozen(children),
         frozen(gate_rows),
         frozen(markers),
-        tuple(sorted(requests.items())),
+        # task_version is tasks.updated_at, including ordinary bookkeeping.
+        # Every delivery/lifecycle field remains fenced independently; retain
+        # full request equality for other delivery consumers and their caches.
+        tuple(sorted((tid, replace(request, task_version=0.0))
+                     for tid, request in requests.items())),
         tuple(
             sorted(
                 (
@@ -425,6 +445,7 @@ class AdmissionSnapshot:
     hierarchy_required: dict = field(default_factory=dict)
     delivery_required: dict = field(default_factory=dict)
     delivery_view: object = None
+    source_requests: dict[str, DeliveryRequest] | None = None
 
     def record_change(self, code, detail, task_id=None):
         """Explain a failed guard before callers discard the allowed set."""
@@ -477,30 +498,22 @@ class AdmissionSnapshot:
         if lock and (self.lock_ids or task_id):
             try:
                 async with conn.begin_nested():
-                    await conn.execute(
-                        select(tasks.c.id)
-                        .where(tasks.c.id.in_(self.lock_ids | ({task_id} if task_id else set())))
-                        .order_by(tasks.c.id)
-                        .with_for_update(read=True, nowait=True)
-                    )
-                    # Freeze integration configuration until activation commits.
-                    await conn.execute(
-                        select(projects.c.id)
-                        .where(projects.c.id.in_([p[0] for p in self.inputs[5]]))
-                        .order_by(projects.c.id)
-                        .with_for_update(read=True, nowait=True)
-                    )
-                    await conn.execute(
-                        select(repos.c.id)
-                        .where(or_(
+                    # Freeze task inputs and integration configuration until activation commits.
+                    lock_queries = (
+                        (tasks, tasks.c.id.in_(self.lock_ids | ({task_id} if task_id else set()))),
+                        (projects, projects.c.id.in_([p[0] for p in self.inputs[5]])),
+                        (repos, or_(
                             repos.c.id.in_([r[0] for r in self.inputs[6]]),
                             repos.c.id.in_(select(projects.c.integration_repository_id).where(
                                 projects.c.id.in_([p[0] for p in self.inputs[5]]),
                             )),
-                        ))
-                        .order_by(repos.c.id)
-                        .with_for_update(read=True, nowait=True)
+                        )),
                     )
+                    for table, condition in lock_queries:
+                        await conn.execute(
+                            select(table.c.id).where(condition).order_by(table.c.id)
+                            .with_for_update(read=True, nowait=True)
+                        )
             except DBAPIError as exc:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
                     return self.record_change(
@@ -512,13 +525,27 @@ class AdmissionSnapshot:
         if not await self._delivery_matches(conn=conn, task_id=task_id):
             return False
         current = await _inputs(self.db, self.candidate_ids, conn)
+        if self.source_requests is not None and logger.isEnabledFor(logging.DEBUG):
+            for tid, name, before, after in _request_changes(
+                self.source_requests, current[2],
+            ):
+                logger.debug(
+                    "Admission delivery input %s.%s changed: %r -> %r%s",
+                    tid, name, before, after,
+                    " (ignored bookkeeping)" if name == "task_version" else "",
+                )
         if self.policy_inputs:
             policy, _ = await _frontier_inputs(conn, self.candidate_ids)
-            if policy != self.policy_inputs:
+            # Scope candidate identity to activation; retain every other policy fence.
+            before_policy, policy = (
+                (tuple(row for row in inputs[0] if task_id is None or row[0] == task_id),
+                 *inputs[1:]) for inputs in (self.policy_inputs, policy)
+            )
+            if policy != before_policy:
                 groups = ("candidate routing/parent", "project/repository policy", "edges",
                           "sources", "completions", "metadata")
                 changed = ", ".join(name for name, before, after in zip(
-                    groups, self.policy_inputs, policy, strict=True) if before != after)
+                    groups, before_policy, policy, strict=True) if before != after)
                 return self.record_change(
                     "admission_policy_changed", f"Admission frontier inputs changed: {changed}; retry",
                     task_id,
@@ -563,13 +590,21 @@ class AdmissionSnapshot:
                     f"{', '.join(sorted((before ^ verified) & ids))}; retry",
                     task_id,
                 )
-        if self.inputs != current[-1]:
+        # A candidate can be another's source: its own claim moves only its status and epoch.
+        inputs, now = (
+            (*i[:4], tuple((tid, replace(r, task_status="", claim_epoch=0)
+                            if tid == task_id and r.task_status != "COMPLETED" else r)
+                           for tid, r in i[4]), *i[5:])
+            for i in (self.inputs, current[-1]))
+        if inputs != now:
             groups = ("edges", "children", "gates", "obsolete markers", "delivery requests",
                       "project configuration", "repository configuration", "labels")
-            changed = ", ".join(name for name, before, after in zip(
-                groups, self.inputs, current[-1], strict=True) if before != after)
+            changed = [name if name != "delivery requests" else f"{name} ({", ".join(
+                f"{tid}.{member}" for tid, member, _, _ in _request_changes(dict(b), dict(a)))})"
+                for name, b, a in zip(groups, inputs, now, strict=True) if b != a]
             return self.record_change(
-                "admission_inputs_changed", f"Admission source inputs changed: {changed}; retry",
+                "admission_inputs_changed",
+                f"Admission source inputs changed: {', '.join(changed)}; retry",
                 task_id,
             )
         if self.pr is not None and not await self.pr.matches(
@@ -623,6 +658,7 @@ async def _observe_sources(
         )
     batch = AdmissionSnapshot(db, candidate_ids, candidate_ids - dev_ids, inputs)
     batch.pr = pr
+    batch.source_requests = requests
     batch.lock_ids = set(requests)
     batch.required = required
     evidence = {}
@@ -706,12 +742,14 @@ async def _observe_sources(
 async def _frontier_inputs(conn, ids):
     """Fence routing, hierarchy policy and graph without fencing our own take.
 
-    READY -> IN_PROGRESS and branch preparation are expected mutations. Route,
-    parent, edges, policy and completion generation are not.
+    READY -> IN_PROGRESS, branch preparation and route evidence refreshes are
+    expected mutations; route identity, parent, edges, policy and generation are not.
+    Candidate tuples stay addressable by task ID to scope activation's route fence.
     """
     rows = (await conn.execute(select(
         tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id, tasks.c.profile_id,
-        tasks.c.route_source, tasks.c.intelligence_class, tasks.c.route,
+        tasks.c.route_source, tasks.c.intelligence_class,
+        tasks.c.route["provider"].as_string(),
         tasks.c.repo_id, tasks.c.integration_mode,
     ).where(tasks.c.id.in_(ids)))).all()
     pids = {r.project_id for r in rows}
@@ -731,15 +769,19 @@ async def _frontier_inputs(conn, ids):
         if edge["dep_type"] in {"blocks", "delivery-of"}:
             required.setdefault(edge["task_id"], set()).add(edge["depends_on_task_id"])
     # Fence source generations without a DeliveryView, minus this claim's own rows.
-    sources = (await conn.execute(select(tasks).where(
+    # updated_at is bookkeeping, not a source generation or policy fence.
+    # Keep this consistent with the DeliveryRequest fingerprint above so a
+    # timestamp-only update cannot merely fail the later policy guard instead.
+    sources = (await conn.execute(select(*(c for c in tasks.c if c.name != "updated_at")).where(
         tasks.c.id.in_(set().union(*required.values())),
         or_(tasks.c.id.not_in(ids), tasks.c.status == "COMPLETED")))).all() if required else []
     completions, markers = [(await conn.execute(select(table).where(
         table.c.task_id.in_({row.id for row in sources})))).all() if sources else []
         for table in (task_completion_records, task_metadata)]
-    fingerprint = tuple(tuple(sorted(repr(tuple(row)) for row in group))
-                        for group in (rows, policies, [tuple(e.items()) for e in edges],
-                                      sources, completions, markers))
+    fingerprint = (tuple(tuple(row) for row in sorted(rows, key=lambda row: row.id)),) + tuple(
+        tuple(sorted(repr(tuple(row)) for row in group))
+        for group in (policies, [tuple(e.items()) for e in edges], sources, completions, markers)
+    )
     return fingerprint, required
 
 

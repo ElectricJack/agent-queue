@@ -55,8 +55,8 @@ from pathlib import Path
 
 import click
 
-from src.test_dsn import _POSTGRES_SETUP as _POSTGRES_SETUP
-from src.test_dsn import postgres_test_dsn_error as postgres_test_dsn_error
+from src.test_dsn import _POSTGRES_SETUP as _POSTGRES_SETUP  # noqa: PLC0414 -- diagnostic re-export
+from src.test_dsn import postgres_test_dsn_error
 from src.test_selection.discovery import SKIP_DIRS
 from src.test_selection.discovery import pytest_rootdir as _pytest_rootdir
 from src.test_selection.discovery import test_modules as _test_modules
@@ -87,7 +87,7 @@ def _load_config():
         from src.config import load_config
 
         return load_config(CONFIG_PATH)
-    except Exception:
+    except Exception:  # noqa: BLE001 -- invalid operator config uses documented fallback caps
         return None
 
 
@@ -462,9 +462,9 @@ def _bazel_plan(args: tuple[str, ...], *, markers: str, all_markers: bool) -> Ba
     root, testpaths = _pytest_rootdir(Path.cwd())
     manifest_path = root / "tools/bazel/test_suites.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest["schema_version"] != 1:
-            raise ValueError("unsupported suite manifest version")
+        from src.test_selection.bazel_manifest import hydrate_manifest
+
+        manifest = hydrate_manifest(json.loads(manifest_path.read_text(encoding="utf-8")))
         modules, suites, aliases = (manifest[key] for key in ("modules", "suites", "aliases"))
         nodes = manifest["collection"]["nodes"]
         for key, relative in (
@@ -548,7 +548,7 @@ def _bazel_plan(args: tuple[str, ...], *, markers: str, all_markers: bool) -> Ba
                 i
                 for i in info["nodes"]
                 if expression is None
-                or expression.evaluate(lambda name: name in nodes[i]["markers"])
+                or expression.evaluate(lambda name, index=i: name in nodes[index]["markers"])
             }
             if not wanted:
                 # Collection-skipped modules have a deliberate fail-closed focused target.
@@ -1009,7 +1009,7 @@ def _smart_observe(plan: SmartPlan, *, exit_code, duration_ms, executed, backend
                 "payload": {"backend": backend},
             },
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 -- observation cannot replace the test execution result
         # Reporting must not turn a real pytest failure into a different result.
         click.echo("aq test: execution observation not recorded", err=True)
 
@@ -1187,9 +1187,9 @@ def test_command(
             raise click.UsageError("Detached jobs use server-owned admission and resource caps")
         if not pytest_args:
             raise click.UsageError("Name the tests to submit")
-        from .jobs import submit
-        from .envelope import emit
         from .app import _handle_errors
+        from .envelope import emit
+        from .jobs import submit
 
         args = list(pytest_args)
         if aq_all_markers and not any(
@@ -1202,6 +1202,7 @@ def test_command(
         emit(ctx, result)
         return
 
+    from src.resources.box_lock import BoxLock, IncompatibleLockClient
     from src.resources.semaphore import (
         SlotSemaphore,
         SlotTimeout,
@@ -1209,7 +1210,6 @@ def test_command(
         full_suite_lock_dir,
     )
     from src.resources.slot_report import REPORT_ENV, append_event
-    from src.resources.box_lock import BoxLock, IncompatibleLockClient
 
     config = _load_config()
     resources = getattr(config, "resources", None)

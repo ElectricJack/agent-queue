@@ -202,7 +202,7 @@ def test_audit_helper_refresh_refuses_unknown_or_ambiguous_selection(audit_refre
     ("workspace_retire_claim", ("project_resources", "handler_gates")),
     *[(name, ("system_scope",)) for name in (
         "batch_reconcile", "gate_reopen", "playbook_source_resync",
-        "repair_repository_checkout", "repair_workspace_checkout",
+        "repair_repository_checkout", "repair_workspace_checkout", "recover_retained_holder",
         "spec_ingest_legacy_inventory", "spec_ingest_reconcile", "workspace_cutover",
     )],
 ])
@@ -212,7 +212,8 @@ def test_frozen_main_generated_producers_have_explicit_resource_authority(comman
 
 @pytest.mark.parametrize("command", [
     "batch_reconcile", "gate_reopen", "playbook_source_resync", "repair_repository_checkout",
-    "repair_workspace_checkout", "spec_ingest_legacy_inventory", "spec_ingest_reconcile",
+    "repair_workspace_checkout", "recover_retained_holder", "spec_ingest_legacy_inventory",
+    "spec_ingest_reconcile",
     "workspace_cutover",
 ])
 async def test_new_system_producers_reject_project_playbook_authority(command):

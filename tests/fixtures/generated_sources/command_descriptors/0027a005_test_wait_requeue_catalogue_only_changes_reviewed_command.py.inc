@@ -1,6 +1,6 @@
 def test_wait_requeue_catalogue_only_changes_reviewed_command():
     evidence = _wait_requeue_changes()
-    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+    assert _publication_hold_changes()["previous_contract_fingerprint"] == (
         evidence["contract_fingerprint"]
     )
     assert {name for section in evidence["catalogue_sections"].values()
