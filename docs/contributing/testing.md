@@ -254,6 +254,14 @@ because wall-clock assertions are not confined to that package — any suite tha
 asserts elapsed time needs the same gate, and an ungated one turns CI's default
 arm red on runner load.
 
+Keep behavior assertions in the default arm when separating a latency budget.
+For example, the session command no-op close test always checks the real close
+result, the completion pipeline's work outcome and its persisted metadata, with
+a 120-second hang backstop. Its separate `test_no_op_close_latency_budget` uses
+the same assertions under `perf_strict` and retains the two-second close budget.
+PostgreSQL transaction startup under load must not prevent the default arm from
+checking those outcomes.
+
 ## The PostgreSQL substrate
 
 PostgreSQL is the suite's **only** backend; SQLite was removed and
@@ -286,6 +294,11 @@ Teardown wipes *and* replays the migration seed rows: the built-in
 test after the first without them.
 
 The wipe (`db_fixtures.reset_all`) deletes rows rather than truncating tables.
+Before scanning tables, it temporarily blocks new connections to the leased
+database and terminates the test role's existing clients, including idle ones.
+This prevents a late background write from surviving the wipe while its identity
+sequence restarts. Connection admission is restored even if the reset fails or
+is cancelled. Each lease belongs to one worker; other test databases remain open.
 `TRUNCATE ... CASCADE` gives every table in the foreign-key closure new files —
 279 of them after a test that wrote one `projects` row — and each new file is
 an fsync the next checkpoint owes. Every `DROP DATABASE` waits for a
