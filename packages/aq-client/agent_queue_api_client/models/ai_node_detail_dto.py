@@ -24,10 +24,10 @@ class AiNodeDetailDTO:
     budgets, and delegation policy").
 
         Attributes:
-            profile_id (str):
             capabilities (CapabilityNamespacesDTO): ``CapabilityPolicy`` projected.  Sorted; empty list means deny-all.
             capability_fingerprint (str):
             budget (AiBudgetDTO):
+            profile_id (None | str | Unset):
             intelligence_class (None | str | Unset):
             provider (None | str | Unset):
             model (None | str | Unset):
@@ -36,10 +36,10 @@ class AiNodeDetailDTO:
             delegation (DelegationPolicyDTO | None | Unset):
     """
 
-    profile_id: str
     capabilities: CapabilityNamespacesDTO
     capability_fingerprint: str
     budget: AiBudgetDTO
+    profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     provider: None | str | Unset = UNSET
     model: None | str | Unset = UNSET
@@ -51,13 +51,17 @@ class AiNodeDetailDTO:
         from ..models.ai_node_detail_dto_output_schema_type_0 import AiNodeDetailDTOOutputSchemaType0
         from ..models.delegation_policy_dto import DelegationPolicyDTO
 
-        profile_id = self.profile_id
-
         capabilities = self.capabilities.to_dict()
 
         capability_fingerprint = self.capability_fingerprint
 
         budget = self.budget.to_dict()
+
+        profile_id: None | str | Unset
+        if isinstance(self.profile_id, Unset):
+            profile_id = UNSET
+        else:
+            profile_id = self.profile_id
 
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
@@ -99,12 +103,13 @@ class AiNodeDetailDTO:
 
         field_dict.update(
             {
-                "profile_id": profile_id,
                 "capabilities": capabilities,
                 "capability_fingerprint": capability_fingerprint,
                 "budget": budget,
             }
         )
+        if profile_id is not UNSET:
+            field_dict["profile_id"] = profile_id
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
         if provider is not UNSET:
@@ -128,13 +133,20 @@ class AiNodeDetailDTO:
         from ..models.delegation_policy_dto import DelegationPolicyDTO
 
         d = dict(src_dict)
-        profile_id = d.pop("profile_id")
-
         capabilities = CapabilityNamespacesDTO.from_dict(d.pop("capabilities"))
 
         capability_fingerprint = d.pop("capability_fingerprint")
 
         budget = AiBudgetDTO.from_dict(d.pop("budget"))
+
+        def _parse_profile_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
 
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
@@ -200,10 +212,10 @@ class AiNodeDetailDTO:
         delegation = _parse_delegation(d.pop("delegation", UNSET))
 
         ai_node_detail_dto = cls(
-            profile_id=profile_id,
             capabilities=capabilities,
             capability_fingerprint=capability_fingerprint,
             budget=budget,
+            profile_id=profile_id,
             intelligence_class=intelligence_class,
             provider=provider,
             model=model,

@@ -15,6 +15,12 @@ related:
 
 # Release Roadmap — Tier 1 through Ongoing
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 This document captures the release task list as of 2026-09-06 and grounds each
 item in the current state of the repository. Each area has three parts: **Where
 we are** (verified against the checkout, with file paths), **What "done" means**
@@ -212,7 +218,10 @@ one line in the docs.
 
 - Docs are MkDocs (`mkdocs.yml`, `scripts/generate-docs.sh`), with
   `docs/specs/` as the source of truth and `docs/guides/` as the operator
-  layer. Several guides are visibly out of date: `getting-started.md` treats
+  layer. *(Superseded 2026-09-09: the MkDocs site and its GitHub Pages deploy
+  were retired — 49 of its 77 nav pages did not exist. Documentation is
+  GitHub-rendered Markdown; see
+  [CI](../../contributing/ci.md#there-is-no-documentation-build).)* Several guides are visibly out of date: `getting-started.md` treats
   Discord as required, `docs/specs/database.md` §1 still describes a single
   `aiosqlite` connection with no pooling, and `docs/guides/discord-commands.md`
   documents a deprecated hooks section and chat-only file/shell capabilities.
@@ -422,8 +431,11 @@ one line in the docs.
 These are places where the repo and the task list, or two parts of the repo,
 disagree. Each should become a task or be resolved in the sweep.
 
-1. `setup.sh` still installs `acpx` and references `runtime: acpx` profiles;
-   both were removed from the codebase.
+1. ~~`setup.sh` still installs `acpx` and references `runtime: acpx` profiles;
+   both were removed from the codebase.~~ Resolved 2026-09-09: the acpx block
+   is gone and the undefined `gemini` extra became `llm`. `tests/
+   test_setup_script.py` is the ratchet. The rest of item 1 under §1 (fresh
+   macOS / WSL2 runs recorded under `docs/gates/`) is still open.
 2. `docs/guides/getting-started.md` lists a Discord bot token as a
    prerequisite; the README documents `messaging_platform: none`.
 3. `docs/guides/getting-started.md` references `aq project onboard`, which the
