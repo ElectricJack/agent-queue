@@ -144,3 +144,28 @@ async def test_numeric_meta_value_reads_every_shape_without_raising(db, text, ex
     async with db.immediate() as conn:
         got = await conn.scalar(select(numeric_meta_value(literal(text))))
     assert got == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(42.5, 42.5), (0, 0.0), ("42.5", 0.0), (None, 0.0), ({"until": 42.5}, 0.0)],
+)
+async def test_integration_rework_cutoff_guards_stored_metadata(db, value, expected):
+    """Malformed rework metadata must not break the sibling-receipt frontier."""
+    from sqlalchemy import select
+
+    from src.database.queries.hierarchy_queries import integration_rework_cutoff
+    from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
+    from src.models import Project, Task
+
+    await db.create_project(Project(id="rework-project", name="Rework"))
+    await db.create_task(
+        Task(id="rework-task", project_id="rework-project", title="Rework", description="")
+    )
+    await db.set_task_meta("rework-task", INTEGRATION_REWORK_AT_KEY, value)
+
+    async with db.immediate() as conn:
+        got = await conn.scalar(select(integration_rework_cutoff("rework-task")))
+        missing = await conn.scalar(select(integration_rework_cutoff("no-metadata")))
+    assert got == pytest.approx(expected)
+    assert missing is None
