@@ -1,4 +1,4 @@
-"""Read-only promotion-flow schema and file validation."""
+"""Promotion flow validation and PR-backed promotion requests."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .envelope import emit
 
 @cli.group()
 def promote() -> None:
-    """Validate composable branch promotion flows."""
+    """Validate promotion flows and manage pinned step PRs."""
 
 
 def _render(data: dict) -> None:
@@ -70,3 +70,140 @@ def promote_validate(
     emit(ctx, data, render=_render)
     if not data.get("valid"):
         raise SystemExit(1)
+
+
+# Intent commands register separately from schema/remote-policy tooling.
+def _execute_intent(ctx: click.Context, command: str, args: dict) -> None:
+    async def run():
+        async with _get_client() as client:
+            return await client.execute(command, args)
+
+    data = _run(run())
+    emit(ctx, data, render=_render)
+    if not data.get("success"):
+        raise SystemExit(1)
+
+
+@promote.command("prepare")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id", required=True)
+@click.option("--bump", type=click.Choice(["minor", "patch"]))
+@click.option("--version", help="Explicit version to prepare.")
+@click.option("--from-task", help="Task motivating this preparation.")
+@click.pass_context
+@_handle_errors
+def promote_prepare(ctx, project_id, step_id, bump, version, from_task):
+    """File a version bump and notes draft as ordinary work on the default branch."""
+    if (version is None) == (bump is None):
+        raise click.UsageError("Choose exactly one of --version or --bump.")
+    _execute_intent(ctx, "promote_prepare", {
+        "project_id": project_id, "step_id": step_id, "bump": bump,
+        "version": version, "from_task": from_task,
+    })
+
+
+@promote.command("request")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id", required=True)
+@click.option(
+    "--from", "source_sha", help="Exact source commit; defaults to the source branch tip."
+)
+@click.option("--version", help="Version at the pinned source commit.")
+@click.option("--notes-reviewed", is_flag=True)
+@click.option("--allow-breaking-migration", is_flag=True,
+              help="Operator only: accept unproven migrations and disable rollback across this release.")
+@click.option("--from-task", help="Completed hotfix task whose exact source to promote.")
+@click.pass_context
+@_handle_errors
+def promote_request(ctx, project_id, step_id, source_sha, version, notes_reviewed,
+                    allow_breaking_migration, from_task):
+    """Open a pinned step PR and an idempotent promotion intent."""
+    _execute_intent(
+        ctx,
+        "promote_request",
+        {
+            "project_id": project_id,
+            "step_id": step_id,
+            "source_sha": source_sha,
+            "version": version,
+            "notes_reviewed": notes_reviewed,
+            **({"allow_breaking_migration": True} if allow_breaking_migration else {}),
+            **({"from_task": from_task} if from_task else {}),
+        },
+    )
+
+
+@promote.command("hotfix")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id", required=True)
+@click.option("--title", required=True)
+@click.option("--description")
+@click.option("--from-task", help="Bug task that prompted this hotfix.")
+@click.option("--version", help="Patch version the hotfix must prepare.")
+@click.pass_context
+@_handle_errors
+def promote_hotfix(ctx, project_id, step_id, title, description, from_task, version):
+    """File a fix on the step target; request its promotion after completion."""
+    _execute_intent(ctx, "promote_hotfix", {
+        "project_id": project_id, "step_id": step_id, "title": title,
+        "description": description, "from_task": from_task, "version": version,
+    })
+
+
+@promote.command("approve")
+@click.argument("request_id")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.pass_context
+@_handle_errors
+def promote_approve(ctx, request_id, project_id):
+    """Post a GitHub approval as the operator's authenticated gh user."""
+    _execute_intent(ctx, "promote_approve", {"project_id": project_id, "request_id": request_id})
+
+
+@promote.command("cancel")
+@click.argument("request_id")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.pass_context
+@_handle_errors
+def promote_cancel(ctx, request_id, project_id):
+    """Close an unpublished step PR and abort its intent."""
+    _execute_intent(ctx, "promote_cancel", {"project_id": project_id, "request_id": request_id})
+
+
+@promote.command("repair")
+@click.argument("request_id")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.pass_context
+@_handle_errors
+def promote_repair(ctx, request_id, project_id):
+    """Back up and restore a stranded intent's task (IN_PROGRESS, unrouted)."""
+    _execute_intent(ctx, "promote_repair", {"project_id": project_id, "request_id": request_id})
+
+
+@promote.command("status")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id")
+@click.pass_context
+@_handle_errors
+def promote_status(ctx, project_id, step_id):
+    """Read step intents and cached check/review evidence."""
+    _execute_intent(ctx, "promote_status", {"project_id": project_id, "step_id": step_id})
+
+
+@promote.command("list")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id")
+@click.option("--limit", type=click.IntRange(1, 100), default=20)
+@click.pass_context
+@_handle_errors
+def promote_list(ctx, project_id, step_id, limit):
+    """List recorded promotions using the local evidence cache."""
+    _execute_intent(
+        ctx,
+        "promote_list",
+        {
+            "project_id": project_id,
+            "step_id": step_id,
+            "limit": limit,
+        },
+    )
