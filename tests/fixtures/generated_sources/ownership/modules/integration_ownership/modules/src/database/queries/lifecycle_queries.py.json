@@ -1,0 +1,25 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.flag_stale_open::e8a2b4864b5a13dbdbed6cc88cc2620503b9e9e167c4c21405eb953fbd12e150": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 168,
+      "owner": "LifecycleQueryMixin.flag_stale_open",
+      "owner_fingerprint": "7d988f7d42574bb39578dd3d99f3f334364ec20e7422df05de314651e7140760",
+      "reason": "Ordinary stale-open advisory, deduplicated supervisor notice and audit event; READY episode identity is rechecked before notification. No ref replay or delivery authority."
+    },
+    "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.record_frontier_rejection::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 80,
+      "owner": "LifecycleQueryMixin.record_frontier_rejection",
+      "owner_fingerprint": "16e506ef56173adb09c643606c9dee5d4145a6555ac3c5d2864ff550d85aaeda",
+      "reason": "Ordinary continuous READY rejection timestamp and advisory cleanup. Clears only its own stale attention code on admission recovery; no ref replay or delivery authority."
+    }
+  }
+}
