@@ -1,0 +1,134 @@
+{
+  "shared_definitions": {
+    "src/playbooks/services.py::DatabaseActivationSource.development_reviews_suppressed": {
+      "baseline_span": [
+        251,
+        254
+      ],
+      "landing_span": [
+        251,
+        254
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::DatabaseActivationSource.legacy_final_review_suppressed": {
+      "baseline_span": [
+        255,
+        260
+      ],
+      "landing_span": [
+        255,
+        260
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::DatabaseActivationSource.ready_activations": {
+      "baseline_span": [
+        191,
+        246
+      ],
+      "landing_span": [
+        191,
+        246
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::INTEGRATION_LIFECYCLE_PLAYBOOK_IDS": {
+      "baseline_span": [
+        26,
+        37
+      ],
+      "landing_span": [
+        26,
+        37
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::IntegrationRouteTarget": {
+      "baseline_span": [
+        75,
+        92
+      ],
+      "landing_span": [
+        75,
+        92
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::PROMOTION_POLICY_EVENTS": {
+      "reason": "Retained promotion notification event names shared by project-scoped policy routing and healthy activation/subscriber no-consumer proofs. No storage or write authority is introduced."
+    },
+    "src/playbooks/services.py::_PARENT_INTEGRATION_EVENTS": {
+      "baseline_span": [
+        38,
+        54
+      ],
+      "landing_span": [
+        38,
+        54
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::_POLICY_ROUTE_FALLBACK_EVENTS": {
+      "baseline_span": [
+        66,
+        74
+      ],
+      "landing_span": [
+        66,
+        74
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::_ROOT_INTEGRATION_EVENTS": {
+      "baseline_span": [
+        55,
+        65
+      ],
+      "landing_span": [
+        55,
+        65
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::_promotion_route": {
+      "reason": "Selects the reviewed request or continuous promotion policy from the stored step type and an enabled, healthy project-scoped activation."
+    },
+    "src/playbooks/services.py::import from src.integration.models import HierarchicalIntegrationPolicy": {
+      "baseline_span": [
+        10,
+        11
+      ],
+      "landing_span": [
+        10,
+        11
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::import from src.integration.outbox import PROMOTION_EVENT_TYPES as PROMOTION_POLICY_EVENTS": {
+      "reason": "Shared promotion policy event vocabulary used to filter active-train outbox dispatch and project-scoped playbook routes. No new storage or writer."
+    },
+    "src/playbooks/services.py::is_integration_route_event": {
+      "baseline_span": [
+        93,
+        96
+      ],
+      "landing_span": [
+        93,
+        96
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/services.py::resolve_integration_route": {
+      "baseline_span": [
+        97,
+        179
+      ],
+      "landing_span": [
+        97,
+        179
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
