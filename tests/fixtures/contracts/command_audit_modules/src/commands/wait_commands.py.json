@@ -1,0 +1,212 @@
+{
+  "reconcile_agent_waits": {
+    "argument_reads_diagnostic_only": [
+      "now",
+      "wait_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_commands.py:WaitCommandsMixin._cmd_reconcile_agent_waits",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'only the daemon may reconcile agent waits')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:a867d3b3f13f8185b7addd4c45b3ba541612c182069ba14ceece42a6a8935c8d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "wait_cancel": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "wait_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_commands.py:WaitCommandsMixin._cmd_wait_cancel",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._wait_v2_cancel(args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'wait not found')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'wait': row}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(exc.code, exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wait.invalid', exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:d198ff8e853a788f605739a7f352632f113278597c63d091f222430fed5e4d96",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "wait_get": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_commands.py:WaitCommandsMixin._cmd_wait_get",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._wait_v2_get(values, args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'wait not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'wait history belongs to another owner or project')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'wait': row, 'next_step': next_step}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(exc.code, exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wait.invalid', exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:882c24a3901c0557c335ad940fe44abf38cb5c225b1b1366273e4094c7808322",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "wait_list": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "offset"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_commands.py:WaitCommandsMixin._cmd_wait_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._wait_v2_list(args)"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'waits': rows, 'count': len(rows)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(getattr(exc, 'code', 'wait.invalid'), exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:24765036de6c53553e79b32cb1a6af90bda55fc60dd0d387016e260f6e31f9c2",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "wait_register": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_commands.py:WaitCommandsMixin._cmd_wait_register",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wait.condition_required', 'version 2 requires a typed condition')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._wait_v2_register(values, args)"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'wait': row, 'next_step': wait_next_step(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(exc.code, exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wait.invalid', exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:d3498c39230f8ad169d0f4ccdfef66fb46f04a11a3ed0eb980d040153cf724ff",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}
