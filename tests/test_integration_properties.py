@@ -28,13 +28,20 @@ from tests.test_branch_retirement import (
 from tests import test_branch_retirement
 from tests.test_integration_batches import batch_env as batch_env
 from tests.test_integration_gitops import commit, git, setup as setup
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_train import Batches, Repair, ROOT, Targets, train
 from tests.test_promotion_steps import promotion as promotion
 
 
 retirement_setup = test_branch_retirement.setup
-# These properties explicitly reset mutable fixture state before every example.
-property_settings = settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+# Real Git examples are expensive: three per property under the CI profile, a
+# hundred under the deep one. These properties explicitly reset mutable fixture
+# state before every example.
+_DEEP = settings.default.max_examples > settings.get_profile("ci").max_examples
+property_settings = settings(
+    max_examples=100 if _DEEP else 3,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
 PAYLOADS = st.lists(st.integers(min_value=0, max_value=1000), min_size=1, max_size=3)
 HISTORY = st.lists(
     st.sampled_from(["restart", "move_target", "repair", "lost_response"]), max_size=3,
