@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlalchemy import select, text
 
 from src.database.tables import record_legacy_mappings
+from src.knowledge.deprecation import record_usage_on
 from src.records.models import RecordError
 
 
@@ -71,6 +72,11 @@ class CompatibilityFence:
     async def read(self, execute, **identity):
         async with self.db.immediate() as conn:
             mapping = await self.lookup_on(conn, **identity)
+            if mapping and mapping["ownership"] == "managed":
+                await record_usage_on(
+                    conn, scope_key=identity["source_scope"], operation="read",
+                    outcome="canonical_read",
+                )
         if not mapping or mapping["ownership"] != "managed":
             return None
         project = identity["source_scope"]
@@ -100,6 +106,12 @@ class CompatibilityFence:
     ):
         async with self.db.immediate() as conn:
             mapping = await self.lookup_on(conn, **identity)
+            if mapping and mapping["ownership"] == "managed":
+                await record_usage_on(
+                    conn, scope_key=identity["source_scope"], operation="write",
+                    outcome=("guarded_write" if if_revision and idempotency_key
+                             and isinstance(patch, dict) else "refused_write"),
+                )
         if not mapping or mapping["ownership"] != "managed":
             return None
         if not if_revision or not idempotency_key or not isinstance(patch, dict):
@@ -125,7 +137,7 @@ class CompatibilityFence:
         return await execute("knowledge_update", args)
 
     @asynccontextmanager
-    async def note_path(self, project_id, path):
+    async def note_path(self, project_id, path, *, operation=None):
         """Hold the same source lock around legacy filesystem side effects.
 
         Physical paths are retained in mapping decision evidence at cutover.
@@ -154,6 +166,11 @@ class CompatibilityFence:
                 .mappings()
                 .first()
             )
+            if mapping and operation:
+                await record_usage_on(
+                    conn, scope_key=mapping["source_scope"], operation=operation,
+                    outcome="canonical_read" if operation in {"read", "list"} else "refused_write",
+                )
             yield mapping
 
 

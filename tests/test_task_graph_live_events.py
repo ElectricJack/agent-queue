@@ -108,7 +108,14 @@ async def test_deletion_keeps_project_context_after_row_is_gone(setup, cascade):
     if cascade:
         await task(db, "child")
         await db.add_dependency("child", "t", "parent-child")
-    assert (await handler._cmd_delete_task({"task_id": "t", "cascade": cascade}))["deleted"] == "t"
+    preview = await handler._cmd_delete_task({"task_id": "t", "cascade": cascade})
+    assert preview["disposition"] == "preview"
+    assert await db.get_task("t") is not None
+    assert queue.empty()
+    result = await handler._cmd_delete_task(
+        {"task_id": "t", "cascade": cascade, "confirmed": True}
+    )
+    assert result["deleted"] == "t"
     assert await db.get_task("t") is None
     await assert_change(db, queue, "task.deleted")
 

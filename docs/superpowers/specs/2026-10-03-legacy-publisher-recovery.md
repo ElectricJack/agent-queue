@@ -15,8 +15,8 @@ recorded in the same terms below.
 * `aq integration migrate-provenance PROJECT --task-id TASK --source SHA
   --reason REASON --apply` may attest a completed generation with no database
   completion row. Its generation is the recorded current completion id, or a
-  deterministic legacy identity fenced to the task version. Missing-row
-  attestations also retain that version identity so archiving, which drops
+  persisted legacy identity fenced to the completed incarnation. Missing-row
+  attestations also retain that legacy identity so archiving, which drops
   current-generation metadata and claim epochs, preserves the decision.
   No passing worker completion or CI result is fabricated. `--no-artifact`
   replaces `--source` for explicitly artifact-free work and requires a reason.
@@ -24,6 +24,17 @@ recorded in the same terms below.
   Apply rechecks task identity and excludes active writers under a row lock;
   the operator identity, reason and actual result are recorded in the audit log.
   Reopening creates a different generation, so old evidence cannot satisfy it.
+  `tasks.legacy_completion_id` rotates only on entering or leaving COMPLETED;
+  comments, findings, description edits and same-status writes preserve it.
+  Archive copies it into `archived_tasks.legacy_completion_id`. Revision
+  `a00000000062` preserves the former timestamp-derived locator and recovers
+  successful live operator attestations from their audit results only when
+  they postdate the task's last reopen fence. It never copies a delivery answer
+  or fabricates Git evidence. Archived rows retain their former exact locator;
+  ambiguous historical decisions still require explicit operator resolution.
+  The one-way SQLite importer omits this PostgreSQL-era column when absent
+  from a legacy source, letting the target default create each identity.
+  Existing source identities are preserved; other required columns still fail closed.
 * A COMPLETED task whose latest completion is its current generation but did not
   pass is attested on a `--reason` too, fenced to that generation. Such a
   generation recorded what it read, not an artifact of its own, so

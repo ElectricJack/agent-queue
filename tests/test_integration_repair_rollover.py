@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
+from src.commands.task_commands import TaskCommandsMixin
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_revisions,
+    integration_owner_recoveries,
     integration_repair_stages,
     integration_review_evidence,
     playbook_artifacts,
@@ -21,12 +23,11 @@ from src.git.manager import GitError
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
 from src.integration.repair import RepairService
-from src.integration.service import IntegrationService
 from src.models import Agent, AgentState, TaskStatus
 from src.orchestrator.core import Orchestrator
 from tests import test_integration_owner_recovery as owner_tests
 from tests.test_integration_owner_recovery import git, remote_sha
-from tests.test_integration_repair import _artifact, _policy
+from tests.test_integration_repair import _artifact, _policy, _restart_command
 
 env = owner_tests.env
 
@@ -146,19 +147,9 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     case = await _batch_writer(env, dirty=dirty)
     repair = case.repair
 
-    async def dispatch_due(_now):
-        for row in await repair.pending_dispatches():
-            await repair.dispatch(row["operation_id"], row["ordinal"])
-
-    service = IntegrationService(
-        case.db, SimpleNamespace(mark_due=AsyncMock()), repair,
-        SimpleNamespace(dispatch_due=AsyncMock()),
-        repair_dispatch_handler=dispatch_due,
-        clock=lambda: 130.0,
-    )
-    # Natural persisted deadline pass, with no CI event: the writer is still
-    # draining, so the clock neither retires it nor allocates a successor.
-    await service.tick(130.0)
+    # Deadline handling is a shared domain operation invoked by the reviewed
+    # reconciler policy; the retired service has no autonomous deadline source.
+    await repair.expire(case.operation, 0, now=130.0)
     waiting = await _stage(case, 0)
     assert waiting["state"] == "active" and waiting["deadline_at"] == 430.0
     assert waiting["dossier"]["deadline_deferrals"][-1]["reason"] == "writer_live"
@@ -227,7 +218,7 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert owner["fence_token"] == case.owner["fence_token"] + 2
 
     # The real origin/fence resolver and checkout-start path must choose the
-    # preservation ref instead of the unchanged partial on canonical origin.
+    # task branch containing the recovered progress instead of the old partial.
     orch = Orchestrator.__new__(Orchestrator)
     orch.db, orch.git = case.db, case.recovery.git
     task = await case.db.get_task(next_id)
@@ -251,66 +242,85 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert len([r for r in await env.audits(case.owner["id"])
                 if r["outcome"] == "preserved_and_released"]) == 1
     assert await _stage(case, 1) == after
-    assert remote_sha(env.origin, case.target.branch) == case.partial
+    assert remote_sha(env.origin, case.target.branch) == tip
 
 
-@pytest.mark.parametrize("on_exhausted", ["human", "continue"])
-async def test_service_retries_a_busy_successor_dispatch_without_any_event(env, on_exhausted):
-    """The lost ``repair_exhausted`` run and a ``busy`` refusal both still advance.
-
-    No playbook runs here: the deadline pass allocates the debug stage, the
-    service's dispatch source finds it under either policy, the attached
-    predecessor makes the first dispatch answer ``busy``, and the paced retry
-    hands the stage to its delegate once the old writer has stopped.
-    """
-    import src.integration.service as service_module
-
-    case = await _batch_writer(env, on_exhausted=on_exhausted)
-    repair = case.repair
-    # A conclusive attempt lets this stage's deadline escalate. A live writer
-    # without an attempt now defers its deadline instead of allocating debug.
-    async with case.db.immediate() as conn:
-        await conn.execute(update(integration_repair_stages).where(
-            integration_repair_stages.c.operation_id == case.operation,
-            integration_repair_stages.c.ordinal == 0,
-        ).values(attempts=1))
-    outcomes = []
-
-    async def dispatcher(row):
-        result = await repair.dispatch(row["operation_id"], int(row["ordinal"]))
-        outcomes.append(result["outcome"])
-        return result
-
-    now = [130.0]
-    # Only the deadline and dispatch sources: the reservation reconciler would
-    # also hand a stopped writer's branch over and hide the retry under test.
-    service = IntegrationService(
-        case.db, SimpleNamespace(mark_due=AsyncMock()),
-        SimpleNamespace(expire=repair.expire, pending_dispatches=repair.pending_dispatches),
-        SimpleNamespace(dispatch_due=AsyncMock()),
-        repair_dispatcher=dispatcher, clock=lambda: now[0],
-    )
-    await service.tick(130.0)
-    stage = await _stage(case, 1)
-    assert stage["state"] == "active" and outcomes == ["busy"]
-    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.PAUSED
-
+async def test_rollover_replays_a_snapshot_already_consumed_by_workspace_preparation(env):
+    case = await _batch_writer(env)
     await case.db.update_session("old-session", state="stopped", desired_state="stopped")
     await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
-    now[0] = 131.0
-    await service.tick(131.0)
-    assert outcomes == ["busy"]  # paced: the retry is not due yet
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
+    recovered = await case.recovery.recover(case.owner["id"], principal="sweep")
+    # A divergent recovery uses a temporary ref. Model its consumed audit:
+    # workspace preparation published the commit and deleted that exact ref.
+    ref = f"aq/recovery/{case.owner['id']}/{case.head}"
+    evidence = recovered.evidence | {"preserved_ref": ref}
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_owner_recoveries).where(
+            integration_owner_recoveries.c.owner_row_id == case.owner["id"],
+        ).values(evidence=evidence))
+    assert remote_sha(env.origin, ref) is None
+    assert remote_sha(env.origin, case.target.branch) == case.head
+    result = await case.repair.dispatch(case.operation, 1)
+    assert result["outcome"] == "dispatched"
+    progress = (await _stage(case, 1))["dossier"]["preserved_progress"]
+    assert (progress["ref"], progress["sha"]) == (ref, case.head)
+    assert progress["completed_member_ordinals"] == [0, 1]
 
-    now[0] = 130.0 + service_module.DISPATCH_RETRY_BASE_SECONDS
-    await service.tick(now[0])
-    assert outcomes == ["busy", "dispatched"]
-    assert (await case.db.get_task(stage["repair_task_id"])).status is TaskStatus.READY
+
+async def test_restart_of_a_dead_batch_writer_resumes_its_preserved_commits(env):
+    """The 2026-10-05 incident: restart stranded a dead repair writer.
+
+    ``aq task restart`` on the delegate of a stopped batch writer moved it to
+    READY without its exact reserved repair fence, so the pool claim frontier
+    excluded it (``frontier_origin_not_materialized``) and counted zero demand
+    for it — no worker could ever claim it. The restart must hand the branch
+    back, and the resumed repair must continue from the preserved commits
+    rather than the frozen candidate.
+    """
+    case = await _batch_writer(env)
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    # A stopped writer with unpublished commits rolls over to the successor.
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
+    await case.recovery.recover(case.owner["id"], principal="sweep")
+    dispatched = await case.repair.dispatch(case.operation, 1)
+    delegate = dispatched["repair_task_id"]
+    progress = (await _stage(case, 1))["dossier"]["preserved_progress"]
+    tip = progress["sha"]
+    assert remote_sha(env.origin, progress["ref"]) == tip
+
+    # Its writer claimed the branch and died; owner recovery freed the fence.
+    await case.db.update_task(delegate, status=TaskStatus.BLOCKED)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="released",
+            fence_token=integration_branch_owners.c.fence_token + 1,
+            session_id=None,
+            workspace_id=None,
+        ))
+
+    command = _restart_command(
+        case.db, RepairService(case.db, owner_recovery=case.recovery, clock=lambda: 440.0)
+    )
+    result = await TaskCommandsMixin._cmd_restart_task(command, {"task_id": delegate})
+
+    assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
+    assert (await case.db.get_task(delegate)).status is TaskStatus.READY
     owner = await BranchOwnership(case.db).get_owner(case.target)
-    assert owner["owner_id"] == stage["repair_task_id"] and owner["handoff_state"] == "reserved"
+    assert (owner["owner_id"], owner["owner_role"], owner["handoff_state"]) == (
+        delegate, "repair", "reserved",
+    )
+    assert await case.db.is_hierarchy_task_runnable(delegate)
+    assert await case.db.claim_frontier_exclusions(delegate) == []
+    # The repair resumes from the preserved repair commits, not the frozen base.
+    resumed = await _stage(case, 1)
+    assert resumed["dossier"]["preserved_progress"]["sha"] == tip
+    assert resumed["dossier"]["preserved_progress"]["repair_commits"] == progress["repair_commits"]
+    assert resumed["starting_sha"] == tip
+    assert "Continue at the preserved tip" in (await case.db.get_task(delegate)).description
 
-    now[0] += 1000.0
-    await service.tick(now[0])
-    assert outcomes == ["busy", "dispatched"]  # a launched writer leaves the selection
+
 
 
 @pytest.mark.parametrize("corruption", ["manifest", "ref", "lineage"])
@@ -407,3 +417,61 @@ async def test_accepted_new_revision_supersedes_historical_preservation(env):
     assert await orch._hierarchy_repair_start(
         str(env.base), origin, fence, repository_url=str(env.origin)
     ) == case.head
+
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+
+    authorize_root_primitives(monkeypatch)
+
+
+async def test_rebuilt_stage_resets_branch_carrying_superseded_stage_commits(env):
+    """Base moved during repair: the rebuilt stage owns and resets the branch.
+
+    The prior stage pushed its own commits to the shared repair branch; the
+    candidate was then rebuilt onto a moved base and a new stage froze that
+    rebuild as its start. Admission must lease-reset the branch to the frozen
+    start instead of blocking with ``slot_reset_failed``.
+    """
+    case = await _batch_writer(env)
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
+    await case.repair.dispatch(case.operation, 1)
+    # The prior stage published its work on the repair branch.
+    git(env.base, "push", "-f", "origin", f"{case.head}:refs/heads/{case.target.branch}")
+    stale_tip = remote_sha(env.origin, case.target.branch)
+    # Rebuild onto a moved base: a commit that does not contain the stage work.
+    rebuilt = git(env.base, "commit-tree", f"{case.partial}^{{tree}}", "-p", case.partial,
+                  "-m", "rebuilt candidate")
+    git(env.base, "push", "origin", f"{rebuilt}:refs/heads/aq/rebuilt-candidate")
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(integration_candidate_revisions).values(
+            batch_id="batch", revision=1, construction_base_sha=case.partial,
+            head_sha=rebuilt, state="testing", created_at=150.0, updated_at=150.0,
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(current_revision=1, lifecycle="testing"))
+        await case.repair.bind_current_batch_subject_on(conn, case.operation, now=150.0)
+    assert (await case.repair.expire(case.operation, 1, now=190.0))["stage"] == 2
+    second = await case.repair.dispatch(case.operation, 2)
+    assert second["outcome"] == "dispatched"
+    assert (await _stage(case, 2))["starting_sha"] == rebuilt
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.db, orch.git = case.db, case.recovery.git
+    origin, fence, role = await orch._hierarchy_origin_and_fence(
+        await case.db.get_task(second["repair_task_id"]), await case.db.get_project("p")
+    )
+    assert role == "repair" and origin["base_sha"] == rebuilt
+    assert stale_tip != rebuilt
+    start = await orch._hierarchy_repair_start(
+        str(env.base), origin, fence, repository_url=str(env.origin)
+    )
+    assert start == rebuilt
+    assert remote_sha(env.origin, case.target.branch) == rebuilt
+    # Re-admission (e.g. a retried claim) is idempotent.
+    assert await orch._hierarchy_repair_start(
+        str(env.base), origin, fence, repository_url=str(env.origin)
+    ) == rebuilt

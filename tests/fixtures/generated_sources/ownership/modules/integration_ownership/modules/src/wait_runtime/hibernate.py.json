@@ -1,0 +1,46 @@
+{
+  "shared": {
+    "src/wait_runtime/hibernate.py::HibernationTransaction._advance_locked": {
+      "landing_span": [
+        132,
+        276
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/hibernate.py::HibernationTransaction.cleanup": {
+      "landing_span": [
+        277,
+        308
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/hibernate.py::begin_suspension": {
+      "landing_span": [
+        25,
+        61
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/hibernate.py::import from src.database.queries.continuation_queries import degrade_checkpoint": {
+      "landing_span": [
+        18,
+        18
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/hibernate.py::import from src.waits.checkpoint import collect_checkpoint_facts": {
+      "landing_span": [
+        21,
+        21
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/hibernate.py::locked_suspension": {
+      "landing_span": [
+        62,
+        84
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}

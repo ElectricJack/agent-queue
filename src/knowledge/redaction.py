@@ -24,6 +24,7 @@ from src.database.tables import (
     record_export_state,
     record_import_runs,
     record_import_items,
+    knowledge_context_bundles,
 )
 from src.records.models import RecordError, uuid_value
 
@@ -202,6 +203,18 @@ class RedactionMixin:
                     )
                     .values(proposed_snapshot=None, source_descriptors=[], redacted_at=now)
                 )
+        # Prepared excerpts are derived copies. Keep execution citations and
+        # delivery receipts, but erase every cached body that pins an affected
+        # revision before any future delivery/replay can read it.
+        bundles = (await conn.execute(select(knowledge_context_bundles).where(
+            knowledge_context_bundles.c.redacted_at.is_(None),
+        ))).mappings().all()
+        for bundle in bundles:
+            if any(item["revision_id"] in revs
+                   for item in bundle["selection"].get("items", [])):
+                await conn.execute(update(knowledge_context_bundles).where(
+                    knowledge_context_bundles.c.bundle_id == bundle["bundle_id"],
+                ).values(selection={}, redacted_at=now))
         if artifacts:
             await conn.execute(
                 update(record_source_artifacts)
