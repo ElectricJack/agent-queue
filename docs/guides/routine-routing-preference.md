@@ -54,10 +54,10 @@ every lane, reservation, exclusion and class ceiling; `--prefer` only decides
 *which of the candidates the router was already going to consider* come first,
 or which of them may be considered at all. Two modes, `--prefer-mode`:
 
-| Mode | The router | When the target is busy, out of usage or absent |
+| Mode | The router | When the target cannot take work immediately |
 |---|---|---|
 | `soft` (default) | Routes to the target whenever it has headroom | Routes normally; records that the preference was not honoured and why |
-| `strict` | Admits only candidates that serve the target | Holds the task (`held`), or reports `no_candidates`; never falls back to another harness |
+| `strict` | Admits only candidates that serve the target | Full profiles still receive queued work. Unavailable providers produce `held`; no eligible candidate produces `no_candidates`. Never falls back to another harness. |
 
 Filing validates the name: it must be an installed harness or an enabled worker
 profile, and the mode must be `soft` or `strict`. A disabled profile, a stage,
@@ -106,14 +106,21 @@ decision carries `"preference": null`.
 When a strict target has no eligible candidate, `prefer_target_unavailable`
 includes the effective kind/origin rule, selected class and lane, and the
 admission checks that excluded its installed profiles. For example, a bugfix
-classified at `deep-high` can exclude the `standard-high-claude` rung by class
+escalated to `deep-high` after a substantive standard failure can exclude the
+`standard-high-claude` rung by class
 and the `deep-high-claude` rung by its reservation for design lanes. Available
 standard Claude capacity does not bypass either rule. Project
 `preferred_provider`, provider exclusions and workspace requirements are also
 named when they exclude the target. `aq task explain` includes these details
 from the router's failed run.
 
-## Replay evidence
+The default `balance.usage_mode` is `soft_limit`. A reviewed policy can opt
+into `headroom`, which weights fresh own-provider quota headroom in pressure.
+It does not compare percentages across vendors or unequal windows. Admission
+headroom still controls free-capacity preference independently of that factor.
+See [routing live context](../specs/design/routing-live-context.md).
+
+## Replay evidence (2026-10-02)
 
 The frozen historical input is
 [`routine-routing-history-2026-10-02.json`](../reports/routine-routing-history-2026-10-02.json).
@@ -150,25 +157,24 @@ task to Claude, while ignoring caller-supplied headroom.
 
 The source, compiled policy literals, classifier prompt and manifests are
 shipped together in `src/prompts/reviewed_playbooks/default-assignment-routing/`.
-The candidate artifact is
-`sha256:2af4b14832ef7665ffd32979db32d770d0467b9192452854ddef64a9c09a787d`;
-the policy is
-`sha256:1054012d5b8c9ece77d158ac5121b45398cc1d527da67b090f1b0f0d25530694`.
-Rebuilding the artifact changes its compile timestamp and hash; use the hash in
-the rebuilt manifest if further source changes are made.
+Use the artifact hash from the delivered bundle's `manifest.md` and
+`artifact.sha256`. The hashes recorded for the 2026-10-02 experiment are
+historical; later routing changes produce different candidates.
 
-After delivery of the code, an operator stages the bundle in a fresh directory
-inside the vault, then imports and reviews the exact candidate before activation:
+An operator stages the bundle in a fresh parent directory inside the vault.
+The bundle directory itself must be named `default-assignment-routing`, matching
+the artifact id. Import validates the bytes but does not activate them:
 
 ```bash
-mkdir -p ~/.agent-queue/vault/reviewed-playbooks/routine-routing-candidate-2026-10-02
+mkdir -p ~/.agent-queue/vault/reviewed-playbooks/routing-candidate/default-assignment-routing
 cp src/prompts/reviewed_playbooks/default-assignment-routing/* \
-  ~/.agent-queue/vault/reviewed-playbooks/routine-routing-candidate-2026-10-02/
-aq playbook import --path reviewed-playbooks/routine-routing-candidate-2026-10-02
+  ~/.agent-queue/vault/reviewed-playbooks/routing-candidate/default-assignment-routing/
+aq playbook import --path reviewed-playbooks/routing-candidate/default-assignment-routing
+ROUTING_ARTIFACT_SHA256=$(cat ~/.agent-queue/vault/reviewed-playbooks/routing-candidate/default-assignment-routing/artifact.sha256)
 aq playbook artifact-diff --playbook-id default-assignment-routing \
-  --target-sha256 sha256:2af4b14832ef7665ffd32979db32d770d0467b9192452854ddef64a9c09a787d
+  --target-sha256 "$ROUTING_ARTIFACT_SHA256"
 aq playbook activate --playbook-id default-assignment-routing \
-  --artifact-sha256 sha256:2af4b14832ef7665ffd32979db32d770d0467b9192452854ddef64a9c09a787d
+  --artifact-sha256 "$ROUTING_ARTIFACT_SHA256"
 ```
 
 Record the prior active hash before activation for rollback through the same

@@ -77,6 +77,8 @@ worker template.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "integration_continue_close",
+    "integration_batch_fix",
     "wait_explain",
     "wait_checkpoint",
     "wait_ack",
@@ -171,6 +173,7 @@ worker template.
     "test_selection_show"
   ],
   "plugin_tools": [
+    "read_file",
     "git_create_pr",
     "git_diff",
     "get_git_status",
