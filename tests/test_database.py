@@ -1,5 +1,4 @@
 import pytest
-from src.database import Database
 from src.models import (
     Project,
     Task,
@@ -14,11 +13,9 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 class TestProjectCRUD:
@@ -383,6 +380,14 @@ class TestTaskMetadata:
         await db.set_task_meta("t-1", "config", {"retries": 3, "timeout": 60})
         result = await db.get_task_meta("t-1", "config")
         assert result == {"retries": 3, "timeout": 60}
+
+    async def test_concurrent_first_writers(self, db):
+        import asyncio
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await asyncio.gather(*(db.set_task_meta("t-1", "config", i) for i in range(10)))
+        assert await db.get_task_meta("t-1", "config") in range(10)
 
     async def test_get_all(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
