@@ -44,6 +44,48 @@ def ctx(tmp_path):
     return DoctorContext(config=config, db=None, handler=None)
 
 
+@pytest.mark.parametrize("material", [None, "bad", "eA==", "valid"])
+async def test_private_value_key_diagnostic(ctx, monkeypatch, material):
+    import base64
+
+    variable = "AQ_DOCTOR_TEST_PRIVATE_KEY"
+    monkeypatch.delenv(variable, raising=False)
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": variable}
+    encoded = base64.b64encode(b"x" * 32).decode() if material == "valid" else material
+    if encoded is not None:
+        monkeypatch.setenv(variable, encoded)
+    check = default_registry().get("playbooks.private_value_key")
+
+    result = await check.run(ctx)
+
+    assert result.severity is (Severity.OK if material == "valid" else Severity.ERROR)
+    assert check.fix is None
+    if material != "valid":
+        assert "private_storage_key_unavailable" in result.detail
+        assert "Restore the original key" in result.detail
+    if encoded:
+        assert encoded not in json.dumps(result.to_dict())
+
+
+async def test_private_value_key_diagnostic_uses_live_service(ctx, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+
+    from src.playbooks.private_values import PrivateValueService
+
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": "AQ_DOCTOR_TEST_PRIVATE_KEY"}
+    monkeypatch.setenv("AQ_DOCTOR_TEST_PRIVATE_KEY", base64.b64encode(b"x" * 32).decode())
+    ctx.db = SimpleNamespace(playbook_private_values=lambda: PrivateValueService(object()))
+    check = default_registry().get("playbooks.private_value_key")
+    assert (await check.run(ctx)).severity is Severity.ERROR
+    ctx.config.playbooks.enabled = False
+    assert (await check.run(ctx)).severity is Severity.INFO
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -72,6 +114,7 @@ class TestRegistry:
         assert reg.unregister("x.y") is False
 
     def test_default_registry_has_all_builtins(self):
+        from src.doctor.ask_checks import ask_checks
         from src.doctor.capability_checks import capability_checks
         from src.doctor.dashboard_server_checks import dashboard_server_checks
         from src.doctor.dashboard_state_checks import dashboard_state_checks
@@ -93,17 +136,18 @@ class TestRegistry:
         from src.doctor.resource_checks import resource_checks
         from src.doctor.review_checks import review_checks
         from src.doctor.routing_checks import routing_checks
-        from src.doctor.script_checks import script_checks
         from src.doctor.service_checks import service_checks
         from src.doctor.session_checks import session_checks
         from src.doctor.skill_checks import skill_checks
         from src.doctor.stall_checks import stall_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
+        from src.doctor.wait_checks import wait_checks
 
         reg = default_registry()
         expected = (
             {c.id for c in builtin_checks()}
+            | {c.id for c in ask_checks()}
             | {c.id for c in hierarchy_checks()}
             | {c.id for c in pool_checks()}
             | {c.id for c in task_checks()}
@@ -112,7 +156,6 @@ class TestRegistry:
             | {c.id for c in skill_checks()}
             | {c.id for c in stall_checks()}
             | {c.id for c in resource_checks()}
-            | {c.id for c in script_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
             | {c.id for c in git_checks()}
@@ -132,6 +175,7 @@ class TestRegistry:
             | {c.id for c in routing_checks()}
             | {c.id for c in service_checks()}
             | {c.id for c in record_checks()}
+            | {c.id for c in wait_checks()}
         )
         assert set(reg.ids()) == expected
 

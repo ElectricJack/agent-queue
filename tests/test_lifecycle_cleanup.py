@@ -17,7 +17,6 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.database.tables import events, projects, tasks
 from src.git.manager import GitManager
 from src.integration.development import (
@@ -42,12 +41,10 @@ SHA = "c9fe0f80500894c94ecefd2b7dd92d5928e034db"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -506,6 +503,89 @@ async def supervisor_messages(db, tid):
         ).all()
 
 
+async def test_ready_frontier_attention_is_delayed_deduplicated_and_cleared(db, orch):
+    from src.models import AgentProfile
+
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
+    await mktask(db, "ready", status=TaskStatus.READY, profile_id="worker",
+                 route_source="router")
+    now = time.time()
+    threshold = orch.config.work_graph.frontier_rejected_after_seconds
+    await db.set_task_meta("ready", "claim_prepare_backoff_until", now + 10 * threshold)
+    assert await orch.reevaluate_frontier_rejections(now=now) == []
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold - 1) == []
+    assert await supervisor_messages(db, "ready") == []
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold) == ["ready"]
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold + 1) == []
+    [notice] = await supervisor_messages(db, "ready")
+    assert notice.to_id == f"supervisor-{PROJECT_ID}"
+    assert "frontier_claim_prepare_backoff" in notice.body
+    assert await db.get_task_meta("ready", "needs_attention") == "stale_open"
+    await db.set_task_meta("ready", "claim_prepare_backoff_until", 0)
+    # The advisory itself must never hold recovered work out of demand or claims.
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        ) == "ready"
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold + 2) == []
+    assert await db.get_task_meta("ready", "needs_attention") is None
+    assert await db.get_task_meta("ready", "frontier_rejection_since") is None
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    # A later rejection in the same READY status is a new notification episode.
+    await db.set_task_meta("ready", "claim_prepare_backoff_until", now + 10 * threshold)
+    later = now + 2 * threshold
+    assert await orch.reevaluate_frontier_rejections(now=later) == []
+    assert await orch.reevaluate_frontier_rejections(now=later + threshold) == ["ready"]
+    assert len(await supervisor_messages(db, "ready")) == 2
+    await db.transition_task("ready", TaskStatus.IN_PROGRESS)
+    assert await db.get_task_meta("ready", "needs_attention") is None
+    assert await db.get_task_meta("ready", "frontier_rejection_since") is None
+
+
+async def test_ready_frontier_attention_preserves_other_incidents_and_paused_projects(db, orch):
+    await mktask(db, "ready", status=TaskStatus.READY)
+    now = time.time()
+    await db.set_task_meta("ready", "needs_attention", "operator_required")
+    await orch.reevaluate_frontier_rejections(now=now)
+    await orch.reevaluate_frontier_rejections(now=now + 3600)
+    assert await db.get_task_meta("ready", "needs_attention") == "operator_required"
+    assert await supervisor_messages(db, "ready") == []
+    await db.update_project(PROJECT_ID, status="paused")
+    await orch.reevaluate_frontier_rejections(now=now + 7200)
+    assert await supervisor_messages(db, "ready") == []
+    orch.config.work_graph.frontier_rejected_after_seconds = 0
+    assert await orch.reevaluate_frontier_rejections(now=now + 10800) == []
+
+
+@pytest.mark.parametrize("before,after,attention,expected", [
+    (TaskStatus.READY, TaskStatus.IN_PROGRESS, "stale_open", None),
+    (TaskStatus.READY, TaskStatus.IN_PROGRESS, "operator_required", None),
+    (TaskStatus.READY, TaskStatus.FAILED, "stale_open", None),
+    (TaskStatus.READY, TaskStatus.FAILED, "operator_required", "operator_required"),
+    (TaskStatus.BLOCKED, TaskStatus.READY, "operator_required", "operator_required"),
+    (TaskStatus.PAUSED, TaskStatus.READY, "stale_open", None),
+])
+async def test_leaving_stale_episode_preserves_unresolved_incidents(
+    db, before, after, attention, expected,
+):
+    await mktask(db, "episode", status=before)
+    await db.set_task_meta("episode", "needs_attention", attention)
+    await db.set_task_meta("episode", "stale_open_detail", {"status": before.value})
+    await db.set_task_meta("episode", "frontier_rejection_since", time.time())
+    await db.set_task_meta("episode", "work_dir", "/retained/workspace")
+
+    if before == TaskStatus.PAUSED:
+        await db.resume_task("episode")
+    else:
+        await db.transition_task("episode", after)
+
+    assert await db.get_task_meta("episode", "needs_attention") == expected
+    assert await db.get_task_meta("episode", "stale_open_detail") is None
+    assert await db.get_task_meta("episode", "frontier_rejection_since") is None
+    assert await db.get_task_meta("episode", "work_dir") == "/retained/workspace"
+
+
 class TestStaleOpenReevaluation:
     async def test_satisfied_blocker_with_a_stale_projection_is_unblocked(self, db, orch):
         await blocked_on(db)
@@ -870,7 +950,11 @@ class TestObsoleteClose:
                 update(projects).where(projects.c.id == "p-train")
                 .values(hierarchical_integration_mode="hierarchy")
             )
-        await mktask(db, "train-task", status=TaskStatus.READY, project_id="p-train")
+        await mktask(db, "train-root", status=TaskStatus.IN_PROGRESS, project_id="p-train")
+        await mktask(
+            db, "train-task", status=TaskStatus.READY, project_id="p-train",
+            parent_task_id="train-root",
+        )
 
         cases = {
             ("live", "why"): "obsolete.live_session",
@@ -979,6 +1063,271 @@ class TestObsoleteCloseCommand:
             {"task_id": "t", "obsolete": True, "reason": "x", "outcome": "pass"}
         )
         assert result["code"] == "obsolete.outcome_conflict"
+
+
+async def claimed_task(db, tid, status_=TaskStatus.IN_PROGRESS, *, agent="agent-1"):
+    """A task with an agent bound to it, the agent created first (FK)."""
+    from src.models import Agent, AgentState
+
+    await db.create_agent(
+        Agent(id=agent, name=agent, profile_id="worker", state=AgentState.BUSY)
+    )
+    await mktask(db, tid, status=status_, assigned_agent_id=agent)
+    await db.update_agent(agent, current_task_id=tid)
+
+
+async def stale_claim(db, tid, *, workspace="ws-1"):
+    """The azure-beacon-38 shape: a dead worker's claim and workspace lock."""
+    from src.models import RepoSourceType, Workspace
+
+    now = time.time()
+    await db.create_session(
+        SessionRecord(
+            id="s-dead", task_id=None, project_id=PROJECT_ID, profile_id="worker",
+            harness="claude", provider="fake", name="s-dead", lifecycle="pool",
+            state="stopped", desired_state="stopped", work_dir="/tmp", epoch="e",
+            instance_token="t", started_at=now, last_activity=now,
+        )
+    )
+    await db.set_task_meta(tid, "claimed_by_session", "s-dead")
+    await db.create_workspace(
+        Workspace(id=workspace, project_id=PROJECT_ID, workspace_path="/tmp/ws",
+                  source_type=RepoSourceType.LINK, locked_by_task_id=tid)
+    )
+
+
+async def epoch(db, tid):
+    async with db._engine.connect() as conn:
+        return await conn.scalar(select(tasks.c.claim_epoch).where(tasks.c.id == tid))
+
+
+async def open_batch(db, tid, project_id):
+    from src.database.tables import integration_batch_members, integration_batches
+
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="batch", project_id=project_id, repository_id="repo", request_id="request",
+            trigger="manual", source_manifest_digest="sha256:" + "4" * 64, base_sha="a" * 40,
+            lifecycle="sealing", current_revision=0,
+            integration_branch="refs/heads/aq/integration/p/1", policy_snapshot={},
+            artifact_snapshot={}, cleanup_state="pending", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_batch_members).values(
+            batch_id="batch", ordinal=0, task_id=tid, repository_id="repo",
+            source_base_sha="a" * 40, source_sha="b" * 40, reviewed_head_sha="b" * 40,
+            reviewed_tree_sha="c" * 40, review_evidence={},
+        ))
+
+
+class TestOneShotOperatorClose:
+    """``aq task close <id> --no-change|--done --reason``: one call from any state.
+
+    azure-beacon-38 (2026-10-13) took six refused commands to close, and the
+    only way through went via READY, where a pool worker claimed it.
+    """
+
+    @pytest.mark.parametrize(
+        "start",
+        [
+            TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.PAUSED,
+            TaskStatus.WAITING_INPUT, TaskStatus.FAILED, TaskStatus.IN_PROGRESS,
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("disposition", "work_outcome"), [("no_change", "no-op"), ("done", "shipped")]
+    )
+    async def test_closes_from_each_starting_state_in_one_call(
+        self, db, start, disposition, work_outcome
+    ):
+        await mktask(db, "t", status=TaskStatus.READY if start == TaskStatus.PAUSED else start)
+        if start == TaskStatus.PAUSED:
+            await db.pause_task("t")
+        before = await epoch(db, "t")
+
+        result = await service(db).close(
+            "t", reason="already on main", principal="human:local-operator",
+            disposition=disposition,
+        )
+
+        assert result["outcome"] == "closed" and result["disposition"] == disposition
+        assert result["previous_status"] == start.value
+        assert await status(db, "t") == TaskStatus.COMPLETED
+        assert await db.get_task_meta("t", "work_outcome") == work_outcome
+        assert await db.get_task_meta("t", "manual_pause") is None
+        assert await epoch(db, "t") == before + 1
+        [record] = await db.get_task_completions("t")
+        assert record.outcome == "pass" and record.work_outcome == work_outcome
+        assert record.summary == "already on main"
+        marker = await db.get_task_meta("t", "obsolete")
+        assert marker["disposition"] == disposition and marker["reason"] == "already on main"
+
+    async def test_paused_task_with_a_dead_workers_claim_closes_without_resuming(self, db):
+        from src.models import AgentState
+
+        await claimed_task(db, "t")
+        await stale_claim(db, "t")
+        await db.pause_task("t")  # The pause's cleanup never ran: lock and binding remain.
+
+        result = await service(db).close(
+            "t", reason="work already done, no changes", principal="human:local-operator",
+            disposition="no_change",
+        )
+
+        assert result["previous_status"] == "PAUSED"
+        assert result["released"] == {"claimed_by_session": "s-dead", "workspaces": ["ws-1"]}
+        assert await status(db, "t") == TaskStatus.COMPLETED
+        assert await db.get_task_meta("t", "claimed_by_session") is None
+        assert (await db.get_workspace("ws-1")).locked_by_task_id is None
+        agent = await db.get_agent("agent-1")
+        assert agent.current_task_id is None and agent.state == AgentState.IDLE
+
+    async def test_a_live_holder_is_still_refused_at_the_service(self, db):
+        from src.sessions.obsolete import ObsoleteCloseRefused
+
+        await claimed_task(db, "t")
+        with pytest.raises(ObsoleteCloseRefused) as refused:
+            await service(db).close(
+                "t", reason="x", principal="local", disposition="done"
+            )
+        assert refused.value.code == "obsolete.in_flight"
+        assert await status(db, "t") == TaskStatus.IN_PROGRESS
+
+    async def test_train_root_closes_but_a_child_or_open_batch_member_is_refused(self, db):
+        from src.sessions.obsolete import ObsoleteCloseRefused
+
+        await db.create_project(Project(id="p-train", name="Train"))
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(projects).where(projects.c.id == "p-train")
+                .values(hierarchical_integration_mode="train")
+            )
+        await mktask(db, "root", status=TaskStatus.PAUSED, project_id="p-train")
+        await mktask(db, "batched", status=TaskStatus.READY, project_id="p-train")
+        await open_batch(db, "batched", "p-train")
+        await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, project_id="p-train")
+        await mktask(
+            db, "child", status=TaskStatus.READY, project_id="p-train", parent_task_id="epic"
+        )
+
+        closed = await service(db).close(
+            "root", reason="no change needed", principal="local", disposition="no_change"
+        )
+        assert closed["outcome"] == "closed"
+        assert await db.obsolete_task_ids(["root"]) == {"root"}
+        for tid, code in (("child", "obsolete.unsupported_mode"),
+                          ("batched", "obsolete.open_batch")):
+            with pytest.raises(ObsoleteCloseRefused) as refused:
+                await service(db).close(tid, reason="x", principal="local", disposition="done")
+            assert refused.value.code == code, tid
+
+    async def test_invalid_disposition_is_refused(self, db):
+        from src.sessions.obsolete import ObsoleteCloseRefused
+
+        await mktask(db, "t", status=TaskStatus.READY)
+        with pytest.raises(ObsoleteCloseRefused) as refused:
+            await service(db).close("t", reason="x", principal="local", disposition="maybe")
+        assert refused.value.code == "obsolete.invalid_disposition"
+
+
+class TestOneShotOperatorCloseCommand:
+    def handler(self, db, **orchestrator):
+        from types import SimpleNamespace
+
+        from src.commands.session_commands import SessionCommandsMixin
+
+        class Handler(SessionCommandsMixin):
+            pass
+
+        handler = Handler()
+        handler.db = db
+        handler.orchestrator = SimpleNamespace(db=db, git=None, **orchestrator)
+        handler._emit_task_graph_change = AsyncMock()
+        return handler
+
+    async def live_writer(self, db):
+        from src.database.tables import sessions
+
+        await claimed_task(db, "t")
+        await stale_claim(db, "t")
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(sessions).where(sessions.c.id == "s-dead")
+                .values(state="running", desired_state="running", task_id="t")
+            )
+
+    async def test_in_progress_writer_is_paused_then_closed(self, db):
+        from src.database.tables import sessions
+
+        await self.live_writer(db)
+        seen: list[TaskStatus] = []
+
+        async def pause_task(task_id):
+            # Stand-in for Orchestrator.pause_task: PAUSED, writer stopped.
+            await db.pause_task(task_id)
+            seen.append(await status(db, task_id))
+            async with db._engine.begin() as conn:
+                await conn.execute(
+                    update(sessions).where(sessions.c.id == "s-dead")
+                    .values(state="stopped", desired_state="stopped", task_id=None)
+                )
+                await conn.execute(
+                    update(tasks).where(tasks.c.id == task_id).values(assigned_agent_id=None)
+                )
+
+        handler = self.handler(db, pause_task=pause_task)
+        result = await handler._cmd_task_close(
+            {"task_id": "t", "done": True, "reason": "landed in #812"}
+        )
+
+        assert result["success"] is True, result
+        assert result["stopped_writer"] is True and seen == [TaskStatus.PAUSED]
+        assert await status(db, "t") == TaskStatus.COMPLETED
+        assert await db.get_task_meta("t", "claimed_by_session") is None
+        assert (await db.get_workspace("ws-1")).locked_by_task_id is None
+        comments = (await db.list_task_comments("t"))["comments"]
+        assert any("Closed as done" in c["body"] for c in comments)
+
+    async def test_without_a_pause_the_live_writer_refusal_names_it(self, db):
+        await self.live_writer(db)
+        result = await self.handler(db)._cmd_task_close(
+            {"task_id": "t", "no_change": True, "reason": "x"}
+        )
+        assert result["success"] is False and result["code"] == "obsolete.live_session"
+        assert await status(db, "t") == TaskStatus.IN_PROGRESS
+
+    async def test_a_failed_pause_is_reported(self, db):
+        await self.live_writer(db)
+
+        async def pause_task(task_id):
+            raise ValueError("Cannot pause task in status IN_PROGRESS")
+
+        result = await self.handler(db, pause_task=pause_task)._cmd_task_close(
+            {"task_id": "t", "no_change": True, "reason": "x"}
+        )
+        assert result["code"] == "obsolete.stop_failed"
+
+    async def test_an_idle_task_is_not_paused(self, db):
+        pause_task = AsyncMock()
+        await mktask(db, "t", status=TaskStatus.READY)
+        result = await self.handler(db, pause_task=pause_task)._cmd_task_close(
+            {"task_id": "t", "no_change": True, "reason": "nothing to do"}
+        )
+        assert result["success"] is True and result["stopped_writer"] is False
+        pause_task.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("args", "code"),
+        [
+            ({"no_change": True, "done": True, "reason": "x"}, "obsolete.disposition_conflict"),
+            ({"done": True, "reason": "x", "outcome": "pass"}, "obsolete.outcome_conflict"),
+            ({"no_change": True, "reason": " "}, "obsolete.reason_required"),
+        ],
+    )
+    async def test_bad_arguments_are_refused(self, db, args, code):
+        await mktask(db, "t", status=TaskStatus.READY)
+        result = await self.handler(db)._cmd_task_close({"task_id": "t", **args})
+        assert result["success"] is False and result["code"] == code
+        assert await status(db, "t") == TaskStatus.READY
 
 
 # ---------------------------------------------------------------------------
