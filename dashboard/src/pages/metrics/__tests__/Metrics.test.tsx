@@ -1,11 +1,14 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Metrics from "../Metrics";
 import { toAlignedData, type Series } from "../chartData";
 import { breakdownKeys, buildCharts, pick } from "../series";
 import { __dispatchEventForTests } from "../../../ws/useEventStream";
 import type { MetricsSample, MetricsSeriesResponse } from "../../../api/metrics";
+import SustainedLagBanner, { sustainedLag } from "../SustainedLagBanner";
+import { BOUNDS_MS, type Hist } from "../histogram";
+import waitFaultAccounting from "./waitFaultAccounting.json";
 
 // ``useEventStream`` opens its singleton socket at import time; stub the
 // constructor before that module is evaluated.
@@ -37,19 +40,34 @@ vi.mock("../TimeSeriesChart", () => ({
   },
 }));
 
-const api = vi.hoisted(() => ({ calls: [] as unknown[], response: null as MetricsSeriesResponse | null }));
+// The delivery panel has its own suite and needs a router; this page test is
+// about the fleet charts.
+vi.mock("../DeliveryLatency", () => ({ default: () => <div data-testid="delivery-latency" /> }));
+
+const api = vi.hoisted(() => ({
+  calls: [] as unknown[],
+  response: null as MetricsSeriesResponse | null,
+  detail: null as Promise<{ data: MetricsSeriesResponse }> | null,
+}));
 vi.mock("../../../api/client", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../../../api/client");
   return {
     ...actual,
     getMetricsSeriesApiMetricsSeriesGet: async (options: unknown) => {
       api.calls.push(options);
+      const { query } = options as { query: { step: string; from: number; to: number } };
+      if (api.detail && query.step === "auto" && query.to - query.from === 3600) {
+        return api.detail;
+      }
       return { data: api.response };
     },
     // The page renders the provider cards too; stub their fetch so this test
     // does not reach the network for a surface it is not about.
     getProviderUsageApiProvidersUsageGet: async () => ({
       data: { now: 1000, snapshots: [], series: {} },
+    }),
+    getProviderAvailabilityApiProvidersAvailabilityGet: async () => ({
+      data: { success: true, mode: "enforce", now: 1000, providers: [] },
     }),
   };
 });
@@ -86,6 +104,7 @@ function page() {
 beforeEach(() => {
   plots.calls = [];
   api.calls = [];
+  api.detail = null;
   api.response = {
     step: "1s",
     from_ts: 1000,
@@ -138,6 +157,66 @@ describe("pure sample readers", () => {
 });
 
 describe("Metrics page", () => {
+  it("renders the persisted fault-matrix accounting without summing overlapping samples", async () => {
+    api.response = { ...api.response!, samples: [
+      sample(1000, { waits: waitFaultAccounting }),
+      sample(1001, { waits: waitFaultAccounting }),
+    ] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    const tile = screen.getByText("Slot-hours released (24h)").closest("div.rounded-xl")!;
+    expect(within(tile as HTMLElement).getByText("2.13")).toBeInTheDocument();
+    expect(within(tile as HTMLElement).getByText("1.97 condition · 0.17 capacity")).toBeInTheDocument();
+    expect(screen.getByText("Tokens saved (counterfactual)")).toBeInTheDocument();
+    expect(screen.getByText("9,932")).toBeInTheDocument();
+    expect(screen.getByText(
+      "Cohort: synthetic-fault-matrix · baseline window: disposable-fixture:0..7200",
+    )).toBeInTheDocument();
+  });
+
+  it.each(["missing baseline", "incomplete overhead"])("does not claim savings for %s", async (gap) => {
+    api.response = { ...api.response!, samples: [sample(1000, { waits: {
+      ...waitFaultAccounting,
+      tokens_saved_counterfactual: gap === "missing baseline"
+        ? null : { ...waitFaultAccounting.tokens_saved_counterfactual, tokens: null },
+    } })] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    const label = screen.queryByText("Tokens saved (counterfactual)");
+    if (gap === "missing baseline") expect(label).not.toBeInTheDocument();
+    else expect(within(label!.closest("div.rounded-xl") as HTMLElement).getByText("—"))
+      .toBeInTheDocument();
+    expect(screen.queryByText("9,932")).not.toBeInTheDocument();
+  });
+
+  it("keeps pre-migration wait readings as gaps and tiles as dashes", async () => {
+    api.response = { ...api.response!, samples: [sample(1000, { waits: null })] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    const tile = screen.getByText("Waiting: in place / hibernated").closest("div.rounded-xl")!;
+    expect(within(tile as HTMLElement).getByText("— / —")).toBeInTheDocument();
+    const released = screen.getByText("Slot-hours released (24h)").closest("div.rounded-xl")!;
+    expect(within(released as HTMLElement).getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("Tokens saved (counterfactual)")).not.toBeInTheDocument();
+    const chart = plots.calls.find((call) => call.title === "Pending waits")!;
+    for (const series of chart.series) expect(series.value({ waits: null })).toBeNull();
+  });
+
+  it("shows observed wait totals and labels a configured counterfactual cohort", async () => {
+    api.response = { ...api.response!, samples: [sample(1000, { waits: {
+      pending_in_place: 2, pending_hibernated: 3, human_pending: 1,
+      released_slot_seconds_24h: { condition: 7200, capacity: 3600 },
+      tokens_saved_counterfactual: { tokens: 1200, cohort: "before-rollout", window: "October 1–7" },
+    } })] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+    expect(screen.getByText("3.00")).toBeInTheDocument();
+    expect(screen.getByText("2.00 condition · 1.00 capacity")).toBeInTheDocument();
+    expect(screen.getByText("Tokens saved (counterfactual)")).toBeInTheDocument();
+    expect(screen.getByText("Cohort: before-rollout · baseline window: October 1–7")).toBeInTheDocument();
+  });
+
   it("renders every series from the fetched history", async () => {
     render(page());
     await screen.findByTestId("chart-Running agents");
@@ -175,7 +254,7 @@ describe("Metrics page", () => {
   it("appends a live tick without refetching history", async () => {
     render(page());
     await screen.findByTestId("chart-Running agents");
-    expect(api.calls).toHaveLength(1);
+    await waitFor(() => expect(api.calls).toHaveLength(2));
 
     act(() => {
       __dispatchEventForTests({
@@ -188,8 +267,8 @@ describe("Metrics page", () => {
     await waitFor(() =>
       expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "4"),
     );
-    // The whole point of the WS tick: no second request at 1 Hz.
-    expect(api.calls).toHaveLength(1);
+    // Only overview + detail; the 1 Hz tick makes no request.
+    expect(api.calls).toHaveLength(2);
   });
 
   it("ignores a tick that predates the fetched window", async () => {
@@ -210,12 +289,13 @@ describe("Metrics page", () => {
   it("refetches with a new window when the range changes", async () => {
     render(page());
     await screen.findByTestId("chart-Running agents");
+    await waitFor(() => expect(api.calls).toHaveLength(2));
     const first = api.calls[0] as { query: { from: number; to: number } };
 
     fireEvent.click(screen.getByRole("button", { name: "24h" }));
 
-    await waitFor(() => expect(api.calls).toHaveLength(2));
-    const second = api.calls[1] as { query: { from: number; to: number } };
+    await waitFor(() => expect(api.calls).toHaveLength(3));
+    const second = api.calls[2] as { query: { from: number; to: number } };
     expect(second.query.to - second.query.from).toBeCloseTo(86_400, 0);
     expect(first.query.to - first.query.from).toBeCloseTo(3_600, 0);
   });
@@ -224,5 +304,244 @@ describe("Metrics page", () => {
     api.response = { ...api.response!, step: "1m" };
     render(page());
     expect(await screen.findByText(/1-minute averages/)).toBeInTheDocument();
+  });
+
+  it("paints minute history and keeps every live second when detail replaces it", async () => {
+    api.response = { ...api.response!, step: "1m", samples: [sample(1000), sample(1060)] };
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await screen.findByTestId("chart-Running agents");
+    expect(screen.getByText(/1-minute averages.*loading 1-second detail/)).toBeInTheDocument();
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    expect((api.calls[0] as { query: { step: string } }).query.step).toBe("1m");
+    expect((api.calls[1] as { query: { step: string } }).query.step).toBe("auto");
+    for (const ts of [1062, 1063, 1064]) {
+      act(() => __dispatchEventForTests({
+        _event_type: "metrics.tick", event_type: "metrics.tick", ...sample(ts),
+      } as never));
+    }
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "5");
+    await act(async () => finish({ data: {
+      ...api.response!, step: "1s", samples: [sample(1060), sample(1061), sample(1062)],
+    } }));
+    await waitFor(() => expect(screen.getByText(/1-second samples/)).toBeInTheDocument());
+    // 1062 is superseded; the two ticks received after the request began stay.
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "5");
+    expect(screen.queryByText(/loading 1-second detail/)).not.toBeInTheDocument();
+    expect(api.calls).toHaveLength(2);
+  });
+
+  it("waits for detail when minute history is empty, including on a cold daemon", async () => {
+    api.response = { ...api.response!, step: "1m", samples: [] };
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    expect(screen.getByText("Loading history…")).toBeInTheDocument();
+    expect(screen.queryByTestId("chart-Running agents")).not.toBeInTheDocument();
+    await act(async () => finish({ data: { ...api.response!, step: "1s" } }));
+    await screen.findByTestId("chart-Running agents");
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "0");
+    expect(screen.queryByText("Loading history…")).not.toBeInTheDocument();
+  });
+
+  it("keeps the overview and reports a failed detail request", async () => {
+    api.response = { ...api.response!, step: "1m" };
+    api.detail = Promise.reject(new Error("detail unavailable"));
+    // The mock's deferred failure is consumed after the two paint frames.
+    void api.detail.catch(() => {});
+    render(page());
+    await screen.findByText(/Could not load 1-second detail/);
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "3");
+    expect(screen.getByText(/1-minute averages/)).toBeInTheDocument();
+    expect(screen.queryByText(/loading 1-second detail/)).not.toBeInTheDocument();
+  });
+
+  it("restores sustained-lag diagnostics when second-level detail arrives", async () => {
+    api.response = { ...api.response!, step: "1m", samples: [
+      perfSample(1000, 900), perfSample(1060, 900), perfSample(1120, 900),
+    ] };
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await screen.findByTestId("chart-Running agents");
+    expect(screen.queryByRole("status", { name: "Event-loop lag" })).not.toBeInTheDocument();
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    await act(async () => finish({ data: { ...api.response!, step: "1s", samples: lagRows() } }));
+    await screen.findByRole("status", { name: "Event-loop lag" });
+    expect(screen.getByText(/1-second samples/)).toBeInTheDocument();
+  });
+
+  it("keeps successful second-level history labelled correctly if a reload fails", async () => {
+    render(page());
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    await screen.findByText(/1-second samples/);
+    api.detail = Promise.reject(new Error("reload unavailable"));
+    void api.detail.catch(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Reload history" }));
+    await screen.findByText(/Could not load metrics history/);
+    expect(screen.getByText(/1-second samples/)).toBeInTheDocument();
+    expect(screen.queryByText(/Showing minute history/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "3");
+  });
+
+  it("ignores late hour detail after switching to the five-minute window", async () => {
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    api.response = { ...api.response!, samples: [sample(2000)] };
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "1"),
+    );
+    await act(async () => finish({ data: { ...api.response!, samples: [sample(1000), sample(1001)] } }));
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "1");
+    expect(api.calls).toHaveLength(3);
+  });
+});
+
+function hist(value: number, count = 1): Hist {
+  const counts = new Array(BOUNDS_MS.length + 1).fill(0);
+  const index = BOUNDS_MS.findIndex((bound) => value <= bound);
+  counts[index < 0 ? BOUNDS_MS.length : index] = count;
+  return { kind: "hist", counts, count, sum: value * count, max: value };
+}
+
+function perfSample(ts: number, drift: number, pool = 1): MetricsSample {
+  return sample(ts, {
+    perf: {
+      enabled: true,
+      loop: { drift: hist(drift), probe_interval_ms: 100 },
+      db: {
+        pool_wait: hist(pool), query: hist(1),
+        counters: { kind: "sum", slow_queries: 2 }, pool: { checked_out: 3 },
+      },
+      host: {
+        psi: { cpu: { some_avg10: 20 }, io: null, memory: null },
+        test_slots: { used: 1, total: 4, waiting: 2, orphaned: 0 },
+        ungated: { unattributed: 5 },
+      },
+      api: { all: hist(20), routes: {}, streams: {}, errors: { kind: "sum" } },
+      relay: { available: true, http: hist(30) },
+    },
+  });
+}
+
+function lagRows(length = 130): MetricsSample[] {
+  return Array.from({ length }, (_, i) => perfSample(1000 + i, 900, 400));
+}
+
+describe("sustained loop lag", () => {
+  it("requires 120 nonempty loop histograms and p95 strictly above 500 ms", () => {
+    expect(sustainedLag([])).toBeNull();
+    expect(sustainedLag(lagRows(119))).toBeNull();
+    expect(sustainedLag(lagRows(120))?.samples).toBe(120);
+    expect(sustainedLag(Array.from({ length: 130 }, (_, i) => perfSample(1000 + i, 5))))
+      .toBeNull();
+    // Uniform observations in (200, 500] produce a p95 below the warning threshold.
+    expect(sustainedLag(Array.from({ length: 130 }, (_, i) => perfSample(1000 + i, 500))))
+      .toBeNull();
+    const boundary = hist(500, 95);
+    boundary.counts[9] = 5;
+    boundary.count = 100;
+    boundary.sum += 900 * 5;
+    boundary.max = 900;
+    const atThreshold = lagRows();
+    for (const row of atThreshold) row.perf!.loop!.drift = boundary;
+    expect(sustainedLag(atThreshold)).toBeNull(); // merged p95 is exactly 500
+    const rows = lagRows();
+    for (const row of rows.slice(0, 11)) row.perf!.loop!.drift = hist(0, 0);
+    expect(sustainedLag(rows)).toBeNull();
+  });
+
+  it("uses only the last 180 seconds relative to the newest sample", () => {
+    const verdict = sustainedLag(lagRows(400))!;
+    expect(verdict.since).toBe(1219);
+    expect(verdict.samples).toBe(181);
+    expect(verdict.p95).toBeCloseTo(975);
+    expect(sustainedLag(lagRows(), 60)).toBeNull();
+  });
+
+  it("ignores old high lag after probes are switched off", () => {
+    expect(sustainedLag([...lagRows(), sample(1130, { perf: { enabled: false } })]))
+      .toBeNull();
+  });
+
+  it("ranks pool, query, latest available PSI and the slowest qualified route", () => {
+    const rows = lagRows();
+    rows[0]!.perf!.db!.query = hist(400, 1000);
+    rows[0]!.perf!.host!.psi = {
+      memory: { some_avg10: 5 }, io: { some_avg10: 20 }, cpu: { some_avg10: 20 },
+    };
+    for (const row of rows.slice(1)) row.perf!.host!.psi = { cpu: null, io: null, memory: null };
+    rows[0]!.perf!.api!.routes = {
+      "GET /api/tasks/{task_id}": { latency: hist(400, 10) },
+      "GET /api/agents": { latency: hist(900, 5) },
+      "GET /api/rare": { latency: hist(9000, 9) },
+    };
+    rows[1]!.perf!.api!.routes = { "GET /api/agents": { latency: hist(900, 5) } };
+    expect(sustainedLag(rows)?.candidates).toEqual([
+      "db_pool_wait", "db_query", "host_memory_pressure", "host_io_pressure",
+      "host_cpu_pressure", "api_route:GET /api/agents",
+    ]);
+  });
+
+  it("uses synchronous Python as a fallback and respects latest lower pressure", () => {
+    const rows = Array.from({ length: 130 }, (_, i) => perfSample(1000 + i, 900));
+    rows[rows.length - 1]!.perf!.host!.psi = { cpu: { some_avg10: 0 } };
+    expect(sustainedLag(rows)?.candidates).toEqual(["synchronous_python"]);
+  });
+
+  it("renders the banner and five charts using stored histogram buckets", async () => {
+    api.response = { ...api.response!, samples: lagRows(), to_ts: 1130 };
+    render(page());
+    const banner = await screen.findByRole("status", { name: "Event-loop lag" });
+    expect(banner).toHaveTextContent("975 ms sustained since 00:16:40Z");
+    expect(banner).toHaveTextContent("candidate causes, not a diagnosis");
+    expect(banner).toHaveTextContent("db_pool_wait");
+    const titles = plots.calls.map((call) => call.title);
+    for (const title of [
+      "Event-loop lag", "API latency", "Database", "Host pressure", "Test slots and ungated load",
+    ]) expect(titles).toContain(title);
+  });
+
+  it("renders no banner for a short window", () => {
+    render(<SustainedLagBanner samples={lagRows(30)} />);
+    expect(screen.queryByRole("status", { name: "Event-loop lag" })).not.toBeInTheDocument();
+  });
+});
+
+describe("performance chart readings", () => {
+  it("derives latencies from buckets and reads the matching gauges and counters", () => {
+    const row = perfSample(1000, 900, 400);
+    const charts = buildCharts([row]);
+    const machineIndex = charts.findIndex((chart) => chart.id === "load");
+    const perf = charts.slice(machineIndex + 1, machineIndex + 6);
+    expect(perf.map((chart) => chart.title)).toEqual([
+      "Event-loop lag", "API latency", "Database", "Host pressure", "Test slots and ungated load",
+    ]);
+    const readings = perf.map((chart) => chart.series.map((series) => series.value(row)));
+    expect(readings).toEqual([
+      [975, 900], [19.5, 15, 48.5], [485, 0.95, 3, 2],
+      [20, null, null], [1, 4, 2, 0, 5],
+    ]);
+    for (const chart of perf) {
+      for (const series of chart.series) expect(series.value(sample(2))).toBeNull();
+    }
+  });
+
+  it("keeps empty histograms and disabled probes as chart gaps", () => {
+    const row = perfSample(1000, 900, 400);
+    row.perf!.loop!.drift = hist(0, 0);
+    const charts = buildCharts([row]);
+    const loop = charts.find((chart) => chart.title === "Event-loop lag")!;
+    expect(loop.series.map((series) => series.value(row))).toEqual([null, null]);
+    row.perf!.enabled = false;
+    const start = charts.findIndex((chart) => chart.title === "Event-loop lag");
+    for (const chart of charts.slice(start, start + 5)) {
+      for (const series of chart.series) expect(series.value(row)).toBeNull();
+    }
   });
 });

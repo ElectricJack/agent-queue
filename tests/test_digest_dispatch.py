@@ -18,17 +18,18 @@ import pytest
 from sqlalchemy import update
 
 from src.config import DiscordConfig, DiscordDigestConfig, DiscordEscalationConfig
-from src.database import Database
 from src.database.tables import tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.dispatch import MARKER_PREFIX, marker_for
 from src.escalations.transport import (
     SinkTransport,
     TransportAmbiguous,
+    TransportRejected,
     TransportRetryable,
     TransportUnavailable,
 )
 from src.models import Project, Task, TaskCompletion
+from src.remote_links import DashboardLink
 from tests.db_fixtures import lease_dsn
 
 CHANNEL = "424242424242424242"
@@ -73,13 +74,11 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("digest_dispatch"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("digest_dispatch")
     await database.create_project(Project(id="p", name="Agent Queue"))
     await database.create_project(Project(id="other", name="Other"))
     yield database
-    await database.close()
 
 
 def make_service(db, transport, config=None, *, clock=None, owner="daemon-a", **kwargs):
@@ -162,10 +161,12 @@ async def test_an_hour_with_work_reserves_one_window_and_sends_one_message(db):
     assert len(transport.messages) == 1
     posted = next(iter(transport.messages.values())).content
     assert "finished the migration" in posted
-    assert MARKER_PREFIX in posted
-
     rows = await windows(db)
+    assert MARKER_PREFIX not in posted
+    assert posted.count(marker_for(rows[0]["id"])) == 1
     assert len(rows) == 1
+    marker = marker_for(rows[0]["id"])
+    assert posted.endswith(marker) and posted.count(marker) == 1
     assert rows[0]["send_status"] == "sent"
     assert rows[0]["external_receipt_id"]
     assert rows[0]["payload"]["reported_keys"]
@@ -319,6 +320,84 @@ async def test_disabling_the_digest_sends_nothing_and_says_so(db):
     assert await windows(db) == []
 
 
+# ------------------------------------------------- report candidate links
+
+
+class StubLinks:
+    """A stub for the daemon's dashboard link resolver."""
+
+    def __init__(self, link) -> None:
+        self._link = link
+
+    async def resolve(self):
+        return self._link
+
+
+def _reports_config(enabled: bool = True, full_fleet: bool = True):
+    from src.config import HourlyReportsConfig, ReportsConfig
+
+    return ReportsConfig(
+        timezone="UTC",
+        hourly=HourlyReportsConfig(enabled=enabled, full_fleet_visibility=full_fleet),
+    )
+
+
+async def _evaluated_window(db, service, transport):
+    await complete(db, "t1", at=BASE + 600, summary="finished the migration")
+    service._anchors[(f"discord:{CHANNEL}", schedule_for(make_config()).generation)] = BASE
+    await service.evaluate()
+    rows = await windows(db)
+    assert len(rows) == 1
+    return rows[0]
+
+
+async def test_the_report_brief_carries_the_resolved_dashboard_link(db):
+    """One resolver serves the brief: the stub's origin, not the empty default."""
+    link = DashboardLink(url="https://queue.ts.example")
+    config = make_config()
+    config.reports = _reports_config()
+    clock = Clock(BASE + HOUR + 30)
+    service = make_service(
+        db,
+        transport := SinkTransport(),
+        config=config,
+        clock=clock,
+        links=StubLinks(link),
+        authoring_ready=lambda: True,
+    )
+    row = await _evaluated_window(db, service, transport)
+
+    request = await db.get_report_request("report-hourly-" + row["id"])
+    assert request is not None
+    brief = request["brief"]
+    assert brief["dashboard_url"] == "https://queue.ts.example"
+    assert [fact["source_url"] for fact in brief["facts"]] == [
+        "https://queue.ts.example/focus/tasks/t1"
+    ]
+
+
+async def test_an_unresolvable_dashboard_link_leaves_the_brief_without_one(db):
+    link = DashboardLink(reason="tailscale_unavailable", detail="tailscale is not running")
+    config = make_config()
+    config.reports = _reports_config()
+    clock = Clock(BASE + HOUR + 30)
+    service = make_service(
+        db,
+        transport := SinkTransport(),
+        config=config,
+        clock=clock,
+        links=StubLinks(link),
+        authoring_ready=lambda: True,
+    )
+    row = await _evaluated_window(db, service, transport)
+
+    request = await db.get_report_request("report-hourly-" + row["id"])
+    assert request is not None
+    assert request["brief"]["dashboard_url"] == ""
+    assert request["brief"]["dashboard_notice"] == link.unavailable_notice
+    assert all(fact["source_url"] == "" for fact in request["brief"]["facts"])
+
+
 # --------------------------------------------------------------- delivery
 
 
@@ -420,13 +499,15 @@ async def test_unreconcilable_ambiguity_is_recorded_unknown_not_reposted(db):
 
     transport.post_root = ambiguous
     first = await service.pump()
-    assert first.retried == 1
+    assert first.unknown == 1
+    assert first.retried == 0
     stored = await db.get_digest_window(row["id"])
+    assert stored["send_status"] == "unknown"
     assert stored["last_error"].startswith("ambiguous:")
 
     clock.now = stored["due_at"]
     second = await service.pump()
-    assert second.unknown == 1
+    assert second.unknown == 0  # unknown sends are never automatically reclaimed
     assert transport.messages == {}
     final = await db.get_digest_window(row["id"])
     assert final["send_status"] == "unknown"
@@ -456,6 +537,20 @@ async def test_a_lost_acknowledgement_is_recovered_from_the_marker(db):
     assert report.sent == 1
     assert len(transport.messages) == 1  # recovered, never reposted
     assert (await db.get_digest_window(row["id"]))["send_status"] == "sent"
+
+
+async def test_a_rejected_post_ends_at_once_instead_of_retrying(db):
+    clock = Clock(BASE + HOUR + 30)
+    transport = SinkTransport()
+    transport.faults.append(("post_root", TransportRejected("discord 400 (error code: 50035)")))
+    service = make_service(db, transport, clock=clock)
+    row = await _reserve_sendable(db, clock=clock, service=service)
+
+    await service.pump()
+    after = await db.get_digest_window(row["id"])
+    assert after["send_status"] == "unknown"
+    assert "50035" in after["last_error"]
+    assert transport.calls == ["post_root"]
 
 
 async def test_a_missing_permission_is_bounded_and_ends_in_attention_needed(db):
@@ -526,10 +621,13 @@ async def test_a_transport_that_explodes_never_escapes_the_tick(db):
     assert report.sent == 0  # and no exception reached the orchestrator cycle
 
 
-async def test_the_rendered_body_leaves_room_for_the_marker(db):
-    """The finished message, marker included, still honours the §8 budget."""
+@pytest.mark.parametrize("long_dashboard_url", [False, True])
+async def test_the_rendered_body_leaves_room_for_the_marker(db, long_dashboard_url):
+    """The finished message, marker included, honours the current 600-character budget."""
     clock = Clock(BASE + HOUR + 30)
     service = make_service(db, transport := SinkTransport(), clock=clock)
+    if long_dashboard_url:
+        service._base_url = "https://" + "x" * 200 + ".example.test"
     for index in range(40):
         await complete(
             db,
@@ -540,7 +638,7 @@ async def test_the_rendered_body_leaves_room_for_the_marker(db):
     service._anchors[(f"discord:{CHANNEL}", schedule_for(make_config()).generation)] = BASE
     await service.tick()
     assert len(transport.messages) == 1
-    assert len(next(iter(transport.messages.values())).content) <= 1200
+    assert len(next(iter(transport.messages.values())).content) <= 600
 
 
 async def test_the_orchestrator_cycle_evaluates_and_survives_a_broken_digest(tmp_path):

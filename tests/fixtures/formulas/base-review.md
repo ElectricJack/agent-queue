@@ -12,8 +12,8 @@ Review the branch for correctness.
 ```aq-graph
 version: 1
 defaults:
-  profile: "{reviewer}"
-  intelligence_class: standard-low
+  labels: ["reviewer:{reviewer}"]
+  intelligence_class: fast-low
 nodes:
   - key: review
     title: Review {branch}
