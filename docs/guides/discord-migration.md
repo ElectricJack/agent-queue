@@ -4,6 +4,13 @@ tags: [discord, migration, operations, runbook]
 
 # Discord simplification: migration and rollout runbook
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. The cutover completed on 2026-09-08; [Escalations
+> and the hourly digest](escalations.md) is the current operator page. Start at
+> [the documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 This is the operator procedure for moving an existing install from the old
 Discord surface — per-project channels, per-task execution threads, gate and
 task buttons, the `question_answer` modal and six slash commands — to the
@@ -66,6 +73,8 @@ discord:
   guild_id: "…"           # unchanged
   channel_id: "123456789012345678"   # numeric ID, not a name
   authorized_users: ["234567890123456789"]
+  conversation:
+    enabled: false           # explicit opt-in; elevated global supervisor
   digest:
     enabled: true
     interval_minutes: 60      # 15–1440
@@ -89,6 +98,12 @@ save time rather than at send time.
 Mentions are bounded and explicit. Only the IDs in `mention_user_ids` /
 `mention_role_ids` are ever pinged, and only on an escalation root post.
 Digests never mention anybody, including text that merely looks like a mention.
+
+The simplification cutover does not activate supervisor conversations. Keep
+`conversation.enabled: false` during migration. After cutover reports `complete`,
+an operator may explicitly enable the 2026-09-24 mention-routing exception by
+following [Discord supervisor conversations](discord-conversations.md), including
+its allowlist trust decision, Message Content intent and thread permissions.
 
 ## 3. What the cutover pass does at startup
 
@@ -170,7 +185,7 @@ aq --json digest status
 aq --json digest preview
 
 # The incidents that migrated, plus anything opened since.
-aq escalation list --states needs_human,reply_received
+aq escalation list --states '["needs_human","reply_received"]'
 ```
 
 What to look at:

@@ -1,0 +1,14 @@
+# Smart test selection: the omission policy (spec §4.3).
+#
+# Tuning seeds, not a measured recall claim: an area is an omission candidate
+# only when Jev answers `unaffected` with at least this probability and this
+# confidence.  Everything else, `unknown` at any confidence and every missing
+# answer, runs.  Changing any value changes this file's digest, so a promotion
+# recorded against the old policy no longer matches and nothing is omitted.
+version: 1
+question_schema_version: 1
+model: "jev-1.13.0"
+omission:
+  choice: unaffected
+  min_probability: 0.98
+  min_confidence: 0.90

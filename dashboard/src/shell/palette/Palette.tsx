@@ -7,6 +7,7 @@ import { usePaletteState } from "./paletteState";
 import { useProjects, useActiveTasksAllProjects } from "../../api/hooks";
 import { useShellPaneStore } from "../../panes/store";
 import { workspaceHref, workspaceNavigation } from "../projectNavigation";
+import { taskSelectionHref, writeRecordSelection } from "../../pages/records/recordUrlState";
 
 /**
  * Linear-style command palette.
@@ -41,7 +42,8 @@ export function Palette() {
 
   const actions = useActions();
   const { data: projects } = useProjects();
-  const { data: tasks } = useActiveTasksAllProjects();
+  // Only the "#" task search reads this; a closed palette used to poll it.
+  const { data: tasks } = useActiveTasksAllProjects({ enabled: open });
 
   const prefix = q[0];
   const body = q.slice(prefix === ">" || prefix === "#" || prefix === "@" ? 1 : 0).trim().toLowerCase();
@@ -100,7 +102,8 @@ export function Palette() {
                   key={t.id}
                   value={t.id}
                   onSelect={() => {
-                    navigate(`/tasks/${encodeURIComponent(t.id)}`, {
+                    navigate(taskSelectionHref(t.project_id, t.id,
+                      workspace.projectId === t.project_id ? workspace.search : ""), {
                       state: { from },
                     });
                     pane.close();
@@ -122,7 +125,8 @@ export function Palette() {
                   key={p.id}
                   value={p.id}
                   onSelect={() => {
-                    navigate(workspaceHref(p.id, workspace.tab, workspace.search));
+                    const params = writeRecordSelection(new URLSearchParams(workspace.search), null);
+                    navigate(workspaceHref(p.id, workspace.tab, params.size ? `?${params}` : ""));
                     setOpen(false);
                     setQ("");
                   }}
