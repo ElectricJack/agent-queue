@@ -1,0 +1,24 @@
+[
+  {
+    "id": "d1",
+    "project_id": "p",
+    "repository_id": "repo-p",
+    "target_ref": "main",
+    "expected_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "prepared_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "delivered",
+    "manifest": {
+      "members": [
+        {
+          "task_id": "t1"
+        }
+      ]
+    },
+    "evidence": {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "reason": "published",
+    "created_at": 90002,
+    "updated_at": 90003
+  }
+]

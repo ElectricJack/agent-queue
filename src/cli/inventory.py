@@ -16,7 +16,7 @@ from typing import Any
 
 import click
 
-INVENTORY_SCHEMA_VERSION = 1
+INVENTORY_SCHEMA_VERSION = 2
 
 # Compatibility spellings are explicit API surface, not coincidences inferred
 # from callback identity.  ``inbox`` intentionally has hook-safe error
@@ -49,6 +49,11 @@ EXPLICITLY_UNSUPPORTED: dict[str, str] = {}
 # representative ledger; adding a behavioral test can promote a path here.
 BEHAVIORAL_EVIDENCE: frozenset[str] = frozenset(
     {
+        # tests/test_cli_dashboard_server.py runs these against a real server process.
+        "aq dashboard restart",
+        "aq dashboard start",
+        "aq dashboard status",
+        "aq dashboard stop",
         "aq inbox",
         "aq message reply",
         "aq plugin logs",
@@ -205,6 +210,10 @@ def _infer_handwritten_backend(command: click.Command) -> str | None:
     except (OSError, TypeError):
         return None
     names = set(re.findall(r"\.execute\(\s*[\"']([a-z0-9_]+)[\"']", source))
+    # The wait CLI uses one transport helper. Its literal command argument is
+    # equally direct evidence, without guessing from a callback's name.
+    if callback.__module__ == "src.cli.waits":
+        names.update(re.findall(r"_execute\(ctx,\s*[\"']([a-z0-9_]+)[\"']", source))
     return next(iter(names)) if len(names) == 1 else None
 
 
@@ -241,6 +250,19 @@ def _counter(values) -> dict[str, int]:
 def _acceptance_counter(values) -> dict[str, int]:
     counts = Counter(values)
     return {status: counts[status] for status in ACCEPTANCE_STATUSES}
+
+
+def inventory_counts(inventory: dict[str, Any]) -> dict[str, Any]:
+    """Compute totals on demand; committed records have no shared count lines."""
+    records = inventory["commands"]
+    return {
+        "leaf_commands": len(records),
+        "registration": _counter(row["registration"] for row in records),
+        "ownership": _counter(row["owner_kind"] for row in records),
+        "support": _counter(row["support"] for row in records),
+        "evidence_level": _counter(row["evidence_level"] for row in records),
+        "acceptance_status": _acceptance_counter(row["acceptance_status"] for row in records),
+    }
 
 
 def build_cli_inventory(
@@ -340,14 +362,6 @@ def build_cli_inventory(
     return {
         "schema_version": INVENTORY_SCHEMA_VERSION,
         "generated_by": "scripts/generate-cli-command-inventory.py",
-        "counts": {
-            "leaf_commands": len(records),
-            "registration": _counter(row["registration"] for row in records),
-            "ownership": _counter(row["owner_kind"] for row in records),
-            "support": _counter(row["support"] for row in records),
-            "evidence_level": _counter(row["evidence_level"] for row in records),
-            "acceptance_status": _acceptance_counter(row["acceptance_status"] for row in records),
-        },
         "commands": records,
         "historical_commands": list(HISTORICAL_COMMANDS),
     }

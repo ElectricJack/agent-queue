@@ -1,7 +1,9 @@
 import pathlib
 import subprocess
 import pytest
+
 from src.git.manager import GitManager, GitError
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -42,15 +44,11 @@ def _head_sha(cwd: str) -> str:
 
 @pytest.fixture
 def git_repo(tmp_path):
-    """Create a bare remote + working clone for testing."""
+    """Create a bare remote + working clone for this test."""
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(str(remote))
     clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
+    clone_seed(str(remote), str(clone))
     # Create initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
@@ -64,7 +62,84 @@ def git_repo(tmp_path):
     return {"remote": str(remote), "clone": str(clone)}
 
 
+
 class TestGitManager:
+    async def test_qualified_tag_uses_isolated_push_and_exact_tag_fetch(self, git_repo, tmp_path):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "tag", "-a", "v1.2.3",
+              "-m", "promotion", _head_sha(clone)], cwd=clone)
+        oid = _git(["rev-parse", "refs/tags/v1.2.3"], cwd=clone)
+        url = pathlib.Path(git_repo["remote"]).as_uri()
+        await mgr._apush_refs_with_app_auth_to_url(
+            clone, destination_url=url, token=None,
+            updates=((oid, "refs/tags/v1.2.3", ""),), _qualified_refs=True,
+        )
+        assert _git(["cat-file", "-t", "refs/tags/v1.2.3"], cwd=git_repo["remote"]) == "tag"
+        destination = tmp_path / "tag-recovery.git"
+        _git(["init", "--bare", str(destination)], cwd=str(tmp_path))
+        assert await mgr._afetch_exact_oid_with_app_auth_to_url(
+            str(destination), destination_url=url, token=None, oid=oid,
+            destination_ref="refs/aq/tag-recovery", _object_type="tag",
+        ) == oid
+        assert _git(["cat-file", "-t", oid], cwd=str(destination)) == "tag"
+        with pytest.raises(GitError, match="object type"):
+            await mgr._afetch_exact_oid_with_app_auth_to_url(
+                str(destination), destination_url=url, token=None, oid=oid,
+                destination_ref="refs/aq/commit-recovery",
+            )
+
+    async def test_qualified_annotated_tag_create_only_and_peeled_read(self, git_repo):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        source = _head_sha(clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "tag", "-a", "v1.2.3",
+              "-m", "promotion", source], cwd=clone)
+        oid = _git(["rev-parse", "refs/tags/v1.2.3"], cwd=clone)
+        assert await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
+                                            expected_old_oid="") == oid
+        refs = await mgr.als_remote_qualified_refs(clone, ["refs/tags/v1.2.3", "refs/tags/v1.2.3^{}"])
+        assert refs["refs/tags/v1.2.3"].oid == oid
+        assert refs["refs/tags/v1.2.3^{}"].oid == source
+        # Inventory is remote-authoritative, including both annotated objects
+        # and peels, with no locally created-but-unpublished tag mixed in.
+        _git(["tag", "local-only", source], cwd=clone)
+        assert await mgr.als_remote_tag_refs(clone) == {
+            "refs/tags/v1.2.3": oid, "refs/tags/v1.2.3^{}": source,
+        }
+        with pytest.raises(GitError, match="absent ref"):
+            await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
+                                         expected_old_oid=oid)
+
+    async def test_qualified_tag_cannot_replace_existing_or_use_lightweight_object(self, git_repo):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        old = _head_sha(clone)
+        _git(["tag", "v1.2.3", old], cwd=clone)
+        _git(["push", "origin", "refs/tags/v1.2.3"], cwd=clone)
+        new = _commit_file(clone, "new", "change", "change")
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "tag", "-a", "v2.0.0",
+              "-m", "promotion", new], cwd=clone)
+        oid = _git(["rev-parse", "refs/tags/v2.0.0"], cwd=clone)
+        with pytest.raises(GitError):
+            await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
+                                         expected_old_oid="")
+        assert _git(["rev-parse", "refs/tags/v1.2.3"], cwd=git_repo["remote"]) == old
+        with pytest.raises(GitError, match="annotated object"):
+            await mgr.apush_qualified_ref(clone, ref="refs/tags/lightweight", tip_oid=new,
+                                         expected_old_oid="")
+
+    async def test_qualified_branch_fast_forward_and_no_rewind(self, git_repo):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        old = _head_sha(clone)
+        new = _commit_file(clone, "new", "change", "change")
+        assert await mgr.apush_qualified_ref(clone, ref="refs/heads/main", tip_oid=new,
+                                            expected_old_oid=old) == new
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_qualified_ref(clone, ref="refs/heads/main", tip_oid=old,
+                                         expected_old_oid=new)
+
     def test_create_checkout(self, git_repo, tmp_path):
         mgr = GitManager()
         checkout_path = str(tmp_path / "agent-1" / "repo")
@@ -2746,240 +2821,6 @@ class TestRetryBranchRebaseComprehensive:
 
         remote_branches = _git(["branch", "-r"], cwd=clone)
         assert "origin/pr/idempotent" in remote_branches
-
-
-# ---------------------------------------------------------------------------
-# GitHub repo creation (mocked subprocess — no real gh CLI needed)
-# ---------------------------------------------------------------------------
-
-
-class TestCheckGhAuth:
-    """Tests for GitManager.check_gh_auth() with mocked subprocess."""
-
-    def test_authenticated(self, monkeypatch):
-        mgr = GitManager()
-        mock_result = subprocess.CompletedProcess(
-            args=["gh", "auth", "status"],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
-        assert mgr.check_gh_auth() is True
-
-    def test_not_authenticated(self, monkeypatch):
-        mgr = GitManager()
-        mock_result = subprocess.CompletedProcess(
-            args=["gh", "auth", "status"],
-            returncode=1,
-            stdout="",
-            stderr="not logged in",
-        )
-        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
-        assert mgr.check_gh_auth() is False
-
-    def test_timeout(self, monkeypatch):
-        mgr = GitManager()
-
-        def _raise_timeout(*a, **kw):
-            raise subprocess.TimeoutExpired(cmd="gh", timeout=30)
-
-        monkeypatch.setattr(subprocess, "run", _raise_timeout)
-        assert mgr.check_gh_auth() is False
-
-    def test_gh_not_installed(self, monkeypatch):
-        mgr = GitManager()
-
-        def _raise_fnf(*a, **kw):
-            raise FileNotFoundError("gh not found")
-
-        monkeypatch.setattr(subprocess, "run", _raise_fnf)
-        assert mgr.check_gh_auth() is False
-
-
-class TestCreateGithubRepo:
-    """Tests for GitManager.create_github_repo() with mocked subprocess."""
-
-    def test_creates_private_repo(self, monkeypatch):
-        mgr = GitManager()
-        captured_args = {}
-
-        def mock_run(cmd, **kwargs):
-            captured_args["cmd"] = cmd
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="https://github.com/user/my-app\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        url = mgr.create_github_repo("my-app")
-        assert url == "https://github.com/user/my-app"
-        assert "--private" in captured_args["cmd"]
-        assert "my-app" in captured_args["cmd"]
-
-    def test_creates_public_repo(self, monkeypatch):
-        mgr = GitManager()
-        captured_args = {}
-
-        def mock_run(cmd, **kwargs):
-            captured_args["cmd"] = cmd
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="https://github.com/user/my-app\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        url = mgr.create_github_repo("my-app", private=False)
-        assert url == "https://github.com/user/my-app"
-        assert "--public" in captured_args["cmd"]
-        assert "--private" not in captured_args["cmd"]
-
-    def test_creates_repo_with_org(self, monkeypatch):
-        mgr = GitManager()
-        captured_args = {}
-
-        def mock_run(cmd, **kwargs):
-            captured_args["cmd"] = cmd
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="https://github.com/my-org/my-app\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        url = mgr.create_github_repo("my-app", org="my-org")
-        assert url == "https://github.com/my-org/my-app"
-        assert "my-org/my-app" in captured_args["cmd"]
-
-    def test_creates_repo_with_description(self, monkeypatch):
-        mgr = GitManager()
-        captured_args = {}
-
-        def mock_run(cmd, **kwargs):
-            captured_args["cmd"] = cmd
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="https://github.com/user/my-app\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        url = mgr.create_github_repo("my-app", description="A cool app")
-        assert url == "https://github.com/user/my-app"
-        assert "--description" in captured_args["cmd"]
-        assert "A cool app" in captured_args["cmd"]
-
-    def test_failure_raises_git_error(self, monkeypatch):
-        mgr = GitManager()
-
-        def mock_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=1,
-                stdout="",
-                stderr="Name already exists on this account",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        with pytest.raises(GitError, match="Name already exists"):
-            mgr.create_github_repo("my-app")
-
-    def test_timeout_raises_git_error(self, monkeypatch):
-        mgr = GitManager()
-
-        def mock_run(cmd, **kwargs):
-            raise subprocess.TimeoutExpired(cmd="gh", timeout=60)
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        with pytest.raises(GitError, match="timed out"):
-            mgr.create_github_repo("my-app")
-
-    def test_url_from_stderr_fallback(self, monkeypatch):
-        """Some gh versions print the URL to stderr instead of stdout."""
-        mgr = GitManager()
-
-        def mock_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="",
-                stderr="https://github.com/user/my-app",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        url = mgr.create_github_repo("my-app")
-        assert url == "https://github.com/user/my-app"
-
-    def test_extracts_url_from_noisy_stdout(self, monkeypatch):
-        """URL is extracted even when stdout contains extra output like deprecation warnings."""
-        mgr = GitManager()
-
-        def mock_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout=(
-                    "Flag --confirm has been deprecated, "
-                    "Pass any argument to skip confirmation prompt\n"
-                    "https://github.com/user/my-app\n"
-                ),
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        url = mgr.create_github_repo("my-app")
-        assert url == "https://github.com/user/my-app"
-
-    def test_no_url_in_output_raises_git_error(self, monkeypatch):
-        """Raises GitError when no URL is found in stdout or stderr."""
-        mgr = GitManager()
-
-        def mock_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="some random output\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        with pytest.raises(GitError, match="no repository URL was found"):
-            mgr.create_github_repo("my-app")
-
-    def test_no_interactive_flags(self, monkeypatch):
-        """Ensures no invalid interactive flags are passed to gh repo create."""
-        mgr = GitManager()
-        captured_args = {}
-
-        def mock_run(cmd, **kwargs):
-            captured_args["cmd"] = cmd
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="https://github.com/user/my-app\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        mgr.create_github_repo("my-app")
-        assert "--yes" not in captured_args["cmd"]
-        assert "--confirm" not in captured_args["cmd"]
 
 
 class TestGetDefaultBranch:

@@ -4,15 +4,40 @@ from __future__ import annotations
 
 from src.config import ProjectRoot
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
+from src.projects.roots import ProjectRootsState, RootFacts, assess_project_roots
 
 OWNER = "project-onboarding"
 
 
+#: How each shared verdict reads to an operator running ``aq doctor``.
+#:
+#: Neither warning is an ERROR: a machine that has not chosen where projects
+#: live is under-configured rather than broken, and a read-only root can still
+#: take a ``link``-mode onboard.  A root that vanished or lost read access *is*
+#: an error — configuration names a place that is no longer there.
+_SEVERITY: dict[ProjectRootsState, Severity] = {
+    ProjectRootsState.OK: Severity.OK,
+    ProjectRootsState.MISSING: Severity.WARN,
+    ProjectRootsState.UNREADABLE: Severity.ERROR,
+    ProjectRootsState.UNUSABLE: Severity.WARN,
+}
+
+
 async def _check_project_roots(ctx: DoctorContext) -> CheckResult:
-    """Report configured roots that disappeared or lost read access after load."""
+    """Report whether any configured root can actually take a new project.
+
+    The verdict comes from :func:`~src.projects.roots.assess_project_roots`,
+    the same function the installation wizard's first-task readiness check
+    uses, so the two surfaces cannot disagree about one configuration the way
+    they did when each carried its own copy of the rule.
+    """
     roots: list[ProjectRoot] = getattr(ctx.config, "project_roots", [])
-    unavailable = [root for root in roots if not root.readable]
+    assessment = assess_project_roots(
+        RootFacts(id=root.id, path=root.path, readable=root.readable, writable=root.writable)
+        for root in roots
+    )
     data = {
+        "state": assessment.state.value,
         "roots": [
             {
                 "id": root.id,
@@ -22,20 +47,15 @@ async def _check_project_roots(ctx: DoctorContext) -> CheckResult:
                 "writable": root.writable,
             }
             for root in roots
-        ]
+        ],
     }
-    if unavailable:
-        affected = ", ".join(f"{root.id} ({root.path})" for root in unavailable)
-        return CheckResult(
-            id="projects.roots",
-            severity=Severity.ERROR,
-            detail=f"{len(unavailable)} project root(s) missing or unreadable: {affected}",
-            data=data,
-        )
+    detail = assessment.detail
+    if assessment.remediation:
+        detail = f"{detail} {assessment.remediation}"
     return CheckResult(
         id="projects.roots",
-        severity=Severity.OK,
-        detail=f"{len(roots)} configured project root(s) are readable",
+        severity=_SEVERITY[assessment.state],
+        detail=detail,
         data=data,
     )
 
