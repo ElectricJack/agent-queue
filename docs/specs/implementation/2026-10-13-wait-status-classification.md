@@ -42,7 +42,7 @@ work would transfer ownership without cancelling its continuation.
 | `pool_claims.LIVE_POOL_CLAIM_TASK_STATUSES` | Session liveness | WAITING included; HIBERNATED and RESUME_PENDING excluded |
 | `claim_commands` held-claim retry | Session liveness | Suspended binding is preserved and returns `not_admissible` / `wait.task_suspended`; never released or served as ordinary work |
 | `session_commands` normal close and one-shot writer stop | Session liveness | Normal close returns `wait.ack_required` on all three; WAITING can require a stop for one-shot dispositions |
-| `sessions.reconciler` held ownership and premature drain acknowledgment | Session liveness | WAITING remains a held/live claim; other suspended states never become generic claim recovery owners |
+| `sessions.reconciler` held ownership and premature drain acknowledgment | Session liveness | WAITING remains a held/live claim; orphan reconciliation retains only the new RESUME_PENDING session fenced by `continuation_occupancy`; other suspended states never become generic claim recovery owners |
 | `orchestrator.pools._measure_pools` | Session liveness | WAITING counts busy, HIBERNATED excluded; only a starting RESUME_PENDING launch counts capacity |
 | `database.metrics_queries` live session counts and hook session IDs | Session liveness | Same continuation exclusion and starting reservation rule as pool supply |
 | `database.task_session_queries.LIVE_WORKER_TASK_STATUSES` | Session liveness | WAITING docks on its live attempt; continuation states have no worker marker |

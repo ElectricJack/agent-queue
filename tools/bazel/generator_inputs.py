@@ -156,6 +156,7 @@ def inventory(root: Path) -> list[str]:
     for pattern in patterns:
         paths.update(p.relative_to(root).as_posix() for p in root.glob(pattern) if p.is_file()
                      and not {"__pycache__", ".ruff_cache"}.intersection(p.parts)
+                     and p.name != "BUILD.bazel"
                      and p.suffix != ".pyc")
     paths.update((
         "pyproject.toml", "package.json", "package-lock.json", ".gitattributes", ".gitignore",

@@ -71,6 +71,15 @@ dependency. MD5 is only the installer's format; Bazel verifies SHA-256 first.
 
 ## Admitted verification
 
+B1 supplies the supervisor-authorized H1/H2 prerequisite for native execution:
+`sysroot_linux-64` 2.28 `he3f20f0_9` and its exact kernel-header dependency are
+URL/SHA-256 pinned in `toolchains.lock.json`, installed offline with the remaining
+native closure, and exposed through `@aq_native//:runtime`. The sysroot provides
+the ELF loader and glibc which were absent from the original H1 lock. Package
+metadata is available from https://api.anaconda.org/package/conda-forge/sysroot_linux-64.
+The launcher maps only its declared library directories at conventional ELF ABI
+paths; native actions never mount the host's libraries as a fallback.
+
 On a shared AQ box, run all smoke execution inside `aq test`, not direct Bazel:
 
 ```bash

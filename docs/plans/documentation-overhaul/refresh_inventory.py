@@ -264,6 +264,18 @@ def _owned_page_rules() -> list[tuple[str, str, str, str, str]]:
 # Ordered rules: (glob, shard, component page, category, note).
 # First match wins, so narrower globs come first.
 RULES: list[tuple[str, str, str, str, str]] = [
+    (".bazel*", "contributing", "tools/bazel/README.md", SUPPORTING,
+     "Pinned Bazel version and repository build settings."),
+    ("BUILD.bazel", "contributing", "tools/bazel/README.md", SUPPORTING,
+     "Root Bazel build targets."),
+    ("**/BUILD.bazel", "contributing", "tools/bazel/README.md", SUPPORTING,
+     "Bazel package targets for Python tests, generators and dashboard checks."),
+    ("REPO.bazel", "contributing", "tools/bazel/README.md", SUPPORTING,
+     "Repository-wide Bazel package discovery settings."),
+    ("MODULE.bazel*", "contributing", "tools/bazel/README.md", SUPPORTING,
+     "Pinned Bazel module dependencies and resolution lock."),
+    ("tools/bazel/**", "contributing", "tools/bazel/README.md", SUPPORTING,
+     "Hermetic toolchains, isolated test environments and substrate smoke checks."),
     ("src/project_schedules.py", "scheduler", "docs/guides/project-schedules.md",
      PRODUCTION, "Durable project-owned one-shot supervisor notifications."),
     # ---------------------------------------------------------------- docs

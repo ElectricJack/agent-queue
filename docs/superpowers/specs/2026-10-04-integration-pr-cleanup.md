@@ -16,6 +16,17 @@ ancestry, patch-equivalence and content-equivalence proofs remain authoritative;
 an undelivered, moved or unreadable PR stays open. Errors isolate individual PRs
 and repositories, and a later inventory retries failed closures.
 
+Delivery proof uses the shared delivery observer's retained objects and may reuse
+its successful snapshot for the observer's bounded read age. It never initializes
+and fetches a separate bare repository for each PR. Preview and apply both read
+the authorized remote PR/default heads and require their exact OIDs to match the
+snapshot; a mismatch refreshes once, then fails closed if refs still differ.
+An item timeout cancels its reader, while the observer's bounded shared fetch
+finishes and cleans up its isolated Git directory. A successful producer retains
+its snapshot even if every reader timed out, so the retry reuses its result.
+A retry arriving before that fetch finishes joins it rather than requiring a
+successor fetch. Guarded task writers still require their fresh observation.
+
 Successful default-branch adoption retires the tracked task PRs. Delivered-child
 adoption also retires the obsolete parent aggregate's PR, with a settlement
 comment rather than a claim that its aggregate landed. Explicit obsolete closes

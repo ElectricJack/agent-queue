@@ -50,7 +50,7 @@ are noted in §2.4 and §5.
   server-computed layout tiles.
 - **Dashboard state**: per-user and per-workspace UI documents (navigation tree, shell
   preferences, graph view) stored by the daemon in typed namespaces.
-- **Focus mode**: the phone UI under `/focus/*`.
+- **Responsive shell**: the same dashboard at every width; below 768 px navigation is a menu and detail panes are full-screen sheets.
 
 ### 2.2 Two processes
 
@@ -129,12 +129,12 @@ Routes, by area:
 
 | Area | Routes |
 |---|---|
-| Phone | `/focus/*` |
+| Requests | `/inbox`, `/asks/:id`, `/escalations/:id` |
 | Fleet | `/agents` (including `?view=providers`), `/conversations`, `/waiting`, `/metrics`, `/host-shell`, `/reviews`, `/reviews/:id` |
 | Project | `/projects/:id/graph`, `tasks-knowledge`, `overview`, `sessions`, `workspaces`, `playbooks`, `config` |
-| Objects | `/tasks/:id`, `/tasks/:id/files`, `/sessions/:id`, `/playbooks/:id`, `/reports/:id`, `/projects/:id/knowledge/:recordId` |
+| Objects | `/tasks/:id`, `/tasks/:id/files`, `/sessions/:id`, `/playbooks/:id`, `/reports/:id`, `/batches/:id`, `/projects/:id/knowledge/:recordId` |
 | Settings | `/settings/*` |
-| Old URLs | `LegacyRedirects` |
+| Old URLs | `/focus/*` redirects to the corresponding full-dashboard route, preserving query and fragment |
 
 The [module reference](../../reference/modules/dashboard.md) catalogues the directories.
 
@@ -222,7 +222,7 @@ component; `panes/registry.ts` collects them by glob. Thirteen ship today: `task
 `panes/store.tsx` holds one open pane. Desktop user-opened panes persist in
 `shell_preferences.right_surface.pane`; widths and right-surface kind/activity tab also
 roam. Compact views do not write their surface changes or restore the desktop surface
-on initial load, and focus routes suppress initial restoration. Agent-pushed panes are
+on initial load. Agent-pushed panes are
 ephemeral. Tasks & Knowledge uses route-owned detail alongside its list. The pane designs are the
 `docs/superpowers/specs/2026-08-22-pane-*` documents and
 [live pane streaming](../../superpowers/specs/2026-08-25-live-pane-streaming-design.md).
@@ -499,3 +499,31 @@ Source:
 - `src/panes/registry.py`, `src/remote_links.py`, `src/dashboard_paths.py`
 - `dashboard/src/`: `main.tsx`, `App.tsx`, `shell/`, `api/`, `ws/`, `panes/`,
   `pages/command-center/layout-v2/`, `deviceLocal.ts`
+
+### 2026-10-25: One dashboard at every width
+
+Focus is retired. Previously posted `/focus` links remain client redirects:
+home → Command Center (honoring `project`), inbox → `/inbox`, objects → their
+same paths without `/focus`, and conversations → `/conversations?conversation=:id`.
+Unknown Focus paths return to Command Center. Redirects replace the history entry.
+Backend notifications use full-dashboard paths and doctor probes `/`.
+
+Pre-removal feature inventory and destinations:
+
+| Former Focus feature | Shared destination |
+|---|---|
+| Tasks, filters, pagination and related tasks | Tasks & Knowledge and `/tasks/:id` |
+| Live agents and pool workers | `/agents` and project sessions |
+| Provider quota and age | Shell usage bars and `/metrics` |
+| Needs-you, waiting, history and pagination | `/inbox`; shared AskInbox in Activity |
+| Quick answers, review discussion, decision preview/receipt | `/asks/:id`; review/escalation aliases resolve the canonical ask |
+| Conversation history, author/state and quick replies | `/conversations` picker and shared chat composer |
+| Session terminal, process pin and explicit restart acknowledgement | `/sessions/:id?started=:epoch`; ended sessions keep transcript and current-agent link |
+| Morning report and task evidence | `/reports/:id` |
+| Batch delivery state, PR and member tasks | `/batches/:id` |
+| Back, menu, compact detail sheets | Shared shell navigation/history |
+
+Phone acceptance uses the built bundle at 390 CSS pixels: navigation collapses,
+page content stays within the viewport, primary controls have 44px touch targets,
+and task, ask/review, session and conversation content remains readable. There is
+no alternate phone mode or terminal link mode.

@@ -554,7 +554,7 @@ async def test_render_long_or_document_meaning_never_has_partial_approval_contro
     card = render(ask, base_url="https://aq.example")
     assert not card.choices
     assert _units(card.text) < 1000
-    assert "https://aq.example" in card.text
+    assert f"https://aq.example/asks/{ask['id']}" in card.text
 
 
 async def test_late_pending_edit_cannot_leave_applied_outcome_actionable(delivery_env):
