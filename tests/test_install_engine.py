@@ -887,6 +887,18 @@ def test_the_data_directory_step_owns_a_directory_it_created(tmp_path):
     record = next(item for item in result.resources if item.kind == "directory")
     assert (record.owned, record.reused) == (True, False)
     assert target.is_dir()
+    assert (target / "vault/system/playbooks/default-assignment-routing.md").is_file()
+    assert not (target / "vault/system/playbooks/blocked-task-escalation.md").exists()
+
+
+def test_install_rerun_does_not_restore_deleted_playbooks(tmp_path):
+    target = tmp_path / "data"
+    registry = prerequisites_only(which=lambda name: f"/usr/bin/{name}", state_dir=target)
+    assert _run(registry, tmp_path).outcome is InstallOutcome.READY
+    source = target / "vault/system/playbooks/default-pipeline.md"
+    source.unlink()
+    assert _run(registry, tmp_path).outcome is InstallOutcome.READY
+    assert not source.exists()
 
 
 def test_an_unwritable_data_directory_names_the_path_and_the_fix(tmp_path):
