@@ -18052,9 +18052,11 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:3557adf497a6c785a96b58cda8e3aa470d87427dcaddf03bb9050425367a4493",
+      "digest": "sha256:9bde0ee23070c86f16be39f38a07bfeef4b3a2daa46be0b62b66c04abecad5e6",
       "imports": [
+        "src.api.auth",
         "src.api.models.supervisor_inbox",
+        "src.api.scope",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
