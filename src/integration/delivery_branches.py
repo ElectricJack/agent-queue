@@ -34,8 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -65,6 +63,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.manager import GitError, RemoteRefState
+from src.integration.branch_backup import _bundle, _record_deletions
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.models import TaskStatus
 
@@ -82,8 +81,6 @@ ASSEMBLY_PREFIX = "aq/development/"
 INTEGRATION_PREFIX = "aq/integration/"
 #: A FAILED or abandoned task's branch is kept this long after it went terminal.
 FAILED_BRANCH_KEEP_SECONDS = 14 * 24 * 3600.0
-#: Temporary refs a backup bundle is written from, removed right after.
-BACKUP_REF_PREFIX = "refs/aq-backup/heads/"
 
 #: Task statuses that can still run, and so may still push to their branch.
 LIVE_TASK_STATUSES = (
@@ -92,6 +89,7 @@ LIVE_TASK_STATUSES = (
     TaskStatus.ASSIGNED.value,
     TaskStatus.IN_PROGRESS.value,
     TaskStatus.WAITING_INPUT.value,
+    TaskStatus.WAITING.value, TaskStatus.HIBERNATED.value, TaskStatus.RESUME_PENDING.value,
     TaskStatus.PAUSED.value,
 )
 #: Journal states that still owe work to the revisions their manifest names.
@@ -332,6 +330,7 @@ async def live_branch_references(
     for row in await rows(
         select(integration_batches.c.id, integration_batches.c.integration_branch).where(
             integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES)
+            | (integration_batches.c.fixer_queue["status"].astext.in_(("deferred", "companion")))
             | (
                 (integration_batches.c.lifecycle == "promoted")
                 & (integration_batches.c.cleanup_state != "complete")
@@ -612,68 +611,6 @@ async def delete_branches(
         "bundled": unreachable,
         "log": str(log),
     }
-
-
-def _month(now: float) -> str:
-    return datetime.fromtimestamp(now, UTC).strftime("%Y-%m")
-
-
-async def _bundle(
-    run_git, store, heads: dict[str, str], *, main_head, backup_dir, repository_id, now
-) -> Path:
-    """Write *heads* to a new verified bundle; raise rather than return an unproved one."""
-    stamp = datetime.fromtimestamp(now, UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", repository_id) or "repository"
-    directory = Path(backup_dir) / _month(now)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{stamp}-{slug}.bundle"
-    refs = {f"{BACKUP_REF_PREFIX}{branch}": sha for branch, sha in heads.items()}
-    try:
-        for ref, sha in refs.items():
-            await run_git(store, "update-ref", ref, sha)
-        await run_git(store, "bundle", "create", str(path), *sorted(refs), "--not", main_head)
-        await run_git(store, "bundle", "verify", str(path))
-        listed = await run_git(store, "bundle", "list-heads", str(path))
-    finally:
-        for ref in refs:
-            try:
-                await run_git(store, "update-ref", "-d", ref)
-            except GitError:
-                logger.warning("could not remove temporary backup ref %s", ref)
-    present = {tuple(line.split(" ", 1)) for line in listed.splitlines() if " " in line}
-    missing = sorted(ref for ref, sha in refs.items() if (sha, ref) not in present)
-    if missing:
-        raise GitError(f"branch backup {path} is missing {missing}")
-    return path
-
-
-def _record_deletions(backup_dir, targets, *, bundled, bundle, repository_id, now) -> Path:
-    """Append one line per branch to the month's deletion log, durably."""
-    directory = Path(backup_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{_month(now)}.tsv"
-    recorded_at = datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds")
-
-    def clean(value) -> str:
-        return re.sub(r"[\t\r\n]+", " ", str(value))
-
-    lines = [
-        "\t".join((
-            branch,
-            targets[branch]["head"],
-            clean(targets[branch].get("reason") or "-"),
-            str(bundle) if branch in bundled else "-",
-            recorded_at,
-            clean(repository_id),
-        ))
-        + "\n"
-        for branch in sorted(targets)
-    ]
-    with path.open("a", encoding="utf-8") as handle:
-        handle.writelines(lines)
-        handle.flush()
-        os.fsync(handle.fileno())
-    return path
 
 
 # -- rules for what may go -----------------------------------------------
@@ -1121,7 +1058,7 @@ async def observe_completed_branches(
     from functools import partial
 
     from src.integration.delivery_observer import DeliveryTarget
-    from src.integration.git_truth import GitTruth, GitTruthSnapshot
+    from src.integration.git_truth import GitTruth, GitTruthSnapshot, merge_noop
     from src.integration.train_sources import project_delivered
 
     now = time.time() if now is None else now
@@ -1160,9 +1097,22 @@ async def observe_completed_branches(
                 if ref.startswith("refs/remotes/origin/")
             }
             store, tip, git = observation.store, observation.target_oid, observer.git
+            target_tree = None
 
-            async def reachable(head, store=store, tip=tip, git=git):
-                return await git.ais_ancestor(store, head, tip, strict=True)
+            async def reachable(head, store=store, tip=tip, git=git, observation=observation):
+                nonlocal target_tree
+
+                ancestry = await git.ais_ancestor(store, head, tip, strict=True)
+                if ancestry is not False:
+                    return ancestry
+                # Inventory only: hand landing can preserve all content under
+                # different commits. This is not strict train containment and
+                # does not authorize deleting a ref or publishing a candidate.
+                if target_tree is None:
+                    target_tree = await git.atree_sha(store, tip)
+                if await git.atree_sha(store, head) == target_tree:
+                    return True
+                return await merge_noop(observation, head, tip, target_tree=target_tree)
 
             async def contains(head, branch, store=store, heads=heads, git=git):
                 return bool(await git.ais_ancestor(store, head, heads[branch], strict=True))

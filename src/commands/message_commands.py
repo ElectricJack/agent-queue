@@ -148,7 +148,7 @@ class MessageCommandsMixin:
         project filter, so even across projects).  A non-elevated session
         token may therefore only address the mailboxes it owns:
 
-        - ``session:<its own session_id>``
+        - ``session:<its own session_id>`` or its persisted named-session name
         - ``task:<the task pinned in its token>``, or, for pool tokens that
           pin no task, the live claim on its session row
         - ``profile:<its session row's profile_id>``
@@ -171,7 +171,10 @@ class MessageCommandsMixin:
         }
         session_id = scope.get("session_id")
         if to_kind == "session":
-            return None if session_id and to_id == session_id else error
+            if session_id and to_id == session_id:
+                return None
+            owner = await self.db.get_session(session_id) if session_id else None
+            return None if owner and owner.lifecycle == "named" and to_id == owner.name else error
         if to_kind == "task":
             task_id = scope.get("task_id")
             if task_id is None and session_id:
@@ -923,6 +926,10 @@ class MessageCommandsMixin:
             return {"success": False, "error": f"Message '{message_id}' not found"}
         # Reading a pointer as its actual recipient consumes the durable body.
         # Operator diagnostics and another supervisor's inspection stay read-only.
+        if (await self._is_message_recipient(message)
+                and await self.db.message_held_by_wait(message.id) is True):
+            return {"success": False, "error_code": "wait.held_message",
+                    "error": "Message is held until wait acknowledgement"}
         await self._acknowledge_message_read(message)
         message = await self.db.get_message(message.id)
         state = "acknowledged" if message.read_at is not None else (
