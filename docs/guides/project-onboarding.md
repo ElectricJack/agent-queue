@@ -136,7 +136,7 @@ value; `''` means the project has no repository binding:
 ```bash
 aq project bind-repository agent-q-sprint-eval \
   --repo-url https://github.com/ElectricJack/agent-q-sprint-eval.git \
-  --expected-repo-url '' \
+  --expected-repo-url='' \
   --reason 'User-authorized Agent Q Sprint Eval: bind the repository created after init'
 ```
 
@@ -146,7 +146,7 @@ repair. The daemon validates GitHub access with its configured credentials,
 then commits the project URL and an operator/reason audit event atomically.
 No checkout, pending commit, task assignment or human approval gate changes.
 Resume the existing worker's guarded `aq git push` after successful binding;
-retain its implementation at `6dda504577f2e21e183d211d2eb2c7c4ef2f7590`.
+preserve its branch and unpublished commits while authorization is repaired.
 
 The command refuses a changed expectation, reassignment of a nonempty URL,
 active Git pushes, and configured or durable integration publication state.
@@ -186,7 +186,7 @@ stable error code to take the matching recovery action:
 | `github_repository_conflict` | Pick a different GitHub owner or repository name, or use the existing repository through clone/link mode; use a new request ID when changing those inputs. |
 | `clone_failed` | Check host network and GitHub access, remove only an AQ-reported request-owned staging directory if recovery asks for it, then retry with a new request ID. |
 | `init_failed` | Check the destination root is writable and the target does not exist, then retry with a new request ID. |
-| `commit_failed` | Configure Git author identity on the daemon host or disable the initial README/commit option, then retry. |
+| `commit_failed` | Inspect the reported Git or hook failure. AQ supplies its installation Git identity (or deterministic fallback), rather than requiring host Git config. An operator can inspect it with `aq system get-git-identity`; correct the cause or disable the initial README/commit option, then use a new request ID. |
 | `push_failed` | Correct GitHub access and run the returned `recovery_command` to adopt the retained remote with a new request ID. Request-owned local resources and registration are rolled back. |
 | `registration_failed` | For a pending request, resume with the same ID. For a failed request, resolve the reported database or vault issue and use the recovery command or a new ID; inspect the resource summary first. |
 
@@ -321,3 +321,25 @@ The normal reset then salvages dirty files and reruns workspace setup. A valid
 sentinel naming a completed predecessor already permits reuse; keep it in place
 so salvage retains its task attribution. Conflicting or unreadable identity files,
 foreign claims and mismatched clones remain preserved for investigation.
+
+To switch admission to a separate clone while preserving a retained source, a
+local operator can preview a base cutover:
+
+```bash
+aq project workspace-cutover --project-id widgets \
+  --source-id widgets-primary --target-id widgets-native --json
+```
+
+The source must be enabled and the target disabled, independent, idle and of the
+same kind, with matching origins and a clean target. Review the proof, then repeat
+with `--apply --expected-proof <proof-from-preview>`. Apply disables the source
+base and its slots and enables the target. It preserves source directories,
+claims, locks and retained writers; it does not copy files or release their owners.
+
+The repair commands above update registrations for existing directories. To copy an entire
+project to new native storage, use `aq project relocate` and the
+[storage relocation runbook](matter-engine-storage-relocation.md). It previews
+the inventory, retains verified recovery copies and atomically publishes repository,
+workspace, retained-store and compiler-cache bindings. It requires a local operator,
+paused admission, a disabled/drained train, no live writers and current required CI.
+It does not enable the train after copying.

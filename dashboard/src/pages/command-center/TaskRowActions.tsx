@@ -7,6 +7,7 @@ import { useShellPaneStore } from "../../panes/store";
 import { TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 const STATUS_OPTIONS = TASK_STATUSES;
+const SUSPENDED = ["WAITING", "HIBERNATED", "RESUME_PENDING"];
 
 function QuickAction({
   icon,
@@ -47,7 +48,7 @@ export function RowActions({ task }: { task: Task }) {
   return (
     <>
       <div className="flex items-center gap-0.5">
-        {["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT"].includes(s) && (
+        {["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT", "WAITING", "HIBERNATED", "RESUME_PENDING"].includes(s) && (
           <QuickAction icon={<PauseIcon className="h-3.5 w-3.5" />}
             title={pauseTask.isPending ? "Pausing…" : "Pause"} disabled={controlPending}
             onClick={() => { resumeTask.reset(); pauseTask.mutate({ task_id: task.id }); }} />
@@ -115,13 +116,13 @@ function LifecycleStatus({ task }: { task: Task }) {
         if (!next || next === current) return;
         editTask.mutate({ task_id: task.id, status: next });
       }}
-      disabled={isPending || current === "PAUSED"}
+      disabled={isPending || current === "PAUSED" || SUSPENDED.includes(current)}
       onClick={(e) => e.stopPropagation()}
-      title="Admin override — bypasses the state machine"
+      title="Task lifecycle status"
       className={`cursor-pointer rounded-full border-0 bg-transparent px-2 py-0.5 text-xs font-medium focus:ring-1 focus:ring-indigo-500 focus:outline-none disabled:opacity-50 ${tone}`}
     >
       {STATUS_OPTIONS.includes(current) ? null : <option value="">{current || "-"}</option>}
-      {STATUS_OPTIONS.filter((s) => s !== "PAUSED" || current === "PAUSED").map((s) => (
+      {STATUS_OPTIONS.filter((s) => (s !== "PAUSED" && !SUSPENDED.includes(s)) || s === current).map((s) => (
         <option key={s} value={s}>
           {taskStatusLabel(s)}
         </option>
@@ -181,6 +182,9 @@ function statusTone(status: string): string {
     case "FAILED":
     case "BLOCKED":
       return "bg-red-500/10 text-red-300";
+    case "WAITING":
+    case "HIBERNATED":
+    case "RESUME_PENDING":
     case "WAITING_INPUT":
       return "bg-amber-500/10 text-amber-300";
     case "DEFINED":
