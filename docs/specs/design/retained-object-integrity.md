@@ -115,6 +115,13 @@ restarted the check and `owner_lease` ran out its 600 s.
   `retry_after`; this does not count toward quarantine. Any other caller receives
   a Git preparation error with reason `verification_pending`. The flight continues
   in both cases, and the next attempt reuses its result.
+- **Recovery preserves pending checks.** If an acquisition fails while its shared
+  full check remains active, the recovery wrapper propagates that failure without
+  starting a second diagnostic fsck or opening an incident. In particular, a
+  claim's `RetainedVerificationPending` remains a bounded repository-wait refusal,
+  rather than becoming a generic acquisition timeout. Diagnostic fsck commands,
+  including incident checks, share the common-store verifier exclusion with full
+  checks and maintenance, so their subprocesses cannot overlap.
 - **Recording under concurrent writes.** The flight fingerprints the store before
   and after its check and records only the files that are present and unchanged in
   both. An object written mid-scan lives in a file absent from the first
