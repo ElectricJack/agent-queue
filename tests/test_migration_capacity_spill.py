@@ -19,7 +19,7 @@ from tests.pg_dsn import create_scratch_database
 
 pytestmark = pytest.mark.migration
 ROOT = Path(__file__).resolve().parent.parent
-REVISION = "a00000000035"
+REVISION = "a00000000037"
 PRECEDING_REVISION = previous_revision(REVISION)
 CHECK = "ck_task_reroutes_reason_code"
 OLD_REASONS = "reason_code IN ('provider_unavailable','operator_forced','operator_undo')"
@@ -57,7 +57,7 @@ def check_oid(conn):
 async def test_upgrade_preserves_rows_is_idempotent_and_downgrade_reverses(existing):
     engine = create_postgres_engine(await create_scratch_database("capacityspillmigration"))
     revision = import_module(
-        "migrations.versions.a00000000035_capacity_spill_and_preferred_provider"
+        "migrations.versions.a00000000037_capacity_spill_and_preferred_provider"
     )
     try:
         await migrate(engine, "upgrade", PRECEDING_REVISION)

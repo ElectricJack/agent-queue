@@ -12,27 +12,31 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import and_, case, func, insert, or_, select, update
+from sqlalchemy import and_, case, exists, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.agent_waits import (
     MAX_DIGEST_BYTES,
     TERMINAL_TASK_STATUSES,
     ProducerObservation,
     WaitError,
     WaitResolution,
-    resolve_wait,
     job_wait_deadline,
+    resolve_wait,
 )
+from src.collaboration import PARTNER_GRACE_SECONDS, is_collaboration_thread
+from src.database.tables import agent_waits as waits
 from src.database.tables import (
-    agent_waits as waits,
     agents,
     archived_tasks,
-    messages,
+    collaboration_messages,
     jobs,
+    messages,
     projects,
     sessions,
     task_completion_records,
+    wait_records,
     tasks,
 )
 
@@ -75,14 +79,14 @@ class AgentWaitQueriesMixin:
         ):
             raise WaitError("out_of_scope", "a live matching session instance is required")
         if elevated and session["lifecycle"] == "named" and session["profile_id"] == "supervisor":
-            return dict(
-                project_id=project_id,
-                owner_kind="supervisor",
-                owner_id=f"supervisor-{session['project_id'] or 'global'}",
-                session_id=session_id,
-                session_instance_token=instance_token,
-                claim_epoch=0,
-            )
+            return {
+                "project_id": project_id,
+                "owner_kind": "supervisor",
+                "owner_id": f"supervisor-{session['project_id'] or 'global'}",
+                "session_id": session_id,
+                "session_instance_token": instance_token,
+                "claim_epoch": 0,
+            }
         if session["project_id"] != project_id or session["lifecycle"] not in ("task", "pool"):
             raise WaitError("out_of_scope", "waits require a held task or named supervisor")
         task = (
@@ -115,16 +119,93 @@ class AgentWaitQueriesMixin:
         )
         if not agent or agent["current_task_id"] != task["id"] or agent["state"] != "BUSY":
             raise WaitError("stale_claim", "agent does not hold the task")
-        return dict(
-            project_id=project_id,
-            owner_kind="task",
-            owner_id=task["id"],
-            session_id=session_id,
-            session_instance_token=instance_token,
-            claim_epoch=epoch,
-        )
+        return {
+            "project_id": project_id,
+            "owner_kind": "task",
+            "owner_id": task["id"],
+            "session_id": session_id,
+            "session_instance_token": instance_token,
+            "claim_epoch": epoch,
+        }
 
-    async def _observe_agent_wait(self, conn, row: dict) -> ProducerObservation:
+    async def _observe_collaboration_wait(self, conn, row: dict, now: float) -> ProducerObservation:
+        """Thread-seq cursor plus typed partner reasons, first match wins."""
+        thread_id = row["match"]["thread_id"]
+        closed = ProducerObservation(
+            available=False, reason="thread_closed", digest={"thread_id": thread_id}
+        )
+        # Read the thread before its links: the message that exhausts the budget
+        # commits with the closure, so it is always visible once closure is.
+        thread = await self.get_collaboration_thread(
+            thread_id, project_id=row["project_id"], conn=conn
+        )
+        if thread is None:
+            return closed
+        is_task = row["owner_kind"] == "task"
+        link = (
+            (
+                await conn.execute(
+                    select(collaboration_messages)
+                    .where(
+                        collaboration_messages.c.thread_id == thread_id,
+                        collaboration_messages.c.seq > row["match"]["after_seq"],
+                        collaboration_messages.c.sender_task_id != row["owner_id"]
+                        if is_task
+                        else True,
+                    )
+                    .order_by(collaboration_messages.c.seq)
+                    .limit(1)
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if link:
+            return ProducerObservation(
+                completed_at=link["created_at"],
+                result_ref=f"collaboration:{thread_id}:{link['seq']}",
+                digest={
+                    "thread_id": thread_id,
+                    "seq": link["seq"],
+                    "message_id": link["message_id"],
+                    "sender_task_id": link["sender_task_id"],
+                },
+            )
+        if thread["state"] != "active" or thread["deadline_at"] <= now:
+            return closed
+        if not is_task:
+            return ProducerObservation(result_ref=f"collaboration:{thread_id}")
+        member = next((m for m in thread["members"] if m["task_id"] == row["owner_id"]), None)
+        if member is None or member["state"] == "removed":
+            return closed
+        # A removed member is no longer a peer, whatever became of its task.
+        peers = [
+            m
+            for m in thread["members"]
+            if m["task_id"] != row["owner_id"] and m["state"] != "removed"
+        ]
+        reason = None
+        if any(m["task_status"] in ("FAILED", "BLOCKED") for m in peers):
+            reason = "peer_failed"
+        elif any(m["task_status"] == "MISSING" for m in peers) or all(
+            m["task_status"] in (*TERMINAL_TASK_STATUSES, "ARCHIVED", "MISSING") for m in peers
+        ):
+            reason = "peer_gone"
+        elif (
+            not any(m["running"] for m in peers)
+            and now - row["created_at"] >= PARTNER_GRACE_SECONDS
+        ):
+            reason = "partner_not_running"
+        if reason:
+            return ProducerObservation(
+                available=False,
+                result_ref=f"collaboration:{thread_id}",
+                reason=reason,
+                digest={"thread_id": thread_id},
+            )
+        return ProducerObservation(result_ref=f"collaboration:{thread_id}")
+
+    async def _observe_agent_wait(self, conn, row: dict, now: float) -> ProducerObservation:
         match = row["match"]
         if row["kind"] == "timer":
             due = match["due_at"]
@@ -176,6 +257,8 @@ class AgentWaitQueriesMixin:
                     "outcome": completion["outcome"] if completion else None,
                 },
             )
+        if row["kind"] == "message" and is_collaboration_thread(match["thread_id"]):
+            return await self._observe_collaboration_wait(conn, row, now)
         if row["kind"] == "message":
             # Delivery/read/archive markers do not participate in the predicate.
             own = or_(
@@ -275,6 +358,22 @@ class AgentWaitQueriesMixin:
                         raise WaitError("out_of_scope", "wait target belongs to another project")
                     return
             return  # Missing producer resolves immediately as source_unavailable.
+        if row["kind"] == "message" and is_collaboration_thread(row["match"]["thread_id"]):
+            thread = await self.get_collaboration_thread(
+                row["match"]["thread_id"], project_id=row["project_id"], conn=conn
+            )
+            # Missing, foreign and unjoined threads share one refusal.
+            if thread is None or (
+                row["owner_kind"] == "task"
+                and not any(
+                    m["task_id"] == row["owner_id"]
+                    and m["state"] == "accepted"
+                    and m["accepted_claim_epoch"] == row["claim_epoch"]
+                    for m in thread["members"]
+                )
+            ):
+                raise WaitError("out_of_scope", "collaboration thread is not joined at this claim")
+            return
         if row["kind"] == "message":
             participant = or_(
                 and_(messages.c.from_kind == "session", messages.c.from_id == row["session_id"]),
@@ -341,6 +440,14 @@ class AgentWaitQueriesMixin:
                     deadline_at is not None
                     and abs((old["deadline_at"] - old["created_at"]) - (deadline_at - now))
                     > 0.00001
+                    # Collaboration attachments are bounded by the thread's
+                    # fixed deadline. Reconnects preserve that deadline instead
+                    # of requesting the same relative duration from a later now.
+                    and not (
+                        kind == "message"
+                        and is_collaboration_thread(match["thread_id"])
+                        and old["deadline_at"] == deadline_at
+                    )
                 )
             ):
                 raise WaitError(
@@ -400,7 +507,7 @@ class AgentWaitQueriesMixin:
         )
         await self._validate_wait_source(conn, row)
         await conn.execute(insert(waits).values(**row))
-        observation = await self._observe_agent_wait(conn, row)
+        observation = await self._observe_agent_wait(conn, row, now)
         resolution = resolve_wait(observation, deadline=deadline_at, now=now)
         if resolution:
             await self._finish_agent_wait(conn, row, resolution, now=now)
@@ -417,7 +524,7 @@ class AgentWaitQueriesMixin:
         # Savepoint keeps the resolved row as outbox intent if insertion fails.
         try:
             async with conn.begin_nested():
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages)
                     .values(
                         id=message_id,
@@ -483,6 +590,54 @@ class AgentWaitQueriesMixin:
             )
             return dict(row) if row else None
 
+    async def consume_agent_wait(self, wait_id: str, *, identity: dict, now: float) -> dict:
+        """Read a terminal result and consume its wake under the current owner fence.
+
+        Historical results can follow their task to a new claim. Their wait state,
+        version and lease baseline remain immutable; only delivery is consumed.
+        Lock order matches registration and reconciliation: session, task, wait.
+        """
+        async with self._engine.begin() as conn:
+            owner = await self._wait_owner(conn, **identity)
+            row = (
+                (await conn.execute(select(waits).where(waits.c.id == wait_id).with_for_update()))
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise WaitError("not_found", "wait not found")
+            if any(row[key] != owner[key] for key in ("project_id", "owner_kind", "owner_id")):
+                raise WaitError("out_of_scope", "result belongs to another owner or project")
+            row = dict(row)
+            if row["state"] == "active":
+                if any(row[key] != owner[key] for key in (
+                    "claim_epoch", "session_id", "session_instance_token",
+                )):
+                    raise WaitError(
+                        "stale_claim", "active wait belongs to an earlier claim or instance"
+                    )
+                return row
+            if row["result_message_id"] is None:
+                await self._enqueue_wait_result(conn, row, now)
+                row = dict(
+                    (await conn.execute(select(waits).where(waits.c.id == wait_id)))
+                    .mappings().one()
+                )
+                if row["result_message_id"] is None:
+                    raise WaitError(
+                        "wait.result_pending", "result delivery is unavailable; retry consumption"
+                    )
+            await conn.execute(
+                update(messages)
+                .where(
+                    messages.c.id == row["result_message_id"],
+                    messages.c.delivered_at.is_(None),
+                    messages.c.archived_at.is_(None),
+                )
+                .values(delivered_at=now, via="wait_consume")
+            )
+            return row
+
     async def list_agent_waits(
         self,
         *,
@@ -491,8 +646,18 @@ class AgentWaitQueriesMixin:
         owner_id: str | None = None,
         limit=100,
         offset=0,
+        continuation: bool = False,
     ) -> list[dict]:
+        """List scoped waits, optionally retaining active waits and result pointers.
+
+        wait_resumed_at marks producer resolution, not agent consumption. A
+        continuation must retain resolved result pointers as well as active IDs.
+        """
         stmt = select(waits)
+        if continuation:
+            stmt = stmt.where(
+                (waits.c.state == "active") | waits.c.result_ref.is_not(None)
+            )
         for key, value in (
             ("project_id", project_id),
             ("owner_kind", owner_kind),
@@ -562,7 +727,7 @@ class AgentWaitQueriesMixin:
                 session["last_claim_epoch"] is None
                 or session["last_claim_epoch"] == row["claim_epoch"]
             )
-            and task["status"] in ("ASSIGNED", "IN_PROGRESS")
+            and task["status"] in ("ASSIGNED", "IN_PROGRESS", "WAITING")
             and task["assigned_agent_id"] == session["agent_id"]
             and (session["lifecycle"] != "pool" or session["claim_phase"] == "active")
         )
@@ -595,7 +760,7 @@ class AgentWaitQueriesMixin:
                 or not await self._blocking_wait_current(conn, dict(row))
             ):
                 return None
-            observation = await self._observe_agent_wait(conn, dict(row))
+            observation = await self._observe_agent_wait(conn, dict(row), now)
             if not observation.available or (
                 observation.completed_at is not None and observation.completed_at <= now
             ):
@@ -648,6 +813,10 @@ class AgentWaitQueriesMixin:
                                 waits.c.result_message_id.is_(None),
                             )
                         )
+                        .where(~exists(select(wait_records.c.id).where(
+                            wait_records.c.legacy_kind == "agent_wait",
+                            wait_records.c.legacy_id == waits.c.id,
+                        )))
                         .where(waits.c.id == wait_id if wait_id else True)
                         .order_by(
                             case((or_(
@@ -695,6 +864,13 @@ class AgentWaitQueriesMixin:
                 if not row:
                     continue
                 row = dict(row)
+                # Recheck after the v1 row lock: the bridge may have committed
+                # since candidate discovery. Its v2 outbox now owns delivery.
+                if await conn.scalar(select(wait_records.c.id).where(
+                    wait_records.c.legacy_kind == "agent_wait",
+                    wait_records.c.legacy_id == row["id"],
+                )):
+                    continue
                 if row["state"] != "active":
                     if row["result_message_id"] is None:
                         await self._enqueue_wait_result(conn, row, now)
@@ -703,7 +879,7 @@ class AgentWaitQueriesMixin:
                 if row["owner_kind"] == "task" and not await self._blocking_wait_current(conn, row):
                     resolution = WaitResolution("cancelled", None, {"reason": "claim_ended"})
                 else:
-                    observation = await self._observe_agent_wait(conn, row)
+                    observation = await self._observe_agent_wait(conn, row, now)
                     resolution = resolve_wait(observation, deadline=row["deadline_at"], now=now)
                 if resolution and await self._finish_agent_wait(conn, row, resolution, now=now):
                     resolved += 1

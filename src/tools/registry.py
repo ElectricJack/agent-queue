@@ -77,11 +77,27 @@ class CategoryMeta:
 
 # Category definitions with human-readable descriptions
 CATEGORIES: dict[str, CategoryMeta] = {
+    "operator": CategoryMeta(name="operator", description="Scoped operator setup and preflight"),
+    "policy": CategoryMeta(
+        name="policy", description="Portable project policy profiles: export, diff and selective import"
+    ),
+    "cron": CategoryMeta(
+        name="cron",
+        description="Session-owned recurring prompts: register, inspect and cancel wake-ups.",
+    ),
     "git": CategoryMeta(
         name="git",
         description=(
             "Branch, commit, push, PR, merge, and remote URL operations for project repositories"
         ),
+    ),
+    "ci": CategoryMeta(
+        name="ci",
+        description="Required CI evidence and completed task audits",
+    ),
+    "integration": CategoryMeta(
+        name="integration",
+        description="Author-assisted close continuations and bound batch repair",
     ),
     "project": CategoryMeta(
         name="project",
@@ -94,9 +110,26 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="agent",
         description=("Agent management, agent profiles, profile import/export"),
     ),
+    "supervisor": CategoryMeta(
+        name="supervisor",
+        description="Supervisor session lifecycle — fresh or resumed restarts through AQ",
+    ),
     "memory": CategoryMeta(
         name="memory",
         description=("Semantic memory — search, project profiles, compaction, reindexing"),
+    ),
+    "knowledge": CategoryMeta(
+        name="knowledge",
+        description=(
+            "Knowledge records — create, list, show, update, history, diff, retire, restore, export"
+        ),
+    ),
+    "record": CategoryMeta(
+        name="record",
+        description=(
+            "Record reads, search, capabilities, and typed links "
+            "(show, search, capabilities, link create/list/remove)"
+        ),
     ),
     "notes": CategoryMeta(
         name="notes",
@@ -142,6 +175,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "update, and apply verified reply evidence"
         ),
     ),
+    "decision": CategoryMeta(
+        name="decision",
+        description="Durable operator decisions shared by all supervisors",
+    ),
     "supervisor_inbox": CategoryMeta(
         name="supervisor_inbox",
         description="Durable Discord conversations with the global supervisor",
@@ -165,7 +202,18 @@ CATEGORIES: dict[str, CategoryMeta] = {
         ),
     ),
     "job": CategoryMeta(name="job", description="Finite managed jobs, durable results and logs"),
+    "artifact": CategoryMeta(
+        name="artifact",
+        description=(
+            "Durable artifact identities — resolve an artifact:// URI and re-hash "
+            "the bytes it names"
+        ),
+    ),
     "wait": CategoryMeta(name="wait", description="Durable typed agent waits and result history"),
+    "collaboration": CategoryMeta(
+        name="collaboration",
+        description="Bounded ordered threads between 2 to 4 held tasks",
+    ),
     "report": CategoryMeta(
         name="report",
         description="Durable supervisor report requests, paged briefs and submissions",
