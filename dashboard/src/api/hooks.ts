@@ -12,6 +12,7 @@ import {
   deleteProfile,
   deleteProject,
   deleteTask,
+  removeTask,
   editMcpServer,
   editIntelligenceClass,
   editProfile,
@@ -78,6 +79,7 @@ import {
   deleteAttachmentApiTasksTaskIdAttachmentsAttachmentIdDelete,
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
+  poolRename,
   poolScale,
   poolSetEnabled,
   playbookActivate,
@@ -157,6 +159,7 @@ import type {
   InspectPlaybookRunResponse,
   CancelPlaybookRunResponse,
   PoolStatusResponse,
+  PoolRenameRequest,
   PoolStatusRow,
   PoolProjectStatus,
   PoolScaleRequest,
@@ -178,6 +181,10 @@ import {
 } from "./chat";
 
 // --- Re-exports — call sites should import shared types from here ---
+// Graph and historical activity projections also feed task components and
+// may carry a status introduced by a newer daemon. Keep their fallback reader.
+export type Task = Omit<TaskResponse, "status"> & { status?: string };
+
 export type {
   AgentSummary,
   AgentSummary as Agent,
@@ -199,7 +206,6 @@ export type {
   ProjectResponse as Project,
   ProjectSummary,
   ShowEffectiveProfileResponse,
-  TaskResponse as Task,
   TaskDetail,
   TaskCompletionDetail,
   WorkspaceSummary as Workspace,
@@ -307,9 +313,10 @@ export type { PoolStatusRow, PoolProjectStatus };
 export function usePoolStatus(projectId?: string) {
   return useQuery({
     queryKey: ["pools", projectId ?? "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data } = await poolStatus({
         body: projectId ? { project_id: projectId } : {},
+        signal,
         throwOnError: true,
       });
       return ((data as PoolStatusResponse).pools ?? []) as PoolStatusRow[];
@@ -336,6 +343,29 @@ export function usePoolSessions() {
     staleTime: 2_000,
     // session.* and pool.* frames refresh this; the poll only reconciles.
     refetchInterval: 30_000,
+  });
+}
+
+export function usePoolRename() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolRenameRequest) => {
+      const { data } = await poolRename({ body: input, throwOnError: true });
+      if (!data.success) throw new Error(data.error || "Could not rename this pool");
+      return data;
+    },
+    onSuccess: async (result, input) => {
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.map((row) => row.profile_id === input.profile_id
+          ? { ...row, name: result.name ?? input.name } : row),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
+      void queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      void queryClient.invalidateQueries({ queryKey: ["profile", input.profile_id] });
+      void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["providers", "allocation"] });
+    },
   });
 }
 
@@ -370,16 +400,42 @@ export function usePoolSetEnabled() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: PoolSetEnabledRequest) => {
-      const { data } = await poolSetEnabled({ body: input, throwOnError: true });
+      // A stalled relay must produce a visible error instead of leaving the
+      // switch on "Saving…" until the relay's much longer header timeout.
+      const signal = AbortSignal.timeout(10_000);
+      let data;
+      try {
+        ({ data } = await poolSetEnabled({ body: input, signal, throwOnError: true }));
+      } catch (error) {
+        if (signal.aborted) {
+          throw new Error("Saving this pool timed out. Check its current state before trying again.");
+        }
+        throw error;
+      }
       const result = data as PoolSetEnabledResponse;
       // Refusals (no such pool profile) come back in band with a 200, exactly
       // as they do for pool_scale, so success has to be checked here.
       if (!result.success) throw new Error(result.error || "Could not update this pool");
       return result;
     },
-    onSuccess: () => {
+    onSuccess: async (result, input) => {
+      // A fleet status read can start before the write and finish after it.
+      // Cancel it before publishing the confirmed value in every pool view.
+      // Otherwise clearing the toggle's pending state shows the old cached
+      // value until the expensive status refresh completes.
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.map((row) => row.profile_id === input.profile_id
+          ? { ...row, enabled: result.enabled ?? input.enabled }
+          : row),
+      );
       void queryClient.invalidateQueries({ queryKey: ["pools"] });
       void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: () => {
+      // A timeout may occur after persistence; reconcile without hiding the
+      // mutation error or automatically retrying an ambiguous write.
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
     },
   });
 }
@@ -394,7 +450,11 @@ export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
       if (projectId) body.project_id = projectId;
       if (opts?.showAll) body.show_all = true;
       const { data } = await listTasks({ body, throwOnError: true });
-      return (data as ListTasksResponse).tasks ?? [];
+      const response = data as ListTasksResponse;
+      return {
+        ...response,
+        tasks: response.tasks ?? [],
+      };
     },
     refetchInterval: 60_000,
   });
@@ -732,6 +792,7 @@ function useTaskMutationCallbacks() {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["task"] });
       queryClient.invalidateQueries({ queryKey: ["projectGraph"] });
+      queryClient.invalidateQueries({ queryKey: ["records"] });
     },
   };
 }
@@ -811,11 +872,34 @@ export function useDeleteTask() {
   });
 }
 
+export function useDeleteTaskPreview(input: DeleteTaskRequest) {
+  return useQuery({
+    queryKey: ["task-delete-preview", input.task_id, input.recursive, input.branches],
+    queryFn: async () => (await deleteTask({
+      body: { ...input, confirmed: false }, throwOnError: true,
+    })).data,
+    staleTime: 0,
+  });
+}
+
 export function useArchiveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string }) =>
-      (await archiveTask({ body: input, throwOnError: true })).data,
+    mutationFn: async (input: {
+      task_id: string;
+      reason?: string;
+      abandon_undelivered?: boolean;
+      disposition?: "deliver" | "obsolete" | "retire";
+    }) => (await archiveTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
+}
+
+export function useRemoveTask() {
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: DeleteTaskRequest) =>
+      (await removeTask({ body: input, throwOnError: true })).data,
     ...cb,
   });
 }
@@ -1519,6 +1603,17 @@ export function useSystemConfig() {
     queryFn: async () => {
       const { data } = await getConfig({ body: {}, throwOnError: true });
       return data as GetConfigResponse;
+    },
+  });
+}
+
+export function useDeploymentHistory() {
+  return useQuery({
+    queryKey: ["deployment-history"],
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const { data } = await getConfig({ body: { section: "deploy" }, throwOnError: true });
+      return (data as GetConfigResponse).deployment_history;
     },
   });
 }

@@ -81,6 +81,19 @@ aq vault reset-harness --dry-run
 | `base` | string | — | Inherit from another harness. **Single level only** — a chain is rejected, so cycles are impossible by construction. |
 | `provider` | string | — | The key this harness's model is looked up under in an intelligence class's per-provider mapping. Omit it for `claude`, `codex` and `gemini`, whose provider is inferred from the id (`anthropic`, `openai`, `google`). **Any other harness must declare it**: an unrecognised id infers `""`, and the launch then resolves no model at all and says so once in the log. Inherits through `base`. |
 
+Session launches discard inherited `CLAUDE*` controls and `AQ_*` variables,
+then inject the new session's identity, credentials and resource limits.
+The spec builder explicitly supplies `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for
+Claude workers, including an override configured in the harness `env` map;
+other Claude controls in a harness `env` map are rejected. A launching shell's
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` cannot override that compact window.
+This isolation also applies when the tmux server predates the daemon restart:
+the pane process starts with the scrubbed environment plus tmux's terminal
+metadata (`TERM`, `TMUX`, `TMUX_PANE`). Daemon startup warns about inherited
+harness controls and `AQ_*` variables by name, without logging their values.
+Restart from a clean operator environment when that warning appears; startup
+retains AQ variables so the worker database guard still prevents unsafe starts.
+
 ### Prompt delivery
 
 | Key | Type | Default | Meaning |
@@ -269,7 +282,7 @@ upgrade.
 | Hooks | yes, via `--settings` | yes, by discovery + `--dangerously-bypass-hook-trust` | no |
 | Transcript reader | yes | yes | no |
 | Permission flag | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--yolo` |
-| Quarantining dialog | rate limit | login required | login required |
+| Quarantining dialog | rate limit, login required | login required | login required |
 
 Each shipped file's `## Notes` section carries the measurement behind every row
 above — which CLI version it was verified against, which byte sequence the
@@ -402,6 +415,50 @@ You do not need to restart the daemon; the vault watcher picks the file up.
 > **Note.** `harness.binaries` probes a fixed list — `git`, plus the shipped
 > harness CLIs and `gh` — rather than deriving it from the vault, so a
 > harness you add yourself will not appear in that check's output.
+
+### Two harnesses, one CLI
+
+A provider-agnostic CLI can serve two backends that fail independently.
+OpenCode is the example: `opencode` runs local models through Ollama
+(`provider: "ollama"`, models `ollama/<name>`), and `opencode-zen` runs the
+same executable against the hosted OpenCode Zen gateway
+(`provider: "opencode"`, models `opencode/<name>`). Write the second one as a
+**standalone file, not a `base:` variant**, when the backends must stay apart:
+
+* **`provider`** picks the intelligence-class slice a launch reads, so the
+  hosted model lives under its own key (`"opencode": {"model": ...}`) and the
+  local slice is never edited.
+* **Availability** is keyed `harness.base or harness.id`
+  ([provider failover](../specs/provider-failover.md) D0). A `base:` variant
+  shares its parent's row, so a gateway rate limit would hold the local lane
+  too; a standalone file gets a row of its own.
+
+The cost is a copied `## Config`; keep the shared keys of the two files in
+step by hand.
+
+Behaviour that belongs to the CLI rather than to one file follows the
+executable, not the id. OpenCode's prime addendum and AQ's read of its native
+question store apply to every harness whose `command` is named `opencode`
+([`runs_cli`](../../src/sessions/harness_registry.py)). A launcher in front of
+the CLI (`npx opencode`) is not recognised, so point `command` at the binary
+or a shim named after it.
+
+That resolution is project-scoped, because the launch is: a session is started
+from `vault/projects/<pid>/harnesses/<name>.md` when that file exists. So when
+a project shadows a harness id with a different `command`, the addendum and the
+question store follow the executable *for that project only* — every other
+project on the same id keeps the system file's behaviour.
+
+One id never moves: the CLI's own name. `runs_cli` answers on the id match
+before it consults the registry, so a project file shadowing `opencode` itself
+keeps OpenCode's addendum and store. Renaming the id is a project's only way
+to opt out.
+
+The routing policy names harnesses, so a new harness id reaches work only
+through a lane or as a general candidate. A narrow lane is the only way to keep
+it to narrow work: a harness that no narrow lane names is a general candidate
+for every class it has a rung at. The shipped policy's `narrow-hosted` lane
+names `opencode-zen`.
 
 ## Editing a shipped harness
 
