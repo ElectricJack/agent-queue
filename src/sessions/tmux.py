@@ -43,6 +43,7 @@ from src.sessions.provider import (
     DialogRule,
     NotSubmitted,
     NudgeDeferred,
+    NudgeReason,
     PartialListError,
     SessionDiedDuringStartup,
     SessionError,
@@ -334,12 +335,23 @@ class TmuxProvider(SessionProvider):
 
         # ``exec`` so the agent *is* the pane process, not a child of a
         # lingering shell — process discovery and signalling depend on it.
-        # tmux replaces a pane's PATH with the client's PATH even when
-        # new-session -e PATH=... set the session environment. Restore the
-        # same lookup context used by preflight at exec time; quote it as
-        # literal data, including relative entries and shell metacharacters.
-        launch_path = shlex.quote(spec.env.get("PATH", os.defpath))
-        shell_cmd = f"PATH={launch_path} exec " + " ".join(shlex.quote(a) for a in spec.command)
+        # -e overlays the persistent tmux server's environment; omitted keys
+        # can still leak from the shell that originally started that server.
+        # Start the agent with exactly the scrubbed env plus tmux's terminal
+        # metadata. Reapply PATH too: tmux substitutes the client's PATH even
+        # when -e set a different, preflight-validated value.
+        launch_env = {"PATH": os.defpath, **spec.env}
+        terminal_env = " ".join(
+            f'{key}="${key}"' for key in ("TERM", "TMUX", "TMUX_PANE")
+            if key not in launch_env
+        )
+        shell_cmd = "exec /usr/bin/env -i " + terminal_env + " " + " ".join(
+            shlex.quote(arg)
+            for arg in (
+                *(f"{key}={value}" for key, value in launch_env.items()),
+                *spec.command,
+            )
+        )
 
         args = ["new-session", "-d", "-s", spec.session_name, "-c", str(work_dir)]
         for key, value in spec.env.items():
@@ -590,6 +602,20 @@ class TmuxProvider(SessionProvider):
         names = await self._tmux("list-sessions", "-F", "#{session_name}")
         return h.name not in names.splitlines()
 
+    async def confirm_instance_stopped(self, h: SessionHandle) -> bool:
+        """Fresh proof that this token no longer owns the tmux name."""
+        names = await self._tmux("list-sessions", "-F", "#{session_name}")
+        if h.name not in names.splitlines():
+            return True
+        if not h.instance_token:
+            return False
+        try:
+            observed = await self._tmux("show-environment", "-t", f"={h.name}", _META_TOKEN_KEY)
+        except TmuxCommandError:
+            return False
+        token = _parse_environment_value(observed, _META_TOKEN_KEY)
+        return token is not None and token != h.instance_token
+
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...] = ()) -> bool:
         try:
             panes = await self._panes()
@@ -735,7 +761,11 @@ class TmuxProvider(SessionProvider):
             ):
                 # An old empty frame is not proof the newly accepted input
                 # is empty. Defer immediately; do not sleep while holding input.
-                raise NudgeDeferred(f"terminal {h.name!r} has recent manual input")
+                raise NudgeDeferred(
+                    f"terminal {h.name!r} has recent manual input",
+                    session_name=h.name,
+                    reason=NudgeReason.RECENT_INPUT,
+                )
             if not await self._fenced(h):
                 raise NotSubmitted(f"session {h.name!r} is gone", session_name=h.name)
 
@@ -783,7 +813,9 @@ class TmuxProvider(SessionProvider):
                     if not await self._clear_composer(h, pane, prefix, pending):
                         raise NudgeDeferred(
                             f"terminal {h.name!r} holds AQ input shown {view} "
-                            "that could not be cleared"
+                            "that could not be cleared",
+                            session_name=h.name,
+                            reason=NudgeReason.UNREADABLE,
                         )
                     await self._forget_pending(h)
                     logger.warning(
@@ -795,7 +827,13 @@ class TmuxProvider(SessionProvider):
                 else:
                     # No safe observation means no key press and no record
                     # removal. A later doctor/reconciler pass can recover it.
-                    raise NudgeDeferred(f"terminal {h.name!r} input is unknown")
+                    # AQ's own text cannot be attributed to a human here, so
+                    # the refusal is unreadable rather than a draft.
+                    raise NudgeDeferred(
+                        f"terminal {h.name!r} input is unknown",
+                        session_name=h.name,
+                        reason=NudgeReason.UNREADABLE,
+                    )
 
             # Never append a reminder to a user's draft or compete with an
             # attached terminal. This guard shares send_input's lock and runs
@@ -1432,13 +1470,23 @@ class TmuxProvider(SessionProvider):
                 if refusal is None:
                     break
         if refusal is not None:
-            raise NudgeDeferred(refusal)
+            raise NudgeDeferred(
+                refusal.message, session_name=name, reason=refusal.reason
+            )
 
-    async def _composer_refusal(self, name: str, pane: str, prefix: str) -> tuple[str | None, bool]:
+    async def _composer_refusal(
+        self, name: str, pane: str, prefix: str
+    ) -> tuple[_ComposerRefusal | None, bool]:
         """Why a nudge cannot be typed now (``None`` when it can), read-only.
 
         The flag says whether a repaint could change the answer: a detached,
         stable OpenCode pane whose box was read cleanly and still showed text.
+
+        The *reason* is what the stall ladder branches on, and it is decided
+        from the evidence in hand, never from the message text: a person at
+        the keyboard is reported as one, and only text that provably cannot
+        be typed input (a wedged TUI's residue, or a read that could not be
+        taken consistently) is reported as unreadable.
         """
         fmt = (
             "#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}\t"
@@ -1447,26 +1495,58 @@ class TmuxProvider(SessionProvider):
         try:
             before = await self._tmux("display-message", "-p", "-t", pane, fmt)
             x, y, width, height, visible, in_mode, attached = map(int, before.split())
-            if (
-                not prefix.strip()
-                or in_mode != 0
-                or attached != 0
-                or not 0 <= x < width
-                or not 0 <= y < height
-            ):
-                return f"terminal {name!r} is busy or its input is unknown", False
+            reasons = []
+            if not prefix.strip():
+                reasons.append("unknown prompt prefix")
+            if in_mode != 0:
+                reasons.append("pane in copy mode")
+            if attached != 0:
+                reasons.append("client attached")
+            if not 0 <= x < width or not 0 <= y < height:
+                reasons.append(f"cursor outside pane ({x},{y}; {width}x{height})")
+            if reasons:
+                # Copy mode, an attached client, or a layout with no known
+                # input line: a person is at this terminal.
+                return (
+                    _ComposerRefusal(
+                        f"terminal {name!r} is busy or its input is unknown: "
+                        + "; ".join(reasons),
+                        NudgeReason.TERMINAL_BUSY,
+                    ),
+                    False,
+                )
             screen = await self._tmux("capture-pane", "-p", "-e", "-t", pane)
             after = await self._tmux("display-message", "-p", "-t", pane, fmt)
         except (TmuxCommandError, ValueError):
-            return f"cannot inspect input for {name!r}", False
-        if before != after:
-            return f"terminal {name!r} has a draft or its input is unknown", False
-        if not _composer_is_empty(screen, prefix, x, y, height, cursor_visible=visible == 1):
             return (
-                f"terminal {name!r} has a draft or its input is unknown",
-                _is_opencode_prefix(prefix),
+                _ComposerRefusal(
+                    f"cannot inspect input for {name!r}", NudgeReason.UNREADABLE
+                ),
+                False,
             )
-        return None, False
+        if before != after:
+            # The pane moved between the two reads, so the captured screen
+            # describes no state that exists: unreadable, not a draft.
+            return (
+                _ComposerRefusal(
+                    f"terminal {name!r} has a draft or its input is unknown",
+                    NudgeReason.UNREADABLE,
+                ),
+                False,
+            )
+        if _composer_is_empty(screen, prefix, x, y, height, cursor_visible=visible == 1):
+            return None, False
+        reason = (
+            _opencode_stale_frame(screen, x, y)
+            if _is_opencode_prefix(prefix)
+            else NudgeReason.DRAFT
+        )
+        return (
+            _ComposerRefusal(
+                f"terminal {name!r} has a draft or its input is unknown", reason
+            ),
+            _is_opencode_prefix(prefix),
+        )
 
     async def _repaint_stray_output(self, name: str, pane: str) -> bool:
         """Make a detached pane redraw its whole screen; False when not attempted.
@@ -1514,9 +1594,12 @@ class TmuxProvider(SessionProvider):
     async def composer_probe(self, h: SessionHandle) -> dict | None:
         """Whether a nudge would be typed into *h* now, and what its input shows.
 
-        ``{"ready": bool, "reason": str | None, "input": str}``.  ``input`` is
-        the visible composer text (for OpenCode, the whole box region), so an
-        operator can tell a human draft from output painted over the input.
+        ``{"ready": bool, "reason": str | None, "reason_kind": str | None,
+        "input": str}``.  ``input`` is the visible composer text (for
+        OpenCode, the whole box region), so an operator can tell a human
+        draft from output painted over the input; ``reason_kind`` is the
+        structured :class:`NudgeReason`, so the report can also say whether
+        the stall ladder is allowed to advance on it.
         ``None`` when the session or its pane is gone.  Read-only: neither a
         repaint nor a key, so ``aq doctor`` cannot disturb a session.
         """
@@ -1530,7 +1613,8 @@ class TmuxProvider(SessionProvider):
         tail = await self._capture_tail(pane, lines=40)
         return {
             "ready": refusal is None,
-            "reason": refusal,
+            "reason": None if refusal is None else refusal.message,
+            "reason_kind": None if refusal is None else str(refusal.reason),
             "input": _composer_preview(tail, prefix)[:_PREVIEW_CHARS],
         }
 
@@ -1650,15 +1734,27 @@ _OPENCODE_AGENT_ROW = re.compile(r"\S.* · \S.*")
 
 @dataclass(frozen=True)
 class _OpenCodeBox:
-    """Row indices of the OpenCode composer box on one captured screen."""
+    """Rows and horizontal bounds of the OpenCode composer on one screen."""
 
     indent: int
+    right: int
     top: int
     agent: int
 
     def rows(self, lines: list[str]) -> list[str]:
         """The rows between the top padding and the agent row, bar removed."""
-        return [line[self.indent + len(_OPENCODE_BAR) :] for line in lines[self.top : self.agent]]
+        return [
+            line[self.indent + len(_OPENCODE_BAR) : self.right]
+            for line in lines[self.top : self.agent]
+        ]
+
+
+@dataclass(frozen=True)
+class _ComposerRefusal:
+    """One composer refusal: the message, and the structured reason for it."""
+
+    message: str
+    reason: NudgeReason
 
 
 def _is_opencode_prefix(prompt_prefix: str) -> bool:
@@ -1683,16 +1779,20 @@ def _opencode_box(lines: list[str]) -> _OpenCodeBox | None:
     if not border:
         return None
     indent = len(lines[border]) - len(lines[border].lstrip(" "))
+    # With its sidebar open, OpenCode paints worktree paths alongside the
+    # blank composer rows. Only columns above the bottom border are input;
+    # reading the rest of the screen misclassifies an idle box as a draft.
+    right = len(lines[border].rstrip())
     bar = " " * indent + _OPENCODE_BAR
     agent = border - 1
     if not lines[agent].startswith(bar) or not _OPENCODE_AGENT_ROW.fullmatch(
-        lines[agent][len(bar) :].strip()
+        lines[agent][len(bar) : right].strip()
     ):
         return None
     top = agent
     while top > 0 and lines[top - 1].startswith(bar):
         top -= 1
-    return _OpenCodeBox(indent=indent, top=top, agent=agent) if top < agent else None
+    return _OpenCodeBox(indent=indent, right=right, top=top, agent=agent) if top < agent else None
 
 
 def _opencode_input(lines: list[str]) -> str | None:
@@ -1717,6 +1817,40 @@ def _opencode_composer_is_empty(lines: list[str], cursor_x: int, cursor_y: int) 
     return all(not row.strip() for row in box.rows(lines))
 
 
+def _opencode_stale_frame(screen: str, cursor_x: int, cursor_y: int) -> NudgeReason:
+    """Whether an OpenCode box at idle geometry holds residue instead of input.
+
+    Only one shape is provably *not* typed input.  At the idle geometry the
+    box has exactly three interior rows with the cursor parked on the middle
+    one at the input position, and a draft can only be the text on that
+    cursor row: a wrapped or multi-line draft grows the box
+    (:func:`_opencode_composer_is_empty` requires exactly three rows for
+    precisely that reason).  Text on either of the *other* interior rows is
+    therefore residue from an earlier layout — the wrapped tail of a Todo
+    line above, or of the agent row below — that a wedged TUI cannot repaint
+    away, and no keyboard put it there.
+
+    That was ``vivid-quest-44.3``: 116 identical refusals over 78 minutes on
+    a pane whose box read exactly this way, holding its task with zero rungs,
+    zero backoffs and zero ``task.stalled`` events.  Everything else that is
+    not the idle shape stays :attr:`NudgeReason.DRAFT`: an unrecognized box is
+    far more likely to be a layout this code has not measured than a human
+    who is not there, and only proof buys an escalation.
+    """
+    lines = [_normalize(_SGR.sub("", line)) for line in screen.splitlines()]
+    box = _opencode_box(lines)
+    if box is None or box.agent - box.top != 3 or cursor_y != box.top + 1:
+        return NudgeReason.DRAFT
+    if cursor_x != box.indent + len(_OPENCODE_BAR) + _OPENCODE_PAD:
+        return NudgeReason.DRAFT  # The cursor moved off the input row: typing.
+    rows = box.rows(lines)
+    return (
+        NudgeReason.STALE_FRAME
+        if any(row.strip() for row in (rows[0], rows[2]))
+        else NudgeReason.DRAFT
+    )
+
+
 def _composer_preview(tail: str, prompt_prefix: str) -> str:
     """The composer's visible text on one line, for an operator to read.
 
@@ -1730,10 +1864,16 @@ def _composer_preview(tail: str, prompt_prefix: str) -> str:
         border = _opencode_border(lines)
         if border is None:
             return ""
-        top = border
-        while top > 0 and lines[top - 1].strip():
-            top -= 1
-        rows = (line.strip().removeprefix(_OPENCODE_BAR).strip() for line in lines[top:border])
+        box = _opencode_box(lines)
+        top = box.top if box is not None else border
+        if box is None:
+            while top > 0 and lines[top - 1].strip():
+                top -= 1
+        right = len(lines[border].rstrip())
+        rows = (
+            line[:right].strip().removeprefix(_OPENCODE_BAR).strip()
+            for line in lines[top:border]
+        )
         return " / ".join(row for row in rows if row)
     prefix = _normalize(prompt_prefix).strip()
     if not prefix:

@@ -18,6 +18,7 @@ claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
 collaboration.py   `aq collaboration {create,accept,show,list,close}` — bounded task threads
+cron.py            `aq cron {register,show,list,cancel}` — session-owned recurring prompts
 daemon.py          `aq start` / `stop` / `restart` — the daemon, plus the dashboard server when a
                    bundle is installed (`--no-dashboard` only skips the Vite prompt;
                    `--no-dashboard-server` leaves the server alone)
@@ -26,7 +27,7 @@ dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` co
                    via src/dashboard_server/process.py), plus the read-only `link` (the origin
                    Discord links name, via src/remote_links.py); also the helpers `aq start|
                    stop|restart|status` call, so the PID/log/config paths come from daemon.py
-db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
+db.py              `aq db` — operator schema, custom backup and disaster-recovery restore
 doctor.py          `aq doctor`, `aq costs`, and `aq benchmark` evidence commands
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),
                    BRIEF_PROJECTIONS — see docs/specs/design/aq-surface.md §4
@@ -41,7 +42,9 @@ install.py         `aq install` — the daemon-free installer: builds the step r
                    runs src/install's engine in-process, maps outcomes to exit codes;
                    `--repair` / `--upgrade` reconcile an existing installation
 inventory.py       Reproducible CLI command inventory and ownership classification
-jobs.py            `aq job {submit,show,list,cancel,result,logs,attach}` and `aq run` preset alias
+jobs.py            `aq job {submit,show,list,cancel,result,retain,logs,attach}` and `aq run`
+                   preset alias
+artifacts.py       `aq artifact verify` — resolve an artifact:// URI and re-hash its bytes
 logs.py            `aq logs` — tail/filter JSONL log file directly (no daemon needed)
 menus.py           Interactive prompts (task wizard, fuzzy select, confirm)
 messages.py        `aq message *`, `aq inbox`, `aq reply`, `aq chat`
@@ -50,6 +53,10 @@ playbook.py        `aq playbook` — compile, run, HITL, health
 pool_provider.py   `aq pool provider` — generated status/apply and structured preview flags
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
+policy.py          `aq policy export|diff|apply` and the shared per-item import selection
+promote.py         `aq promote {schema,validate,prepare,request,hotfix,approve,cancel,repair,status,list}` — flow
+                   validation, pinned step PRs, and cached promotion history
+promote_rulesets.py `aq promote rulesets` — print chain/tag rulesets and workflow triggers
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
 reports.py         `aq report {morning,request,brief,submit}` — evidence preview, durable reads and file submission
 reviews.py         `aq review` — document-review queue, decisions, revisions, and comments
@@ -61,14 +68,16 @@ streams.py         `aq stream start|tail|kill`
 styles.py          Theme, status icons, color maps
 system_config.py   `aq system config` — YAML config editing
 tasks.py           Hand-crafted `aq task` commands needing interactive features
-                   (create wizard, select, close, claim, comment)
+                   or file input (create wizard, graph files, batch-propose,
+                   select, close, claim, comment)
 test_runner.py     `aq test` — pytest behind the box-wide test semaphore
 uninstall.py       `aq uninstall` — plans and removes installer-owned resources from the
                    resume record; destructive scopes are opt-in and confirmed one by one
 update.py          `aq update` — stop the daemon, fast-forward the source checkout, then hand
                    reinstall / rebuild / restart to a fresh process on the new code
                    (src/install/update_finish.py); rolls back on any failure (src/install/update.py)
-waits.py           `aq wait {register,show,list,cancel}` — typed, claim-fenced durable waits
+waits.py           `aq wait {register,show,list,cancel,explain,graph,checkpoint,ack,decide,lift,bridge}`
+                   — versioned conditions, evidence and claim-fenced durable waits
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 
@@ -107,6 +116,12 @@ generated, and hooks were replaced by playbooks (`aq playbook`).
   `@cli.group()` / `@group.command()`; importing registers. Hand-crafted modules are
   imported *before* `register_auto_commands()` so their names win over generated ones.
   `_run()` in `app.py` bridges sync Click commands to the async client.
+- **Command discovery:** the CLI reads `src/tools/command_catalogue.json` instead
+  of importing the handler, typed schemas or internal plugin implementations.
+  After changing tool definitions, handler methods, contracts or internal plugin schemas,
+  run `python scripts/generate-command-catalogue.py` (also part of the common
+  regeneration script). `tests/test_cli_startup_offline.py` checks drift and
+  forbids handler, database, SQLAlchemy and asyncpg imports during CLI startup.
 - **Plugin CLI extensions** register `aq <plugin-name> …` via the `aq.plugins` entry
   point group; saved plugin config is fetched only when that group is invoked, read-only
   and bounded. Import, help, version, schema and `aq test` discovery must never initialize

@@ -23,6 +23,16 @@ class KnowledgeEnvelope(BaseModel):
     revision_id: str | None = None
 
 
+class KnowledgeCitationResponse(KnowledgeEnvelope):
+    citation_id: str
+
+
+class KnowledgeContextDeliveryResponse(KnowledgeEnvelope):
+    bundle_id: str
+    delivery_id: str
+    state: str
+
+
 class KnowledgeCreateResponse(KnowledgeEnvelope):
     kind: str | None = None
     version: int | None = None
@@ -89,7 +99,54 @@ class KnowledgeExportResponse(KnowledgeEnvelope):
     format_version: int = 1
 
 
+class KnowledgeImportResponse(KnowledgeEnvelope):
+    """Read-only reconciliation and the canonical bytes bound by its seal."""
+
+    source_installation_id: str
+    snapshot_id: str
+    snapshot_timestamp: str
+    manifest_sha256: str
+    manifest_content_base64: str
+    vector_observation: str
+    counts: dict
+    items: list[dict]
+    mappings: list[dict]
+    identities: list[dict]
+
+
+class KnowledgeGenerationTickResponse(BaseModel):
+    """One bounded tick: how much was retained and the terminal state per job.
+
+    ``states`` carries one terminal state string per job the tick ran
+    (``succeeded`` / ``retry`` / ``quarantined`` / ``cancelled``); it is empty
+    when no due job was claimed.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    success: bool = True
+    captured: int | None = None
+    states: list[str] = []
+
+
+class KnowledgeGenerationStatusResponse(BaseModel):
+    """Content-free cost and ambiguity diagnostics; never inspects a provider.
+
+    ``jobs`` groups by scope / state / error code, ``budgets`` is the daily
+    per-feature allowance projection, and ``unknown_calls`` counts reservations
+    whose paid provider operation has no known outcome.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    success: bool = True
+    jobs: list[dict] = []
+    budgets: list[dict] = []
+    unknown_calls: int | None = None
+    page_limit: int | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "knowledge_cite": KnowledgeCitationResponse,
+    "knowledge_context_deliver": KnowledgeContextDeliveryResponse,
     "knowledge_create": KnowledgeCreateResponse,
     "knowledge_create_task": KnowledgeCreateTaskResponse,
     "knowledge_list": KnowledgeListResponse,
@@ -100,6 +157,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "knowledge_retire": KnowledgeLifecycleResponse,
     "knowledge_restore": KnowledgeLifecycleResponse,
     "knowledge_export": KnowledgeExportResponse,
+    "knowledge_import": KnowledgeImportResponse,
+    "knowledge_generation_status": KnowledgeGenerationStatusResponse,
+    "knowledge_generation_tick": KnowledgeGenerationTickResponse,
 }
 
 
@@ -117,3 +177,28 @@ class KnowledgeProtectionResponse(KnowledgeEnvelope):
 from src.commands.contracts.knowledge_protection import PROTECTION_COMMANDS  # noqa: E402
 
 RESPONSE_MODELS.update({name: KnowledgeProtectionResponse for name, *_ in PROTECTION_COMMANDS})
+
+
+class KnowledgeImportResponse(KnowledgeEnvelope):
+    """Stable envelope for inventory and durable apply/resume projections."""
+
+    source_installation_id: str | None = None
+    snapshot_id: str | None = None
+    snapshot_timestamp: str | None = None
+    manifest_sha256: str | None = None
+    manifest_content_base64: str | None = None
+    vector_observation: str | None = None
+    counts: dict | None = None
+    items: list[dict] | None = None
+    mappings: list[dict] | None = None
+    identities: list[dict] | None = None
+    run_id: str | None = None
+    state: str | None = None
+
+
+RESPONSE_MODELS["knowledge_import"] = KnowledgeImportResponse
+
+# Conditional apply/resume requirements must survive the HTTP projection.
+from src.commands.contracts.inventory import KnowledgeImportArgs  # noqa: E402
+
+REQUEST_MODELS = {"knowledge_import": KnowledgeImportArgs}

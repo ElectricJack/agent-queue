@@ -199,11 +199,11 @@ names.
 | `dispatched` | A fresh delegate now owns the branch. | — |
 | `already_dispatched` | The delegate already held the fence; replay. | — |
 | `writer_reused` | An attached verifier is doing the work; no delegate needed. | — |
-| `busy` | A reserved external mutation exists, or the predecessor has not confirmed stopped/detached. | Retry after the mutation reconciles; see [publication pending](../../guides/integration-troubleshooting.md#publication-pending). |
+| `busy` | A reserved external mutation exists, or the predecessor has not confirmed stopped/detached. | Retry after the mutation reconciles; see [publication pending](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery). |
 | `configuration_blocked` | The stage names no intelligence class to hint the router with. | Set the stage's `*_intelligence_class` in the integration policy, then re-dispatch. |
 | `stale` | Unknown operation or stage, or the pinned candidate subject is no longer current. | Expected during a rebuild; the next candidate event re-drives it. |
 | `unknown` (handler) / `busy` (contract) | A state dispatch did not expect: missing or mismatched delegate, writer kind, id collision, missing owner row, a fence held by a non-predecessor, an incoherent owner/task/session shape after the transfer, or a subject that moved under proven preserved progress. The result carries the exact `reason` and a `reason_code`. | Nothing: nothing was consumed, the continuation and reservation passes retry the stage, and the supervisor gets one message per operation and reason. Inspect with `aq integration status <project>` → `ownership` if it persists. |
-| `human_required` | A human decision: the delegate carries an operator `manual_pause` hold, or its preserved progress no longer proves its lineage (an unexplained remote move). | Release the hold, or decide on the preserved history; see [a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-branch-is-held-by-a-writer-that-is-gone). |
+| `human_required` | A human decision: the delegate carries an operator `manual_pause` hold, or its preserved progress no longer proves its lineage (an unexplained remote move). | Release the hold, or decide on the preserved history; see [a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-finished-task-still-owns-its-branch). |
 
 `unknown` is newer than the frozen contract. Reviewed playbooks pin this
 contract's fingerprint, so the contract adapter reports it as the declared,

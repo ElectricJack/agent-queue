@@ -10,9 +10,11 @@ transaction.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 
 from sqlalchemy import (
     Text,
@@ -26,6 +28,7 @@ from sqlalchemy import (
     func,
     insert,
     literal,
+    literal_column,
     or_,
     select,
     true,
@@ -34,6 +37,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.queries.task_queries import (
     INTEGRATION_REWORK_AT_KEY,
     STALE_OPEN_ATTENTION,
@@ -49,7 +53,7 @@ from src.database.tables import (
     projects,
     sessions,
     task_branch_origins,
-    task_delivery_receipts,
+    task_context,
     task_dependencies,
     task_integration_checkpoints,
     task_metadata,
@@ -58,6 +62,8 @@ from src.database.tables import (
 )
 from src.models import AgentState, DepType, Task, TaskStatus
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
+
+logger = logging.getLogger(__name__)
 
 # Container statuses that withhold their children (work-graph §3.1) are
 # enforced by BlockedStateMixin's satisfaction table
@@ -132,6 +138,32 @@ def container_flag_exists():
     )
 
 
+def never_leaseable_container():
+    """``WHERE`` clause: the claim frontier will never offer this row to a worker.
+
+    The conjunction of the two reasons ``_frontier_predicates``
+    (``src/database/queries/claim_queries.py``) keeps off the frontier:
+    ``container_settles_without_worker`` — the §7 container flag, because a
+    container settles when its children finish and a worker holding one could
+    never close it — and ``has_children``, which covers the parent row the flag
+    never reached (the flag lands with a task's first child, so for any parent
+    the two are the same rule).
+
+    They stay two named frontier predicates because ``aq task explain`` and the
+    doctor report each under its own code.  This is the composed question a
+    writer *outside* the frontier needs to ask: is this row settle-only work no
+    pool worker can ever be given?  A writer that has to give a task's
+    lifecycle back must not draw the line narrower than the one that took it
+    away, or a parent whose flag never landed is stranded by the difference
+    between the two spellings.
+    """
+    child = tasks.alias("never_leaseable_child")
+    return or_(
+        container_flag_exists(),
+        exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
+    )
+
+
 def childless_held_open_container():
     """``WHERE`` clause: the row is a held-open container with no children.
 
@@ -194,13 +226,16 @@ def childless_held_open_container():
 def _settlement_clauses() -> list:
     """The §7 conditions both settlement legs share, correlated to ``tasks``.
 
-    Container flag ∧ no live session holds it ∧ no non-COMPLETED child ∧ not
-    a childless held-open container ∧ no hierarchy/train collection episode
-    owns its completion.  The caller joins ``projects`` and adds the status.
+    Container flag ∧ not an ingestion batch member awaiting fidelity review
+    (design §4: a held container never auto-settles) ∧ no live session holds
+    it ∧ no non-COMPLETED child ∧ not a childless held-open container ∧ no
+    hierarchy/train collection episode owns its completion.  The caller
+    joins ``projects`` and adds the status.
     """
     child = tasks.alias("child")
     return [
         container_flag_exists(),
+        not_ingest_held(),
         ~exists(
             select(literal(1)).where(
                 and_(
@@ -224,6 +259,21 @@ def _settlement_clauses() -> list:
                 select(literal(1)).where(
                     task_integration_checkpoints.c.task_id == tasks.c.id,
                     task_integration_checkpoints.c.episode_id.is_not(None),
+                    # In a train project the git-first train never runs the
+                    # legacy collector, and orphan settlement cancels its
+                    # operation; a cancelled episode owns nothing, so the
+                    # container settles here (grand-lantern-78, 2026-10-07).
+                    or_(
+                        projects.c.hierarchical_integration_mode != "train",
+                        exists(
+                            select(literal(1)).where(
+                                integration_repair_operations.c.parent_task_id == tasks.c.id,
+                                integration_repair_operations.c.episode_id
+                                == task_integration_checkpoints.c.episode_id,
+                                integration_repair_operations.c.state != "cancelled",
+                            )
+                        ),
+                    ),
                 )
             ),
         ),
@@ -295,7 +345,7 @@ PHASES_UNSUPPORTED_MODE_CODE = "hierarchy.phases_unsupported_mode"
 
 @dataclass(frozen=True)
 class ProjectIntegrationMode:
-    """The two per-project constants the hierarchy claim predicates need.
+    """The per-project constants the hierarchy claim predicates need.
 
     Both predicates below ask one question of the ``projects`` row —
     "is this project in hierarchy/train mode, and against which
@@ -307,14 +357,23 @@ class ProjectIntegrationMode:
     object.  A caller that has read the project row passes this in and the
     subqueries collapse to a constant.
 
-    Callers whose statement spans more than one project (see
-    :meth:`HierarchyQueryMixin.hierarchy_runnable_task_ids`) pass ``None``
-    and keep the correlated form, which is why both predicates still build
-    it.
+    Multi-project readers use request-scoped modes where available and keep
+    the correlated form for other projects.
     """
 
     hierarchical: bool
     integration_repository_id: str | None
+    # Empty means unobserved: only a revalidated Git view may admit prerequisites.
+    delivered_prerequisite_ids: frozenset[str] = frozenset()
+    observation_unavailable: bool = False
+    cross_epic_prerequisites: str = "default_branch"
+    default_prerequisite_ids: frozenset[str] = frozenset()
+    #: Dependents whose epic branch already contains every cross-epic source.
+    parent_contained_task_ids: frozenset[str] = frozenset()
+    stacked: bool = False
+    stackable_prerequisite_ids: frozenset[str] = frozenset()
+    project_id: str | None = None
+    train_playbook_id: str = "fast-smooth-train"
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -325,14 +384,47 @@ class ProjectIntegrationMode:
         """
         if project is None:
             return None
+        from src.integration.stacked_branches import stacked_policy
+
         return cls(
+            project_id=getattr(project, "id", None),
+            train_playbook_id=((getattr(project, "hierarchical_integration_policy", None)
+                                or {}).get("train") or {}).get("playbook_id") or "fast-smooth-train",
+            stacked=stacked_policy(project),
             hierarchical=getattr(project, "hierarchical_integration_mode", None)
             in HIERARCHY_MODES,
             integration_repository_id=getattr(project, "integration_repository_id", None),
+            cross_epic_prerequisites=(
+                getattr(project, "hierarchical_integration_policy", None) or {}
+            ).get("cross_epic_prerequisites", "default_branch"),
         )
 
 
+@lru_cache(maxsize=128)
+def _train_disabled_for_binding(project_id=None, playbook_id=None):
+    # Reuse the SQL expression/binds; its activation values are read per query.
+    from src.integration.train_policy import train_activation_disabled, train_disabled_for_project
+
+    if playbook_id is not None:
+        return train_activation_disabled(project_id or tasks.c.project_id, playbook_id)
+
+    return exists(select(literal(1)).where(
+        projects.c.id == tasks.c.project_id, train_disabled_for_project(),
+    ))
+
+
+def _train_disabled_for_task(mode=None):
+    # Hoist only identity; activation state stays fresh even for a reused mode.
+    return (_train_disabled_for_binding(mode.project_id, mode.train_playbook_id)
+            if mode is not None else _train_disabled_for_binding())
+
+
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
+    """An explicitly paused train creates no new origin admission requirement."""
+    return _train_disabled_for_task(mode) | _materialized_origin_when_hierarchical(mode)
+
+
+def _materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
     """Require an exact origin or an active delegate reservation in enabled projects.
 
     A repair delegate writes its operation's existing branch and a parent
@@ -360,6 +452,7 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 task_branch_origins.c.materialized.is_(True),
             )),
             _reserved_repair_branch(mode.integration_repository_id),
+            _ordinary_repair_branch(mode.integration_repository_id),
             _reserved_verifier_branch(mode.integration_repository_id),
         )
     return or_(~exists(
@@ -385,7 +478,53 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 )
             ),
         )
-    ), _reserved_repair_branch(), _reserved_verifier_branch())
+    ), _reserved_repair_branch(), _ordinary_repair_branch(), _reserved_verifier_branch())
+
+
+def _ordinary_repair_branch(repository_id: str | None = None):
+    """Ordinary repairs use the leased batch ref, without a legacy origin/stage."""
+    owner = integration_branch_owners
+    allocation = (
+        integration_batches.c.id + ":"
+        + func.cast(integration_batches.c.repair_attempt_count, Text)
+    )
+    # The sync dedup key is deliberately independent of allocation number.
+    # Bind that arm to ordinary_repair_id(batch, attempt), so an old sync
+    # cannot become runnable under a later allocation's batch identity.
+    # Fixed protocol strings are SQL literals, not another set of parameters
+    # for every origin/reservation predicate in the bounded candidate read.
+    repair_prefix = literal_column("'repair:'", type_=Text)
+    sync_id = literal_column("'repair-'", type_=Text) + func.encode(
+        func.sha256(func.convert_to(allocation, literal_column("'UTF8'"))),
+        literal_column("'hex'"),
+    )
+    source = task_context.join(owner, owner.c.holder == task_context.c.task_id).join(
+        integration_batches, integration_batches.c.id == tasks.c.created_by_id,
+    )
+    if repository_id is None:
+        source = source.join(projects, projects.c.id == tasks.c.project_id)
+    return exists(select(literal(1)).select_from(source).correlate(tasks).where(
+        tasks.c.created_by_kind == "system",
+        or_(
+            tasks.c.dedup_key == (repair_prefix + allocation),
+            and_(
+                tasks.c.dedup_key == (repair_prefix + integration_batches.c.id
+                                     + literal_column("':'", type_=Text)
+                                     + literal_column("'sync-default-branch'", type_=Text)),
+                tasks.c.id == sync_id,
+            ),
+        ),
+        task_context.c.id == tasks.c.id,
+        task_context.c.task_id == tasks.c.id,
+        task_context.c.label == "Repair input",
+        owner.c.fence.is_not(None),
+        owner.c.repository_id == tasks.c.repo_id,
+        or_(owner.c.ref == tasks.c.branch_name,
+            owner.c.ref == ("refs/heads/" + tasks.c.branch_name)),
+        owner.c.repository_id == (
+            repository_id if repository_id is not None else projects.c.integration_repository_id
+        ),
+    ))
 
 
 def _reserved_repair_branch(repository_id: str | None = None):
@@ -429,7 +568,7 @@ def _reserved_repair_branch(repository_id: str | None = None):
 def _reserved_verifier_branch(repository_id: str | None = None):
     """A parent verifier checks the parent's branch, not a new task origin.
 
-    ``ParentCompletion`` files the delegate on the parent's checkpoint branch
+    ``ParentEpisodeRecords`` files the delegate on the parent's checkpoint branch
     and binds it as ``verifier_task_id``; the handoff then reserves that
     branch's fence to it.  Admit exactly that: the bound delegate of a live
     parent operation, holding the unattached ``verifier`` fence on the
@@ -490,12 +629,18 @@ def integration_rework_cutoff(task_id):
 def delivered_same_parent_prerequisites_when_hierarchical(
     mode: ProjectIntegrationMode | None = None,
 ):
+    """Paused trains use ordinary task dependencies without delivery paperwork."""
+    return _train_disabled_for_task(mode) | _delivered_same_parent_prerequisites(mode)
+
+
+def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = None):
     """Require a direct sibling prerequisite to reach the shared parent first.
 
     Graph blockedness intentionally releases a ``blocks`` dependent when its
     predecessor completes.  In a hierarchy project that is too early: the
-    predecessor's reviewed head still belongs to its feature branch until a
-    receipt proves it was incorporated into their common parent branch.
+    predecessor's source still belongs to its feature branch until delivery
+    is proven on their common parent branch. Only the supplied Git view can
+    prove delivery; an absent view leaves affected prerequisites unproven.
 
     *mode*, when supplied, folds the two ``projects`` lookups away exactly as
     in :func:`materialized_origin_when_hierarchical`.
@@ -505,36 +650,15 @@ def delivered_same_parent_prerequisites_when_hierarchical(
     dependency = task_dependencies.alias("hierarchy_prerequisite")
     prerequisite = tasks.alias("hierarchy_prerequisite_task")
     parent = tasks.alias("hierarchy_prerequisite_parent")
-    checkpoint = task_integration_checkpoints.alias("hierarchy_prerequisite_checkpoint")
-    receipt = task_delivery_receipts.alias("hierarchy_prerequisite_receipt")
     origin = task_branch_origins.alias("hierarchy_prerequisite_origin")
-
-    delivered = exists(
-        select(literal(1))
-        # As above: ``tasks`` is two levels out, so name every correlated
-        # FROM explicitly (``correlate`` replaces auto-correlation).
-        .correlate(tasks, prerequisite, parent, checkpoint)
-        .where(
-            receipt.c.source_task_id == prerequisite.c.id,
-            receipt.c.target_task_id == tasks.c.parent_task_id,
-            receipt.c.repository_id == checkpoint.c.repository_id,
-            receipt.c.target_branch == parent.c.branch_name,
-            receipt.c.disposition == "code",
-            receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-            # Ordinary task bookkeeping and the close record may be written
-            # after delivery.  Only entry into a new work incarnation makes
-            # an old receipt stale.
-            receipt.c.created_at >= func.coalesce(
-                integration_rework_cutoff(prerequisite.c.id), prerequisite.c.created_at
-            ),
-        )
-    )
+    delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids) if mode else false()
+    if mode is not None and mode.stacked:
+        delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
         select(literal(1))
         .select_from(
             dependency.join(prerequisite, prerequisite.c.id == dependency.c.depends_on_task_id)
             .join(parent, parent.c.id == tasks.c.parent_task_id)
-            .outerjoin(checkpoint, checkpoint.c.task_id == prerequisite.c.id)
         )
         .where(
             dependency.c.task_id == tasks.c.id,
@@ -586,6 +710,111 @@ def delivered_same_parent_prerequisites_when_hierarchical(
 #: Session states that still hold their task — a container in one of these
 #: cannot be settled out from under a live worker (spec §7).
 LIVE_SESSION_STATES = ("starting", "running", "draining")
+
+
+def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
+    """Use each project's Git view; missing views cannot prove delivery."""
+    def predicate(mode=None):
+        siblings = delivered_same_parent_prerequisites_when_hierarchical(mode)
+        if not cross_parent:
+            return siblings
+        return siblings & cross_parent_prerequisites_on_default(mode) & epic_refresh_ready(mode)
+
+    legacy = predicate()
+    if not modes:
+        return legacy
+    return case(
+        {pid: predicate(mode) for pid, mode in modes.items()},
+        value=tasks.c.project_id,
+        else_=legacy,
+    )
+
+
+# Built once: the claim frontier evaluates these predicates on every claim, and
+# a fresh alias copies every column of its table (see claim_queries).
+_CROSS_PREREQUISITE_EDGE = task_dependencies.alias("cross_prerequisite_edge")
+_CROSS_PREREQUISITE_SOURCE = tasks.alias("cross_prerequisite_source")
+_REFRESH_PENDING_PARENT = tasks.alias("refresh_pending_parent")
+_CONTAINMENT_PARENT = tasks.alias("containment_parent")
+
+
+def _cross_parent_prerequisites():
+    """Completed cross-parent blocks edges, correlated to the dependent task."""
+    edge = _CROSS_PREREQUISITE_EDGE
+    source = _CROSS_PREREQUISITE_SOURCE
+    return source, select(literal_column("1")).select_from(
+        edge.join(source, source.c.id == edge.c.depends_on_task_id),
+    ).correlate(tasks).where(
+        edge.c.task_id == tasks.c.id, edge.c.dep_type == literal_column("'blocks'"),
+        source.c.parent_task_id.is_distinct_from(tasks.c.parent_task_id)
+        | source.c.parent_task_id.is_(None),
+        source.c.status == literal_column("'COMPLETED'"),
+    )
+
+
+def _cross_parent_delivery_enabled(mode):
+    return ~_train_disabled_for_task(mode) & _configured_cross_parent_delivery(mode)
+
+
+def _configured_cross_parent_delivery(mode):
+    if mode is None:
+        return exists(select(literal_column("1")).where(
+            projects.c.id == tasks.c.project_id,
+            projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES),
+            func.coalesce(projects.c.hierarchical_integration_policy[
+                "cross_epic_prerequisites"].as_string(), literal_column("'default_branch'"))
+            != literal_column("'completed'"),
+        ))
+    return true() if mode.hierarchical and mode.cross_epic_prerequisites != "completed" else false()
+
+
+def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = None):
+    """Require exact Git delivery of cross-parent sources on the default branch.
+
+    Epic containment and refresh batches have their own frontier predicate.
+    With no observation, a completed cross-parent source remains unproven.
+    """
+    source, cross_edge = _cross_parent_prerequisites()
+    ids = mode.default_prerequisite_ids if mode else frozenset()
+    if mode is not None and mode.stacked:
+        ids |= mode.stackable_prerequisite_ids
+    unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
+    return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge.where(unproven)))
+
+
+def open_epic_refresh_batches():
+    """Open refresh batch ids for this task's epic; ordinary collections are unrelated."""
+    parent = _REFRESH_PENDING_PARENT
+    return select(integration_batches.c.id).select_from(
+        integration_batches.join(parent, parent.c.repo_id == integration_batches.c.repository_id),
+    ).correlate(tasks).where(
+        parent.c.id == tasks.c.parent_task_id,
+        integration_batches.c.project_id == tasks.c.project_id,
+        integration_batches.c.intent != literal_column("'aborted'"),
+        integration_batches.c.lifecycle != literal_column("'promoted'"),
+        integration_batches.c.id.like("train-epic-refresh-%"),
+        integration_batches.c.target_ref == (literal_column("'refs/heads/'", type_=Text) + func.replace(
+            parent.c.branch_name, literal_column("'refs/heads/'"), literal_column("''"))),
+    )
+
+
+def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
+    """A cross-epic child needs contained sources and no open epic refresh.
+
+    An ordinary sibling collection, including a failed or held one, cannot
+    withhold a child whose epic already contains every proven source.
+    """
+    source, cross_edge = _cross_parent_prerequisites()
+    if mode is not None and mode.stacked:
+        cross_edge = cross_edge.where(~source.c.id.in_(mode.stackable_prerequisite_ids))
+    parent = _CONTAINMENT_PARENT
+    has_epic = exists(select(literal_column("1")).where(
+        parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
+    ))
+    ids = mode.parent_contained_task_ids if mode else ()
+    contained = tasks.c.id == any_(literal(sorted(ids), type_=ARRAY(Text))) if ids else false()
+    pending = exists(open_epic_refresh_batches()) | (has_epic & ~contained)
+    return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge) & pending)
 
 
 class HierarchyError(Exception):
@@ -655,10 +884,16 @@ class HierarchyQueryMixin:
             ),
         }
 
-    async def hierarchy_runnable_task_ids(self, task_ids: list[str]) -> set[str]:
+    async def hierarchy_runnable_task_ids(
+        self, task_ids: list[str], *, hierarchy_modes=None
+    ) -> set[str]:
         """Return tasks whose project mode/origin permits writer assignment."""
         if not task_ids:
             return set()
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self)
         async with self._engine.connect() as conn:
             rows = (
                 (
@@ -667,8 +902,9 @@ class HierarchyQueryMixin:
                             # One array bind avoids expanding the whole READY frontier
                             # into thousands of parameters on each scheduler tick.
                             tasks.c.id == any_(bindparam("task_ids", task_ids, type_=ARRAY(Text))),
+                            not_ingest_held(),
                             materialized_origin_when_hierarchical(),
-                            delivered_same_parent_prerequisites_when_hierarchical(),
+                            delivered_prerequisites_for_projects(hierarchy_modes),
                         )
                     )
                 )
@@ -687,63 +923,68 @@ class HierarchyQueryMixin:
         workspace-start overlay: a delivered parent head is a descendant of
         that base and lets the child's normal branch preparation fast-forward
         from the preserved origin without copying files or merging siblings.
-        ``None`` means either no sibling prerequisite exists or the task is
-        not currently receipt-eligible (the caller has already fail-closed via
-        :meth:`is_hierarchy_task_runnable`).
+        This uses the same current Git proof as admission,
+        including its exact parent tip, rather than historical receipt rows.
+        Stale or unknown proof refuses preparation. ``None`` means no sibling
+        prerequisite needs a head; unobserved siblings cannot pass admission.
         """
         dependency = task_dependencies.alias("delivery_head_dependency")
         prerequisite = tasks.alias("delivery_head_prerequisite")
-        checkpoint = task_integration_checkpoints.alias("delivery_head_checkpoint")
-        receipt = task_delivery_receipts.alias("delivery_head_receipt")
-        async with self._engine.connect() as conn:
-            task = (
-                await conn.execute(select(tasks).where(tasks.c.id == task_id))
-            ).mappings().one_or_none()
-            if task is None or task["parent_task_id"] is None:
+        from src.integration.delivery_observer import prerequisite_observer
+
+        observer = prerequisite_observer(self)
+        if observer is not None:
+            task = await self.get_task(task_id)
+            if task is None or task.parent_task_id is None:
                 return None
-            parent_branch = (
-                await conn.execute(
-                    select(tasks.c.branch_name).where(tasks.c.id == task["parent_task_id"])
-                )
-            ).scalar_one_or_none()
-            if not parent_branch:
-                return None
-            rows = (
-                await conn.execute(
-                    select(receipt.c.after_sha, receipt.c.created_at)
-                    .select_from(
-                        dependency.join(
-                            prerequisite,
-                            prerequisite.c.id == dependency.c.depends_on_task_id,
-                        )
-                        .join(checkpoint, checkpoint.c.task_id == prerequisite.c.id)
-                        .join(
-                            receipt,
-                            and_(
-                                receipt.c.source_task_id == prerequisite.c.id,
-                                receipt.c.target_task_id == task["parent_task_id"],
-                                receipt.c.repository_id == checkpoint.c.repository_id,
-                                receipt.c.target_branch == parent_branch,
-                                receipt.c.disposition == "code",
-                                receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-                                receipt.c.created_at >= func.coalesce(
-                                    integration_rework_cutoff(prerequisite.c.id),
-                                    prerequisite.c.created_at,
-                                ),
-                            ),
-                        )
-                    )
-                    .where(
-                        dependency.c.task_id == task_id,
-                        dependency.c.dep_type == DepType.BLOCKS.value,
-                        prerequisite.c.parent_task_id == task["parent_task_id"],
-                    )
-                    .order_by(receipt.c.created_at.desc(), receipt.c.id.desc())
-                )
-            ).all()
-        for head, _created_at in rows:
-            if isinstance(head, str) and len(head) == 40:
-                return head
+            view = await observer.prerequisite_view(task.project_id, task_id=task_id)
+            if not await view.fresh():
+                raise ValueError("hierarchy prerequisite target moved during preparation")
+            async with self._engine.connect() as conn:
+                current = (await conn.execute(select(tasks).where(
+                    tasks.c.id == task_id,
+                ))).mappings().one_or_none()
+                if current is None or current["parent_task_id"] != task.parent_task_id:
+                    raise ValueError("hierarchy prerequisite parent changed during preparation")
+                ids = set((await conn.execute(select(prerequisite.c.id).select_from(
+                    dependency.join(prerequisite,
+                                    prerequisite.c.id == dependency.c.depends_on_task_id),
+                ).where(
+                    dependency.c.task_id == task_id,
+                    dependency.c.dep_type == DepType.BLOCKS.value,
+                    prerequisite.c.parent_task_id == current["parent_task_id"],
+                ))).scalars())
+                if not ids:
+                    return None
+                verified = await view.verified_on(conn, ids)
+                origin = (await conn.execute(select(task_branch_origins).where(
+                    task_branch_origins.c.task_id == task_id,
+                    task_branch_origins.c.reserved.is_(True),
+                    task_branch_origins.c.retired_at.is_(None),
+                ))).mappings().one_or_none()
+                parent_branch = (await conn.execute(select(tasks.c.branch_name).where(
+                    tasks.c.id == current["parent_task_id"],
+                ))).scalar_one_or_none()
+                if (origin is None or not parent_branch or not origin["parent_ref"]
+                    or origin["parent_task_id"] != current["parent_task_id"]
+                    or origin["parent_repository_id"] != current["repo_id"]
+                    or origin["parent_ref"].removeprefix("refs/heads/")
+                    != parent_branch.removeprefix("refs/heads/")):
+                    raise ValueError("hierarchy prerequisite origin changed during preparation")
+                for tid in ids:
+                    proof = verified.get(tid)
+                    target = view.targets.get(tid)
+                    if (proof is None or not proof.satisfied or target is None
+                        or target.repository_id != current["repo_id"]
+                        or target.target_ref != "refs/heads/" + parent_branch.removeprefix(
+                            "refs/heads/")):
+                        raise ValueError("hierarchy prerequisite delivery is not current")
+                heads = {proof.target_oid for proof in verified.values()}
+            if not await view.fresh() or len(heads) != 1:
+                raise ValueError("hierarchy prerequisite target moved during preparation")
+            return heads.pop()
+        # Admission already withholds sibling-dependent work without a Git view.
+        # An ordinary root has no prerequisite overlay to prepare.
         return None
 
     async def mark_container(self, task_id: str, *, conn) -> None:
@@ -1074,52 +1315,31 @@ class HierarchyQueryMixin:
         abandon_undelivered: bool = False,
         delivery=None,
         obsolete_integration_delegate: bool = False,
+        allow_missing_provenance_reopen: bool = False,
     ) -> bool:
-        """Fence canonical hierarchy/lifecycle writers for enabled projects.
+        """Fence hierarchy/lifecycle writers; return whether hierarchy delivery applies.
 
-        Returns whether hierarchical delivery applies.  When
-        ``retire_pending`` is true, a removal retires every live origin in the
-        subtree and advances each surviving affected parent's generation in
-        this transaction.  Delivered and batch-sealed identity is never
-        discarded.
-
-        ``branch_policy`` says what to do about origins whose branch reached
-        the remote, and is only consulted when ``retire_pending`` is set:
-
-        ``"keep"``
-            Retire the origins; leave the refs alone.  ``archive`` always
-            passes this — archiving moves a task out of the active view, it
-            does not destroy work.
-        ``"discard"``
-            Retire the origins and mark each materialized one ``pending`` for
-            :class:`~src.integration.branch_discard.BranchDiscardService`,
-            which removes the ref asynchronously.
-        ``None``
-            Refuse with ``branch_discard_required`` when the subtree holds a
-            materialized origin, naming the branches in the error context so a
-            surface can ask.  A caller that says nothing can never destroy a
-            branch by omission.
-
-        ``delivery`` is the git view a removal took before this transaction
-        (see :mod:`src.integration.removal_guard`); development work it does
-        not verify as delivered refuses an archive.
+        Delivered and sealed identities cannot be discarded. retire_pending retires live
+        subtree origins and advances surviving parents' generations in this transaction.
+        Its branch_policy selects keep (archive: retain refs) or discard (queue async
+        BranchDiscardService). Omitted policy refuses materialized origins explicitly.
+        The caller observes delivery before this transaction; unknown Git evidence
+        refuses mutation, and archive requires proof on the configured default target.
+        An authorized explicit reopen may repair only this task's missing provenance,
+        retaining internal child delivery and invalidating aggregate verification.
         """
         if branch_policy not in (None, "keep", "discard"):
             raise ValueError(f"unknown branch_policy: {branch_policy!r}")
-        task_row = (
-            await conn.execute(
-                select(tasks.c.project_id, tasks.c.parent_task_id).where(tasks.c.id == task_id)
-            )
-        ).one_or_none()
+        _delivery_query = select(tasks.c.project_id, tasks.c.parent_task_id).where(
+            tasks.c.id == task_id
+        )
+        task_row = (await conn.execute(_delivery_query)).one_or_none()
         if task_row is None:
             return False
-        mode = (
-            await conn.execute(
-                select(projects.c.hierarchical_integration_mode).where(
-                    projects.c.id == task_row.project_id
-                )
-            )
-        ).scalar_one_or_none()
+        _delivery_query = select(projects.c.hierarchical_integration_mode).where(
+            projects.c.id == task_row.project_id
+        )
+        mode = (await conn.execute(_delivery_query)).scalar_one_or_none()
         removal_ids = None
         if mutation in {"delete", "archive"}:
             # The removal half is mode-independent: audit rows and live repair
@@ -1152,13 +1372,7 @@ class HierarchyQueryMixin:
         if not ids:
             return True
         active_batch_states = (
-            "sealing",
-            "sealed",
-            "building",
-            "testing",
-            "repairing",
-            "human_blocked",
-            "promoting",
+            "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
             "cleanup_pending",
         )
         # A mutation below a sealed root changes that member's frozen
@@ -1176,78 +1390,79 @@ class HierarchyQueryMixin:
         )
         ancestor_ids = [row[0] for row in (await conn.execute(select(ancestors.c.id))).all()]
         sealed_scope = sorted(set(ids) | set(ancestor_ids))
-        sealed = (
-            await conn.execute(
-                select(integration_batch_members.c.task_id)
-                .select_from(
-                    integration_batch_members.join(
-                        integration_batches,
-                        integration_batches.c.id == integration_batch_members.c.batch_id,
-                    )
+        _delivery_query = (
+            select(integration_batch_members.c.task_id)
+            .select_from(
+                integration_batch_members.join(
+                    integration_batches,
+                    integration_batches.c.id == integration_batch_members.c.batch_id,
                 )
-                .where(integration_batch_members.c.task_id.in_(sealed_scope))
-                .where(integration_batches.c.lifecycle.in_(active_batch_states))
-                .limit(1)
             )
-        ).first()
+            .where(integration_batch_members.c.task_id.in_(sealed_scope))
+            .where(integration_batches.c.lifecycle.in_(active_batch_states))
+            .limit(1)
+        )
+        sealed = (await conn.execute(_delivery_query)).first()
         if sealed:
             raise HierarchyError("sealed", f"{mutation} would change a sealed subtree")
         rollover_operation = None
         if mutation == "reopen":
-            checkpoint_episode = (
-                await conn.execute(
-                    select(task_integration_checkpoints.c.episode_id).where(
-                        task_integration_checkpoints.c.task_id == task_id
-                    )
-                )
-            ).scalar_one_or_none()
+            _delivery_query = select(task_integration_checkpoints.c.episode_id).where(
+                task_integration_checkpoints.c.task_id == task_id
+            )
+            checkpoint_episode = (await conn.execute(_delivery_query)).scalar_one_or_none()
             if checkpoint_episode is not None:
-                rollover_operation = (
-                    await conn.execute(
-                        select(integration_repair_operations.c.id).where(
-                            integration_repair_operations.c.parent_task_id == task_id,
-                            integration_repair_operations.c.episode_id == checkpoint_episode,
-                            integration_repair_operations.c.state == "completed",
-                        )
-                    )
-                ).scalar_one_or_none()
-        receipt_source = tasks.alias("integration_receipt_source")
-        delivered_stmt = (
-            select(task_delivery_receipts.c.source_task_id)
-            .select_from(
-                task_delivery_receipts.join(
-                    receipt_source,
-                    receipt_source.c.id == task_delivery_receipts.c.source_task_id,
+                _delivery_query = select(integration_repair_operations.c.id).where(
+                    integration_repair_operations.c.parent_task_id == task_id,
+                    integration_repair_operations.c.episode_id == checkpoint_episode,
+                    integration_repair_operations.c.state == "completed",
                 )
+                rollover_operation = (await conn.execute(_delivery_query)).scalar_one_or_none()
+        from src.integration.delivery_observer import delivery_sensitive_ids
+        from src.integration.delivery_truth import MISSING_PROVENANCE, DeliveryState
+
+        recovering_provenance = False
+        if mutation != "archive":
+            sensitive = await delivery_sensitive_ids(conn, ids, hierarchical=True)
+            verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
+            own_proof = verified.get(task_id)
+            recovering_provenance = bool(
+                mutation == "reopen" and allow_missing_provenance_reopen
+                and own_proof is not None and own_proof.state is DeliveryState.UNKNOWN
+                and own_proof.reason == MISSING_PROVENANCE
             )
-            .where(task_delivery_receipts.c.source_task_id.in_(ids))
-        )
-        if rollover_operation is not None:
-            delivered_stmt = delivered_stmt.where(
-                or_(
-                    task_delivery_receipts.c.target_task_id.is_(None),
-                    task_delivery_receipts.c.target_task_id != task_id,
-                    task_delivery_receipts.c.source_task_id == task_id,
-                    receipt_source.c.parent_task_id != task_id,
+            if sensitive - verified.keys() or any(
+                proof.state is DeliveryState.UNKNOWN for proof in verified.values()
+                if not (recovering_provenance and proof.request.task_id == task_id)
+            ):
+                raise HierarchyError(
+                    "delivery_unknown", f"{mutation} requires current Git delivery evidence",
                 )
+            internal_refs = set()
+            if rollover_operation is not None or recovering_provenance:
+                branches = (await conn.execute(select(tasks.c.branch_name).where(
+                    tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
+                ))).scalars()
+                internal_refs = {"refs/heads/" + branch.removeprefix("refs/heads/")
+                                 for branch in branches}
+            delivered = any(
+                proof.state is DeliveryState.CONTAINED
+                and proof.request.target_ref not in internal_refs
+                for proof in verified.values()
             )
-        delivered = (await conn.execute(delivered_stmt.limit(1))).first()
-        if delivered:
+        else:
+            delivered = False  # Archive proved default-target delivery above.
+        if delivered and mutation != "archive":
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"
             )
-        origins = (
-            (
-                await conn.execute(
-                    select(task_branch_origins)
-                    .where(task_branch_origins.c.task_id.in_(ids))
-                    .where(task_branch_origins.c.retired_at.is_(None))
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .all()
+        _delivery_query = (
+            select(task_branch_origins)
+            .where(task_branch_origins.c.task_id.in_(ids))
+            .where(task_branch_origins.c.retired_at.is_(None))
+            .with_for_update()
         )
+        origins = (await conn.execute(_delivery_query)).mappings().all()
         materialized = [row for row in origins if row["materialized"]]
         if retire_pending and materialized and branch_policy is None:
             # Not a refusal on the merits — the caller simply has not said what
@@ -1314,7 +1529,7 @@ class HierarchyQueryMixin:
                         updated_at=now,
                     )
                 )
-        if rollover_operation is not None:
+        if rollover_operation is not None or recovering_provenance:
             await conn.execute(
                 update(task_integration_checkpoints)
                 .where(task_integration_checkpoints.c.task_id == task_id)
@@ -1329,7 +1544,10 @@ class HierarchyQueryMixin:
                     updated_at=time.time(),
                 )
             )
-        elif mutation in {"reopen", "disposition"} and task_row.parent_task_id:
+        if (
+            mutation in {"reopen", "disposition"} and task_row.parent_task_id
+            and (rollover_operation is None or recovering_provenance)
+        ):
             # Reopening or changing the terminal disposition makes the
             # parent's previously observed child aggregate stale even when
             # no delivery receipt exists yet.  The transition and this
@@ -1357,6 +1575,7 @@ class HierarchyQueryMixin:
         integration_authorized: bool = False,
         completed_parent_for_repair: bool = False,
         reject_live_parent: bool = False,
+        defer_projection: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -1373,6 +1592,9 @@ class HierarchyQueryMixin:
         ``reject_live_parent`` protects a reparent destination from acquiring
         children while another worker holds it. Creation paths leave it off:
         workers deliberately creating subtasks must retain their ownership.
+
+        ``defer_projection`` is for a task change set: the caller must
+        recompute the final graph and settle both parents before committing.
         """
         task_row = (
             await conn.execute(
@@ -1515,7 +1737,15 @@ class HierarchyQueryMixin:
             .where(tasks.c.id == task_id)
             .values(parent_task_id=parent_id, updated_at=time.time())
         )
+        from src.waits.sources import record_dependency_change
+
+        if old_parent:
+            await record_dependency_change(conn, task_id, old_parent, "parent-child", "removed")
+        if parent_id:
+            await record_dependency_change(conn, task_id, parent_id, "parent-child", "added")
         affected |= await self._collect_affected({task_id}, conn)
+        if defer_projection:
+            return TransitionResult()
         flipped = await self.recompute_blocked(affected, conn=conn)
         settle_result = await self.settle_containers(
             {p for p in (old_parent, parent_id) if p}, conn=conn
@@ -1661,6 +1891,16 @@ class HierarchyQueryMixin:
             .values(parent_task_id=parent_id, updated_at=now)
         )
 
+        from src.waits.sources import record_dependency_changes
+
+        changes = []
+        for row in child_rows:
+            if row.parent_task_id == parent_id:
+                continue
+            if row.parent_task_id:
+                changes.append((row.id, row.parent_task_id, "parent-child", "removed"))
+            changes.append((row.id, parent_id, "parent-child", "added"))
+        await record_dependency_changes(conn, changes)
         affected = await self._collect_affected(set(ids), conn)
         affected.add(parent_id)
         affected |= old_parents
@@ -1751,7 +1991,7 @@ class HierarchyQueryMixin:
         if not pending or depth > MAX_STRUCTURAL_DEPTH:
             return result
 
-        from src.integration.parent_completion import ParentCompletion
+        from src.integration.records import ParentEpisodeRecords
 
         for parent_id in sorted(pending):
             has_episode = (
@@ -1770,7 +2010,7 @@ class HierarchyQueryMixin:
                 )
             ).first()
             if has_episode:
-                await ParentCompletion(self).mark_ready_on(conn, parent_id)
+                await ParentEpisodeRecords(self).mark_ready_on(conn, parent_id)
 
         stmt = (
             select(tasks.c.id)
@@ -1783,16 +2023,26 @@ class HierarchyQueryMixin:
         )
         hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
         for cid in hits:
+            settleable, completion_token = await self._episode_completion_token(conn, cid)
+            if not settleable:
+                continue
             # _apply_transition seeds the container's own parent back into
             # this method at depth + 1, so grandparents are handled by
-            # recursion; merge everything it settled and flipped.
-            res = await self._apply_transition(
-                conn,
-                cid,
-                TaskStatus.COMPLETED,
-                context="subtasks_completed",
-                _settle_depth=depth,
-            )
+            # recursion; merge everything it settled and flipped. A refusal
+            # skips this container rather than failing the caller's write.
+            try:
+                async with conn.begin_nested():
+                    res = await self._apply_transition(
+                        conn,
+                        cid,
+                        TaskStatus.COMPLETED,
+                        context="subtasks_completed",
+                        _settle_depth=depth,
+                        _integration_completion_token=completion_token,
+                    )
+            except HierarchyError as exc:
+                logger.warning("Container %s not settled: %s", cid, exc)
+                continue
             await self._merge_settlement(conn, cid, res, result)
         stale = (
             select(tasks.c.id)
@@ -1811,7 +2061,14 @@ class HierarchyQueryMixin:
                 for child_id in required.get(cid, ())
             ):
                 continue
-            res = await self._settle_stale_container(conn, cid, depth=depth)
+            # One refused container must not stall the sweep for every other
+            # container: settle each inside its own savepoint.
+            try:
+                async with conn.begin_nested():
+                    res = await self._settle_stale_container(conn, cid, depth=depth)
+            except HierarchyError as exc:
+                logger.warning("Stale container %s not settled: %s", cid, exc)
+                continue
             if res is not None:
                 await self._merge_settlement(conn, cid, res, result)
         return result
@@ -1833,6 +2090,52 @@ class HierarchyQueryMixin:
                 result.settled.append(sid)
         result.flipped |= res.flipped
         result.ready.extend(res.ready)
+
+    async def _episode_completion_token(self, conn, cid: str):
+        """Whether *cid* may settle, and the completion token it needs.
+
+        A managed parent completes only through verified integration. The one
+        exception settlement admits is a train project whose legacy collection
+        episode was cancelled: that episode owns nothing, and the git-first
+        train never runs its collector. Re-checked on the caller's (locked)
+        connection; anything else with an episode is refused.
+        """
+        episode = (
+            await conn.execute(
+                select(task_integration_checkpoints.c.episode_id).where(
+                    task_integration_checkpoints.c.task_id == cid,
+                    task_integration_checkpoints.c.episode_id.is_not(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if episode is None:
+            return True, None
+        mode = (
+            await conn.execute(
+                select(projects.c.hierarchical_integration_mode)
+                .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                .where(tasks.c.id == cid)
+            )
+        ).scalar_one_or_none()
+        if mode != "train":
+            # Hierarchy keeps its own collector; only it completes the parent.
+            return True, None
+        live = (
+            await conn.execute(
+                select(integration_repair_operations.c.id)
+                .where(
+                    integration_repair_operations.c.parent_task_id == cid,
+                    integration_repair_operations.c.episode_id == episode,
+                    integration_repair_operations.c.state != "cancelled",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if live is not None:
+            return False, None
+        from src.database.queries.task_queries import _INTEGRATION_COMPLETION_TOKEN
+
+        return True, _INTEGRATION_COMPLETION_TOKEN
 
     async def _settle_stale_container(
         self, conn, cid: str, *, depth: int
@@ -1863,6 +2166,9 @@ class HierarchyQueryMixin:
                     return None
             except (TypeError, ValueError, AttributeError):
                 pass
+        settleable, completion_token = await self._episode_completion_token(conn, cid)
+        if not settleable:
+            return None
         await conn.execute(
             delete(task_metadata).where(
                 task_metadata.c.task_id == cid,
@@ -1875,6 +2181,7 @@ class HierarchyQueryMixin:
             TaskStatus.COMPLETED,
             context=STALE_CONTAINER_CONTEXT,
             force=True,
+            _integration_completion_token=completion_token,
             _manual_pause_control=True,
             _settle_depth=depth,
             resume_after=None,
@@ -2108,6 +2415,12 @@ class HierarchyQueryMixin:
             # waiting ``task_claim`` long-poll (I2).
             result.ready.extend(res.ready)
             result.abandoned.append(tid)
+            from src.integration.branch_retirement import request_task_retirement_on
+
+            await request_task_retirement_on(
+                conn, tid, request_id=f"abandon:{task_id}:{tid}:{time.time()}",
+                reason=f"abandoned by container {task_id}",
+            )
         return result
 
     async def _upsert_meta(self, task_id: str, key: str, value, *, conn) -> None:

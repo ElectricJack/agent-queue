@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from src.git.github_contracts import GitHubCredentialIdentity
+from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
 from src.integration.ci import IntegrationCITrust, IntegrationTrustManifest
 from src.integration.ci_adapters import CIAdapters, bind_ci_adapters
 from src.integration.ci_producers import (
@@ -21,8 +21,8 @@ from src.integration.ci_producers import (
     ProducerRequest,
     digest,
 )
-from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
-from src.integration.subjects import (
+from src.integration.promotion_contracts import RootAttestationProof, RootAttestationSubject
+from src.integration.runtime_contracts import (
     CIAttestArgs,
     CIObserveArgs,
     CIRequestArgs,
@@ -143,12 +143,25 @@ def local(client, **plan):
     )
 
 
-def github(*, conclusion="success", status="completed", app=True, manifest=False):
+def github(
+    *,
+    conclusion="success",
+    status="completed",
+    app=True,
+    manifest=False,
+    names=("unit",),
+    job_conclusions=None,
+    run_conclusion=None,
+):
+    """One hosted attempt: every required name is a job, and the run concludes
+    on its own. ``job_conclusions`` and ``run_conclusion`` model a run whose
+    jobs disagree with the conclusion GitHub derives from them."""
+    jobs = list(job_conclusions or (conclusion,) * len(names))
     trust = dict(
         canonical_repository_id="repo",
         repository_id=123,
         full_name="acme/widgets",
-        required_checks={"version": "v1", "names": ("unit",)},
+        required_checks={"version": "v1", "names": tuple(names)},
     )
     trusted = (
         IntegrationTrustManifest(
@@ -167,14 +180,15 @@ def github(*, conclusion="success", status="completed", app=True, manifest=False
         else GitHubCredentialIdentity.existing_login(),
         checks=[
             {
-                "id": 11,
-                "name": "unit",
+                "id": 11 + index,
+                "name": name,
                 "head_sha": HEAD,
                 "status": status,
-                "conclusion": conclusion,
+                "conclusion": job,
                 "app": {"id": 15368},
                 "check_suite": {"id": 21},
             }
+            for index, (name, job) in enumerate(zip(names, jobs))
         ],
         workflows=[
             {
@@ -184,7 +198,7 @@ def github(*, conclusion="success", status="completed", app=True, manifest=False
                 "check_suite_id": 21,
                 "head_sha": HEAD,
                 "status": status,
-                "conclusion": conclusion,
+                "conclusion": conclusion if run_conclusion is None else run_conclusion,
                 "event": "push",
                 "repository": {"id": 123, "full_name": "acme/widgets"},
                 "head_repository": {"id": 123, "full_name": "acme/widgets"},
@@ -192,15 +206,18 @@ def github(*, conclusion="success", status="completed", app=True, manifest=False
         ],
         jobs=[
             {
-                "id": 51,
-                "name": "unit",
+                "id": 51 + index,
+                "name": name,
                 "run_id": 31,
                 "run_attempt": 1,
                 "head_sha": HEAD,
                 "status": status,
-                "conclusion": conclusion,
-                "check_run_url": "https://api.github.com/repos/acme/widgets/check-runs/11",
+                "conclusion": job,
+                "check_run_url": (
+                    f"https://api.github.com/repos/acme/widgets/check-runs/{11 + index}"
+                ),
             }
+            for index, (name, job) in enumerate(zip(names, jobs))
         ],
     )
 
@@ -241,6 +258,36 @@ async def test_hosted_normalizes_authenticated_exact_head(
     assert result.head_sha == HEAD and result.required_check_version == "v1"
 
 
+@pytest.mark.parametrize(
+    ("job_conclusions", "run_conclusion", "state", "classification"),
+    [
+        # A real failure is conclusive whatever its cancelled siblings say.
+        (("failure", "cancelled"), "failure", "red", "conclusive"),
+        (("cancelled", "failure"), "failure", "red", "conclusive"),
+        (("success", "failure"), "failure", "red", "conclusive"),
+        # GitHub concludes a run 'failure' when no runner was acquired for its
+        # jobs, so an outage retries instead of opening a repair.
+        (("success", "cancelled"), "failure", "infra", "cancelled"),
+        (("cancelled", "success"), "failure", "infra", "cancelled"),
+        (("cancelled", "cancelled"), "failure", "infra", "cancelled"),
+    ],
+)
+async def test_hosted_classifies_the_jobs_before_the_run_conclusion(
+    job_conclusions, run_conclusion, state, classification
+):
+    client, trust = github(
+        app=False, names=("unit", "lint"), job_conclusions=job_conclusions,
+        run_conclusion=run_conclusion,
+    )
+    s = subject()
+
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+
+    assert (result.state, result.classification) == (state, classification)
+    assert result.is_attempt is (classification == "conclusive")
+    assert dict(zip(("unit", "lint"), job_conclusions)) == result.checks
+
+
 async def test_app_credentials_cannot_replace_subject_manifest_with_policy_only_trust():
     client, trust = github()
     requester = AsyncMock()
@@ -250,6 +297,32 @@ async def test_app_credentials_cannot_replace_subject_manifest_with_policy_only_
     assert (await producer.request(s, s.head)).outcome == "unavailable"
     client.paged_items.assert_not_awaited()
     requester.assert_not_awaited()
+
+
+@pytest.mark.parametrize("manifest", [False, True])
+@pytest.mark.parametrize("aggregate", [None, "failure", "cancelled", "timed_out"])
+async def test_hosted_required_job_succeeds_independently_of_unrequired_jobs(manifest, aggregate):
+    client, trust = github(app=manifest, manifest=manifest)
+    client.workflows[0].update(
+        status="queued" if aggregate is None else "completed", conclusion=aggregate,
+    )
+    client.checks.append({**client.checks[0], "id": 99, "name": "waived-windows",
+                          "status": "queued", "conclusion": None})
+    client.jobs.append({**client.jobs[0], "id": 99, "name": "waived-windows",
+                       "status": "queued", "conclusion": None})
+    s = subject()
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+    assert result.state is CIState.GREEN
+    assert result.checks == {"unit": "success"}
+    assert result.details["receipt"]["workflow_runs"][0]["conclusion"] == aggregate
+    assert result.details["checks"][0]["job_url"].endswith("/actions/runs/31/job/51")
+    assert "job_url" not in result.details["receipt"]["checks"][0]
+
+    # A workflow rerun cannot borrow the previous attempt's successful job.
+    client.workflows[0]["run_attempt"] = 2
+    result = await HostedCIProducer(client, trust).observe(s, s.head)
+    assert result.state is not CIState.GREEN
+    assert result.classification == "superseded"
 
 
 @pytest.mark.parametrize("change", ["head", "app", "newer-pending", "older-attempt"])
@@ -281,6 +354,27 @@ async def test_hosted_pending_absence_and_transport_failure_are_distinct():
     assert (await producer.observe(s, s.head)).classification == "none"
     client.paged_items.side_effect = OSError("network")
     assert (await producer.observe(s, s.head)).classification == "infra"
+
+
+async def test_hosted_rate_limit_preserves_retry_after_for_train_pause():
+    client, trust = github(app=False)
+    error = GitHubAccessError("rate_limited", "secondary limit", retry_at=1900, http_status=403)
+    client.paged_items.side_effect = error
+    with pytest.raises(GitHubAccessError) as caught:
+        await HostedCIProducer(client, trust).observe(subject(), subject().head)
+    assert caught.value is error and caught.value.retry_at == 1900
+
+
+async def test_hosted_rate_limit_callers_fail_closed_without_recording_attempt():
+    client, trust = github(app=False)
+    error = GitHubAccessError("rate_limited", "secondary limit", retry_at=1900, http_status=403)
+    client.paged_items.side_effect = error
+    producer, s = HostedCIProducer(client, trust), subject()
+    db = SubjectDB(s)
+    with pytest.raises(GitHubAccessError) as caught:
+        await CIAdapters(db, lambda _: producer).observe(s, CIObserveArgs(head=s.head))
+    assert caught.value is error and caught.value.retry_at == 1900
+    assert not db.entries
 
 
 async def test_hosted_request_uses_existing_owner_without_running_git():
@@ -581,14 +675,11 @@ def test_typed_green_cannot_claim_failure_cancellation_or_untrusted_evidence():
 
 
 @pytest.fixture
-async def ci_producer_db():
+async def ci_producer_db(reuse_database):
     from sqlalchemy import insert
-    from src.database import Database
     from src.database.tables import playbook_artifacts
-    from tests.db_fixtures import lease_dsn
 
-    db = Database(lease_dsn("ci-producers"))
-    await db.initialize()
+    db = await reuse_database("ci-producers")
     pin = subject().policy
     async with db._engine.begin() as conn:
         await conn.execute(
@@ -603,7 +694,6 @@ async def ci_producer_db():
             )
         )
     yield db
-    await db.close()
 
 
 async def test_real_journal_replay_is_append_only_and_never_counts_budget(ci_producer_db):
