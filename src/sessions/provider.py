@@ -215,6 +215,10 @@ class SessionSpec:
     #: Recorded rather than re-derived, because "the hook file was written" and
     #: "knowledge rides that hook" are different facts about the same launch.
     knowledge_transport: str | None = None
+    #: True when the launch should record ``work_dir``'s repository root as
+    #: trusted in Codex's ``config.toml`` before starting, so Codex never
+    #: parks on its "Trust this folder?" screen (:mod:`src.sessions.codex_trust`).
+    codex_project_trust: bool = False
 
 
 @dataclass(frozen=True)
@@ -497,6 +501,10 @@ class SessionProvider(ABC):
         explicitly implement a fresh probe here; unsupported/unknown is unsafe.
         """
         return False
+
+    async def confirm_instance_stopped(self, h: SessionHandle) -> bool:
+        """Confirm this instance is gone, allowing a different same-named successor."""
+        return await self.confirm_stopped(h)
 
     @abstractmethod
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...]) -> bool:
