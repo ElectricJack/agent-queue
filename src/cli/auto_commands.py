@@ -9,7 +9,7 @@ Category prefixes are stripped from command names for cleaner UX:
 ``git_commit`` becomes ``aq git commit``, ``memory_search`` becomes
 ``aq memory search``.
 
-Tool definitions are imported from ``src.tools.definitions._ALL_TOOL_DEFINITIONS``
+Tool definitions are loaded from the generated ``src/tools/command_catalogue.json``
 (a pure data structure, no heavy deps) so commands appear in ``--help``
 even when the daemon is down.  Execution still goes through the REST API.
 """
@@ -22,16 +22,40 @@ from collections import defaultdict
 import click
 from rich.console import Console
 
-from src.tools import (
-    CATEGORIES,
-    _ALL_TOOL_DEFINITIONS,
-    _CLI_CATEGORY_OVERRIDES,
-    _TOOL_CATEGORIES,
-)
+from src.tools.command_catalogue import load_command_catalogue
+
+_CATALOGUE = load_command_catalogue()
+_ALL_TOOL_DEFINITIONS = _CATALOGUE["explicit"]
+_CATEGORY_DESCRIPTIONS = {
+    **_CATALOGUE["categories"],
+    "ask": "Human requests, discussion and prepared decisions.",
+}
+_CLI_CATEGORY_OVERRIDES = _CATALOGUE["cli_category_overrides"]
+_TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    "policy_export",
+    "policy_diff",
+    "policy_apply",
+    "create_project",
+    "remove_task",
+    "promote_schema",
+    "promote_validate",
+    "promote_rulesets",
+    "promote_request",
+    "promote_hotfix",
+    "promote_approve",
+    "promote_cancel",
+    "promote_repair",
+    "promote_status",
+    "promote_list",
+    # pool_provider.py mounts schema-generated status/apply in a nested group
+    # and translates preview's operator flags into structured arguments.
+    "provider_allocation_status",
+    "provider_allocation_preview",
+    "provider_allocation_apply",
     # test_runner.py — internal commands of the claim-aware smart runner.
     "test_select",
     "test_selection_recheck",
@@ -44,6 +68,8 @@ HANDCRAFTED_COVERAGE = {
     "restart_task",
     # tasks.py — `aq task create --graph|--from-spec|--dry-run`
     "create_task_graph",
+    # tasks.py — file-based or inline transactional change sets with a diff preview.
+    "task_batch_propose",
     # agent_surface.py — claim-aware worker-loop commands: positional task
     # ids, --claim-epoch fenced against .aq/claim.json (swarm-work-model §10).
     "task_claim",
@@ -91,9 +117,19 @@ HANDCRAFTED_COVERAGE = {
     "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
     "wait_register",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
+    "message_wait",
     "wait_get",
     "wait_list",
     "wait_cancel",
+    "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+    "wait_decide", "wait_lift", "wait_legacy_bridge",
     # collaboration.py — positional THREAD ids and --claim-epoch resolution.
     "collaboration_create",
     "collaboration_accept",
@@ -107,36 +143,31 @@ HANDCRAFTED_COVERAGE = {
     "review_submit",
     "review_dispatch",
     # projects.py — composite/UX-heavy commands only
-    "edit_project",
     "set_default_branch",
     "onboard_project",
+    "bind_project_repository",
     # integration.py — positional identities and explicit rollout CAS fences.
+    "integration_release_held_gate",
     "integration_status",
-    "integration_flush",
-    "integration_enable",
-    "integration_reconcile_unmaterialized",
-    "integration_waive_history",
-    "integration_resume",
-    "integration_abort",
-    "integration_develop",
-    "integration_adopt",
-    "integration_migrate_provenance",
-    "integration_development_sweep",
-    "integration_cancel_preserving",
-    "integration_retry_cleanup",
+    "integration_continue_close",
+    "integration_trust_manifest",
+    "integration_app_verify",
+    "integration_reevaluate_repair",
     "integration_release_owner",
+    "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
-    "integration_clear_stale_request",
     "integration_redrive_root",
+    "integration_authorize_root",
     "integration_redrive_child",
-    "integration_rebind_reused_identity",
-    "integration_rebind_repair",
-    "integration_adopt_legacy_deliveries",
-    "integration_bind_legacy_repositories",
-    "integration_release_delegates",
-    "integration_resolve_candidate_member",
-    "integration_recover_candidate_member",
+    "integration_recover_completed_container",
+    "integration_reopen_collection",
+    "integration_close_delivered_pr",
+    "integration_record_root_noop",
+    "integration_supersede_completion",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",
@@ -160,6 +191,7 @@ HANDCRAFTED_COVERAGE = {
     "job_cancel",
     "job_result",
     "job_logs",
+    "job_retain",
     "report_request",
     "report_brief",
     "report_submit",
@@ -167,6 +199,10 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
+    "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 
@@ -203,6 +239,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "message": "message",
     "escalation": "escalation",
     "supervisor_inbox": "supervisor-inbox",
+    "decision": "decision",
     "review": "review",
     "github_issue": "github-issue",
     "digest": "digest",
@@ -225,6 +262,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "message": "Inter-agent and user message queue.",
     "escalation": "Durable human escalations and supervisor-owned resolution.",
     "supervisor-inbox": "Supervisor conversations — status, history, and explicit replies.",
+    "supervisor": "Supervisor session lifecycle.",
     "review": "Document reviews: submit specs and plans for Jack's approval",
     "github-issue": "GitHub issue triage and review actions for the bound project.",
     "digest": "Hourly activity digest — dry preview and schedule health.",
@@ -410,6 +448,8 @@ def _strip_category_prefix(cmd_name: str, category: str) -> str:
 
     Falls back to the full name if stripping would leave nothing useful.
     """
+    if cmd_name == "ask_prepare_decision" and category == "ask":
+        return "prepare"
     singular = category.rstrip("s")
     plural = singular + "s"
 
@@ -505,14 +545,17 @@ def _make_auto_command(
         )
 
     def _make_callback(name: str):
-        from .formatter_registry import apply_formatter, command_output
-
         @click.pass_context
         def callback(ctx, **kwargs):
             # Late-bind imports so mock patches take effect in tests
             from . import app as _app
+            from .formatter_registry import apply_formatter, command_output
 
             api_url = ctx.obj.get("api_url") if ctx.obj else None
+            if name == "knowledge_propose" and kwargs.get("claim_epoch") is None:
+                from .claim_epoch import resolve_claim_epoch
+
+                kwargs["claim_epoch"] = resolve_claim_epoch(None)
             if name == "supervisor_inbox_history":
                 states = kwargs.pop("history_states", ())
                 if states:
@@ -579,7 +622,17 @@ def _make_auto_command(
                         emit_error(exc.code, exc.detail_message, exc.details or None)
                     else:
                         console.print(f"[bold red]Error:[/] {exc}")
-                        _app._render_command_findings(exc.details or {})
+                        details = exc.details or {}
+                        formatted = False
+                        if name == "provider_allocation_apply":
+                            if details.get("preview"):
+                                formatted = apply_formatter(
+                                    "provider_allocation_preview", details["preview"], console
+                                )
+                            elif details.get("status"):
+                                formatted = apply_formatter(name, details, console)
+                        if not formatted:
+                            _app._render_command_findings(details)
                     raise SystemExit(exc.exit_code)
                 else:
                     raise
@@ -642,39 +695,29 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     hand-crafted group (task, hook, project, agent, plugin) or creates
     a new one (git, memory, file, system).
     """
-    # Build complete tool map: explicit defs + auto-discovered
+    # Discovery belongs to generation: importing the live handler here makes
+    # every CLI invocation load the daemon and database dependencies.
     tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
-    try:
-        from src.mcp_registration import _discover_all_commands
+    for name, defn in _CATALOGUE["fallback"].items():
+        if name not in tool_map:
+            tool_map[name] = defn
 
-        discovered = _discover_all_commands()
-        for name, defn in discovered.items():
-            if name not in tool_map:
-                tool_map[name] = defn
-    except Exception:
-        pass
-
-    # Collect internal plugin tool definitions (no daemon needed)
+    # Internal schemas are packaged too, avoiding plugin implementation imports.
     plugin_categories: dict[str, str] = {}
     plugin_owners: dict[str, str] = {}
-    try:
-        from src.plugins.internal import collect_internal_tool_definitions
-
-        for category, tool_defs in collect_internal_tool_definitions():
-            for defn in tool_defs:
-                name = defn["name"]
-                if name not in tool_map:
-                    tool_map[name] = defn
-                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
-                    plugin_categories[name] = category
-                plugin_owners[name] = {
-                    "files": "aq-files",
-                    "git": "aq-git",
-                    "notes": "aq-notes",
-                    "vibecop": "aq-vibecop",
-                }.get(category, f"internal:{category}")
-    except Exception:
-        pass
+    for category, tool_defs in _CATALOGUE["internal"]:
+        for defn in tool_defs:
+            name = defn["name"]
+            if name not in tool_map:
+                tool_map[name] = defn
+            if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
+                plugin_categories[name] = category
+            plugin_owners[name] = {
+                "files": "aq-files",
+                "git": "aq-git",
+                "notes": "aq-notes",
+                "vibecop": "aq-vibecop",
+            }.get(category, f"internal:{category}")
 
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
@@ -683,10 +726,10 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     for cmd_name, defn in tool_map.items():
         if cmd_name in HANDCRAFTED_COVERAGE or cmd_name in EXCLUDED:
             continue
-        # Determine category: check _TOOL_CATEGORIES, then overrides, then plugins
+        # CLI overrides intentionally take precedence over the shared API/MCP category.
         cat = (
-            _TOOL_CATEGORIES.get(cmd_name)
-            or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            or _TOOL_CATEGORIES.get(cmd_name)
             or plugin_categories.get(cmd_name)
         )
         if cat:
@@ -694,7 +737,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
             categorized_names.add(cmd_name)
 
     # Register commands into each category's CLI group
-    for cat_name in sorted(CATEGORIES.keys()):
+    for cat_name in sorted(_CATEGORY_DESCRIPTIONS):
         cli_name = CATEGORY_CLI_NAMES.get(cat_name, cat_name)
         tools = category_tools.get(cat_name, [])
         if not tools:
@@ -708,7 +751,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
             # Create a new group for this category
             desc = CATEGORY_CLI_DESCRIPTIONS.get(
                 cli_name,
-                CATEGORIES[cat_name].description,
+                _CATEGORY_DESCRIPTIONS[cat_name],
             )
 
             @click.group(cli_name, help=desc)

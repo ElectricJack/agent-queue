@@ -11,6 +11,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { RANGES, type RangeKey } from "../../api/metrics";
 import { useEventStreamStatus } from "../../ws/EventStreamProvider";
+import DeliveryLatency from "./DeliveryLatency";
 import ProviderUsage from "./ProviderUsage";
 import StatTiles from "./StatTiles";
 import SustainedLagBanner from "./SustainedLagBanner";
@@ -50,6 +51,7 @@ export default function Metrics() {
           <h1 className="text-lg font-semibold text-gray-100">Metrics</h1>
           <p className="text-xs text-gray-500">
             {STEP_LABEL[feed.step] ?? feed.step} ·{" "}
+            {feed.isRefining && "loading 1-second detail · "}
             {status === "connected"
               ? "live"
               : status === "connecting"
@@ -95,12 +97,20 @@ export default function Metrics() {
           Could not load metrics history: {String((feed.error as Error)?.message ?? feed.error)}
         </p>
       )}
+      {feed.refinementError != null && (
+        <p className="text-sm text-amber-200">
+          Could not load 1-second detail. Showing minute history and live 1-second samples;
+          reload history to retry.
+        </p>
+      )}
 
       <SustainedLagBanner samples={feed.samples} />
 
       <StatTiles sample={feed.latest} />
 
       <ProviderUsage />
+
+      <DeliveryLatency />
 
       {feed.isLoading ? (
         <p className="text-sm text-gray-500">Loading history…</p>
