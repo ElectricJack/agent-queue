@@ -13,6 +13,9 @@ Two halves, in the house style:
   in D12 (same class, next provider, or hold), D14 (only an ``available``
   provider is a target; no bound changes) and D15 (the trickle and the
   per-sweep / per-task limits), and is what ``dry_run`` returns verbatim.
+  A task the router routed moves only among ``tasks.route.candidates``
+  (mandatory routing §6.8): the next candidate whose profile exists and
+  whose provider may take the traffic, in the router's order.
 * :class:`ProviderRerouteService` gathers the snapshot, applies a plan under
   the ``update_task_routing`` guard (a claim that wins after the read is never
   retargeted), records ``task_reroutes`` / ``rerouted_from`` / a task comment
@@ -20,12 +23,12 @@ Two halves, in the house style:
   notice per batch per project (D19).  The automatic sweep then runs a
   second, *capacity spill* pass (D24, :mod:`src.providers.spill`): READY
   work leaves a pool that cannot serve it for a same-class pool with room.
-  It also answers the two derived questions other code asks: why a task is
-  held (D18) and which profile a project's default resolves to while its
-  provider is down (D13).
+  It also answers the derived question other code asks: why a task is
+  held (D18).
 
-The class never changes on an automatic move.  Intent never changes on any
-move (D16).
+The class never changes on an automatic move, except to a route candidate's
+own class (only the narrow lanes map one).  Intent never changes on any move
+(D16), and neither does ``route_source``.
 """
 
 from __future__ import annotations
@@ -37,10 +40,12 @@ import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
 
+from src.commands.operator_authority import is_operator_profile
 from src.providers.availability import AVAILABLE, DEGRADED, UNAVAILABLE
 from src.providers.intent import CLASS_ONLY, PINNED, effective_intent
 
@@ -105,6 +110,7 @@ class Rung:
     lifecycle: str = "task"
     enabled: bool = True
     capacity: int = 1
+    operator: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +133,12 @@ class Candidate:
     #: PAUSED on an automatic backoff with no recorded cause: touched only
     #: with ``include_paused`` (D13, the tasks paused before this shipped).
     legacy_pause: bool = False
+    #: ``tasks.route.candidates`` the router recorded, in its order: every
+    #: ``(profile_id, intelligence_class)`` a move may choose (mandatory
+    #: routing §6.8).  Empty for a route the router did not write (legacy,
+    #: in flight), which keeps the class-equivalent rung search.
+    route_candidates: tuple[tuple[str, str], ...] = ()
+    workspace_kind: str = "project-repo"
 
 
 @dataclass
@@ -157,9 +169,13 @@ class Decision:
     #: move: ``provider_unavailable`` (failover), ``operator_forced`` or
     #: ``capacity_spill`` (D24).  Set by the sweep, not the planners.
     reason_code: str | None = None
+    #: Internal capacity accounting between the failover and spill passes.
+    workspace_kind: str = "project-repo"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value.pop("workspace_kind")
+        return value
 
 
 @dataclass
@@ -178,8 +194,12 @@ class PlanContext:
     backlog: Mapping[str, int] = field(default_factory=dict)
     #: ``task_reroute_stats`` per task id.
     stats: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    #: Project id -> the provider of its raw default profile.
-    default_providers: Mapping[str, str] = field(default_factory=dict)
+    #: Profiles that exist but are disabled; never a move's target.
+    disabled_profiles: frozenset[str] = frozenset()
+    #: Profile id -> harness, for a route candidate that is not a rung.
+    profile_harnesses: Mapping[str, str] = field(default_factory=dict)
+    #: Profile id -> lifecycle, likewise.
+    profile_lifecycles: Mapping[str, str] = field(default_factory=dict)
     #: Providers some enabled profile launches against (``llm`` excluded).
     session_providers: frozenset[str] = frozenset()
     config: Any = None
@@ -199,13 +219,11 @@ def _worker_provider_order() -> tuple[str, ...]:
 
 
 def provider_order(ctx: PlanContext, project_id: str | None) -> list[str]:
-    """Failover target preference (D12): ``order``, else the project default's
-    provider first, then ``WORKER_PROVIDERS`` order, then any other provider."""
+    """Failover target preference (D12): ``order``, else ``WORKER_PROVIDERS``
+    order, then any other provider.  There is no project default to put
+    first (mandatory routing §6.8); a routed task follows its candidates."""
     configured = list(getattr(ctx.config, "order", None) or [])
-    if configured:
-        seed = configured
-    else:
-        seed = [ctx.default_providers.get(project_id or "", "")] + list(_worker_provider_order())
+    seed = configured or list(_worker_provider_order())
     extra = sorted({rung.provider for rung in ctx.rungs.values()} - set(seed))
     order: list[str] = []
     for provider in [*seed, *extra]:
@@ -230,6 +248,7 @@ def equivalent_rung(
     provider: str,
     *,
     allow_degraded: bool = False,
+    operator: bool = False,
 ) -> tuple[Rung | None, bool]:
     """``(target, exists)`` for *class_id* on *provider*.
 
@@ -241,6 +260,7 @@ def equivalent_rung(
         rung
         for rung in ctx.rungs.values()
         if rung.enabled and rung.class_id == class_id and rung.provider == provider
+        and compatible_worker_role(operator, rung)
     ]
     if not rungs:
         return None, False
@@ -248,6 +268,57 @@ def equivalent_rung(
     if state == AVAILABLE or (allow_degraded and state == DEGRADED):
         return min(rungs, key=_rung_rank), True
     return None, True
+
+
+def compatible_worker_role(operator: bool, target: Rung) -> bool:
+    """Keep operator authority and frontier limits across failover and spill."""
+    from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES
+
+    return target.operator == operator and (
+        not operator or (target.class_id in OPERATOR_CLASSES and target.harness in OPERATOR_HARNESSES)
+    )
+
+
+def route_candidates_of(route: Any) -> tuple[tuple[str, str], ...]:
+    """``tasks.route.candidates`` as ``(profile_id, intelligence_class)`` pairs, in order."""
+    if isinstance(route, str):
+        try:
+            route = json.loads(route)
+        except ValueError:
+            return ()
+    rows = route.get("candidates") if isinstance(route, Mapping) else None
+    out: list[tuple[str, str]] = []
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        profile_id = str(row.get("profile_id") or "").strip()
+        class_id = str(row.get("intelligence_class") or "").strip()
+        if profile_id and (profile_id, class_id) not in out:
+            out.append((profile_id, class_id))
+    return tuple(out)
+
+
+def candidate_rung(ctx: PlanContext, profile_id: str, class_id: str) -> Rung | None:
+    """A route candidate as a move target: its profile exists and is enabled.
+
+    Its class is the candidate's own (only the narrow lanes map classes, so
+    outside them it is the task's class).  A candidate that is not a rung --
+    a generic task-lifecycle worker -- is a one-slot target.
+    """
+    if profile_id not in ctx.profile_providers or profile_id in ctx.disabled_profiles:
+        return None
+    rung = ctx.rungs.get(profile_id)
+    if rung is not None:
+        if not rung.enabled:
+            return None
+        return replace(rung, class_id=class_id or rung.class_id)
+    return Rung(
+        profile_id=profile_id,
+        harness=str(ctx.profile_harnesses.get(profile_id) or ""),
+        class_id=class_id,
+        provider=ctx.profile_providers[profile_id],
+        lifecycle=str(ctx.profile_lifecycles.get(profile_id) or "task"),
+    )
 
 
 def _hold(decision: Decision, kind: str, detail: str = "", ahead: int | None = None) -> None:
@@ -299,6 +370,7 @@ def plan_sweep(
         provider = ctx.profile_providers.get(cand.profile_id, "")
         state = ctx.state(provider)
         rung = ctx.rungs.get(cand.profile_id)
+        operator = bool(rung and rung.operator)
         class_id = (cand.intelligence_class or "").strip() or (rung.class_id if rung else "")
         decision = Decision(
             task_id=cand.task_id,
@@ -313,6 +385,7 @@ def plan_sweep(
             title=cand.title,
             status=cand.status,
             provider_generation=ctx.generations.get(provider),
+            workspace_kind=cand.workspace_kind,
         )
         decisions.append(decision)
         down = state in UNAVAILABLE
@@ -340,7 +413,8 @@ def plan_sweep(
         if everything_down:
             _hold(decision, "all_providers_unavailable", "every session provider is unavailable")
             continue
-        if rung is None and not to_profile:
+        routed = cand.route_candidates
+        if rung is None and not to_profile and not routed:
             _hold(decision, "no_equivalent_rung", f"{cand.profile_id} is not a worker rung")
             continue
         stats = ctx.stats.get(cand.task_id) or {}
@@ -367,7 +441,23 @@ def plan_sweep(
                 continue
 
         target: Rung | None = None
-        if to_profile:
+        if to_profile and routed:
+            # A routed task moves only among its candidates, even when
+            # forced: a move outside them is an override (routing §6.8, §7).
+            entry = next((c for c in routed if c[0] == to_profile), None)
+            if entry is None:
+                _hold(
+                    decision,
+                    "no_available_target",
+                    f"{to_profile} is not one of the task's route candidates; "
+                    "a move outside them is an override",
+                )
+                continue
+            chosen = candidate_rung(ctx, to_profile, entry[1] or class_id)
+            if chosen is None:
+                _hold(decision, "no_available_target", f"{to_profile} is not an enabled profile")
+                continue
+        elif to_profile:
             chosen = ctx.rungs.get(to_profile)
             if chosen is None or not chosen.enabled:
                 _hold(decision, "no_available_target", f"{to_profile} is not an enabled worker rung")
@@ -379,6 +469,10 @@ def plan_sweep(
                     "a cross-class move needs force",
                 )
                 continue
+        if to_profile:
+            if not compatible_worker_role(operator, chosen):
+                _hold(decision, "no_equivalent_rung", "target must preserve the worker's operator role and frontier")
+                continue
             target_state = ctx.state(chosen.provider)
             if not (target_state == AVAILABLE or (allow_degraded and target_state == DEGRADED)):
                 _hold(decision, "no_available_target", f"provider {chosen.provider} is {target_state}")
@@ -388,6 +482,38 @@ def plan_sweep(
                 decision.detail = f"already on {to_profile}"
                 continue
             target = chosen
+        elif routed:
+            # The next candidate the router recorded whose profile still
+            # exists and whose provider may take failover traffic (§6.8).
+            left = set(stats.get("left_providers") or ())
+            any_candidate = False
+            for profile_id, candidate_class in routed:
+                option = candidate_rung(ctx, profile_id, candidate_class or class_id)
+                if option is None or option.profile_id == cand.profile_id:
+                    continue
+                if not compatible_worker_role(operator, option):
+                    continue
+                if option.provider == provider or option.provider in left:
+                    continue
+                any_candidate = True
+                option_state = ctx.state(option.provider)
+                if option_state == AVAILABLE or (allow_degraded and option_state == DEGRADED):
+                    target = option
+                    break
+            if target is None:
+                if any_candidate:
+                    _hold(
+                        decision,
+                        "no_available_target",
+                        "every other route candidate's provider is unavailable or degraded",
+                    )
+                else:
+                    _hold(
+                        decision,
+                        "no_equivalent_rung",
+                        "the router recorded no candidate on another provider",
+                    )
+                continue
         else:
             left = set(stats.get("left_providers") or ())
             any_rung = False
@@ -395,7 +521,7 @@ def plan_sweep(
                 if other == provider or other in left:
                     continue
                 found, exists = equivalent_rung(
-                    ctx, class_id, other, allow_degraded=allow_degraded
+                    ctx, class_id, other, allow_degraded=allow_degraded, operator=operator
                 )
                 any_rung = any_rung or exists
                 if found is not None:
@@ -465,7 +591,7 @@ def _json_meta(value: Any) -> Any:
 
 
 class ProviderRerouteService:
-    """Plans and applies re-route sweeps; answers holds and derived defaults."""
+    """Plans and applies re-route sweeps; answers holds."""
 
     def __init__(
         self,
@@ -479,6 +605,7 @@ class ProviderRerouteService:
         clock: Callable[[], float] = time.time,
         pool_measure: Callable[[], Awaitable[Any]] | None = None,
         pool_global_cap: Callable[[], int | None] | None = None,
+        ready_projects: Callable[[], Awaitable[frozenset[str]]] | None = None,
     ) -> None:
         self._db_getter = db_getter
         self.availability = availability
@@ -491,6 +618,9 @@ class ProviderRerouteService:
         #: capacity spill pass reads (D24).  Without them spill never runs.
         self._pool_measure = pool_measure
         self._pool_global_cap = pool_global_cap
+        #: The projects whose router is ready (mandatory routing §9.1): spill
+        #: moves only work a pool could claim there.  ``None``: none are.
+        self._ready_projects = ready_projects
         self._lock = asyncio.Lock()
         self._active_cache: tuple[float, bool] | None = None
 
@@ -566,12 +696,19 @@ class ProviderRerouteService:
         profile_providers: dict[str, str] = {}
         rungs: dict[str, Rung] = {}
         session_providers: set[str] = set()
+        disabled: set[str] = set()
+        harnesses: dict[str, str] = {}
+        lifecycles: dict[str, str] = {}
         for profile in profiles:
             if getattr(profile, "template", False) or ":" in str(profile.id):
                 continue
             provider = availability.provider_for_profile(profile)
             profile_providers[profile.id] = provider
+            harnesses[profile.id] = str(getattr(profile, "harness", "") or "")
+            lifecycles[profile.id] = str(getattr(profile, "lifecycle", "task") or "task")
             enabled = bool(getattr(profile, "enabled", True))
+            if not enabled:
+                disabled.add(profile.id)
             if enabled and provider and provider != "llm":
                 session_providers.add(provider)
             route = worker_route(
@@ -607,6 +744,7 @@ class ProviderRerouteService:
                 lifecycle=lifecycle,
                 enabled=enabled,
                 capacity=max(1, capacity),
+                operator=is_operator_profile(profile),
             )
         now = self.now()
         states: dict[str, str] = {}
@@ -617,14 +755,6 @@ class ProviderRerouteService:
             states[provider] = availability.effective_state(provider, now)
             row = availability.row(provider)
             generations[provider] = int(getattr(row, "generation", 0) or 0)
-        default_providers: dict[str, str] = {}
-        try:
-            for project in await db.list_projects():
-                default = getattr(project, "default_profile_id", None)
-                if default and default in profile_providers:
-                    default_providers[project.id] = profile_providers[default]
-        except Exception:
-            logger.debug("provider reroute: projects unreadable", exc_info=True)
         try:
             backlog = await db.count_rerouted_queued_by_profile()
         except Exception:
@@ -636,7 +766,9 @@ class ProviderRerouteService:
             states=states,
             generations=generations,
             backlog=backlog,
-            default_providers=default_providers,
+            disabled_profiles=frozenset(disabled),
+            profile_harnesses=harnesses,
+            profile_lifecycles=lifecycles,
             session_providers=frozenset(session_providers),
             config=self.config,
             now=now,
@@ -690,6 +822,8 @@ class ProviderRerouteService:
                     intent=intent,
                     provider_pause=pause if paused else None,
                     legacy_pause=paused and pause is None,
+                    route_candidates=route_candidates_of(row.get("route")),
+                    workspace_kind=row.get("workspace_kind") or "project-repo",
                 )
             )
         return out
@@ -744,7 +878,9 @@ class ProviderRerouteService:
             and self._pool_measure is not None
             and bool(getattr(getattr(cfg, "spill", None), "enabled", False))
         )
-        async with self._lock:
+        # A preview is observational and writes nothing. Do not queue it behind
+        # a fleet-wide applying sweep; guarded mutations remain serialized.
+        async with nullcontext() if dry_run else self._lock:
             ctx = await self.context()
             providers = [provider] if provider else None
             candidates = await self._candidates(ctx, providers=providers, task_ids=task_ids)
@@ -832,7 +968,14 @@ class ProviderRerouteService:
             "notices": notices,
         }
 
-    async def _plan_spill(self, ctx: PlanContext, failover: Sequence[Decision]) -> list[Decision]:
+    async def _plan_spill(
+        self,
+        ctx: PlanContext,
+        failover: Sequence[Decision],
+        *,
+        explaining_task_id: str | None = None,
+        pool_measure: Callable[[], Awaitable[Any]] | None = None,
+    ) -> list[Decision]:
         """The capacity spill pass (D24 S3-S6) over one pool measurement.
 
         Candidates are READY frontier tasks on a pool rung whose provider is
@@ -841,6 +984,9 @@ class ProviderRerouteService:
         pool is measured only when there is a candidate, and failover's
         planned moves are counted on their targets first.  A failure here is
         logged and plans nothing: spill never breaks a failover sweep.
+        Explain also includes its requested task before the age threshold,
+        so the planner can name its remaining wait without admitting other
+        young tasks into the sweep's queue.
         """
         from src.providers.spill import (
             SpillCandidate,
@@ -859,16 +1005,23 @@ class ProviderRerouteService:
                 return []
             after = float(getattr(ctx.config.spill, "after_seconds", 300) or 0)
             decided = {d.task_id for d in failover}
+            ready_projects = await self._ready_projects() if self._ready_projects else frozenset()
             rows = [
                 row
                 for row in await self.db.list_spill_candidates(
-                    sources, updated_before=ctx.now - after
+                    sources,
+                    updated_before=None if explaining_task_id else ctx.now - after,
+                    ready_project_ids=ready_projects,
                 )
                 if row["id"] not in decided
+                and (
+                    row["id"] == explaining_task_id
+                    or float(row.get("updated_at") or 0.0) <= ctx.now - after
+                )
             ]
             if not rows:
                 return []
-            measurement = await self._pool_measure()
+            measurement = await (pool_measure or self._pool_measure)()
             global_cap = self._pool_global_cap() if self._pool_global_cap is not None else None
             view = with_incoming_moves(
                 capacity_view_from_measurement(
@@ -899,6 +1052,8 @@ class ProviderRerouteService:
                         )
                     ),
                     updated_at=float(row.get("updated_at") or 0.0),
+                    route_candidates=route_candidates_of(row.get("route")),
+                    workspace_kind=row.get("workspace_kind") or "project-repo",
                 )
                 for row in rows
                 if row["project_id"] in projects
@@ -1165,7 +1320,7 @@ class ProviderRerouteService:
         thread_id = f"reroute:{batch}:{project_id}"
         to_id = f"supervisor-{project_id}"
         try:
-            if await self.db.reroute_notice_sent(thread_id, "session", to_id):
+            if await self.db.reroute_notice_sent(thread_id):
                 return None
         except Exception:
             logger.debug("provider reroute: notice check failed", exc_info=True)
@@ -1220,16 +1375,25 @@ class ProviderRerouteService:
         task_ids: Sequence[str] | None = None,
         force: bool = False,
         actor: str = "system",
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """Return tasks to ``rerouted_from`` (D16): by batch or by task.
 
         Refused per task while the original provider is still unavailable,
-        unless *force*; always refused for a running or claimed task.
+        unless *force*; always refused for a running or claimed task, and for
+        a routed task whose ``rerouted_from`` is not among its route
+        candidates (mandatory routing §6.8), *force* or not.
+
+        *project_id* confines the undo to one project's tasks: a batch is a
+        sweep across projects, and a per-project supervisor undoes only its
+        own project's moves from it.
         """
         db = self.db
         wanted: list[str] = list(task_ids or [])
         if batch_id:
-            rows = await db.list_task_reroutes(batch_id=batch_id, limit=10_000)
+            rows = await db.list_task_reroutes(
+                batch_id=batch_id, project_id=project_id, limit=10_000
+            )
             wanted += [row["task_id"] for row in rows if row.get("undone_at") is None]
         wanted = list(dict.fromkeys(wanted))
         if not wanted:
@@ -1248,6 +1412,11 @@ class ProviderRerouteService:
                 if task is None:
                     refused.append({"task_id": task_id, "reason": "task not found"})
                     continue
+                if project_id is not None and task.project_id != project_id:
+                    refused.append(
+                        {"task_id": task_id, "reason": f"not a task of project {project_id}"}
+                    )
+                    continue
                 if not task.rerouted_from:
                     refused.append({"task_id": task_id, "reason": "not re-routed"})
                     continue
@@ -1255,6 +1424,19 @@ class ProviderRerouteService:
                 if home is None:
                     refused.append(
                         {"task_id": task_id, "reason": f"profile {task.rerouted_from} is gone"}
+                    )
+                    continue
+                candidates = route_candidates_of(getattr(task, "route", None))
+                if candidates and task.rerouted_from not in {pid for pid, _ in candidates}:
+                    # A routed task returns only to a candidate (routing §6.8).
+                    refused.append(
+                        {
+                            "task_id": task_id,
+                            "reason": (
+                                f"profile {task.rerouted_from} is not one of the task's route "
+                                "candidates; a move outside them is an override"
+                            ),
+                        }
                     )
                     continue
                 home_provider = self.availability.provider_for_profile(home)
@@ -1335,6 +1517,52 @@ class ProviderRerouteService:
 
     # -- derived answers ----------------------------------------------------------
 
+    async def spill_state(
+        self, task: Any, *, pool_measure: Callable[[], Awaitable[Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Read-only spill state for a READY frontier task waiting on a pool (D24 S8).
+
+        Plan the same queues as an automatic sweep, including its failover
+        reservations, so ordering, target headroom and sweep limits agree.
+        ``None`` means this task is not spill's to move or its pool can serve it.
+        """
+        if (
+            not getattr(task, "profile_id", None)
+            or getattr(task, "assigned_agent_id", None) is not None
+            or str(getattr(getattr(task, "status", None), "value", "")) != "READY"
+            or self._pool_measure is None
+        ):
+            return None
+        ctx = await self.context()
+        rung = ctx.rungs.get(task.profile_id)
+        if rung is None or rung.lifecycle != "pool" or ctx.unavailable(rung.provider):
+            return None
+        candidates = await self._candidates(ctx, providers=None, task_ids=None)
+        if candidates:
+            ctx.stats = await self.db.task_reroute_stats([c.task_id for c in candidates])
+        failover = plan_sweep(candidates, ctx)
+        decisions = await self._plan_spill(
+            ctx, failover, explaining_task_id=task.id, pool_measure=pool_measure,
+        )
+        mine = next((d for d in decisions if d.task_id == task.id), None)
+        if mine is None or mine.action == "skip":
+            return None
+        inactive = await self.failover_inactive_reason()
+        if inactive is None and not ctx.config.spill.enabled:
+            inactive = "provider_failover.spill.enabled is false"
+        if inactive is None and not getattr(self._config_getter().swarm, "enabled", True):
+            inactive = "swarm.enabled is false"
+        if inactive is not None:
+            return {"kind": "spill_inactive", "detail": inactive, "to_profile_id": None}
+        return {
+            "kind": "spill_next_sweep" if mine.action == "move" else mine.kind,
+            "detail": (
+                f"the next sweep moves it to {mine.to_profile_id}"
+                if mine.action == "move" else mine.detail
+            ),
+            "to_profile_id": mine.to_profile_id,
+        }
+
     async def hold_kind(self, task: Any) -> dict[str, Any] | None:
         """``{"kind", "ahead", "detail", "to_profile_id"}`` for a held task (D18).
 
@@ -1361,6 +1589,7 @@ class ProviderRerouteService:
                     title=str(getattr(task, "title", "") or ""),
                     intelligence_class=getattr(task, "intelligence_class", None),
                     intent=effective_intent(task),
+                    route_candidates=route_candidates_of(getattr(task, "route", None)),
                 )
             )
         ctx.stats = await self.db.task_reroute_stats([c.task_id for c in candidates])
@@ -1386,83 +1615,3 @@ class ProviderRerouteService:
             "detail": mine.detail,
             "to_profile_id": mine.to_profile_id,
         }
-
-    def resolve_default_profile_id(
-        self,
-        default_profile_id: str | None,
-        profiles: Mapping[str, Any],
-        *,
-        project_id: str | None = None,
-        preferred_provider: str | None = None,
-    ) -> str | None:
-        """The default's equivalent rung for project preference or provider outage.
-
-        Derived per call and never persisted, so recovery needs no undo.  A
-        default whose provider is launchable, that is not a worker rung, or
-        that has no equivalent on an ``available`` provider is returned as is
-        (its tasks then hold). A project preference restricts selection to its
-        enabled, launchable same-class workers and returns ``None`` when none
-        exists; it never falls back across providers. Synchronous and I/O-free: *profiles* is a
-        snapshot the caller already has.
-        """
-        from src.profiles.catalog import rung_profile_id, worker_route
-
-        availability = self.availability
-        if not default_profile_id or (not preferred_provider and not availability.enforcing):
-            return default_profile_id
-        profile = profiles.get(default_profile_id)
-        if profile is None:
-            return None if preferred_provider else default_profile_id
-        provider = availability.provider_for_profile(profile, project_id=project_id)
-        if not preferred_provider and not availability.is_unavailable(provider):
-            return default_profile_id
-        route = worker_route(
-            profile.id,
-            harness=getattr(profile, "harness", ""),
-            default_class=getattr(profile, "default_class", ""),
-            lifecycle=getattr(profile, "lifecycle", "task"),
-            template=bool(getattr(profile, "template", False)),
-            read_only=bool(getattr(profile, "read_only", False)),
-        )
-        if route is None:
-            return None if preferred_provider else default_profile_id
-        _harness, class_id = route
-        classes = self._classes()
-        cls = classes.get(class_id)
-        if preferred_provider and cls is None:
-            return None
-        order = list(getattr(self.config, "order", None) or []) or list(_worker_provider_order())
-        best: tuple | None = None
-        for other in profiles.values():
-            if getattr(other, "template", False) or not getattr(other, "enabled", True):
-                continue
-            other_route = worker_route(
-                other.id,
-                harness=getattr(other, "harness", ""),
-                default_class=getattr(other, "default_class", ""),
-                lifecycle=getattr(other, "lifecycle", "task"),
-                template=bool(getattr(other, "template", False)),
-                read_only=bool(getattr(other, "read_only", False)),
-            )
-            if other_route is None or other_route[1] != class_id:
-                continue
-            other_provider = availability.provider_for_profile(other, project_id=project_id)
-            if preferred_provider:
-                if other_provider != preferred_provider or availability.suppresses(other_provider):
-                    continue
-            else:
-                if other_provider == provider:
-                    continue
-                if availability.effective_state(other_provider) != AVAILABLE:
-                    continue
-            if cls is not None and not _class_has_slice(cls, other, self.harness_registry):
-                continue
-            rank = (
-                order.index(other_provider) if other_provider in order else len(order),
-                other.id != rung_profile_id(class_id, other_route[0]),
-                str(getattr(other, "lifecycle", "task")) != "pool",
-                other.id,
-            )
-            if best is None or rank < best[0]:
-                best = (rank, other.id)
-        return best[1] if best is not None else (None if preferred_provider else default_profile_id)

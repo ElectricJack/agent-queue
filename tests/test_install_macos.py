@@ -18,6 +18,7 @@ import pytest
 
 from src.install.command import CommandOutput
 from src.install.engine import InstallEngine, InstallOptions
+from src.install.graft import STEP_GRAFT_CLI, STEP_GRAFT_REPOS
 from src.install.logins import login_steps
 from src.install.macos import (
     ARM_PREFIX,
@@ -638,6 +639,8 @@ def _base_registry_ids():
         *_database_ids(),
         *_provider_ids(),
         *_onboarding_ids(),
+        STEP_GRAFT_CLI,
+        STEP_GRAFT_REPOS,
     ]
 
 
