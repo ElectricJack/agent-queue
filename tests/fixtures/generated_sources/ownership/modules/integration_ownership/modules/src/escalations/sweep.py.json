@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/escalations/sweep.py::SweepFacts.delivery_statuses": "Notification transport delivery status, not code delivery.",
+    "src/escalations/sweep.py::notice_delivered": "Notification transport receipt handling, not integration state."
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/assignment_route_queries.py::AssignmentRouteQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

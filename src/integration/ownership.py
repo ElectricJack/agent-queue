@@ -72,6 +72,19 @@ class BranchOwnership:
             return await self._acquire_on(owned_conn, target, owner_id, role)
 
     async def _acquire_on(self, conn, target: BranchKey, owner_id: str, role: str) -> Fence:
+        if role == "worker":
+            from src.database.tables import projects, tasks
+            from src.integration.train_policy import train_disabled_for_project
+
+            project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == owner_id))
+            if project_id is not None:
+                # Activation changes take repo then hierarchy; callers may already
+                # hold hierarchy, so never acquire the repo fence here.
+                await self._db.lock_hierarchy_project(conn, project_id)
+                if await conn.scalar(select(projects.c.id).where(
+                    projects.c.id == project_id, train_disabled_for_project(),
+                )):
+                    raise BranchBusy("train playbook is disabled")
         row = await self._locked_row(conn, target)
         if row is not None and row.get("fence") is not None:
             from src.integration.lock import BranchLock
@@ -318,6 +331,7 @@ class BranchOwnership:
         *,
         state: str = "reserved",
         expected_role: str | None = None,
+        timeout_seconds: float | None = None,
     ):
         """Hold the ownership row across one bounded external mutation.
 
@@ -328,7 +342,8 @@ class BranchOwnership:
         """
         async with self._db.immediate() as conn:
             async with self.mutation_exclusion_on(
-                conn, fence, state=state, expected_role=expected_role
+                conn, fence, state=state, expected_role=expected_role,
+                timeout_seconds=timeout_seconds,
             ):
                 yield conn
 
@@ -340,6 +355,7 @@ class BranchOwnership:
         *,
         state: str = "reserved",
         expected_role: str | None = None,
+        timeout_seconds: float | None = None,
     ):
         """Recheck and hold ownership inside a caller's canonically ordered transaction."""
         row = await self._locked_row(conn, fence.target)
@@ -352,7 +368,9 @@ class BranchOwnership:
         if row.get("fence") is not None:
             from src.integration.lock import BranchLock
 
-            async with BranchLock(self._db, clock=self._clock).exclusion(fence, conn=conn):
+            async with BranchLock(self._db, clock=self._clock).exclusion(
+                fence, conn=conn, timeout_seconds=timeout_seconds,
+            ):
                 yield row
         else:
             yield row
@@ -435,6 +453,12 @@ class BranchOwnership:
             or (agent_id is not None and workspace["locked_by_agent_id"] != agent_id)
         ):
             raise BranchBusy("workspace is no longer locked by the branch owner")
+        slot = workspaces.alias("owner_attachment_slot")
+        base = await conn.scalar(
+            select(slot.c.id).where(slot.c.base_workspace_id == workspace_id).limit(1)
+        )
+        if base is not None:
+            raise BranchBusy("branch ownership cannot attach to a shared base checkout")
         result = await conn.execute(
             update(integration_branch_owners)
             .where(integration_branch_owners.c.id == row["id"])
