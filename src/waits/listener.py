@@ -26,6 +26,11 @@ from src.waits.resource_sources import (
 
 logger = logging.getLogger(__name__)
 
+_OBSERVATION_ONLY_PREFIXES = (
+    "ci_check:", "resource_invalidation:pool:", "resource_invalidation:config:",
+    "resource_invalidation:workspace:",
+)
+
 
 class ListenerUnavailable(RuntimeError):
     """A downstream lifecycle owner is absent; leave the cursor unchanged."""
@@ -187,39 +192,91 @@ class WaitSourceListener:
             raise ListenerUnavailable(f"wait dispatch refused: {result}")
         return result
 
-    async def _unobserved_prefix(self, conn, position, watermark):
-        """Retire only a contiguous irrelevant prefix, under the graph fence.
-
-        CI checks have no consumer side effects without a subscription. Pool
-        snapshots only invalidate resource waits. In particular, task retirement
-        and provider recovery must still run even when no wait matches directly.
-        Broad resource matching is conservative: dispatch rechecks canonical scope.
-        """
-        subscribed = select(wait_records.c.id).where(
+    @staticmethod
+    def _hint_subscription():
+        # Broad resource matching is conservative: dispatch rechecks canonical
+        # scope. Provider hints still require lifecycle recovery without waits.
+        return select(wait_records.c.id).where(
             wait_records.c.outcome == "pending",
             wait_records.c.verification_state == "verified",
             wait_records.c.source_watermark_seq < wait_source_events.c.seq,
             or_(
                 (wait_records.c.source_key == wait_source_events.c.source_key)
                 & (wait_records.c.source_generation == wait_source_events.c.source_generation),
-                wait_source_events.c.source_key.startswith("resource_invalidation:pool:")
+                wait_source_events.c.source_key.startswith("resource_invalidation:", autoescape=True)
                 & (wait_records.c.condition_kind == "resource"),
             ),
         ).exists()
+
+    async def _unobserved_prefix(self, conn, position, watermark):
+        """Retire only an irrelevant observation prefix, under the graph fence.
+
+        Task retirement and provider recovery still run without subscriptions.
+        """
         rows = (await conn.execute(select(
             wait_source_events.c.seq, wait_source_events.c.source_key,
-            subscribed.label("subscribed"),
+            self._hint_subscription().label("subscribed"),
         ).where(
             wait_source_events.c.seq > position, wait_source_events.c.seq <= watermark,
         ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings()
         prefix = []
         for row in rows:
-            if row["subscribed"] or not row["source_key"].startswith((
-                "ci_check:", "resource_invalidation:pool:",
-            )):
+            if row["subscribed"] or not row["source_key"].startswith(_OBSERVATION_ONLY_PREFIXES):
                 break
             prefix.append(row["seq"])
         return prefix
+
+    async def _unobserved_events(self, conn, watermark, *, source=None):
+        """Find observation-only events that no verified subscriber needs.
+
+        Call under GRAPH_LOCK before stamping: registration may have subscribed
+        while the listener waited for the fence. Check all projects even for a
+        project-scoped supervisor recovery.
+        """
+        query = select(wait_source_events.c.seq).where(
+            wait_source_events.c.seq <= watermark,
+            wait_source_events.c.dispatched_at.is_(None),
+            or_(*(wait_source_events.c.source_key.startswith(prefix, autoescape=True)
+                  for prefix in _OBSERVATION_ONLY_PREFIXES)),
+            ~self._hint_subscription(),
+        )
+        if source is not None:
+            query = query.where(
+                wait_source_events.c.source_key == source["source_key"],
+                wait_source_events.c.source_generation == source["source_generation"],
+            )
+        return list(await conn.scalars(query.order_by(
+            wait_source_events.c.seq,
+        ).limit(self.batch_size)))
+
+    async def _retire_unused_retries(self, watermark):
+        """Bounded cleanup behind the cursor, independent of observation backoff."""
+        async with self.db._engine.begin() as conn:
+            position = await conn.scalar(select(wait_listener_cursors.c.last_seq).where(
+                wait_listener_cursors.c.listener_key == "source",
+            ))
+            watermark = min(position or 0, watermark)
+            if not await self._unobserved_events(conn, watermark):
+                return 0
+            try:
+                await lock_graph(conn, queued=True, timeout=self.graph_wait_seconds)
+            except WaitError as exc:
+                if exc.code != "wait.graph_busy":
+                    raise
+                self._graph_busy = True
+                return 0
+            await self.locked_lease(conn)
+            processed = await self._unobserved_events(conn, watermark)
+            if processed:
+                await conn.execute(update(wait_source_events).where(
+                    wait_source_events.c.seq.in_(processed),
+                ).values(dispatched_at=self.clock()))
+            await self.locked_lease(conn)
+        for seq in processed:
+            self._retry_due.pop(seq, None)
+        if len(processed) == self.batch_size:
+            self.changed.set()
+        return len(processed)
 
     @staticmethod
     def _coalesce_key(event):
@@ -272,24 +329,40 @@ class WaitSourceListener:
         ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
 
     @admission_pass("service.scheduler.reader")
-    async def drain(self, watermark):
+    async def _drain_with_admission(self, watermark):
+        return await self.drain(watermark, admission_ready=True)
+
+    async def drain(self, watermark, *, admission_ready=False):
         """Bound each transaction; retain slow observations for a later retry pass."""
         count = retries = 0
         retry_pending = True
         recovery = {"position": None, "attempted": set()}
         started = asyncio.get_running_loop().time()
+        retirement = asyncio.timeout(self.event_budget_seconds)
+        try:
+            async with retirement:
+                count += await self._retire_unused_retries(watermark)
+        except TimeoutError:
+            if not retirement.expired():
+                raise
+            logger.warning("wait.unused_retry_retirement_deferred")
+        attempted = bool(count)
         while True:
-            if asyncio.get_running_loop().time() - started >= self.drain_budget_seconds:
+            if attempted and asyncio.get_running_loop().time() - started >= self.drain_budget_seconds:
                 # Refresh the watermark promptly even when many old sources
                 # each exhaust their attempt budget. Keep the live loop awake.
                 self.changed.set()
                 return count
+            # An empty retirement scan is housekeeping, not source progress.
+            # Even a slow scan must leave room for one forward/retry attempt.
+            attempted = True
             attempt = {}
             budget = asyncio.timeout(self.event_budget_seconds)
             try:
                 async with budget:
                     result = await self._drain_one(
-                        watermark, retry_pending and retries < self.retry_batch_size, attempt, recovery)
+                        watermark, retry_pending and retries < self.retry_batch_size, attempt, recovery,
+                        admission_ready=admission_ready)
             except TimeoutError:
                 if not budget.expired():
                     raise
@@ -303,6 +376,11 @@ class WaitSourceListener:
                 return count
             if result.get("raced"):
                 continue
+            if result.get("needs_admission"):
+                # _drain_one has released its transaction and graph fence.
+                # Fleet preparation is needed only for a real resource observer,
+                # never an idle tick or an unsubscribed invalidation backlog.
+                return count + await self._drain_with_admission(watermark)
             retry_pending = result["retry_pending"]
             processed, retry_after = result["processed"], result["retry_after"]
             if retry_after:
@@ -325,7 +403,7 @@ class WaitSourceListener:
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
 
-    async def _drain_one(self, watermark, retry_pending, attempt, recovery):
+    async def _drain_one(self, watermark, retry_pending, attempt, recovery, *, admission_ready=False):
         async with self.db._engine.begin() as conn:
             from src.waits.loops import prepare_progress
 
@@ -420,6 +498,17 @@ class WaitSourceListener:
                     if candidate is None:
                         return None
                     event = candidate
+                    if not admission_ready and event["source_key"].startswith((
+                        "resource_invalidation:", "resource:",
+                    )) and await conn.scalar(select(wait_records.c.id).where(
+                        wait_records.c.outcome == "pending",
+                        wait_records.c.verification_state == "verified",
+                        wait_records.c.condition_kind == "resource",
+                        wait_records.c.source_watermark_seq < event["seq"],
+                    ).limit(1)):
+                        # Recheck under GRAPH_LOCK, including subscriptions that
+                        # committed while this attempt waited for the fence.
+                        return {"needs_admission": True}
                     retry_after = await self._dispatch(conn, dict(event)) or 0
                     processed = coalesced or [event["seq"]]
                 if cursor["lease_expires_at"] <= self.clock():
@@ -467,13 +556,21 @@ class WaitSourceListener:
                 await lock_graph(conn, queued=True, timeout=self.graph_wait_seconds)
                 await self.locked_lease(conn)
                 retry_after = await self._dispatch(conn, dict(event), project_id=project_id) or 0
-                # Do not retire a global source on behalf of only one project.
-                # Forward draining (or its retained retry) still owns that stamp.
+                # Observation-only sources can retire without subscribers.
+                # Other sources retain their forward/retry lifecycle ownership.
+                retired = []
+                if event["source_key"].startswith(_OBSERVATION_ONLY_PREFIXES):
+                    retired = await self._unobserved_events(conn, event["seq"], source=event)
+                    if retired:
+                        await conn.execute(update(wait_source_events).where(
+                            wait_source_events.c.seq.in_(retired),
+                        ).values(dispatched_at=self.clock()))
                 await conn.execute(insert(events).values(
                     event_type="wait.source_redispatched", project_id=project_id,
                     timestamp=self.clock(), payload=json.dumps({
                         "source_seq": event["seq"], "source_key": event["source_key"],
                         "note": args["note"], "retry_after": retry_after,
+                        "retired_events": len(retired),
                         "supervisor_session_id": getattr(principal, "session_id", None),
                     }),
                 ))
@@ -482,6 +579,7 @@ class WaitSourceListener:
             return {"success": True, "result": {
                 "source_seq": event["seq"], "project_id": project_id,
                 "retry_after": retry_after, "redispatched": True,
+                "retired_events": len(retired),
             }}
 
     async def report_lag(self):

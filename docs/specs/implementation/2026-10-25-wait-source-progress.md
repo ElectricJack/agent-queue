@@ -17,12 +17,35 @@ and other event kinds remain individual because they carry lifecycle effects. Ev
 coalesced row is stamped only with the successful transaction; deferred rows remain
 undispatched. A bounded prefix stops at unrelated lifecycle events.
 
+CI events have no lifecycle effects without a pending verified subscriber of the
+same source/generation whose watermark precedes the event. Pool, config and workspace
+invalidations likewise only reobserve resource subscribers. Retire these unused
+observations in forward prefixes and retained batches behind the cursor, including
+events still on retry backoff, under the graph and listener lease fences. Resource
+matching conservatively preserves any pending verified resource subscriber with a
+preceding watermark. Provider invalidations always retain lifecycle dispatch: even
+with zero pending waits they can release held continuations. No source observation
+or owner progress preparation is needed for a retired batch. Registration remains
+serialized by the graph fence. An empty retirement scan must still allow one
+forward/retry attempt before the pass yields.
+
+An idle drain or unsubscribed backlog must not prepare fleet-wide admission.
+Only a source with a pending verified resource subscriber needs that preparation.
+Check under the graph fence so concurrent registrations cannot be missed; release
+the source transaction, prepare admission outside the fence, then retry dispatch
+against current subscriptions. Preparation never authorizes an outcome itself.
+
 `aq wait source-redispatch --source-seq N --project P --note REASON` lets a live named
 supervisor or local operator reobserve one persisted source through normal dispatch.
 The command requires a project, fences the leader lease, preserves the forward cursor,
 filters wait and lifecycle effects to that project, and records an audit event. It
 never trusts caller-supplied evidence or a former dispatched stamp. Missing sources,
 contention and absent leadership return a refusal; no wake is fabricated.
+For a CI, pool, config or workspace source, the command also retires retained events
+of that source/generation through the requested sequence when no pending verified
+subscriber anywhere needs each event. It reports and audits the number retired. A project-scoped recovery
+must preserve any event still needed by another project's subscriber. Retirement
+uses bounded batches; repeat the command to drain additional history.
 
 An independent listener monitor checks undispatched row count and oldest commit age,
 including deferred rows behind the cursor. Alert when count exceeds configurable

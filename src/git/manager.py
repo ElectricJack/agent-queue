@@ -80,7 +80,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -128,6 +128,31 @@ def _zeroized_credential(buffer: bytearray):
         yield buffer
     finally:
         zeroize(buffer)
+
+
+@asynccontextmanager
+async def _isolated_git_directory(**kwargs):
+    """Remove large temporary stores off-loop, retaining ownership on cancellation."""
+    directory = tempfile.TemporaryDirectory(**kwargs)
+    try:
+        yield directory.name
+    finally:
+        cleanup = asyncio.create_task(asyncio.to_thread(directory.cleanup))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            # A second cancellation must not orphan removal or release the
+            # repository operation's fences while its directory still exists.
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    break
+            with suppress(Exception):
+                cleanup.result()
+            raise
 
 
 def safe_git_detail(value: str, token: str | None = None, *, limit: int = 512) -> str:
@@ -2147,7 +2172,7 @@ class GitManager:
         if destination.exists() and any(destination.iterdir()):
             raise GitError("checkout destination is not empty")
         deadline = asyncio.get_running_loop().time() + self._GIT_TIMEOUT
-        with tempfile.TemporaryDirectory(prefix="aq-app-clone-", dir=destination.parent) as temporary:
+        async with _isolated_git_directory(prefix="aq-app-clone-", dir=destination.parent) as temporary:
             root = Path(temporary)
             root.chmod(0o700)
             home = root / "home"
@@ -2290,7 +2315,7 @@ class GitManager:
         if refetch:
             # Damaged tips must not tell the server their objects are held.
             borrowable_objects = None
-        with tempfile.TemporaryDirectory(prefix="aq-app-origin-fetch-") as temporary:
+        async with _isolated_git_directory(prefix="aq-app-origin-fetch-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
             home = root / "home"
@@ -3912,7 +3937,7 @@ class GitManager:
                 checkout_path, remote, repository_url=repository_url
             )
             if destination_url is not None:
-                with tempfile.TemporaryDirectory(prefix="aq-app-ref-") as temporary:
+                async with _isolated_git_directory(prefix="aq-app-ref-") as temporary:
                     home = Path(temporary)
                     home.chmod(0o700)
                     output = (await self._arun_authenticated_git(
@@ -4043,7 +4068,7 @@ class GitManager:
                 raise GitError(result.stderr or "remote tag inventory failed")
             output = result.stdout
         else:
-            with tempfile.TemporaryDirectory(prefix="aq-app-tags-") as temporary:
+            async with _isolated_git_directory(prefix="aq-app-tags-") as temporary:
                 home = Path(temporary)
                 home.chmod(0o700)
                 output = (await self._arun_authenticated_git(
@@ -4077,7 +4102,7 @@ class GitManager:
                 raise GitError(result.stderr or "remote head inventory failed")
             output = result.stdout
         else:
-            with tempfile.TemporaryDirectory(prefix="aq-app-heads-") as temporary:
+            async with _isolated_git_directory(prefix="aq-app-heads-") as temporary:
                 home = Path(temporary)
                 home.chmod(0o700)
                 output = (await self._arun_authenticated_git(
@@ -4118,7 +4143,7 @@ class GitManager:
                     raise GitError(result.stderr or "qualified remote read failed")
                 output = result.stdout
             else:
-                with tempfile.TemporaryDirectory(prefix="aq-app-ref-") as temporary:
+                async with _isolated_git_directory(prefix="aq-app-ref-") as temporary:
                     home = Path(temporary)
                     home.chmod(0o700)
                     output = (await self._arun_authenticated_git(
@@ -4498,7 +4523,7 @@ class GitManager:
             if result.state is RemoteRefState.ERROR:
                 raise GitError(result.error or "remote head observation failed")
             return result.oid
-        with tempfile.TemporaryDirectory(prefix="aq-app-ref-") as temporary:
+        async with _isolated_git_directory(prefix="aq-app-ref-") as temporary:
             home = Path(temporary)
             home.chmod(0o700)
             output = await self._arun_authenticated_git(
@@ -4844,7 +4869,7 @@ class GitManager:
         loop = asyncio.get_running_loop()
         started = loop.time()
         deadline = started + fetch_timeout
-        with tempfile.TemporaryDirectory(prefix="aq-app-fetch-") as temporary:
+        async with _isolated_git_directory(prefix="aq-app-fetch-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
             home = root / "home"
@@ -5574,10 +5599,11 @@ class GitManager:
         checkout = Path(checkout_path).resolve(strict=True)
         uses_existing_auth = token is None
         token_buffer = bytearray(token.encode("utf-8")) if token is not None else bytearray()
-        with (
-            _zeroized_credential(token_buffer),
-            tempfile.TemporaryDirectory(prefix="aq-app-push-") as temporary,
-        ):
+        async with AsyncExitStack() as stack:
+            stack.enter_context(_zeroized_credential(token_buffer))
+            temporary = await stack.enter_async_context(
+                _isolated_git_directory(prefix="aq-app-push-")
+            )
             token = ""
             root = Path(temporary)
             root.chmod(0o700)
@@ -6819,7 +6845,7 @@ class GitManager:
                 token = await self._atoken_for_repository(binding)
                 source_url = f"https://github.com/{binding.full_name}.git"
                 deadline = asyncio.get_running_loop().time() + self._GIT_TIMEOUT
-                with tempfile.TemporaryDirectory(prefix="aq-app-head-") as temporary:
+                async with _isolated_git_directory(prefix="aq-app-head-") as temporary:
                     home = Path(temporary)
                     home.chmod(0o700)
                     output = await self._arun_authenticated_git(
