@@ -26,6 +26,7 @@ import os
 import re
 import uuid
 import warnings
+from contextlib import asynccontextmanager
 
 from src.database.schema_key import schema_key_slug
 from src.database import Database
@@ -225,6 +226,23 @@ BEGIN
 END $$;
 """
 
+#: A write the finished test cancelled can still be committing on the server:
+#: the client gave up, the backend did not.  Its row lands after the reset's
+#: DELETE took its snapshot, and survives it, while the sequence it drew from
+#: goes back to the start, so the next test collides with it on the primary key
+#: (``wait_source_events_pkey`` from a cancelled provider-availability probe).
+#: Fence new connections before ending existing sessions. Idle clients can send
+#: another write after the termination snapshot, and reconnecting clients can
+#: otherwise race the DELETE too. Only this leased database is fenced; the reset
+#: connection stays usable and always restores admission before closing.
+#: Wait for the test role's clients, including idle ones, to exit before DELETE
+#: takes its snapshot. Autovacuum and other roles' backends are left alone.
+_END_TEST_SESSIONS = """
+SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity
+WHERE datname = current_database() AND pid <> pg_backend_pid()
+  AND backend_type = 'client backend' AND usename = current_user
+"""
+
 #: What ``RESTART IDENTITY`` did: every sequence a test drew from goes back to
 #: its start.  ``last_value`` is NULL until a sequence is first used.
 _RESTART_USED_SEQUENCES = """
@@ -249,6 +267,19 @@ WHERE c.oid IN (SELECT oid FROM emptied)
    OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN (SELECT oid FROM emptied))
 """
 
+#: Relation statistics and column distributions are separate in PostgreSQL.
+#: Clearing only pg_class leaves a previous fixture's ANALYZE in pg_statistic,
+#: which can change the next fixture's plans even after its rows are gone.
+#: Include empty tables and expression indexes: neither needs to hold rows
+#: when a test ends for its sampled distributions to survive.
+_CLEAR_ATTRIBUTE_STATS = """
+SELECT pg_clear_attribute_stats('public', c.relname::text, a.attname::text, s.stainherit)
+FROM pg_statistic s
+JOIN pg_class c ON c.oid = s.starelid
+JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
+WHERE c.relnamespace = 'public'::regnamespace
+"""
+
 _HAS_CLEAR_STATS = "SELECT to_regprocedure('pg_clear_relation_stats(text,text)') IS NOT NULL"
 
 #: Whether this run can take the row reset: ``None`` until the first reset
@@ -268,6 +299,28 @@ def _refuse_row_reset(reason: str) -> None:
     )
 
 
+@asynccontextmanager
+async def _reset_connection(dsn: str):
+    """Keep one reset connection while refusing competing lease writers."""
+    prefix, database = _split(dsn)
+    quoted_database = '"' + database.replace('"', '""') + '"'
+    conn = await _connect_admin(dsn)
+    try:
+        # PostgreSQL refuses ALLOW_CONNECTIONS false for the current database.
+        control = await _connect_admin(f"{prefix}/postgres")
+        try:
+            await control.execute(f"ALTER DATABASE {quoted_database} ALLOW_CONNECTIONS false")
+            await conn.execute(_END_TEST_SESSIONS)
+            yield conn
+        finally:
+            try:
+                await control.execute(f"ALTER DATABASE {quoted_database} ALLOW_CONNECTIONS true")
+            finally:
+                await control.close()
+    finally:
+        await conn.close()
+
+
 async def reset_all(dsn: str) -> None:
     """Wipe every row but leave the schema, ``alembic_version`` -- and the files -- alone.
 
@@ -285,8 +338,10 @@ async def reset_all(dsn: str) -> None:
     skips the foreign-key triggers and the schema's delete guards (all
     origin-enabled), so tables empty in any order.  VACUUM then returns the
     emptied heaps to zero pages and ``pg_clear_relation_stats`` their planner
-    statistics to never-vacuumed -- the state a truncate left, which the perf
-    suites' buffer counts and plan shapes assume.  Measured on an isolated
+    statistics to never-vacuumed. Column statistics are also cleared so the
+    next test cannot inherit an earlier fixture's ANALYZE distributions.
+    The perf suites' buffer counts and plan shapes need that isolation.
+    Measured on an isolated
     server over 100 resets: 322 ms and 27,915 checkpoint files for TRUNCATE,
     139 ms and 14 files for this.
 
@@ -297,8 +352,7 @@ async def reset_all(dsn: str) -> None:
     global _ROW_RESET
     import asyncpg
 
-    conn = await _connect_admin(dsn)
-    try:
+    async with _reset_connection(dsn) as conn:
         if _ROW_RESET is None:
             if await conn.fetchval(_HAS_CLEAR_STATS):
                 _ROW_RESET = True
@@ -321,10 +375,9 @@ async def reset_all(dsn: str) -> None:
                         "VACUUM (INDEX_CLEANUP ON) " + ", ".join(f'"{t}"' for t in tables)
                     )
                     await conn.execute(_CLEAR_STATS, tables)
+                await conn.execute(_CLEAR_ATTRIBUTE_STATS)
                 return
         await conn.execute(_TRUNCATE_ALL)
-    finally:
-        await conn.close()
 
 
 #: Rows the migration chain itself inserts, captured from the template once.

@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from src.api import dependencies as deps
-from src.api.auth import LOCAL_SCOPE
+from src.api.auth import LOCAL_SCOPE, operator_viewer_context, request_operator_viewer
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -23,6 +23,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         request_id = request.headers.get("X-Request-ID", uuid4().hex[:8])
+        request.state.request_id = request_id
         with structlog.contextvars.bound_contextvars(
             request_id=request_id,
             route=request.url.path,
@@ -79,6 +80,7 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
                 ):
                     client_host = request.client.host if request.client else None
                     if client_host not in ("127.0.0.1", "::1", "localhost"):
+                        store.record_auth_result(scope.session_id, 403)
                         return JSONResponse(
                             {"ok": False, "error": "token restricted to loopback"},
                             status_code=403,
@@ -98,10 +100,21 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             scope = await _attach_derived_identity(scope)
 
         request.state.scope = scope
-        if scope.kind == "session" and scope.session_id:
-            with structlog.contextvars.bound_contextvars(session_id=scope.session_id):
-                return await call_next(request)
-        return await call_next(request)
+        # The dashboard edge replaces this marker; direct browser requests
+        # carry Origin. Agent identity takes precedence in the command layer.
+        surface = "dashboard" if (
+            request.headers.get("x-aq-dashboard-viewer") in {"operator", "other"}
+            or request.headers.get("origin")
+        ) else "cli"
+        with operator_viewer_context(request_operator_viewer(request), surface=surface):
+            if scope.kind == "session" and scope.session_id:
+                with structlog.contextvars.bound_contextvars(session_id=scope.session_id):
+                    response = await call_next(request)
+                    if store is not None and (response.status_code < 400
+                                              or response.status_code in {401, 403}):
+                        store.record_auth_result(scope.session_id, response.status_code)
+                    return response
+            return await call_next(request)
 
 
 async def _attach_derived_identity(scope):

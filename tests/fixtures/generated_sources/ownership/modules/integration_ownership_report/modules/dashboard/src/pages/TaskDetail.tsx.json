@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "dashboard/src/pages/TaskDetail.tsx::function TaskDetailContent({ taskId }: { taskId: string }) {": {
+      "baseline_span": [
+        24,
+        180
+      ],
+      "landing_span": [
+        24,
+        180
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/pages/TaskDetail.tsx::import { EpicDeliveryPanel, EpicStatus } from \"../components/EpicDelivery\";": {
+      "baseline_span": [
+        7,
+        7
+      ],
+      "landing_span": [
+        7,
+        7
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
