@@ -15,7 +15,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitError, RemoteRefResult, RemoteRefState
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
@@ -25,16 +24,14 @@ WS = "/tmp/p1"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("sdb.db"))
-    await d.initialize()
+async def db(reuse_database):
+    d = await reuse_database("sdb.db")
     await d.create_project(Project(id="p1", name="P1", repo_default_branch="main"))
     await d.create_project(Project(id="p2", name="P2", repo_default_branch="main"))
     await d.create_workspace(
         Workspace(id="w1", project_id="p1", workspace_path=WS, source_type=RepoSourceType.CLONE)
     )
     yield d
-    await d.close()
 
 
 @pytest.fixture
@@ -167,3 +164,13 @@ async def test_failed_default_publication_never_updates_the_project(handler, db,
     result = await handler.execute("set_default_branch", {"project_id": "p1", "branch": "dev"})
     assert result.get("error")
     assert (await db.get_project("p1")).repo_default_branch == "main"
+
+
+async def test_fetch_failure_keeps_best_effort_default_configuration(handler, db):
+    git = handler.orchestrator.git
+    git._arun = AsyncMock(side_effect=GitError("fetch unavailable"))
+    result = await handler.execute("set_default_branch", {"project_id": "p1", "branch": "dev"})
+    assert result["status"] == "updated"
+    assert (await db.get_project("p1")).repo_default_branch == "dev"
+    git.apush_validated_ref.assert_not_awaited()
+    git.apush_validated_delivery.assert_not_awaited()

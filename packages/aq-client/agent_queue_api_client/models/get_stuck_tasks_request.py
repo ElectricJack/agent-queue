@@ -22,12 +22,20 @@ class GetStuckTasksRequest:
         now (float | None | Unset): Reference Unix timestamp (seconds since epoch).  Playbooks should pass the trigger
             event's ``tick_time`` so repeated runs are deterministic.  Defaults to the server's current time.
         project_id (None | str | Unset): Optional project filter.  When omitted, all projects are scanned.
+        pagination (None | str | Unset):
+        snapshot_id (None | str | Unset):
+        page_token (None | str | Unset):
+        page_size (int | None | Unset):
     """
 
     assigned_threshold_seconds: int | Unset = 1800
     in_progress_threshold_seconds: int | Unset = 7200
     now: float | None | Unset = UNSET
     project_id: None | str | Unset = UNSET
+    pagination: None | str | Unset = UNSET
+    snapshot_id: None | str | Unset = UNSET
+    page_token: None | str | Unset = UNSET
+    page_size: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,6 +55,30 @@ class GetStuckTasksRequest:
         else:
             project_id = self.project_id
 
+        pagination: None | str | Unset
+        if isinstance(self.pagination, Unset):
+            pagination = UNSET
+        else:
+            pagination = self.pagination
+
+        snapshot_id: None | str | Unset
+        if isinstance(self.snapshot_id, Unset):
+            snapshot_id = UNSET
+        else:
+            snapshot_id = self.snapshot_id
+
+        page_token: None | str | Unset
+        if isinstance(self.page_token, Unset):
+            page_token = UNSET
+        else:
+            page_token = self.page_token
+
+        page_size: int | None | Unset
+        if isinstance(self.page_size, Unset):
+            page_size = UNSET
+        else:
+            page_size = self.page_size
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -58,6 +90,14 @@ class GetStuckTasksRequest:
             field_dict["now"] = now
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if pagination is not UNSET:
+            field_dict["pagination"] = pagination
+        if snapshot_id is not UNSET:
+            field_dict["snapshot_id"] = snapshot_id
+        if page_token is not UNSET:
+            field_dict["page_token"] = page_token
+        if page_size is not UNSET:
+            field_dict["page_size"] = page_size
 
         return field_dict
 
@@ -86,11 +126,51 @@ class GetStuckTasksRequest:
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
 
+        def _parse_pagination(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        pagination = _parse_pagination(d.pop("pagination", UNSET))
+
+        def _parse_snapshot_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        snapshot_id = _parse_snapshot_id(d.pop("snapshot_id", UNSET))
+
+        def _parse_page_token(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        page_token = _parse_page_token(d.pop("page_token", UNSET))
+
+        def _parse_page_size(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        page_size = _parse_page_size(d.pop("page_size", UNSET))
+
         get_stuck_tasks_request = cls(
             assigned_threshold_seconds=assigned_threshold_seconds,
             in_progress_threshold_seconds=in_progress_threshold_seconds,
             now=now,
             project_id=project_id,
+            pagination=pagination,
+            snapshot_id=snapshot_id,
+            page_token=page_token,
+            page_size=page_size,
         )
 
         get_stuck_tasks_request.additional_properties = d
