@@ -105,7 +105,7 @@ from src.git.github_contracts import (
 )
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 from src.git.process import ProcessCleanupError, run_owned_process
-from src.git.locks import remove_stale_locks
+from src.git.locks import common_git_dir_from_cwd, remove_stale_locks
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -623,6 +623,7 @@ def _parse_status_branch_header(header: str) -> str:
 
 #: How long a clean full fsck of an unchanged object store is reused.
 _RETAINED_VERIFY_TTL_SECONDS = 3600.0
+_RETAINED_VERIFY_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
 def _common_git_dir(git_dir: str) -> Path:
@@ -949,11 +950,12 @@ class GitManager:
         effective_timeout = self._command_timeout(timeout)
         try:
             try:
-                proc, stdout, stderr = await run_owned_process(
-                    "git", *args, cwd=cwd, timeout=effective_timeout,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    env=self._foreground_git_env(self._env_for(args)),
-                )
+                async with self._amaintenance_exclusion(args, cwd, effective_timeout) as remaining:
+                    proc, stdout, stderr = await run_owned_process(
+                        "git", *args, cwd=cwd, timeout=remaining,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                        env=self._foreground_git_env(self._env_for(args)),
+                    )
             except asyncio.TimeoutError as exc:
                 raise GitError(
                     f"git {' '.join(args)} timed out after {effective_timeout}s"
@@ -1019,15 +1021,16 @@ class GitManager:
         command = ["git", *args]
         try:
             try:
-                proc, stdout, stderr = await run_owned_process(
-                    *command, cwd=cwd, timeout=effective_timeout,
-                    input=None if stdin is None else stdin.encode("utf-8"),
-                    stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    env=self._foreground_git_env({
-                        **self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env,
-                    }),
-                )
+                async with self._amaintenance_exclusion(args, cwd, effective_timeout) as remaining:
+                    proc, stdout, stderr = await run_owned_process(
+                        *command, cwd=cwd, timeout=remaining,
+                        input=None if stdin is None else stdin.encode("utf-8"),
+                        stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                        env=self._foreground_git_env({
+                            **self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env,
+                        }),
+                    )
             except asyncio.TimeoutError as exc:
                 raise GitError(
                     f"git {' '.join(args)} timed out after {effective_timeout}s"
@@ -1042,6 +1045,31 @@ class GitManager:
             stdout=stdout.decode(errors="replace"),
             stderr=stderr.decode(errors="replace"),
         )
+
+    @asynccontextmanager
+    async def _amaintenance_exclusion(
+        self, args: list[str], cwd: str | None, timeout: float,
+    ) -> AsyncIterator[float]:
+        """Exclude full verification while foreground maintenance rewrites packs.
+
+        Separate from the repository transaction: its callers may already hold
+        that lock. Git's global options (notably maintenance's `-c`) are skipped
+        when identifying the command. Independent Git processes still require
+        the verifier's bounded retry.
+        """
+        if _git_subcommand(args) not in {"gc", "repack", "maintenance"}:
+            yield timeout
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        directory = await asyncio.to_thread(
+            common_git_dir_from_cwd, Path(cwd or os.getcwd()), args,
+        )
+        if directory is None:
+            yield max(0.0, deadline - loop.time())
+            return
+        async with self._aretained_store_exclusion(str(directory), deadline=deadline):
+            yield max(0.0, deadline - loop.time())
 
     @asynccontextmanager
     async def arepository_transaction(self, cwd: str) -> AsyncIterator[None]:
@@ -2474,6 +2502,30 @@ class GitManager:
         )
         return len(tips)
 
+    @asynccontextmanager
+    async def _aretained_store_exclusion(
+        self, git_dir: str, *, deadline: float,
+    ) -> AsyncIterator[None]:
+        """Serialize full checks and foreground maintenance for one common store."""
+        common = await asyncio.to_thread(_common_git_dir, git_dir)
+        key = os.path.realpath(common)
+        lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
+            key, asyncio.Lock())
+        loop = asyncio.get_running_loop()
+        started_waiting = loop.time()
+        try:
+            async with asyncio.timeout_at(deadline):
+                await lock.acquire()
+        except TimeoutError as exc:
+            raise _git_preparation_error(
+                "lock_wait_timeout", elapsed=loop.time() - started_waiting,
+                budget=max(0.0, deadline - started_waiting),
+            ) from exc
+        try:
+            yield
+        finally:
+            lock.release()
+
     async def _averify_retained_objects(
         self, git_dir: str, *, home: Path, deadline: float,
     ) -> None:
@@ -2494,25 +2546,14 @@ class GitManager:
         # One full check per store at a time: concurrent fetches into the same
         # store wait for it and reuse a clean result instead of each running
         # their own. The object-store walks run off the event loop.
-        key = os.path.realpath(git_dir)
-        lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
-            key, asyncio.Lock())
         loop = asyncio.get_running_loop()
-        started_waiting = loop.time()
-        try:
-            async with asyncio.timeout_at(deadline):
-                await lock.acquire()
-        except TimeoutError as exc:
-            raise _git_preparation_error(
-                "lock_wait_timeout", elapsed=loop.time() - started_waiting,
-                budget=max(0.0, deadline - started_waiting),
-            ) from exc
-        try:
+        key = os.path.realpath(git_dir)
+        async with self._aretained_store_exclusion(git_dir, deadline=deadline):
             fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             if self._retained_verified_matches(key, fingerprint):
                 return
             started = time.monotonic()
-            for attempt in range(2):
+            for attempt in range(len(_RETAINED_VERIFY_RETRY_DELAYS) + 1):
                 try:
                     await self._run_isolated_import_git(
                         [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
@@ -2521,16 +2562,25 @@ class GitManager:
                     )
                     break
                 except GitError as exc:
-                    if attempt or not str(exc).startswith("retained Git object integrity"):
+                    if (attempt == len(_RETAINED_VERIFY_RETRY_DELAYS)
+                            or not str(exc).startswith("retained Git object integrity")):
                         raise
-                    # A linked worktree shares objects with independent writers.
-                    # Re-run the full gate once after a transient pack/ref change;
-                    # the original acquisition deadline still bounds both checks.
+                    delay = _RETAINED_VERIFY_RETRY_DELAYS[attempt]
+                    if loop.time() + delay >= deadline:
+                        raise
+                    # Independent writers may still be repacking the store.
+                    # Back off before checking again, without renewing the budget.
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            await asyncio.sleep(delay)
+                    except TimeoutError as timeout:
+                        raise _git_preparation_error(
+                            "git_timeout", subcommand="fsck", elapsed=loop.time() - started,
+                            budget=max(0.0, deadline - started),
+                        ) from timeout
                     fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             self._record_retained_verified(key, fingerprint, after, started)
-        finally:
-            lock.release()
 
     def _retained_verified_matches(self, key: str, fingerprint: tuple | None) -> bool:
         verified = self.__dict__.setdefault("_retained_verified", {})
@@ -2624,7 +2674,7 @@ class GitManager:
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,
-        lender_verified: bool = False,
+        lender_git_dir: str, lender_verified: bool = False,
     ) -> bool:
         """Whether *imported* already holds commit *oid* and everything it references.
 
@@ -2650,7 +2700,11 @@ class GitManager:
         if not lender_verified:
             # With no named tips, the lender may contain just an unreferenced
             # commit. rev-list detects absent objects but not truncated blobs.
-            await self._averify_retained_objects(str(imported), home=home, deadline=deadline)
+            # Fence the actual lender against maintenance, not the disposable
+            # repository that reads it through alternates.
+            await self._averify_retained_objects(
+                lender_git_dir, home=home, deadline=deadline,
+            )
         return True
 
     async def _areceived_objects(
@@ -4817,6 +4871,7 @@ class GitManager:
                 )
                 held = _object_type == "commit" and await self._aholds_complete_commit(
                     imported, oid, home=home, deadline=deadline, lender_verified=seeded_tips > 0,
+                    lender_git_dir=str(destination),
                 )
             mode = (
                 "local" if held

@@ -145,6 +145,9 @@ class FidelityReviewCommandsMixin:
             members = [t for t in members if t.status.value == args["status"]]
         else:
             members = self._apply_completion_filter(members, args)
+        total = len(members)
+        if args.get("limit") is not None:
+            members = members[:args["limit"]]
         details = {}
         for task in members:
             detail = await self._fidelity_member_detail(task, context)
@@ -153,7 +156,7 @@ class FidelityReviewCommandsMixin:
         mode = args.get("display_mode") or "flat"
         if mode == "flat":
             return {"display_mode": "flat", "tasks": list(details.values()),
-                    "total": len(details), "hidden_completed": 0, "filtered": True}
+                    "total": total, "hidden_completed": 0, "filtered": True}
         ids = set(details)
 
         def children(parent, seen):

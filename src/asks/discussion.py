@@ -134,7 +134,7 @@ async def queue_discussion(handler, ask, item, *, conn, interpretation=False):
     version = await revision_context(handler, ask, conn=conn)
     input_id, entry_id = item["id"], f"ask-discussion-{item['id']}"
     message_id = f"msg-{input_id}"
-    recipient, _ = await db.resolve_conversation_supervisor(ask["project_id"])
+    recipient, _ = await db.resolve_ask_supervisor(ask["project_id"], conn=conn)
     recipient = recipient or f"supervisor-{ask['project_id']}"
     prior = await db.list_ask_history(ask["id"], conn=conn, limit=100)
     packet = {

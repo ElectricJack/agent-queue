@@ -34,6 +34,12 @@ class _Task:
 
 
 @dataclass
+class _Project:
+    id: str = "agent-queue"
+    name: str = "agent-q"
+
+
+@dataclass
 class _Profile:
     id: str = "claude-opus"
     default_class: str = ""
@@ -1180,10 +1186,10 @@ class TestWorkerToolEnv:
         for key in self.EXPECTED:
             monkeypatch.delenv(key, raising=False)
 
-    def _pool(self, builder, harness=CLAUDE):
+    def _pool(self, builder, harness=CLAUDE, *, project=None):
         return builder.build_pool_spec(
             profile=_Profile(id="standard-high-claude"),
-            project=_Task(id="proj-1"),
+            project=project if project is not None else _Task(id="proj-1"),
             agent_id="agent-1",
             harness=harness,
             work_dir="/wd/.aq/worktrees/slot-1",
@@ -1217,6 +1223,26 @@ class TestWorkerToolEnv:
         assert "drain-ack" in prompt
         assert "Do not poll claims" in prompt
         assert "daemon_unreachable / exit code 3, keep retrying" in prompt
+
+    @pytest.mark.parametrize("project_name", ["agent-q", "Agent Queue", ""])
+    @pytest.mark.parametrize("prompt_limit", [1024, 16_384], ids=["file", "inline"])
+    def test_pool_prompt_uses_exact_project_id(self, builder, project_name, prompt_limit):
+        project = _Project(name=project_name)
+        spec = self._pool(
+            builder,
+            harness=replace(CLAUDE, max_argv_prompt_bytes=prompt_limit),
+            project=project,
+        )
+        expected = (
+            "You are a pool worker for project agent-queue (profile standard-high-claude)."
+        )
+        assert spec.env["AQ_PROJECT_ID"] == project.id
+        assert spec.prompt.splitlines()[0] == expected
+        if prompt_limit == 1024:
+            prompts = [content for path, content in spec.files if path.endswith(".txt")]
+            assert prompts == [spec.prompt]
+        else:
+            assert spec.prompt in spec.command
 
     @pytest.mark.parametrize("global_enabled, override", [(True, None), (False, True)])
     def test_pool_prompt_uses_effective_wait_policy(self, builder, global_enabled, override):
