@@ -29,7 +29,6 @@ import pytest
 from sqlalchemy import update
 
 from src.config import DiscordConfig, DiscordEscalationConfig, DiscordEscalationsConfig
-from src.database import Database
 from src.database.queries.escalation_queries import ESCALATION_OUTCOMES
 from src.database.tables import escalation_deliveries, messages
 from src.escalations import (
@@ -51,22 +50,19 @@ from src.escalations.dispatch import EDIT_COALESCE_SECONDS
 from src.escalations.plan import DEFER_SECONDS, MAX_ATTEMPTS
 from src.escalations.render import render_collapsed_root, render_state_root
 from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 BASE_URL = "https://queue.example.test"
 CHANNEL = "424242424242424242"
 
 
 @pytest.fixture
-async def env():
-    db = Database(lease_dsn("escalation_state"))
-    await db.initialize()
+async def env(reuse_database):
+    db = await reuse_database("escalation_state")
     for project in ("p", "other"):
         await db.create_project(Project(id=project, name=project, supervisor_enabled=True))
     bus = SimpleNamespace(emit=AsyncMock())
     config = SimpleNamespace(discord=DiscordConfig())
     yield SimpleNamespace(db=db, bus=bus, config=config)
-    await db.close()
 
 
 async def notice(env, *, body_kind="task_recovery", project="p", created_at=100, thread_id=None):
@@ -474,9 +470,8 @@ class Clock:
 
 
 @pytest.fixture
-async def world():
-    db = Database(lease_dsn("escalation_stateful"))
-    await db.initialize()
+async def world(reuse_database):
+    db = await reuse_database("escalation_stateful")
     await db.create_project(Project(id="p", name="Project"))
     transport = SinkTransport()
     clock = Clock()
@@ -500,7 +495,6 @@ async def world():
         )
 
     yield SimpleNamespace(db=db, transport=transport, clock=clock, config=config, service=service)
-    await db.close()
 
 
 async def incident(world, **overrides):
