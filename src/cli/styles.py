@@ -18,6 +18,9 @@ STATUS_STYLES: dict[str, str] = {
     "ASSIGNED": "bold magenta",
     "IN_PROGRESS": "bold yellow",
     "WAITING_INPUT": "bold cyan",
+    "WAITING": "cyan",
+    "HIBERNATED": "dim cyan",
+    "RESUME_PENDING": "bold magenta",
     "PAUSED": "dim white",
     "VERIFYING": "bold blue",
     "COMPLETED": "bold green",
@@ -31,6 +34,9 @@ STATUS_ICONS: dict[str, str] = {
     "ASSIGNED": "📋",
     "IN_PROGRESS": "🟡",
     "WAITING_INPUT": "💬",
+    "WAITING": "⏳",
+    "HIBERNATED": "💤",
+    "RESUME_PENDING": "🔄",
     "PAUSED": "⏸️",
     "VERIFYING": "🔍",
     "COMPLETED": "🟢",
@@ -66,6 +72,7 @@ TASK_TYPE_ICONS: dict[str, str] = {
     "test": "🧪",
     "docs": "📝",
     "chore": "🔧",
+    "operator": "⚙️",
     "research": "🔍",
     "plan": "📋",
     "sync": "🔄",
@@ -73,8 +80,8 @@ TASK_TYPE_ICONS: dict[str, str] = {
     "art": "🎨",
 }
 
-#: Every ``TaskType`` value, in display order: the ``--type`` choices.  The CLI
-#: does not import ``src.models``; a test holds this equal to ``TaskType``.
+#: User-creatable ``TaskType`` values in display order; delivery intents are
+#: excluded. The CLI stays independent of ``src.models``; a test checks parity.
 TASK_TYPES: tuple[str, ...] = tuple(TASK_TYPE_ICONS)
 
 
