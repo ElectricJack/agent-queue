@@ -27,10 +27,13 @@ from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnershipError, StaleFence
+from src.integration.row_query import select_row
 
 DEFAULT_TTL_SECONDS = 480.0
 RENEWAL_MARGIN_SECONDS = DEFAULT_TTL_SECONDS / 3
 CRITICAL_SECTION_SECONDS = 30.0
+# Repair startup includes an isolated Git object import before ref mutation.
+REPAIR_START_SECONDS = GitManager._GIT_TIMEOUT + CRITICAL_SECTION_SECONDS
 
 
 class RemoteMoved(GitError):
@@ -39,6 +42,23 @@ class RemoteMoved(GitError):
     def __init__(self, observed_oid: str | None):
         self.observed_oid = observed_oid
         super().__init__("remote ref moved; rebuild against its current tip")
+
+
+class BranchLockTimeout(TimeoutError):
+    """The fenced critical section outlived its bound and was cancelled.
+
+    Raised in place of ``asyncio.timeout``'s anonymous ``TimeoutError`` (whose
+    text is empty) so the preparation that ran inside the section records which
+    bound expired on which ref; the cancelled operation stays in ``__cause__``.
+    """
+
+    def __init__(self, target: BranchKey, seconds: float):
+        self.target = target
+        self.seconds = seconds
+        super().__init__(
+            f"branch fence critical section exceeded {seconds:g}s on "
+            f"{target.repository_id}:{target.branch}"
+        )
 
 
 class PublishWithdrawn(BranchOwnershipError):
@@ -108,18 +128,36 @@ class BranchLock:
         return dict(rows[0]) if rows else None
 
     @asynccontextmanager
-    async def exclusion(self, fence: Fence, *, conn=None):
+    async def exclusion(self, fence: Fence, *, conn=None, timeout_seconds: float | None = None):
         """Hold current authority through bounded I/O, shared with reacquisition."""
-        async with asyncio.timeout(CRITICAL_SECTION_SECONDS):
-            if conn is not None:
-                row = await self.lock_on(conn, fence.target)
-                self.require_current(row, fence)
-                yield row
-            else:
-                async with self.db.immediate() as owned:
-                    row = await self.lock_on(owned, fence.target)
-                    self.require_current(row, fence)
+        seconds = (CRITICAL_SECTION_SECONDS if timeout_seconds is None
+                   else self._ttl(timeout_seconds))
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        bound = asyncio.timeout(seconds)
+
+        def require_current(row):
+            nonlocal seconds
+            self.require_current(row, fence)
+            # A longer acquisition budget never extends the authority grant.
+            seconds = min(seconds, loop.time() - started + row["expires_at"] - self.clock())
+            bound.reschedule(started + seconds)
+
+        try:
+            async with bound:
+                if conn is not None:
+                    row = await self.lock_on(conn, fence.target)
+                    require_current(row)
                     yield row
+                else:
+                    async with self.db.immediate() as owned:
+                        row = await self.lock_on(owned, fence.target)
+                        require_current(row)
+                        yield row
+        except TimeoutError as exc:
+            if not bound.expired() or isinstance(exc, BranchLockTimeout):
+                raise
+            raise BranchLockTimeout(fence.target, seconds) from exc
 
     def require_current(self, row: dict | None, fence: Fence) -> None:
         if (
@@ -197,6 +235,7 @@ class BranchLock:
             "session_id": None,
             "workspace_id": None,
             "confirmed_workspace_id": None,
+            "delegation": None,
             "updated_at": now,
         }
         if row:
@@ -343,11 +382,7 @@ async def session_leases_on(conn, session_id: str, *, task_id: str | None = None
 
 async def renew_session_leases_on(db, conn, session_id: str, observed_at: float) -> None:
     """Heartbeat renews only a current live claim, and cannot revive an expiry."""
-    session = (
-        (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
-        .mappings()
-        .one_or_none()
-    )
+    session = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
     if (
         session is None
         or not session["task_id"]
@@ -355,11 +390,7 @@ async def renew_session_leases_on(db, conn, session_id: str, observed_at: float)
         or session["desired_state"] != "running"
     ):
         return
-    task = (
-        (await conn.execute(select(tasks).where(tasks.c.id == session["task_id"])))
-        .mappings()
-        .one_or_none()
-    )
+    task = await select_row(conn, tasks, tasks.c.id == session['task_id'])
     if (
         task is None
         or task["assigned_agent_id"] != session["agent_id"]
@@ -412,11 +443,7 @@ async def renew_session_leases_on_liveness(
     ]
     if not candidates:
         return
-    session = (
-        (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
-        .mappings()
-        .one_or_none()
-    )
+    session = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
     if (
         session is None
         or not session["task_id"]
@@ -424,16 +451,18 @@ async def renew_session_leases_on_liveness(
         or session["desired_state"] != "running"
     ):
         return
-    task = (
-        (await conn.execute(select(tasks).where(tasks.c.id == session["task_id"])))
-        .mappings()
-        .one_or_none()
-    )
+    task = await select_row(conn, tasks, tasks.c.id == session['task_id'])
+    from src.waits.holding import execution_waits
+
+    execution_wait = await conn.scalar(execution_waits().where(
+        sessions.c.id == session_id,
+    ).limit(1))
     if (
         task is None
         or task["assigned_agent_id"] != session["agent_id"]
         or (session["lifecycle"] == "pool" and session["last_claim_epoch"] != task["claim_epoch"])
-        or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+        or (task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+            and not (task["status"] == "WAITING" and execution_wait is not None))
     ):
         return
     rungs = await conn.scalar(
@@ -441,7 +470,7 @@ async def renew_session_leases_on_liveness(
             task_metadata.c.task_id == task["id"], task_metadata.c.key == "stall_nudges"
         )
     )
-    if int(json.loads(rungs) if rungs is not None else 0) > 1:
+    if execution_wait is None and int(json.loads(rungs) if rungs is not None else 0) > 1:
         return
     for row in candidates:
         if row["holder"] != task["id"]:
