@@ -1,0 +1,65 @@
+{
+  "source_base": "feeb89e65e4bb5e2a4a2033fa32f967d1f66fce9",
+  "merged_source": "bf0314f79433b66c2f60cdd377a77c2e9996278a",
+  "reason": "Add the authenticated exact-head fast-forward that adopts a separate repair task's pushed head into its root's open PR branch. Preserve every existing descriptor byte.",
+  "previous_cli_catalogue_sha256": "ef12003251677f05da45c498ef2fb8edcb3fe627c817deec07eb57ccca8e9fb3",
+  "cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "command": "integration_fast_forward_pr",
+  "transport_definition": {
+    "name": "integration_fast_forward_pr",
+    "description": "Authenticated hierarchical integration operational control.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "pr_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "dry_run": {
+          "default": true,
+          "title": "Dry Run",
+          "type": "boolean"
+        },
+        "expected_head_sha": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Head Sha"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "task_id",
+        "pr_number"
+      ],
+      "title": "IntegrationFastForwardPrArgs",
+      "type": "object"
+    }
+  },
+  "contract_fingerprint": "sha256:f4e3b3bed4e362510895bede8ca08550305c80c44f2967a08aa02d076d7a2919"
+}
