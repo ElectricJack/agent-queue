@@ -188,7 +188,11 @@ A repository with no PR host falls back to `direct`.
     ([required-job settlement](../design/required-job-train-settlement.md)).
 - **Pre-existing failure.** `candidate_baseline.py:CandidateBaselineService` compares
   the candidate's failures against the target's baseline. Only failures that the batch
-  introduced are repairable by the batch.
+  introduced are normally repairable by the batch. When an open batch seals its own
+  epic target's subtree, proven target failures are also repairable on the retained
+  candidate: the seal prevents ordinary hierarchy repair. Unknown baseline checks
+  never authorize this exception. Frozen members, repair budgets and publication
+  checks remain authoritative.
 - **Repair.** A bounded fix task filed against a red or conflicting candidate
   (section 3.3.3).
 - **Receipt.** An append-only `task_delivery_receipts` row with a disposition of `code`,
@@ -290,7 +294,15 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
 `_red` (`train.py`, about line 867) handles a red candidate:
 
 - **Every failure pre-dates the batch.** An epic target gets one sync with the default
-  branch. Other targets get a bounded recheck, which ends in the
+  branch. If that sync is unavailable or spent and this open batch seals the epic's
+  subtree, it files an ordinary candidate repair for the proven inherited failures.
+  Mixed candidate/target failures use the same scope exception. The operator or live
+  owning supervisor can preview `aq integration repair-target BATCH_ID` and apply with
+  the previewed `--candidate-sha`, `--target-sha` and a nonblank `--reason`. Apply
+  reobserves checks and both refs; it reuses outstanding repairs and retains the
+  existing attempt budget, intent, source and branch ownership fences. It never
+  reopens the epic, adds children or advances the target. Other targets get a bounded
+  recheck, which ends in the
   `candidate_pre_existing_failure` blocker. A failing check that cannot be identified
   yields `candidate_failing_checks_unknown`. A red promotion target is held.
 - **The batch introduced a failure, or the merge conflicted.** `_repair` calls
@@ -410,7 +422,7 @@ The consumers are:
 | **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes a task whose prerequisite is not delivered: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. With no snapshot available the reason is `delivery_evidence_unavailable`, and the claim fails closed. |
 | **Readiness** (`src/task_graph/readiness.py`) | Maps those codes to "Waiting on delivery" or "Checking delivery evidence", reading cached snapshots only. |
 | **Archive and delete** (`archive_queries.py`) | Refuse without an observer. |
-| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | **Receipts, not Git** (section 6). |
+| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus current default-target Git proof in `AdmissionView`. |
 
 #### 3.3.7 Cleanup, retirement and recovery
 
@@ -462,7 +474,7 @@ reader can find them.
 | Batches and candidates | `integration_batches` (3730), `integration_batch_members` (3811), `integration_check_evidence` (4474), `integration_attestation_publications` (4538), `integration_cleanup_items` (4596), `integration_outbox` (5151) | Yes |
 | Branch authority | `integration_branch_owners` (3386; `UNIQUE(repository_id, ref)`; legacy `owner_id`/`fence_token`/`handoff_state` columns side by side with Git-first `holder`/`fence`/`expires_at`), `task_branch_origins` (3265), `branch_retirements` (3238), `branch_deletion_audit` (3331), `integration_owner_recoveries` (4454) | Yes |
 | Source evidence | `integration_source_ci` (706), `integration_review_evidence` (3419), `integration_root_authorizations` (3465), `task_integration_checkpoints` (3170) | Partly |
-| Receipts | `task_delivery_receipts` (3636; append-only, `UNIQUE domain_key`) | Read by `delivery-of`; not written by the train |
+| Receipts | `task_delivery_receipts` (3636; append-only, `UNIQUE domain_key`) | Historical audit/recovery; no `delivery-of` eligibility authority |
 | Repair and parents (legacy) | `integration_repair_operations` (4245), `integration_repair_stages` (4359), `integration_repair_stage_evidence` (4711), `integration_parent_episodes` (4311), `integration_child_dispositions` (4330), parent verifications (4736–4878) | No (retained) |
 | Legacy reconciler and publisher | `integration_subjects` (5293), `integration_subject_journal` (5477), `integration_candidate_*` (3856–4086), `integration_promotion_intents` (3499; root intents only), `integration_root_intent_members` (4155), `project_integration_schedules` (4909), `project_integration_leases` (4946), `integration_release_results` (4960), `integration_legacy_deliveries` (5203), waiver/rollout/gate-applicability tables (4980–5131) | No (retained; the drop set is empty) |
 | Per project | `projects.hierarchical_integration_mode`, `hierarchical_integration_policy`, `integration_mode`, `integration_repository_id`, `promotion_flow`, `default_branch_cutover` | Yes |
@@ -559,16 +571,11 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
 
    The [git-first cutover runbook](../../guides/git-first-cutover-runbook.md) and
    [design/promotion-flow.md](../design/promotion-flow.md) state the true position.
-2. **`delivery-of` edges cannot be satisfied under the train.**
-   - `blocked_state.py:delivery_landed` is satisfied only by a root
-     `task_delivery_receipts` row with disposition `code` or `noop`.
-   - `DeliveryObserver._admit_delivery_dependents` only recomputes, and its docstring
-     says "nothing here unblocks without the receipt".
-   - The train writes no receipts. On the live database the last root receipt was
-     written on 2026-10-05.
-   - No `delivery-of` edges exist there today, so the gap is latent. The first one
-     authored, for example by held ingestion's post-landing tasks, would stay blocked.
-     `stark-willow-95.13` (section 7) retires receipt authority.
+2. **`delivery-of` uses current Git admission.** Source completion releases its
+   structural SQL projection. `AdmissionView` then requires current default-target
+   containment, so the train can satisfy the edge without writing a receipt and a
+   rewind withholds the dependent again. Missing observers report unavailable
+   evidence and do not use historical receipts.
 3. **Two protocols side by side.** About 81k lines in 130 modules, against the Git-first
    spec's target of about 12k engine lines and 10 tables. Among the duplicates:
    - the legacy staged `RepairService` (`repair.py`, lines 602 onward) sits next to
@@ -581,6 +588,17 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
    - about 15 legacy tables are retained with an empty drop set.
 
    The `tests/integration_ownership.json` size budget is still in phase `transition`.
+   Decision `msg-edb5f857de344716a38857406fa69958` authorizes one temporary
+   owned-line exception for batch `train-77f0d8e451f6aed08d608e443031047a`:
+   155,499 → 156,792, exactly the measured excess of 1,293 at source
+   `d00e25221856145f24777f8b016a008b4e954bca`. The source inventory and all
+   ownership classifications remain unchanged. The manifest records the exact
+   batch, decision and measurement; the budget rejects a changed exception or
+   any further growth. Historical baselines, the 15,000 replacement allowance,
+   engine/table caps and final retirement caps remain fixed. `s4_modules` and
+   `final` ignore this exception; `azure-ridge-72` owns its earlier removal and
+   restoration of 155,499 after this batch is delivered. This decision does not
+   change retry history, integration authority, required CI or cutover holds.
 4. **Dead or never-wired code:**
    - `shadow.py` is imported only by tests.
    - `GENERATED_MERGE_CONFIG` has no caller.
@@ -599,8 +617,11 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
      command.
    - `ENDED_LIFECYCLES` lists `"failed"`, which nothing writes.
 5. **Operator-only recovery modules accumulate.** Each answers one historical incident:
-   `preserved_repair`, `parent_repair_heads`, `repair_rebind`, `detached_repair_rebind`,
-   `noop_repair`, `published_repair_handoff`, `source_repairs` and `delegate_release`.
+   `parent_repair_heads`, `noop_repair`, `published_repair_handoff`, `source_repairs`
+   and `delegate_release`. On 2026-10-21, `stark-willow-95.24` removed the unreachable
+   `preserved_repair`, `repair_rebind`, `detached_repair_rebind` implementations and
+   `ParentPrimitiveAdapters`; their command handlers were already retired. The parent
+   policy facts and historical refusal markers remain readable.
 6. **Tail latency.** The 2026-10-19 retrospective (vault; review `rev-quick-pinnacle`,
    withdrawn) measured pass-to-`dev` over 22 September to 20 October:
 
