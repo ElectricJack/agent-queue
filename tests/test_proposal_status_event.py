@@ -104,15 +104,12 @@ class TestProposalStatusChangedEmission:
     async def test_commit_rollback_does_not_emit_status_changed(self, handler, monkeypatch):
         """A failed commit reverts the proposal to 'ready' — not a terminal
         state — and must not emit proposal.status_changed."""
-        import src.commands.proposal_commands as pc
-
         async def _boom(*args, **kwargs):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(pc, "_create_one_task", _boom)
-
         prop_id = await _propose_one_task(handler)
         await _approve(handler, prop_id)
+        monkeypatch.setattr(handler._db, "create_task", _boom)
         r = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
         assert r["success"] is False
         assert not r.get("not_approved"), r
