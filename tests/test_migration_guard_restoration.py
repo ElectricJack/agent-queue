@@ -16,8 +16,12 @@ from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 # K05 revision59 installs protection guards during metadata creation too.
-# This regression isolates integration guards, not either knowledge domain.
-KNOWLEDGE_TABLE_NAMES = (*RECORD_TABLE_NAMES, *PROTECTION_TABLE_NAMES)
+# This regression isolates integration guards. Knowledge and ask audit guards
+# are installed by metadata.create_all independently of the integration repair.
+METADATA_GUARD_TABLE_NAMES = (
+    *RECORD_TABLE_NAMES, *PROTECTION_TABLE_NAMES,
+    "ask_decisions", "approved_document_snapshots",
+)
 
 #: Triggers that revisions *after* the squashed baseline add on top of the
 #: immutable pre-squash snapshot in :data:`migrations.integration_guards`.
@@ -76,13 +80,13 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                 "c" * 40,
             )
             if initial_revision == "a00000000001":
-                # This regression concerns the original integration guards. New
-                # record-domain guards are installed by metadata create_all.
+                # This regression concerns the original integration guards.
+                # Other audit-domain guards are installed by metadata create_all.
                 assert (
                     await raw.fetchval(
                         "SELECT count(*) FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
                         "WHERE NOT tgisinternal AND c.relname <> ALL($1::text[])",
-                        list(KNOWLEDGE_TABLE_NAMES),
+                        list(METADATA_GUARD_TABLE_NAMES),
                     )
                     == 0
                 )
@@ -102,7 +106,7 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                     "JOIN pg_namespace n ON n.oid=c.relnamespace "
                     "WHERE NOT tgisinternal AND n.nspname='public' "
                     "AND c.relname <> ALL($1::text[])",
-                    list(KNOWLEDGE_TABLE_NAMES),
+                    list(METADATA_GUARD_TABLE_NAMES),
                 )
             }
             assert installed == {(name, table) for name, table, _ in TRIGGERS} | (
@@ -156,7 +160,7 @@ async def test_unstamped_legacy_database_is_refused_without_changing_data():
                         "WHERE NOT tgisinternal "
                         "AND c.relname <> ALL(CAST(:record_tables AS text[]))"
                     ),
-                    {"record_tables": list(KNOWLEDGE_TABLE_NAMES)},
+                    {"record_tables": list(METADATA_GUARD_TABLE_NAMES)},
                 )
             ).scalar_one() == 0
     finally:
