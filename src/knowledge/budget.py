@@ -10,10 +10,13 @@ from dataclasses import asdict, dataclass
 
 from src.records.models import RecordError
 
+# A launch without model telemetry must still carry the full worker protocol.
+DEFAULT_INPUT_TOKENS = 131072
+
 
 @dataclass(frozen=True)
 class ContextBudget:
-    input_tokens: int = 32768
+    input_tokens: int = DEFAULT_INPUT_TOKENS
     output_tokens: int = 4096
     wrapper_tokens: int = 256
     knowledge_tokens: int = 4096
@@ -30,9 +33,17 @@ class ContextBudget:
             raise ValueError("Unsupported tokenizer")
 
     @classmethod
-    def from_config(cls, config, *, remaining_tokens=None):
+    def from_config(cls, config, *, remaining_tokens=None, model_context_window=None):
         settings = config.knowledge.context
-        limit = getattr(settings, "input_max_tokens", 32768)
+        configured_limit = getattr(settings, "input_max_tokens", None)
+        window = (
+            model_context_window
+            if type(model_context_window) is int and model_context_window > 0
+            else None
+        )
+        limit = configured_limit if configured_limit is not None else window or DEFAULT_INPUT_TOKENS
+        if window is not None:
+            limit = min(limit, window)
         if remaining_tokens is not None:
             if type(remaining_tokens) is not int or remaining_tokens < 0:
                 raise ValueError("remaining_tokens must be a nonnegative integer")

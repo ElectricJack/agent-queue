@@ -139,3 +139,28 @@ def test_parse_rejects_invalid_mode(tmp_path: Path):
     md.write_text("---\nid: bad\nmode: sideways\n---\n")
     with pytest.raises(ValueError, match="mode"):
         parse_workspace_kind_file(md, project_id="__system__")
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", "2.5", '"2"'])
+def test_reject_invalid_slot_limit(tmp_path, value):
+    path = tmp_path / "native.md"
+    path.write_text(f"---\nid: native\nmode: worktree\nmax_slots: {value}\n---\n")
+    with pytest.raises(ValueError, match="max_slots"):
+        parse_workspace_kind_file(path, "p")
+
+
+def test_parse_special_slot_limit(tmp_path):
+    path = tmp_path / "native.md"
+    path.write_text("---\nid: native\nmode: worktree\nmax_slots: 2\n---\n")
+    assert parse_workspace_kind_file(path, "p").max_slots == 2
+
+
+def test_slot_limit_survives_markdown_render(tmp_path):
+    from src.models import WorkspaceKind
+    from src.profiles.workspace_kind_registry import WorkspaceKindStore
+
+    path = tmp_path / "native.md"
+    path.write_text(WorkspaceKindStore._render_kind_markdown(WorkspaceKind(
+        id="native", project_id="p", mode="worktree", max_slots=2,
+    )))
+    assert parse_workspace_kind_file(path, "p").max_slots == 2
