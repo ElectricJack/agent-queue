@@ -6,6 +6,7 @@ import { PoolBadge, PoolOutsidePools, PoolPlacementRow, PoolQuarantine, PoolSupp
 import PoolProjects from "./PoolProjects";
 import PoolScaleFields from "./PoolScaleFields";
 import PoolNameFields from "./PoolNameFields";
+import DeletePool from "./DeletePool";
 import { formatIdle, poolDisplayName, type PoolEntry } from "./pools";
 import TerminalPane, { TerminalTabs } from "../../components/TerminalPane";
 
@@ -124,6 +125,7 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
             </p>
             <PoolScaleFields pool={pool} />
             <PoolProjects projects={projects} />
+            <DeletePool entry={entry} />
           </div>
         )}
       </div>
