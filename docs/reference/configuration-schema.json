@@ -808,6 +808,14 @@
           "additionalProperties": false,
           "default": null,
           "properties": {
+            "actions_permission": {
+              "default": "read",
+              "enum": [
+                "read",
+                "write"
+              ],
+              "type": "string"
+            },
             "app_id": {
               "minimum": 1,
               "type": "integer"
@@ -2733,6 +2741,11 @@
           "runtime_bytes": 1073741824,
           "runtime_manifest": "",
           "runtime_root": "",
+          "search_path": [
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin"
+          ],
           "state_root": "",
           "stderr_bytes": 1048576,
           "stdout_bytes": 1048576,
@@ -2917,6 +2930,11 @@
             "runtime_bytes": 1073741824,
             "runtime_manifest": "",
             "runtime_root": "",
+            "search_path": [
+              "/usr/local/bin",
+              "/usr/bin",
+              "/bin"
+            ],
             "state_root": "",
             "stderr_bytes": 1048576,
             "stdout_bytes": 1048576,
@@ -2969,6 +2987,17 @@
             "runtime_root": {
               "default": "",
               "type": "string"
+            },
+            "search_path": {
+              "default": [
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "state_root": {
               "default": "",
@@ -3323,11 +3352,21 @@
     "supervisor": {
       "additionalProperties": false,
       "default": {
+        "context_ceiling_tokens": 160000,
         "global_": {
           "idle_timeout_seconds": 2700
-        }
+        },
+        "max_session_age_seconds": 86400,
+        "max_turn_retries": 2,
+        "question_timeout_seconds": 900,
+        "retry_backoff_seconds": 60,
+        "turn_timeout_seconds": 900
       },
       "properties": {
+        "context_ceiling_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
         "global_": {
           "additionalProperties": false,
           "default": {
@@ -3340,6 +3379,26 @@
             }
           },
           "type": "object"
+        },
+        "max_session_age_seconds": {
+          "default": 86400,
+          "type": "integer"
+        },
+        "max_turn_retries": {
+          "default": 2,
+          "type": "integer"
+        },
+        "question_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
+        },
+        "retry_backoff_seconds": {
+          "default": 60,
+          "type": "integer"
+        },
+        "turn_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
         }
       },
       "type": "object",
@@ -3914,6 +3973,56 @@
       "type": "string",
       "x-reload": "restart"
     },
+    "workspaces": {
+      "additionalProperties": false,
+      "default": {
+        "build_cache": null,
+        "projects": {}
+      },
+      "properties": {
+        "build_cache": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "dir": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "ccache",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "ccache",
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "worktrees": {
       "additionalProperties": false,
       "default": {
@@ -4012,7 +4121,8 @@
       "swarm",
       "test_selection",
       "wait_policy",
-      "work_graph"
+      "work_graph",
+      "workspaces"
     ],
     "other": [],
     "restart_required": [
