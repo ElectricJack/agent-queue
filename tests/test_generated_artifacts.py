@@ -11,6 +11,7 @@ paths, and run the drift check itself.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,8 @@ IDENTITY = ["-c", "user.name=Tester", "-c", "user.email=tester@example.test"]
 
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(path), *IDENTITY, *args], capture_output=True, text=True, check=check
+        ["git", "-C", str(path), *IDENTITY, *args], capture_output=True, text=True, check=check,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"},
     )
 
 
@@ -55,7 +57,13 @@ def _marked() -> list[str]:
 def test_gitattributes_marks_exactly_what_the_script_regenerates():
     """A generator added to one list and not the other is either never rebuilt
     at merge time or rebuilt without its conflicts ever being avoided."""
-    assert sorted(p.removesuffix("/**") for p in _marked()) == sorted(_listed())
+    def expand(patterns):
+        return {
+            path for pattern in patterns
+            for path in _git(ROOT, "ls-files", "--", pattern.removesuffix("/**")).stdout.splitlines()
+        }
+
+    assert expand(_marked()) == expand(_listed())
 
 
 def test_every_regenerated_artifact_is_tracked_and_resolves_to_the_driver():
@@ -78,6 +86,75 @@ def test_an_unknown_argument_is_a_usage_error_not_a_regeneration():
     )
     assert result.returncode == 2
     assert "unknown argument: --bogus" in result.stderr
+
+
+def test_recorded_artifacts_preserve_approved_bytes_and_historical_policy(tmp_path):
+    """Extracting source inputs must not reapprove policy or reset a baseline."""
+    script = ROOT / "scripts/generate-recorded-artifacts.py"
+    listed = subprocess.run(
+        [sys.executable, str(script), "--list"], capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    expected = {name: (ROOT / name).read_bytes() for name in listed}
+    shutil.copytree(ROOT / "tests/fixtures/generated_sources",
+                    tmp_path / "tests/fixtures/generated_sources")
+    for _ in range(2):
+        subprocess.run([sys.executable, str(script), "--root", str(tmp_path)], check=True)
+        assert {name: (tmp_path / name).read_bytes() for name in listed} == expected
+    subprocess.run(
+        [sys.executable, str(script), "--root", str(tmp_path), "--check"], check=True,
+    )
+
+
+@pytest.mark.parametrize("failure", ["missing_input", "unapproved_definition", "unapproved_source"])
+def test_recorded_artifacts_refuse_missing_or_unapproved_inputs(tmp_path, failure):
+    shutil.copytree(ROOT / "tests/fixtures/generated_sources",
+                    tmp_path / "tests/fixtures/generated_sources")
+    source = tmp_path / "tests/fixtures/generated_sources/playbooks/default-pipeline/definition.json"
+    if failure == "missing_input":
+        source.unlink()
+    elif failure == "unapproved_definition":
+        definition = json.loads(source.read_text())
+        definition["compiled_at"] = "2000-01-01T00:00:00Z"
+        source.write_text(json.dumps(definition))
+    else:
+        source.with_name("source.md").write_text("Unapproved replacement policy\n")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/generate-recorded-artifacts.py"),
+         "--root", str(tmp_path)], capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert "Recorded artifact input refused" in result.stderr
+    assert not (tmp_path / "tests/integration_ownership.json").exists()
+
+
+async def test_recorded_input_conflict_is_a_source_conflict(tmp_path):
+    """Derived manifest conflicts never authorize choosing an approval input."""
+    repo = tmp_path / "repo"
+    _git(tmp_path, "init", "-q", "--initial-branch=main", str(repo))
+    shutil.copyfile(ROOT / ".gitattributes", repo / ".gitattributes")
+    source = "tests/fixtures/generated_sources/playbooks/default-pipeline/manifest.md"
+    artifact = "src/prompts/reviewed_playbooks/default-pipeline/manifest.md"
+    for name in (source, artifact):
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("approved provenance\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    heads = []
+    for note in ("left", "right"):
+        _git(repo, "checkout", "--detach", base)
+        for name in (source, artifact):
+            (repo / name).write_text(f"{note} provenance\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", note)
+        heads.append(_git(repo, "rev-parse", "HEAD").stdout.strip())
+    with pytest.raises(GeneratedMergeConflict) as raised:
+        await merge_generated_tree(
+            GitManager(), repo, ["merge-tree", "--write-tree", *heads],
+        )
+    assert source in raised.value.stdout
+    assert not list(tmp_path.glob("aq-regen-*"))
 
 
 def test_real_generated_paths_merge_without_conflicting(tmp_path):
@@ -130,7 +207,10 @@ def test_real_generated_paths_merge_without_conflicting(tmp_path):
     assert "tests/test_b.py" in listed and "tests/test_c.py" in listed
 
 
-def _catalogue_branches(tmp_path):
+def _catalogue_branches(
+    tmp_path, *, base_modules=("a",), other_module="b", current_module="c", all_generated=False,
+    edit_existing=False,
+):
     """Two branches that run the actual catalogue generator on different modules."""
     repo = tmp_path / "catalogue-repo"
     repo.mkdir(parents=True)
@@ -154,15 +234,26 @@ def _catalogue_branches(tmp_path):
     )
     regenerator.chmod(0o755)
     shutil.copyfile(ROOT / ".gitattributes", repo / ".gitattributes")
+    if all_generated:
+        for path in _listed():
+            source, destination = ROOT / path, repo / path
+            if source.is_dir():
+                shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__"))
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
     (repo / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
-    (repo / "tests").mkdir()
+    (repo / "tests").mkdir(exist_ok=True)
     (repo / cat.AREAS_PATH).write_text(
         'version: 1\nareas:\n  - id: area\n    description: Tests.\n'
         '    match: ["tests/test_*.py"]\n'
     )
 
-    def add_module(name):
-        (repo / "tests" / f"test_{name}.py").write_text(f"def test_{name}():\n    pass\n")
+    def add_module(name, imported=""):
+        content = f"import src.{imported}\n" if imported else ""
+        (repo / "tests" / f"test_{name}.py").write_text(
+            content + f"def test_{name}():\n    pass\n"
+        )
         subprocess.run(
             [sys.executable, str(scripts / "generate-selection-catalogue.py")],
             cwd=repo, capture_output=True, text=True, check=True,
@@ -171,12 +262,45 @@ def _catalogue_branches(tmp_path):
         _git(repo, "commit", "-qm", name)
         return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
-    base = add_module("a")
+    for module in base_modules:
+        base = add_module(module)
     _git(repo, "switch", "-qc", "other")
-    other = add_module("b")
+    other = add_module(base_modules[0], "other") if edit_existing else add_module(other_module)
     _git(repo, "switch", "-q", "main")
-    current = add_module("c")
+    current = (
+        add_module(base_modules[-1], "current") if edit_existing else add_module(current_module)
+    )
     return repo, base, current, other
+
+
+@pytest.mark.parametrize("edit_existing", [False, True], ids=["additions", "imports"])
+def test_independent_test_changes_merge_all_generated_files_with_plain_git(tmp_path, edit_existing):
+    # Keep the insertions in distinct sorted positions, including the same
+    # area's module index. Adjacent insertions can still be real text conflicts.
+    repo, _, _, _ = _catalogue_branches(
+        tmp_path, base_modules=("00", "20", "40", "60", "80"),
+        other_module="10", current_module="70", all_generated=True,
+        edit_existing=edit_existing,
+    )
+    assert _git(repo, "config", "--get", "merge.aq-generated.driver", check=False).returncode == 1
+    result = _git(repo, "merge", "--no-edit", "other", check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(repo, "diff", "--name-only", "--diff-filter=U").stdout == ""
+    expected = cat.build_catalogue(repo, cat.load_areas(repo / cat.AREAS_PATH))
+    actual = (repo / cat.CATALOGUE_PATH).read_text()
+    assert actual == cat.render_catalogue(expected)
+    assert cat.load_catalogue(repo / cat.CATALOGUE_PATH) == expected
+    assert "digest" not in json.loads(actual)
+    # Test-only inputs change only the selection catalogue; every other audited
+    # generated output remains byte-identical through the plain merge.
+    for path in _listed():
+        if path == cat.CATALOGUE_PATH:
+            continue
+        source = ROOT / path
+        files = sorted(source.rglob("*")) if source.is_dir() else [source]
+        for file in files:
+            if file.is_file() and "__pycache__" not in file.parts:
+                assert (repo / file.relative_to(ROOT)).read_bytes() == file.read_bytes()
 
 
 async def test_generated_catalogue_conflict_rebuilds_both_branches(tmp_path):
