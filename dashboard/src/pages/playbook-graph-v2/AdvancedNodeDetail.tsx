@@ -61,6 +61,7 @@ export default function AdvancedNodeDetail({ node }: AdvancedNodeDetailProps) {
 
       {resolved.length > 0 && (
         <Block name="Resolved inputs">
+          <p className="text-xs text-gray-400">Expressions are shown as authored until execution. Protected values are withheld.</p>
           <Rows rows={resolved} />
           {resolved.map((row, index) =>
             row.value.redacted || row.value.canonical == null ? null : (

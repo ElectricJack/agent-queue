@@ -357,12 +357,12 @@ async def test_tracked_deployment_recovery_hold_refuses_without_fetch_or_launch(
 class TestRunCommand:
     async def test_missing_working_dir_returns_error(self, handler):
         result = await handler.execute("run_command", {"command": "echo hi"})
-        assert result == {"error": "working_dir is required"}
+        assert result == {"success": False, "error": "working_dir is required"}
 
     async def test_missing_command_returns_error(self, handler):
         result = await handler.execute("run_command", {"working_dir": "/tmp"})
-        assert result == {"error": "command is required"}
+        assert result == {"success": False, "error": "command is required"}
 
     async def test_missing_both_returns_error(self, handler):
         result = await handler.execute("run_command", {})
-        assert result == {"error": "command is required"}
+        assert result == {"success": False, "error": "command is required"}

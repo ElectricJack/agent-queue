@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -29,6 +29,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
+from src.observations.models import SnapshotArgs, SnapshotValue
 
 
 class CreateTaskArgs(CommandArgs):
@@ -258,7 +259,7 @@ class GateResolveValue(CommandValue):
     unblocked_task_ids: list[str]
 
 
-class ListTasksArgs(CommandArgs):
+class ListTasksArgs(SnapshotArgs, CommandArgs):
     """The arguments ``_cmd_list_tasks`` actually reads.
 
     ``limit`` is deliberately absent.  No path in
@@ -272,9 +273,14 @@ class ListTasksArgs(CommandArgs):
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
+    include_completed: bool | None = None
+    completed_only: bool | None = None
+    show_all: bool | None = None
+    labels: list[str] | None = None
+    any_label: list[str] | None = None
 
 
-class ListTasksValue(CommandValue):
+class ListTasksValue(SnapshotValue, CommandValue):
     """What ``list_tasks`` returns — in both of the shapes it has.
 
     ``_cmd_list_tasks`` (``src/commands/task_commands.py``) answers with one
@@ -294,10 +300,8 @@ class ListTasksValue(CommandValue):
     failed its contract, in either display mode, while the compiler validated
     against the same fiction and reported nothing.
 
-    Only keys this contract's own arguments can produce are modelled.
-    ``label_filter_scope`` is left out deliberately: it appears only for a
-    ``labels`` / ``any_label`` filter, which ``ListTasksArgs`` does not
-    expose, so no playbook step can reach it.
+    Snapshot mode adds the shared immutable observation envelope. Label
+    filters preserve their root-only annotation in hierarchical modes.
     """
 
     display_mode: str = "flat"
@@ -308,6 +312,7 @@ class ListTasksValue(CommandValue):
     hidden_completed: int = 0
     filtered: bool = False
     dependency_display: str | None = None
+    label_filter_scope: str | None = None
 
     # Tree and compact mode only.
     trees: list[dict[str, Any]] = Field(default_factory=list)
@@ -315,12 +320,12 @@ class ListTasksValue(CommandValue):
     total_tasks: int = 0
 
 
-class ListProjectsArgs(CommandArgs):
+class ListProjectsArgs(SnapshotArgs, CommandArgs):
     pass
 
 
-class ListProjectsValue(CommandValue):
-    projects: list[dict[str, Any]]
+class ListProjectsValue(SnapshotValue, CommandValue):
+    projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GetTaskArgs(CommandArgs):
@@ -421,6 +426,42 @@ class GetDownstreamTasksArgs(CommandArgs):
 
 class GetDownstreamTasksValue(CommandValue):
     tasks: list[dict[str, str]]
+
+
+class HeldBatchOperation(CommandArgs):
+    """Scoped operation. The command checks kind-specific fields and live membership."""
+
+    kind: Literal["rewrite", "split", "combine", "reparent", "rewire", "add_leaf",
+                  "move_to_root", "retire"]
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    changes: dict[str, Any] | None = None
+    task: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    parent_id: str | None = None
+    delivery_targets: list[str] | None = None
+    edges: list[dict[str, Any]] | None = None
+    remove_edges: list[dict[str, Any]] | None = None
+    reason: str | None = None
+    replacement_task_id: str | None = None
+    satisfied_by: str | None = None
+    rewire: dict[str, list[dict[str, Any]]] | None = None
+
+
+class TaskBatchUpdateArgs(CommandArgs):
+    proposal_id: str
+    project_id: str | None = None
+    payload: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    operations: list[HeldBatchOperation] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def update_shape(self):
+        if (self.payload is None) == (self.operations is None):
+            raise ValueError("Supply payload or operations")
+        if self.operations is not None and self.expected_revision is None:
+            raise ValueError("Held operations require expected_revision")
+        return self
 
 
 class TaskBatchCommitArgs(CommandArgs):
@@ -706,14 +747,14 @@ class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
     """The durable incident receipt returned to the triage playbook."""
 
 
-class GetStuckTasksArgs(CommandArgs):
+class GetStuckTasksArgs(SnapshotArgs, CommandArgs):
     assigned_threshold_seconds: int = Field(default=1800, ge=0)
     in_progress_threshold_seconds: int = Field(default=7200, ge=0)
     now: float | None = None
     project_id: str | None = None
 
 
-class GetStuckTasksValue(CommandValue):
+class GetStuckTasksValue(SnapshotValue, CommandValue):
     stuck: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
     now_used: float | None = None
@@ -857,6 +898,28 @@ def set_handler_provider(provider: Callable[[], Any] | None) -> None:
     """
     global _handler_provider
     _handler_provider = provider
+    from src.commands.contracts.registry import CONTRACTS
+
+    if provider is None:
+        CONTRACTS.configure_snapshot_provider(None)
+        return
+
+    offline = None
+
+    def snapshot_provider():
+        nonlocal offline
+        handler = provider()
+        if isinstance(getattr(type(handler), "command_descriptors", None), property):
+            return handler.command_descriptors
+        # Keep provider installation late-bound. Minimal adapter test doubles
+        # retain a cached offline inventory rather than manufacturing commands.
+        if offline is None:
+            from src.commands.command_inventory import offline_snapshot
+
+            offline = offline_snapshot(CONTRACTS.typed_contracts())
+        return offline
+
+    CONTRACTS.configure_snapshot_provider(snapshot_provider)
 
 
 def handler_provider_installed() -> bool:
@@ -1012,6 +1075,9 @@ def _adapter(name: str, value_type: type[CommandValue]):
                 provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
                 detail=raw.get("error"),
             )
+        elif name in {"list_tasks", "list_projects", "get_stuck_tasks"} and "complete" in raw:
+            value = value_type(**{field: raw[field] for field in value_type.model_fields
+                                 if field in raw})
         elif outcome in {
             "rejected", "refused_routing_gate", "already_linked", "not_running", "not_approved",
         }:
@@ -1935,7 +2001,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "list_tasks",
             ListTasksArgs,
             ListTasksValue,
-            (OutcomeSpec(name="listed", classification=OutcomeClass.SUCCESS),),
+            _outcomes("listed"),
             SideEffectClass.READ,
             (ReadClause(subject=EffectSubject.TASK_LIST),),
             IdempotencySpec(mode="natural"),
@@ -2189,6 +2255,10 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.wait import register_wait_contracts
 
     register_wait_contracts(registry)
+
+    from src.commands.contracts.wait_v2 import register_wait_v2_contracts
+
+    register_wait_v2_contracts(registry)
     from src.commands.contracts.cron import register_cron_contracts
 
     register_cron_contracts(registry)

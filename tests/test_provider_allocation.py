@@ -270,6 +270,37 @@ async def test_non_workers_are_diagnostics_never_selected(orch):
 # -- counts ---------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("task_id,session_id,provider,profile_id", [
+    ("task-alpha-busy", "sess-alpha-busy", "claude", "standard-high-claude"),
+    ("task-alpha-task", "sess-alpha-task", "codex", "deep-high-codex"),
+])
+@pytest.mark.parametrize("status,state,live", [
+    (TaskStatus.WAITING, "running", True),
+    (TaskStatus.HIBERNATED, "running", False),
+    (TaskStatus.HIBERNATED, "starting", False),
+    (TaskStatus.RESUME_PENDING, "running", False),
+    (TaskStatus.RESUME_PENDING, "starting", True),
+])
+async def test_provider_sessions_respect_continuation_ownership(
+    orch, task_id, session_id, provider, profile_id, status, state, live,
+):
+    await orch.db.update_task(task_id, status=status, provider_intent=PINNED)
+    if state != "running":
+        from dataclasses import replace
+
+        previous = await orch.db.get_session(session_id)
+        await orch.db.update_session(session_id, state="stopped")
+        session_id += "-launch"
+        await orch.db.create_session(replace(previous, id=session_id, state=state))
+    result = await _handler(orch).execute("provider_allocation_status", {})
+    assert result["success"], result
+    profile = _profiles(_providers(result)[provider])[profile_id]
+    assert (session_id in {s["session_id"] for s in profile["sessions"]}) is live
+    assert task_id in profile["pinned"]["task_ids"]
+    if profile_id == "deep-high-codex":
+        assert sum(profile["supply"][key] for key in ("busy", "starting")) == int(live)
+
+
 async def test_supply_sessions_and_ceiling_are_exact(orch):
     result = await _handler(orch).execute("provider_allocation_status", {})
     claude, codex = _providers(result)["claude"], _providers(result)["codex"]
