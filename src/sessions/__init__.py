@@ -69,10 +69,16 @@ class SessionProviderRegistry:
     a fresh instance per call would throw both away.
     """
 
-    def __init__(self, providers: dict[str, type[SessionProvider]], config=None):
+    def __init__(
+        self, providers: dict[str, type[SessionProvider]], config=None, *,
+        enforce_registered_launches: bool = False,
+    ):
         self._providers = dict(providers)
         self._config = config
         self._instances: dict[str, SessionProvider] = {}
+        # Explicit injected registries can exercise provider primitives in
+        # isolation. The production factory always enforces registration.
+        self._enforce_registered_launches = enforce_registered_launches
 
     def get(self, name: str) -> type[SessionProvider] | None:
         return self._providers.get(name)
@@ -96,6 +102,16 @@ class SessionProviderRegistry:
                 f"Unknown session provider: {name!r}. Available: {self.names()}"
             )
         instance = cls(config=config if config is not None else self._config)
+        if self._enforce_registered_launches:
+            start = instance.start
+
+            async def registered_start(spec):
+                from src.sessions.launch import require_launch_authorization
+
+                require_launch_authorization(instance, spec)
+                return await start(spec)
+
+            instance.start = registered_start
         self._instances[name] = instance
         return instance
 
@@ -123,4 +139,4 @@ def default_session_registry(config=None) -> SessionProviderRegistry:
     except ImportError:
         logger.debug("tmux session provider unavailable on this host")
 
-    return SessionProviderRegistry(providers, config=config)
+    return SessionProviderRegistry(providers, config=config, enforce_registered_launches=True)

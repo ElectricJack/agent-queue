@@ -113,18 +113,13 @@ async def open_escalation(db, escalation_id, *, project_id, with_pending_deliver
         incident_key=f"incident-{escalation_id}",
         supervisor_owner=f"supervisor-{project_id}",
         summary="Blocked",
+        task_title="Restore project work",
         investigation="looked",
         decision_requested="retry or hold?",
         severity="high",
     )
     if with_pending_delivery:
-        await db.enqueue_escalation_delivery(
-            escalation_id=incident["id"],
-            kind="root",
-            dedup_key=f"{escalation_id}:root",
-            payload={"text": "blocked"},
-            available_at=NOW,
-        )
+        assert len(await db.list_escalation_deliveries(incident["id"])) == 1
     return incident
 
 
@@ -188,7 +183,9 @@ class TestPreview:
         config.health_check = HealthCheckConfig(base_url="http://100.99.1.2:8081")
         config.dashboard_server = DashboardServerConfig(public_url="https://queue.ts.example/")
         result = await handler.execute("digest_preview", {"now": NOW})
-        assert result["text"].rstrip().endswith("https://queue.ts.example")
+        # §6.1: the digest's one link is the needs-you inbox, on its own last
+        # line, so it is the same string a delivery carries.
+        assert result["text"].rstrip().endswith("<https://queue.ts.example/focus/inbox>")
         assert "8081" not in result["text"]
 
         service = DigestScheduleService(
@@ -306,6 +303,29 @@ class TestPreview:
         config.discord = discord(project_ids=["p"])
         result = await handler.execute("digest_preview", {"now": NOW})
         assert result["open_escalations"] == 1
+
+    async def test_answered_escalations_leave_both_preview_and_delivery_attention_counts(self, env):
+        handler, db, config = env
+        await completed_task(db, "t1", title="Shipped")
+        await open_escalation(db, "answered", project_id="p")
+        await open_escalation(db, "unanswered", project_id="p")
+        await db.accept_escalation_reply(
+            "answered", transport="dashboard", external_message_id="human-answer",
+            verified_actor="human:jack", text="Authorization granted", received_at=NOW - 10,
+        )
+        preview = await handler.execute("digest_preview", {"now": NOW})
+        assert preview["open_escalations"] == 1
+        assert "1 open escalation" in preview["text"]
+        from src.digest import DigestScheduleService
+        from src.digest.schedule import schedule_for
+
+        service = DigestScheduleService(db, None, config=config, lease_owner="test")
+        schedule = schedule_for(config.discord)
+        result = await service._evaluate_window(
+            schedule, schedule.window_for(NOW, last_window_end=None), now=NOW,
+        )
+        assert "1 open escalation" in result.text
+        assert "2 open escalations" not in result.text
 
     async def test_a_new_generation_does_not_inherit_old_window_timing(self, env):
         handler, db, config = env
@@ -447,17 +467,12 @@ class TestStatus:
             incident_key="incident-1",
             supervisor_owner="supervisor-p",
             summary="Blocked",
+            task_title="Restore project work",
             investigation="looked",
             decision_requested="retry or hold?",
             severity="high",
         )
-        await db.enqueue_escalation_delivery(
-            escalation_id=incident["id"],
-            kind="root",
-            dedup_key="esc-1:root",
-            payload={"text": "blocked"},
-            available_at=NOW,
-        )
+        assert len(await db.list_escalation_deliveries(incident["id"])) == 1
         result = await handler.execute("digest_status", {"now": NOW})
         assert result["open_escalations"] == 1
         assert result["pending_escalation_deliveries"] == 1

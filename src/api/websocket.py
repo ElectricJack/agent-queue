@@ -60,6 +60,9 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "metrics.",
     "dashboard_state.",
     "review.",
+    "ask.",
+    "project.paused",
+    "project.resumed",
     # Run lifecycle from the V2 engine ("playbook.v2.run.started" and
     # friends).  Without this the dashboard's playbook views only changed
     # when their 30s poll happened to land inside a run, so the fleet's
@@ -244,6 +247,8 @@ class WebSocketManager:
 
     def start(self) -> None:
         """Subscribe to all bus events and forward the allowed prefixes."""
+        if self._unsub is not None:
+            return
         logger.info("WebSocketManager subscribing to bus %s (id=%d)", self._bus, id(self._bus))
         logger.info("Bus handlers before subscribe: %s", dict(self._bus._handlers))
         self._unsub = self._bus.subscribe("*", self._on_event)
