@@ -19,14 +19,18 @@ class TaskRecoverRequest:
         incident_id (str): Exact recovery incident ID from the supervisor notification
         decision (str):
         reason (str): Diagnosis and rationale for this decision
-        expected_hold_at (float | None | Unset): Release a cleared hold by retrying this incident; exact decided_at of
-            the prior hold. All recovery guards and remaining budgets still apply.
+        operator_release (bool | None | Unset): Local operator or live global supervisor only: release the exact prior
+            hold. With decision release, preserve task state and integration controls; with retry, authorize a reviewed
+            nonautomatic failure while retaining all ownership, liveness, gate and budget guards. Requires expected_hold_at.
+        expected_hold_at (float | None | Unset): Exact decided_at of the prior hold. Required for operator_release;
+            normal retry releases retain automatic recovery guards and remaining budgets.
     """
 
     task_id: str
     incident_id: str
     decision: str
     reason: str
+    operator_release: bool | None | Unset = UNSET
     expected_hold_at: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -38,6 +42,12 @@ class TaskRecoverRequest:
         decision = self.decision
 
         reason = self.reason
+
+        operator_release: bool | None | Unset
+        if isinstance(self.operator_release, Unset):
+            operator_release = UNSET
+        else:
+            operator_release = self.operator_release
 
         expected_hold_at: float | None | Unset
         if isinstance(self.expected_hold_at, Unset):
@@ -55,6 +65,8 @@ class TaskRecoverRequest:
                 "reason": reason,
             }
         )
+        if operator_release is not UNSET:
+            field_dict["operator_release"] = operator_release
         if expected_hold_at is not UNSET:
             field_dict["expected_hold_at"] = expected_hold_at
 
@@ -71,6 +83,15 @@ class TaskRecoverRequest:
 
         reason = d.pop("reason")
 
+        def _parse_operator_release(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        operator_release = _parse_operator_release(d.pop("operator_release", UNSET))
+
         def _parse_expected_hold_at(data: object) -> float | None | Unset:
             if data is None:
                 return data
@@ -85,6 +106,7 @@ class TaskRecoverRequest:
             incident_id=incident_id,
             decision=decision,
             reason=reason,
+            operator_release=operator_release,
             expected_hold_at=expected_hold_at,
         )
 
