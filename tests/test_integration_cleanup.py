@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -17,27 +19,30 @@ from src.database.tables import (
     integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_publications,
+    integration_candidate_resolutions,
     integration_candidate_ref_mutations,
     integration_candidate_revisions,
     integration_check_evidence,
     integration_cleanup_items,
-    integration_outbox,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_owner_recoveries,
     integration_review_evidence,
     integration_root_intent_members,
     project_integration_leases,
     project_integration_schedules,
     projects,
+    repos,
+    sessions,
     task_delivery_receipts,
+    task_completion_records,
     tasks,
     workspaces,
 )
 from src.integration.cleanup import CleanupExecutionResult, IntegrationCleanupService
+from src.integration.batches import candidate_ref
 from src.integration.release import IntegrationReleaseService
-from src.integration.scheduler import IntegrationScheduler
-from src.integration.settling import note_approval
 from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import CapabilityPolicy
@@ -77,9 +82,13 @@ async def release_db(tmp_path, request, reuse_database):
             .where(projects.c.id == "p")
             .values(hierarchical_integration_desired_mode="train")
         )
-    scheduler = IntegrationScheduler(db)
-    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
-    due_request = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
+    due_request = {"request_id": "integration-sweep:p:1"}
+    async with db.immediate() as conn:
+        await conn.execute(insert(project_integration_schedules).values(
+            project_id="p", enabled=True, interval_seconds=300, next_due_at=300.0,
+            request_sequence=1, outstanding_request_id=due_request["request_id"],
+            outstanding_trigger="manual", outstanding_requested_at=10.0, updated_at=10.0,
+        ))
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_batches).values(
@@ -139,6 +148,7 @@ async def release_db(tmp_path, request, reuse_database):
                 pr_url="https://github.com/acme/widgets/pull/1",
                 repository_id="repo",
                 source_base_sha=BASE,
+                source_sha=SOURCE,
                 reviewed_head_sha=SOURCE,
                 reviewed_tree_sha=TREE,
                 review_evidence_id="review",
@@ -146,7 +156,11 @@ async def release_db(tmp_path, request, reuse_database):
                 source_ref=(
                     None
                     if "legacy_source_identity" in request.node.name
-                    else "refs/heads/aq/root"
+                    else (
+                        "refs/heads/aq/epic/root"
+                        if "epic_repair_and_recovered_preserved_refs" in request.node.name
+                        else "refs/heads/aq/root"
+                    )
                 ),
                 source_ref_retention=(
                     None
@@ -154,6 +168,8 @@ async def release_db(tmp_path, request, reuse_database):
                     else (
                         "retain" if "retains_source_ref" in request.node.name else "delete"
                     )
+                    if "epic_repair_and_recovered_preserved_refs" not in request.node.name
+                    else "retain"
                 ),
             )
         )
@@ -382,7 +398,24 @@ async def release_db(tmp_path, request, reuse_database):
             .where(integration_batches.c.id == "batch")
             .values(lifecycle="promoted", final_main_sha=HEAD, updated_at=20.0)
         )
-    yield db, scheduler
+    # These protocol tests simulate the external Git observation independently
+    # of forged receipt rows. Real ancestry/rewind coverage lives in
+    # test_delivery_consumers.test_cleanup_guard_rechecks_current_target_without_receipts.
+    async def observe(ids, **_kwargs):
+        async def verified(conn, requested):
+            heads = {}
+            for tid, commits in await conn.execute(select(
+                task_completion_records.c.task_id, task_completion_records.c.commits,
+            ).where(task_completion_records.c.task_id.in_(requested))):
+                if parsed := json.loads(commits):
+                    heads[tid] = parsed[-1]
+            return {tid: SimpleNamespace(satisfied=True, lifecycle_exclusion=False,
+                                         source_oid=heads.get(tid, SOURCE)) for tid in requested}
+
+        return SimpleNamespace(fresh=AsyncMock(return_value=True), verified_on=verified)
+
+    db.set_prerequisite_observer(SimpleNamespace(truth=object(), observe=observe))
+    yield db, None
 
 
 async def test_release_is_atomic_replayable_and_cleanup_independent(release_db):
@@ -406,118 +439,14 @@ async def test_release_is_atomic_replayable_and_cleanup_independent(release_db):
     assert batch["cleanup_state"] == "pending"
 
 
-async def test_release_atomically_promotes_first_catchup_once(release_db):
-    db, scheduler = release_db
-    original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    async with db.immediate() as conn:
-        await note_approval(conn, project_id="p", now=300.0)
-    periodic = await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
-    assert original["request_id"] == periodic["request_id"]
-
-    result = await IntegrationReleaseService(db).release("batch", 601.0)
-    assert result.outcome == "released"
-    assert result.request_id == original["request_id"]
-    assert result.catchup_request_id == "integration-sweep:p:2"
-    replay = await IntegrationReleaseService(db).release("batch", 602.0)
-    assert replay.outcome == "already_released"
-    assert replay.catchup_request_id == result.catchup_request_id
-    async with db._engine.connect() as conn:
-        schedule = (
-            await conn.execute(select(project_integration_schedules))
-        ).mappings().one()
-        events = (
-            await conn.execute(
-                select(integration_outbox).where(
-                    integration_outbox.c.event_type == "integration.sweep_due"
-                )
-            )
-        ).mappings().all()
-    assert schedule["outstanding_request_id"] == result.catchup_request_id
-    assert schedule["outstanding_trigger"] == "manual"
-    assert schedule["outstanding_requested_at"] == 21.0
-    assert schedule["request_sequence"] == 2
-    assert schedule["catchup_trigger"] is None
-    assert len(events) == 2
 
 
-async def test_release_during_drain_discards_catchup_without_starting_new_train(
-    release_db,
-):
-    db, scheduler = release_db
-    original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(projects)
-            .where(projects.c.id == "p")
-            .values(
-                hierarchical_integration_desired_mode="disabled",
-                hierarchical_integration_draining=True,
-            )
-        )
-
-    result = await IntegrationReleaseService(db).release("batch", 30.0)
-
-    assert result.outcome == "released"
-    assert result.request_id == original["request_id"]
-    assert result.catchup_request_id is None
-    async with db._engine.connect() as conn:
-        schedule = (
-            await conn.execute(select(project_integration_schedules))
-        ).mappings().one()
-        sweep_events = (
-            await conn.execute(
-                select(integration_outbox).where(
-                    integration_outbox.c.event_type == "integration.sweep_due"
-                )
-            )
-        ).mappings().all()
-    assert schedule["outstanding_request_id"] is None
-    assert schedule["catchup_trigger"] is None
-    assert len(sweep_events) == 1
 
 
-async def test_release_replay_is_immutable_after_a_later_train_acquires_lease(
-    release_db,
-):
-    db, scheduler = release_db
-    await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
-    released = await IntegrationReleaseService(db).release("batch", 30.0)
-    assert released.outcome == "released"
-    assert released.catchup_request_id == "integration-sweep:p:2"
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(integration_batches).values(
-                id="later-batch",
-                project_id="p",
-                repository_id="repo",
-                request_id=released.catchup_request_id,
-                source_manifest_digest="sha256:" + "8" * 64,
-                base_sha=HEAD,
-                lifecycle="sealed",
-                current_revision=0,
-                integration_branch="refs/heads/aq/integration/later",
-                policy_snapshot={},
-                artifact_snapshot={},
-                cleanup_state="pending",
-                created_at=31.0,
-                updated_at=31.0,
-            )
-        )
-        await conn.execute(
-            insert(project_integration_leases).values(
-                project_id="p",
-                repository_id="repo",
-                batch_id="later-batch",
-                owner_id="later-owner",
-                fence_token=4,
-                heartbeat_at=31.0,
-                expires_at=1000.0,
-            )
-        )
 
-    replay = await IntegrationReleaseService(db).release("batch", 40.0)
 
-    assert replay == released.model_copy(update={"outcome": "already_released"})
+
+
 
 
 async def test_release_waits_for_unresolved_attestation_publication(release_db):
@@ -684,6 +613,10 @@ async def test_batch_cleanup_waits_for_promotion_and_only_collects_member_descen
             ("root.2", "root", late_head, 21.0),
             ("ejected.1", "ejected", ejected_head, 3.0),
         ):
+            await conn.execute(insert(task_completion_records).values(
+                id=f"completion-{task_id}", task_id=task_id, outcome="pass",
+                commits='["' + head + '"]', completed_at=created_at,
+            ))
             await conn.execute(insert(task_delivery_receipts).values(
                 id=f"receipt-{task_id}",
                 domain_key=f"child:{task_id}",
@@ -770,6 +703,77 @@ async def test_cleanup_retains_source_ref_from_frozen_policy(release_db):
     assert refs == [BRANCH]
 
 
+async def test_train_cleanup_materializes_epic_repair_and_recovered_preserved_refs(release_db):
+    db, _scheduler = release_db
+    repair_ref = "refs/heads/aq/integration-repairs/resolution"
+    preserved_ref = "refs/heads/aq/preserved/owner-root"
+    preserved_sha = "f" * 40
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(
+            target_ref="refs/heads/main", lifecycle="promoted", final_main_sha=HEAD,
+        ))
+        await conn.execute(insert(sessions).values(
+            id="repair-session", profile_id="standard-high-claude", harness="claude",
+            provider="test", name="n-repair", lifecycle="task", state="stopped",
+            desired_state="stopped", claims=0, work_dir="/tmp/repair", epoch="0",
+            instance_token="token", started_at=1.0, restarts=0, hooks_provisioned=False,
+        ))
+        await conn.execute(insert(workspaces).values(
+            id="repair-workspace", project_id="p", workspace_path="/tmp/repair-workspace",
+            source_type="link", enabled=True, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_candidate_resolutions).values(
+            id="resolution", batch_id="batch", revision=0, member_ordinal=0,
+            operation_id="op", operation_episode_id="batch", stage_ordinal=0,
+            stage_deadline_at=1000.0, project_id="p", repair_task_id="repair-task",
+            repair_session_id="repair-session", repair_session_instance_token="token",
+            repair_workspace_id="repair-workspace", repair_workspace_path="/tmp/repair-workspace",
+            repository_id="repo", branch="refs/heads/aq/repair-task",
+            target_branch=repair_ref, target_kind="qualified", fence_owner_id="owner-root",
+            fence_token=1, partial_head_sha="a" * 40, source_base_sha=BASE,
+            source_head_sha=SOURCE, resolved_head_sha=preserved_sha,
+            resolved_tree_sha=TREE, repair_commit_shas=[preserved_sha],
+            push_evidence={"accepted": True}, state="accepted", created_at=2.0,
+            updated_at=3.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner-root", repository_id="repo", ref="refs/heads/aq/root",
+            owner_id="root", owner_role="producer", fence_token=4,
+            handoff_state="released", created_at=1.0, updated_at=4.0,
+        ))
+        await conn.execute(insert(integration_owner_recoveries).values(
+            id="recovery", owner_row_id="owner-root", repository_id="repo",
+            ref="refs/heads/aq/root", task_id="root", outcome="preserved_and_released",
+            evidence={"preserved_ref": preserved_ref, "preserved_sha": preserved_sha,
+                      "released_fence_token": 4},
+            principal="operator", created_at=4.0,
+        ))
+
+    service = IntegrationCleanupService(
+        db,
+        data_dir="/daemon",
+        binding_resolver=AsyncMock(
+            return_value=GitHubRepositoryBinding(99, "acme/widgets")
+        ),
+    )
+    result = await service.materialize("batch", now=30.0)
+    async with db._engine.connect() as conn:
+        refs = set((await conn.execute(select(integration_cleanup_items.c.target_ref).where(
+            integration_cleanup_items.c.batch_id == "batch",
+            integration_cleanup_items.c.kind == "remote_ref",
+        ))).scalars())
+    assert result.outcome == "materialized"
+    assert refs == {
+        "refs/heads/aq/epic/root",
+        "refs/heads/aq/integration-repairs/resolution",
+        "refs/heads/aq/preserved/owner-root",
+        BRANCH,
+        candidate_ref("batch"),
+    }
+
+
 async def test_cleanup_legacy_source_identity_is_visible_conflict(release_db):
     db, _scheduler = release_db
     result = await IntegrationCleanupService(db, data_dir="/daemon").materialize(
@@ -846,6 +850,72 @@ class CleanupForge:
     async def close_pull_request(self, *, number):
         self.closed.append(number)
         self.prs[number]["state"] = "closed"
+
+
+
+
+async def test_aborted_batch_moved_pr_head_is_retained(release_db):
+    db, _scheduler = release_db
+    forge = CleanupForge()
+
+    async def moved_comment(**kwargs):
+        await CleanupForge.comment_pull_request(forge, **kwargs)
+        forge.prs[9]["head_sha"] = "f" * 40
+
+    forge.comment_pull_request = moved_comment
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="aborted"))
+    cleanup = IntegrationCleanupService(
+        db, data_dir="/daemon", forge_provider=forge, clock=lambda: 30.0,
+    )
+    await cleanup.materialize("batch", now=30.0)
+    [result] = await cleanup.advance("batch", now=30.0)
+    assert result.outcome == "conflict" and forge.closed == []
+    assert (await db.get_integration_batch("batch"))["cleanup_state"] == "conflict"
+
+
+async def test_aborted_pr_cleanup_survives_repository_engine_transfer(release_db):
+    from src.database.tables import playbook_artifacts
+    from src.integration.runtime_contracts import (
+        PolicyArtifactPin,
+        Subject,
+        SubjectKind,
+        SubjectPhase,
+        SubjectSchedule,
+    )
+
+    db, _scheduler = release_db
+    pin = PolicyArtifactPin(playbook_id="root-test", artifact_sha256="sha256:" + "1" * 64)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="aborted"))
+        await conn.execute(insert(playbook_artifacts).values(
+            artifact_sha256=pin.artifact_sha256, playbook_id=pin.playbook_id,
+            source_digest="sha256:" + "2" * 64, contract_fingerprint="sha256:" + "3" * 64,
+            compiler_build="test", path="/test/root.json", created_at=1.0,
+        ))
+    await db.ensure_integration_subject(Subject(
+        id="subject", project_id="p", repository_id="repo", kind=SubjectKind.ROOT_BATCH,
+        subject_key="root:request", engine="reconciler", policy=pin, batch_id="batch",
+        phase=SubjectPhase.REPAIRING, target_ref=BRANCH, head_sha=HEAD, base_sha=BASE,
+        schedule=SubjectSchedule.progress(now=10, max_wait_seconds=600),
+        created_at=1.0, updated_at=1.0,
+    ).to_row())
+    forge = CleanupForge()
+    cleanup = IntegrationCleanupService(db, data_dir="/daemon", forge_provider=forge)
+    assert (await cleanup.materialize("batch", now=30.0)).outcome == "materialized"
+    [result] = await cleanup.advance("batch", now=30.0)
+    assert result.outcome == "complete" and forge.closed == [9]
+    # The terminal audit exception grants no source or ref cleanup authority.
+    # Call the production guard without the domain fixture's Subject scope.
+    denied = await type(cleanup).execute.__wrapped__(
+        cleanup, "batch", "remote_ref", BRANCH, now=31.0,
+    )
+    assert denied.outcome == "wait"
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="human_blocked"))
+    assert (
+        await type(cleanup).materialize.__wrapped__(cleanup, "batch", now=32.0)
+    ).outcome == "stale"
 
 
 async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
@@ -951,7 +1021,9 @@ async def test_expired_cleanup_claim_cannot_post_after_successor_prewrite(releas
     old_task = asyncio.create_task(
         old.execute("batch", "source_pr", "99#1", now=30.0)
     )
-    await asyncio.wait_for(first_lookup.wait(), timeout=1.0)
+    # Hang guard only: the claim and repository reads before the first lookup
+    # can exceed a second on a loaded CI shard.
+    await asyncio.wait_for(first_lookup.wait(), timeout=30.0)
     accepted = await successor.execute(
         "batch", "source_pr", "99#1", now=400.0
     )
@@ -1121,6 +1193,111 @@ async def test_integration_cleanup_command_is_subject_only_and_project_scoped(
     service.materialize.assert_awaited_once_with("batch-command")
     service.advance.assert_awaited_once_with("batch-command")
     await handler.db.close()
+
+
+async def _cleanup_command_with_items(handler, item_count, states):
+    """A promoted batch whose persisted items carry ``states``, one row each."""
+    await handler.db.create_project(Project(id="p", name="project"))
+    await handler.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="mismatched-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id="mismatched-request",
+                source_manifest_digest="sha256:" + "5" * 64,
+                base_sha=BASE,
+                lifecycle="promoted",
+                current_revision=0,
+                integration_branch=BRANCH,
+                final_main_sha=HEAD,
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state="pending",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        for index, state in enumerate(states):
+            await conn.execute(
+                insert(integration_cleanup_items).values(
+                    batch_id="mismatched-batch",
+                    kind="local_ref",
+                    identity=f"refs/heads/cleanup-{index}",
+                    domain_key=f"cleanup:mismatched:{index}",
+                    project_id="p",
+                    repository_id="repo",
+                    repository_numeric_id=99,
+                    repository_full_name="acme/widgets",
+                    revision=0,
+                    target_ref=f"refs/heads/cleanup-{index}",
+                    expected_sha=HEAD,
+                    state=state,
+                    attempts=1,
+                    next_attempt_at=1.0,
+                    created_at=1.0,
+                    updated_at=1.0,
+                    **({"terminal_at": 2.0} if state == "complete" else {}),
+                )
+            )
+    service = AsyncMock()
+    service.materialize.return_value = type(
+        "Materialized",
+        (),
+        {"outcome": "materialized", "item_count": item_count},
+    )()
+    service.advance.return_value = []
+    handler.orchestrator.integration_cleanup_service = service
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_cleanup"]),
+        project_id="p",
+    )
+    with principal_context(principal):
+        return await handler.execute("integration_cleanup", {"batch_id": "mismatched-batch"})
+
+
+async def test_cleanup_command_reports_complete_when_every_item_is_done_despite_the_count(
+    command_handler_factory,
+):
+    """A stale materialized count must not read as an invariant error.
+
+    Batch 288750f6 answered ``invariant_error`` on every tick with all five of
+    its items complete, which held the lease and blocked the next seal.
+    """
+    handler = await command_handler_factory()
+    try:
+        result = await _cleanup_command_with_items(
+            handler, item_count=6, states=["complete"] * 5
+        )
+    finally:
+        await handler.db.close()
+    assert result == {
+        "success": True,
+        "outcome": "already_complete",
+        "batch_id": "mismatched-batch",
+        "item_count": 6,
+        "completed_count": 5,
+        "conflict_count": 0,
+    }
+
+
+async def test_cleanup_command_still_refuses_a_mismatch_while_work_remains(
+    command_handler_factory,
+):
+    handler = await command_handler_factory()
+    try:
+        result = await _cleanup_command_with_items(
+            handler, item_count=6, states=["complete"] * 4 + ["pending"]
+        )
+    finally:
+        await handler.db.close()
+    assert result["success"] is False
+    assert result["outcome"] == "invariant_error"
+    assert (result["item_count"], result["completed_count"]) == (6, 4)
 
 
 async def test_cleanup_command_never_reports_complete_for_a_partial_page(
@@ -1379,27 +1556,35 @@ async def test_cleanup_retry_backoff_and_exhaustion_are_frozen(release_db):
     assert (exhausted.outcome, exhausted.attempts) == ("failed", 2)
 
 
-async def test_cleanup_never_deletes_default_branch_even_with_matching_sha(release_db):
+@pytest.mark.parametrize("kind", ["remote_ref", "local_ref"])
+@pytest.mark.parametrize("branch", ["dev", "main", "staging", "aq/release"])
+async def test_cleanup_never_deletes_protected_branch_even_with_matching_sha(release_db, kind, branch):
     db, _scheduler = release_db
     async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(default_branch="dev"))
+        await conn.execute(update(projects).where(projects.c.id == "p").values(promotion_flow=[
+            {"id": "staging", "target": "staging"}, {"id": "release", "target": "main"},
+            {"id": "aq", "target": "aq/release"},
+        ]))
         await conn.execute(
             insert(integration_cleanup_items).values(
-                batch_id="batch", kind="remote_ref", identity="refs/heads/main",
-                domain_key="cleanup:batch:remote_ref:main", project_id="p",
+                batch_id="batch", kind=kind, identity=f"refs/heads/{branch}",
+                domain_key=f"cleanup:batch:{kind}:{branch}", project_id="p",
                 repository_id="repo", repository_numeric_id=99,
                 repository_full_name="acme/widgets", revision=0,
-                member_ordinal=0,
-                target_ref="refs/heads/main", expected_sha=HEAD, state="pending",
+                member_ordinal=0 if kind == "remote_ref" else None,
+                target_ref=f"refs/heads/{branch}", expected_sha=HEAD, state="pending",
                 attempts=0, next_attempt_at=30.0, created_at=30.0, updated_at=30.0,
             )
         )
-    app = CleanupApp({"main": HEAD})
+    app = CleanupApp({branch: HEAD})
     git = CleanupGit(app)
     result = await IntegrationCleanupService(
         db, data_dir="/daemon", git_manager=git, github_client_factory=lambda _: app
-    ).execute("batch", "remote_ref", "refs/heads/main", now=30.0)
+    ).execute("batch", kind, f"refs/heads/{branch}", now=30.0)
     assert result.outcome == "conflict"
     assert git.remote_deletes == []
+    assert git.local_refs == {BRANCH: HEAD}
 
 
 @pytest.mark.parametrize("protection", ["moved", "foreign_owner"])
@@ -1781,32 +1966,9 @@ async def test_cleanup_does_not_infer_worktree_absence_from_failed_head_lookup(
     assert git.removes == 1
 
 
-@pytest.mark.parametrize("protection", ["none", "attached", "successor", "other_ref"])
-async def test_completed_cleanup_reconciles_only_exact_detached_collector(release_db, protection):
-    from src.integration.controls import IntegrationControlService
 
-    db, _scheduler = release_db
-    service = IntegrationCleanupService(db, data_dir="/daemon", clock=lambda: 30.0)
-    await service.materialize("batch", now=30.0)
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_cleanup_items).values(
-            state="complete", terminal_at=30.0,
-        ))
-        await conn.execute(insert(integration_branch_owners).values(
-            id="delivered-collector", repository_id="repo",
-            ref="refs/heads/other" if protection == "other_ref" else BRANCH,
-            owner_id="op", owner_role="collector",
-            fence_token=8 if protection == "successor" else 7,
-            handoff_state="attached" if protection == "attached" else "reserved",
-            session_id="live" if protection == "attached" else None,
-            workspace_id="checkout" if protection == "attached" else None,
-            created_at=1.0, updated_at=1.0,
-        ))
-    recovered = await IntegrationControlService(
-        db, cleanup_service=service, clock=lambda: 31.0,
-    ).retry_cleanup("batch")
-    assert recovered["outcome"] == "nothing_to_retry"
-    async with db._engine.connect() as conn:
-        state = (await conn.execute(select(integration_branch_owners.c.handoff_state)
-                 .where(integration_branch_owners.c.id == "delivered-collector"))).scalar_one()
-    assert state == {"none": "released", "attached": "attached"}.get(protection, "reserved")
+
+@pytest.fixture(autouse=True)
+def reconciler_primitive_authority(monkeypatch):
+    from tests.integration_primitive_scope import authorize_root_primitives
+    authorize_root_primitives(monkeypatch)

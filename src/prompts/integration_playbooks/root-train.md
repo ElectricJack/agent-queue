@@ -5,11 +5,7 @@ version: 1
 scope: system
 enabled: false
 triggers:
-  - integration.sweep_due
-  - integration.sealed
-  - integration.candidate_green
   - integration.candidate_red
-  - integration.repair_delegate_closed
   - integration.repair_exhausted
   - integration.batch_promoted
   - integration.cleanup_requested
@@ -23,56 +19,16 @@ the root route. A project whose policy does not name it never reaches it. Comman
 receive subject identities only; repository, Git objects, leases, fences, policy, CI
 evidence, and cleanup targets are resolved from durable server-owned state.
 
-The reviewed graph names `request_id`, `revision`, and `stage`; binds results as
-`sealed`, `candidate`, and `rebuilt`; and consumes the already-started bounded
-repair stage through `integration_repair_dispatch`.
-
-## Rule: seal-due-frontier
-
-On `integration.sweep_due`, call `integration_seal` with the event `project_id`,
-`operation_id` as the durable request identity, and server time. A sealed train
-waits for its emitted `integration.sealed` fact. An empty train is released
-without constructing a candidate.
-
-## Rule: construct-and-test
-
-On `integration.sealed`, call `integration_build_candidate` with `batch_id` and
-bind its typed result. Empty completes. Built and replayed-built candidates call
-`integration_ci_evidence` with the same batch and the result revision. Pending
-CI ends the current run without repair. Authenticated green or terminal red CI
-durably emits an operation-bound continuation. Candidate conflict dispatches
-the existing server-derived primary repair stage.
-The build adapter applies the frozen `on_main_moved` policy: rebuild is the
-default; wait remains a typed non-success outcome. No caller SHA is accepted.
-
-## Rule: promote-green-candidate
-
-On `integration.candidate_green`, call `integration_promote_main` for the exact
-current batch and revision.
-A moved base rebuilds under the frozen batch policy and waits for the next
-durable candidate-result event. If that rebuild conflicts before the repair
-deadline, dispatch the exact operation's existing server-derived primary stage.
+The Git train owns candidate construction and publication. This graph retains
+bounded repair dispatch through `integration_repair_dispatch` using the event's
+`operation_id`, release and cleanup; its authored integration policy
+tables remain the train's deterministic policy input.
 
 ## Rule: repair-red-candidate
 
 On `integration.candidate_red`, dispatch the exact operation's current repair
 stage. The event's `batch_id`, `revision`, and `head_sha` carry routing identity,
 while the command resolves durable stage authority server-side.
-
-## Rule: continue-closed-root-repair
-
-On `integration.repair_delegate_closed`, resolve the exact close event and its
-`operation_id`, `stage`, `task_id`, `session_id`, `instance_token`, `workspace_id`,
-and `fence_token` with `integration_repair_close_current`. Bind the result as
-`closed_repair`. Parent delegates end this rule. A stale or
-superseded root close fails visibly; it cannot select a newer candidate.
-For a current root close, call `integration_build_candidate` with the resolved
-batch and `expected_revision` from `closed_repair`, then bind its result as
-`repaired_candidate`. Built or already-built candidates call
-`integration_ci_evidence` with that result's exact revision. Pending CI ends
-the run; authenticated green or red CI emits its own durable continuation.
-A build conflict dispatches the exact operation's existing bounded repair stage.
-The close event itself never supplies success evidence or promotes a candidate.
 
 ## Rule: dispatch-debug
 
@@ -124,26 +80,28 @@ a different table; copying a template never activates it or authorizes ejection.
       "default": "wait",
       "cases": [
         {"rule": "binding-human-hold", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "held"}, "right": {"type": "literal", "value": true}}, "action": "held"},
+        {"rule": "answered-hold", "when": {"type": "bool", "op": "and", "operands": [{"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "gate"}, "mode": "present"}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "gate.answer"}, "right": {"type": "literal", "value": "hold"}}]}, "action": "exhaustion-gate"},
+        {"rule": "competing-lease", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "competing_lease"}, "right": {"type": "literal", "value": true}}, "action": "wait"},
+        {"rule": "published-cleanup", "when": {"type": "bool", "op": "or", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "published"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "cleaning"}}]}, "action": "cleanup"},
+        {"rule": "base-moved", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "base_moved"}, "right": {"type": "literal", "value": true}}, "action": "build"},
+        {"rule": "reconcile-publication", "when": {"type": "bool", "op": "and", "operands": [{"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "unresolved_writes"}, "mode": "truthy"}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "green"}}, {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "publisher_fence"}}]}, "action": "publish"},
+        {"rule": "observe-exact-green", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "green"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "testing"}}]}, "action": "observe-ci"},
+        {"rule": "promote-exact-green", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "green"}}, {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "publisher_fence"}}]}, "action": "publish"},
+        {"rule": "publisher-fence-unavailable", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "green"}}, "action": "wait"},
         {"rule": "unknown-facts", "when": {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "unknown"}, "mode": "truthy"}, "action": "wait"},
         {"rule": "open-human-gate", "when": {"type": "bool", "op": "and", "operands": [{"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "gate"}, "mode": "present"}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "gate.status"}, "right": {"type": "literal", "value": "open"}}]}, "action": "exhaustion-gate"},
-        {"rule": "answered-hold", "when": {"type": "bool", "op": "and", "operands": [{"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "gate"}, "mode": "present"}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "gate.answer"}, "right": {"type": "literal", "value": "hold"}}]}, "action": "exhaustion-gate"},
         {"rule": "answered-retry", "when": {"type": "bool", "op": "and", "operands": [{"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "gate"}, "mode": "present"}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "gate.answer"}, "right": {"type": "literal", "value": "retry"}}]}, "action": "build"},
-        {"rule": "reconcile-publication", "when": {"type": "bool", "op": "and", "operands": [{"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "unresolved_writes"}, "mode": "truthy"}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "green"}}, {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "publisher_fence"}}]}, "action": "publish"},
         {"rule": "unresolved-publication", "when": {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "unresolved_writes"}, "mode": "truthy"}, "action": "wait"},
-        {"rule": "published-cleanup", "when": {"type": "bool", "op": "or", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "published"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "cleaning"}}]}, "action": "cleanup"},
         {"rule": "writer-unclaimed-expired", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "filed"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "budget_expired"}, "right": {"type": "literal", "value": true}}]}, "action": "capacity"},
         {"rule": "writer-live-expired", "when": {"type": "bool", "op": "and", "operands": [{"type": "bool", "op": "or", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "claimed"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "working"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "unknown"}}]}, {"type": "bool", "op": "or", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "budget_expired"}, "right": {"type": "literal", "value": true}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "budget_exhausted"}, "right": {"type": "literal", "value": true}}]}]}, "action": "stop-writer"},
         {"rule": "no-progress-gate", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "no_progress"}, "right": {"type": "literal", "value": true}}, "action": "exhaustion-gate"},
         {"rule": "ladder-exhausted", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ladder_exhausted"}, "right": {"type": "literal", "value": true}}, "action": "exhaustion-gate"},
         {"rule": "writer-stopped", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "stopped"}}, "action": "build"},
-        {"rule": "base-moved", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "base_moved"}, "right": {"type": "literal", "value": true}}, "action": "build"},
         {"rule": "admit-frontier", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "admitting"}}, {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "members"}, "mode": "truthy"}]}, "action": "seal"},
         {"rule": "admit-empty", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "admitting"}}, "action": "cadence"},
         {"rule": "construct", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "building"}}, "action": "build"},
         {"rule": "primary-repair", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "repairing"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "none"}}]}, "action": "repair-primary"},
         {"rule": "waiting-writer", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "repairing"}}, {"type": "bool", "op": "or", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "filed"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "claimed"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "working"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "writer_status"}, "right": {"type": "literal", "value": "unknown"}}]}]}, "action": "wait"},
-        {"rule": "promote-exact-green", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "promotable"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "green"}}, {"type": "exists", "value": {"type": "binding_ref", "binding": "s", "path": "publisher_fence"}}]}, "action": "publish"},
-        {"rule": "publisher-fence-unavailable", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "promotable"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "green"}}]}, "action": "wait"},
         {"rule": "ci-absent", "when": {"type": "bool", "op": "and", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "testing"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "ci_state"}, "right": {"type": "literal", "value": "none"}}]}, "action": "request-ci"},
         {"rule": "ci-current", "when": {"type": "bool", "op": "or", "operands": [{"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "testing"}}, {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "phase"}, "right": {"type": "literal", "value": "promotable"}}]}, "action": "observe-ci"},
         {"rule": "overdue-wait", "when": {"type": "comparison", "op": "eq", "left": {"type": "binding_ref", "binding": "s", "path": "wait_overdue"}, "right": {"type": "literal", "value": true}}, "action": "wait"}

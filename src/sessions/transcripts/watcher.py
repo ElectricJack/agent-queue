@@ -289,7 +289,7 @@ class TranscriptWatcher:
         if offset <= 0:
             return True
         try:
-            size = path.stat().st_size
+            size = (await asyncio.to_thread(path.stat)).st_size
         except OSError:
             size = None
         if size is not None and size < offset:
@@ -384,7 +384,7 @@ class TranscriptWatcher:
         if row.session_key and not (row.harness == "codex" and row.session_key == row.id):
             return
         try:
-            key = reader.discover_session_key(path)
+            key = await asyncio.to_thread(reader.discover_session_key, path)
         except Exception:
             logger.debug("discover_session_key failed for %s", row.id, exc_info=True)
             return

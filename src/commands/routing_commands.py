@@ -19,12 +19,17 @@ from collections import Counter
 from dataclasses import replace
 from typing import Any
 
+from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.database.queries.routing_queries import ROUTABLE_STATUSES, RoutingBusyError
 from src.models import TASK_TYPE_VALUES, TaskStatus
 from src.playbooks.invocation import current_invocation
 from src.routing.context import live_context, quota_observations, summarize_context
 from src.routing.planner import (
+    LOCAL_MODEL_PROVIDERS,
+    PREFER_MODES,
+    PREFER_SOFT,
+    PREFER_STRICT,
     ROUTABLE_SOURCES,
     ROUTED_SOURCES,
     Candidate,
@@ -33,10 +38,14 @@ from src.routing.planner import (
     Snapshot,
     TaskFacts,
     is_candidate,
+    launchable,
     plan_route,
+    prefer_target,
+    preference_record,
     reselect,
     selection_evidence,
     selection_reason,
+    serves_preference,
     worker_classes,
 )
 from src.routing.policy import Balance, PolicyError, parse_policy
@@ -65,11 +74,27 @@ REROUTABLE_STATUSES = frozenset(
 #: Workspace kinds a pool may prepare (``_claim_preparation_predicates``); a
 #: task needing any other kind is offered task-lifecycle profiles only.
 POOL_WORKSPACE_KINDS = frozenset({"project-repo", "vault"})
+#: ``projects.hierarchical_integration_mode`` values whose tasks deliver
+#: through an integration train (``development`` batches them; the other two
+#: collect them under their parents).
+TRAIN_INTEGRATION_MODES = frozenset({"hierarchy", "train", "development"})
 
 #: Stage profiles never offered as an ordinary worker route.
 _CONTROL_PROFILES = frozenset(
-    {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
+    {
+        "supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler",
+        "spec-ingest", "fidelity-reviewer",
+    }
 )
+
+
+def _route_target_available(task, snapshot: Snapshot) -> bool:
+    profile = snapshot.profile(task.profile_id)
+    return profile is not None and launchable(Candidate(
+        profile_id=profile.id, harness=profile.harness,
+        provider=profile.provider, lifecycle=profile.lifecycle,
+        intelligence_class=task.intelligence_class or "",
+    ), snapshot)
 
 
 def profile_provider(profile, harness_registry=None, project_id: str | None = None) -> str:
@@ -115,6 +140,78 @@ def route_constraints(task) -> dict[str, Any]:
     route = getattr(task, "route", None)
     constraints = route.get("constraints") if isinstance(route, dict) else None
     return dict(constraints) if isinstance(constraints, dict) else {}
+
+
+async def validate_route_preference(
+    handler,
+    project_id: str | None,
+    target: Any,
+    mode: Any,
+    *,
+    keep_target: str | None = None,
+    keep_mode: str | None = None,
+    conn=None,
+) -> tuple[tuple[str | None, str | None], str | None]:
+    """Resolve ``--prefer``/``--prefer-mode`` into the pair the task stores.
+
+    ``(target, mode)`` is the value to store — ``(None, None)`` clears the
+    preference — and the string is the refusal, naming what exists instead.
+    A preference is an input to the router, not a route: the name must be an
+    installed harness or an enabled worker profile, and the mode must be one
+    of :data:`~src.routing.planner.PREFER_MODES`.  A profile id wins over a
+    harness name, which is the resolution the planner applies (§4).
+
+    *keep_target* and *keep_mode* are the task's current pair, carried forward
+    when the caller supplies only half of it, so ``aq task route --prefer``
+    never silently relaxes a strict preference and ``--prefer-mode`` never
+    silently drops the target.  An explicitly empty ``--prefer`` clears both.
+    Filing has no prior pair and so takes ``soft``.
+    """
+    if target is None and mode is None:
+        return (None, None), None
+    chosen_mode = str(mode or keep_mode or PREFER_SOFT).strip().lower()
+    if chosen_mode not in PREFER_MODES:
+        return (None, None), (
+            f"Invalid prefer_mode '{mode}'. Allowed: {', '.join(sorted(PREFER_MODES))}"
+        )
+    name = str(target).strip() if target is not None else ""
+    if not name:
+        # ``--prefer ""`` clears; a mode on its own keeps the stored target.
+        name = "" if target is not None else str(keep_target or "").strip()
+    if not name:
+        return (None, None), None
+    profiles = await handler.db.list_profiles(**({"conn": conn} if conn is not None else {}))
+    profile = next((p for p in profiles if p.id == name), None)
+    if profile is not None:
+        if not bool(getattr(profile, "enabled", True)):
+            return (None, None), (
+                f"profile '{name}' is disabled; enable it with "
+                f"`aq agent profile set {name} enabled true` or prefer its harness"
+            )
+        if not _worker_profile(profile) or getattr(profile, "template", False) or getattr(
+            profile, "read_only", False
+        ):
+            return (None, None), (
+                f"profile '{name}' is not a worker route (a template, stage, named, "
+                "read-only or non-worker profile); prefer its harness instead"
+            )
+        return (name, chosen_mode), None
+    harnesses = {
+        str(getattr(p, "harness", "") or "") for p in profiles
+        if bool(getattr(p, "enabled", True)) and getattr(p, "harness", "")
+    }
+    registry = getattr(handler.orchestrator, "harness_registry", None)
+    if registry is not None:
+        harnesses |= {
+            harness.id for harness in registry.list_for_scope(project_id) if harness.id
+        }
+    if name not in harnesses:
+        known = ", ".join(sorted(harnesses)) or "none"
+        return (None, None), (
+            f"'{name}' is neither an installed harness nor an enabled worker profile "
+            f"(known: {known})"
+        )
+    return (name, chosen_mode), None
 
 
 class RoutingCommandsMixin:
@@ -174,8 +271,13 @@ class RoutingCommandsMixin:
             except Exception:  # noqa: BLE001 - a missing cap is "one slot"
                 global_cap = None
 
+        from src.routing.policy import is_opencode_family
+
         facts: list[ProfileFacts] = []
+        from src.commands.operator_authority import is_operator_profile
         keys: set[str] = set()
+        now = time.time()
+        quarantine = getattr(orchestrator, "_pool_quarantine", {})
         for profile in await self.db.list_profiles(conn=conn):
             harness = str(getattr(profile, "harness", "") or "")
             if not harness:
@@ -196,6 +298,14 @@ class RoutingCommandsMixin:
                 id=profile.id,
                 harness=harness,
                 provider=key,
+                harness_family=(
+                    "opencode" if registry is not None and (
+                        is_opencode_family(
+                            harness, profile_provider(profile, registry, project_id),
+                            getattr(registry.get(harness, project_id), "command", ""),
+                        )
+                    ) else ""
+                ),
                 lifecycle=lifecycle,
                 default_class=str(getattr(profile, "default_class", "") or ""),
                 classes=frozenset(
@@ -204,10 +314,15 @@ class RoutingCommandsMixin:
                 ),
                 slots=int(slots or 0),
                 enabled=bool(getattr(profile, "enabled", True)),
+                min_active=int(getattr(profile, "min_active", 0) or 0),
+                max_active=getattr(profile, "max_active", None),
+                quarantined=quarantine.get((project_id, profile.id), 0) > now,
+                operator=is_operator_profile(profile),
                 template=bool(getattr(profile, "template", False)),
                 read_only=bool(getattr(profile, "read_only", False)),
                 runtime=str(getattr(profile, "runtime", "") or ""),
                 needs_workspace=bool(getattr(profile, "needs_workspace", True)),
+                local=profile_provider(profile, registry, project_id) in LOCAL_MODEL_PROVIDERS,
             ))
             keys.add(key)
 
@@ -247,6 +362,52 @@ class RoutingCommandsMixin:
                 quota_source="provider_usage_snapshots" if rows_by_provider else "unknown",
             )
         return tuple(facts), providers
+
+    async def reconcile_unavailable_routes(self, tasks) -> list:
+        """Return unavailable queued router routes to policy, never retarget held work.
+
+        The cascade supplies otherwise eligible router-owned tasks. Read facts once
+        per project, then refresh suspected stale routes under apply's lock before
+        clearing them. This also repairs routes written before disablement and
+        survives missed configuration events or daemon restarts.
+        """
+        by_project = {}
+        for task in tasks:
+            by_project.setdefault(task.project_id, []).append(task)
+        reset = []
+        for project_id, queued in by_project.items():
+            profiles, providers = await self._routing_static_facts(
+                project_id, {t.intelligence_class for t in queued if t.intelligence_class},
+            )
+            snapshot = Snapshot(profiles=profiles, providers=providers)
+            for task in queued:
+                if _route_target_available(task, snapshot):
+                    continue
+                async with self.db.routing_apply_lock() as conn:
+                    fresh = await self.db.get_task_on(conn, task.id)
+                    if fresh is None or fresh.route_source != ROUTER:
+                        continue
+                    profiles, providers = await self._routing_static_facts(
+                        project_id, [fresh.intelligence_class] if fresh.intelligence_class else [],
+                        conn=conn,
+                    )
+                    if _route_target_available(
+                        fresh, Snapshot(profiles=profiles, providers=providers),
+                    ):
+                        continue
+                    if not await self.db.reset_task_route(
+                        fresh.id, route_source=ROUTER, queued_only=True, conn=conn,
+                    ):
+                        continue
+                self.orchestrator._clear_route_needed_throttle(fresh.id)
+                await self._post_route_comment(fresh, {
+                    "author_kind": "supervisor", "author_id": "routing-reconciler",
+                }, f"Router route to {fresh.profile_id} cleared: its profile or provider "
+                   "is unavailable; requesting a fresh route with the original constraints.")
+                await self._announce_route_change(fresh.id)
+                if task := await self.db.get_task(fresh.id):
+                    reset.append(task)
+        return reset
 
     async def _routing_snapshot(self, task, project, class_ids, *, conn=None) -> Snapshot:
         """Reuse planner facts, adding bounded observations of the existing admission limits.
@@ -315,7 +476,13 @@ class RoutingCommandsMixin:
             global_cap=self.orchestrator._pool_global_cap(),
             workspace_capacity=workspace_capacity, quarantine=quarantine, headroom_out=headroom,
         )
-        return replace(snapshot, context=context, headroom=headroom)
+        registry = getattr(self.orchestrator, "harness_registry", None)
+        installed = {profile.harness for profile in profiles if profile.harness}
+        if registry is not None:
+            installed |= {h.id for h in registry.list_for_scope(task.project_id) if h.id}
+        return replace(
+            snapshot, context=context, headroom=headroom, harnesses=frozenset(installed)
+        )
 
     async def _preferred_provider_serves(
         self, project_id: str, provider: str, class_id: str | None
@@ -344,6 +511,23 @@ class RoutingCommandsMixin:
         labels = await self.db.get_task_labels(task.id)
         exclude = route_constraints(task).get("exclude_providers") or []
         task_type = getattr(task.task_type, "value", task.task_type)
+        origin = getattr(task, "created_by_kind", None)
+        if origin == "system":
+            from src.integration.repair import OrdinaryRepairService
+
+            # Ordinary train repairs are system filings, not legacy stage
+            # delegates. Their immutable, identity-checked input supplies the
+            # routing origin without changing their claim/restart lifecycle.
+            if await OrdinaryRepairService(self.db).input(task.id) is not None:
+                origin = "integration_repair"
+        elif origin in {SOURCE_CI_REPAIR_ORIGIN, "integration_writer"} or (
+            origin is None and await self.db.list_source_ci_inherited_oids(task.id)
+        ):
+            # Source-CI repairs and integration writers (including verifier
+            # test tasks) use the repair policy, keeping every OpenCode lane
+            # excluded without changing their stored identity or lifecycle.
+            # The record lookup covers repairs filed before origin stamping.
+            origin = "integration_repair"
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
         if class_hint is None and (getattr(task, "route_source", None) or UNROUTED) == UNROUTED:
             # Rows filed before creation recorded the filer's class as
@@ -358,8 +542,10 @@ class RoutingCommandsMixin:
             description=task.description or "",
             task_type=str(task_type) if task_type else None,
             class_hint=class_hint,
-            created_by_kind=getattr(task, "created_by_kind", None),
+            created_by_kind=origin,
             exclude_providers=frozenset(str(p) for p in exclude if p),
+            prefer_target=getattr(task, "prefer_target", None) or None,
+            prefer_mode=getattr(task, "prefer_mode", None) or PREFER_SOFT,
             benchmark_arms=tuple(sorted(
                 label.removeprefix("benchmark:") for label in labels
                 if label.startswith("benchmark:")
@@ -369,6 +555,13 @@ class RoutingCommandsMixin:
             needs_task_lifecycle=any(
                 row.kind_id not in POOL_WORKSPACE_KINDS for row in requirements
             ),
+            on_train=project is not None and getattr(
+                project, "hierarchical_integration_mode", None
+            ) in TRAIN_INTEGRATION_MODES,
+            blocks_work=await self.db.has_waiting_dependents(task.id),
+            failed_attempts=tuple(await self.db.get_task_meta(
+                task.id, "routing_failed_attempts",
+            ) or ()),
         )
 
     async def _cmd_task_route_plan(self, args: dict) -> dict:
@@ -534,14 +727,36 @@ class RoutingCommandsMixin:
                          and (not fresh_facts.preferred_provider
                               or c.provider == fresh_facts.preferred_provider)
                          and (not fresh_facts.needs_task_lifecycle or c.lifecycle == "task")]
+                # The preference is read from the fresh task, never from the
+                # plan: a strict one narrows the plan's own candidates to what
+                # serves it (so apply cannot fall back out of one), and a soft
+                # one flags them.  A preference set since the plan is applied.
+                target = prefer_target(fresh_facts)
+                if target:
+                    if fresh_facts.prefer_mode == PREFER_STRICT:
+                        valid = [c for c in valid if serves_preference(c, target)]
+                        if not valid:
+                            return {"success": True, "outcome": "stale", "task_id": task.id,
+                                    "reason": (
+                                        f"no candidate of the plan serves the strict "
+                                        f"preference '{target}'"
+                                    )}
+                    valid = [
+                        replace(c, prefer_target=serves_preference(c, target))
+                        for c in valid
+                    ]
                 selection = reselect(valid, snapshot, balance)
                 if selection is None:
                     return {"success": True, "outcome": "stale", "task_id": task.id,
                             "reason": "no candidate of the plan is launchable now"}
                 chosen = selection.chosen
                 adjusted = chosen.profile_id != planned_profile_id
+                preference = preference_record(
+                    fresh_facts, valid, snapshot, selection,
+                )
                 decision = selection_evidence(
                     valid, selection, snapshot, prefer_harnesses=plan.get("prefer_harnesses") or (),
+                    preference=preference,
                 )
                 reason = f"kind {plan.get('task_type')}, rule {plan.get('rule')}; " + selection_reason(
                     decision
@@ -579,6 +794,7 @@ class RoutingCommandsMixin:
                     "scores": [s.as_dict() for s in selection.scores],
                     "reason": reason,
                     "decision": decision,
+                    "preference": preference,
                     "policy_sha256": plan.get("policy_sha256"),
                     "benchmark_arm": plan.get("benchmark_arm"),
                     "benchmark_class": plan.get("benchmark_class"),
@@ -594,6 +810,12 @@ class RoutingCommandsMixin:
                     "routed_at": time.time(),
                     "live_context": dict(snapshot.context),
                 }
+                if raised := plan.get("class_raised_for_risk"):
+                    # Only a plan whose risk floor raised the class carries it,
+                    # so every other route record is unchanged.
+                    route["class_raised_for_risk"] = raised
+                if escalated := plan.get("escalated_after_failure"):
+                    route["escalated_after_failure"] = escalated
                 prior = getattr(fresh, "route", None)
                 if constraints := route_constraints(fresh):
                     route["constraints"] = constraints
@@ -649,6 +871,7 @@ class RoutingCommandsMixin:
             policy_sha256=plan.get("policy_sha256"),
             run_id=invocation.run_id,
             adjusted_at_apply=adjusted,
+            preference=preference,
         )
         return {
             "success": True,
@@ -660,6 +883,7 @@ class RoutingCommandsMixin:
             "provider_intent": selection.provider_intent,
             "lane": chosen.lane,
             "reason": reason,
+            "preference": preference,
             "planned_profile_id": planned_profile_id,
             "adjusted_at_apply": adjusted,
             "resolved_gate_ids": resolved,
@@ -739,7 +963,15 @@ class RoutingCommandsMixin:
     def _route_state_refusal(task, *, command: str) -> dict | None:
         """Refuse *command* on a task no route may change now (spec §7)."""
         status = getattr(task.status, "value", task.status)
-        if task.assigned_agent_id or task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+        if task.status == TaskStatus.RESUME_PENDING:
+            why = (
+                f"task '{task.id}' is RESUME_PENDING; pause it before changing its route "
+                f"(aq task pause --task-id {task.id}), then run {command} again and "
+                f"resume it (aq task resume --task-id {task.id}). "
+                "For provider failover, use aq provider reroute --dry-run to preview "
+                "unassigned continuations with no live session"
+            )
+        elif task.assigned_agent_id or task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
             why = (
                 f"task '{task.id}' is claimed or running; stop it first "
                 f"(aq task stop --task-id {task.id}), then run {command} again"
@@ -787,12 +1019,16 @@ class RoutingCommandsMixin:
         intelligence class and a kind; an empty value clears one -- clears
         ``profile_id``, ``intelligence_class`` and the ``route`` record (its
         ``constraints`` and ``legacy`` audit stay), sets
-        ``route_source='unrouted'`` and clears the route-needed throttle, so
-        the next cascade emits ``task.route_needed`` and the project's router
-        plans the task again.  It clears an override the same way.  A
-        profile, provider or pin is refused in the dispatch path
-        (``routing.choice_forbidden``); the emergency lever is
-        ``task_route_override``.
+        ``route_source='unrouted'`` and emits ``task.route_needed`` immediately,
+        so the project's router plans the task again even if the cascade
+        filters it out. It clears an override the same way. It also
+        stores the routing preference it is given (§4): ``--prefer`` names a
+        harness or profile the router weighs before scoring and
+        ``--prefer-mode`` chooses ``soft`` (the default) or ``strict``; an
+        empty ``--prefer`` clears it, and an unknown name or mode is refused
+        here, before anything is written.  A profile, provider or pin is
+        refused in the dispatch path (``routing.choice_forbidden``); the
+        emergency lever is ``task_route_override``.
 
         Callers: the local operator, a live supervisor session, and a worker
         session for a task it filed.  A playbook never re-routes.  A claimed,
@@ -828,7 +1064,37 @@ class RoutingCommandsMixin:
                     ),
                 }
             hints["task_type"] = kind
-        if not await self.db.reset_task_route(task.id, **hints):
+        preference: dict[str, Any] = {}
+        if "prefer" in args or "prefer_mode" in args:
+            (target, mode), error = await validate_route_preference(
+                self, task.project_id, args.get("prefer"), args.get("prefer_mode"),
+                # Either half of the pair carries the other forward.
+                keep_target=getattr(task, "prefer_target", None),
+                keep_mode=getattr(task, "prefer_mode", None),
+            )
+            if error is not None:
+                return {"success": False, "error": error}
+            preference = {"prefer_target": target, "prefer_mode": mode}
+        if not await self.db.reset_task_route(task.id, **hints, **preference):
+            # A stopped task can still have an old writer awaiting confirmed
+            # termination. Name that session instead of calling the task running.
+            fresh = await self.db.get_task(task.id)
+            if fresh is not None:
+                refusal = self._route_state_refusal(fresh, command="aq task route")
+                if refusal is not None:
+                    return refusal
+            session = await self.db.get_session_for_task(task.id)
+            if session is not None and session.state in {"starting", "running", "draining"}:
+                return {
+                    "success": False,
+                    "code": NOT_ROUTABLE,
+                    "error": (
+                        f"task '{task.id}' still has live session '{session.id}' "
+                        f"({session.state}); stop its writer with "
+                        f"`aq session kill {session.id}`, wait for confirmed termination, "
+                        "then run aq task route again"
+                    ),
+                }
             return {
                 "success": False,
                 "code": NOT_ROUTABLE,
@@ -865,6 +1131,10 @@ class RoutingCommandsMixin:
             )
         await self._announce_route_change(task.id)
         fresh = await self.db.get_task(task.id) or task
+        project = await self.db.get_project(fresh.project_id)
+        await self.orchestrator._emit_route_needed_event(
+            fresh, router=getattr(project, "assignment_playbook_id", None),
+        )
         task_type = getattr(fresh.task_type, "value", fresh.task_type)
         return {
             "success": True,
@@ -872,6 +1142,8 @@ class RoutingCommandsMixin:
             "route_source": UNROUTED,
             "class_hint": getattr(fresh, "class_hint", None),
             "task_type": str(task_type) if task_type else None,
+            "prefer_target": getattr(fresh, "prefer_target", None),
+            "prefer_mode": getattr(fresh, "prefer_mode", None),
             "cleared": cleared,
         }
 

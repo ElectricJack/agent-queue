@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useEffect } from "react";
-import TerminalPane, { TerminalToolbar } from "../TerminalPane";
+import { useEffect, useState } from "react";
+import { Cog6ToothIcon, CommandLineIcon } from "@heroicons/react/24/outline";
+import TerminalPane, { TerminalTabs, TerminalToolbar } from "../TerminalPane";
 
 afterEach(cleanup);
+
+const TABS = [
+  { id: "terminal" as const, label: "Terminal", Icon: CommandLineIcon },
+  { id: "settings" as const, label: "Settings", Icon: Cog6ToothIcon },
+];
 
 describe("Terminal pane disclosure", () => {
   it("combines window and transport controls into one header without remounting the terminal", async () => {
@@ -64,5 +70,74 @@ describe("Terminal pane disclosure", () => {
     fireEvent.blur(screen.getByRole("dialog"), { relatedTarget: screen.getByRole("button", { name: "Outside" }) });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getAllByRole("heading", { name: "Worker" })).toHaveLength(1);
+  });
+});
+
+describe("Terminal pane view switch", () => {
+  it("carries the terminal and settings tabs in the header, so changing views needs no disclosure", async () => {
+    const user = userEvent.setup();
+    function Pane() {
+      const [tab, setTab] = useState<"terminal" | "settings">("terminal");
+      return <TerminalPane title="Worker" onClose={vi.fn()}
+        tabs={<TerminalTabs label="Worker view" idPrefix="pane" tabs={TABS} value={tab} onChange={setTab} />}
+        details={<p>Long task and model details</p>}>
+        <p>{tab === "terminal" ? "Terminal body" : "Settings body"}</p>
+      </TerminalPane>;
+    }
+    const view = render(<Pane />);
+    const header = view.container.querySelector("header")!;
+    expect(within(header).getByRole("tablist", { name: "Worker view" })).toBeVisible();
+    expect(within(header).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+    expect(within(header).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByText("Terminal body")).toBeVisible();
+
+    await user.click(within(header).getByRole("tab", { name: "Settings" }));
+    expect(screen.getByText("Settings body")).toBeVisible();
+    expect(within(header).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // The old placement is gone: opening the details no longer repeats the switch.
+    fireEvent.click(screen.getByRole("button", { name: "Details for Worker" }));
+    const dialog = screen.getByRole("dialog", { name: "Worker details" });
+    expect(within(dialog).queryByRole("tab")).toBeNull();
+    expect(within(dialog).getByText("Long task and model details")).toBeVisible();
+  });
+
+  it("keeps each header tab a named, focusable control that a keyboard can activate", async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(<TerminalPane title="Worker" onClose={vi.fn()}
+      tabs={<TerminalTabs label="Worker view" idPrefix="pane" tabs={TABS} value="terminal" onChange={onChange} />}
+      details={<p>Details</p>}>
+      <p>Terminal body</p>
+    </TerminalPane>);
+    const settings = screen.getByRole("tab", { name: "Settings" });
+    // Icon-only at phone widths: the accessible name and tooltip carry the label.
+    expect(settings).toHaveAttribute("title", "Settings");
+    expect(settings).toHaveAttribute("aria-controls", "pane-panel");
+    expect(settings).toHaveAttribute("data-primary-control");
+    settings.focus();
+    await user.keyboard("{Enter}");
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange).toHaveBeenCalledWith("settings");
+  });
+
+  it("keeps the switch in the disclosure on a compact row, which has no room for it", () => {
+    const width = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 320 });
+    try {
+      const view = render(<TerminalPane title="Worker" onClose={vi.fn()}
+        tabs={<TerminalTabs label="Worker view" idPrefix="pane" tabs={TABS} value="terminal" onChange={vi.fn()} />}
+        details={<p>Long task and model details</p>}>
+        <p>Terminal body</p>
+      </TerminalPane>);
+      expect(within(view.container.querySelector("header")!).queryByRole("tab")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Details for Worker" }));
+      const dialog = screen.getByRole("dialog", { name: "Worker details" });
+      expect(within(dialog).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+      expect(within(dialog).getByRole("tab", { name: "Settings" })).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width });
+    }
   });
 });

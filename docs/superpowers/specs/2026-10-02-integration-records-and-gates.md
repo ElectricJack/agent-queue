@@ -1,5 +1,10 @@
 # Integration records and gates: phase 2 primitives 14–19
 
+> **Partly retired (2026-10-22, azure-ridge-72).** `RecordsPrimitives`, the attempt
+> reader and the gate wait/eject ports were never bound in production and were removed.
+> The human gates (`GatePrimitives.gate_on`, `answer_on`, `release_hold`) and the journal
+> helpers in `records.py` remain live. This document is kept as history.
+
 Task `amber-meadow-15.3` (`p2_gates`), implementing `rev-agile-ridge`
 revision 2, §3.2–§3.7. Builds on the published `vivid-willow.1`
 foundation (`9ad7f4ead`). This task preserves that prerequisite commit;
@@ -56,6 +61,23 @@ approval after its timeout also refuses. Policy defaults apply only to an
 unanswered timed gate; a `no_default` gate has no automatic answer.
 Answering wakes the subject; a subsequent `gate` visit checks product holds
 before returning the immutable choice for policy to apply.
+
+A local human operator may explicitly release a live parent episode's gate
+whose immutable answer is `hold`, using `integration_release_held_gate`. Preview
+returns the current subject version; apply requires that exact version, the
+current gate ID and a nonblank reason. The parent engine exclusion lock and
+subject row lock serialize release with visits, legacy operations and engine
+transfers. The transaction appends `gate-release:<gate_id>` with the operator,
+reason, previous answer and exact subject identity, clears the current gate
+binding, and wakes the subject without changing its engine or any product pause.
+The original definition, answer and dashboard projection remain intact.
+
+Release works before or after rollback to legacy. It cannot release an
+unanswered gate, a reject/abort answer, a stale gate or version, a different
+head/generation/artifact, or a terminal subject. Agent, supervisor and policy
+principals cannot release a human hold. A later reconciler visit asks a new gate
+if the underlying failure still requires a decision; the old answer never
+authorizes the new gate.
 
 ## Ejection and kind adapters
 
