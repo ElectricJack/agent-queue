@@ -16,6 +16,7 @@ wall-clock guessing — so both glyphs are covered deterministically.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,8 +24,21 @@ import pytest
 
 import src.sessions as sessions_pkg
 from src.sessions.harness_parser import parse_harness_markdown
-from src.sessions.provider import DialogRule, SessionHandle, SessionSpec
+from src.sessions.provider import (
+    DialogRule,
+    SessionDiedDuringStartup,
+    SessionHandle,
+    SessionSpec,
+)
 from src.sessions.tmux import TmuxProvider
+from tests.test_session_runtime_units import session_clock as session_clock
+
+
+@pytest.fixture(autouse=True)
+def virtual_time(session_clock):
+    from src.sessions import tmux
+
+    session_clock.patch(tmux)
 
 NBSP = " "
 
@@ -50,6 +64,19 @@ CODEX_TRUST = """\
   2. No, exit
 """
 
+#: Codex 0.162 renamed the screen; the old rule missed it and the "› 1." row
+#: passed for the composer (nimble-harbor-12).
+CODEX_TRUST_FOLDER = """\
+>_ OpenAI Codex (v0.162.1)
+
+  Trust this folder? Codex can read, edit, and run files here, subject to your
+  permission settings.
+
+› 1. Trust and continue
+  2. Back to Agent Command Center
+"""
+
+
 
 def _shipped_rule(harness_id: str, name: str) -> DialogRule:
     """The rule the daemon actually ships, not a hand-built stand-in.
@@ -74,6 +101,7 @@ CODEX_RULE = _shipped_rule("codex", "trust-directory")
 HARNESSES = [
     pytest.param(CLAUDE_COMPOSER, CLAUDE_TRUST, CLAUDE_RULE, id="claude"),
     pytest.param(CODEX_COMPOSER, CODEX_TRUST, CODEX_RULE, id="codex"),
+    pytest.param(CODEX_COMPOSER, CODEX_TRUST_FOLDER, CODEX_RULE, id="codex-0.162"),
 ]
 
 
@@ -166,7 +194,7 @@ class TestReadyPrefixFalsePositives:
         provider = _provider(pane)
         await _await_ready(provider, _spec(prefix, rule))
 
-        assert pane.sent == [("Enter",)], "the trust dialog was never answered"
+        assert pane.sent == [rule.keys], "the trust dialog was never answered"
         assert pane.composer_frames > 0, "startup returned before the composer painted"
 
     async def test_dialog_painted_after_readiness_is_still_dismissed(self, prefix, trust, rule):
@@ -186,7 +214,7 @@ class TestReadyPrefixFalsePositives:
         provider = _provider(pane)
         await _await_ready(provider, _spec(prefix, rule))
 
-        assert pane.sent == [("Enter",)], "a late trust dialog was left on screen"
+        assert pane.sent == [rule.keys], "a late trust dialog was left on screen"
 
     async def test_quiet_pane_still_settles_promptly(self, prefix, trust, rule):
         # No dialog ever appears: startup must not send keys and must not
@@ -196,3 +224,104 @@ class TestReadyPrefixFalsePositives:
         await _await_ready(provider, _spec(prefix, rule))
 
         assert pane.sent == []
+
+
+@pytest.mark.parametrize("late_after", [0, 3])
+async def test_hook_review_requires_intervention_even_with_composer_glyph(late_after):
+    rule = DialogRule(
+        name="hook-review-required", pattern="Hooks need review", keys=(), quarantine=True
+    )
+    pane = _Pane(
+        lambda p: (
+            f"welcome\n{CODEX_COMPOSER}\n"
+            if p.captures <= late_after
+            else "Hooks need review\n› 1. Review hooks\n  2. Trust all\n"
+        )
+    )
+    with pytest.raises(SessionDiedDuringStartup, match="hook-review-required"):
+        await _await_ready(_provider(pane), _spec(CODEX_COMPOSER, rule))
+    assert pane.sent == [], "startup must not approve hooks"
+
+
+async def test_once_answer_that_does_not_clear_dialog_is_not_ready():
+    pane = _Pane(lambda p: CODEX_TRUST)
+    with pytest.raises(SessionDiedDuringStartup, match="remains unresolved"):
+        await _await_ready(_provider(pane, budget=0.3), _spec(CODEX_COMPOSER, CODEX_RULE))
+    assert pane.sent == [("Enter",)]
+
+
+async def test_dismissed_dialog_in_scrollback_does_not_kill_ready_session():
+    pane = _Pane(lambda p: f"working\n{CODEX_COMPOSER}Ask Codex to do anything\n")
+    provider = _provider(pane)
+    original = provider._tmux
+
+    async def with_history(*args, **kwargs):
+        current = await original(*args, **kwargs)
+        if args[0] == "capture-pane" and "-S" in args:
+            return CODEX_TRUST + "\n" + current
+        return current
+
+    provider._tmux = with_history
+    await _await_ready(provider, _spec(CODEX_COMPOSER, CODEX_RULE))
+    assert pane.sent == []
+
+
+@pytest.mark.parametrize("lingering_frames", [1, 4])
+async def test_answered_specific_dialog_does_not_fall_through_to_quarantine(lingering_frames):
+    specific = DialogRule(
+        name="skip-optional",
+        pattern="Continue without trusting",
+        keys=("3",),
+    )
+    fallback = DialogRule(
+        name="hook-review-required",
+        pattern="Hooks need review",
+        keys=(),
+        quarantine=True,
+    )
+    screen = "Hooks need review\n› 1. Review hooks\n  3. Continue without trusting\n"
+    pane = _Pane(
+        lambda p: (
+            screen
+            if not p.sent or p.captures - p.dismissed_at < lingering_frames
+            else f"welcome\n{CODEX_COMPOSER}\n"
+        )
+    )
+    spec = replace(_spec(CODEX_COMPOSER, specific), dialogs=(specific, fallback))
+    await _await_ready(_provider(pane), spec)
+    assert pane.sent == [("3",)]
+
+
+async def test_exhausted_dialog_budget_does_not_accept_menu_as_ready():
+    pane = _Pane(lambda p: CODEX_TRUST)
+    with pytest.raises(SessionDiedDuringStartup, match="remains unresolved"):
+        await _await_ready(_provider(pane, budget=0), _spec(CODEX_COMPOSER, CODEX_RULE))
+    assert pane.sent == []
+
+
+@pytest.mark.parametrize("selected_yes", [False, True])
+async def test_claude_trust_selects_yes_before_submitting(selected_yes):
+    path = Path(sessions_pkg.__file__).parent / "default_harnesses" / "claude.md"
+    harness = parse_harness_markdown(path.read_text(), fallback_id="claude").harness
+    screen = "Is this a project you created or one you trust?\n" + (
+        "  No, exit\n❯ Yes, I trust this folder\n"
+        if selected_yes
+        else "❯ No, exit\n  Yes, I trust this folder\n"
+    )
+    expected = ("Enter",) if selected_yes else ("Down", "Enter")
+    # Wrong keys keep the dialog visible: accepting any submission would
+    # conceal the original bug, where Enter chose No and exited Claude.
+    pane = _Pane(lambda p: CLAUDE_COMPOSER if p.sent == [expected] else screen)
+    spec = replace(_spec(CLAUDE_COMPOSER, CLAUDE_RULE), dialogs=harness.dialogs)
+    await _await_ready(_provider(pane), spec)
+    assert pane.sent == [expected]
+
+
+async def test_unrecognized_claude_trust_selection_is_not_ready():
+    path = Path(sessions_pkg.__file__).parent / "default_harnesses" / "claude.md"
+    harness = parse_harness_markdown(path.read_text(), fallback_id="claude").harness
+    pane = _Pane(lambda p: "Is this a project you created or one you trust?\n❯ Other choice\n")
+    spec = replace(_spec(CLAUDE_COMPOSER, CLAUDE_RULE), dialogs=harness.dialogs)
+    with pytest.raises(SessionDiedDuringStartup, match="remains unresolved"):
+        await _await_ready(_provider(pane, budget=0.3), spec)
+    assert pane.sent == []

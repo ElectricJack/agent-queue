@@ -1,0 +1,168 @@
+"""Turn an eligible window into one short, safe message.
+
+Constraints from §8 of the digest spec and §3.2 of the Discord design spec,
+all enforced here rather than by the transport:
+
+* one message inside :data:`~src.discord.render_budget.DIGEST` -- three body
+  lines and 600 characters, never split across posts;
+* counts first, then the highlights that survived the cap, then one link to
+  the needs-you inbox as the last line;
+* plain language: one line per highlight, no stack traces or raw logs;
+* no mentions, ever, including text a human or agent wrote that merely looks
+  like one.  A routine digest that pings a role is exactly the noise this
+  redesign removes, so the escape is applied to every interpolated string
+  rather than trusted to the callers.
+"""
+
+from __future__ import annotations
+
+import re
+
+from src.dashboard_paths import inbox_path
+from src.digest.eligibility import Eligibility
+from src.digest.facts import (
+    KIND_COMPLETED,
+    KIND_PROGRESS,
+    KIND_PROVIDER,
+    KIND_REROUTE,
+    KIND_STARTED,
+    DigestWindow,
+)
+from src.discord.render_budget import DIGEST, GLYPH_DIGEST, compose, link_line
+
+#: Hard ceiling for the rendered message (§3.2's digest row).
+MAX_CHARS = DIGEST.chars
+
+#: How many highlights a normal digest shows before it switches to a count.
+#: §3.2 allows three body lines: the header with its counts is one, so two are
+#: left for the sections a reader actually reads.
+MAX_HIGHLIGHTS = DIGEST.body_lines - 1
+
+#: Longest a single highlight line may be before it is elided.
+MAX_HIGHLIGHT_CHARS = 120
+
+_MENTION_TOKEN = re.compile(r"<@[!&]?\d+>|<#\d+>")
+_WHITESPACE = re.compile(r"\s+")
+_TRACEBACK = re.compile(r"traceback \(most recent call last\)", re.IGNORECASE)
+
+_KIND_VERB = {
+    KIND_COMPLETED: "completed",
+    KIND_PROGRESS: "progress",
+    KIND_STARTED: "started",
+}
+
+
+def sanitise(text: str) -> str:
+    """One safe line: no mentions, no newlines, no log spill.
+
+    Raw Discord mention tokens are dropped outright; a bare ``@`` keeps its
+    character but gains a zero-width space so ``@everyone`` typed by a human
+    into a task title cannot ping a server from a routine digest.
+    """
+    text = _MENTION_TOKEN.sub("", text or "")
+    if _TRACEBACK.search(text):
+        # A pasted traceback is never a useful highlight; keep the first line.
+        text = text.split("\n", 1)[0]
+    text = _WHITESPACE.sub(" ", text).strip()
+    text = text.replace("`", "")
+    return text.replace("@", "@\u200b")
+
+
+def _elide(text: str, limit: int = MAX_HIGHLIGHT_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _window_label(window: DigestWindow) -> str:
+    hours = window.hours
+    if window.catchup:
+        return f"catch-up, last {hours:.0f}h"
+    if hours <= 0:
+        return "latest"
+    if abs(hours - 1.0) < 0.01:
+        return "last hour"
+    return f"last {hours:.0f}h"
+
+
+def _highlight_line(fact, project_names: dict[str, str]) -> str:
+    detail = sanitise(fact.detail) or sanitise(fact.title)
+    if fact.fleet:
+        # Daemon health belongs to no project or task: its title names the
+        # subject ("provider codex") and its detail says what happened.
+        return _elide(f"• {sanitise(fact.title)}: {detail}")
+    project = sanitise(project_names.get(fact.project_id, fact.project_id))
+    verb = _KIND_VERB.get(fact.kind, fact.kind)
+    return _elide(f"• {project}: {verb} — {detail} ({sanitise(fact.task_id)})")
+
+
+def render_digest(
+    eligibility: Eligibility,
+    window: DigestWindow,
+    *,
+    project_names: dict[str, str] | None = None,
+    dashboard_url: str = "",
+    dashboard_notice: str = "",
+    open_escalations: int = 0,
+    max_chars: int = MAX_CHARS,
+    max_highlights: int = MAX_HIGHLIGHTS,
+    waiting_on_delivery: tuple[dict, ...] = (),
+) -> str:
+    """Render the message for an eligible window.
+
+    Raises ``ValueError`` if asked to render a suppressed window: silence has
+    no text, and a caller that renders one anyway is a bug worth failing on.
+    """
+    if not eligibility.send:
+        raise ValueError(f"suppressed window has no message ({eligibility.reason})")
+
+    names = project_names or {}
+    completed = eligibility.completed_count
+    started = sum(1 for fact in eligibility.facts if fact.kind == KIND_STARTED)
+    progressed = sum(1 for fact in eligibility.facts if fact.kind == KIND_PROGRESS)
+    providers = sum(1 for fact in eligibility.facts if fact.kind == KIND_PROVIDER)
+    reroutes = sum(1 for fact in eligibility.facts if fact.kind == KIND_REROUTE)
+    counts = []
+    if providers:
+        counts.append(f"{providers} provider change" + ("" if providers == 1 else "s"))
+    if reroutes:
+        counts.append(f"{reroutes} re-route batch" + ("" if reroutes == 1 else "es"))
+    if completed:
+        counts.append(f"{completed} completed")
+    if progressed:
+        counts.append(f"{progressed} progressed")
+    if started:
+        counts.append(f"{started} started")
+    counts.append(f"{eligibility.active_count} active")
+    if waiting_on_delivery:
+        counts.append(f"{len(waiting_on_delivery)} waiting on delivery")
+    if open_escalations > 0:
+        word = "escalation" if open_escalations == 1 else "escalations"
+        counts.append(f"{open_escalations} open {word}")
+    ordered = list(eligibility.facts)
+    ordered.sort(key=lambda f: (f.rank, names.get(f.project_id, f.project_id), -f.at, f.key))
+
+    shown = ordered[: max(0, max_highlights - bool(waiting_on_delivery))]
+    overflow = len(ordered) - len(shown)
+    if overflow > 0:
+        # The count belongs with the other counts: when the window is too full
+        # for three lines the highlights give way first, and a digest that
+        # quietly dropped a fact would be lying about the window.
+        counts.append(f"+{overflow} more")
+    # The window and its counts share the first line: §3.2 leaves three body
+    # lines for a message that has to carry both, and the counts are what the
+    # reader scans for.
+    header = " · ".join([f"{GLYPH_DIGEST} Agent Queue — {_window_label(window)}", *counts])
+    link = link_line(dashboard_url, inbox_path(), notice=dashboard_notice)
+
+    def assemble(lines: list[str]) -> str:
+        return compose([header, *lines], DIGEST, link=link, chars=max_chars)
+
+    # Highlights are already ordered most-informative-first by eligibility;
+    # grouping by project keeps one project's lines together without
+    # reordering the ranking between groups.  Overflow is taken from the end:
+    # the least informative highlight goes before the counts ever do.
+    waits = ["• " + sanitise(f"{item['task_id']}: {item['reason']}")
+             for item in waiting_on_delivery[:1]]
+    text = assemble([*waits, *[_highlight_line(fact, names) for fact in shown]])
+    return text

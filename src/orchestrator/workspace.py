@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+from src.jobs.workspace import guard_workspace
+
+
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
-from src.git.manager import GitError, GitManager, is_valid_git_oid
-from src.integration.models import BranchKey, Fence
+from src.git.manager import GitError, GitManager, commit_identity, is_valid_git_oid
+
+# ``*_INTEGRATION_OWNER_ROLES`` live in that leaf module so this module and
+# ``workspace_attachments`` share one definition without an import cycle; see
+# there for what each set admits and why.
+from src.integration.models import (
+    REQUEUE_INTEGRATION_OWNER_ROLES,
+    RETRYABLE_INTEGRATION_OWNER_ROLES,
+    BranchKey,
+    Fence,
+)
 from src.integration.ownership import (
     BranchBusy,
     BranchOwnership,
@@ -15,6 +28,7 @@ from src.integration.ownership import (
     StaleFence,
 )
 from src.models import (
+    AgentState,
     KIND_MODE_WORKTREE,
     RepoSourceType,
     Task,
@@ -30,14 +44,6 @@ logger = logging.getLogger(__name__)
 # phrasings are in the wild depending on which command refused (`switch`,
 # `checkout`, `worktree add`).
 _BRANCH_BUSY_MARKERS = ("already checked out", "already used by worktree")
-
-# Owner roles whose ``owner_id`` is a task id and whose reservation therefore
-# survives its writer session.  ``arelease_integration_writer_for_retry``
-# self-transfers one of these back to ``reserved``; ``collector`` (owned by an
-# operation/batch) and ``verifier`` (reused while still attached, see
-# ``RepairService._reuse_verifier_on``) are deliberately absent.
-RETRYABLE_INTEGRATION_OWNER_ROLES = frozenset({"worker", "repair"})
-
 
 def _is_branch_busy_error(exc: Exception) -> bool:
     """True when a git failure is "that branch lives in another worktree"."""
@@ -189,17 +195,23 @@ class WorkspaceMixin:
         project = await self.db.get_project(task.project_id)
         integration_origin = None
         integration_fence = None
-        if getattr(project, "hierarchical_integration_mode", "disabled") in {
-            "hierarchy",
-            "train",
-        }:
+        from src.integration.train_policy import worker_integration_enabled
+
+        if await worker_integration_enabled(self.db, project):
             try:
                 integration_origin, integration_fence, _integration_role = (
                     await self._hierarchy_origin_and_fence(task, project)
                 )
             except (BranchBusy, StaleFence, ValueError) as exc:
                 logger.info("Task %s hierarchy workspace wait: %s", task.id, exc)
-                self._workspace_wait_reasons[task.id] = "branch_materialization_pending"
+                from src.integration.stacked_branches import (
+                    StackPrerequisitesConflict, StackPreparationChanged,
+                )
+
+                self._workspace_wait_reasons[task.id] = (
+                    exc.code if isinstance(exc, (StackPrerequisitesConflict, StackPreparationChanged))
+                    else "branch_materialization_pending"
+                )
                 return None
         lock_mode = task.workspace_mode or WorkspaceMode.EXCLUSIVE
 
@@ -372,10 +384,12 @@ class WorkspaceMixin:
         if integration_origin is None and await self.db.get_task_meta(task.id, CHECKPOINT_META):
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
-                await self.db.update_task(task.id, branch_name=branch)
-                if is_git_workspace:
-                    await self._ensure_control_files_excluded(workspace)
-                return workspace  # Preserve the resumed task's plan files too.
+                # None: a foreign checkpoint was discarded; prepare normally.
+                if branch is not None:
+                    await self.db.update_task(task.id, branch_name=branch)
+                    if is_git_workspace:
+                        await self._ensure_control_files_excluded(workspace)
+                    return workspace  # Preserve the resumed task's plan files too.
             except Exception as exc:
                 logger.error("Cannot restore paused task %s: %s", task.id, exc)
                 self._remove_sentinel(workspace)
@@ -395,7 +409,7 @@ class WorkspaceMixin:
         #   steps in the chain accumulate commits on a single branch.
         #   This is what enables the "one PR for the whole plan" workflow
         #   in _complete_workspace.
-        if integration_origin is not None:
+        if integration_origin is not None or task.branch_name:
             branch_name = task.branch_name
         elif task.is_plan_subtask and task.parent_task_id:
             parent = await self.db.get_task(task.parent_task_id)
@@ -431,7 +445,7 @@ class WorkspaceMixin:
                 await self._ensure_control_files_excluded(workspace)
                 base_path = await self.git.aworktree_base_path(workspace)
                 if base_path and await self.git.ahas_remote(base_path):
-                    await self.git._arun(["fetch", "origin"], cwd=base_path)
+                    await self.git.afetch_origin(base_path, repository_url=repo_url)
             elif is_git_workspace:
                 # Workspace source types determine the git setup strategy:
                 #
@@ -489,16 +503,29 @@ class WorkspaceMixin:
                     # Fetch is automatically serialized by the GitManager
                     # lock provider for branch-isolated workspaces.
                     if await self.git.ahas_remote(workspace):
-                        await self.git._arun(["fetch", "origin"], cwd=workspace)
-                    try:
-                        await self.git._arun(["checkout", default_branch], cwd=workspace)
-                    except GitError:
-                        pass  # May already be on default branch
-                    if await self.git.ahas_remote(workspace):
-                        await self.git._arun(
-                            ["reset", "--hard", f"origin/{default_branch}"],
-                            cwd=workspace,
-                        )
+                        await self.git.afetch_origin(workspace, repository_url=repo_url)
+                    if task.branch_name:
+                        from src.integration.owner_recovery import resume_recovery_snapshots
+
+                        if task.repo_id:
+                            await resume_recovery_snapshots(
+                                self.db, self.git, workspace, task.repo_id, branch_name,
+                                repository_url=repo_url,
+                            )
+                        start = await self.git.arev_parse(workspace, f"origin/{default_branch}")
+                        start = start or await self.git.arev_parse(workspace, default_branch)
+                        if start is None:
+                            raise GitError("resume base is unavailable")
+                        await self.git.aprepare_child_branch(workspace, branch_name, start)
+                    else:
+                        try:
+                            await self.git._arun(["checkout", default_branch], cwd=workspace)
+                        except GitError:
+                            pass  # May already be on default branch
+                        if await self.git.ahas_remote(workspace):
+                            await self.git._arun(
+                                ["reset", "--hard", f"origin/{default_branch}"], cwd=workspace,
+                            )
                 else:
                     raise GitError(f"workspace is not a valid Git checkout: {workspace}")
 
@@ -507,6 +534,15 @@ class WorkspaceMixin:
         except Exception as e:
             # Layer 3: Git failure means no launch — release workspace and
             # clean up the sentinel so another task can use this workspace.
+            from src.integration.stacked_branches import (
+                StackPrerequisitesConflict, StackPreparationChanged,
+            )
+
+            if isinstance(e, (StackPrerequisitesConflict, StackPreparationChanged)):
+                self._workspace_wait_reasons[task.id] = e.code
+                self._remove_sentinel(workspace)
+                await self._release_workspace_and_cleanup(ws)
+                return None
             logger.error("Git setup failed for task %s in %s: %s", task.id, workspace, e)
             await self._emit_text_notify(
                 f"**Git Error:** Task `{task.id}` — branch setup failed: {e}\n"
@@ -522,19 +558,24 @@ class WorkspaceMixin:
         # 2. A new task failing to write its own plan because the file already exists
         # This covers both archived plans (.claude/plans/) and primary plan files
         # (.claude/plan.md, plan.md, etc.).
-        if integration_origin is None:
-            await self._cleanup_plan_files_before_task(
-                workspace, task.id, branch_name=branch_name, default_branch=default_branch
-            )
+        if integration_origin is None and not task.branch_name:
+            # Its plan-deletion commits land on the task branch, which the
+            # worker will publish: they carry the project's identity.
+            project = await self.db.get_project(task.project_id)
+            with commit_identity(self.git.resolve_commit_identity(project)):
+                await self._cleanup_plan_files_before_task(
+                    workspace, task.id, branch_name=branch_name, default_branch=default_branch
+                )
 
         return workspace
 
     async def _hierarchy_origin_and_fence(
-        self, task: Task, project
+        self, task: Task, project, *, preparing_session_id=None, preparing_workspace_id=None,
+        preparation_workspace=None,
     ) -> tuple[dict, Fence, str]:
         """Resolve exact origin/target and the server-derived current role."""
         # Claim selection and workspace preparation are separated by Git and
-        # slot acquisition. Re-check receipt-backed sibling prerequisites at
+        # slot acquisition. Re-check current sibling delivery proof at
         # this second boundary so a reopened prerequisite cannot race a child
         # into a checkout that no longer contains its delivered work.
         if not await self.db.is_hierarchy_task_runnable(task.id):
@@ -542,6 +583,21 @@ class WorkspaceMixin:
         repository_id = getattr(project, "integration_repository_id", None)
         if not repository_id or task.repo_id != repository_id:
             raise ValueError("task is not bound to the designated repository")
+        from src.integration.repair import OrdinaryRepairService
+
+        ordinary = await OrdinaryRepairService(self.db).input(task.id)
+        if ordinary is not None:
+            from src.integration.lock import BranchLock
+
+            if (ordinary["repository_id"] != repository_id
+                or ordinary["target_ref"].removeprefix("refs/heads/") != task.branch_name):
+                raise ValueError("ordinary repair task no longer names its allocated target")
+            target = BranchKey(repository_id=repository_id, branch=ordinary["target_ref"])
+            fence = await BranchLock(self.db).acquire(target, task.id, role="repair")
+            return ({"base_sha": ordinary["starting_sha"], "reserved": True,
+                     "materialized": True, "ordinary_repair": True,
+                     "epic_refresh": ordinary["batch_id"].startswith("train-epic-refresh-")},
+                    fence, "repair")
         repair = await self.db.get_active_integration_repair_for_task(task.id)
         if repair is not None:
             if repair.get("writer_kind") != "repair_delegate":
@@ -573,18 +629,39 @@ class WorkspaceMixin:
                     "reserved": True,
                     "materialized": True,
                     "operation_id": repair["id"],
+                    "preserved_progress": (repair.get("stage_dossier") or {}).get(
+                        "preserved_progress"
+                    ),
                 }
+                if (
+                    origin["preserved_progress"]
+                    and origin["preserved_progress"]["subject"] != repair["stage_subject"]
+                ):
+                    origin["preserved_progress"] = None
             else:
                 raise ValueError("repair operation target kind is invalid")
-            if task.branch_name != branch:
+            if (task.branch_name or "").removeprefix("refs/heads/") != branch.removeprefix("refs/heads/"):
                 raise ValueError("repair delegate branch does not match its target")
             target = BranchKey(repository_id=repository_id, branch=branch)
             owner = await BranchOwnership(self.db).get_owner(target)
+            if owner is not None and owner.get("fence") is not None:
+                from src.integration.lock import BranchLock
+
+                await BranchLock(self.db).acquire(target, task.id, role="repair")
+                owner = await BranchOwnership(self.db).get_owner(target)
             if (
                 owner is None
                 or owner["owner_id"] != task.id
                 or owner["owner_role"] != "repair"
-                or owner["handoff_state"] != "reserved"
+                or not (
+                    owner.get("fence") is not None
+                    or owner["handoff_state"] == "reserved"
+                    or (owner["handoff_state"] == "attached"
+                        and preparing_session_id is not None
+                        and preparing_workspace_id is not None
+                        and owner["session_id"] == preparing_session_id
+                        and owner["workspace_id"] == preparing_workspace_id)
+                )
             ):
                 raise BranchBusy("repair branch is not reserved by this delegate")
             return (
@@ -606,56 +683,275 @@ class WorkspaceMixin:
         origin = await self.db.get_task_branch_origin_for_promotion(subject_id, repository_id)
         if origin is None or not origin.get("reserved") or not origin.get("materialized"):
             raise ValueError("exact branch origin is not materialized")
-        prerequisite_head = await self.db.hierarchy_prerequisite_delivery_head(task.id)
+        canonical_base_sha = origin["base_sha"]
+        from src.integration.stacked_branches import EpicRefresh, StackedBranches, stacked_policy
+
+        repair_inputs = await self.db.get_task_meta(task.id, "stack_repair_inputs")
+        stack_repair = await self.db.get_task_meta(task.id, "stack_repair_for")
+        refreshed_head = None
+        if operation is None and not stack_repair:
+            refreshed_head = await EpicRefresh(
+                self.db, getattr(self, "integration_train", None),
+            ).child_base(task, origin)
+        parent_head = refreshed_head or (
+            await self.db.hierarchy_prerequisite_delivery_head(task.id)
+            if operation is None and not stack_repair and not stacked_policy(project) else None
+        )
+        stack = await StackedBranches(self.db).prepare(
+            task.id, parent_base=parent_head, workspace=preparation_workspace,
+        ) if operation is None and not stack_repair else None
+        if stack is None and operation is None and not stack_repair and parent_head is None:
+            parent_head = await self.db.hierarchy_prerequisite_delivery_head(task.id)
+            if parent_head:
+                stack = await StackedBranches(self.db).prepare(
+                    task.id, parent_base=parent_head, workspace=preparation_workspace,
+                )
+        prerequisite_head = (stack["base_sha"] if stack else
+                             parent_head)
+        if repair_inputs:
+            origin = dict(origin) | {"stack_repair_inputs": repair_inputs}
+        if stack:
+            origin = dict(origin) | stack
+            if hasattr(stack, "view"):
+                origin |= {"preparation_view": stack.view, "preparation_proofs": stack.proofs}
+                if stack.repair:
+                    origin["preparation_repair"] = stack.repair
         if prerequisite_head is not None:
-            # This does not mutate the reserved origin.  A delivery receipt is
-            # the parent collector's proof that this descendant head contains
-            # the reviewed prerequisite; preparing from it makes the child's
-            # first push a fast-forward from its immutable origin rather than
-            # a copied sibling tree or an arbitrary local merge.
-            origin = dict(origin) | {"base_sha": prerequisite_head}
+            # Overlay the proven parent tip without changing the filing origin.
+            # Existing child commits must survive this update, including retries.
+            origin = dict(origin) | {"base_sha": prerequisite_head,
+                                     "prerequisite_head": prerequisite_head}
         branch = subject.branch_name or ""
-        if branch != f"aq/{subject_id}" or task.branch_name != branch:
+        checkpoint = await self.db.get_integration_checkpoint(subject_id)
+        if (
+            not branch
+            or checkpoint is None
+            or checkpoint["repository_id"] != repository_id
+            or checkpoint["branch"] != branch
+            or task.branch_name != branch
+        ):
             raise ValueError("task branch does not match its canonical origin")
         target = BranchKey(repository_id=repository_id, branch=branch)
         ownership = BranchOwnership(self.db)
         owner = await ownership.get_owner(target)
+        if owner is not None and owner.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            await BranchLock(self.db).acquire(
+                target, task.id, role="verifier" if operation is not None else "worker"
+            )
+            owner = await ownership.get_owner(target)
+        if (
+            operation is None
+            and subject_id == task.id
+            and owner is not None
+            and owner["owner_id"] == task.id
+            and owner["owner_role"] == "worker"
+            and owner["handoff_state"] in {"released", "handoff_pending"}
+        ):
+            # A reopened producer retains its canonical origin, but its prior
+            # session released ownership at close -- or asked for a handoff
+            # that never completed, which left the row ``handoff_pending``.
+            # Reserve a fresh fence for the new attempt before preparing the
+            # workspace.
+            if owner["handoff_state"] == "released":
+                await ownership.acquire(target, task.id, "worker")
+            else:
+                # ``handoff_pending`` is not a free row: it fences the branch
+                # until the prior writer is *proved* gone, and ``acquire``
+                # refuses it for exactly that reason.  This is still the same
+                # task's own reservation, so take it back the way every close
+                # path does -- the ordinary self-transfer, which runs that
+                # proof first.  An unproven row stays fenced and the caller
+                # backs off to the owner-recovery sweep instead of acquiring a
+                # branch a live writer may still hold.
+                if preparing_session_id and owner.get("session_id") == preparing_session_id:
+                    from src.integration.preparation_handoff import resume_preparation_handoff
+
+                    if not await resume_preparation_handoff(
+                        self, owner, session_id=preparing_session_id,
+                        workspace_id=preparing_workspace_id,
+                    ):
+                        raise BranchBusy("current preparation branch handoff remains unproven")
+                else:
+                    # External reclaim still requires the prior provider stopped.
+                    reclamation = BranchOwnership(
+                        self.db, confirm_handoff=self.aconfirm_integration_owner_handoff,
+                    )
+                    try:
+                        await reclamation.transfer(
+                            Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
+                            task.id, "worker",
+                        )
+                    except BranchOwnershipError as exc:
+                        raise BranchBusy("own branch handoff is unproven") from exc
+            owner = await ownership.get_owner(target)
         role = str(owner["owner_role"]) if owner is not None else ""
         expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
         if (
             owner is None
             or owner["owner_id"] != task.id
             or role != expected_role
-            or owner["handoff_state"] != "reserved"
+            or not (
+                owner.get("fence") is not None
+                or owner["handoff_state"] == "reserved"
+                or (owner["handoff_state"] == "attached"
+                    and preparing_session_id is not None
+                    and preparing_workspace_id is not None
+                    and owner["session_id"] == preparing_session_id
+                    and owner["workspace_id"] == preparing_workspace_id)
+            )
         ):
             raise BranchBusy("canonical branch is not reserved by this task")
         if role == "verifier":
-            checkpoint = await self.db.get_integration_checkpoint(subject_id)
-            if checkpoint is None or not checkpoint.get("episode_id"):
+            if not checkpoint.get("episode_id"):
                 raise ValueError("verifier target has no active parent episode")
             origin = dict(origin) | {"base_sha": checkpoint["checkpoint_sha"]}
+        elif role == "worker":
+            progress = await self.db.get_task_meta(task.id, "supervisor_recovery_checkpoint")
+            if progress:
+                if (
+                    progress["repository_id"] != repository_id
+                    or progress["branch"] != branch
+                    or progress["base_sha"] != canonical_base_sha
+                ):
+                    raise ValueError("operator handoff checkpoint no longer matches the canonical origin")
+                origin = dict(origin) | {"operator_handoff": progress}
+            elif prerequisite_head is None:
+                # A stopped writer's saved work (provider failover, ``aq task
+                # stop``). A stacked child already merges its published branch.
+                from src.orchestrator.stranded_work import RESUME_POINT_META
+
+                resume = await self.db.get_task_meta(task.id, RESUME_POINT_META)
+                if resume and (
+                    resume.get("repository_id"), resume.get("branch"), resume.get("base_sha")
+                ) == (repository_id, branch.removeprefix("refs/heads/"), canonical_base_sha):
+                    origin = dict(origin) | {"resume_point": resume}
         return (
             origin,
             Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
             role,
         )
 
-    async def _hierarchy_repair_start(self, workspace: str, origin: dict, fence: Fence) -> str:
+    async def _hierarchy_repair_start(
+        self, workspace: str, origin: dict, fence: Fence, *, repository_url: str
+    ) -> str:
         """Preserve the published repair tip, proving its frozen base ancestry."""
         branch = fence.target.branch.removeprefix("refs/heads/")
         tracking = f"refs/remotes/origin/{branch}"
-        await self.git._arun(
-            ["fetch", "--no-tags", "origin", f"+refs/heads/{branch}:{tracking}"],
-            cwd=workspace,
-        )
-        head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
-        if not is_valid_git_oid(head) or await self.git.ais_ancestor(
-            workspace, origin["base_sha"], head, strict=True
-        ) is not True:
-            raise GitError("repair branch no longer descends from its frozen starting commit")
-        return head
+        await self.git.afetch_origin(workspace, repository_url=repository_url)
+        if origin.get("ordinary_repair"):
+            from src.git.manager import RemoteRefState
+            from src.integration.repair import UnpublishedRepairTarget
 
+            observed = await self.git.als_remote_ref(
+                workspace, branch, repository_url=repository_url,
+            )
+            if observed.state is RemoteRefState.ABSENT:
+                raise UnpublishedRepairTarget(fence.target.branch)
+            if observed.state is RemoteRefState.ERROR:
+                raise GitError(f"ordinary repair target observation failed: {observed.error}")
+        head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
+        if origin.get("ordinary_repair"):
+            if not is_valid_git_oid(head):
+                raise GitError("ordinary repair target is missing")
+            if origin.get("epic_refresh"):
+                from src.integration.stacked_branches import merge_heads
+
+                start = origin["base_sha"]
+                if await self.git.ais_ancestor(workspace, start, head, strict=True):
+                    return head
+                if await self.git.ais_ancestor(workspace, head, start, strict=True):
+                    return start
+                # Preserve epic progress and the failed refresh candidate;
+                # checkout only, publication still belongs to the repair lease.
+                return await merge_heads(self.git, workspace, head, [start], stamp=0)
+            # Remote movement is progress, including a rebuilt candidate.
+            # Never reset it to an obsolete allocation input or recreate a ref.
+            return head
+        progress = origin.get("preserved_progress")
+        if progress:
+            from src.integration.owner_recovery import consume_recovery_progress
+
+            if (progress["sha"] != origin["base_sha"]
+                or not await self.git.ais_ancestor(
+                    workspace, progress["base_sha"], progress["sha"], strict=True,
+                )):
+                raise GitError("preserved repair tip or canonical branch lineage changed")
+            try:
+                return await consume_recovery_progress(
+                    self.git, workspace, branch, progress, repository_url=repository_url,
+                )
+            except GitError as exc:
+                raise GitError(f"preserved repair tip is unusable: {exc}") from exc
+        if not is_valid_git_oid(head):
+            raise GitError("repair branch no longer descends from its frozen starting commit")
+        if await self.git.ais_ancestor(
+            workspace, origin["base_sha"], head, strict=True
+        ) is True:
+            return head
+        # A new stage froze a fresh start (e.g. the candidate was rebuilt onto
+        # a moved base) while the shared repair branch still carries the
+        # superseded prior stage's commits. This stage owns the branch under
+        # its fence: reset it to the frozen start, leased on the observed tip.
+        base_sha = str(origin["base_sha"])
+        if not is_valid_git_oid(base_sha):
+            raise GitError("repair branch no longer descends from its frozen starting commit")
+        try:
+            await self.git._arun(["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=workspace)
+        except GitError:
+            await self.git._arun(["fetch", "--no-tags", "origin", base_sha], cwd=workspace)
+        await self.git._apush_oid(
+            workspace, base_sha, branch,
+            force_with_lease=True, expected_old_oid=head,
+            repository_url=repository_url or None,
+        )
+        logger.warning(
+            "repair stage reset %s from superseded tip %s to frozen start %s",
+            branch, head, base_sha,
+        )
+        return base_sha
+
+    @guard_workspace("attachment")
     async def _prepare_exact_origin_workspace(
+        self, task: Task, project, attachment, origin: dict, fence: Fence,
+    ) -> str:
+        from src.git.manager import ChildPreparationConflict
+        from src.integration.stacked_branches import StackedBranches, verify_preparation
+
+        try:
+            if origin.get("preparation_view"):
+                # Push preparation discovers its checkout after resolving the
+                # origin. Include unpublished child commits before taking the
+                # mutation fence, so generated overlaps use the scratch regenerator.
+                view = origin["preparation_view"]
+                child_ref = task.branch_name.removeprefix("refs/heads/")
+                local = await self.git.arev_parse(
+                    attachment.workspace.workspace_path, "refs/heads/" + child_ref,
+                )
+                if local and local != view.watched_refs.get(child_ref):
+                    await verify_preparation(origin)
+                    stack = await StackedBranches(self.db).prepare(
+                        task.id, parent_base=origin["base_sha"],
+                        workspace=attachment.workspace.workspace_path,
+                    )
+                    origin = origin | stack | {
+                        "preparation_view": stack.view, "preparation_proofs": stack.proofs,
+                    }
+                    if stack.repair:
+                        origin["preparation_repair"] = stack.repair
+            branch = await self._prepare_exact_origin_workspace_locked(
+                task, project, attachment, origin, fence,
+            )
+            await verify_preparation(origin, finalize=True)
+            return branch
+        except ChildPreparationConflict as exc:
+            await StackedBranches(self.db).reserve_child_conflict(
+                task.id, exc, attachment.workspace.workspace_path,
+            )
+            raise
+
+    async def _prepare_exact_origin_workspace_locked(
         self,
         task: Task,
         project,
@@ -692,12 +988,44 @@ class WorkspaceMixin:
             return fence.target.branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
         role = owner["owner_role"] if owner else None
+        from src.integration.lock import REPAIR_START_SECONDS
+
         async with BranchOwnership(self.db).mutation_exclusion(
-            fence, expected_role=role
+            fence, expected_role=role,
+            timeout_seconds=REPAIR_START_SECONDS if role == "repair" else None,
         ):
+            from src.integration.owner_recovery import resume_recovery_snapshots
+
+            if role in {"worker", "repair"}:
+                await resume_recovery_snapshots(
+                    self.db, self.git, workspace, fence.target.repository_id, branch,
+                    repository_url=project.repo_url or "",
+                )
+            if origin.get("stack_repair_inputs"):
+                inputs = origin["stack_repair_inputs"]
+                await self.git._arun(
+                    ["fetch", "--no-tags", inputs["store"], *inputs["heads"]], cwd=workspace,
+                )
+            if ws.is_slot and origin.get("operator_handoff"):
+                base_sha = await self._operator_handoff_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
+            if ws.is_slot and origin.get("resume_point"):
+                base_sha = await self._resume_point_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             if ws.is_slot:
+                if origin.get("stack_store"):
+                    await self.git._arun(
+                        ["fetch", "--no-tags", str(origin["stack_store"]), base_sha], cwd=workspace,
+                    )
                 if role == "repair":
-                    base_sha = await self._hierarchy_repair_start(workspace, origin, fence)
+                    base_sha = await self._hierarchy_repair_start(
+                        workspace, origin, fence, repository_url=project.repo_url or ""
+                    )
+                preserve = {"preserve_branch": True} if (
+                    role == "worker"
+                ) else {}
                 await self._worktree_slots().reset_slot_for_task(
                     ws,
                     task,
@@ -705,6 +1033,8 @@ class WorkspaceMixin:
                     resume_branch=None,
                     target_branch=branch,
                     kind=attachment.kind,
+                    operator_handoff=bool(origin.get("operator_handoff")),
+                    **preserve,
                 )
                 return fence.target.branch
 
@@ -721,13 +1051,32 @@ class WorkspaceMixin:
 
             if not await self.git.avalidate_checkout(workspace):
                 raise GitError(f"workspace is not a valid Git checkout: {workspace}")
+            if origin.get("operator_handoff"):
+                base_sha = await self._operator_handoff_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             await self._ensure_control_files_excluded(workspace)
             if await self.git.ahas_uncommitted_changes(workspace):
                 await self.git.aforce_clean_workspace(workspace)
             if await self.git.ahas_remote(workspace):
-                await self.git._arun(["fetch", "origin"], cwd=workspace)
+                await self.git.afetch_origin(
+                    workspace, repository_url=project.repo_url or ""
+                )
             if role == "repair":
-                base_sha = await self._hierarchy_repair_start(workspace, origin, fence)
+                base_sha = await self._hierarchy_repair_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
+            if origin.get("stack_store"):
+                await self.git._arun(
+                    ["fetch", "--no-tags", str(origin["stack_store"]), base_sha], cwd=workspace,
+                )
+            if role == "worker":
+                await self.git.aprepare_child_branch(workspace, branch, base_sha)
+                return fence.target.branch
+            if origin.get("resume_point"):
+                base_sha = await self._resume_point_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
             actual_head = await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             if actual_head != base_sha:
@@ -735,6 +1084,45 @@ class WorkspaceMixin:
                     f"exact origin checkout resolved {actual_head or 'no HEAD'}, expected {base_sha}"
                 )
         return fence.target.branch
+
+    async def _operator_handoff_start(self, workspace, origin, fence, *, repository_url):
+        """Resume audited progress on the owned task branch, merging divergence."""
+        from src.integration.owner_recovery import consume_recovery_progress
+
+        progress = origin["operator_handoff"]
+        await self.git.afetch_origin(workspace, repository_url=repository_url)
+        sha = progress["sha"]
+        if await self.git.ais_ancestor(workspace, origin["base_sha"], sha, strict=True) is not True:
+            raise GitError("operator handoff progress does not descend from the canonical origin")
+        return await consume_recovery_progress(
+            self.git, workspace, fence.target.branch, progress,
+            repository_url=repository_url,
+        )
+
+    async def _resume_point_start(self, workspace, origin, fence, *, repository_url):
+        """Continue from the published branch while it still holds the saved WIP.
+
+        A branch rewound or rewritten since the save is someone else's call
+        now: start from the filing base as an ordinary preparation would.
+        """
+        resume = origin["resume_point"]
+        base_sha = str(origin["base_sha"])
+        branch = fence.target.branch.removeprefix("refs/heads/")
+        await self.git.afetch_origin(workspace, repository_url=repository_url)
+        head = await self.git.arev_parse(workspace, f"refs/remotes/origin/{branch}")
+        sha = resume.get("sha")
+        if (
+            is_valid_git_oid(sha)
+            and is_valid_git_oid(head)
+            and await self.git.ais_ancestor(workspace, base_sha, sha, strict=True) is True
+            and await self.git.ais_ancestor(workspace, sha, head, strict=True) is True
+        ):
+            return head
+        logger.warning(
+            "origin/%s no longer holds the saved WIP %s; starting from its origin %s",
+            branch, sha, base_sha,
+        )
+        return base_sha
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.
@@ -817,11 +1205,12 @@ class WorkspaceMixin:
         return a single ``warming`` bool computed *before* growth ran, which
         made all three indistinguishable — see :class:`SlotGrowth`.
         """
-        cap = self._project_slot_cap(project)
-
         kind = await self.db.resolve_workspace_kind(project.id, kind_id)
         if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
             return SlotGrowth()
+        from src.workspace_disable import kind_slot_cap
+
+        cap = kind_slot_cap(self._project_slot_cap(project), kind)
 
         base = await self.db.find_worktree_base(project.id, kind.id)
         if base is None:
@@ -838,7 +1227,7 @@ class WorkspaceMixin:
         self._register_slot_bases(slots, base.workspace_path)
 
         in_cap = [s for s in slots if (s.slot_index or 0) < cap]
-        free = [s for s in in_cap if s.locked_by_agent_id is None]
+        free = [s for s in in_cap if s.enabled and s.locked_by_agent_id is None]
         warming = len(in_cap) < cap
         if free or len(in_cap) >= cap:
             # Something is acquirable, or we are already at cap: no growth.
@@ -912,6 +1301,8 @@ class WorkspaceMixin:
         lands as one PR — that maps to the continuation/resume path rather
         than a fresh ``aq/<task_id>`` (worktree-execution §6.1).
         """
+        if task.branch_name:
+            return task.branch_name.removeprefix("refs/heads/")
         if not (task.is_plan_subtask and task.parent_task_id):
             return None
         parent = await self.db.get_task(task.parent_task_id)
@@ -948,7 +1339,8 @@ class WorkspaceMixin:
         from src.orchestrator.worktree_manager import task_branch_name
 
         branch = await self._resume_branch_for(task) or task_branch_name(task.id)
-        cap = self._project_slot_cap(project)
+        from src.workspace_disable import slot_cap
+
         affinity: dict[str, str] = {}
         seen: set[str] = set()
         for req in await effective_requirements(self.db, task):
@@ -965,7 +1357,7 @@ class WorkspaceMixin:
                 slots = [
                     s
                     for s in await self.db.list_slots_for_base(base.id)
-                    if (s.slot_index or 0) < cap
+                    if s.enabled and (s.slot_index or 0) < slot_cap(project, kind)
                 ]
                 holder = await self._worktree_slots().find_slot_holding_branch(
                     base, slots, branch
@@ -990,7 +1382,9 @@ class WorkspaceMixin:
         rows, not a filename convention.
         """
         for slot in slots:
-            self._worktree_base_paths[slot.workspace_path] = base_path
+            self._worktree_base_paths[os.path.normcase(os.path.realpath(slot.workspace_path))] = (
+                os.path.normcase(os.path.realpath(base_path))
+            )
         self._git_mutex(base_path)  # ensure the lock exists for the resolver
 
     def _recover_worktree_base_paths(self, all_workspaces: list[Workspace]) -> None:
@@ -1055,6 +1449,11 @@ class WorkspaceMixin:
         if base is not None:
             self._register_slot_bases([ws], base.workspace_path)
 
+        if task.status == TaskStatus.RESUME_PENDING:
+            from src.wait_runtime.resume import verify_saved_branch
+
+            await verify_saved_branch(self, task, slot_dir)
+
         resume_branch = None if integration_origin is not None else await self._resume_branch_for(task)
 
         try:
@@ -1077,7 +1476,13 @@ class WorkspaceMixin:
                     ws, task, **reset_kwargs
                 )
         except Exception as e:
-            if _is_branch_busy_error(e) and resume_branch:
+            from src.integration.stacked_branches import (
+                StackPrerequisitesConflict, StackPreparationChanged,
+            )
+
+            if isinstance(e, (StackPrerequisitesConflict, StackPreparationChanged)):
+                self._workspace_wait_reasons[task.id] = e.code
+            elif _is_branch_busy_error(e) and resume_branch:
                 # Two plan subtasks of the same parent resume the *same*
                 # branch, and git refuses to check one branch out in two
                 # worktrees.  That is a scheduling wait, not a git error:
@@ -1155,7 +1560,15 @@ class WorkspaceMixin:
         else:
             await self.db.release_workspace(ws.id)
 
-    async def aconfirm_integration_owner_handoff(self, owner: dict) -> bool:
+    async def _integration_preparation_cleanup_unproved(self, owner: dict) -> bool:
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        task_id = owner.get("owner_id")
+        return bool(task_id and await self.db.get_task_meta(task_id, PREPARE_CLEANUP_HOLD) is not None)
+
+    async def aconfirm_integration_owner_handoff(
+        self, owner: dict, *, save_wip_reason: str | None = None
+    ) -> bool:
         """Stop and detach an attached integration writer before fencing it out.
 
         A database unlock is not termination evidence: slot worktrees retain
@@ -1163,11 +1576,23 @@ class WorkspaceMixin:
         uncached ``confirm_stopped`` probe, then requires a slot to be truly
         detached before releasing it.  If any proof is unavailable, retain
         the lock and return ``False`` so the ownership record stays fenced.
+
+        By default a dirty or unpushed checkout is refused before the writer
+        is stopped.  ``save_wip_reason`` is for a writer that cannot save its
+        own work -- out of usage, or stopped by an operator: the writer is
+        stopped first, then the whole checkout is committed as ``WIP saved by
+        AQ: <reason>`` and fast-forwarded onto the task's own branch, and the
+        ordinary proof runs on the result.  A branch that cannot fast-forward
+        stays fenced, for owner recovery to preserve.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
             integration_handoff_release_is_confirmed,
+            orphaned_integration_pool_handoff_exclusion,
+            _mark_orphaned_integration_pool_handoff_released_on,
             mark_integration_handoff_released,
         )
 
@@ -1176,6 +1601,13 @@ class WorkspaceMixin:
         if not session_id or not workspace_id:
             return False
         session = await self.db.get_session(session_id)
+        # Public transfer must stop a live writer. The no-stop pool helper is
+        # reserved for that worker's own close, never an external transfer.
+        if (session is not None and session.lifecycle == "pool"
+                and session.state == "stopped" and session.desired_state == "stopped"):
+            held_task = await self.db.get_task(session.task_id) if session.task_id else None
+            if held_task is not None and held_task.status != TaskStatus.IN_PROGRESS:
+                return await self.aconfirm_stopped_integration_pool_owner_handoff(owner)
         workspace = await self.db.get_workspace(workspace_id)
         repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
         task = await self.db.get_task(session.task_id) if session and session.task_id else None
@@ -1189,14 +1621,152 @@ class WorkspaceMixin:
             or session.project_id != repository.project_id
             or task.project_id != repository.project_id
             or task.repo_id != repository.id
-            or task.branch_name != owner.get("ref")
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
-            return False
+            # A failed pool prepare used to release its task bindings before
+            # detaching this owner.  Its stopped attempt is enough to recover
+            # only if the exact old session/worktree identity has not been
+            # reused; see the helper for the full fence set.  This path only
+            # probes the retired instance token and never stops a process.
+            # The workspace row remains locked for the whole external proof.
+            # A later pool claim therefore cannot acquire this checkout in
+            # between the retired-session snapshot and ``switch --detach``.
+            # That exclusion is the difference between safely detaching the
+            # historical owner and rewriting a successor's checkout.
+            orphan_workspace = workspace
+            orphan_base = (
+                await self.db.get_workspace(orphan_workspace.base_workspace_id)
+                if orphan_workspace is not None and orphan_workspace.is_slot
+                and orphan_workspace.base_workspace_id
+                else None
+            )
+            async with orphaned_integration_pool_handoff_exclusion(self.db, owner) as (
+                conn,
+                recovery,
+            ):
+                if recovery is None:
+                    return False
+                if orphan_workspace is None or orphan_workspace.id != recovery["workspace_id"]:
+                    return False
+                try:
+                    # Probe only the retired instance token.  Unlike ``stop``,
+                    # confirmation is read-only and a reused session name cannot
+                    # make this touch a successor process.
+                    provider = self.session_providers.create(recovery["session_provider"], self.config)
+                    retired_handle = SessionHandle(
+                        name=recovery["session_name"],
+                        provider=recovery["session_provider"],
+                        instance_token=recovery["session_instance_token"],
+                    )
+                    if not await provider.confirm_stopped(retired_handle):
+                        return False
+                    from src.orchestrator.workspace_attachments import (
+                        detach_workspace_for_integration_handoff,
+                    )
+
+                    if orphan_workspace.is_slot:
+                        if (
+                            orphan_base is None
+                            or orphan_base.project_id != orphan_workspace.project_id
+                        ):
+                            return False
+                        detached = await detach_workspace_for_integration_handoff(
+                            self.git,
+                            self._git_mutex,
+                            orphan_workspace,
+                            mutex_path=orphan_base.workspace_path,
+                            expected_branch=str(owner["ref"]),
+                            repository_url=repository.url,
+                            default_branch=repository.default_branch,
+                        )
+                    else:
+                        detached = await detach_workspace_for_integration_handoff(
+                            self.git,
+                            self._git_mutex,
+                            orphan_workspace,
+                            expected_branch=str(owner["ref"]),
+                            repository_url=repository.url,
+                            default_branch=repository.default_branch,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Could not recover orphaned integration workspace %s",
+                        recovery["workspace_id"],
+                        exc_info=True,
+                    )
+                    return False
+                return detached and await _mark_orphaned_integration_pool_handoff_released_on(
+                    conn, owner, recovery
+                )
         current_branch = await self.git.aget_current_branch(
             workspace.workspace_path, strict=True
         )
-        if current_branch not in {owner.get("ref"), "HEAD"}:
+        if current_branch not in {str(owner.get("ref") or "").removeprefix("refs/heads/"), "HEAD"}:
+            return False
+        preparation_epoch = (
+            task.claim_epoch
+            if session.lifecycle == "pool" and session.claim_phase == "preparing"
+            and session.last_claim_epoch == task.claim_epoch
+            and task.status == TaskStatus.IN_PROGRESS
+            and task.assigned_agent_id == session.agent_id
+            else None
+        )
+        # Read-only checkout proof must pass *before* we kill a live writer.
+        # Stopping the session destroys its process; if the checkout turns out
+        # to be dirty or unpushed at that point there is no recovery, and any
+        # subsequent probe/detach will race a checkout that is no longer under
+        # the writer's control.  Proving the Git state first lets us refuse
+        # cleanly while the writer is still intact.
+        # Only the task's own writer has its checkout saved onto the task
+        # branch: a verifier's scratch edits are not the task's work.
+        may_save_wip = (
+            save_wip_reason is not None
+            and preparation_epoch is None
+            and owner.get("owner_role") in RETRYABLE_INTEGRATION_OWNER_ROLES
+            and owner.get("owner_id") == task.id
+        )
+        try:
+            from src.orchestrator.workspace_attachments import (
+                probe_slot_for_integration_handoff,
+                probe_workspace_for_integration_handoff,
+            )
+
+            if workspace.is_slot:
+                probed = await probe_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
+                )
+            else:
+                probed = await probe_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
+                )
+            if not probed and not may_save_wip:
+                logger.warning(
+                    "Refusing integration handoff %s: checkout not clean and pushed "
+                    "before writer stop (workspace=%s, branch=%s)",
+                    owner.get("id"), workspace.id, owner.get("ref"),
+                )
+                return False
+        except Exception:
+            logger.warning(
+                "Could not probe integration workspace %s before writer stop",
+                workspace.id, exc_info=True,
+            )
             return False
         try:
             provider = self.session_providers.create(session.provider, self.config)
@@ -1211,6 +1781,58 @@ class WorkspaceMixin:
         except Exception:
             logger.warning("Could not confirm integration writer %s stopped", session_id, exc_info=True)
             return False
+        if not probed:
+            from src.git.manager import commit_identity
+            from src.orchestrator.stranded_work import save_wip_to_task_branch
+
+            project = await self.db.get_project(task.project_id)
+            with commit_identity(self.git.resolve_commit_identity(project)):
+                saved = await save_wip_to_task_branch(
+                    self.git,
+                    workspace.workspace_path,
+                    str(owner["ref"]),
+                    save_wip_reason,
+                    repository_url=repository.url,
+                    event_bus=self.bus,
+                    project_id=task.project_id,
+                )
+            if saved.status not in {"pushed", "clean"}:
+                # The writer is gone; say so, so owner recovery can preserve
+                # the checkout instead of waiting on a session that is dead.
+                await self.db.update_session(
+                    session.id,
+                    state="stopped",
+                    desired_state="stopped",
+                    end_reason="integration_handoff_wip_unsaved",
+                )
+                logger.warning(
+                    "Integration handoff %s stopped its writer but could not save WIP "
+                    "onto %s: %s",
+                    owner.get("id"), owner.get("ref"), saved.error,
+                )
+                return False
+        if (
+            save_wip_reason is not None
+            and preparation_epoch is None
+            and owner.get("owner_role") == "worker"
+            and owner.get("owner_id") == task.id
+        ):
+            # The next worker continues from the saved (or already pushed)
+            # head instead of restarting at the branch's filing base.  The
+            # writer is already stopped: a missing resume point only costs
+            # the next worker its start, never this handoff.
+            from src.orchestrator.stranded_work import record_resume_point
+
+            try:
+                head = (
+                    saved.commit if not probed
+                    else await self.git.arev_parse(workspace.workspace_path, "HEAD")
+                )
+                await record_resume_point(
+                    self.db, task.id, repository.id, str(owner["ref"]), head
+                )
+            except Exception:
+                logger.warning("Task %s: resume point not recorded", task.id, exc_info=True)
 
         try:
             from src.orchestrator.workspace_attachments import (
@@ -1225,6 +1847,9 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -1232,6 +1857,9 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             if not detached:
                 return False
@@ -1257,13 +1885,170 @@ class WorkspaceMixin:
                 end_reason="integration_handoff",
             )
         if not await mark_integration_handoff_released(
-            self.db, owner, workspace=workspace, task_id=session.task_id
+            self.db, owner, workspace=workspace, task_id=session.task_id,
+            preparation_epoch=preparation_epoch,
         ):
             return False
         released = await self.db.get_workspace(workspace.id)
         return released is not None and released.locked_by_task_id is None
 
-    async def aconfirm_integration_pool_owner_handoff(self, owner: dict) -> bool:
+    async def aconfirm_stopped_integration_pool_owner_handoff(self, owner: dict) -> bool:
+        """Recover one stale stopped pool writer without changing its requeued task.
+
+        This is intentionally narrower than the live pool close confirmer:
+        it accepts only the exact expired attachment left by a confirmed pool
+        teardown, and refuses any agent/session/workspace reuse. The task's
+        current READY claim epoch is evidence of a successor attempt, not a
+        value to restore or overwrite.
+        """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
+        session_id = owner.get("session_id")
+        workspace_id = owner.get("workspace_id")
+        from src.orchestrator.workspace_attachments import (
+            integration_handoff_release_is_confirmed,
+            mark_stopped_integration_pool_handoff_released,
+        )
+
+        if await integration_handoff_release_is_confirmed(self.db, owner):
+            return True
+        if not session_id or not workspace_id:
+            return False
+        session = await self.db.get_session(session_id)
+        workspace = await self.db.get_workspace(workspace_id)
+        repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
+        task = await self.db.get_task(owner.get("owner_id"))
+        current_owner = await BranchOwnership(self.db).get_owner(
+            BranchKey(
+                repository_id=str(owner.get("repository_id") or ""),
+                branch=str(owner.get("ref") or ""),
+            )
+        )
+        agent = await self.db.get_agent(session.agent_id) if session and session.agent_id else None
+        newer_session = (
+            any(
+                candidate.id != session.id and candidate.started_at >= session.started_at
+                for candidate in await self.db.list_sessions(agent_id=session.agent_id)
+            )
+            if session and session.agent_id
+            else True
+        )
+        unlocked_verifier = (
+            workspace is not None and owner.get("owner_role") == "verifier"
+            and workspace.locked_by_task_id is None
+            and workspace.locked_by_agent_id is None
+        )
+        if (
+            session is None
+            or workspace is None
+            or repository is None
+            or task is None
+            or agent is None
+            or current_owner is None
+            or newer_session
+            or current_owner["fence_token"] != owner.get("fence_token")
+            or current_owner["owner_id"] != owner.get("owner_id")
+            or current_owner["owner_role"] != owner.get("owner_role")
+            or current_owner["handoff_state"] != "handoff_pending"
+            or current_owner["session_id"] != session_id
+            or current_owner["workspace_id"] != workspace_id
+            or session.lifecycle != "pool"
+            or session.state != "stopped"
+            or session.desired_state != "stopped"
+            or owner.get("owner_role") not in {"worker", "repair", "verifier"}
+            or session.task_id != owner.get("owner_id")
+            or (not unlocked_verifier and (
+                workspace.locked_by_task_id != owner.get("owner_id")
+                or workspace.locked_by_agent_id != session.agent_id
+            ))
+            or workspace.project_id != repository.project_id
+            or session.project_id != repository.project_id
+            or task.project_id != repository.project_id
+            or task.repo_id != repository.id
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
+            or task.status != TaskStatus.READY
+            or task.assigned_agent_id is not None
+            or agent.state != AgentState.RETIRED
+            or agent.current_task_id != owner.get("owner_id")
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
+        ):
+            return False
+        confirmed_later_sessions = {}
+        try:
+            if unlocked_verifier:
+                for later in await self.db.list_sessions():
+                    if (later.id == session.id or later.started_at < session.started_at
+                            or later.work_dir != session.work_dir):
+                        continue
+                    if later.state != "stopped" or later.desired_state != "stopped":
+                        return False
+                    later_provider = self.session_providers.create(later.provider, self.config)
+                    if not await later_provider.confirm_stopped(SessionHandle(
+                        name=later.name, provider=later.provider, instance_token=later.instance_token
+                    )):
+                        return False
+                    confirmed_later_sessions[later.id] = (
+                        later.instance_token, later.started_at
+                    )
+            provider = self.session_providers.create(session.provider, self.config)
+            handle = SessionHandle(
+                name=session.name,
+                provider=session.provider,
+                instance_token=session.instance_token,
+            )
+            if not await provider.confirm_stopped(handle):
+                return False
+            from src.orchestrator.workspace_attachments import (
+                detach_slot_for_integration_handoff,
+                detach_workspace_for_integration_handoff,
+            )
+
+            if workspace.is_slot:
+                detached = await detach_slot_for_integration_handoff(
+                    self.db,
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=owner.get("owner_role") == "verifier",
+                    require_detached=unlocked_verifier,
+                )
+            else:
+                detached = await detach_workspace_for_integration_handoff(
+                    self.git,
+                    self._git_mutex,
+                    workspace,
+                    expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=owner.get("owner_role") == "verifier",
+                    require_detached=unlocked_verifier,
+                )
+            if not detached:
+                return False
+        except Exception:
+            logger.warning(
+                "Could not prove stopped pool integration writer %s detached",
+                session_id,
+                exc_info=True,
+            )
+            return False
+        return await mark_stopped_integration_pool_handoff_released(
+            self.db,
+            owner,
+            workspace=workspace,
+            session_instance_token=session.instance_token,
+            confirmed_later_sessions=confirmed_later_sessions,
+        )
+
+    async def aconfirm_integration_pool_owner_handoff(
+        self, owner: dict, *, retained_preparation=None, require_preparation=False,
+        expected_preparation=None,
+    ) -> bool:
         """Detach a **pool** writer's checkout and release its exact attachment.
 
         :meth:`aconfirm_integration_owner_handoff` proves a push-model writer
@@ -1287,6 +2072,8 @@ class WorkspaceMixin:
         and (via ``arelease_integration_writer_for_retry``) makes the caller
         retain the claim rather than close over an unprovable handoff.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
@@ -1299,6 +2086,12 @@ class WorkspaceMixin:
         if not session_id or not workspace_id:
             return False
         session = await self.db.get_session(session_id)
+        if (session is not None and session.lifecycle == "pool"
+                and session.task_id is None
+                and session.state == "stopped" and session.desired_state == "stopped"):
+            # Teardown cleared the claim proof. Recover the exact ended
+            # attempt with provider confirmation and workspace exclusion.
+            return await self.aconfirm_integration_owner_handoff(owner)
         workspace = await self.db.get_workspace(workspace_id)
         repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
         task = await self.db.get_task(session.task_id) if session and session.task_id else None
@@ -1308,22 +2101,46 @@ class WorkspaceMixin:
             or repository is None
             or task is None
             or session.lifecycle != "pool"
-            or owner.get("owner_role") not in {"worker", "repair"}
+            # Every task-owned role: the proof this method takes is the claim
+            # protocol plus a detached checkout, and a pool verifier holds
+            # both exactly as a worker or repair delegate does.  ``collector``
+            # is owned by an operation, so it has no claim to read.
+            or owner.get("owner_role") not in REQUEUE_INTEGRATION_OWNER_ROLES
             or task.id != owner.get("owner_id")
             or workspace.locked_by_task_id != session.task_id
             or workspace.project_id != repository.project_id
             or session.project_id != repository.project_id
             or task.project_id != repository.project_id
             or task.repo_id != repository.id
-            or task.branch_name != owner.get("ref")
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             return False
 
+        # Ownership attaches before reset. A failed, unactivated preparation
+        # may still be detached at the published default tip rather than the
+        # task tip. Prove both tips are published; never discard local work.
+        preparation_epoch = (
+            task.claim_epoch
+            if session.claim_phase == "preparing"
+            and session.last_claim_epoch == task.claim_epoch
+            and task.status == TaskStatus.IN_PROGRESS
+            and task.assigned_agent_id == session.agent_id
+            else None
+        )
+        if require_preparation and preparation_epoch is None:
+            return False
+        if expected_preparation is not None and expected_preparation != (
+            preparation_epoch, session.instance_token, workspace.generation,
+        ):
+            return False
         try:
             from src.orchestrator.workspace_attachments import (
                 detach_slot_for_integration_handoff,
                 detach_workspace_for_integration_handoff,
+                detach_retained_preparation,
             )
 
             if workspace.is_slot:
@@ -1333,6 +2150,9 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -1340,7 +2160,19 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
+            if not detached and retained_preparation and session.claim_phase == "preparing":
+                base = await self.db.get_workspace(workspace.base_workspace_id) if (
+                    workspace.is_slot and workspace.base_workspace_id
+                ) else workspace
+                if base is not None and base.project_id == workspace.project_id:
+                    detached = await detach_retained_preparation(
+                        self.git, self._git_mutex, workspace, expected_branch=str(owner["ref"]),
+                        retained=retained_preparation, mutex_path=base.workspace_path,
+                    )
             if not detached:
                 return False
         except Exception:
@@ -1363,13 +2195,173 @@ class WorkspaceMixin:
             return False
         return await mark_integration_pool_handoff_released(
             self.db, owner, workspace=workspace, task_id=session.task_id,
-            session_instance_token=session.instance_token
+            session_instance_token=session.instance_token,
+            preparation_epoch=preparation_epoch,
+            require_preparation=require_preparation,
         )
+
+    async def aconfirm_integration_pool_published_repair_handoff(
+        self, owner: dict, reservation_id: str, *, remote_head_reader
+    ) -> bool:
+        """Prove a qualified candidate repair without advancing its canonical ref."""
+        from src.integration.published_repair_handoff import confirm_published_pool_repair_handoff
+
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
+        try:
+            return await confirm_published_pool_repair_handoff(
+                self.db, self.git, self._git_mutex, owner, reservation_id,
+                remote_head_reader=remote_head_reader,
+            )
+        except Exception:
+            logger.warning(
+                "Could not prove published candidate repair handoff %s", reservation_id,
+                exc_info=True,
+            )
+            return False
+
+    async def arecover_completed_integration_pool_claim(self, task, session) -> bool:
+        """Release one terminal pool holder only after proving its writer is gone.
+
+        A daemon can lose the response after ``task_close`` has already made
+        the task COMPLETED.  The normal close tail then never gets to detach
+        the slot, release the claim, or remove the claim file.  This is not a
+        generic terminal-claim cleanup: it is deliberately limited to the
+        exact attached integration writer, its claim epoch, session instance,
+        agent lock, workspace lock, and branch-ownership fence.  In
+        particular, a live (or unprobeable) writer is left entirely alone.
+        """
+        if (
+            task is None
+            or session is None
+            or task.status is not TaskStatus.COMPLETED
+            or session.lifecycle != "pool"
+            or session.state not in {"running", "draining"}
+            or session.desired_state not in {"running", "stopped"}
+            or session.task_id != task.id
+            or session.last_claim_epoch != task.claim_epoch
+            or task.assigned_agent_id is not None
+            or not session.agent_id
+            or not task.repo_id
+            or not task.branch_name
+        ):
+            return False
+
+        project = await self.db.get_project(task.project_id)
+        if (
+            project is None
+            or project.hierarchical_integration_mode not in {"hierarchy", "train"}
+            or project.integration_repository_id != task.repo_id
+        ):
+            return False
+        workspace = await self.db.get_workspace_for_agent(session.agent_id)
+        if (
+            workspace is None
+            or workspace.id is None
+            or workspace.locked_by_agent_id != session.agent_id
+            or workspace.locked_by_task_id != task.id
+            or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
+        ):
+            return False
+
+        target = BranchKey(repository_id=task.repo_id, branch=task.branch_name)
+        ownership = BranchOwnership(self.db, confirm_handoff=self.aconfirm_integration_pool_owner_handoff)
+        owner = await ownership.get_owner(target)
+        if owner is None and not task.branch_name.startswith("refs/heads/"):
+            full_target = BranchKey(
+                repository_id=task.repo_id,
+                branch=f"refs/heads/{task.branch_name}",
+            )
+            owner = await ownership.get_owner(full_target)
+            if owner is not None:
+                target = full_target
+        if (
+            owner is None
+            or owner["owner_id"] != task.id
+            or owner["owner_role"] not in RETRYABLE_INTEGRATION_OWNER_ROLES
+            or owner["handoff_state"] not in {"attached", "handoff_pending"}
+            or owner["session_id"] != session.id
+            or owner["workspace_id"] != workspace.id
+        ):
+            return False
+
+        # A stale daemon row is not liveness evidence.  Require both probes
+        # against the session's durable instance token before even reserving
+        # handoff; a false/unknown result preserves the writer and all locks.
+        try:
+            provider = self.session_providers.create(session.provider, self.config)
+            handle = SessionHandle(session.name, session.provider, session.instance_token)
+            process_names = ()
+            reconciler = getattr(self, "session_reconciler", None)
+            if reconciler is not None:
+                process_names = reconciler._process_names(session)
+            if await provider.process_alive(handle, process_names):
+                return False
+            if not await provider.confirm_stopped(handle):
+                return False
+        except Exception:
+            logger.warning(
+                "Could not prove terminal pool writer %s is quiescent", session.id, exc_info=True
+            )
+            return False
+
+        # Prevent the old loop from claiming a successor while the Git proof
+        # runs.  The instance-token CAS is the fence against a reused session.
+        if session.desired_state == "running" and not await self.db.update_session_instance(
+            session.id,
+            session.instance_token,
+            require_desired_state="running",
+            desired_state="stopped",
+        ):
+            return False
+
+        fence = Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
+        try:
+            # confirm_transfer persists handoff_pending, then the pool
+            # confirmer proves clean/published HEAD and detaches it.  Unlike
+            # transfer(), it intentionally leaves durable release evidence
+            # rather than assigning this completed task a successor fence.
+            await ownership.confirm_transfer(fence)
+        except BranchOwnershipError:
+            return False
+
+        release = await self.db.release_claim(
+            session.id,
+            task_status=TaskStatus.COMPLETED,
+            context="completed_pool_claim_recovery",
+            now=time.time(),
+            result="completed_recovered",
+            expected_task_id=task.id,
+            expected_claim_epoch=task.claim_epoch,
+            expected_task_status=TaskStatus.COMPLETED,
+            preserve_terminal_task=True,
+            stop_after_release=True,
+            release_workspace_lock=True,
+            end_reason="completed_pool_claim_recovery",
+        )
+        if not release.released:
+            return False
+        from src.claim_file import remove_claim_file_if_matches
+
+        remove_claim_file_if_matches(session.work_dir, task.id, task.claim_epoch)
+        await self.db.log_event(
+            "pool.completed_claim_recovered",
+            project_id=task.project_id,
+            task_id=task.id,
+            agent_id=session.agent_id,
+            payload=(
+                f"session={session.id} epoch={task.claim_epoch} workspace={workspace.id} "
+                f"branch={task.branch_name}"
+            ),
+        )
+        return True
 
     async def aconfirm_integration_owner_stopped_for_repair(
         self, owner: dict
     ) -> dict | None:
         """Stop one exact writer without touching its retained repair checkout."""
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return None
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         if not session_id or not workspace_id or owner.get("handoff_state") != "attached":
@@ -1393,7 +2385,9 @@ class WorkspaceMixin:
             or session.project_id != repository.project_id
             or session.task_id != task.id
             or task.repo_id != repository.id
-            or task.branch_name != owner.get("ref")
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
             or owner.get("owner_id") != task.id
             or os.path.realpath(session.work_dir)
             != os.path.realpath(workspace.workspace_path)
@@ -1460,7 +2454,14 @@ class WorkspaceMixin:
         }
 
     async def arelease_integration_writer_for_retry(
-        self, task, *, reason: str, pool: bool = False
+        self,
+        task,
+        *,
+        reason: str,
+        pool: bool = False,
+        roles: frozenset[str] = RETRYABLE_INTEGRATION_OWNER_ROLES,
+        retained_preparation=None,
+        save_wip_reason: str | None = None,
     ) -> bool | None:
         """Prove an enabled writer stopped, then restore its task reservation.
 
@@ -1491,6 +2492,17 @@ class WorkspaceMixin:
         reserved".  Only the roles a *task* can own are accepted;
         ``collector`` and ``verifier`` handoffs keep the general rule
         (design spec 9.1).
+
+        ``roles`` names the owner roles this particular call site may
+        self-transfer, defaulting to :data:`RETRYABLE_INTEGRATION_OWNER_ROLES`.
+        The re-queue leg passes :data:`REQUEUE_INTEGRATION_OWNER_ROLES` to
+        include ``verifier``; see that constant for why the exclusion does
+        not apply when a task returns to the frontier still owning its own
+        branch.
+
+        ``save_wip_reason`` lets the stop proof save a dirty or unpushed
+        checkout onto the task branch instead of refusing; see
+        :meth:`aconfirm_integration_owner_handoff`.  Pool handoffs ignore it.
         """
         project = await self.db.get_project(task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") not in {
@@ -1502,20 +2514,40 @@ class WorkspaceMixin:
         if not repository_id or task.repo_id != repository_id or not task.branch_name:
             return False
         target = BranchKey(repository_id=repository_id, branch=task.branch_name)
+        async def confirm_pool(owner):
+            return await self.aconfirm_integration_pool_owner_handoff(
+                owner, retained_preparation=retained_preparation,
+            )
+
+        async def confirm_stop(owner):
+            return await self.aconfirm_integration_owner_handoff(
+                owner, save_wip_reason=save_wip_reason,
+            )
+
         ownership = BranchOwnership(
             self.db,
-            confirm_handoff=(
-                self.aconfirm_integration_pool_owner_handoff
-                if pool
-                else self.aconfirm_integration_owner_handoff
-            ),
+            confirm_handoff=confirm_pool if pool else confirm_stop,
         )
         owner = await ownership.get_owner(target)
+        if owner is None and not task.branch_name.startswith("refs/heads/"):
+            full_target = BranchKey(
+                repository_id=repository_id,
+                branch=f"refs/heads/{task.branch_name}",
+            )
+            owner = await ownership.get_owner(full_target)
+            if owner is not None:
+                target = full_target
         if owner is None or owner["owner_id"] != task.id:
             return False
         role = str(owner["owner_role"] or "")
-        if role not in RETRYABLE_INTEGRATION_OWNER_ROLES:
+        if role not in roles:
             return False
+        if owner.get("fence") is not None:
+            from src.integration.lock import BranchLock
+
+            # Managed authority is released by holder/fence alone. Ordinary
+            # workspace cleanup owns unsaved work; it is not a ref-write proof.
+            return await BranchLock(self.db).release(ownership._fence(owner))
         if owner["handoff_state"] == "reserved":
             return True
         fence = Fence(target=target, owner_id=task.id, token=int(owner["fence_token"]))
@@ -1557,6 +2589,7 @@ class WorkspaceMixin:
             workspace_id=workspace_id,
         )
 
+    @guard_workspace("ws")
     async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
         """Remove a *legacy* git worktree and delete its workspace record.
 
@@ -1812,6 +2845,7 @@ class WorkspaceMixin:
                 return ws
         return None
 
+    @guard_workspace("workspace")
     async def _cleanup_workspace_for_next_task(
         self,
         workspace: str | None,
