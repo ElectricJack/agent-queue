@@ -45,7 +45,11 @@ than releases. Set it to the number of migrations in the supported rollback
 window; zero disallows an ahead schema. Its default is `null`, so no distance
 limit is enabled before cutover. With no retained directory, the existing
 unknown-revision refusal remains in effect. Behind schemas retain the existing
-operator/daemon migration rules. Refusals explain how to deploy matching code or
+operator/daemon migration rules, including multiple known heads awaiting a
+merge revision. The direct plugin client uses this policy as well. With retained
+migrations configured, `aq doctor --check db.alembic_orphan` applies the same
+proof and limit and never offers or runs a downgrade or stamp, even when
+retained evidence is rejected. Refusals explain how to deploy matching code or
 supply evidence; downgrading or stamping to bypass the guard is not a rollback.
 
 Run a drill on an explicitly provisioned, empty scratch PostgreSQL database:
@@ -164,10 +168,20 @@ intent returns `ambiguous` without changing the deadline or operation state.
 
 ### When production is already stamped with an orphan
 
+With `database.schema_ahead_migrations` configured, this check uses the retained
+migration proof described above. `--fix` leaves both schema and stamp untouched,
+including when the proof fails. The repair procedure below applies only when
+retained migrations are not configured.
+
 ```bash
-aq doctor --check db.alembic_orphan          # which branch/file defines it
-aq doctor --check db.alembic_orphan --fix    # run that revision's own downgrade()
+aq doctor --offline --check db.alembic_orphan        # which branch/file defines it
+aq doctor --offline --check db.alembic_orphan --fix  # run its own downgrade()
 ```
+
+Run these locally as the operator, outside a worker session. `--offline` needs
+no daemon and opens the configured database without schema initialization or
+upgrade. Only `db.alembic_orphan` is supported offline; the usual doctor output,
+JSON envelope and exit codes apply. Omit `--offline` when using the daemon.
 
 The check searches every `refs/remotes` and `refs/heads` for the migration
 file that declares the unknown revision, so the answer is a branch name and a

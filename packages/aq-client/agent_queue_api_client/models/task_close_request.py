@@ -39,7 +39,11 @@ class TaskCloseRequest:
             swarm.claim_wait_max).
         obsolete (bool | Unset): Close the task as obsolete/superseded instead of with an outcome (operator or
             supervisor only; needs task_id and reason, not outcome). Default: False.
-        reason (None | str | Unset): Why the task is obsolete (required with obsolete).
+        no_change (bool | Unset): One-shot operator close: nothing needed doing (work_outcome no-op). Works from any
+            state; operator or supervisor only; needs task_id and reason, not outcome. Default: False.
+        done (bool | Unset): One-shot operator close: the work already landed (work_outcome shipped). Works from any
+            state; operator or supervisor only; needs task_id and reason, not outcome. Default: False.
+        reason (None | str | Unset): Why the task is closed (required with obsolete, no_change or done).
     """
 
     task_id: str
@@ -60,6 +64,8 @@ class TaskCloseRequest:
     claim_next: bool | None | Unset = UNSET
     wait: int | None | Unset = UNSET
     obsolete: bool | Unset = False
+    no_change: bool | Unset = False
+    done: bool | Unset = False
     reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -165,6 +171,10 @@ class TaskCloseRequest:
 
         obsolete = self.obsolete
 
+        no_change = self.no_change
+
+        done = self.done
+
         reason: None | str | Unset
         if isinstance(self.reason, Unset):
             reason = UNSET
@@ -212,6 +222,10 @@ class TaskCloseRequest:
             field_dict["wait"] = wait
         if obsolete is not UNSET:
             field_dict["obsolete"] = obsolete
+        if no_change is not UNSET:
+            field_dict["no_change"] = no_change
+        if done is not UNSET:
+            field_dict["done"] = done
         if reason is not UNSET:
             field_dict["reason"] = reason
 
@@ -378,6 +392,10 @@ class TaskCloseRequest:
 
         obsolete = d.pop("obsolete", UNSET)
 
+        no_change = d.pop("no_change", UNSET)
+
+        done = d.pop("done", UNSET)
+
         def _parse_reason(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -406,6 +424,8 @@ class TaskCloseRequest:
             claim_next=claim_next,
             wait=wait,
             obsolete=obsolete,
+            no_change=no_change,
+            done=done,
             reason=reason,
         )
 
