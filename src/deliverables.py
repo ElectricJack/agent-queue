@@ -7,17 +7,124 @@ tests/b.py`` or ``ruff check <changed files>`` — is checked against the
 repeatable ``--test`` / ``--command`` values recorded on the close, because a
 shell command is never a file under the worktree and is not text the repo
 is expected to contain.
+
+A ``review`` item is different again: its evidence is a document review the
+task submitted (``aq review submit``), so the caller passes the task's
+reviews in.  Research and design tasks carry one implicitly (see
+:func:`effective_deliverables`).
 """
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
 _TEXT_SUFFIXES = {".py", ".md", ".toml", ".yaml", ".yml", ".json", ".ts", ".tsx", ".js"}
 _SKIP_PARTS = {".git", "node_modules", ".venv", "dist", "build", "__pycache__"}
 _PLACEHOLDER = re.compile(r"<[^<>]*>")
+
+#: A ``review`` item's target: the kind of document review the task must
+#: submit (``doc_reviews.kind``), or ``any``.
+REVIEW_TARGETS = ("spec", "plan", "other", "any")
+
+#: Task types whose product is a document for a human decision: a research
+#: report or a design proposal.
+DOCUMENT_TASK_TYPES = frozenset({"research", "design"})
+
+
+def effective_deliverables(
+    deliverables: list[dict[str, str]] | None,
+    *,
+    task_type: Any,
+    dispatched_reviewer: bool = False,
+) -> list[dict[str, str]]:
+    """The task's declared deliverables plus its implicit document review.
+
+    A research or design task hands back a document, and a document is for a
+    human decision: it goes to Reviews through ``aq review submit``, not only
+    onto a branch where nobody sees it (vivid-delta: research task
+    crisp-orbit-37 committed its proposal and never reached the Reviews tab).
+    Such a task that declares no ``review`` item gets ``{"id": "review",
+    "kind": "review", "target": "any"}``; a task with nothing to submit waives
+    it at close with ``--deliverable-unmet 'review: <reason>'``.
+
+    The rule reads the type the task has *now*, not at creation, because the
+    assignment router writes the type of an untyped task after it is filed.
+    A dispatched adversarial reviewer is research-typed but answers with
+    comments on someone else's revision, so it is exempt.
+    """
+    items = [dict(item) for item in deliverables or []]
+    kind = getattr(task_type, "value", task_type)
+    if (
+        dispatched_reviewer
+        or kind not in DOCUMENT_TASK_TYPES
+        or any(item["kind"] == "review" for item in items)
+    ):
+        return items
+    taken = {item["id"] for item in items}
+    item_id, suffix = "review", 2
+    while item_id in taken:
+        item_id, suffix = f"review-{suffix}", suffix + 1
+    return [*items, {"id": item_id, "kind": "review", "target": "any"}]
+
+
+async def resolve_task_deliverables(db: Any, task: Any) -> list[dict[str, str]]:
+    """:func:`effective_deliverables` with stored review and experiment context."""
+    task_type = getattr(task, "task_type", None)
+    task_type = getattr(task_type, "value", task_type)
+    if task_type in DOCUMENT_TASK_TYPES:
+        from src.object_loop.reviews import experiment_context
+
+        experiment = await experiment_context(db, task.id)
+        if experiment and not experiment["final_result"]:
+            # Internal experiments hand back artifacts/score packets. Preserve
+            # explicitly requested documents without inventing a human gate.
+            return [dict(item) for item in getattr(task, "deliverables", None) or []]
+    dispatched = (
+        task_type in DOCUMENT_TASK_TYPES
+        and await db.get_review_dispatch_for_task(task.id) is not None
+    )
+    return effective_deliverables(
+        getattr(task, "deliverables", None), task_type=task_type, dispatched_reviewer=dispatched
+    )
+
+
+def review_submit_guidance(task_id: str, items: list[dict[str, Any]]) -> str:
+    """How to meet (or visibly waive) the ``review`` items among *items*."""
+    reviews = [item for item in items if item["kind"] == "review"]
+    if not reviews:
+        return ""
+    kinds = sorted({str(item["target"]) for item in reviews} - {"any"})
+    kind = "|".join(kinds) if kinds else "spec|plan|other"
+    waiver = " ".join(f"--deliverable-unmet '{item['id']}: <reason>'" for item in reviews)
+    return (
+        "A review item is met by a document review this task submitted: write the "
+        "document in your checkout, do not commit it, and run "
+        f"`aq review submit --task-id {task_id} --file <draft.md> --kind {kind} "
+        '--title "<title>"`; put the review id in your close summary. '
+        "After submission, move the local draft outside the source checkout so "
+        "the unchanged source branch can close without a PR or source CI. "
+        f"Only when the task produced no document, close with {waiver}."
+    )
+
+
+def review_revision_guidance(response: dict[str, Any]) -> str:
+    """Explain the publication contract of a task answering review feedback."""
+    review_id = response["review_id"]
+    return (
+        f"This task must publish a revision of `{review_id}` newer than revision "
+        f"{response['revision']} before a passing close. Read "
+        f"`aq review show --review-id {review_id} --comments`, revise a local draft, "
+        "and do not edit the vault mirror or its frontmatter directly. Publish with "
+        f"`aq review submit --review-id {review_id} --file <draft.md> "
+        '--changes "<comment dispositions and evidence>"`, adding `--resolves cmt-...` '
+        "for each addressed comment. Editing a file alone does not publish a revision. "
+        "Record the new revision number and content hash in the close summary. "
+        "Do not wait for approval; publication does not approve the review."
+    )
 
 
 def parse_unmet_reasons(
@@ -50,23 +157,44 @@ def evaluate_deliverables(
     root: Path,
     tests: list[str],
     commands: list[str] | None = None,
+    reviews: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str | bool]]:
     """Evaluate declared items using only local, reproducible evidence.
 
     ``tests`` and ``commands`` are the repeatable ``--test`` / ``--command``
     values recorded on the close.  A ``test`` item is only ever satisfied by
     ``tests``; a ``command`` item accepts either list, since a test command is
-    also a command that was run.
+    also a command that was run.  ``reviews`` are the document reviews the
+    task submitted (``kind`` and ``state`` each), the evidence for a
+    ``review`` item.
     """
     commands = commands or []
+    reviews = reviews or []
     return [
-        {**item, "met": _is_met(item, root=root, tests=tests, commands=commands), "reason": ""}
+        {
+            **item,
+            "met": _is_met(item, root=root, tests=tests, commands=commands, reviews=reviews),
+            "reason": "",
+        }
         for item in deliverables
     ]
 
 
-def _is_met(item: dict[str, str], *, root: Path, tests: list[str], commands: list[str]) -> bool:
+def _is_met(
+    item: dict[str, str],
+    *,
+    root: Path,
+    tests: list[str],
+    commands: list[str],
+    reviews: list[dict[str, Any]],
+) -> bool:
     kind, target = item["kind"], item["target"].strip()
+    if kind == "review":
+        # A withdrawn review is no longer awaiting anyone's decision.
+        return any(
+            review.get("state") != "withdrawn" and target in ("any", review.get("kind"))
+            for review in reviews
+        )
     command_like = _is_command_like(target)
     if kind == "test":
         if command_like:
@@ -97,11 +225,25 @@ def _file_exists(root: Path, target: str) -> bool:
 def _test_command_met(target: str, *, root: Path, tests: list[str]) -> bool:
     """A test suite declared as its command line.
 
-    Every path the command names must exist under the worktree.  Then the
-    item is met when a recorded ``--test`` value matches the declared
-    command, or — so a worker who ran the suites one at a time is not
-    refused — when each of those paths is named by some recorded ``--test``.
+    Explicit npm workspace commands resolve paths from that configured
+    workspace and require exact command evidence. For root commands, every
+    named path must exist under the worktree, and a recorded ``--test`` must
+    match the command or name each path across separately run suites.
     """
+    if target.split()[0] == "npm":
+        try:
+            tokens = shlex.split(target)
+        except ValueError:
+            return False
+        prefix = tokens[1 : tokens.index("--")] if "--" in tokens else tokens[1:]
+        if any(token.startswith(("-w", "--workspace")) for token in prefix):
+            workspace_test = _npm_workspace_test(tokens, root=root)
+            if workspace_test is None:
+                return False
+            workspace, paths = workspace_test
+            return all(_path_exists(workspace, path) for path in paths) and any(
+                _squash(target) == _squash(command) for command in tests
+            )
     paths = [token for token in target.split() if _looks_like_path(token)]
     if not all(_path_exists(root, path) for path in paths):
         return False
@@ -110,14 +252,99 @@ def _test_command_met(target: str, *, root: Path, tests: list[str]) -> bool:
     return bool(paths) and all(any(path in command for command in tests) for path in paths)
 
 
+def _npm_workspace_test(tokens: list[str], *, root: Path) -> tuple[Path, list[str]] | None:
+    """Parse one explicit workspace test invocation, never arbitrary shell syntax.
+
+    Only npm's selector and test subcommands are understood before ``--``;
+    options that change its context or permit missing scripts are refused.
+    """
+    if any(any(char in token for char in ";&|<>`$") for token in tokens):
+        return None
+    separator = tokens.index("--") if "--" in tokens else len(tokens)
+    prefix, arguments = tokens[1:separator], tokens[separator + 1 :]
+    selectors: list[str] = []
+    command: list[str] = []
+    index = 0
+    while index < len(prefix):
+        token = prefix[index]
+        if token in ("-w", "--workspace"):
+            index += 1
+            if index == len(prefix):
+                return None
+            selectors.append(prefix[index])
+        elif token.startswith("--workspace="):
+            selectors.append(token.partition("=")[2])
+        elif token.startswith("-w") and token != "-ws":
+            selectors.append(token[2:])
+        else:
+            command.append(token)
+        index += 1
+    if len(selectors) != 1 or command not in (["run", "test"], ["run-script", "test"], ["test"]):
+        return None
+    workspace = _npm_workspace(root, selectors[0])
+    paths = [token for token in arguments if _looks_like_path(token)]
+    if workspace is None or any(not _relative_workspace_path(path) for path in paths):
+        return None
+    return workspace, paths
+
+
+def _relative_workspace_path(value: str) -> bool:
+    """Literal relative paths only; no traversal or wildcard interpretation."""
+    return bool(value) and not (
+        Path(value).is_absolute()
+        or ".." in Path(value).parts
+        or any(char in value for char in "*?[]\\\0")
+    )
+
+
+def _package_json(root: Path) -> dict[str, Any] | None:
+    try:
+        if not _file_exists(root, "package.json"):
+            return None
+        value = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _npm_workspace(root: Path, selector: str) -> Path | None:
+    """Resolve an exact directory or name from literal configured workspaces.
+
+    Do not walk the tree or expand npm globs/parent selectors. Unresolved and
+    ambiguous selectors are unmet rather than guessed relative directories.
+    """
+    if not _relative_workspace_path(selector) or selector.startswith("-"):
+        return None
+    package = _package_json(root)
+    entries = package.get("workspaces") if package is not None else None
+    if not isinstance(entries, list):
+        return None
+    matches: set[Path] = set()
+    for entry in entries:
+        if not isinstance(entry, str) or not _relative_workspace_path(entry):
+            return None
+        try:
+            workspace = (root / entry).resolve()
+        except (OSError, RuntimeError):
+            return None
+        if not workspace.is_relative_to(root.resolve()) or workspace == root.resolve():
+            return None
+        manifest = _package_json(workspace)
+        if manifest is not None and (
+            Path(selector) == Path(entry) or selector == manifest.get("name")
+        ):
+            matches.add(workspace)
+    return matches.pop() if len(matches) == 1 else None
+
+
 def _path_exists(root: Path, token: str) -> bool:
     """``tests/test_x.py::test_a`` and ``tests/`` both count as existing paths."""
-    candidate = (root / token.split("::", 1)[0]).resolve()
     try:
+        candidate = (root / token.split("::", 1)[0]).resolve()
         candidate.relative_to(root.resolve())
-    except ValueError:
+        return candidate.exists()
+    except (OSError, ValueError, RuntimeError):
         return False
-    return candidate.exists()
 
 
 def _looks_like_path(token: str) -> bool:

@@ -170,6 +170,8 @@ class TestValidation:
             {"session_nice": 25},
             {"load_warn_ratio": 0},
             {"cgroups": ResourceCgroupConfig(cpu_quota_percent=0)},
+            {"test_interpreters": ["~/dev/quilt-trader/.venv/bin/python"]},
+            {"test_interpreters": {"quilt-trader": ""}},
         ],
     )
     def test_bad_values_are_rejected(self, kwargs):

@@ -25,7 +25,13 @@ class CreateTaskResponse:
         integration_mode (None | str | Unset):
         task_type (None | str | Unset):
         profile_id (None | str | Unset):
+        profile_source (None | str | Unset):
         intelligence_class (None | str | Unset):
+        route_source (None | str | Unset):
+        class_hint (None | str | Unset):
+        prefer_target (None | str | Unset):
+        prefer_mode (None | str | Unset):
+        provider_intent (None | str | Unset):
         preferred_workspace_id (None | str | Unset):
         attachments (list[str] | None | Unset):
         skip_verification (bool | Unset):  Default: False.
@@ -35,6 +41,7 @@ class CreateTaskResponse:
         gate_id (None | str | Unset):
         status (None | str | Unset):
         reason (None | str | Unset):
+        parent_id (None | str | Unset):
         depends_on (list[CreateTaskResponseDependsOnItem] | Unset):
     """
 
@@ -44,7 +51,13 @@ class CreateTaskResponse:
     integration_mode: None | str | Unset = UNSET
     task_type: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
+    profile_source: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
+    route_source: None | str | Unset = UNSET
+    class_hint: None | str | Unset = UNSET
+    prefer_target: None | str | Unset = UNSET
+    prefer_mode: None | str | Unset = UNSET
+    provider_intent: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[str] | None | Unset = UNSET
     skip_verification: bool | Unset = False
@@ -54,6 +67,7 @@ class CreateTaskResponse:
     gate_id: None | str | Unset = UNSET
     status: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
+    parent_id: None | str | Unset = UNSET
     depends_on: list[CreateTaskResponseDependsOnItem] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -82,11 +96,47 @@ class CreateTaskResponse:
         else:
             profile_id = self.profile_id
 
+        profile_source: None | str | Unset
+        if isinstance(self.profile_source, Unset):
+            profile_source = UNSET
+        else:
+            profile_source = self.profile_source
+
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
             intelligence_class = UNSET
         else:
             intelligence_class = self.intelligence_class
+
+        route_source: None | str | Unset
+        if isinstance(self.route_source, Unset):
+            route_source = UNSET
+        else:
+            route_source = self.route_source
+
+        class_hint: None | str | Unset
+        if isinstance(self.class_hint, Unset):
+            class_hint = UNSET
+        else:
+            class_hint = self.class_hint
+
+        prefer_target: None | str | Unset
+        if isinstance(self.prefer_target, Unset):
+            prefer_target = UNSET
+        else:
+            prefer_target = self.prefer_target
+
+        prefer_mode: None | str | Unset
+        if isinstance(self.prefer_mode, Unset):
+            prefer_mode = UNSET
+        else:
+            prefer_mode = self.prefer_mode
+
+        provider_intent: None | str | Unset
+        if isinstance(self.provider_intent, Unset):
+            provider_intent = UNSET
+        else:
+            provider_intent = self.provider_intent
 
         preferred_workspace_id: None | str | Unset
         if isinstance(self.preferred_workspace_id, Unset):
@@ -141,6 +191,12 @@ class CreateTaskResponse:
         else:
             reason = self.reason
 
+        parent_id: None | str | Unset
+        if isinstance(self.parent_id, Unset):
+            parent_id = UNSET
+        else:
+            parent_id = self.parent_id
+
         depends_on: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.depends_on, Unset):
             depends_on = []
@@ -163,8 +219,20 @@ class CreateTaskResponse:
             field_dict["task_type"] = task_type
         if profile_id is not UNSET:
             field_dict["profile_id"] = profile_id
+        if profile_source is not UNSET:
+            field_dict["profile_source"] = profile_source
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
+        if route_source is not UNSET:
+            field_dict["route_source"] = route_source
+        if class_hint is not UNSET:
+            field_dict["class_hint"] = class_hint
+        if prefer_target is not UNSET:
+            field_dict["prefer_target"] = prefer_target
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
+        if provider_intent is not UNSET:
+            field_dict["provider_intent"] = provider_intent
         if preferred_workspace_id is not UNSET:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
         if attachments is not UNSET:
@@ -183,6 +251,8 @@ class CreateTaskResponse:
             field_dict["status"] = status
         if reason is not UNSET:
             field_dict["reason"] = reason
+        if parent_id is not UNSET:
+            field_dict["parent_id"] = parent_id
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
 
@@ -226,6 +296,15 @@ class CreateTaskResponse:
 
         profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
 
+        def _parse_profile_source(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        profile_source = _parse_profile_source(d.pop("profile_source", UNSET))
+
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -234,6 +313,51 @@ class CreateTaskResponse:
             return cast(None | str | Unset, data)
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
+
+        def _parse_route_source(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        route_source = _parse_route_source(d.pop("route_source", UNSET))
+
+        def _parse_class_hint(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        class_hint = _parse_class_hint(d.pop("class_hint", UNSET))
+
+        def _parse_prefer_target(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_target = _parse_prefer_target(d.pop("prefer_target", UNSET))
+
+        def _parse_prefer_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_mode = _parse_prefer_mode(d.pop("prefer_mode", UNSET))
+
+        def _parse_provider_intent(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        provider_intent = _parse_provider_intent(d.pop("provider_intent", UNSET))
 
         def _parse_preferred_workspace_id(data: object) -> None | str | Unset:
             if data is None:
@@ -317,6 +441,15 @@ class CreateTaskResponse:
 
         reason = _parse_reason(d.pop("reason", UNSET))
 
+        def _parse_parent_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
+
         _depends_on = d.pop("depends_on", UNSET)
         depends_on: list[CreateTaskResponseDependsOnItem] | Unset = UNSET
         if _depends_on is not UNSET:
@@ -333,7 +466,13 @@ class CreateTaskResponse:
             integration_mode=integration_mode,
             task_type=task_type,
             profile_id=profile_id,
+            profile_source=profile_source,
             intelligence_class=intelligence_class,
+            route_source=route_source,
+            class_hint=class_hint,
+            prefer_target=prefer_target,
+            prefer_mode=prefer_mode,
+            provider_intent=provider_intent,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
             skip_verification=skip_verification,
@@ -343,6 +482,7 @@ class CreateTaskResponse:
             gate_id=gate_id,
             status=status,
             reason=reason,
+            parent_id=parent_id,
             depends_on=depends_on,
         )
 
