@@ -225,3 +225,23 @@ async def test_readiness_uses_the_pool_routers_cached_ready_set(db):
     assert not ready["claimable"]
     assert ready["state"] == "withheld"
     assert ready["reasons"][0]["code"] == "frontier_route_not_claimable"
+
+
+@pytest.mark.parametrize("count", [1, 2])
+async def test_readiness_scopes_single_task_prerequisite_observation(count):
+    from types import SimpleNamespace
+
+    from src.task_graph.readiness import load_readiness
+
+    exclusions = AsyncMock(return_value={})
+    db = SimpleNamespace(claim_frontier_exclusions_many=exclusions)
+    rows = [{"id": f"task-{i}", "project_id": "proj", "status": "READY"}
+            for i in range(count)]
+    await load_readiness(db, rows)
+    options = exclusions.await_args.kwargs
+    assert options["cached_only"] is True
+    assert options["project_ids"] == {"proj"}
+    if count == 1:
+        assert options["single_task_id"] == "task-0"
+    else:
+        assert "single_task_id" not in options

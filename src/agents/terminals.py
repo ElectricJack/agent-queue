@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _ACTIVE_TASK = {
     TaskStatus.ASSIGNED,
     TaskStatus.IN_PROGRESS,
-    TaskStatus.WAITING_INPUT,
+    TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
 }
 
 
