@@ -676,7 +676,7 @@ def test_the_configuration_a_real_install_wrote_exports_without_its_credentials(
     assert "AQ_DB_PASSWORD" in host.env_path.read_text(encoding="utf-8")
 
     preview = bundle_preview(str(host.config_path), str(host.aq_home))
-    assert "database" in preview["excluded_sections"]
+    assert "database.url" in preview["excluded_sections"]
     assert "database" not in preview["config"]
 
     destination = tmp_path / "portable.aqbundle"
