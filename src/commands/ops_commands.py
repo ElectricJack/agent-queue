@@ -90,7 +90,8 @@ class OpsCommandsMixin:
         if isinstance(only, str):
             only = [c.strip() for c in only.split(",") if c.strip()]
 
-        ctx = DoctorContext(config=self.config, db=self.db, handler=self)
+        ctx = DoctorContext(config=self.config, db=self.db, handler=self,
+                            leave_gated=bool(args.get("leave_gated")))
         try:
             result = await run_doctor(registry, ctx, fix=bool(args.get("fix")), only=only)
         except Exception as exc:
@@ -480,10 +481,10 @@ class OpsCommandsMixin:
                     )
                     service_tier = codex_service_tier_for(profile, class_config)
 
+            from src.scheduler import project_pool_candidates
+
             projects = []
-            for cand in sorted(
-                measurement.candidates.get(key, []), key=lambda c: c.project_id
-            ):
+            for cand in project_pool_candidates(measurement.candidates.get(key, [])):
                 if view is not None and cand.project_id != view:
                     continue
                 local = sup.by_project.get(cand.project_id) or PoolProjectSupply()
@@ -496,6 +497,7 @@ class OpsCommandsMixin:
                         "ready": cand.ready,
                         "running_idle": local.running_idle,
                         "running_busy": local.running_busy,
+                        "evictable": local.evictable,
                         "starting": local.starting,
                         "draining": local.draining,
                         "max_concurrent_agents": cand.project_cap,
@@ -556,6 +558,7 @@ class OpsCommandsMixin:
                     "desired": desired,
                     "running_idle": sup.running_idle,
                     "running_busy": sup.running_busy,
+                    "evictable": sup.evictable,
                     "starting": sup.starting,
                     "draining": sup.draining,
                     "ready": ready,
@@ -631,3 +634,9 @@ class OpsCommandsMixin:
         from src.commands.pool_admin import command_response, set_pool_bounds
 
         return command_response(await set_pool_bounds(self, args))
+
+    async def _cmd_pool_delete(self, args: dict) -> dict:
+        """Delete a global pool, stopping its sessions and invalidating its routes."""
+        from src.commands.pool_admin import delete_pool
+
+        return await delete_pool(self, args)

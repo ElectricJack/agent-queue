@@ -8,7 +8,53 @@ from src.config import PlaybooksConfig
 from src.playbooks.activation import ActivationHealth, ActivationHealthRecord
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 from tests.playbook_v2_helpers import StubProfiles
-from tests.test_api_playbook_v2_commands import _backend_fixture
+from tests.test_api_playbook_v2_commands import _backend_fixture as _golden_backend_fixture
+
+
+def _backend_fixture():
+    """The §10.1 golden re-pinned to the contracts the live registry serves.
+
+    These handlers validate against ``RegistryContractLookup()`` — the real
+    registry — while the golden is a frozen artifact whose digest other suites
+    pin.  A command contract that legitimately evolves (``list_tasks`` gained
+    the observation-snapshot envelope and the shared ``rejected`` outcome)
+    therefore turns the golden ``stale_contract`` here, and every activation
+    under test would be refused for a reason none of them is about.  So the
+    copy records each command's current fingerprint and routes any business
+    outcome the step does not map yet to the step's own ``runtime_error``
+    target, exactly as a recompile against today's registry would have to.
+    """
+    import json
+    from dataclasses import replace
+
+    from src.playbooks.definition import canonical_bytes, load_definition_json
+
+    golden, golden_ref, golden_activation = _golden_backend_fixture()
+    raw = json.loads(canonical_bytes(golden))
+    lookup = RegistryContractLookup()
+    commands = raw["compiled_against"]["commands"]
+    for name in commands:
+        info = lookup.get(name)
+        if info is not None:
+            commands[name] = info.execution_fingerprint
+    for step in raw["steps"].values():
+        if step.get("type") != "command":
+            continue
+        info = lookup.get(step["command"])
+        transitions = step.get("transitions") or {}
+        fallback = transitions.get("runtime_error")
+        if info is None or fallback is None:
+            continue
+        for outcome in sorted(info.outcomes - set(transitions)):
+            transitions[outcome] = fallback
+    definition = load_definition_json(json.dumps(raw))
+    ref = replace(
+        golden_ref,
+        artifact_sha256=definition.artifact_sha256(),
+        contract_fingerprint=definition.contract_fingerprint(),
+    )
+    activation = replace(golden_activation, active_artifact_sha256=ref.artifact_sha256)
+    return definition, ref, activation
 
 
 class _Handler(PlaybookV2CommandsMixin):

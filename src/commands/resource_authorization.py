@@ -10,7 +10,7 @@ from __future__ import annotations
 # These names operate on installation-wide state, even if they happen to accept
 # project_id as a display filter. A filter is not proof of scoped execution.
 SYSTEM_COMMANDS = frozenset("""
-archive_settings claude_usage create_agent create_profile delete_agent delete_profile
+operational_retention archive_settings claude_usage create_agent create_profile delete_agent delete_profile
 edit_agent edit_profile export_profile get_config get_config_schema
 get_github_auth_status get_profile get_status import_profile install_profile
 list_github_owners list_intelligence_classes list_profiles list_project_roots
@@ -21,14 +21,15 @@ reload_config migrate_profiles profile_audit profile_drift profile_reseed check_
 list_available_tools list_mcp_tool_catalog list_prompts read_prompt plugin_config
 plugin_disable plugin_enable plugin_info plugin_install plugin_list plugin_prompts
 plugin_reload plugin_remove plugin_reset_prompts plugin_update policy_apply policy_diff
-policy_export doctor db_preflight_hierarchy digest_facts digest_post digest_preview
+policy_export doctor doctor_run observation_snapshot_cleanup db_preflight_hierarchy digest_facts digest_post digest_preview
 digest_status discord_purge_channel read_logs scan_stub_staleness vault_rebuild_index
-list_projects list_active_tasks_all_projects orchestrator_control pool_status pool_scale pool_rename
+list_projects list_active_tasks_all_projects orchestrator_control pool_scale pool_rename pool_delete
 pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
 provider_recheck provider_set_state provider_status provider_held_tasks
 reconcile_agent_cron reconcile_agent_waits reconcile_collaborations cron_delivery_begin
-cron_delivery_finish integration_train_tick job_reconcile job_submit_integration
-observe_integration_source_ci queue_sync_workspaces session_cleanup supervisor_restart
+cron_delivery_finish integration_train_tick integration_reconcile_git_truth job_reconcile
+job_submit_integration
+observe_integration_source_ci queue_sync_workspaces session_cleanup
 start_agent_terminal session_input session_token
 playbook_activation_health playbook_health list_playbooks list_playbook_runs
 list_event_triggers playbook_pending_events playbook_pending_event_action
@@ -36,13 +37,16 @@ playbook_v2_import playbook_v2_validate playbook_v2_propose playbook_v2_shadow_c
 playbook_delete playbook_artifacts get_playbook_source update_playbook_source
 set_playbook_enabled playbook_graph_layout_save playbook_v2_graph playbook_graph_view
 show_playbook_graph playbook_artifact_diff
+batch_reconcile gate_reopen playbook_source_resync repair_repository_checkout
+repair_workspace_checkout spec_ingest_legacy_inventory spec_ingest_legacy_adopt
+spec_ingest_reconcile workspace_cutover
 run_command shutdown restart_daemon update_and_restart
 """.split())
 
 # Handlers with no resource data (schemas/catalogues only).
 PUBLIC_COMMANDS = frozenset("""
 get_schema playbook_commands find_applicable_tool load_tools
-formula_list formula_show list_workspace_kinds
+formula_list formula_show list_workspace_kinds doctor_catalog
 """.split())
 
 # Session-lifecycle commands require an actual session. Held-work commands also
@@ -53,6 +57,7 @@ prime subagent_event task_claim session_drain_ack operator_execute operator_pref
 HELD_COMMANDS = frozenset("""
 task_close task_heartbeat task_set task_comment task_comment_edit task_comment_delete
 benchmark_stage_record artifact_verify object_checkpoint_read task_handoff
+approved_spec_packet
 """.split())
 
 # Each of these producers confines its primary query/mutation to project_id, or
@@ -68,9 +73,9 @@ get_recent_events get_task_dependencies get_task_result get_task_tree get_token_
 get_workflow github_issue_close_rejected graph_layout_rebuild graph_reflow_status graph_tidy
 inspect_playbook_run list_archived list_mcp_servers list_workflows list_workspaces
 message_inbox message_list message_reply message_status pause_project pause_task phase_create
-phase_list playbook_activate playbook_run_overlay pr_merge project_doctor project_ready
+phase_list playbook_activate playbook_run_overlay pool_status pr_merge project_doctor project_ready
 provide_input provider_reroute_undo question_answer question_escalate question_list release_project_constraint
-release_workspace remove_dependency remove_task remove_workspace reopen_with_feedback
+release_workspace rebind_workspace remove_dependency remove_task remove_workspace reopen_with_feedback
 reparent_task restart_task resume_playbook resume_project resume_task review_attachment_add
 review_attachment_list review_comment review_decide review_delegate review_dispatch
 review_import_edits review_list review_reopen review_show review_submit review_withdraw
@@ -81,6 +86,7 @@ skip_task spec_approve task_batch_discard task_batch_propose task_batch_update t
 task_comments task_deps task_progress task_recent_activity task_recover task_route
  task_route_override task_show task_subtask_add task_subtask_get task_subtask_update
  task_subtasks token_audit workflow_pipeline_view workspace_doctor workspace_reap
+ discard_pause_checkpoint workspace_clear_sentinel workspace_retire_claim
 """.split())
 
 # These commands already implement a nontrivial resource language: mailboxes,
@@ -88,17 +94,20 @@ task_comments task_deps task_progress task_recent_activity task_recover task_rou
 # Do not reinterpret value IDs as unrelated table IDs. Their independent handler
 # gates are required, and plain project_id mismatches are still checked here.
 HANDLER_RESOURCE_GATES = frozenset("""
+supervisor_restart
 message_send message_inbox message_list message_reply message_status message_wait
 review_attachment_add review_attachment_list review_comment review_decide review_delegate
 review_dispatch review_import_edits review_list review_reopen review_show review_submit
 review_withdraw create_task_graph formula_cook task_batch_propose task_batch_update
 dashboard_state_get dashboard_state_list dashboard_state_put dashboard_state_reset
+review_feedback_complete
 """.split())
 
 # Session callers retain the independently verified domain gates. These
 # commands use live claims, tagged recipients, project selections or operator
 # grants that cannot be replaced by a generic argument-to-row ownership test.
 SESSION_HANDLER_RESOURCE_GATES = frozenset("""
+supervisor_restart
 task_show task_route task_handoff create_task provider_allocation_apply
 provider_allocation_preview object_loop_inputs test_selection_show test_selection_list
 supervisor_inbox_status supervisor_inbox_history escalation_create escalation_get
@@ -108,12 +117,13 @@ run_playbook dry_run_playbook playbook_activate
 digest_facts digest_preview digest_status bind_project_repository
 edit_intelligence_class delete_intelligence_class list_profiles list_intelligence_classes
 test_selection_policy_show
+review_feedback_complete
 """.split()) | PUBLIC_COMMANDS | SESSION_COMMANDS | HELD_COMMANDS
 
 # Explicit read audit, not a command-name heuristic. Unannotated effects remain
 # destructive and non-retryable; a read observation may still report unhealthy.
 AUDITED_READS = frozenset("""
-archive_settings check_profile claude_usage db_preflight_hierarchy digest_facts digest_preview
+archive_settings check_profile claude_usage db_preflight_hierarchy doctor_catalog doctor_run digest_facts digest_preview
  digest_status explain_task find_applicable_tool find_merge_conflict_workspaces formula_list
  formula_show gate_list gate_show get_agent get_agent_error get_benchmark_report get_chain_health
 get_chat_analyzer_metrics get_config get_config_schema get_costs get_git_identity
@@ -135,7 +145,22 @@ session_list session_logs session_peek session_show show_effective_profile show_
 """.split())
 
 
+STATE_COMMANDS = frozenset({
+    "playbook_state_get", "playbook_state_list", "playbook_state_set",
+    "playbook_state_delete", "playbook_state_inspect", "playbook_state_reset",
+    "playbook_state_notify",
+})
+STATE_PREVIEW_COMMANDS = STATE_COMMANDS - {"playbook_state_inspect", "playbook_state_reset"}
+AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_inspect"}
+
+
 def resource_requirements(name: str) -> tuple[str, ...]:
+    if name == "object_checkpoint_read":
+        return ("held_session_or_project_playbook_invocation",)
+    if name == "playbook_script_run":
+        return ("pinned_script_invocation",)
+    if name in STATE_COMMANDS:
+        return ("invocation_namespace_or_operator",)
     if name in SESSION_COMMANDS:
         return ("live_session",)
     if name in HELD_COMMANDS:
@@ -216,19 +241,39 @@ async def authorize_resources(
         "promote_approve", "operator_execute", "operator_preflight",
     }:
         return deny("unauthorized")
-    if command in SESSION_COMMANDS | HELD_COMMANDS and principal.kind is PrincipalKind.PLAYBOOK:
+    if (command in SESSION_COMMANDS | HELD_COMMANDS and command != "object_checkpoint_read"
+            and principal.kind is PrincipalKind.PLAYBOOK):
         return deny("session_required")
-    # Typed adapters already implement their domain's ownership language and
-    # outcome protocol. In particular, stale repair inputs, tagged message
-    # recipients and operator preflights must reach those independent gates.
+    # Typed adapters enforce their own ownership and outcome protocols, including stale repair
+    # inputs, tagged message recipients and operator preflights.
     if not generated:
         from src.commands.contracts import CONTRACTS
 
         if command in CONTRACTS.typed_contracts():
             return None
+    if command == "message_send" and principal.kind is PrincipalKind.PLAYBOOK:
+        # Shared submission validation resolves recipient ownership and derives
+        # sender provenance. Authored sender fields cannot become resource authority.
+        return None
+    if command == "playbook_script_run":
+        # The handler checks the actual pinned step, run and capability; its
+        # data arguments never enter generic identifier/project inference.
+        return None
+    if command in STATE_COMMANDS:
+        # This handler derives namespace membership from a pinned invocation;
+        # no injected project argument or recursive interpretation of private values.
+        return None
     project = principal.project_id
     if project is not None and args.get("project_id") not in (None, project):
         return deny()
+    if project is not None and command == "pool_status":
+        # Only supervisors may inspect their project's share of a global pool.
+        # Pin the view here too: direct dispatch must not rely on HTTP injection.
+        # The handler filters project/session details and retains fleet counters.
+        if principal.kind is not PrincipalKind.SESSION or not principal.elevated:
+            return deny()
+        args["project_id"] = project
+        return None
     if project is not None and command in SYSTEM_COMMANDS:
         return deny()
     if project is None:
