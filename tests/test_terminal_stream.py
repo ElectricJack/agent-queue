@@ -389,6 +389,65 @@ async def test_output_backpressure_waits_for_ack_without_dropping_bytes(setup):
     await asyncio.wait_for(task, 2)
 
 
+async def test_desktop_attach_sends_no_history_and_never_asks_to_restore_size(setup):
+    calls = []
+    async def attach(provider, row, **kwargs):
+        calls.append(kwargs)
+        return setup.client
+    async def history(lines, rows):
+        raise AssertionError("history was not requested")
+    setup.client.history = history
+    setup.attach = attach
+    ws = Socket(query={"cols": "100", "rows": "30"})
+    task = asyncio.create_task(service(setup).handle(ws, "s"))
+    assert (await ws.next())["type"] == "ready"
+    assert calls == [{"cols": 100, "rows": 30}]
+    await ws.disconnect()
+    await asyncio.wait_for(task, 2)
+
+
+async def test_phone_history_precedes_attach_output_under_the_same_credit(setup):
+    calls, asked = [], []
+    async def attach(provider, row, **kwargs):
+        calls.append(kwargs)
+        return setup.client
+    async def history(lines, rows):
+        asked.append((lines, rows))
+        return b"old-1\r\nold-2\r\n"
+    setup.client.history = history
+    setup.attach = attach
+    await setup.client.output.put(b"live")
+    ws = Socket(query={"cols": "45", "rows": "20", "history": "2000", "restore_size": "1"})
+    task = asyncio.create_task(service(setup, output_limit=8).handle(ws, "s"))
+    assert (await ws.next())["type"] == "ready"
+    assert calls == [{"cols": 45, "rows": 20, "restore_size": True, "scrollback": True}]
+    assert asked == [(2000, 20)]
+    assert await ws.next() == b"old-1\r\no"
+    await asyncio.sleep(0.05)
+    assert ws.outgoing.empty() and setup.client.reads == 0
+    await ws.control({"type": "ack", "bytes": 8})
+    assert await ws.next() == b"ld-2\r\n"
+    live = b""
+    while live != b"live":
+        chunk = await ws.next()
+        live += chunk
+        await ws.control({"type": "ack", "bytes": len(chunk)})
+    await ws.disconnect()
+    await asyncio.wait_for(task, 2)
+    assert setup.client.closed
+
+
+@pytest.mark.parametrize("query", [
+    {"history": "-1"}, {"history": "10001"}, {"history": "1e3"}, {"history": "\u0661"},
+    {"restore_size": "true"}, {"restore_size": "2"},
+])
+async def test_invalid_phone_options_refuse_before_attach(setup, query):
+    ws = Socket(query={"cols": "80", "rows": "24", **query})
+    await service(setup).handle(ws, "s")
+    assert ws.closed == 4400 and not ws.accepted
+    assert setup.client.sizes == []
+
+
 @pytest.mark.parametrize("frame", [
     {"type": "ack", "bytes": 1},
     {"type": "resize", "cols": 100000, "rows": 20},

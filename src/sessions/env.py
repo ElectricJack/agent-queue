@@ -30,9 +30,9 @@ Scrubbing is **not** implemented here.  :func:`src.env_scrub.scrub_env` owns
 the policy (trust-and-ops R6); this module supplies the ``explicit`` map it
 merges last and passes the daemon config through so the
 ``security.env_scrub_enabled`` kill switch and ``security.env_allowlist``
-are actually honoured at the launch site.  ``CLAUDECODE`` /
-``CLAUDE_CODE_ENTRYPOINT`` stripping comes free from ``STRIP_ALWAYS`` there
-— this module does not repeat it.
+are actually honoured at the launch site. Inherited ``CLAUDE*`` controls are
+stripped there regardless of the scrub kill switch; deliberate launch
+settings (such as the worker compact window) are supplied explicitly.
 """
 
 from __future__ import annotations
@@ -230,6 +230,9 @@ def build_session_env(
     """
     explicit: dict[str, str] = {}
     explicit.update(session_db_isolation(work_dir))
+    from src.build_cache import cache_environment
+
+    explicit.update(cache_environment(config, project_id))
     if harness_env:
         harness_explicit = {str(k): str(v) for k, v in harness_env.items()}
         # A harness file cannot restore a marker inherited from its enclosing

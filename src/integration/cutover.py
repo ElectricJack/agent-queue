@@ -36,7 +36,7 @@ from src.git.github_contracts import (
     GitHubAccessError, GitHubCredentialMode, credential_identity_from_client,
 )
 from src.integration.ci import IntegrationTrustManifest
-from src.integration.protection import ATTESTED_ONLY, classify
+from src.integration.protection import ATTESTED_ONLY, classify, read_ruleset_detail
 from src.integration.trust_manifest import ATTESTATION_NAME
 from src.integration.records import PolicyActivation
 from src.integration.train import TrainTarget
@@ -172,16 +172,22 @@ def workflow_branches(text):
 class CutoverGit:
     """Read Git/PR facts and create a missing default at the captured source OID."""
 
-    def __init__(self, db, client):
+    def __init__(self, db, client, *, ruleset_admin_reader=None):
         self.db, self.client = db, client
+        self.ruleset_admin_reader = ruleset_admin_reader
 
     async def remote_state(self, branches):
         root = f"/repositories/{self.client.repository.repository_id}"
         repo = await self.client.request_json("GET", root)
         rows = await self.client.paged_list(
             root + "/rulesets?per_page=100&includes_parents=true", max_pages=10)
-        rulesets = [await self.client.request_json("GET", f"{root}/rulesets/{row['id']}")
-                    for row in rows]
+        rulesets = [await read_ruleset_detail(
+            self.client, self.client.repository, row["id"],
+            admin_reader=self.ruleset_admin_reader,
+        ) for row in rows]
+        if any(not isinstance(row.get("bypass_actors"), list) for row in rulesets):
+            raise ValueError("github_ruleset_unverifiable: bypass actors are hidden; "
+                             "capture cutover with the local ruleset administrator login")
         protection = {}
         for branch in sorted(branches):
             path = f"{root}/branches/{quote(branch, safe='')}/protection"
@@ -310,7 +316,7 @@ class CutoverGit:
                         and row.get("enforcement") == "active"
                         and pattern in row.get("conditions", {}).get("ref_name", {}).get("include", [])
                         and not row.get("conditions", {}).get("ref_name", {}).get("exclude")]
-            immutable = any(not row.get("bypass_actors") and {"update", "deletion"} <= {
+            immutable = any(row.get("bypass_actors") == [] and {"update", "deletion"} <= {
                 rule["type"] for rule in row.get("rules", [])} for row in matching)
             creation = any(row.get("bypass_actors") == [{"actor_type": "Integration",
                                "actor_id": trust.attestation_app_id, "bypass_mode": "always"}]
@@ -391,6 +397,9 @@ class Cutover:
                     raise ValueError("invalid promotion flow: " + result.problems[0].code)
                 flow = result.flow
             inventory = await inventory_on(conn, project_id, repository.id, now=self.clock())
+            from src.integration.hierarchy import missing_origin_tasks_on
+
+            missing_origins = await missing_origin_tasks_on(conn, project_id, repository.id)
             receipt_targets = await receipt_targets_on(conn, repository.id,
                 repository.default_branch, prior=prior["receipt_ids"] if reverse else None)
             receipt_ids = list(receipt_targets)
@@ -414,6 +423,9 @@ class Cutover:
         facts = await self.git.observe(project_id, repository, default, branches=branches)
         missing = await self.git.retained(project_id, repository, missing)
         blockers = barrier(inventory, allow_epics=allow_epics, targets=targets, project_id=project_id)
+        if missing_origins:
+            blockers.append({"code": "branch_origins_missing", "task_ids": missing_origins,
+                             "control": "aq doctor --check integration.branch_origins --fix"})
         if not reverse and project["default_branch_cutover"]:
             blockers.append({"code": "cutover_already_active",
                              "control": "reverse the active cutover before replacing it"})
@@ -498,6 +510,9 @@ class Cutover:
         if (not isinstance(state, dict)
                 or not reverse and state.get("default_branch") != plan["old_default"]
                 or not isinstance(state.get("rulesets"), list)
+                or any(not isinstance(row, dict)
+                       or not isinstance(row.get("bypass_actors"), list)
+                       for row in state.get("rulesets", []))
                 or not isinstance(state.get("protection"), dict)):
             raise ValueError("saved_plan_invalid: capture GitHub state before manual changes")
         for key in ("project_id", "repository_id", "generation", "old_default", "default_branch",
@@ -552,6 +567,10 @@ class _Activation:
             await BranchLock(db).lock_on(conn, BranchKey(
                 repository_id=plan["repository_id"], branch=branch))
         live = await inventory_on(conn, project["id"], plan["repository_id"], now=self.service.clock())
+        from src.integration.hierarchy import missing_origin_tasks_on
+
+        if await missing_origin_tasks_on(conn, project["id"], plan["repository_id"]):
+            return {"outcome": "refused", "error": "branch_origins_missing"}
         await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(
             [row["task_id"] for row in plan["aborted_member_fence"]])).order_by(
                 tasks.c.id).with_for_update())
