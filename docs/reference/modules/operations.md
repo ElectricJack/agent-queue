@@ -32,6 +32,7 @@ This catalog maps every production module owned by the operations documentation 
 | [src/logging_config.py](../../../src/logging_config.py) | Configures structured console/JSONL logging and correlation context. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_logging_config.py`. |
 | [src/metrics/__init__.py](../../../src/metrics/__init__.py) | Exposes the fleet-metrics package surface. | [Operations guide](../../guides/operations.md) | Covered with sampler tests. |
 | [src/metrics/sampler.py](../../../src/metrics/sampler.py) | Collects, publishes, buffers, rolls up and prunes fleet metric samples. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_metrics_sampler.py`. |
+| [src/stall_watch.py](../../../src/stall_watch.py) | Detects orphaned workers, aged active tasks and unroutable READY leaves, and formats supervisor summaries. | [Stuck-task watch spec](../../specs/stuck-task-watch.md) | Read-only; covered by `tests/test_stall_watch.py`. |
 
 ## Related pages
 
