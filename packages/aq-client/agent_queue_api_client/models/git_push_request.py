@@ -21,12 +21,14 @@ class GitPushRequest:
         expected_remote_oid (None | str | Unset): Exact remote branch OID expected before the push (40 hex digits); the
             push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch
             must still be absent.
+        publication_delegation_id (None | str | Unset): Single-use integration-owner grant for this target branch
         workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     project_id: None | str | Unset = UNSET
     branch: None | str | Unset = UNSET
     expected_remote_oid: None | str | Unset = UNSET
+    publication_delegation_id: None | str | Unset = UNSET
     workspace: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -49,6 +51,12 @@ class GitPushRequest:
         else:
             expected_remote_oid = self.expected_remote_oid
 
+        publication_delegation_id: None | str | Unset
+        if isinstance(self.publication_delegation_id, Unset):
+            publication_delegation_id = UNSET
+        else:
+            publication_delegation_id = self.publication_delegation_id
+
         workspace: None | str | Unset
         if isinstance(self.workspace, Unset):
             workspace = UNSET
@@ -64,6 +72,8 @@ class GitPushRequest:
             field_dict["branch"] = branch
         if expected_remote_oid is not UNSET:
             field_dict["expected_remote_oid"] = expected_remote_oid
+        if publication_delegation_id is not UNSET:
+            field_dict["publication_delegation_id"] = publication_delegation_id
         if workspace is not UNSET:
             field_dict["workspace"] = workspace
 
@@ -100,6 +110,15 @@ class GitPushRequest:
 
         expected_remote_oid = _parse_expected_remote_oid(d.pop("expected_remote_oid", UNSET))
 
+        def _parse_publication_delegation_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        publication_delegation_id = _parse_publication_delegation_id(d.pop("publication_delegation_id", UNSET))
+
         def _parse_workspace(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -113,6 +132,7 @@ class GitPushRequest:
             project_id=project_id,
             branch=branch,
             expected_remote_oid=expected_remote_oid,
+            publication_delegation_id=publication_delegation_id,
             workspace=workspace,
         )
 
