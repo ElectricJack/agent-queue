@@ -754,7 +754,8 @@ function Inner(props: LayoutCanvasProps) {
           nodesFocusable={false}
           edgesFocusable={false}
           elementsSelectable={false}
-          // Keep an epic's opaque frame below its children when selected.
+          // Frames must stay below their children. React Flow otherwise adds
+          // 1000 to a selected frame's z-index, covering the child cards.
           elevateNodesOnSelect={false}
           deleteKeyCode={null}
           selectionKeyCode={null}
