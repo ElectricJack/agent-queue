@@ -96,6 +96,7 @@ RETIRED_CONTROLS = frozenset({
     "integration_release_delegates", "integration_retry_cleanup",
     "integration_settle_delivered_batch", "integration_settle_parked",
     "integration_shadow_report", "integration_waive_history",
+    "integration_development_engine_transfer",
 })
 
 
