@@ -542,6 +542,7 @@ class WaitAdapter(SourceAdapter):
     async def snapshot(self, source, *, conn, lock=True):
         from src.database.tables import playbook_v2_runs
         from src.playbooks.run_state import deserialize_snapshot
+        from src.playbooks.services import run_project_id
 
         row = (
             (
@@ -559,7 +560,7 @@ class WaitAdapter(SourceAdapter):
         if not row:
             raise AskError("ask.not_found", "Playbook run was not found")
         snap = deserialize_snapshot(row["snapshot"], version=row["snapshot_version"])
-        if snap.event.get("project_id") != source.project_id:
+        if await run_project_id(self.db, snap, conn=conn) != source.project_id:
             raise AskError("ask.not_found", "Playbook run was not found")
         engine = self.handler._v2_engine()
         artifact = engine._load(await engine._ref_for(snap))
