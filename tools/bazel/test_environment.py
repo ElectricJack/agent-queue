@@ -92,8 +92,38 @@ class Runtime:
     library_dirs: tuple[Path, ...] = ()
     git_exec_path: Path | None = None
     shell: Path | None = None
+    env_executable: Path | None = None
     sysroot: Path | None = None
     read_only_mappings: tuple[ReadOnlyMapping, ...] = ()
+
+    def to_manifest(self) -> dict:
+        """JSON-safe declaration carried across PG and E2E child boundaries."""
+        return {
+            "python": str(self.python),
+            **{name: list(map(str, getattr(self, name)))
+               for name in ("read_only", "bin_dirs", "library_dirs")},
+            **{name: str(getattr(self, name)) if getattr(self, name) else None
+               for name in ("git_exec_path", "shell", "env_executable", "sysroot")},
+            "read_only_mappings": [
+                {"source": str(mapping.source), "target": str(mapping.target)}
+                for mapping in self.read_only_mappings
+            ],
+        }
+
+    @classmethod
+    def from_manifest(cls, fields: Mapping) -> Runtime:
+        """Restore the complete runtime, including optional ABI mappings."""
+        return cls(
+            python=Path(fields["python"]),
+            **{name: tuple(map(Path, fields.get(name, ())))
+               for name in ("read_only", "bin_dirs", "library_dirs")},
+            **{name: Path(fields[name]) if fields.get(name) else None
+               for name in ("git_exec_path", "shell", "env_executable", "sysroot")},
+            read_only_mappings=tuple(
+                ReadOnlyMapping(Path(mapping["source"]), Path(mapping["target"]))
+                for mapping in fields.get("read_only_mappings", ())
+            ),
+        )
 
     def validate(self) -> None:
         if not self.bin_dirs:
@@ -107,6 +137,8 @@ class Runtime:
             paths += (self.git_exec_path,)
         if self.shell is not None:
             paths += (self.shell,)
+        if self.env_executable is not None:
+            paths += (self.env_executable,)
         for path in paths:
             if not _within(_absolute(path), self.read_only) or not path.exists():
                 raise IsolationError("runtime path is missing from declared inputs")
@@ -176,62 +208,84 @@ def test_environment(
     Output paths must belong to separately declared writable Bazel output roots.
     No host temporary/config directory is implicitly mounted into the child.
     """
-    runtime.validate()
     test_tmpdir = _absolute(test_tmpdir)
     if not test_tmpdir.is_dir():
         raise IsolationError("TEST_TMPDIR must be an existing directory")
+    with tempfile.TemporaryDirectory(prefix="aq-test-", dir=test_tmpdir) as temporary:
+        yield create_test_environment(
+            root=Path(temporary), runtime=runtime, bazel=bazel,
+            output_roots=output_roots, settings=settings,
+        )
+
+
+def create_test_environment(
+    *,
+    root: Path,
+    runtime: Runtime,
+    bazel: Mapping[str, str] | None = None,
+    output_roots: Sequence[Path] = (),
+    settings: Mapping[str, str] | None = None,
+) -> TestEnvironment:
+    """Populate an empty caller-owned directory using the H2 positive allowlist.
+
+    The caller owns its lifetime. E2E worlds use this when a daemon must survive
+    several independent script calls; ordinary targets use ``test_environment``.
+    """
+    runtime.validate()
+    root = _absolute(root)
+    if not root.is_dir() or any(root.iterdir()):
+        raise IsolationError("environment root must be an empty private directory")
+    root.chmod(0o700)
     outputs = tuple(_absolute(Path(p)) for p in output_roots)
     for path in outputs:
         if not path.is_dir() or path == Path("/"):
             raise IsolationError("output roots must be existing private directories")
-    with tempfile.TemporaryDirectory(prefix="aq-test-", dir=test_tmpdir) as temporary:
-        root = Path(temporary)
-        names = {
-            "HOME": "home", "XDG_CONFIG_HOME": "config", "XDG_CACHE_HOME": "cache",
-            "XDG_DATA_HOME": "data", "XDG_STATE_HOME": "state", "XDG_RUNTIME_DIR": "run",
-            "TMPDIR": "tmp", "TMUX_TMPDIR": "tmux", "AQ_E2E_HOME": "e2e",
-        }
-        env = {key: str(root / directory) for key, directory in names.items()}
-        for value in env.values():
-            Path(value).mkdir(mode=0o700)
-        config = root / "config" / "aq.yaml"
-        config.write_text("{}\n", encoding="utf-8")
-        config.chmod(0o600)
-        env.update({
-            "TEST_TMPDIR": str(root), "TMP": env["TMPDIR"], "TEMP": env["TMPDIR"],
-            "AQ_CONFIG_PATH": str(config), "PATH": os.pathsep.join(map(str, runtime.bin_dirs)),
-            "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
-            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0", "PYTHONNOUSERSITE": "1",
-            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-        })
-        if runtime.library_dirs:
-            env["LD_LIBRARY_PATH"] = os.pathsep.join(map(str, runtime.library_dirs))
-        if runtime.git_exec_path is not None:
-            env["GIT_EXEC_PATH"] = str(runtime.git_exec_path)
-        if runtime.shell is not None:
-            env["SHELL"] = str(runtime.shell)
-        for name, value in (bazel or {}).items():
-            if name not in BAZEL_VARIABLES or "\0" in value:
-                raise IsolationError(f"undeclared Bazel variable: {name}")
-            if name in _RUNFILES and not _within(_absolute(Path(value)), runtime.read_only):
-                raise IsolationError("runfiles path is outside declared inputs")
-            if name in _OUTPUTS and not _within(_absolute(Path(value)), (root, *outputs)):
-                raise IsolationError("Bazel output path is outside declared output roots")
-            env[name] = value
-        environment = TestEnvironment(root, runtime, env, (root, *outputs))
-        # Prevent an input mount from exposing the parent TMPDIR or shadowing
-        # the private state (and vice versa). Sibling targets share no writes.
-        roots = (*runtime.read_only, *environment.writable)
-        for mapping in runtime.read_only_mappings:
-            if any(_within(mapping.target, (root,)) or _within(root, (mapping.target,))
-                   for root in environment.writable):
-                raise IsolationError("mapping target shadows private writable state")
-        for i, first in enumerate(roots):
-            for second in roots[i + 1:]:
-                if _within(first, (second,)) or _within(second, (first,)):
-                    raise IsolationError("declared input/output roots must not overlap")
-        yield TestEnvironment(root, runtime, environment.child_env(settings), environment.writable)
+    names = {
+        "HOME": "home", "XDG_CONFIG_HOME": "config", "XDG_CACHE_HOME": "cache",
+        "XDG_DATA_HOME": "data", "XDG_STATE_HOME": "state", "XDG_RUNTIME_DIR": "run",
+        "TMPDIR": "tmp", "TMUX_TMPDIR": "tmux", "AQ_E2E_HOME": "e2e",
+    }
+    env = {key: str(root / directory) for key, directory in names.items()}
+    for value in env.values():
+        Path(value).mkdir(mode=0o700)
+    config = root / "config" / "aq.yaml"
+    config.write_text("{}\n", encoding="utf-8")
+    config.chmod(0o600)
+    env.update({
+        "TEST_TMPDIR": str(root), "TMP": env["TMPDIR"], "TEMP": env["TMPDIR"],
+        "AQ_CONFIG_PATH": str(config), "PATH": os.pathsep.join(map(str, runtime.bin_dirs)),
+        "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0", "PYTHONNOUSERSITE": "1",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    })
+    if runtime.library_dirs:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(map(str, runtime.library_dirs))
+    if runtime.git_exec_path is not None:
+        env["GIT_EXEC_PATH"] = str(runtime.git_exec_path)
+    if runtime.shell is not None:
+        env["SHELL"] = str(runtime.shell)
+    for name, value in (bazel or {}).items():
+        if name not in BAZEL_VARIABLES or "\0" in value:
+            raise IsolationError(f"undeclared Bazel variable: {name}")
+        if name in _RUNFILES and not _within(_absolute(Path(value)), runtime.read_only):
+            raise IsolationError("runfiles path is outside declared inputs")
+        if name in _OUTPUTS and not _within(_absolute(Path(value)), (root, *outputs)):
+            raise IsolationError("Bazel output path is outside declared output roots")
+        env[name] = value
+    environment = TestEnvironment(root, runtime, env, (root, *outputs))
+    # Prevent an input mount from exposing the parent TMPDIR or shadowing
+    # the private state (and vice versa). Sibling targets share no writes.
+    roots = (*runtime.read_only, *environment.writable)
+    for mapping in runtime.read_only_mappings:
+        if any(_within(mapping.target, (root,)) or _within(root, (mapping.target,))
+               for root in environment.writable):
+            raise IsolationError("mapping target shadows private writable state")
+    for i, first in enumerate(roots):
+        for second in roots[i + 1:]:
+            if _within(first, (second,)) or _within(second, (first,)):
+                raise IsolationError("declared input/output roots must not overlap")
+    return TestEnvironment(root, runtime, environment.child_env(settings), environment.writable)
 
 
 def _syscall(name: str, *args) -> None:
@@ -299,6 +353,8 @@ def _enter_namespaces(config: dict) -> int:
         _bind(Path("/dev") / device, jail / "dev" / device, readonly=False)
     if config["shell"]:
         _bind(Path(config["shell"]), jail / "bin" / "sh", readonly=True)
+    if config["env_executable"]:
+        _bind(Path(config["env_executable"]), jail / "usr" / "bin" / "env", readonly=True)
     # Native PG/git/tmux need an account lookup and private PTYs. Generate these
     # inputs rather than exposing the host's passwd, NSS, hosts or terminal state.
     etc = jail / "etc"
@@ -335,6 +391,11 @@ def _enter_namespaces(config: dict) -> int:
     os.chdir(config["cwd"])
     os.umask(0o077)
     _syscall("prctl", 38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+    # Mount setup is finished. PID 1 must have the same unprivileged capability
+    # set as its children, including for the daemon's same-user /proc proofs.
+    header = (ctypes.c_uint32 * 2)(0x20080522, 0)  # LINUX_CAPABILITY_VERSION_3
+    capabilities = (ctypes.c_uint32 * 6)()
+    _syscall("capset", ctypes.byref(header), ctypes.byref(capabilities))
     return 0
 
 
@@ -454,6 +515,8 @@ async def run_isolated(
             "read_only": list(map(str, environment.runtime.read_only)),
             "writable": list(map(str, environment.writable)),
             "shell": str(environment.runtime.shell) if environment.runtime.shell else None,
+            "env_executable": str(environment.runtime.env_executable)
+            if environment.runtime.env_executable else None,
             "read_only_mappings": [[str(m.source), str(m.target)]
                                    for m in environment.runtime.read_only_mappings],
         }

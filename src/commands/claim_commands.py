@@ -1474,6 +1474,9 @@ class ClaimCommandsMixin:
                 except Exception as exc:
                     if not _retryable_preparation_error(exc):
                         raise
+                    from src.preparation_failure import describe_preparation_failure
+
+                    failure = describe_preparation_failure(exc, "preparation_retry")
                     active = await self.db.get_session(session.id)
                     if (active is not None and active.task_id == task.id
                             and active.last_claim_epoch == task.claim_epoch
@@ -1494,10 +1497,22 @@ class ClaimCommandsMixin:
                     )
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
-            remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch, session_id=session.id)
-            self._resolve_claim_waiters(session.id, task.claim_epoch, "no_ready_work")
+            # The retry budget ended, but this exact preparation still owns
+            # its task, workspace and possibly a ref reservation. Report the
+            # concrete failure through the durable refusal cooldown instead
+            # of disguising retained work as an empty frontier.
+            await self.db.record_failed_preparation(
+                session.id, instance_token=session.instance_token, task_id=task.id,
+                claim_epoch=task.claim_epoch, preparation_started_at=row.claim_phase_at,
+                task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+            )
+            await self._record_prepare_failure(
+                task, failure, session=session, slot=slot, epoch=task.claim_epoch,
+                disposition="retained",
+            )
+            self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
             return self._simple(
-                ClaimResult.NO_READY_WORK, "claim preparation transient contention", row, cap
+                ClaimResult.PREPARE_FAILED, failure.reason, row, cap
             )
 
     async def _branch_fenced_prepare_failed(
@@ -1773,7 +1788,7 @@ class ClaimCommandsMixin:
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
         cleanup_unproved=False,
     ) -> None:
-        """Record what a permanent preparation failure observed, and who saw it.
+        """Record what a failed preparation observed, and who saw it.
 
         The identity (session instance, claim epoch, workspace) makes a late
         or stale completion attributable; the record decides nothing --
@@ -1842,6 +1857,7 @@ class ClaimCommandsMixin:
         # assignment inside ``try`` (a missing slot raises first).
         hierarchy_enabled = False
         fresh = None
+        recheck_detail = None
         prepared_branch: str | None = None
         # The preparation step running when an exception escapes; the
         # failure description names it (src/preparation_failure.py).
@@ -1918,7 +1934,7 @@ class ClaimCommandsMixin:
             async def prepare_and_activate(
                 *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
             ):
-                nonlocal prepared_branch, stage, slot
+                nonlocal prepared_branch, stage, slot, recheck_detail
                 if conn is None:
                     timing = current_claim_timing.get()
                     if timing is not None and timing.activation_stack is not None:
@@ -1964,10 +1980,8 @@ class ClaimCommandsMixin:
                 )
                 stage = "claim_file"
                 prepared_branch = branch if isinstance(branch, str) and branch else None
-                # Writing the claim file joins the same guard as the slot
-                # reset: any failure after ``record_holder`` committed — a slot
-                # reset error or an OSError on this write — must release the
-                # claim and leave no claim file behind.
+                # Reset and marker writes share cleanup: failures release the
+                # committed holder and remove the claim file.
                 marker = {
                     "task_id": task.id,
                     "claim_epoch": epoch,
@@ -1999,11 +2013,8 @@ class ClaimCommandsMixin:
                 stage = "activate_claim"
                 activation_args = dict(
                     epoch=epoch, now=time.time(), branch_name=prepared_branch,
-                    # A successful preparation clears its pause checkpoint
-                    # and failure ladder together, so a later, unrelated
-                    # prepare starts at minimum.  Done inside the activation
-                    # transaction rather than after it: same guards, same
-                    # table, one fewer pooled checkout.
+                    # Clear pause and failure metadata atomically with activation;
+                    # a later preparation starts at the minimum backoff.
                     clear_preparation_metadata=True,
                     admission=admission,
                     ordinary_admission_guard=admission is None,
@@ -2019,6 +2030,10 @@ class ClaimCommandsMixin:
                     )
                 except OrdinaryAdmissionChanged:
                     stage = "admission_recheck"
+                    recheck_detail = (
+                        "ordinary_admission_changed: artifact-free source, integration policy "
+                        "or graph eligibility changed; retry with current admission"
+                    )
                     return None
                 if activated and hierarchy_enabled:
                     stage = "finalize_preparation"
@@ -2099,24 +2114,30 @@ class ClaimCommandsMixin:
                     )
                 hierarchy_attached = True
                 stage = "activation_lock"
+                from src.integration.lock import slot_preparation_timeout_seconds
+
+                preparation_timeout = slot_preparation_timeout_seconds(
+                    self.config.worktrees, task.project_id,
+                )
                 if previous_owner and previous_owner.get("fence") is not None:
-                    # Managed recovery/filing takes task before ref. Holding
-                    # ref while activate_claim locks session/task reverses
-                    # that order, including FK key-share locks from filing.
+                    # Match recovery/filing: session/task before ref, including
+                    # filing's FK key-share locks, then repository mutex.
                     async with self.db.immediate() as conn:
                         claim = await self.db.lock_claim_for_activation(
                             conn, session.id, task.id, epoch=epoch
                         )
                         if claim is not None:
                             async with ownership.mutation_exclusion_on(
-                                conn, fence, state="attached", expected_role=owner_role
+                                conn, fence, state="attached", expected_role=owner_role,
+                                timeout_seconds=preparation_timeout,
                             ):
                                 fresh = await prepare_and_activate(
                                     conn=conn, **preparation_args,
                                 )
                 else:
                     async with ownership.mutation_exclusion(
-                        fence, state="attached", expected_role=owner_role
+                        fence, state="attached", expected_role=owner_role,
+                        timeout_seconds=preparation_timeout,
                     ) as conn:
                         fresh = await prepare_and_activate(
                             conn=conn, **preparation_args,
@@ -2482,20 +2503,51 @@ class ClaimCommandsMixin:
                 return out
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
-            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             if stage == "admission_recheck" or (
-                admission is not None and not await admission.matches()
+                admission is not None and (
+                    admission.rejection_reasons(task.id) or not await admission.matches()
+                )
             ):
-                await self.db.release_claim(
+                from src.preparation_failure import describe_preparation_failure
+
+                reasons = admission.rejection_reasons(task.id) if admission is not None else []
+                detail = "; ".join(
+                    f"{reason['code']}: {reason['detail']}" for reason in reasons
+                ) or recheck_detail or (
+                    "admission_recheck_unexplained: admission guard rejected preparation "
+                    f"at {stage} without comparison diagnostics; inspect task {task.id} "
+                    f"claim epoch {epoch}"
+                )
+                failure = describe_preparation_failure(RuntimeError(detail), "admission_recheck")
+                await self.db.record_failed_preparation(
+                    session.id, instance_token=session.instance_token, task_id=task.id,
+                    claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
+                    task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+                )
+                released = await self.db.release_claim(
                     session.id,
                     expected_task_id=task.id, expected_claim_epoch=epoch,
                     expected_instance_token=session.instance_token, task_status=TaskStatus.READY,
+                    # A prerequisite/gate can now block the selected task.
+                    # Release that exact IN_PROGRESS claim even when its
+                    # blocked projection changed; preserve the epoch so the
+                    # settled refusal still matches this preparation.
+                    expected_task_status=TaskStatus.IN_PROGRESS,
+                    expected_task_claim_epoch=epoch,
                     context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
+                    prepare_backoff=True,
+                )
+                if released.released:
+                    remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="released" if released.released else "retained",
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(
-                    ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", row, cap
+                    ClaimResult.PREPARE_FAILED, failure.reason, row, cap
                 )
+            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
         if prepared_branch:

@@ -112,17 +112,16 @@ async def isolated_child(plan: dict) -> int:
             *plan["pytest_command"], env=dict(os.environ)
         )
         return await process.wait()
-    runtime = isolation.Runtime(
-        Path(plan["python"]),
-        tuple(map(Path, plan["read_only"])),
-        tuple(map(Path, plan["bin_dirs"])),
-    )
+    runtime = isolation.Runtime.from_manifest(plan["runtime"])
     env = isolation.TestEnvironment(root, runtime, dict(os.environ), (root,))
     native = Path(plan["native"]) / "bin"
     binaries = PostgresBinaries(
         *(native / name for name in ("initdb", "postgres", "pg_ctl", "psql"))
     )
-    async with postgres_cluster(env, binaries, tcp=True, socket_alias_root=Path("/tmp")) as cluster:
+    async with postgres_cluster(
+        env, binaries, tcp=True, socket_alias_root=Path("/tmp"),
+        python_paths=tuple(map(Path, plan["python_paths"])),
+    ) as cluster:
         os.environ.update(cluster.environ)
         # Pytest needs its own event loop for async fixtures; execute in a child,
         # keeping cluster lifecycle on this responsive event loop.
@@ -285,6 +284,7 @@ class Launch:
             library_dirs=(native / "lib",),
             git_exec_path=native / "libexec/git-core",
             shell=native / "bin/bash",
+            env_executable=native / "bin/env",
             sysroot=sysroot,
             read_only_mappings=tuple(
                 isolation.ReadOnlyMapping(sysroot / directory, Path("/") / directory)
@@ -336,6 +336,8 @@ class Launch:
             "python": str(python),
             "read_only": list(map(str, read_only)),
             "bin_dirs": list(map(str, runtime.bin_dirs)),
+            "runtime": runtime.to_manifest(),
+            "python_paths": self.import_paths(workspace, inputs),
             "workspace": str(workspace),
             "spec": self.spec,
             "native": str(native),
@@ -360,6 +362,7 @@ class Launch:
             "read_only": list(map(str, read_only)),
             "writable": list(map(str, self.environment.writable)),
             "shell": str(runtime.shell),
+            "env_executable": str(runtime.env_executable),
             "read_only_mappings": [
                 [str(mapping.source), str(mapping.target)]
                 for mapping in runtime.read_only_mappings

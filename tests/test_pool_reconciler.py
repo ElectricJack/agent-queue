@@ -162,6 +162,10 @@ async def test_contained_sibling_releases_mid_epic_without_delivery_receipt(
     from src.scheduler import PoolKey
 
     env = git_first_frontier
+    # Pool sizing permits preparation while its first observation runs in the
+    # background. Completed negative evidence then withholds sibling demand.
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+    await asyncio.gather(*env.observer._refreshes.values())
     assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
     env.git(env.origin.clone, "push", "origin", "aq/first:aq/epic")
     env.observer._recent.clear()

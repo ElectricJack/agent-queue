@@ -19,7 +19,7 @@ import sys
 import tempfile
 import uuid
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -89,6 +89,7 @@ async def postgres_cluster(
     startup_timeout: float = 30,
     grace: float = 2,
     socket_alias_root: Path | None = None,
+    python_paths: tuple[Path, ...] = (),
 ):
     """Create a new cluster, yield its child-only DSN, and bound all teardown.
 
@@ -99,6 +100,9 @@ async def postgres_cluster(
     remains under TEST_TMPDIR, even when Bazel's path exceeds sockaddr_un.
     """
     binaries.validate(environment)
+    if any(not path.is_absolute() or not any(path.is_relative_to(root)
+           for root in environment.runtime.read_only) for path in python_paths):
+        raise IsolationError("Python dependency path is outside declared runtime inputs")
     if any(not math.isfinite(n) or n <= 0 for n in (startup_timeout, grace)):
         raise IsolationError("PostgreSQL startup and teardown budgets must be positive and finite")
     with tempfile.TemporaryDirectory(prefix="pg-", dir=environment.root) as temporary:
@@ -157,8 +161,18 @@ async def postgres_cluster(
                     )
                 query = urlencode({"host": str(sockets), "port": port})
                 dsn = f"postgresql+asyncpg://aq_test@/{database}?{query}"
+                manifest = root / "environment.json"
+                manifest.write_text(json.dumps({
+                    "root": str(environment.root), "runtime": asdict(environment.runtime),
+                    "env": environment.child_env(), "python_paths": python_paths,
+                    "socket_alias_root": socket_alias_root,
+                    "postgres_dsn": dsn,
+                    "tcp_dsn": f"postgresql+asyncpg://aq_test@127.0.0.1:{port}/{database}"
+                    if tcp else None,
+                }, default=str))
                 env.update({"POSTGRES_TEST_DSN": dsn, "AQ_TEST_PG_MODE": "postgres",
-                            "AQ_REQUIRE_POSTGRES_TESTS": "1", "AQ_DB_SCOPE": "test"})
+                            "AQ_REQUIRE_POSTGRES_TESTS": "1", "AQ_DB_SCOPE": "test",
+                            "AQ_TEST_ENVIRONMENT": str(manifest)})
                 yield Cluster(root, sockets, port, dsn, process, env)
         except BaseException:
             # The private tree is removed even on startup failure. Preserve a
@@ -186,6 +200,7 @@ async def run_postgres_target(
     tcp: bool = False,
     timeout: float = 290,
     grace: float = 2,
+    python_paths: tuple[Path, ...] = (),
 ) -> int:
     """H2 entry point: cluster and test process share one private namespace.
 
@@ -203,9 +218,8 @@ async def run_postgres_target(
     plan.write_text(json.dumps({
         "root": str(environment.root), "env": environment.child_env(),
         "binaries": {key: str(value) for key, value in vars(binaries).items()},
-        "read_only": list(map(str, environment.runtime.read_only)),
-        "python": str(environment.runtime.python),
-        "bin_dirs": list(map(str, environment.runtime.bin_dirs)),
+        **environment.runtime.to_manifest(),
+        "python_paths": list(map(str, python_paths)),
         "command": command, "tcp": tcp, "grace": grace,
     }))
     try:
@@ -226,8 +240,7 @@ async def _target(plan: dict) -> int:
     from tools.bazel.test_environment import Runtime
 
     environment = TestEnvironment(
-        Path(plan["root"]), Runtime(Path(plan["python"]), tuple(map(Path, plan["read_only"])),
-                                    tuple(map(Path, plan["bin_dirs"]))),
+        Path(plan["root"]), Runtime.from_manifest(plan),
         plan["env"], (Path(plan["root"]),),
     )
     binaries = PostgresBinaries(**{key: Path(value) for key, value in plan["binaries"].items()})
@@ -236,7 +249,8 @@ async def _target(plan: dict) -> int:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, task.cancel)
     async with postgres_cluster(environment, binaries, tcp=plan["tcp"], grace=plan["grace"],
-                                socket_alias_root=Path("/tmp")) as cluster:
+                                socket_alias_root=Path("/tmp"),
+                                python_paths=tuple(map(Path, plan["python_paths"]))) as cluster:
         process = await asyncio.create_subprocess_exec(
             *plan["command"], env=cluster.environ, start_new_session=True,
         )
