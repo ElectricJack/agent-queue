@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/commands/escalation_commands.py::EscalationCommandsMixin._cmd_escalation_list": "Generic escalation list; delivery_status refers to notification delivery.",
+    "src/commands/escalation_commands.py::EscalationCommandsMixin.emit_escalation_delivery_status": "Notification transport delivery event, not code delivery."
+  }
+}

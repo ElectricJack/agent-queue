@@ -8,6 +8,7 @@ owning subsystem has not landed yet are listed in
 contract those owners must follow.
 """
 
+from src.doctor.ask_checks import ask_checks
 from src.doctor.builtin import builtin_checks
 from src.doctor.capability_checks import capability_checks
 from src.doctor.dashboard_server_checks import dashboard_server_checks
@@ -18,6 +19,7 @@ from src.doctor.escalation_checks import escalation_checks
 from src.doctor.formula_checks import formula_checks
 from src.doctor.git_checks import git_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
+from src.doctor.ingestion_checks import ingestion_checks
 from src.doctor.integration_checks import integration_checks
 from src.doctor.intelligence_class_checks import intelligence_class_checks
 from src.doctor.models import (
@@ -44,6 +46,7 @@ from src.doctor.skill_checks import skill_checks
 from src.doctor.stall_checks import stall_checks
 from src.doctor.task_checks import task_checks
 from src.doctor.workspace_checks import workspace_checks
+from src.doctor.wait_checks import wait_checks
 
 __all__ = [
     "RESERVED_CHECK_IDS",
@@ -52,6 +55,7 @@ __all__ = [
     "DoctorContext",
     "DoctorRegistry",
     "Severity",
+    "ask_checks",
     "builtin_checks",
     "capability_checks",
     "dashboard_server_checks",
@@ -64,6 +68,7 @@ __all__ = [
     "formula_checks",
     "git_checks",
     "integration_checks",
+    "ingestion_checks",
     "intelligence_class_checks",
     "perf_checks",
     "playbook_v2_checks",
@@ -80,15 +85,20 @@ __all__ = [
     "stall_checks",
     "task_checks",
     "workspace_checks",
+    "wait_checks",
 ]
 
 
 def default_registry() -> DoctorRegistry:
     """A registry pre-populated with every built-in check."""
     registry = DoctorRegistry()
+    for check in ask_checks():
+        registry.register(check)
     for check in builtin_checks():
         registry.register(check)
     for check in hierarchy_checks():
+        registry.register(check)
+    for check in ingestion_checks():
         registry.register(check)
     for check in pool_checks():
         registry.register(check)
@@ -141,5 +151,7 @@ def default_registry() -> DoctorRegistry:
     for check in service_checks():
         registry.register(check)
     for check in record_checks():
+        registry.register(check)
+    for check in wait_checks():
         registry.register(check)
     return registry
