@@ -9,22 +9,20 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.models import AgentProfile, DepType, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.tools import _ALL_TOOL_DEFINITIONS
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -47,6 +45,7 @@ async def handler(db, config):
 
 
 async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
@@ -312,8 +311,7 @@ class TestAbandonChildren:
 
 
 class TestCascadeDeleteLiveDescendants:
-    """Cascade delete refuses rather than pulling a live session out from
-    under a grandchild (spec §7, controller ruling on task 7 review)."""
+    """Confirmed recursive deletion stops live descendants and reports failures."""
 
     async def _grandchild_tree(self, db):
         await mktask(db, "p", status=TaskStatus.DEFINED)
@@ -322,7 +320,7 @@ class TestCascadeDeleteLiveDescendants:
         await db.add_dependency("c", "p", "parent-child")
         await db.add_dependency("gc", "c", "parent-child")
 
-    async def test_refused_while_grandchild_has_live_session(self, handler, db):
+    async def test_confirmed_delete_handles_grandchild_live_session(self, handler, db):
         await self._grandchild_tree(db)
         now = time.time()
         await db.create_session(
@@ -344,15 +342,13 @@ class TestCascadeDeleteLiveDescendants:
             )
         )
 
-        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True})
-        assert res["success"] is False
-        assert res["code"] == "hierarchy.live_descendants"
-        assert res["sessions"] == [{"session_id": "s1", "task_id": "gc"}]
-
-        # Nothing was deleted.
-        assert await db.get_task("p") is not None
-        assert await db.get_task("c") is not None
-        assert await db.get_task("gc") is not None
+        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True, "confirmed": True})
+        assert res["success"] is True, res
+        assert "running_work" in {w["code"] for w in res["warnings"]}
+        assert res["sessions"] == [{"session_id": "s1", "task_id": "gc", "state": "running"}]
+        assert await db.get_task("p") is None
+        assert await db.get_task("c") is None
+        assert await db.get_task("gc") is None
 
     async def test_succeeds_once_session_stopped(self, handler, db):
         await self._grandchild_tree(db)
@@ -377,8 +373,10 @@ class TestCascadeDeleteLiveDescendants:
         )
         await db.update_session("s1", state="stopped")
 
-        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True})
-        assert res == {"deleted": "p", "title": "p", "discarded_branches": []}
+        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True, "confirmed": True})
+        assert res["success"], res
+        assert res["deleted"] == "p"
+        assert res["branch_details"] == []
 
         assert await db.get_task("p") is None
         assert await db.get_task("c") is None
@@ -465,6 +463,7 @@ class TestHierarchyCommands:
         res = await handler._cmd_get_schema({})
         assert "container_closed" in res["enums"]["hierarchy_error"]
         assert "live_parent" in res["enums"]["hierarchy_error"]
+        assert "dependency_on_container" in res["enums"]["hierarchy_error"]
 
     async def test_agent_scope_includes_reads(self):
         from src.api.scope import AGENT_COMMAND_SET
@@ -473,12 +472,7 @@ class TestHierarchyCommands:
 
 
 class TestDeleteBranchPolicy:
-    """``task_delete``'s ``branches`` argument, end to end through the handler.
-
-    The guard's own tests cover the database side; these pin the surface: the
-    refusal a UI has to act on, and that a discard actually reaches the row the
-    drain reads.
-    """
+    """Branch choices preview resources and report cleanup through the handler."""
 
     async def _hierarchical_task_with_a_branch(
         self, db, task_id: str, *, branch: str | None = None
@@ -511,7 +505,7 @@ class TestDeleteBranchPolicy:
                 )
             )
 
-    async def test_delete_without_a_choice_names_the_branches(self, db, handler):
+    async def test_delete_without_confirmation_previews_the_branches(self, db, handler):
         epic_branch = "aq/epic/retire-the-publisher"
         await self._hierarchical_task_with_a_branch(
             db, "has-branch", branch=epic_branch
@@ -519,11 +513,10 @@ class TestDeleteBranchPolicy:
 
         res = await handler.execute("delete_task", {"task_id": "has-branch"})
 
-        assert res["success"] is False
-        assert res["code"] == "hierarchy.branch_discard_required"
-        assert res["branches"] == [
-            {"task_id": "has-branch", "branch": epic_branch, "base_sha": "a" * 40}
-        ]
+        assert res["success"] is True
+        assert res["disposition"] == "preview"
+        assert res["branches"] == "keep"
+        assert epic_branch in {b["branch"] for b in res["branch_details"]}
         assert await db.get_task("has-branch") is not None
 
     async def test_delete_with_keep_leaves_no_discard_work(self, db, handler):
@@ -534,11 +527,11 @@ class TestDeleteBranchPolicy:
         await self._hierarchical_task_with_a_branch(db, "keep-branch")
 
         res = await handler.execute(
-            "delete_task", {"task_id": "keep-branch", "branches": "keep"}
+            "delete_task", {"task_id": "keep-branch", "branches": "keep", "confirmed": True}
         )
 
         assert res["deleted"] == "keep-branch"
-        assert res["discarded_branches"] == []
+        assert all(b["action"] == "keep" for b in res["branch_details"])
         async with db._engine.connect() as conn:
             state = (
                 await conn.execute(
@@ -549,7 +542,7 @@ class TestDeleteBranchPolicy:
             ).scalar_one()
         assert state is None
 
-    async def test_delete_with_delete_queues_the_branch_and_reports_it(self, db, handler):
+    async def test_delete_with_unavailable_checkout_reports_nonfatal_cleanup(self, db, handler):
         from sqlalchemy import select
 
         from src.database.tables import task_branch_origins
@@ -560,13 +553,12 @@ class TestDeleteBranchPolicy:
         )
 
         res = await handler.execute(
-            "delete_task", {"task_id": "drop-branch", "branches": "delete"}
+            "delete_task", {"task_id": "drop-branch", "branches": "delete", "confirmed": True}
         )
 
         assert res["deleted"] == "drop-branch"
-        assert res["discarded_branches"] == [
-            {"task_id": "drop-branch", "branch": epic_branch, "base_sha": "a" * 40}
-        ]
+        assert epic_branch in {b["branch"] for b in res["branch_details"]}
+        assert "branch_cleanup_incomplete" in {w["code"] for w in res["warnings"]}
         assert await db.get_task("drop-branch") is None
         async with db._engine.connect() as conn:
             origin = (
@@ -576,7 +568,8 @@ class TestDeleteBranchPolicy:
                     )
                 )
             ).mappings().one()
-        assert origin["discard_state"] == "pending"
+        assert origin["discard_state"] is None
+        assert origin["retired_at"] is not None
         assert origin["branch_name"] == epic_branch
 
     async def test_an_unknown_choice_is_rejected_before_anything_moves(self, db, handler):
@@ -592,14 +585,7 @@ class TestDeleteBranchPolicy:
 
 
 class TestHierarchyRefusalsOverHTTP:
-    """The refusals a dashboard has to act on must survive the typed route.
-
-    ``src/api/codegen.py`` answers a command error with a bare
-    ``{"error": ...}`` 422 unless the command is on its allowlist, which
-    strips the very ``code``/``branches``/``references`` keys the delete
-    dialog branches on. These tests pin the wire body, not the handler
-    result — the handler-level tests above cannot see that boundary.
-    """
+    """Preview choices and confirmed deletion survive the generated HTTP route."""
 
     @pytest.fixture
     async def typed_routes(self, handler):
@@ -609,7 +595,7 @@ class TestHierarchyRefusalsOverHTTP:
         an event loop of its own, and the handler's asyncpg connections belong
         to this test's loop — every database call would fail with "another
         operation is in progress" and the route would answer a 422 carrying
-        that error instead of the refusal under test.
+        that error instead of the response under test.
         """
         from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
@@ -658,20 +644,20 @@ class TestHierarchyRefusalsOverHTTP:
                 )
             )
 
-    async def test_delete_refused_by_integration_history_keeps_its_code_on_the_wire(
+    async def test_confirmed_delete_with_integration_history_succeeds_on_the_wire(
         self, db, typed_routes
     ):
         await self._integration_owned_task(db, "owned")
 
         response = await typed_routes.post("/api/task/delete", json={"task_id": "owned"})
 
-        assert response.status_code == 422, response.text
-        body = response.json()
-        assert body["code"] == "hierarchy.integration_history_retained"
-        assert body["success"] is False
-        assert body["error"].startswith("hierarchy.integration_history_retained:")
-        assert [r["table"] for r in body["references"]] == ["integration_parent_episodes"]
+        assert response.status_code == 200, response.text
+        assert response.json()["disposition"] == "preview"
         assert await db.get_task("owned") is not None
+        response = await typed_routes.post("/api/task/delete", json={"task_id": "owned", "confirmed": True})
+        assert response.status_code == 200, response.text
+        assert response.json()["deleted"] == "owned"
+        assert await db.get_task("owned") is None
 
     async def test_archive_with_integration_history_succeeds_on_the_wire(
         self, db, typed_routes
@@ -685,7 +671,7 @@ class TestHierarchyRefusalsOverHTTP:
         assert body["archived"] == "owned"
         assert await db.get_task("owned") is None
 
-    async def test_branch_discard_refusal_keeps_its_branch_list_on_the_wire(
+    async def test_branch_preview_keeps_its_branch_list_on_the_wire(
         self, db, typed_routes
     ):
         """What ``BranchDiscardPrompt`` renders has to reach the browser."""
@@ -693,25 +679,18 @@ class TestHierarchyRefusalsOverHTTP:
 
         response = await typed_routes.post("/api/task/delete", json={"task_id": "has-branch"})
 
-        assert response.status_code == 422, response.text
+        assert response.status_code == 200, response.text
         body = response.json()
-        assert body["code"] == "hierarchy.branch_discard_required"
-        assert body["branches"] == [
-            {"task_id": "has-branch", "branch": "aq/has-branch", "base_sha": "a" * 40}
-        ]
+        assert body["disposition"] == "preview"
+        assert "aq/has-branch" in {b["branch"] for b in body["branch_details"]}
         assert await db.get_task("has-branch") is not None
 
 
 class TestDeleteIntegrationOwned:
-    """An integration audit row refuses a cascade delete through the surface.
-
-    The cascade path checks ``live_descendant_sessions`` and deletes inside one
-    caller-owned transaction, so the refusal has to come back as the command's
-    refusal dict *and* roll that transaction back — never half a tree deleted.
-    """
+    """Integration history becomes a warning and survives recursive deletion."""
 
     async def _repair_verified(self, db, task_id: str) -> None:
-        """A settled batch repair whose verifier was *task_id* (RESTRICT FK)."""
+        """A settled batch repair whose historical verifier was *task_id*."""
         from sqlalchemy import insert
 
         from src.database.tables import integration_repair_operations
@@ -736,16 +715,15 @@ class TestDeleteIntegrationOwned:
                 )
             )
 
-    async def test_cascade_delete_reports_the_refusal_and_keeps_the_tree(self, db, handler):
+    async def test_confirmed_cascade_delete_keeps_history_and_deletes_tree(self, db, handler):
         await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
         await mktask(db, "c", status=TaskStatus.COMPLETED)
         await db.add_dependency("c", "p", "parent-child")
         await self._repair_verified(db, "c")
 
-        res = await handler.execute("delete_task", {"task_id": "p", "cascade": True})
+        res = await handler.execute("delete_task", {"task_id": "p", "cascade": True, "confirmed": True})
 
-        assert res["success"] is False
-        assert res["code"] == "hierarchy.integration_history_retained"
-        assert "integration_repair_operations(c)" in res["error"]
-        assert await db.get_task("p") is not None
-        assert await db.get_task("c") is not None
+        assert res["success"] is True, res
+        assert "integration_owned" in {w["code"] for w in res["warnings"]}
+        assert await db.get_task("p") is None
+        assert await db.get_task("c") is None

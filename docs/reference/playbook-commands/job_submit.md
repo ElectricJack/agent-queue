@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/job.py`](../../../src/commands/contracts/job.py) |
-| Contract fingerprint | `sha256:bbd254154d84f90e2d9c3a5ca6d36a16ac1ed8073e56b6019ac15aa815af5795` |
+| Contract fingerprint | `sha256:a4f8b1735ede53fc866a10c12a745128d49902bf4328e41b9699c01c4a60fc4d` |
 
 ## Parameters
 
@@ -27,6 +27,7 @@
 | `preset` | `string` | yes | — | — |
 | `argv` | `string[]` | no | — | — |
 | `idempotency_key` | `string` | yes | — | — |
+| `attempt_id` | `string \| null` | no | `null` | — |
 | `wait` | `boolean` | no | `false` | — |
 
 ## Result
@@ -34,7 +35,11 @@
 | Field | Type | Description |
 |---|---|---|
 | `job` | `object` | — |
-| `wait` | `AgentWaitRecord \| null` | — |
+| `wait` | `AgentWaitRecord \| object \| null` | — |
+| `wait_id` | `string \| null` | — |
+| `decision` | `object \| null` | — |
+| `continuation_id` | `string \| null` | — |
+| `generation` | `integer \| null` | — |
 | `next_step` | `string \| null` | — |
 
 ## Nested objects
@@ -77,7 +82,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create using project_id, task_id, session_id, claim_epoch, preset, argv, idempotency_key, wait | — | always |
+| Create using project_id, task_id, session_id, claim_epoch, preset, argv, idempotency_key, attempt_id, wait | — | always |
 
 <!-- aq:generated:end -->
 

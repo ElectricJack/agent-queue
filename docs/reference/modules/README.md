@@ -23,7 +23,7 @@ own modules; this page is only the index.
 | [`architecture.md`](architecture.md) | `architecture` | 6 | — | [Architecture](../../concepts/architecture.md) |
 | [`tasks.md`](tasks.md) | `tasks` | 28 | — | [Tasks](../../concepts/tasks.md), [document reviews](../../guides/reviews.md) |
 | [`scheduler.md`](scheduler.md) | `scheduler` | 25 | — | [Scheduling](../../concepts/scheduling.md), [resource gating](../../guides/resource-gating.md) |
-| [`routing.md`](routing.md) | `routing` | 23 | — | [Agents and routing](../../concepts/agents-and-routing.md), [profiles and classes](../profiles-and-classes.md) |
+| [`routing.md`](routing.md) | `routing` | 32 | — | [Agents and routing](../../concepts/agents-and-routing.md), [profiles and classes](../profiles-and-classes.md) |
 | [`sessions.md`](sessions.md) | `sessions` | 30 | — | [Sessions](../../concepts/sessions.md) |
 | [`workspaces.md`](workspaces.md) | `workspaces` | 22 | — | [Projects and workspaces](../../concepts/projects-and-workspaces.md) |
 | [`integration.md`](integration.md) | `integration` | 29 | — | [Integration](../../concepts/integration.md) |
