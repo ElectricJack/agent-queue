@@ -23,7 +23,8 @@ Three pieces, the first shared by the other two:
   before and after rows, what happens to each live session, the pins and
   manual agents it leaves alone, and a SHA-256 preview token over the
   request plus everything the decision observed.  Apply (plan Task 9)
-  rebuilds it and refuses a token that no longer matches.
+  rebuilds it from the request :class:`PreviewRegistry` kept for the token
+  and refuses a token that no longer matches.
 
 The allocation key is the **harness** provider key (``harness.base or
 harness.id``: ``claude``, ``codex``), the same key availability and re-routes
@@ -34,6 +35,7 @@ every other profile is listed in ``diagnostics`` with the reason.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -55,9 +57,11 @@ LIVE_SESSION_STATES = ("starting", "running", "draining")
 #: The supply counters every profile, project row and provider reports.
 SUPPLY_FIELDS = ("ready", "idle", "busy", "starting", "draining", "unresponsive")
 #: Task statuses in which a pin keeps work on a provider (spec §Backend commands).
-INTENT_TASK_STATUSES = ("READY", "ASSIGNED", "IN_PROGRESS")
+INTENT_TASK_STATUSES = (
+    "READY", "ASSIGNED", "IN_PROGRESS", "WAITING", "HIBERNATED", "RESUME_PENDING",
+)
 #: A manual agent's current task counts only while it is one of these.
-_ACTIVE_TASK_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS", "WAITING_INPUT"})
+_ACTIVE_TASK_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING"})
 #: Stage profiles no generic worker may stand in for (``routing_commands``).
 _CONTROL_PROFILE_IDS = frozenset(
     {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
@@ -78,10 +82,11 @@ def classify_profile(profile: Any, *, provider_known: bool) -> str | None:
 
     Reasons, first match wins: ``retired_project_scoped`` (a ``project:`` id
     that resolves nowhere), ``template``, ``named`` (a resident session),
-    ``role`` (a stage or control profile, or a read-only one), ``malformed``
+    ``role`` (a stage, control or operator profile, or a read-only one), ``malformed``
     (no harness, no class, or an unknown lifecycle -- no worker route at
     all), ``unknown_provider`` (its harness is not registered).
     """
+    from src.commands.operator_authority import is_operator_profile
     from src.profiles.catalog import worker_route
 
     profile_id = str(getattr(profile, "id", "") or "")
@@ -94,6 +99,7 @@ def classify_profile(profile: Any, *, provider_known: bool) -> str | None:
         return "named"
     if (
         profile_id in _role_profile_ids()
+        or is_operator_profile(profile)
         or getattr(profile, "read_only", False)
         or getattr(profile, "runtime", "") == "supervisor"
     ):
@@ -287,7 +293,9 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
             "draining": supply.draining,
             "unresponsive": supply.unresponsive,
         }
-        for candidate in sorted(measurement.candidates.get(key, []), key=lambda c: c.project_id):
+        from src.scheduler import project_pool_candidates
+
+        for candidate in project_pool_candidates(measurement.candidates.get(key, [])):
             local = supply.by_project.get(candidate.project_id)
             row["projects"].append(
                 {
@@ -306,6 +314,12 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
     live_pool_agents = {s.agent_id for s in live if s.agent_id}
     live += await db.list_sessions(lifecycle="task", live_only=True)
     live = [s for s in live if s.profile_id in profiles]
+    statuses = await db.get_task_statuses([s.task_id for s in live if s.task_id])
+    live = [
+        s for s in live
+        if statuses.get(s.task_id) != "HIBERNATED"
+        and (statuses.get(s.task_id) != "RESUME_PENDING" or s.state == "starting")
+    ]
     titles = await db.get_task_titles([s.task_id for s in live if s.task_id])
     task_rows: dict[str, dict[str, dict[str, Any]]] = {}
     for session in sorted(live, key=lambda s: (s.project_id or "", s.id)):
@@ -446,7 +460,8 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
             "status": getattr(project.status, "value", project.status),
             # ``projects.preferred_provider`` lands with plan Task 1.
             "preferred_provider": getattr(project, "preferred_provider", None),
-            "default_profile_id": project.default_profile_id,
+            # The router binding (mandatory routing §8); there is no default profile.
+            "assignment_playbook_id": project.assignment_playbook_id,
             "max_concurrent_agents": project.max_concurrent_agents,
         }
         for project in sorted(await db.list_projects(), key=lambda p: p.id)
@@ -1208,3 +1223,138 @@ def _plan(snapshot: Mapping[str, Any], request: dict[str, Any]) -> dict[str, Any
             request, _fingerprint(snapshot, eligible, selected, structural=structural)
         ),
     }
+
+
+# -- apply (plan Task 9) --------------------------------------------------------------
+
+#: How long an issued preview stays appliable.  A structural token stales on
+#: any session churn within minutes anyway; the bound only keeps the registry
+#: from holding requests nobody will apply.
+PREVIEW_TTL_SECONDS = 900.0
+#: The most issued previews one daemon remembers (oldest dropped first).
+PREVIEW_CAPACITY = 256
+
+
+class PreviewRegistry:
+    """The requests this daemon issued preview tokens for, keyed by token.
+
+    Apply takes only a token (spec §Backend commands: no mutable selector),
+    so it needs the request the token was issued for to rebuild the preview.
+    The registry is in memory, per daemon (:func:`preview_registry`), and that
+    is durable enough: a token is a promise about the fleet *now* -- any
+    session churn stales a structural one within minutes -- so a daemon
+    restart costs at most one unapplied preview, and apply then fails closed
+    (``preview_unknown``) instead of acting on a request it cannot verify.
+    Keeping it out of the database also keeps preview free of writes.
+
+    ``lock`` serializes applies, so two operators cannot interleave the
+    profile edits and compensations of two allocations.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl: float = PREVIEW_TTL_SECONDS,
+        capacity: int = PREVIEW_CAPACITY,
+        clock=time.time,
+    ) -> None:
+        self._ttl = ttl
+        self._capacity = capacity
+        self._clock = clock
+        self._issued: dict[str, tuple[float, dict[str, Any]]] = {}
+        self.lock = asyncio.Lock()
+
+    def issue(self, token: str, request: Mapping[str, Any]) -> None:
+        """Remember that *token* was issued for the canonical *request*."""
+        self._expire()
+        self._issued.pop(token, None)
+        self._issued[token] = (self._clock(), json.loads(json.dumps(request)))
+        while len(self._issued) > self._capacity:
+            self._issued.pop(next(iter(self._issued)))
+
+    def lookup(self, token: str) -> dict[str, Any] | None:
+        """The request *token* was issued for, or ``None`` (never issued, expired, used)."""
+        self._expire()
+        entry = self._issued.get(token)
+        return json.loads(json.dumps(entry[1])) if entry is not None else None
+
+    def consume(self, token: str) -> None:
+        """Forget *token*: an applied preview is not applied twice."""
+        self._issued.pop(token, None)
+
+    def _expire(self) -> None:
+        cutoff = self._clock() - self._ttl
+        for token in [token for token, (at, _) in self._issued.items() if at < cutoff]:
+            del self._issued[token]
+
+
+def preview_registry(orchestrator: Any) -> PreviewRegistry:
+    """The daemon's one :class:`PreviewRegistry`.
+
+    It lives on the orchestrator, not a ``CommandHandler``: the daemon builds
+    several handlers (CLI API, MCP, the typed routes) and a preview issued
+    through one must be appliable through another.
+    """
+    registry = getattr(orchestrator, "_allocation_previews", None)
+    if registry is None:
+        registry = PreviewRegistry()
+        orchestrator._allocation_previews = registry
+    return registry
+
+
+def busy_authorization_error(
+    preview: Mapping[str, Any], authorized: Iterable[str] | None
+) -> tuple[str, str] | None:
+    """``(error_code, message)`` unless *authorized* names exactly the preview's busy set.
+
+    The busy set is the sessions the preview would ``interrupt`` (spec
+    invariant 5).  Each authorized id may be a session id or the id of the
+    task that session runs; every busy session must be named and nothing
+    else may be.  ``None`` when the authorization is exact -- or when there
+    is nothing to authorize and nothing was given.
+    """
+    names = sorted({str(item).strip() for item in (authorized or ())} - {""})
+    busy = [row for row in preview.get("sessions", []) if row.get("action") == "interrupt"]
+    if preview["request"].get("drain") != "interrupt-busy":
+        if names:
+            return (
+                "busy_authorization_unexpected",
+                "authorize_busy_interrupt applies only to drain interrupt-busy",
+            )
+        return None
+    if not busy:
+        if names:
+            return (
+                "busy_authorization_mismatch",
+                "the preview interrupts no busy session; authorize nothing",
+            )
+        return None
+    matched: set[str] = set()
+    unknown: list[str] = []
+    for name in names:
+        hits = {row["session_id"] for row in busy if name in (row["session_id"], row.get("task_id"))}
+        if not hits:
+            unknown.append(name)
+        matched |= hits
+    missing = sorted(row["session_id"] for row in busy if row["session_id"] not in matched)
+    expected = ", ".join(sorted(row["session_id"] for row in busy))
+    if not names:
+        return (
+            "busy_authorization_required",
+            (
+                f"drain interrupt-busy interrupts {len(busy)} busy session(s); authorize "
+                f"exactly that set with authorize_busy_interrupt: {expected}"
+            ),
+        )
+    if unknown or missing:
+        parts = []
+        if unknown:
+            parts.append(f"not in the busy set: {', '.join(unknown)}")
+        if missing:
+            parts.append(f"busy but not authorized: {', '.join(missing)}")
+        return (
+            "busy_authorization_mismatch",
+            f"authorize_busy_interrupt must name exactly the preview's busy set ({expected}); "
+            + "; ".join(parts),
+        )
+    return None

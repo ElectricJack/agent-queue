@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
@@ -16,14 +18,18 @@ from src.cli.app import cli
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.report_commands import ReportCommandsMixin
 from src.config import AppConfig
-from src.database import Database
 from src.database import tables
+from src.delivery.message import operation_marker
+from src.event_bus import EventBus
 from src.git.manager import GitManager
 from src.models import Project, Task
 from src.profiles.capabilities import DENY_ALL
 from src.reports.git import MAX_COMMITS, read_git_evidence
 from src.reports.hourly import MAX_BRIEF_BYTES
 from src.reports.morning import collect_morning_evidence, preview_until, report_window
+from src.reports.morning_due import EVENT_TYPE as MORNING_DUE
+from src.reports.morning_due import MorningDueEmitter, morning_due_event_id
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures/reports/morning"
@@ -38,6 +44,7 @@ def frozen(name):
 
 def snapshot():
     return {
+        "needs_you": {"count": 0, "source_health": "healthy", "identity_hash": "empty"},
         "projects": [{"id": "p", "name": "Project P", "repo_default_branch": "main"}],
         "sources": {
             name: frozen(name)
@@ -59,14 +66,16 @@ def snapshot():
     }
 
 
-async def build(data=None, *, observed=None, **kwargs):
+async def build(data=None, *, observed=None, git=None, **kwargs):
     db = SimpleNamespace(collect_morning_report_sources=AsyncMock(return_value=data or snapshot()))
-    git = SimpleNamespace()
+    git = git or SimpleNamespace()
     from unittest.mock import patch
 
+    observed = observed or frozen("git")[0]
+    # One fresh read per project: the collector annotates each read in place.
     with patch(
         "src.reports.morning.read_git_evidence",
-        AsyncMock(return_value=observed or frozen("git")[0]),
+        AsyncMock(side_effect=lambda *_, **__: copy.deepcopy(observed)),
     ) as read:
         result = await collect_morning_evidence(db, git, window=WINDOW, now=172801, **kwargs)
     return result, db, read
@@ -92,6 +101,118 @@ async def test_frozen_sources_separate_landed_pending_and_agent_verification():
     )
 
 
+def workspace(project_id, path, kind_id="project-repo"):
+    return {"project_id": project_id, "workspace_path": str(path), "kind_id": kind_id}
+
+
+def repository_snapshot(repos, workspaces, **project):
+    data = snapshot()
+    data["projects"] = [{**data["projects"][0], **project}]
+    data["sources"] = {"repos": repos, "workspaces": workspaces}
+    return data
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        pytest.param(
+            {"source_type": "link", "source_path": "/moved/away", "checkout_base_path": ""},
+            id="moved-link",
+        ),
+        pytest.param(
+            {"source_type": "clone", "source_path": "", "checkout_base_path": ""},
+            id="daemon-created-clone",
+        ),
+    ],
+)
+async def test_unusable_repository_path_reads_the_project_repo_base(tmp_path, configured):
+    # Live 2026-09-27: a moved linked source raised git_read_failed and
+    # development clone rows (no path) left three projects unavailable.
+    repo = {**frozen("repos")[0], **configured}
+    data = repository_snapshot(
+        [repo],
+        [
+            workspace("p", tmp_path),
+            workspace("p", "/vault/projects/p", "vault"),
+            workspace("p", "/job-snapshots/abc", "job-snapshot"),
+        ],
+    )
+    result, _, read = await build(data)
+    assert read.call_args.kwargs["checkout"] == str(tmp_path)
+    assert result["brief"]["git"]["p"]["repository_id"] == "repo-p"
+    gaps = {gap["reason"] for gap in result["brief"]["coverage"]["gaps"]}
+    assert "configured_repository_unavailable" not in gaps
+
+
+async def test_existing_configured_path_wins_over_the_base(tmp_path):
+    configured, base = tmp_path / "configured", tmp_path / "base"
+    configured.mkdir()
+    base.mkdir()
+    repo = {**frozen("repos")[0], "source_path": str(configured)}
+    _, _, read = await build(repository_snapshot([repo], [workspace("p", base)]))
+    assert read.call_args.kwargs["checkout"] == str(configured)
+
+
+async def test_projects_without_repositories_ignore_vault_and_snapshot_bases(tmp_path):
+    data = repository_snapshot(
+        [],
+        [workspace("p", tmp_path), workspace("p", "/vault/projects/p", "vault")],
+    )
+    _, _, read = await build(data)
+    assert read.call_args.kwargs["checkout"] == str(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("primary_name", "expected"),
+    [("p-primary", "primary"), ("ordinary", "other")],
+)
+async def test_matching_project_repo_bases_select_deterministically(
+    tmp_path, primary_name, expected
+):
+    repo = {**frozen("repos")[0], "source_type": "clone", "source_path": ""}
+    primary, other = tmp_path / "primary", tmp_path / "other"
+    data = repository_snapshot(
+        [repo],
+        [
+            {**workspace("p", other), "name": "other"},
+            {**workspace("p", primary), "name": primary_name},
+        ],
+    )
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(
+            side_effect={
+                str(other): "git@github.com:example/repo.git",
+                str(primary): "https://github.com/example/repo",
+            }.get
+        )
+    )
+    result, _, read = await build(data, git=git)
+    assert read.call_args.kwargs["checkout"] == str(tmp_path / expected)
+    assert git.aget_remote_url.await_count == 2
+    assert result["brief"]["git"]["p"]["repository_id"] == "repo-p"
+
+
+@pytest.mark.parametrize("second_url", ["https://github.com/example/other", None])
+async def test_different_or_unreadable_project_repo_bases_stay_unavailable(tmp_path, second_url):
+    repo = {**frozen("repos")[0], "source_type": "clone", "source_path": ""}
+    data = repository_snapshot(
+        [repo], [workspace("p", tmp_path / "one"), workspace("p", tmp_path / "two")]
+    )
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(
+            side_effect={
+                str(tmp_path / "one"): "https://github.com/example/repo",
+                str(tmp_path / "two"): second_url,
+            }.get
+        )
+    )
+    result, _, read = await build(data, git=git)
+    read.assert_not_awaited()
+    assert {"source": "git:p", "reason": "configured_repository_unavailable"} in result[
+        "brief"
+    ]["coverage"]["gaps"]
+
+
 async def test_replayed_fact_is_late_and_morning_membership_deduplicates_it():
     data = snapshot()
     data["sources"]["completions"][0]["completed_at"] = 80000
@@ -102,6 +223,17 @@ async def test_replayed_fact_is_late_and_morning_membership_deduplicates_it():
     # Critical outstanding failures remain visible even when reported before.
     third, _, _ = await build(data, reported_keys=frozenset({"escalation:e1"}))
     assert "escalation:e1" in {f["key"] for f in third["brief"]["facts"]}
+
+
+@pytest.mark.parametrize("state", ["reply_received", "resolving"])
+async def test_answered_escalations_do_not_recur_as_unresolved_morning_facts(state):
+    data = snapshot()
+    data["sources"]["escalations"][0]["state"] = state
+    first, _, _ = await build(data)
+    fact = next(f for f in first["brief"]["facts"] if f["key"] == "escalation:e1")
+    assert fact["detail"]["unresolved"] is False
+    again, _, _ = await build(data, reported_keys=frozenset({"escalation:e1"}))
+    assert "escalation:e1" not in {f["key"] for f in again["brief"]["facts"]}
 
 
 async def test_partial_source_never_suppresses_or_advances_its_cursor():
@@ -158,6 +290,108 @@ async def test_oversized_brief_has_no_dangling_refs_or_advanceable_cursors():
     assert brief["source_cursors"] == {}
 
 
+def busy_git_read():
+    """A capped default-branch read: 200 commits, a full diffstat, 200 proofs."""
+    observed = frozen("git")[0]
+    commits = [f"{i:040x}" for i in range(MAX_COMMITS)]
+    observed["commits"] = [
+        {"sha": sha, "at": 100000 + i, "subject": "s" * 300} for i, sha in enumerate(commits)
+    ]
+    observed["diffstat"] = "d" * 8000
+    observed["ancestry"].update(dict.fromkeys(commits, "landed"))
+    observed["gaps"] = ["commit_limit", "file_limit"]
+    return observed
+
+
+def busy_sources(data, filler):
+    """Hundreds of long completions after *filler*, and a day of hourly digests."""
+    data["sources"]["completions"] += [
+        {
+            **filler,
+            "id": f"busy-{i}",
+            "task_id": f"busy-{i}",
+            "completed_at": 100000 + i,
+            "changes": "c" * 1500,
+            "summary": "s" * 1500,
+            "verification": "v" * 1000,
+        }
+        for i in range(300)
+    ]
+    digest = data["sources"]["digests"][0]
+    data["sources"]["digests"] = [{**digest, "id": f"digest-{i}"} for i in range(72)]
+    return data
+
+
+def assert_bounded_without_dangling_refs(brief):
+    assert len(json.dumps(brief, ensure_ascii=False).encode()) <= MAX_BRIEF_BYTES
+    keys = {fact["key"] for fact in brief["facts"]}
+    for project in brief["projects"]:
+        for group in ("landed", "pending", "failures"):
+            assert set(project[group]) <= keys
+    assert {"source": "brief", "reason": "byte_limit"} in brief["coverage"]["gaps"]
+    assert not brief["coverage"]["complete"]
+    assert brief["source_cursors"] == brief["source_heads"] == {}
+
+
+async def test_busy_window_keeps_a_delivered_task_landed(monkeypatch):
+    # Live 2026-09-28: a 48 KB git read and 72 hourly digests exceeded the
+    # 24 KiB cap on their own, so the trimmer dropped every one of 984 facts
+    # before touching either, and the supervisor had to file a no-facts report.
+    data = busy_sources(snapshot(), frozen("completions")[1])
+    result, _, _ = await build(copy.deepcopy(data), observed=busy_git_read())
+    brief = result["brief"]
+    assert_bounded_without_dangling_refs(brief)
+    assert {"delivery:d1", "completion:c1"} <= set(brief["projects"][0]["landed"])
+    by_key = {fact["key"]: fact for fact in brief["facts"]}
+    assert by_key["completion:c1"]["task_id"] == "t1"
+    assert by_key["delivery:d1"]["detail"]["shipment"] == "landed"
+    # Unresolved problems are kept with the landed work.
+    assert {"incident:recovery-1", "escalation:e1"} <= set(brief["projects"][0]["failures"])
+    assert result["would_suppress"] is False
+    # Context goes before evidence; every omission is counted, none is silent.
+    assert brief["digest_context"] == []
+    assert brief["omitted"]["digest_context"] == 72
+    assert brief["git"]["p"]["head"] == HEAD and "commits" not in brief["git"]["p"]
+    assert brief["git"]["p"]["commit_count"] == MAX_COMMITS
+    monkeypatch.setattr("src.reports.morning.MAX_BRIEF_BYTES", 10**9)
+    unbounded, _, _ = await build(data, observed=busy_git_read())
+    total = len(unbounded["brief"]["facts"])
+    assert brief["omitted"]["facts"] == total - len(brief["facts"]) > 0
+    assert brief["omitted"]["projects"] == {"p": brief["omitted"]["facts"] - 1}
+
+
+async def test_busy_project_cannot_crowd_out_another_projects_delivery():
+    # One project's newer landed work must not push a quieter project's
+    # delivered task (matter-engine-cpp beside agent-queue) out of the brief.
+    data = busy_sources(snapshot(), frozen("completions")[0])
+    data["projects"].append({"id": "q", "name": "Project Q", "repo_default_branch": "main"})
+    data["sources"]["repos"].append(
+        {**frozen("repos")[0], "id": "repo-q", "project_id": "q", "source_path": "/q"}
+    )
+    data["sources"]["completions"].append(
+        {**frozen("completions")[0], "id": "cq", "task_id": "tq", "project_id": "q"}
+    )
+    data["sources"]["deliveries"].append(
+        {**frozen("deliveries")[0], "id": "dq", "project_id": "q", "repository_id": "repo-q"}
+    )
+    reads = {"/configured/base": busy_git_read(), "/q": frozen("git")[0]}
+    db = SimpleNamespace(collect_morning_report_sources=AsyncMock(return_value=data))
+    from unittest.mock import patch
+
+    with patch(
+        "src.reports.morning.read_git_evidence",
+        AsyncMock(side_effect=lambda *_, checkout, **__: copy.deepcopy(reads[checkout])),
+    ):
+        result = await collect_morning_evidence(db, SimpleNamespace(), window=WINDOW, now=172801)
+    brief = result["brief"]
+    assert_bounded_without_dangling_refs(brief)
+    projects = {project["id"]: project for project in brief["projects"]}
+    assert {"delivery:dq", "completion:cq"} <= set(projects["q"]["landed"])
+    assert len(projects["p"]["landed"]) > len(projects["q"]["landed"])
+    # Landed work outranks per-commit history of either project.
+    assert not any(fact["source"] == "git" for fact in brief["facts"])
+
+
 async def test_truncated_completion_commits_cannot_prove_landing():
     data = snapshot()
     data["sources"]["completions"][0]["commits"] = json.dumps([HEAD] * 201)
@@ -177,7 +411,7 @@ async def test_truncated_completion_commits_cannot_prove_landing():
 )
 def test_preview_uses_report_zone_and_latest_default_boundary(zone, day, expected):
     def epoch(value):
-        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
+        return datetime.fromisoformat(value).replace(tzinfo=UTC).timestamp()
 
     assert preview_until(epoch(day), zone) == epoch(expected)
 
@@ -233,9 +467,8 @@ def test_cli_preview_requires_dry_run_and_forwards_window(monkeypatch):
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("morning_reports"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("morning_reports")
     await database.create_project(Project(id="p", name="Project P"))
     await database.create_project(Project(id="q", name="Private Project Q"))
     for task_id in ("t1", "t2", "t3"):
@@ -276,7 +509,6 @@ async def db():
             .values(status="FAILED", updated_at=incident["updated_at"])
         )
     yield database
-    await database.close()
 
 
 async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds(db):
@@ -298,7 +530,7 @@ async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds
     assert statements[0] == "SET TRANSACTION READ ONLY"
     assert len(connections) == 1
     assert all(
-        sql.startswith(("SELECT", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
+        sql.startswith(("SELECT", "WITH", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
         for sql in statements
     )
     for source in ("completions", "deliveries", "incidents", "escalations", "attempts", "reroutes"):
@@ -443,7 +675,22 @@ async def test_stale_remote_tracking_refs_are_visible_and_no_fetch_is_run(repo):
     assert result["fetched_at"] is None
 
 
-async def test_git_failure_is_a_gap_and_command_operands_are_hashes():
+async def test_missing_checkout_is_named_without_running_git(tmp_path):
+    async def run(args, **kwargs):
+        raise AssertionError(f"git ran in a missing checkout: {args}")
+
+    result = await read_git_evidence(
+        SimpleNamespace(arun_git_result=run),
+        checkout=str(tmp_path / "moved"),
+        default_branch="main",
+        since=0,
+        until=100,
+        now=100,
+    )
+    assert result["gaps"] == ["checkout_unavailable"] and result["head"] is None
+
+
+async def test_git_failure_is_a_gap_and_command_operands_are_hashes(caplog, tmp_path):
     calls = []
 
     async def run(args, **kwargs):
@@ -458,7 +705,7 @@ async def test_git_failure_is_a_gap_and_command_operands_are_hashes():
 
     result = await read_git_evidence(
         SimpleNamespace(arun_git_result=run),
-        checkout="/daemon/base",
+        checkout=str(tmp_path),
         default_branch="main",
         since=0,
         until=100,
@@ -466,17 +713,20 @@ async def test_git_failure_is_a_gap_and_command_operands_are_hashes():
         previous_head=OLD,
     )
     assert "git_read_failed" in result["gaps"]
+    assert any(
+        str(tmp_path) in record.getMessage() and record.exc_info for record in caplog.records
+    )
     log = next(args for args, _ in calls if args[0] == "log")
     assert f"{HEAD}..{HEAD}" in log and log[-1] == "--"
     assert f"--max-count={MAX_COMMITS + 1}" in log
-    assert all(kwargs["cwd"] == "/daemon/base" for _, kwargs in calls)
+    assert all(kwargs["cwd"] == str(tmp_path) for _, kwargs in calls)
 
 
 # Durable scheduling and read surface (implementation plan 2).
 
 
 def utc(value):
-    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
+    return datetime.fromisoformat(value).replace(tzinfo=UTC).timestamp()
 
 
 @pytest.mark.parametrize(
@@ -840,6 +1090,59 @@ async def test_author_request_reconciles_once_with_original_snapshot(scheduled):
     assert messages[0]["to_id"] == "supervisor-global"
 
 
+@pytest.mark.parametrize(
+    "start,clock,local_date,next_start,next_date",
+    (
+        ("2026-10-09T23:00:00", "16:00", "2026-10-09", "2026-10-10T23:00:00", "2026-10-10"),
+        ("2026-11-01T08:00:00", "01:00", "2026-11-01", "2026-11-02T09:00:00", "2026-11-02"),
+    ),
+)
+async def test_183_ticks_reserve_one_report_and_author_per_local_day(
+    scheduled, start, clock, local_date, next_start, next_date
+):
+    command, _ = scheduled
+    command.orchestrator.config.reports.timezone = "America/Los_Angeles"
+    command.orchestrator.config.reports.morning.time = clock
+    now = utc(start)
+    command, collector, request = await author_request(scheduled, now)
+    assert request["owner_ref"] == f"morning-{local_date}"
+
+    # Distinct minute ticks cross UTC midnight or the DST repeated hour.
+    # Reconstructing the command halfway through discards process-local state.
+    for minute in range(1, 183):
+        if minute == 90:
+            restarted = Commands(command.db)
+            restarted.orchestrator = command.orchestrator
+            command = restarted
+        result = await tick(command, now + minute * 60)
+        assert result["report_id"] == request["owner_ref"]
+    collector.assert_awaited_once()
+    report = await command.db.get_morning_report(request["owner_ref"])
+    assert report["state"] == "final" and report["reason"] == "author_deadline"
+
+    async with command.db._engine.connect() as conn:
+        assert len((await conn.execute(select(tables.morning_reports))).all()) == 1
+        assert len((await conn.execute(select(tables.supervisor_report_requests))).all()) == 1
+        messages = (
+            await conn.execute(
+                select(tables.messages.c.id).where(tables.messages.c.body_kind == "report_request")
+            )
+        ).scalars().all()
+    assert messages == [f"msg-{request['id']}"]
+
+    following = await tick(command, utc(next_start))
+    assert following["report_id"] == f"morning-{next_date}"
+    assert following["state"] == "authoring"
+    assert collector.await_count == 2
+    async with command.db._engine.connect() as conn:
+        assert len((await conn.execute(select(tables.morning_reports))).all()) == 2
+        assert len((await conn.execute(select(tables.supervisor_report_requests))).all()) == 2
+        messages = await conn.execute(
+            select(tables.messages).where(tables.messages.c.body_kind == "report_request")
+        )
+        assert len(messages.all()) == 2
+
+
 async def test_request_recovered_after_reservation_before_message(scheduled, monkeypatch):
     command, _ = scheduled
     policy = command.orchestrator.config.reports.morning
@@ -899,6 +1202,7 @@ async def test_structured_author_submit_finalizes_coverage_and_immutable_content
 
 async def test_submit_deadline_race_has_one_immutable_winner(scheduled):
     import asyncio
+
     from src.reports.fallback import build_fallback
 
     now = utc("2026-09-25T07:00:00")
@@ -977,6 +1281,7 @@ async def test_disable_cancels_author_request_but_retains_readable_brief(schedul
 
 async def test_morning_report_validation_requires_scoped_grounded_manual_checks():
     import copy
+
     from src.reports.authoring import validate_morning_report
     from src.reports.fallback import build_fallback
 
@@ -1084,24 +1389,35 @@ async def test_only_current_global_supervisor_launch_can_read_and_submit_morning
     now = utc("2026-09-25T07:00:00")
     command, _, request = await author_request(scheduled, now)
     monkeypatch.setattr("src.commands.report_commands.time.time", lambda: now + 60)
+    # Production shape: the request names the ``supervisor-global`` address,
+    # while the launch reading it is a UUID row named ``n-supervisor--global``.
+    launch = "22f503aa-d483-47bc-aeb2-a867e800a529"
     monkeypatch.setattr(
         command.db,
         "get_session",
         AsyncMock(
             return_value=SimpleNamespace(
-                id="supervisor-global", lifecycle="named", instance_token="current-launch"
+                id=launch,
+                name="n-supervisor--global",
+                profile_id="supervisor",
+                project_id=None,
+                lifecycle="named",
+                state="running",
+                instance_token="current-launch",
             )
         ),
     )
     for session_id, instance_token in [
-        ("supervisor-global", "replaced-launch"),
+        (launch, "replaced-launch"),
         ("other-supervisor", "current-launch"),
+        ("supervisor-global", "current-launch"),
     ]:
         principal = ExecutionPrincipal(
             kind=PrincipalKind.SESSION,
             policy=DENY_ALL,
             session_id=session_id,
             session_instance_token=instance_token,
+            elevated=True,
         )
         with principal_context(principal):
             assert (await command._cmd_report_brief({"request_id": request["id"]}))[
@@ -1113,8 +1429,9 @@ async def test_only_current_global_supervisor_launch_can_read_and_submit_morning
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=DENY_ALL,
-        session_id="supervisor-global",
+        session_id=launch,
         session_instance_token="current-launch",
+        elevated=True,
     )
     with principal_context(principal):
         brief = await command._cmd_report_brief({"request_id": request["id"], "limit": 1})
@@ -1137,10 +1454,16 @@ def test_morning_bundle_is_optional_and_uses_only_the_tick_command():
 
     bundle = Path("src/prompts/reviewed_playbooks/morning-report")
     artifact = load_definition_json((bundle / "artifact.json").read_text())
-    assert artifact.rules[0].trigger.event_type == "timer.1m"
+    # Never a minute timer again: each ``timer.1m`` event started its own run.
+    assert [rule.trigger.event_type for rule in artifact.rules] == [MORNING_DUE]
     command_steps = [step for step in artifact.steps.values() if step.type == "command"]
-    assert len(command_steps) == 1 and command_steps[0].command == "morning_report_tick"
-    assert {step.type for step in artifact.steps.values()} == {"command", "terminal"}
+    assert {step.command for step in command_steps} == {"morning_report_tick"}
+    assert len(command_steps) == 2
+    waits = [step for step in artifact.steps.values() if step.type == "wait"]
+    assert {(step.wait_kind, step.timeout_seconds) for step in waits} == {("timer", 60)}
+    assert {step.type for step in artifact.steps.values()} == {
+        "command", "decision", "wait", "terminal",
+    }
     assert artifact.id not in DEFAULT_SYSTEM_PLAYBOOK_IDS + REQUIRED_SYSTEM_PLAYBOOK_IDS
 
 
@@ -1235,6 +1558,7 @@ async def test_ambiguous_morning_transport_never_resubmits_or_blind_reposts(sche
 
 async def test_finalization_crash_before_outbox_reservation_recovers_once(scheduled):
     import asyncio
+
     from src.escalations.transport import SinkTransport
     from tests.test_report_requests import Clock
 
@@ -1409,12 +1733,13 @@ async def test_scoped_fallback_delivers_without_supervisor_and_summary_budget_in
     assert text.endswith(f"https://dashboard.example.test/focus/reports/{row['id']}")
     assert "@everyone" not in text
     # Same marker size the shared primitive appends.
-    assert len(text) + 1 + len("aq-out:" + "a" * 16) <= 1500
+    assert len(text) + 1 + len(operation_marker("x", prefix="aq-out")) <= 1500
     collector.assert_awaited_once()
 
 
 async def test_cancelled_delivery_migration_upgrades_old_constraint_idempotently(db):
     import importlib.util
+
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import inspect
@@ -1488,10 +1813,22 @@ async def test_project_scoped_read_uses_fallback_instead_of_global_authored_pros
     assert read["report"]["report"]["summary"] == "Morning report for p."
 
 
+
 # The reviewed artifact end to end: engine, executor round-trip, contract, handler.
 
 REVIEWED_MORNING = Path("src/prompts/reviewed_playbooks/morning-report/artifact.json")
-MINUTE_TICK = {"_event_type": "timer.1m", "tick_time": "2026-09-27T13:00:00+00:00", "interval": "1m"}
+LOS_ANGELES = ZoneInfo("America/Los_Angeles")
+
+
+def morning_due(now):
+    """The ``report.morning_due`` event ``MorningDueEmitter`` sends for ``now``'s local day."""
+    day = datetime.fromtimestamp(now, LOS_ANGELES).date().isoformat()
+    return {
+        "_event_type": MORNING_DUE,
+        "event_id": morning_due_event_id(day),
+        "local_date": day,
+        "report_id": f"morning-{day}",
+    }
 
 
 @pytest.fixture
@@ -1499,7 +1836,7 @@ async def morning_playbook(command_handler_factory, monkeypatch):
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.builtin import set_handler_provider
     from src.playbooks.definition import load_definition_json
-    from src.playbooks.engine import PlaybookEngine
+    from src.playbooks.engine import PlaybookEngine, TimerFired
     from src.playbooks.executors.base import EngineServices
     from tests.playbook_v2_engine_helpers import (
         InMemoryArtifactStore,
@@ -1521,45 +1858,73 @@ async def morning_playbook(command_handler_factory, monkeypatch):
     monkeypatch.setattr(
         "src.reports.morning.collect_morning_evidence", AsyncMock(side_effect=collect)
     )
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        "src.commands.report_commands.time", SimpleNamespace(time=lambda: clock.now)
+    )
     artifact = load_definition_json(REVIEWED_MORNING.read_text(encoding="utf-8"))
+    runs = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS,
+            clock=lambda: clock.now,
+            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+            handler=handler,
+            db=handler.db,
+            private_values=private_value_service(handler.db),
+        ),
+        runs=runs,
+        waits=runs,
+        activations=StubActivations([artifact_ref_for(artifact)]),
+    )
 
-    async def run(now, principal=None):
-        monkeypatch.setattr("src.commands.report_commands.time", SimpleNamespace(time=lambda: now))
-        runs = RecordingRunRepository()
-        engine = PlaybookEngine(
-            services=EngineServices(
-                contracts=CONTRACTS,
-                clock=lambda: now,
-                artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
-                handler=handler,
-                db=handler.db,
-            ),
-            runs=runs,
-            waits=runs,
-            activations=StubActivations([artifact_ref_for(artifact)]),
-        )
-        event = {**MINUTE_TICK, "event_id": f"tick-{now}"}
-        # The runtime dispatches timer events as this service principal.
+    def latest():
+        (snapshot,) = runs.snapshots.values()
+        ticks = [
+            r for r in runs.receipts
+            if r.step_id in ("reconcile-morning--tick", "reconcile-morning--retry")
+            and r.receipt_kind == "step"
+        ]
+        return snapshot, ticks[-1]
+
+    async def dispatch(now, principal=None):
+        """Dispatch the day's ``report.morning_due`` as the runtime does."""
+        clock.now = now
         result = await engine.dispatch_event(
-            event, principal or ExecutionPrincipal.service("playbook-dispatch")
+            morning_due(now), principal or ExecutionPrincipal.service("playbook-dispatch")
         )
         assert result.rules_selected == ("reconcile-morning",)
-        (snapshot,) = runs.snapshots.values()
-        tick = next(r for r in runs.receipts if r.step_id == "reconcile-morning--tick"
-                    and r.receipt_kind == "step")
-        return snapshot, tick
+        return result
+
+    async def run(now, principal=None):
+        await dispatch(now, principal)
+        return latest()
+
+    async def fire(now, principal=None):
+        """Expire the paused run's timer wait as ``WaitScheduler`` does each cycle."""
+        clock.now = now
+        snapshot, _ = latest()
+        assert snapshot.lifecycle.value == "paused", (snapshot.error_code, snapshot.error)
+        await engine.resume(
+            snapshot.run_id,
+            TimerFired(snapshot.wait.wait_id),
+            principal or ExecutionPrincipal.service("playbook-timeout"),
+        )
+        return latest()
 
     set_handler_provider(lambda: handler)
     try:
-        yield handler, run
+        yield SimpleNamespace(
+            handler=handler, runs=runs, dispatch=dispatch, run=run, fire=fire
+        )
     finally:
         set_handler_provider(None)
 
 
 async def test_reviewed_morning_playbook_before_schedule_completes(morning_playbook):
-    _, run = morning_playbook
-    snapshot, tick = await run(utc("2026-09-27T13:00:00"))  # 06:00 in Los Angeles
+    snapshot, tick = await morning_playbook.run(utc("2026-09-27T13:00:00"))  # 06:00 LA
     assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
+    assert snapshot.current_step_id == "reconcile-morning--done"
     assert tick.outcome == "success" and tick.error_code is None
     assert snapshot.bindings["report"] == {
         "report_id": None,
@@ -1571,9 +1936,8 @@ async def test_reviewed_morning_playbook_before_schedule_completes(morning_playb
 
 
 async def test_reviewed_morning_playbook_disabled_completes(morning_playbook):
-    handler, run = morning_playbook
-    handler.orchestrator.config.reports.morning.enabled = False
-    snapshot, _ = await run(utc("2026-09-27T15:00:00"))
+    morning_playbook.handler.orchestrator.config.reports.morning.enabled = False
+    snapshot, _ = await morning_playbook.run(utc("2026-09-27T15:00:00"))
     assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
     assert snapshot.bindings["report"] == {
         "report_id": None,
@@ -1584,37 +1948,274 @@ async def test_reviewed_morning_playbook_disabled_completes(morning_playbook):
     }
 
 
-async def test_reviewed_morning_playbook_authoring_completes_and_wakes_once(morning_playbook):
-    handler, run = morning_playbook
+async def test_reviewed_morning_playbook_is_one_run_per_local_day(morning_playbook):
+    """The regression: 183 runs on 2026-10-10.  Each ``timer.1m`` event had a
+    fresh id; the daily event's id is the idempotency key, so a restart or a
+    repeated emission replays the day's run instead of starting another."""
+    handler = morning_playbook.handler
     handler.orchestrator.config.reports.morning.destination = "discord:123456789012345678"
-    snapshot, _ = await run(utc("2026-09-27T14:00:00"))  # 07:00 in Los Angeles
-    assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
-    report = snapshot.bindings["report"]
-    assert report["report_id"] == "morning-2026-09-27" and report["state"] == "authoring"
-    assert report["next_due_at"] == utc("2026-09-28T14:00:00")
+    now = utc("2026-09-27T14:00:00")  # 07:00 in Los Angeles
+    first = await morning_playbook.dispatch(now)
+    assert len(first.run_ids) == 1 and first.deduplicated == ()
+    (snapshot,) = morning_playbook.runs.snapshots.values()
+    assert snapshot.lifecycle.value == "paused"
+    assert snapshot.current_step_id == "reconcile-morning--pause"
+    assert snapshot.bindings["report"]["report_id"] == "morning-2026-09-27"
+    assert snapshot.bindings["report"]["state"] == "authoring"
     request = await handler.db.get_report_request("report-morning-morning-2026-09-27")
     assert request["state"] == "requested"
-    again, _ = await run(utc("2026-09-27T14:01:00"))
-    assert again.bindings["report"]["state"] == "authoring"
+
+    for minute in range(1, 183):
+        again = await morning_playbook.dispatch(now + minute * 60)
+        assert again.run_ids == first.run_ids and again.deduplicated == ("reconcile-morning",)
+    assert len(morning_playbook.runs.snapshots) == 1
+    assert morning_playbook.runs.create_calls == 1
     assert await handler.db.get_report_request(request["id"]) == request
 
 
-async def test_reviewed_morning_playbook_refusal_takes_the_rejected_edge(morning_playbook):
+async def test_reviewed_morning_playbook_loops_until_the_deadline_fallback(morning_playbook):
+    """Inside the day's one run, the timer loop keeps ticking a minute apart
+    until the report settles; the author request is never re-sent."""
+    handler = morning_playbook.handler
+    handler.orchestrator.config.reports.morning.destination = "discord:123456789012345678"
+    now = utc("2026-09-27T14:00:00")  # 07:00 in Los Angeles
+    await morning_playbook.run(now)
+    request = await handler.db.get_report_request("report-morning-morning-2026-09-27")
+
+    snapshot, tick = await morning_playbook.fire(now + 60)
+    assert snapshot.lifecycle.value == "paused"
+    assert snapshot.current_step_id == "reconcile-morning--pause"
+    assert tick.step_id == "reconcile-morning--tick"
+    assert snapshot.bindings["report"]["state"] == "authoring"
+    assert await handler.db.get_report_request(request["id"]) == request
+
+    # The author deadline is 15 minutes; the next tick finalizes the fallback.
+    snapshot, _ = await morning_playbook.fire(now + 16 * 60)
+    assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
+    assert snapshot.current_step_id == "reconcile-morning--done"
+    assert snapshot.bindings["report"]["report_id"] == "morning-2026-09-27"
+    assert snapshot.bindings["report"]["state"] == "final"
+    report = await handler.db.get_morning_report("morning-2026-09-27")
+    assert report["state"] == "final" and report["reason"] == "author_deadline"
+    assert len(morning_playbook.runs.snapshots) == 1
+    ticks = [
+        r for r in morning_playbook.runs.receipts
+        if r.step_id == "reconcile-morning--tick" and r.receipt_kind == "step"
+    ]
+    assert len(ticks) == 3
+
+
+async def test_reviewed_morning_playbook_ends_when_the_local_day_rolls_over(morning_playbook):
+    """A run whose timer fires after midnight sees another day's answer and
+    ends; the next day's event owns the next report, so the loop is bounded."""
+    morning_playbook.handler.orchestrator.config.reports.morning.destination = (
+        "discord:123456789012345678"
+    )
+    now = utc("2026-09-27T14:00:00")  # 07:00 in Los Angeles
+    await morning_playbook.run(now)
+    snapshot, _ = await morning_playbook.fire(utc("2026-09-28T13:00:00"))  # 06:00 next day
+    assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
+    assert snapshot.current_step_id == "reconcile-morning--done"
+    assert snapshot.bindings["report"]["report_id"] is None
+    assert snapshot.bindings["report"]["reason"] == "before_schedule"
+    report = await morning_playbook.handler.db.get_morning_report("morning-2026-09-27")
+    assert report["state"] == "final" and report["reason"] == "author_deadline"
+
+
+async def test_reviewed_morning_playbook_refusal_retries_once_then_fails(morning_playbook):
     """A supervisor's manual run is refused by design; it must fail as ``rejected``
-    with the handler's reason, not as a contract violation that hides it."""
+    with the handler's reason, not as a contract violation that hides it, and
+    only after one timer-spaced retry."""
     from src.profiles.capabilities import CapabilityPolicy
 
-    _, run = morning_playbook
     supervisor = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         session_id="supervisor-session",
         profile_id="supervisor",
         policy=CapabilityPolicy.from_namespaces(aq_commands=["morning_report_tick"]),
     )
-    snapshot, tick = await run(utc("2026-09-27T13:00:00"), supervisor)
-    assert snapshot.lifecycle.value == "failed"
-    assert snapshot.current_step_id == "reconcile-morning--failed"
+    snapshot, tick = await morning_playbook.run(utc("2026-09-27T13:00:00"), supervisor)
+    assert snapshot.lifecycle.value == "paused"
+    assert snapshot.current_step_id == "reconcile-morning--backoff"
     assert tick.error_code != "contract_violation"
     assert tick.selected_transition.endswith("::rejected")
     assert snapshot.bindings["report"]["state"] == "rejected"
     assert snapshot.bindings["report"]["reason"] == "out_of_scope"
+
+    snapshot, retry = await morning_playbook.fire(utc("2026-09-27T13:01:00"), supervisor)
+    assert retry.step_id == "reconcile-morning--retry"
+    assert snapshot.lifecycle.value == "failed"
+    assert snapshot.current_step_id == "reconcile-morning--failed"
+    assert retry.selected_transition.endswith("::rejected")
+    assert snapshot.bindings["retried"]["reason"] == "out_of_scope"
+
+
+async def test_reviewed_morning_playbook_recovers_a_transient_failure(morning_playbook):
+    """One failed call waits a minute and retries; a recovered retry settles
+    like the first call would have."""
+    handler = morning_playbook.handler
+    real = handler._cmd_morning_report_tick
+    calls = []
+
+    async def flaky(args):
+        calls.append(args)
+        if len(calls) == 1:
+            raise RuntimeError("database blip")
+        return await real(args)
+
+    handler._cmd_morning_report_tick = flaky
+    snapshot, _ = await morning_playbook.run(utc("2026-09-27T13:00:00"))  # 06:00 LA
+    assert snapshot.current_step_id == "reconcile-morning--backoff"
+    snapshot, retry = await morning_playbook.fire(utc("2026-09-27T13:01:00"))
+    assert retry.step_id == "reconcile-morning--retry" and retry.outcome == "success"
+    assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
+    assert snapshot.bindings["retried"]["state"] == "waiting" and len(calls) == 2
+
+
+# The once-per-local-day trigger.
+
+
+class RecordingEmitBus:
+    def __init__(self, *, fail=0):
+        self.bus = EventBus(env="dev")
+        self.events = []
+        self.failures = fail
+        self.bus.subscribe(MORNING_DUE, self.events.append)
+
+    async def emit(self, event_type, data):
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("bus unavailable")
+        await self.bus.emit(event_type, data)
+
+
+def morning_due_emitter(*, fail=0, timezone="America/Los_Angeles", time="07:00"):
+    config = AppConfig()
+    config.reports.timezone = timezone
+    config.reports.morning.time = time
+    clock = SimpleNamespace(now=0.0)
+    bus = RecordingEmitBus(fail=fail)
+    emitter = MorningDueEmitter(lambda: config, bus, clock=lambda: clock.now)
+    return emitter, bus, clock, config
+
+
+async def test_morning_due_emits_once_per_local_day_after_the_planned_instant():
+    emitter, bus, clock, _ = morning_due_emitter()
+    clock.now = utc("2026-09-27T13:59:59")  # 06:59:59 in Los Angeles
+    assert await emitter.tick() is None and bus.events == []
+
+    clock.now = utc("2026-09-27T14:00:00")
+    assert await emitter.tick() == "2026-09-27"
+    # Every remaining minute of the local day, across UTC midnight, is silent.
+    for minute in range(1, 17 * 60):
+        clock.now = utc("2026-09-27T14:00:00") + minute * 60
+        assert await emitter.tick() is None
+    assert bus.events == [
+        {
+            "_event_type": MORNING_DUE,
+            "event_id": "report.morning_due:morning-daily:2026-09-27",
+            "local_date": "2026-09-27",
+            "report_id": "morning-2026-09-27",
+        }
+    ]
+    assert bus.events[0]["event_id"] == morning_due_event_id("2026-09-27")
+
+    clock.now = utc("2026-09-28T14:00:00")
+    assert await emitter.tick() == "2026-09-28"
+    assert [event["local_date"] for event in bus.events] == ["2026-09-27", "2026-09-28"]
+
+
+async def test_morning_due_after_a_restart_repeats_the_same_idempotency_key():
+    first, first_bus, clock, config = morning_due_emitter()
+    clock.now = utc("2026-09-27T20:00:00")
+    await first.tick()
+    restarted = MorningDueEmitter(lambda: config, first_bus, clock=lambda: clock.now)
+    clock.now = utc("2026-09-28T02:00:00")  # 19:00 the same local day, UTC tomorrow
+    assert await restarted.tick() == "2026-09-27"
+    assert [e["event_id"] for e in first_bus.events] == [morning_due_event_id("2026-09-27")] * 2
+
+
+async def test_morning_due_follows_the_zoned_instant_across_dst():
+    emitter, _bus, clock, _ = morning_due_emitter()
+    # 2026-11-01 falls back: 07:00 PST is 15:00 UTC, not the PDT 14:00.
+    clock.now = utc("2026-11-01T14:30:00")
+    assert await emitter.tick() is None
+    clock.now = utc("2026-11-01T15:00:00")
+    assert await emitter.tick() == "2026-11-01"
+
+
+async def test_morning_due_retries_a_failed_emit_and_skips_invalid_config():
+    emitter, bus, clock, config = morning_due_emitter(fail=1)
+    clock.now = utc("2026-09-27T15:00:00")
+    assert await emitter.tick() is None and bus.events == []
+    assert await emitter.tick() == "2026-09-27" and len(bus.events) == 1
+
+    invalid, invalid_bus, clock, config = morning_due_emitter(timezone="Not/AZone")
+    clock.now = utc("2026-09-27T15:00:00")
+    assert config.reports.validate()
+    assert await invalid.tick() is None and invalid_bus.events == []
+
+
+async def test_morning_due_emits_while_disabled_so_the_tick_cancels_pending_rows():
+    emitter, bus, clock, config = morning_due_emitter()
+    config.reports.morning.enabled = False
+    clock.now = utc("2026-09-27T15:00:00")
+    assert await emitter.tick() == "2026-09-27" and len(bus.events) == 1
+
+
+def test_morning_due_event_is_contracted():
+    from src.event_schemas import CONTRACTED_EVENT_TYPES, validate_event
+
+    assert MORNING_DUE in CONTRACTED_EVENT_TYPES
+    assert validate_event(MORNING_DUE, {"local_date": "2026-09-27"})
+    assert not validate_event(
+        MORNING_DUE, {"local_date": "2026-09-27", "report_id": "morning-2026-09-27"}
+    )
+
+
+async def test_the_orchestrator_cycle_emits_morning_due_from_the_live_config(tmp_path):
+    """The cycle owns the daily trigger and reads the hot-reloaded config."""
+    from src.config import DatabaseConfig
+    from src.orchestrator import Orchestrator
+    from src.runtimes import default_registry
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("morning_due_cycle")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+        messaging_platform="none",
+    )
+    orch = Orchestrator(config, runtimes=None)
+    orch._runtimes = default_registry(config=config)
+    await orch.initialize()
+    try:
+        assert isinstance(orch.morning_due, MorningDueEmitter)
+        events = []
+        orch.bus.subscribe(MORNING_DUE, events.append)
+        reloaded = copy.copy(config)
+        reloaded.reports = copy.deepcopy(config.reports)
+        reloaded.reports.timezone = "America/Los_Angeles"
+        orch.config = reloaded
+        orch.morning_due._clock = lambda: utc("2026-09-28T02:00:00")  # 19:00 in LA
+        await orch.run_one_cycle()
+        await orch.run_one_cycle()
+        assert [event["local_date"] for event in events] == ["2026-09-27"]
+    finally:
+        await orch.shutdown()
+
+
+async def test_morning_human_reminders_survive_empty_days_and_fit_the_brief():
+    data = snapshot()
+    data["waiting_on_you"] = [
+        dict(wait_id=f"w-{i}", task_id="human-owner", project_id="p", subject="task_comment",
+             title="Question", created_at=1000 + i, age_seconds=200000)
+        for i in range(12)
+    ]
+    for key in data["sources"]:
+        if key not in {"repos", "workspaces"}:
+            data["sources"][key] = []
+    result, _, _ = await build(data, observed={**frozen("git")[0], "commits": []})
+    reminder = result["brief"]["waiting_on_you"]
+    assert reminder["count"] == 12 and reminder["more"] == 2 and len(reminder["items"]) == 10
+    assert not result["would_suppress"]
+    assert len(json.dumps(result["brief"], ensure_ascii=False).encode()) <= MAX_BRIEF_BYTES
