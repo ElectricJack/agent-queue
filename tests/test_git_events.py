@@ -20,6 +20,7 @@ from src.event_schemas import validate_event
 from src.git.manager import GitError, GitManager
 from src.git.github import PullRequestCreation
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 PR_REPOSITORY = GitHubRepositoryBinding(1, "test/repo")
 
@@ -57,21 +58,17 @@ def _commit_file(clone: str, filename: str, content: str, message: str) -> str:
 
 @pytest.fixture
 def bare_repo(tmp_path):
-    """Create a bare repo to act as 'origin'."""
+    """A fresh empty origin, populated only if this test requests a clone."""
     bare = str(tmp_path / "origin.git")
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", bare],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(bare)
     return bare
 
 
 @pytest.fixture
 def clone(tmp_path, bare_repo):
-    """Clone the bare repo with an initial commit pushed to main."""
+    """Build this test's working clone and initial history with Git."""
     clone_path = str(tmp_path / "clone")
-    subprocess.run(["git", "clone", bare_repo, clone_path], check=True, capture_output=True)
+    clone_seed(bare_repo, clone_path)
     _git(["config", "user.name", "Test"], cwd=clone_path)
     _git(["config", "user.email", "t@t.com"], cwd=clone_path)
     pathlib.Path(clone_path, "README.md").write_text("init")
