@@ -34,7 +34,8 @@ Trigger: `spec.approved`. No guard.
    metadata and dedup key `spec-ingest:decision:<id>`. `spec_path` is a display
    mirror only. Callers cannot supply a role, description, or approval stamp.
    `created` and `reused` end the rule `completed`. Replays return the same
-   task receipt even after archive. A durable dispatch operation retries until
+   task receipt after completion, closure as obsolete, or archive; settling the
+   ingest task never commissions another ingest for that decision. A durable dispatch operation retries until
    this task receipt exists; bus delivery alone does not complete ingestion.
    The role reads the approved packet and preserves all feedback obligations
    and existing follow-up links. Design approvals create only an epic and an
@@ -42,6 +43,14 @@ Trigger: `spec.approved`. No guard.
    grounded graph. Accepted external prerequisites cover every executable leaf
    unless the decision preview explicitly accepted narrower coverage. Edges
    and the decision's graph receipt commit with the complete graph.
+   Require authors to follow `docs/templates/spec.md` and the Spec supersession
+   checklist in `docs/guides/reviews.md`: identify approved specs replaced or
+   overlapped, cite approved revisions, and list every predecessor goal as
+   `kept`, `changed` or `dropped` with replacement evidence and reasons. Each
+   drop requires Jack's explicit sign-off for the goal and replacement revision.
+   Check this accounting before deriving implementation work; report missing
+   accounting or unsigned drops to the supervisor and do not commit affected
+   work. Delegated or general approval alone does not authorize dropping a goal.
 
 ## Rule: proposal-ready-gate
 

@@ -191,20 +191,20 @@ class AskInputQueriesMixin:
                 await conn.scalar(
                     text(
                         "SELECT EXISTS (SELECT 1 FROM human_communication_modes "
-                        "WHERE mode = 'channel' AND destination->>'channel_id' = :channel "
-                        "AND destination->>'guild_id' = :guild)"
+                        "WHERE mode = 'channel' AND destination = 'discord:' || :guild || ':' || :channel)"
                     ),
                     {"channel": channel_id, "guild": guild_id},
                 )
             )
 
-    async def pending_ask_inputs(self, *, conn, limit=100):
+    async def pending_ask_inputs(self, *, conn, limit=100, project_id=None):
         return [
             dict(row)
             for row in (
                 await conn.execute(
                     select(conversation_inputs)
                     .where(
+                        conversation_inputs.c.project_id == project_id if project_id else True,
                         or_(
                             conversation_inputs.c.routing_state == "queued",
                             and_(

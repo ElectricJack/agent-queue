@@ -42,7 +42,48 @@ global knowledge requires explicit global scope, enablement and grants. A save
 does not confer verification, authority or permission to enable features.
 The orchestrator schedules; you decide what exists to schedule.
 
+Shared workspace preparation failures are infrastructure incidents. Correlate
+`slot_reset_failed`, missing/mismatched slot paths and repeated unproved own-branch
+handoffs using the session, claim, workspace lock, Git branch and integration
+owner evidence. Keep the daemon's bounded retries and retained preparations;
+create or reuse one durable escalation for the infrastructure repair. Never
+mass-pause otherwise ready tasks to silence a system fault. Preserve explicit
+human holds, live workers and branch ownership throughout recovery.
+When preparation refuses a slot that `retains a foreign claim`, run `aq project
+workspace-retire-claim --workspace-id SLOT`: it removes the leftover claim file
+only when the holder provably let go, and otherwise names the holder to examine.
+When it refuses because the slot's `branch disagrees with its source sentinel`
+and the sentinel names a finished task, run `aq project workspace-clear-sentinel
+--workspace-id SLOT --if-task-terminal`: it frees the sentinel only when that task
+is terminal and the slot is unheld, clean and published.
+When a paused task's preparation refuses its own `Paused checkpoint`, inspect the
+checkpoint and, if it cannot be this task's work, run `aq task
+discard-pause-checkpoint --task-id TASK --reason WHY`; the ref stays reachable and
+the discard is audited. Never delete checkpoint metadata by hand.
+
+A held train repair blocks every delivery through that train. Diagnose and
+escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
+holds on train repairs and `slot_reset_failed` escalate to project and global
+supervisors after 15 minutes while preserving the execution barrier. Ask the
+global supervisor to release a reviewed hold with `aq task recover
+--operator-release --decision release --task-id TASK --incident-id INCIDENT
+--expected-hold-at DECIDED_AT --reason WHY`, then use the integration operation's
+controls. Only the local operator or live global supervisor can authorize this
+release. For ordinary tasks they may instead choose `--decision retry`, which
+retains worker/recovery budgets, fresh stop proof, routing, gates and resource
+guards. Never clear metadata by hand or reset budgets to lift a hold.
+
 ## Transactional graph changes
+
+Keep pool workers executing or closing their own tasks. Never tell a worker to
+hold idle for source mapping, integration controls or delivery paperwork. Read
+the project's integration mode first: with the train off, train controls are
+not prerequisites for worker publication and close. Resolve actual command
+refusals through their owner; preserve human holds and integration ownership.
+If execution needs an answer, give concrete guidance or register one verified
+message condition. Human waits have no deadline. AQ escalates stalled non-human
+conditions; use wait_decide to extend, reroute, cancel or wake, or wait_lift with
+verified response evidence. Preserve the original age and sleeping worker.
 
 For any change involving multiple tasks, stage one change set with
 `aq task batch-propose --file changes.yaml --project PROJECT --dry-run`, inspect
@@ -51,8 +92,12 @@ its diff, then submit the same file without `--dry-run`. Use `tasks` with
 `remove_edges` for dependencies, and `comments` for findings. Edits accept
 `parent_id`, hints, and `action: pause|resume|block|archive`. Follow the existing
 human proposal approval flow; `task_batch_commit` applies the approved revision
-atomically. On `change_set.conflict`, stage and review a fresh proposal against
-the current graph. Sequential task creation and dependency edits can expose
+atomically. Later task edits, pause/resume and claim churn do not invalidate an
+approved batch: commit it as approved and put subsequent changes in a subsequent
+batch. Never discard a gated proposal or replace its approval. If referenced
+tasks disappeared, commit applies the rest and reports `missing_task_ids` and
+`skipped_operations`; read that receipt before planning follow-up work. A failed
+transaction retains the proposal and approval for retry. Sequential task creation and dependency edits can expose
 unfinished work to the orchestrator. Use single-task commands for isolated work.
 
 ## Config
@@ -127,6 +172,16 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_register",
+    "wait_get",
+    "wait_list",
+    "wait_cancel",
+    "wait_ack",
+    "wait_explain",
+    "wait_graph",
+    "wait_decide",
+    "wait_lift",
+    "waits.fleet_summary",
     "task_batch_propose",
     "task_batch_update",
     "task_batch_commit",
@@ -171,10 +226,14 @@ start code work, tests or QA from a digest author turn.
     "collaboration_list",
     "create_task",
     "create_task_graph",
+    "discard_pause_checkpoint",
     "doctor",
     "edit_task",
     "edit_project",
     "bind_project_repository",
+    "project_doctor",
+    "repair_repository_checkout",
+    "repair_workspace_checkout",
     "digest_facts",
     "digest_post",
     "escalation_apply_reply",
@@ -192,28 +251,37 @@ start code work, tests or QA from a digest author turn.
     "github_issue_close_rejected",
     "gate_list",
     "get_schema",
+    "get_playbook_source",
+    "playbook_activation_health",
+    "playbook_source_resync",
     "get_task",
     "integration_close_delivered_pr",
-    "integration_rebind_repair",
-    "integration_rebind_detached_repair",
-    "integration_recover_preserved_repair",
-    "integration_recover_parent_head",
-    "integration_recover_candidate_member",
-    "integration_recover_unwritten_resolution",
+    "integration_fast_forward_pr",
     "integration_redrive_child",
+    "integration_recover_completed_container",
     "integration_abort_batch",
+    "integration_settle_batch",
+    "integration_release_withheld_source",
     "integration_pause_batch",
     "integration_resume_batch",
+    "integration_repair_target",
+    "integration_rerequest_check",
     "integration_eject",
     "integration_seal_now",
     "integration_record_root_noop",
     "integration_refresh_epic",
+    "integration_reverify_epic",
     "integration_retire_origin",
     "integration_reopen_collection",
     "integration_redrive_root",
     "integration_authorize_root",
+    "integration_supersede_completion",
     "integration_release_owner",
+    "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
     "integration_status",
@@ -221,7 +289,6 @@ start code work, tests or QA from a digest author turn.
     "integration_transfer_owner",
     "integration_trust_manifest",
     "integration_app_verify",
-    "integration_resolve_candidate_member",
     "list_intelligence_classes",
     "list_projects",
     "list_profiles",
@@ -260,6 +327,7 @@ start code work, tests or QA from a digest author turn.
     "provider_status",
     "project_ready",
     "pr_merge",
+    "ci_completed_status",
     "question_answer",
     "question_escalate",
     "question_list",
@@ -272,6 +340,10 @@ start code work, tests or QA from a digest author turn.
     "review_dispatch",
     "review_decide",
     "ask_list",
+    "ask_legacy_reset",
+    "ask_reconcile",
+    "ask_cutover_status",
+    "ask_cutover",
     "ask_show",
     "ask_history",
     "ask_apply_input",
@@ -291,6 +363,7 @@ start code work, tests or QA from a digest author turn.
     "session_list",
     "session_logs",
     "session_peek",
+    "supervisor_restart",
     "supervisor_inbox_history",
     "supervisor_inbox_reply",
     "supervisor_inbox_status",
@@ -308,7 +381,9 @@ start code work, tests or QA from a digest author turn.
     "task_subtask_add",
     "task_subtask_get",
     "task_subtask_update",
-    "task_subtasks"
+    "task_subtasks",
+    "workspace_clear_sentinel",
+    "workspace_retire_claim"
   ],
   "plugin_tools": [
     "write_note",
@@ -483,6 +558,22 @@ start code work, tests or QA from a digest author turn.
   what is still missing: report it and never close that PR by hand. A legacy
   PR the train can never seat is delivered by a fresh root that merges its
   exact head, never by forging its identity.
+- **A separately filed repair for an open root PR.** The repair publishes on
+  its own branch; its worker cannot push the PR branch. Once it closes pass,
+  run `aq integration fast-forward-pr --task-id <repair> --pr <number>` (a dry
+  run). `would_publish` → `--apply --head <previous_oid> --reason ...` pushes
+  the repair's exact head under a server-acquired lease; `already_published`
+  is done. `changed`, `blocked` (a live writer or lease) and `not_eligible` (a
+  protected target, a non-descendant, no completed root) are never forced or
+  fast-forwarded by hand.
+- **A task whose work needs nothing, or already landed.** Close it in one
+  call, from any non-terminal state: `aq task close <id> --no-change --reason
+  ...` (nothing to do) or `--done --reason ...` (shipped elsewhere);
+  `--obsolete` for superseded work. It stops a live writer through a pause
+  (never READY, so no pool worker grabs it), clears stale claims and locks,
+  records the completion and releases branch owners. Never resume, archive
+  or edit metadata to get there. Refusals name a real holder (a live
+  integration subject, an open batch, open children): report those.
 - **Historical task identity.** Delivery requires the exact completion identity and repository binding. Inspect `aq task show <id>` and retained proof when identity is unproven; report the missing evidence without rebinding or fabricating it.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
