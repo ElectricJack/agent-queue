@@ -947,6 +947,32 @@ async def test_repository_contention_returns_cooldown_and_resumes_same_preparati
         await train
 
 
+async def test_retained_verification_wait_is_its_own_retained_stage(handler, db, tmp_path):
+    from src.git.repository_lock import RetainedVerificationPending
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    prefetch = handler.orchestrator._worktree_slots().prefetch_slot_for_task
+    prefetch.side_effect = RetainedVerificationPending(5.0)
+    result = await settled_claim(env.handler, {"next": True})
+    assert result["result"] == "prepare_failed", result
+    assert "verification in progress" in result["reason"]
+    assert result["retry_after"] > 0 and result["refusal_count"] == 1
+    assert prefetch.await_count == 1
+    held = await db.get_session(env.sid)
+    assert (held.claim_phase, held.last_claim_epoch, held.claim_failure_count) == (
+        "preparing", 1, 0,
+    )
+    failure = await db.get_task_meta(env.task_id, "prepare_failure")
+    assert (failure["stage"], failure["disposition"]) == ("retained_verification", "retained")
+    assert await db.get_task_meta(env.task_id, "needs_attention") is None
+
+    prefetch.side_effect = None
+    await expire_claim_refusal(db, env.sid)
+    resumed = await settled_claim(env.handler, {"next": True})
+    assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
+    assert await db.get_task_meta(env.task_id, "prepare_failure") is None
+
+
 async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp_path, monkeypatch):
     from src.integration import lock as lock_module
 
@@ -1528,6 +1554,9 @@ class TestClaim:
         h = scoped(handler, sid)
         initial = await h._cmd_task_claim({"next": True})
         assert initial["result"] == "claim_in_progress"
+        # The result is delivered only to a claim, never to an ended turn.
+        assert "in this same turn" in initial["instructions"]
+        assert "aq task claim --next" in initial["instructions"]
         job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
         finish.set()
         await job
@@ -9029,6 +9058,91 @@ async def test_retained_binding_probe_can_exclude_the_claimants_owner_row(db, ow
     assert await slots._slot_has_retained_binding(
         "ws-slot", excluding_owner="t-next",
     ) is (owner != "t-next")
+
+
+@pytest.mark.parametrize("target", ["candidate-a", "candidate-b"])
+async def test_admission_accepts_same_decision_route_refresh(db, target):
+    from src.integration.admission import observe_admission
+
+    for tid in ("candidate-a", "candidate-b"):
+        await mktask(db, tid, profile_id="worker", route_source="router",
+                     route={"provider": "anthropic", "live_context": {"as_of": 1}})
+    view = await observe_admission(db, ["candidate-a", "candidate-b"], None)
+    assert view.allowed == {"candidate-a", "candidate-b"}
+
+    await db.update_task(target, route={
+        "provider": "anthropic", "live_context": {"as_of": 2},
+        "selection": {"snapshot_age_seconds": 30, "effective_headroom": 0.8},
+        "scores": [{"load": 2}],
+    })
+
+    assert await view.matches()
+    async with db.immediate() as conn:
+        assert await view.matches(conn=conn, lock=True, task_id="candidate-a")
+    assert not view.rejection_reasons("candidate-a")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("profile_id", "other-worker"),
+    ("intelligence_class", "other-class"),
+    ("route_source", "override"),
+    ("route", {"provider": "openai"}),
+    ("parent_task_id", "parent"),
+])
+@pytest.mark.parametrize("target", ["candidate-a", "candidate-b"])
+async def test_admission_fences_only_selected_candidate_identity(db, field, value, target):
+    from src.integration.admission import observe_admission
+
+    await db.create_profile(AgentProfile(id="other-worker", name="other"))
+    await mktask(db, "parent", status=TaskStatus.DEFINED)
+    for tid in ("candidate-a", "candidate-b"):
+        await mktask(db, tid, profile_id="worker", route_source="router",
+                     route={"provider": "anthropic"})
+    view = await observe_admission(db, ["candidate-a", "candidate-b"], None)
+    assert view.allowed == {"candidate-a", "candidate-b"}
+    changes = {field: value}
+    if field == "profile_id":
+        changes["route_source"] = "router"
+    await db.update_task(target, **changes)
+
+    async with db.immediate() as conn:
+        assert await view.matches(conn=conn, lock=True, task_id="candidate-a") is (
+            target != "candidate-a"
+        )
+    if target == "candidate-a":
+        assert view.rejection_reasons("candidate-a")[0]["code"] == "admission_policy_changed"
+    else:
+        assert not view.rejection_reasons("candidate-a")
+    # Initial batch selection still rejects any candidate whose identity moved.
+    assert not await view.matches()
+
+
+@pytest.mark.parametrize("target", ["incoming", "unrelated"])
+async def test_claim_survives_route_refresh_during_workspace_preparation(
+    handler, db, tmp_path, target,
+):
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "incoming", profile_id="worker", priority=1, route_source="router",
+                 route={"provider": "anthropic", "live_context": {"as_of": 1}})
+    await mktask(db, "unrelated", profile_id="worker", priority=2, route_source="router",
+                 route={"provider": "anthropic"})
+    sid, work_dir = await pool_session(db, tmp_path)
+
+    async def refresh_route(*args, **kwargs):
+        await db.update_task(target, route={
+            "provider": "openai" if target == "unrelated" else "anthropic",
+            "live_context": {"as_of": 2},
+        })
+        return "aq/incoming"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = refresh_route
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "incoming"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (work_dir / ".aq/claim.json").exists()
+    assert await db.get_task_meta("incoming", "prepare_failure") is None
 
 
 @pytest.mark.parametrize("stage", ["source", "policy"])

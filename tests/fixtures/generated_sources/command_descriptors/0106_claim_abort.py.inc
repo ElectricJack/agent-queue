@@ -9,7 +9,7 @@ def _claim_abort_changes():
 def _before_claim_abort_catalogue(catalogue=None):
     evidence = _claim_abort_changes()
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_store_maintenance_catalogue()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
     catalogue["explicit"].remove(definition)
@@ -24,7 +24,7 @@ def test_claim_abort_catalogue_only_adds_fenced_supervisor_control():
         evidence["contract_fingerprint"]
     )
     catalogue = _before_retained_holder_repair_catalogue(
-        _before_publication_hold_catalogue(json.loads(render_command_catalogue()))
+        _before_publication_hold_catalogue(_before_store_maintenance_catalogue())
     )
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]

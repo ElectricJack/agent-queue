@@ -1784,6 +1784,12 @@ class SessionsConfig:
     stop_intent_report_seconds: int = 600
     stall_max_nudges: int = 3
     stall_backoff_seconds: int = 300
+    #: How long a session running a command of its own -- a foreground
+    #: ``aq test``, a background task its turn waits on -- counts as active
+    #: although its pane and transcript are quiet.  Measured from the
+    #: session's last own activity, so a hung command still stalls.  0
+    #: disables the cover.
+    stall_command_grace_seconds: int = 7200
     max_restarts: int = 3
     restart_window_seconds: int = 600
     restart_backoff_seconds: int = 30
@@ -1866,6 +1872,7 @@ class SessionsConfig:
             "stop_intent_report_seconds",
             "stall_max_nudges",
             "stall_backoff_seconds",
+            "stall_command_grace_seconds",
             "max_restarts",
             "restart_window_seconds",
             "restart_backoff_seconds",
@@ -5478,7 +5485,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "idle_stop_grace_seconds": int,
                     "stop_intent_report_seconds": int,
                     "stall_max_nudges": int,
-                    "stall_backoff_seconds": int,
+                    "stall_backoff_seconds": int, "stall_command_grace_seconds": int,
                     "max_restarts": int,
                     "restart_window_seconds": int,
                     "restart_backoff_seconds": int,
