@@ -10,7 +10,9 @@ from __future__ import annotations
 import pytest
 
 from src.config import (
+    AppConfig,
     DiscordConfig,
+    DiscordConversationConfig,
     DiscordDigestConfig,
     DiscordEscalationConfig,
     is_discord_snowflake,
@@ -23,6 +25,7 @@ from src.digest.schedule import (
 )
 
 CHANNEL = "123456789012345678"
+AUTHOR = "111111111111111111"
 
 
 def base(**kwargs) -> DiscordConfig:
@@ -47,6 +50,7 @@ class TestDefaults:
         assert config.escalation.mention_role_ids == []
         assert config.escalation.reminder_minutes == 0
         assert config.escalation.supervisor_delivery_timeout_minutes == 15
+        assert config.conversation.enabled is False
         assert config.validate() == []
 
     def test_enablement_is_independent(self):
@@ -266,6 +270,128 @@ class TestLoading:
         ]
         assert discord["escalation"]["properties"]["enabled"]["default"] is True
         assert discord["channel_id"]["default"] == ""
+
+
+class TestConversation:
+    """``discord.conversation`` fails closed at load (mention-routing spec §4)."""
+
+    def test_off_by_default_even_with_an_empty_allowlist(self):
+        assert base().authorized_users == []
+        assert base().validate() == []
+        assert AppConfig().discord.conversation.enabled is False
+
+    def test_enabled_with_allowlist_guild_and_channel_is_valid(self):
+        config = base(
+            authorized_users=[AUTHOR],
+            conversation=DiscordConversationConfig(enabled=True),
+        )
+        assert config.validate() == []
+        assert any("elevated global supervisor" in note for note in config.warnings())
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"authorized_users": []},
+            {"authorized_users": [""]},
+            {"channel_id": ""},
+            {"guild_id": ""},
+        ],
+    )
+    def test_enabling_without_allowlist_guild_or_channel_is_an_error(self, overrides):
+        values = {
+            "bot_token": "t",
+            "guild_id": "1",
+            "channel_id": CHANNEL,
+            "authorized_users": [AUTHOR],
+            "conversation": DiscordConversationConfig(enabled=True),
+            **overrides,
+        }
+        errors = messages(DiscordConfig(**values))
+        assert (
+            "discord.conversation.enabled: discord.conversation.enabled requires a non-empty "
+            "discord.authorized_users allowlist, a guild_id and a channel_id"
+        ) in errors
+
+    def test_enabling_requires_the_message_queue(self):
+        config = AppConfig()
+        config.discord = base(
+            authorized_users=[AUTHOR],
+            conversation=DiscordConversationConfig(enabled=True),
+        )
+        assert [str(e) for e in config.validate() if e.field == "conversation.enabled"] == []
+        config.messages.enabled = False
+        assert [str(e) for e in config.validate() if e.field == "conversation.enabled"] == [
+            "[discord] conversation.enabled: requires messages.enabled"
+        ]
+
+    def test_yaml_enables_the_section(self, tmp_path):
+        import yaml
+
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "database": {"url": "postgresql://u:p@localhost/db"},
+                    "discord": {
+                        "bot_token": "t",
+                        "guild_id": "1",
+                        "channel_id": CHANNEL,
+                        "authorized_users": [AUTHOR],
+                        "conversation": {"enabled": True},
+                    },
+                }
+            )
+        )
+        assert load_config(str(path)).discord.conversation.enabled is True
+
+    def test_yaml_enabling_with_an_empty_allowlist_refuses_to_load(self, tmp_path):
+        import yaml
+
+        from src.config import ConfigValidationError, load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "database": {"url": "postgresql://u:p@localhost/db"},
+                    "discord": {
+                        "bot_token": "t",
+                        "guild_id": "1",
+                        "channel_id": CHANNEL,
+                        "conversation": {"enabled": True},
+                    },
+                }
+            )
+        )
+        with pytest.raises(ConfigValidationError) as raised:
+            load_config(str(path))
+        assert any("conversation.enabled" in error for error in raised.value.errors)
+
+    def test_an_absent_conversation_block_stays_off(self, tmp_path):
+        import yaml
+
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "database": {"url": "postgresql://u:p@localhost/db"},
+                    "discord": {"bot_token": "t", "guild_id": "1", "conversation": None},
+                }
+            )
+        )
+        assert load_config(str(path)).discord.conversation.enabled is False
+
+    def test_the_editor_schema_publishes_the_default(self):
+        from src.config_editor import build_config_schema
+
+        discord = build_config_schema()["properties"]["discord"]["properties"]
+        assert discord["conversation"]["properties"]["enabled"] == {
+            "default": False, "type": "boolean",
+        }
 
 
 class TestScheduleGeneration:

@@ -20,6 +20,7 @@ Covers:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -500,6 +501,12 @@ class TestCommandVaultWrite:
                 None,
             ),
             (
+                {"harness": "codex", "codex_service_tier": "fast"},
+                {"harness": "codex", "codex_service_tier": "fast"},
+                None,
+                None,
+            ),
+            (
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
                 None,
@@ -705,6 +712,49 @@ name: Namespaced Worker
         await handler.execute("delete_profile", {"profile_id": "test-reviewer"})
         profile = await handler.db.get_profile("test-reviewer")
         assert profile is None
+
+    async def test_delete_rung_of_an_operators_own_class_records_a_tombstone(self, handler):
+        """Derivation reads the vault's classes, so the tombstone check must too.
+
+        Checking the *shipped* class set left a rung built from an operator's
+        own class untombstoned, and the next daemon start derived it straight
+        back — which is exactly what happened to ``fast-off-claude`` on a real
+        box.
+        """
+        from src.profiles.retired_defaults import is_retired
+
+        classes = Path(handler.config.data_dir) / "vault" / "intelligence-classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        (classes / "house-style.md").write_text(
+            "---\nid: house-style\nname: House Style\n---\n\n"
+            '```json\n{"anthropic": {"model": "claude-opus-5", "thinking": "high"}}\n```\n',
+            encoding="utf-8",
+        )
+        await handler.execute(
+            "create_profile", {"id": "house-style-claude", "name": "House Claude"},
+        )
+
+        result = await handler.execute(
+            "delete_profile", {"profile_id": "house-style-claude"},
+        )
+
+        assert result["retired"] is True
+        assert is_retired(handler.config.data_dir, "house-style-claude")
+
+    async def test_delete_derived_rung_records_a_tombstone(self, handler):
+        """A deleted rung must not be re-derived on the next start or install."""
+        from src.profiles.retired_defaults import is_retired
+
+        await handler.execute(
+            "create_profile", {"id": "astra-high-codex", "name": "Codex Astra High"},
+        )
+
+        result = await handler.execute(
+            "delete_profile", {"profile_id": "astra-high-codex"},
+        )
+
+        assert result["retired"] is True
+        assert is_retired(handler.config.data_dir, "astra-high-codex")
 
     async def test_duplicate_detection_via_vault(self, handler):
         """Creating a profile with an existing vault file should fail."""
