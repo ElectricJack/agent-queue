@@ -11,6 +11,12 @@ related:
 
 # Task graph: server-side stable layout, viewport paging, and focus mode
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 ## 1. Outcome
 
 The Command Center **Graph** tab must stay readable and fast as a project accumulates
@@ -116,7 +122,8 @@ Two layouts exist per project and are maintained independently by the same engin
 - **`all`**: every non-archived task.
 - **`active`**: every task whose status is not in the finished set (`COMPLETED`,
   `CANCELED`, `CANCELLED`, `SKIPPED`). A container whose children are all finished is
-  present as a single card-sized **stub** so the epic remains findable.
+  present as a single card-sized **stub**, *unless* nothing unfinished needs it — see
+  4.8.
 
 **Show completed** switches the variant the client queries. Each variant is stable on its
 own. Neither is derived from the other at read time.
@@ -317,6 +324,10 @@ projection** of task state:
   `asyncio.to_thread` so pure-Python CPU work never blocks the event loop, then applies
   the write set. Per-project batches are debounced by requiring the newest dirty row to be
   at least 500 ms old, so bursts coalesce.
+- Layout aggregate reads select only blocked task IDs within the project, rather than
+  materializing full task rows. Publication prepares and executes layout and cell inserts
+  in bounded batches, yielding between them so large projects do not starve health probes.
+  Every batch remains inside the same publication transaction and meta-row lock.
 - **Publishing is atomic.** Layout row upserts, deletes, path-prefix translations, the
   `project_layout_meta.layout_version` increment, and deletion of the consumed
   `layout_dirty` rows (by `seq <= max consumed`) happen in one transaction. Readers see
@@ -328,6 +339,16 @@ projection** of task state:
   task set, parent links, container flags, and dependency edges against the layout rows
   and enqueues dirty marks for any discrepancy. This catches marks lost to bugs; it is
   bounded by project size but rare.
+
+  The diff runs **per variant** (2026-09-20), against what the visibility rules would
+  publish for that variant today: a task the variant should not hold but still has a row
+  for is drift just as much as a missing row, and a `kind` is checked against the
+  variant's own expectation (a stub is not a container). That is also the upgrade path
+  for a *rules* change — there is no engine-version column and none is wanted, so when
+  4.8's drop rule changed, the sweep is what retired the rows an already-laid-out install
+  had published under the old rule, with no operator action and no migration. It
+  deliberately chases presence, parentage and kind only, never geometry: the finished-leaf
+  fold above leaves an empty slot behind on purpose.
 - **Serialization with Tidy.** Tidy is a job (5.4) that takes the same meta lock. Dirty
   marks that arrive while Tidy runs are processed after it publishes, against the new
   layout.
@@ -335,7 +356,7 @@ projection** of task state:
   without re-laying its container: in `all` only the ancestors' aggregates are rewritten;
   in `active` a `status.finished` leaf's row is deleted and its slot left empty until the
   next ordinary pass over that container — a created, moved or reopened sibling, or a
-  tidy job (the reconcile sweep only diffs the `all` variant and never heals this gap).
+  tidy job (the sweep chases presence, not geometry, so it never heals this gap).
   If the finished leaf was the container's last active child, the container itself must
   flip to a stub, so that case takes the ordinary path instead of the fold. Re-flowing on
   every completion measured 1.4 s for a 5,000-child root and ran inside the orchestrator
@@ -353,10 +374,38 @@ project has no meta row for a variant, including the backfill for existing proje
 
 ### 4.8 Stubs
 
-In the `active` variant, a container whose children are all finished becomes a stub: a
+In the `active` variant, a container with no unfinished descendant becomes a stub: a
 1.0 by 1.0 record with `kind = stub` and no child records. When a child reopens, the
 container is rebuilt from its active children and its size change propagates as in 4.4
 step 6.
+
+**A stub is context, and only context (2026-09-20).** It exists so an epic stays findable
+and so a drawn edge from unfinished work still has a far endpoint to land on — 5.2's
+`cap_stubs` drops an edge whose far end has no row in the variant. A container that is
+context for nothing is therefore *dropped from the variant entirely*, with its subtree,
+rather than left tiling the canvas with work the viewer asked to hide. It is dropped when
+all three hold:
+
+- it is **itself** in the finished set (an unfinished container whose descendants have
+  all finished is live work and keeps its stub);
+- it has no unfinished descendant;
+- no unfinished task anywhere has a drawn edge (5.2's `DRAWN_TYPES`) into it or into its
+  subtree.
+
+The anchor from such an edge is charged to the *nearest* enclosing droppable container,
+so an edge into a child keeps that child's epic as the stub and the chain above it is
+restored as real containers by the ancestor closure. A finished ancestor of unfinished
+work is unaffected — it has an unfinished descendant. The `all` variant is untouched.
+
+Two affordances are deliberately given up for a dropped container, both restored by
+**Show completed** (which switches the query to `all`):
+
+- it cannot be **expanded** from the active view, because there is no tile to click — 5.2
+  promotes an `expanded` id to `all` only when that id resolves to a stub, and a dropped
+  container resolves to nothing. A stale persisted `expanded` naming one is ignored: no
+  rows, no error, no promotion;
+- it cannot be **found by search** in the active view, because `locate` and the `q`/
+  `status` filters read that variant's rows.
 
 ### 4.9 Cross-container edges
 
@@ -456,6 +505,11 @@ back and forth is a dictionary hit rather than a reload and a re-flow. A filtere
 is never cached: its match set comes from live task titles and statuses, which change
 without republishing the layout.
 
+Delivery enrichment must not fetch network Git on graph reads. It uses only a
+recent daemon observer snapshot, rechecking the completion identity and target;
+absent or expired snapshots report unavailable evidence rather than blocking the
+viewport on a clone/fetch. This applies equally to tiles, lists and node reads.
+
 ### 5.3 `POST /api/projects/{id}/graph/list`
 
 Body `{variant, expanded, q, status, cursor, limit}`. Returns nodes in layout order
@@ -506,6 +560,10 @@ flag, then is removed together with the grid layout.
 - `onlyRenderVisibleElements` is enabled.
 - The 200 ms transform transition on nodes is removed. Nothing moves except by explicit
   user action; a Tidy is followed by a full refetch.
+- Wheel and trackpad pinch zoom smoothly around the cursor, clamped to 0.15–2.
+  Wheel gestures always zoom; dragging empty canvas pans. Zoom buttons and fit-to-view
+  remain available. With the canvas focused, `+`/`-` zoom and `0` fits the view; typing
+  in controls and scrolling side panels or the detail drawer retain their usual behavior.
 
 ### 6.2 Level of detail
 
@@ -557,6 +615,9 @@ which only happens when something republishes the layout underneath the toggle.
 
 ### 6.6 Focus mode
 
+- Selecting or reselecting the entered container leaves its children visible and the
+  current scope intact. Selection decorates the frame without changing its stacking
+  order: container frames stay below child task cards, including when selected.
 - Any container card or header has a **Focus** action. It sets `?focus=<id>`; the tiles
   query sends `root=<id>` and the variant is forced to `all`. **Show completed** is
   disabled while focused.
@@ -796,3 +857,85 @@ Shipped behind `dashboard.graph_layout.enabled`, with these gaps recorded rather
 - `POST /api/task/set-status` publishes no forwarded bus event, so a status change made through
   that route reaches the canvas only on the next event or the extent's 60 s poll. Task creation,
   deletion and the `notify.task_*` family do drive the live path.
+
+
+## 2026-10-07 graph-load investigation (stark-meadow-80)
+
+Read-only Chrome measurement of the deployed agent-queue project via :5173,
+1440×1000 viewport, at 05:32 UTC: first visible task 10,992 ms; initial viewport
+tiles settled at 11,752 ms. Browser script CPU 588 ms, layout 97 ms, style 46 ms.
+These are **before deployment of the cached-only observation change**, not a
+claim that the <1 s first view / <3 s loaded target has been met. A previous
+sample's main tile request was 6,328 ms; shared-daemon load makes timings variable.
+
+Repeat with `node dashboard/layout-checks/benchmark-graph.mjs [base-url] [project]`.
+The script records every API resource, including requests caused by restored
+server-side dashboard state; zero-byte entries can be cancelled requests.
+“Loaded” means the initial viewport, not off-screen tasks. Resource timing and
+CDP CPU durations are browser measurements, not isolated React render durations.
+
+| API resource (request order) | Duration ms | Decoded bytes |
+|---|---:|---:|
+| `/api/dashboard/state-list` | 1226 | 3379 |
+| `/api/providers/usage` | 875 | 1322 |
+| `/api/providers/availability` | 2176 | 4130 |
+| `/api/project/list` | 2302 | 3967 |
+| `/api/agent/list` | 1890 | 118661 |
+| `/api/system/session-list` | 1473 | 1965 |
+| `/api/agent/list-profiles` | 1473 | 37129 |
+| `/api/review/list` | 1751 | 7169 |
+| `/api/project/list-roots` | 1670 | 328 |
+| `/api/project/get` | 1108 | 713 |
+| `/api/projects/agent-queue/graph/extent?variant=active` | 735 | 83 |
+| `/api/playbook/list` | 1088 | 8156 |
+| `/api/projects/agent-queue/graph/running-target` | 902 | 148 |
+| `/api/record/capabilities` | 765 | 1005 |
+| `/api/projects/agent-queue/graph/tiles` | 728 | 0 |
+| `/api/task/get` | 3384 | 11355 |
+| `/api/tasks/eager-falcon-39/sessions` | 905 | 576 |
+| `/api/task/subtasks` | 1631 | 80 |
+| `/api/task/comments` | 1783 | 11253 |
+| `/api/tasks/eager-falcon-39/attachments` | 1006 | 33 |
+| `/api/review/list` | 1737 | 29 |
+| `/api/task/gate-list` | 1867 | 12400 |
+| `/api/projects/agent-queue/graph/tiles` | 7752 | 10634 |
+| `/api/agent/list` | 1664 | 118663 |
+| `/api/record/link-list` | 1505 | 76 |
+| `/api/collaboration/list` | 539 | 39 |
+| `/api/system/list-intelligence-classes` | 298 | 4347 |
+| `/api/task/gate-list` | 1443 | 27 |
+| `/api/projects/agent-queue/graph/tiles` | 640 | 150 |
+
+The supervisor's production log inspection identified a fresh authenticated
+origin fetch on graph tile reads: ~3.9–4 s, 1,804 objects / ~10.5 MB, repeated
+85 times (request ids `8b4f671f`, `a8a66f19`). Tile payloads themselves are small.
+Graph reads now reuse the delivery observer's recent snapshot; cold or expired
+snapshots produce unknown without creating a store, waiting on its fetch lock,
+or contacting origin. Background/guarded observers still fetch. Current task
+identity and target checks still reject stale delivery evidence. Roster reads
+use live session settings directly and avoid resolving retired classes for idle
+historical workers, eliminating that source of repeated missing-class warnings.
+
+Production SQL tracing is unavailable to workers. On the disposable PostgreSQL
+at :5534, the repeatable `test_graph_initial_load_measurement` benchmark seeds
+100 completed epics + 5,000 live children (4 KB descriptions), 5,000 archived
+tasks and 4,900 edges. It prints SQL statement timing and EXPLAIN ANALYZE BUFFERS
+for the slowest statement; network Git is forbidden by an assertion.
+
+| Patched synthetic request | Total ms | SQL ms | SQL statements | Bytes |
+|---|---:|---:|---:|---:|
+| extent | 21.4 | 8.7 | 3 | 108 |
+| running target | 29.0 | 14.0 | 2 | 4 |
+| cold tiles | 885.5 | 189.4 | 33 | 98,327 |
+| warm tiles | 270.9 | 149.4 | 32 | 98,327 |
+
+The slowest SQL plan was the batched epic-delivery projection (25 ms on replay,
+1,012 shared-buffer hits), not an individual query per task. These synthetic
+numbers are not a controlled before/after comparison with production. Run the
+benchmark with `POSTGRES_TEST_DSN` pointing at a disposable database:
+`aq test -m perf -p no:xdist -s tests/perf/test_layout_api_statements.py -k graph_initial_load_measurement`.
+It reports timings without noisy wall-clock assertions; ordinary endpoint and
+observer regression tests enforce the no-network property for cold/warm/expired
+observations and identity changes. The <1 s / <3 s browser target still needs
+post-delivery verification on the deployed project; broad API contention remains
+visible in this baseline. No graph card or layout design was changed.

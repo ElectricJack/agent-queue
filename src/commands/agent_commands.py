@@ -7,9 +7,11 @@ import logging
 import os
 import time
 
+from src.task_templates import render_task_template
 from src.models import RepoSourceType, Task, TaskStatus, TaskType, Workspace
 from src.task_names import generate_task_id
 from src.workspace_names import generate_workspace_id
+from src.workspace_disable import ENABLE_FIELDS, OPERATOR, disable_fields
 from src.commands.helpers import _run_subprocess
 from src.commands.flock_commands import FlockCommandsMixin
 
@@ -29,10 +31,15 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """
         body = args.get("body")
         if not isinstance(body, str) or not body.strip():
-            return {"error": "body is required"}
+            return {"success": False, "error": "body is required"}
         wait = args.get("wait")
         if wait is not None and (type(wait) is not int or not 0 <= wait <= 60):
-            return {"error": "wait must be an integer from 0 to 60"}
+            return {"success": False, "error": "wait must be an integer from 0 to 60"}
+        reply_to = args.get("reply_to")
+        if reply_to is not None and (not isinstance(reply_to, str) or not reply_to.strip()):
+            return {"success": False, "error": "reply_to must be a message id"}
+        if reply_to and args.get("all_running"):
+            return {"success": False, "error": "reply_to answers one worker's message; it cannot use all_running"}
 
         project_id = args.get("project_id")
         if args.get("all_running"):
@@ -44,17 +51,41 @@ class AgentCommandsMixin(FlockCommandsMixin):
             for session in sessions:
                 result = await self._queue_supervisor_message(session, body, wait)
                 rows.append({"session_id": session.id, **result})
-            return {"count": len(rows), "recipients": rows}
+            return {"success": all(row["success"] for row in rows),
+                    "count": len(rows), "recipients": rows}
 
         target = args.get("target")
         if not isinstance(target, str) or not target.strip():
-            return {"error": "target is required unless all_running=true"}
+            return {"success": False, "error": "target is required unless all_running=true"}
         session, task_id, error = await self._resolve_live_message_target(
             target.strip(), project_id=project_id
         )
         if error:
-            return {"error": error}
-        result = await self._queue_supervisor_message(session, body, wait)
+            return {"success": False, "error": error}
+        original = None
+        if reply_to:
+            # Answering on the worker's thread is what satisfies a durable
+            # message wait it registered there; a threadless answer cannot.
+            original = await self.db.get_message(reply_to.strip())
+            if original is None or original.project_id != session.project_id:
+                # A message the caller can read — another project's report to
+                # its supervisor mailbox — is refused for what it is, not as
+                # missing (clear-zenith-84).  Anything else stays "not found"
+                # so the refusal never confirms a foreign id exists.
+                if original is not None and (
+                    project_id is None or await self._message_in_project(original, project_id)
+                ):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Message '{reply_to}' is not a message of the target's project "
+                            f"'{session.project_id}': reply_to threads guidance onto that "
+                            f"worker's own message. Send without reply_to, and answer "
+                            f"'{reply_to}' with `aq message reply {reply_to}`."
+                        )
+                    }
+                return {"success": False, "error": f"Message '{reply_to}' not found"}
+        result = await self._queue_supervisor_message(session, body, wait, reply_to=original)
         if "error" not in result:
             result["target"] = {"task_id": task_id, "session_id": session.id}
         return result
@@ -101,22 +132,47 @@ class AgentCommandsMixin(FlockCommandsMixin):
             return None, None, f"Agent '{target}' has no unique live worker session"
         return sessions[0], sessions[0].task_id, None
 
-    async def _queue_supervisor_message(self, session, body: str, wait: int | None) -> dict:
-        queued = await self._cmd_message_send(
-            {
-                "project_id": session.project_id,
-                "to_kind": "session",
-                "to_id": session.id,
-                "from_kind": "system",
-                "from_id": "supervisor",
-                "body": body,
-            }
-        )
+    async def _agent_message_sender(self, session) -> tuple[str, str]:
+        """The sender guidance to *session* is stored under, from the caller's scope.
+
+        A current named launch of the target's own project supervisor
+        (``_project_supervisor_session``) signs as its stable mailbox
+        ``session:supervisor-<project>``, so the worker's ``aq message reply``
+        returns there on the same thread.  Every other caller — the local
+        operator CLI, automation, the global supervisor, a stale or foreign
+        launch — has no project-supervisor return address and keeps the
+        ``system:supervisor`` announcement, which ``message_reply`` refuses.
+        The client never names the sender.
+        """
+        supervisor = await self._project_supervisor_session()
+        if supervisor is not None and supervisor.project_id == session.project_id:
+            return "session", f"supervisor-{supervisor.project_id}"
+        return "system", "supervisor"
+
+    async def _queue_supervisor_message(
+        self, session, body: str, wait: int | None, *, reply_to=None
+    ) -> dict:
+        from_kind, from_id = await self._agent_message_sender(session)
+        send = {
+            "project_id": session.project_id,
+            "to_kind": "session",
+            "to_id": session.id,
+            "from_kind": from_kind,
+            "from_id": from_id,
+            "body": body,
+        }
+        if reply_to is not None:
+            send["thread_id"] = reply_to.thread_id
+            send["reply_to_id"] = reply_to.id
+        queued = await self._queue_message_notification(send)
         if "error" in queued:
             return queued
+        if reply_to is not None:
+            # Same acknowledgement ``message_reply`` records on its original.
+            await self.db.mark_read(reply_to.id)
         if session.task_id:
             await self.db.add_task_comment(
-                session.task_id, body, author_kind="supervisor", author_id="supervisor"
+                session.task_id, body, author_kind="supervisor", author_id=from_id
             )
         if wait:
             deadline = time.monotonic() + wait
@@ -137,7 +193,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         project_id = args["project_id"]
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         source = args.get("source", "clone")
         try:
@@ -145,7 +201,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         except ValueError:
             # Same contract as the WORKTREE fall-through below: a source this
             # command cannot provision is a clean refusal, not a traceback.
-            return {"error": f"Unsupported workspace source_type '{source}'"}
+            return {"success": False, "error": f"Unsupported workspace source_type '{source}'"}
         path = args.get("path")
         name = args.get("name")
 
@@ -157,6 +213,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         resolved_kind = await self.db.resolve_workspace_kind(project_id, kind_id)
         if resolved_kind is None:
             return {
+                "success": False,
                 "error": (
                     f"Kind '{kind_id}' is not defined for project "
                     f"'{project_id}' and no system default exists. "
@@ -171,16 +228,17 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if source_type == RepoSourceType.LINK:
             if not path:
-                return {"error": "Link workspaces require a 'path' parameter"}
+                return {"success": False, "error": "Link workspaces require a 'path' parameter"}
             # Always store as absolute path to prevent CWD-relative resolution issues
             path = os.path.realpath(path)
             if not os.path.isdir(path):
-                return {"error": f"Path '{path}' does not exist or is not a directory"}
+                return {"success": False, "error": f"Path '{path}' does not exist or is not a directory"}
             # Reject if path is already a workspace for a different project
             all_ws = await self.db.list_workspaces()
             for ws in all_ws:
                 if os.path.realpath(ws.workspace_path) == path and ws.project_id != project_id:
                     return {
+                        "success": False,
                         "error": f"Path '{path}' is already a workspace for "
                         f"project '{ws.project_id}'"
                     }
@@ -201,7 +259,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 try:
                     await self.orchestrator.git.acreate_checkout(project.repo_url, path)
                 except Exception as e:
-                    return {"error": f"Clone failed: {e}"}
+                    return {"success": False, "error": f"Clone failed: {e}"}
         elif source_type == RepoSourceType.INIT:
             if not path:
                 ws_dir_name = name or ws_id
@@ -214,9 +272,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
             try:
                 await self.orchestrator.git.ainit_repo(path)
             except Exception as e:
-                return {"error": f"git init failed: {e}"}
+                return {"success": False, "error": f"git init failed: {e}"}
         else:
-            return {"error": f"Unsupported workspace source_type '{source}'"}
+            return {"success": False, "error": f"Unsupported workspace source_type '{source}'"}
         workspace = Workspace(
             id=ws_id,
             project_id=project_id,
@@ -224,11 +282,12 @@ class AgentCommandsMixin(FlockCommandsMixin):
             source_type=source_type,
             name=name,
             kind_id=kind_id,
+            enabled=bool(args.get("enabled", True)),
         )
         await self.db.create_workspace(workspace)
 
         # Auto-populate project.repo_url from git remote if not already set
-        result: dict = {
+        result: dict = {"success": True,
             "created": ws_id,
             "project_id": project_id,
             "workspace_path": path,
@@ -246,18 +305,30 @@ class AgentCommandsMixin(FlockCommandsMixin):
         return result
 
     async def _cmd_list_workspaces(self, args: dict) -> dict:
-        """List workspaces with lock status.
+        """List workspaces with lock status, owner identity and bounded diagnostics.
 
         Worktree-execution §6.8 annotations: each row carries ``role``
         (``base`` / ``slot`` / ``other``), ``slot_index``, ``mode`` (the
-        kind's git provisioning mode), ``branch`` (current HEAD when
-        readable), and ``dirty`` (True when the tree has uncommitted work).
-        Best-effort — a workspace whose directory is gone reports the
-        annotations as ``None`` rather than failing the whole call.
+        kind's git provisioning mode), ``branch`` and ``dirty``. ``branch`` and
+        ``dirty`` are ``None`` whenever the checkout could not be read --
+        never a guessed "clean". Each row also carries ``owner`` (lock task,
+        claim fence and live session, with a classification), ``presence``,
+        ``git_status`` and ``beyond_cap``; the top-level ``diagnostics`` says
+        whether the readback is complete. The whole call answers within
+        ``deadline_seconds`` (:mod:`src.workspace_listing`) and writes nothing.
         """
+        from src.workspace_listing import diagnose_workspaces, resolve_deadline
+
         project_id = args.get("project_id")
         if not project_id and self._active_project_id:
             project_id = self._active_project_id
+        try:
+            deadline = resolve_deadline(args.get("deadline_seconds"))
+        except (TypeError, ValueError) as exc:
+            return {"success": False, "error": str(exc) or "deadline_seconds must be a number"}
+        probe_git = args.get("git", True)
+        if not isinstance(probe_git, bool):
+            return {"success": False, "error": "git must be a boolean"}
         workspaces = await self.db.list_workspaces(project_id=project_id)
 
         # Pre-resolve kinds so annotations don't do N+1 lookups.
@@ -279,28 +350,17 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 kind_cache[key] = kind
             return getattr(kind, "mode", None) if kind is not None else None
 
-        git = getattr(self.orchestrator, "git", None)
+        per_row, diagnostics = await diagnose_workspaces(
+            self.db,
+            getattr(self.orchestrator, "git", None),
+            workspaces,
+            probe_git=probe_git,
+            deadline=deadline,
+        )
         rows: list[dict] = []
         for ws in workspaces:
             role = "slot" if ws.is_slot else ("base" if ws.kind_id else "other")
-            mode = await _resolve_mode(ws)
-            branch: str | None = None
-            dirty: bool | None = None
-            if git is not None:
-                try:
-                    if await git.avalidate_checkout(ws.workspace_path):
-                        try:
-                            branch = await git.aget_current_branch(ws.workspace_path)
-                        except Exception:
-                            branch = None
-                        try:
-                            dirty = await git.ahas_uncommitted_changes(
-                                ws.workspace_path
-                            )
-                        except Exception:
-                            dirty = None
-                except Exception:
-                    pass
+            diag = per_row[ws.id]
             rows.append(
                 {
                     "id": ws.id,
@@ -316,12 +376,18 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     # Worktree-execution §6.8 annotations
                     "role": role,
                     "slot_index": ws.slot_index,
-                    "mode": mode,
-                    "branch": branch,
-                    "dirty": dirty,
+                    "mode": await _resolve_mode(ws),
+                    "branch": diag["branch"],
+                    "dirty": diag["dirty"],
+                    # Bounded diagnostics (src/workspace_listing.py)
+                    "presence": diag["presence"],
+                    "git_status": diag["git_status"],
+                    "git_error": diag["git_error"],
+                    "beyond_cap": diag["beyond_cap"],
+                    "owner": diag["owner"],
                 }
             )
-        return {"workspaces": rows}
+        return {"success": True, "workspaces": rows, "diagnostics": diagnostics}
 
     async def _cmd_list_workspace_kinds(self, args: dict) -> dict:
         """List workspace kinds visible to a project (system + project overrides).
@@ -342,6 +408,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 if k.project_id == SYSTEM_KIND_SCOPE
             ]
         return {
+            "success": True,
             "project_id": project_id,
             "workspace_kinds": [
                 {
@@ -354,6 +421,8 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     "repo_url": k.repo_url,
                     "default_lock_mode": k.default_lock_mode,
                     "auto_attach": k.auto_attach,
+                    "mode": k.mode,
+                    "max_slots": k.max_slots,
                 }
                 for k in kinds
             ],
@@ -361,9 +430,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
     async def _cmd_remove_workspace(self, args: dict) -> dict:
         """Delete a workspace by ID or name."""
+        from sqlalchemy.exc import IntegrityError
+
+        from src.workspace_registration import path_is_missing
+
         workspace_ref = args.get("workspace_id") or args.get("workspace")
         if not workspace_ref:
-            return {"error": "workspace_id or workspace is required"}
+            return {"success": False, "error": "workspace_id or workspace is required"}
 
         # Try by ID first
         ws = await self.db.get_workspace(workspace_ref)
@@ -375,14 +448,27 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 ws = await self.db.get_workspace_by_name(project_id, workspace_ref)
 
         if not ws:
-            return {"error": f"Workspace '{workspace_ref}' not found"}
-        if ws.locked_by_agent_id:
+            return {"success": False, "error": f"Workspace '{workspace_ref}' not found"}
+        if ws.locked_by_agent_id or ws.locked_by_task_id:
             return {
-                "error": f"Workspace '{ws.id}' is locked by agent "
-                f"'{ws.locked_by_agent_id}'. Release it first."
+                "success": False,
+                "error": f"Workspace '{ws.id}' is locked by "
+                f"'{ws.locked_by_agent_id or ws.locked_by_task_id}'. Release it first."
             }
-        await self.db.delete_workspace(ws.id)
+        if not ws.is_slot and path_is_missing(ws.workspace_path):
+            try:
+                await self.db.remove_missing_workspace_registration(
+                    ws.id, expected_path=ws.workspace_path,
+                )
+            except ValueError as exc:
+                return {"success": False, "error": f"Workspace '{ws.id}' cleanup refused: {exc}"}
+            except IntegrityError:
+                return {"success": False, "error": f"Workspace '{ws.id}' cleanup refused: matching repository "
+                        "is still referenced; reconcile its references before removal"}
+        else:
+            await self.db.delete_workspace(ws.id)
         return {
+            "success": True,
             "deleted": ws.id,
             "name": ws.name,
             "project_id": ws.project_id,
@@ -394,11 +480,12 @@ class AgentCommandsMixin(FlockCommandsMixin):
         workspace_id = args["workspace_id"]
         ws = await self.db.get_workspace(workspace_id)
         if not ws:
-            return {"error": f"Workspace '{workspace_id}' not found"}
+            return {"success": False, "error": f"Workspace '{workspace_id}' not found"}
         if not ws.locked_by_agent_id:
-            return {"workspace_id": workspace_id, "status": "already_unlocked"}
+            return {"success": True, "workspace_id": workspace_id, "status": "already_unlocked"}
         await self.db.release_workspace(workspace_id)
         return {
+            "success": True,
             "workspace_id": workspace_id,
             "released_from_agent": ws.locked_by_agent_id,
             "released_from_task": ws.locked_by_task_id,
@@ -417,11 +504,11 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """
         workspace_id = args.get("workspace_id")
         if not workspace_id:
-            return {"error": "workspace_id is required"}
+            return {"success": False, "error": "workspace_id is required"}
 
         ws = await self.db.get_workspace(workspace_id)
         if not ws:
-            return {"error": f"Workspace '{workspace_id}' not found"}
+            return {"success": False, "error": f"Workspace '{workspace_id}' not found"}
 
         force = bool(args.get("force"))
         updates: dict = {}
@@ -436,7 +523,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if "enabled" in args:
             new_enabled = bool(args["enabled"])
             if new_enabled != ws.enabled:
-                updates["enabled"] = new_enabled
+                # Record who turned it off, so a project running below its
+                # cap can say why — and so the slot reconciler leaves an
+                # operator's decision alone.
+                updates.update(
+                    ENABLE_FIELDS if new_enabled
+                    else disable_fields(OPERATOR, "disabled with edit_workspace")
+                )
                 changed_fields.append("enabled")
 
         new_source_type = ws.source_type
@@ -444,7 +537,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             try:
                 new_source_type = RepoSourceType(args["source_type"])
             except ValueError:
-                return {"error": f"Unsupported source_type '{args['source_type']}'"}
+                return {"success": False, "error": f"Unsupported source_type '{args['source_type']}'"}
             if new_source_type != ws.source_type:
                 updates["source_type"] = new_source_type.value
                 changed_fields.append("source_type")
@@ -453,9 +546,10 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if "workspace_path" in args:
             requested = args["workspace_path"]
             if not isinstance(requested, str) or not requested.strip():
-                return {"error": "workspace_path must be a non-empty string"}
+                return {"success": False, "error": "workspace_path must be a non-empty string"}
             if ws.locked_by_agent_id:
                 return {
+                    "success": False,
                     "error": (
                         f"Workspace '{ws.id}' is locked by task "
                         f"'{ws.locked_by_task_id}'. Disable the workspace and wait "
@@ -464,8 +558,12 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 }
             candidate = os.path.realpath(requested)
             if candidate != ws.workspace_path:
+                if ws.is_slot or await self.db.list_slots_for_base(ws.id):
+                    return {"success": False, "error": "Register a new base and use workspace_cutover; "
+                                     "linked slot paths cannot be relocated in place"}
                 if not force and not os.path.isdir(candidate):
                     return {
+                        "success": False,
                         "error": (
                             f"Path '{candidate}' does not exist. Set force=true to "
                             "edit anyway (e.g. when relocating before the directory "
@@ -480,6 +578,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                         and os.path.realpath(other.workspace_path) == candidate
                     ):
                         return {
+                            "success": False,
                             "error": (
                                 f"Path '{candidate}' is already a workspace "
                                 f"({other.id} in project '{other.project_id}')."
@@ -491,6 +590,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if not updates:
             return {
+                "success": True,
                 "updated": ws.id,
                 "fields": [],
                 "workspace_path": new_path,
@@ -498,8 +598,15 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 "enabled": ws.enabled,
             }
 
-        await self.db.update_workspace(ws.id, **updates)
+        relocated = "workspace_path" in updates or "source_type" in updates
+        changed = await self.db.update_workspace(
+            ws.id, expected_generation=ws.generation if relocated else None,
+            require_unlocked=relocated, **updates,
+        )
+        if not changed:
+            return {"success": False, "error": "Workspace binding changed or is locked; edit was not applied"}
         return {
+            "success": True,
             "updated": ws.id,
             "fields": changed_fields,
             "workspace_path": new_path,
@@ -521,15 +628,15 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
 
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         workspaces = await self.db.list_workspaces(project_id=project_id)
         if not workspaces:
-            return {"error": f"No workspaces found for project '{project_id}'"}
+            return {"success": False, "error": f"No workspaces found for project '{project_id}'"}
 
         default_branch = project.repo_default_branch or "main"
         results: list[dict] = []
@@ -712,6 +819,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 continue
 
         return {
+            "success": True,
             "project_id": project_id,
             "workspaces_scanned": len(workspaces),
             "workspaces_with_conflicts": len(results),
@@ -738,15 +846,15 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
 
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         workspaces = await self.db.list_workspaces(project_id=project_id)
         if not workspaces:
-            return {"error": f"No workspaces found for project '{project_id}'"}
+            return {"success": False, "error": f"No workspaces found for project '{project_id}'"}
 
         default_branch = project.repo_default_branch or "main"
 
@@ -766,6 +874,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if existing_sync:
             existing_ids = ", ".join(t.id for t in existing_sync)
             return {
+                "success": True,
                 "already_queued": True,
                 "existing_task_ids": [t.id for t in existing_sync],
                 "project_id": project_id,
@@ -810,6 +919,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if not needs_sync:
             return {
+                "success": True,
                 "already_synced": True,
                 "project_id": project_id,
                 "workspace_count": len(workspaces),
@@ -827,35 +937,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
             f"  - {ws.workspace_path} (id: {ws.id}, name: {ws.name or '—'})" for ws in workspaces
         )
 
-        description = f"""## Sync Workspaces — {project_id}
-
-    **Task Type:** Orchestrator-managed sync workflow (handled automatically by the orchestrator)
-
-    ### Workflow Steps (executed by the orchestrator, NOT the agent):
-    1. **Pause Project** — Prevent new tasks from being queued for `{project_id}`
-    2. **Wait for Active Tasks** — Monitor all running tasks and wait for completion
-    3. **Merge Feature Branches** — Launch a Claude Code agent to merge all feature work
-    4. **Cleanup & Resume** — Unlock workspaces and resume the project
-
-    ### Project Details:
-    - **Project ID:** {project_id}
-    - **Default Branch:** {default_branch}
-    - **Workspace Root:** {workspace_root}
-
-    ### Workspaces:
-    {workspace_paths}
-
-    ### Merge Strategy:
-    - Merge and push one workspace at a time
-    - Pull updates before working on subsequent workspaces
-    - Preserve ALL feature work unless it's duplicated or made irrelevant by subsequent changes
-    - Resolve conflicts intelligently, preferring to preserve feature functionality
-    - Ensure each workspace ends up on `{default_branch}` with no remaining feature branches from agent-queue
-
-    ### Why This Exists:
-    This synchronizes workspaces that have drifted from the default branch, consolidating
-    feature work stuck on feature branches across multiple workspaces.
-    """
+        description = render_task_template(
+            "workspace-sync",
+            project_id=project_id,
+            default_branch=default_branch,
+            workspace_root=workspace_root,
+            workspace_paths=workspace_paths,
+        )
 
         task_id = await generate_task_id(self.db)
         task = Task(
@@ -870,6 +958,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         await self.db.create_task(task)
 
         return {
+            "success": True,
             "queued": task_id,
             "project_id": project_id,
             "title": task.title,
