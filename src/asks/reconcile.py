@@ -156,12 +156,16 @@ async def identity(handler, table, row, conn):
         return await identity(handler, escalations, dict(incident), conn) if incident else None
     if table is playbook_v2_runs:
         from src.playbooks.run_state import deserialize_snapshot
+        from src.playbooks.services import run_project_id
 
         snap = deserialize_snapshot(row["snapshot"], version=row["snapshot_version"])
-        if not snap.wait or snap.wait.kind != "human" or not snap.event.get("project_id"):
+        if not snap.wait or snap.wait.kind != "human":
+            return None
+        project = await run_project_id(handler.db, snap, conn=conn)
+        if not project:
             return None
         return SourceIdentity(
-            snap.event["project_id"],
+            project,
             "wait",
             snap.wait.wait_id,
             {"run_id": snap.run_id, "step_id": snap.wait.step_id},

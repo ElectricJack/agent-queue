@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/waits/measurements.py::cost_values": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/measurements.py::update_sample": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

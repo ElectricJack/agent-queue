@@ -28,6 +28,14 @@ export interface PoolRenamedEvent extends BaseEvent {
   backup_path: string;
 }
 
+export interface PoolDeletedEvent extends BaseEvent {
+  event_type: "pool.deleted";
+  profile_id: string;
+  depth: "profile" | "directory";
+  sessions: string[];
+  warnings: string[];
+}
+
 export interface ProjectPauseChangedEvent extends BaseEvent {
   event_type: "project.paused" | "project.resumed";
   project_id: string;
@@ -349,6 +357,7 @@ export interface TaskGraphChangedEvent extends BaseEvent {
   event_type: "task.created" | "task.reparented" | "task.updated" | "task.deleted" | "task.archived" | "task.ready" | "task.claimed";
   task_id: string;
   title?: string;
+  status?: string;
   old_parent?: string | null;
   new_parent?: string | null;
 }
@@ -463,6 +472,8 @@ export interface ReviewCommentedEvent extends BaseEvent {
  */
 export interface MetricsTickEvent extends BaseEvent, MetricsSample {
   event_type: "metrics.tick";
+  /** Null before wait schema migration; shares the generated history shape. */
+  waits?: MetricsSample["waits"];
 }
 
 // --- Durable dashboard state ---
@@ -535,4 +546,5 @@ export type NotifyEvent =
   | MetricsTickEvent
   | DashboardStateChangedEvent
   | ProjectPauseChangedEvent
-  | PoolRenamedEvent;
+  | PoolRenamedEvent
+  | PoolDeletedEvent;
