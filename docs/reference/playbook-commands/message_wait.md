@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/message_wait.py`](../../../src/commands/contracts/message_wait.py) |
-| Contract fingerprint | `sha256:6032a5449468b4efc114d5f18ecd4cf046bd4b26417ea4060f41657daba9c24d` |
+| Contract fingerprint | `sha256:1ae0cf1e8365712451dbc606e80b73ddfd06bbd68a1f6be82ff2e66d4d1d964d` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `schema_version` | `1 \| 2` | no | `1` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
@@ -92,7 +93,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create using project_id, task_id, session_id, thread_id, after_seq, timeout, idempotency_key, claim_epoch | — | always |
+| Create using schema_version, project_id, task_id, session_id, thread_id, after_seq, timeout, idempotency_key, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

@@ -1,0 +1,16 @@
+{
+  "reconciliation_definitions": {
+    "src/projects/storage_binding.py::bound_path": {
+      "fingerprint": "db842c810250424952ff9e902420e44cd2bc25851725694337fcaf6058a2b5de",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/storage_binding.py::read_binding": {
+      "fingerprint": "c48fff2cbda2d031eaec01dd605684963ea2d024153f1c601a9433e77a2f1a14",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/storage_binding.py::repository_path": {
+      "fingerprint": "fa442cf4b92d6e2b61d37d4a80cc5abfad71f2eca59e2dff167dab5d1fe8a11a",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}
