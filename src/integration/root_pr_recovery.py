@@ -156,7 +156,8 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
                 from_kind="system", from_id="integration-admission", to_kind="session",
                 to_id=f"supervisor-{request.project_id}",
                 subject=f"Root PR checks require repair: {request.task_id}",
-                body=f"{reason}; automatic reopen attempts: {len(heads)}/{limit}.\n{feedback}",
+                body=f"{reason}; automatic reopen attempts: {len(heads)}/{limit}. Adopt a separate "
+                     f"passing repair with aq integration fast-forward-pr.\n{feedback}",
                 body_kind="integration_root_pr_checks", created_at=time.time(), priority=50,
                 archive_after_inject=1,
             ).on_conflict_do_nothing(index_elements=[messages.c.id]))

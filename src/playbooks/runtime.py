@@ -264,6 +264,10 @@ class V2PlaybookRuntime:
         return len(self._triggers)
 
     def _on_event(self, event: dict[str, Any]) -> None:
+        if event.get("_event_type") == "integration.publication_verified":
+            # Its outbox durably accepts playbook destinations separately;
+            # the bus copy wakes observation and external deployment owners.
+            return
         payload = dict(event)
         # The live publisher cannot choose its own backlog age or observation
         # time. Replay restores the trusted timestamp from the stored row.
