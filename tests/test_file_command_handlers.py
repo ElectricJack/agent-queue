@@ -1369,3 +1369,94 @@ class TestCountProjectMemoryFiles:
         assert "error" not in result, result
         assert result["count"] == 1
         assert result["total"] == 1
+
+
+@pytest.fixture
+async def scoped_reader(handler, db):
+    from dataclasses import replace
+
+    from src.commands.principal import principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+    from tests.record_helpers import worker_principal
+
+    worker = await worker_principal(db, project_id="test-proj")
+    worker = replace(worker, policy=CapabilityPolicy.from_namespaces(plugin_tools=["read_file"]))
+
+    async def read(path, **args):
+        with principal_context(worker):
+            return await handler.execute("read_file", {"path": str(path), **args})
+
+    return read
+
+
+@pytest.mark.parametrize("area", ["plans", "specs"])
+async def test_worker_reads_own_vault_documents(config, scoped_reader, area):
+    from pathlib import Path
+
+    target = Path(config.vault_root) / "projects" / "test-proj" / area / "design.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("first\nsecond\nthird\n")
+    for path in (target, f"projects/test-proj/{area}/design.md"):
+        result = await scoped_reader(path, offset=2, limit=1)
+        assert result["content"] == "second"
+        assert result["truncated"] is True
+        assert result["path"] == str(target)
+
+
+@pytest.mark.parametrize("path", [
+    "projects/other/plans/secret.md",
+    "projects/test-proj/notes/secret.md",
+    "projects/test-proj/plans/../../other/plans/secret.md",
+    "projects/test-proj/plans/../notes/secret.md",
+    "projects/test-proj/plans/../../../system/secret.md",
+])
+async def test_worker_vault_reads_reject_other_scopes(config, scoped_reader, path):
+    from pathlib import Path
+
+    target = Path(config.vault_root) / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("secret")
+    for candidate in (path, target):
+        result = await scoped_reader(candidate)
+        assert "Access denied" in result["error"]
+
+
+@pytest.mark.parametrize("link_level", ["file", "area", "project"])
+async def test_worker_vault_reads_reject_symlink_escapes(config, scoped_reader, tmp_path, link_level):
+    from pathlib import Path
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("secret")
+    root = Path(config.vault_root) / "projects" / "test-proj"
+    if link_level == "file":
+        (root / "plans").mkdir(parents=True)
+        (root / "plans" / "secret.md").symlink_to(outside / "secret.md")
+    elif link_level == "area":
+        root.mkdir(parents=True)
+        (root / "plans").symlink_to(outside, target_is_directory=True)
+    else:
+        (outside / "plans").mkdir()
+        (outside / "plans" / "secret.md").write_text("secret")
+        root.parent.mkdir(parents=True)
+        root.symlink_to(outside, target_is_directory=True)
+    result = await scoped_reader("projects/test-proj/plans/secret.md")
+    assert "Access denied" in result["error"]
+
+
+async def test_worker_workspace_reads_are_project_scoped(
+    handler, db, workspace_dir, project_with_workspace, scoped_reader, tmp_path
+):
+    target = workspace_dir / "allowed.md"
+    target.write_text("own project")
+    assert (await scoped_reader(target))["content"] == "own project"
+    other = tmp_path / "workspaces" / "other"
+    other.mkdir()
+    secret = other / "secret.md"
+    secret.write_text("secret")
+    await db.create_project(Project(id="other", name="Other"))
+    await db.create_workspace(Workspace(
+        id="other-ws", project_id="other", workspace_path=str(other),
+        source_type=RepoSourceType.LINK, name="default",
+    ))
+    assert "Access denied" in (await scoped_reader(secret))["error"]
