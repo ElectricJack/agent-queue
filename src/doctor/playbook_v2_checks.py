@@ -25,14 +25,14 @@ the result); a doctor that "repaired" it could only do so by deleting the
 activation or by trusting whatever bytes it found, and both are worse than
 telling an operator exactly which playbook and which hash went bad.
 
-``playbooks.reviewed_bundles``: every reviewed bundle the daemon ships must be
-byte-identical in ``vault/reviewed-playbooks/<id>/``, the only place
-``playbook_v2_import`` reads from.  A drifted vault copy is what stranded
-upgraded installs at ``stale_contract``: it was seeded once and never
-refreshed.  This one *has* a fix, because the shipped recording is the
-reviewed source of truth and the old copy is moved aside rather than
-overwritten; inside the daemon the fix also re-runs the required-playbook
-reconcile so a broken system activation is re-pointed without a restart.
+``playbooks.required`` reports missing, disabled or broken baseline policy.
+Its explicit fix restores the required reviewed bundles and activations.
+
+``playbooks.reviewed_bundles`` compares installed reviewed bundles with their
+shipped recordings. Its explicit fix refreshes installed copies, preserving
+superseded bytes, and repairs required activations. Uninstalled optional
+bundles are neither reported nor restored. Enabled activations with different
+hashes get an explicit import command; optional activations are never replaced.
 
 Mirrors ``src/doctor/formula_checks.py``'s shape: a private ``_check_*``
 function plus a factory returning the :class:`DoctorCheck` list.
@@ -55,6 +55,101 @@ REPLAY_POLICY_CHECK_ID = "playbooks.pending_event_replay_policy"
 REVIEWED_BUNDLES_CHECK_ID = "playbooks.reviewed_bundles"
 ORPHANED_RUNS_CHECK_ID = "playbooks.orphaned_runs"
 SOURCE_CHECK_ID = "playbooks.source_unavailable"
+REQUIRED_CHECK_ID = "playbooks.required"
+PRIVATE_KEY_CHECK_ID = "playbooks.private_value_key"
+
+
+async def _check_private_value_key(ctx: DoctorContext) -> CheckResult:
+    from src.playbooks.private_values import private_value_key_health
+
+    accessor = getattr(ctx.db, "playbook_private_values", None)
+    service = accessor() if callable(accessor) and ctx.config.playbooks.enabled else None
+    status = private_value_key_health(ctx.config.playbooks, service=service)
+    if status.get("state") == "disabled":
+        severity, detail = Severity.INFO, "playbooks.enabled is false"
+    elif status["ok"]:
+        severity, detail = Severity.OK, "Active playbook private-value key is available"
+    else:
+        severity = Severity.ERROR
+        detail = status["error"] + ": " + status["remediation"]
+    return CheckResult(id=PRIVATE_KEY_CHECK_ID, severity=severity, detail=detail, data=status)
+
+
+async def _check_required(ctx: DoctorContext) -> CheckResult:
+    from src.playbooks.activation import load_activation_health
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import granted_aq_commands
+    from src.playbooks.required import (
+        REQUIRED_GRANTS, REQUIRED_SYSTEM_PLAYBOOK_IDS, _required_state, _system_activation,
+    )
+    from src.playbooks.run_state import ArtifactVerificationFailed
+
+    if not getattr(getattr(ctx.config, "playbooks", None), "enabled", False) or ctx.db is None:
+        return CheckResult(
+            id=REQUIRED_CHECK_ID, severity=Severity.INFO,
+            detail="playbooks disabled or database unavailable",
+        )
+    contracts, profiles = await _lookups(ctx)
+    records = await load_activation_health(
+        ctx.db, contracts=contracts, profiles=profiles, enabled_only=False
+    )
+    required = {
+        identifier: _required_state(identifier, _system_activation(records, identifier), None)
+        for identifier in REQUIRED_SYSTEM_PLAYBOOK_IDS
+    }
+    store = ArtifactStore(ctx.config.compiled_root)
+    for identifier, grant in REQUIRED_GRANTS.items():
+        state = required[identifier]
+        if not state["ok"]:
+            continue
+        try:
+            definition = await asyncio.to_thread(store.load, state["artifact_sha256"])
+            granted = grant in granted_aq_commands(definition)
+        except (OSError, ValueError, ArtifactVerificationFailed):
+            granted = False
+        if not granted:
+            state.update(
+                ok=False, diagnostic=f"{identifier}: missing grant {grant}",
+                fix_command="aq doctor --check playbooks.required --fix",
+            )
+    missing = [identifier for identifier, state in required.items() if not state["ok"]]
+    return CheckResult(
+        id=REQUIRED_CHECK_ID,
+        severity=Severity.ERROR if missing else Severity.OK,
+        detail=(
+            f"Required system playbooks unavailable: {', '.join(missing)}. "
+            "Run aq doctor --check playbooks.required --fix to install/activate shipped policy."
+            if missing else "Required system playbooks are active"
+        ),
+        data={"required": required},
+    )
+
+
+async def _fix_required(ctx: DoctorContext) -> CheckResult:
+    from src.playbooks.required import REQUIRED_SYSTEM_PLAYBOOK_IDS, ensure_reviewed_playbook_bundles
+
+    reconcile = getattr(getattr(ctx.handler, "orchestrator", None), "reconcile_required_playbooks", None)
+    if not inspect.iscoroutinefunction(reconcile):
+        return CheckResult(
+            id=REQUIRED_CHECK_ID, severity=Severity.ERROR,
+            detail="Required policy repair needs the running daemon command handler",
+        )
+    written = await asyncio.to_thread(
+        ensure_reviewed_playbook_bundles, ctx.config.data_dir, ids=REQUIRED_SYSTEM_PLAYBOOK_IDS
+    )
+    status = await reconcile(repair=True)
+    return CheckResult(
+        id=REQUIRED_CHECK_ID, severity=Severity.OK if status["ok"] else Severity.ERROR,
+        detail="Required system policy repair completed" if status["ok"] else "Required policy repair failed; inspect diagnostics",
+        fixable=True, fix_applied=True, data={"written": written, **status},
+    )
+
+
+def _installed_bundle_ids(data_dir: str) -> tuple[str, ...]:
+    from src.playbooks.required import shipped_reviewed_playbook_ids
+
+    root = Path(data_dir) / "vault" / "reviewed-playbooks"
+    return tuple(identifier for identifier in shipped_reviewed_playbook_ids() if (root / identifier).exists())
 
 
 async def _check_source_unavailable(ctx: DoctorContext) -> CheckResult:
@@ -324,7 +419,7 @@ async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
 
 
 async def _check_activation_invalid(ctx: DoctorContext) -> CheckResult:
-    """Name enabled activations with verified artifacts the loader cannot parse."""
+    """Name enabled artifacts with invalid definitions or unsupported features."""
     playbooks = getattr(ctx.config, "playbooks", None)
     if playbooks is None or not getattr(playbooks, "enabled", False):
         return CheckResult(
@@ -361,7 +456,11 @@ async def _check_activation_invalid(ctx: DoctorContext) -> CheckResult:
     return CheckResult(
         id=INVALID_CHECK_ID,
         severity=Severity.WARN,
-        detail=f"{len(invalid)} enabled activation(s) have invalid definitions; recompile and reactivate them",
+        detail=(
+            f"{len(invalid)} enabled activation(s) have invalid definitions or unsupported "
+            "features; upgrade all intended executors for the named features, or explicitly "
+            "restore compatible reviewed artifacts; recompile malformed definitions"
+        ),
         data={"checked": len(records), "count": len(invalid), "invalid": invalid},
     )
 
@@ -437,6 +536,49 @@ async def _check_pending_event_replay_policy(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _reviewed_activation_updates(ctx: DoctorContext, installed: tuple[str, ...]) -> list[dict]:
+    """Offer shipped policy at the same scope without inferring upgrade consent.
+
+    Hash inequality need not mean older: a customized artifact can be healthy
+    and intentionally different. Disabled and absent activations are opt-outs.
+    """
+    from src.playbooks.definition import artifact_sha256, load_definition_json
+    from src.playbooks.required import reviewed_bundle_source
+
+    if ctx.db is None or not hasattr(ctx.db, "list_playbook_activations"):
+        return []
+    activations = await ctx.db.list_playbook_activations(enabled_only=True)
+    updates = []
+    for identifier in installed:
+        candidates = [
+            row for row in activations if row["playbook_id"] == identifier and row["enabled"]
+        ]
+        if not candidates:
+            continue
+        definition = load_definition_json(
+            (reviewed_bundle_source() / identifier / "artifact.json").read_text(encoding="utf-8")
+        )
+        scope = definition.scope
+        scope_identifier = getattr(scope, "project_id", None) or getattr(scope, "agent_type", "")
+        shipped_sha = artifact_sha256(definition)
+        for row in candidates:
+            if (
+                row["scope"] != scope.type
+                or (row.get("scope_identifier") or "") != scope_identifier
+                or row.get("active_artifact_sha256") == shipped_sha
+            ):
+                continue
+            updates.append({
+                "playbook_id": identifier,
+                "scope": scope.type,
+                "scope_identifier": scope_identifier,
+                "active_sha256": row.get("active_artifact_sha256"),
+                "shipped_sha256": shipped_sha,
+                "import_command": f"aq playbook import --path reviewed-playbooks/{identifier} --activate",
+            })
+    return updates
+
+
 async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
     """Shipped reviewed bundles against their vault copies.  Read-only."""
     playbooks = getattr(ctx.config, "playbooks", None)
@@ -452,27 +594,40 @@ async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
             id=REVIEWED_BUNDLES_CHECK_ID, severity=Severity.INFO, detail="no data_dir configured"
         )
 
-    from src.playbooks.required import reviewed_bundle_drift, shipped_reviewed_playbook_ids
+    from src.playbooks.required import reviewed_bundle_drift
 
-    shipped = shipped_reviewed_playbook_ids()
-    drift = reviewed_bundle_drift(data_dir)
-    if not drift:
+    shipped = _installed_bundle_ids(data_dir)
+    drift = reviewed_bundle_drift(data_dir, ids=shipped)
+    updates = await _reviewed_activation_updates(ctx, shipped)
+    if not drift and not updates:
         return CheckResult(
             id=REVIEWED_BUNDLES_CHECK_ID,
             severity=Severity.OK,
             detail=f"{len(shipped)} shipped reviewed bundle(s) match their vault copies",
             data={"checked": len(shipped)},
         )
+    details = []
+    if drift:
+        details.append(
+            f"{len(drift)} shipped reviewed bundle(s) differ from their vault copies "
+            f"({', '.join(row['playbook_id'] for row in drift)}); an import reads the vault "
+            "copy, so a stale one can leave its activation at stale_contract. Run "
+            "aq doctor --check playbooks.reviewed_bundles --fix to refresh installed copies"
+        )
+    for update in updates:
+        details.append(
+            f"{update['playbook_id']} ({update['scope']} {update['scope_identifier']!r}): "
+            f"active {update['active_sha256']} differs from shipped {update['shipped_sha256']}. "
+            "Review the shipped policy and any local customization, then explicitly import/activate "
+            f"{'after refreshing the vault bundle: ' if drift else 'with: '}"
+            f"{update['import_command']}"
+        )
     return CheckResult(
         id=REVIEWED_BUNDLES_CHECK_ID,
         severity=Severity.WARN,
-        detail=(
-            f"{len(drift)} shipped reviewed bundle(s) differ from their vault copies "
-            f"({', '.join(row['playbook_id'] for row in drift)}); an import reads the vault "
-            "copy, so a stale one can leave its activation at stale_contract. Run with --fix "
-            "or restart the daemon to refresh them"
-        ),
-        data={"checked": len(shipped), "count": len(drift), "drift": drift},
+        detail="; ".join(details),
+        data={"checked": len(shipped), "count": len(drift), "drift": drift,
+              "activation_updates": updates},
     )
 
 
@@ -481,25 +636,29 @@ async def _fix_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
     from src.playbooks.required import ensure_reviewed_playbook_bundles
 
     data_dir = getattr(ctx.config, "data_dir", "") or ""
-    written = ensure_reviewed_playbook_bundles(data_dir) if data_dir else []
+    written = ensure_reviewed_playbook_bundles(
+        data_dir, ids=_installed_bundle_ids(data_dir)
+    ) if data_dir else []
     data: dict[str, object] = {"written": written}
     orchestrator = getattr(ctx.handler, "orchestrator", None)
     reconcile = getattr(orchestrator, "reconcile_required_playbooks", None)
     if written and inspect.iscoroutinefunction(reconcile):
-        status = await reconcile()
+        status = await reconcile(repair=True)
         data["required_playbooks"] = status
-    return CheckResult(
-        id=REVIEWED_BUNDLES_CHECK_ID,
-        severity=Severity.OK,
-        detail=f"refreshed {len(written)} reviewed bundle(s) in the vault",
-        fixable=True,
-        fix_applied=True,
-        data=data,
-    )
+    result = await _check_reviewed_bundles(ctx)
+    result.detail = f"refreshed {len(written)} reviewed bundle(s) in the vault; {result.detail}"
+    result.fixable = result.fix_applied = True
+    result.data.update(data)
+    if "required_playbooks" in data and not data["required_playbooks"]["ok"]:
+        result.severity = Severity.ERROR
+        result.detail += "; required policy repair failed; inspect diagnostics"
+    return result
 
 
 def playbook_v2_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id=PRIVATE_KEY_CHECK_ID, run=_check_private_value_key, owner=OWNER),
+        DoctorCheck(id=REQUIRED_CHECK_ID, run=_check_required, fix=_fix_required, timeout_s=30.0, owner=OWNER),
         DoctorCheck(id=ORPHANED_RUNS_CHECK_ID, run=_check_orphaned_runs, owner=OWNER),
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),
         DoctorCheck(id=SOURCE_CHECK_ID, run=_check_source_unavailable, fix=None, owner=OWNER),

@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/manual_control.py::ManualIntegration._audit::43af4306df0fc4b68c261654694b538d901170aaf2723019b993b3528d5bdf2e": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 141,
+      "owner": "ManualIntegration._audit",
+      "owner_fingerprint": "08ee4526422e2fd59113b82da60ead88c15b652869ed7886c4d07c75ad297c67",
+      "reason": "Writes the completed operator command result and principal as an audit event; current command guards, not the event payload, authorize integration actions."
+    }
+  }
+}

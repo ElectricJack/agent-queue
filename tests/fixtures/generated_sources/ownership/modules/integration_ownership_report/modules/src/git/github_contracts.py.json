@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/git/github_contracts.py::rate_limit_cause": {
+      "reason": "Preserves GitHub rate-limit identity and retry timing across wrapped failures in promotion admission and train observation."
+    }
+  }
+}
