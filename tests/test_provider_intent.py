@@ -1,9 +1,15 @@
 """Provider intent: who meant the provider a task's profile names (provider-failover D8-D10).
 
-Every row of the D9 table, the pin permission rule, ``task_route``'s
-never-downgrade, the graph ``pin`` key, unpinned playbook role delegation,
-``explicit_route``'s pinned vendor, ``delete_profile``'s reset and the
-``a00000000013`` migration (named constraints, idempotent backfill to
+Mandatory task routing (spec 2026-09-28 §5.1) took the intent off the filing
+surfaces: ``create_task``, ``ensure_task``, ``edit_task``, graphs and formulas
+refuse ``profile_id``, ``pin`` and ``provider_intent`` with
+``routing.choice_forbidden``, so the tests of those surfaces below now pin the
+refusal.  What remains is the intent the router and ``task_route`` write:
+
+Every remaining row of the D9 table, ``task_route``'s pin permission rule and
+never-downgrade, unpinned playbook role delegation, ``explicit_route``'s
+pinned vendor, ``delete_profile``'s reset and the ``a00000000013`` migration
+(named constraints, idempotent backfill to
 ``preferred`` and never ``pinned``, the ``archived_tasks`` mirror).  On
 PostgreSQL, like the rest of the suite.
 """
@@ -48,6 +54,7 @@ from src.providers.intent import (
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from src.vault import ensure_default_intelligence_classes
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKER_CAPS = {"harness_tools": ["Bash", "Edit"], "aq_commands": [], "plugin_tools": []}
@@ -74,7 +81,6 @@ async def setup(tmp_path):
         _worker("astra-high-codex", "codex", "astra-high"),
     ):
         await db.create_profile(profile)
-    await db.update_project("p", default_profile_id="standard-high-claude")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(
@@ -122,9 +128,10 @@ def test_effective_intent_without_a_profile_is_class_only() -> None:
     assert effective_intent(Task(id="t", project_id="p", title="", description="",
                                  provider_intent=PINNED)) == CLASS_ONLY
     pinned = Task(id="t", project_id="p", title="", description="",
-                  profile_id="x", provider_intent=PINNED)
+                  profile_id="x", route_source="legacy", provider_intent=PINNED)
     assert effective_intent(pinned) == PINNED and narrows_catalog(pinned)
-    routed = Task(id="t", project_id="p", title="", description="", profile_id="x")
+    routed = Task(id="t", project_id="p", title="", description="", profile_id="x",
+    route_source="legacy")
     assert effective_intent(routed) == CLASS_ONLY and not narrows_catalog(routed)
 
 
@@ -139,32 +146,35 @@ def test_resolve_intent_follows_how_the_profile_was_chosen() -> None:
 # -- create_task (D9 rows) ----------------------------------------------------
 
 
-async def test_create_with_explicit_profile_is_preferred(setup) -> None:
+def _assert_refused(result, *refused: str) -> None:
+    """Filing carries hints, never routes (mandatory-routing spec §5.1)."""
+    assert result.get("success") is False, result
+    assert result.get("code") == "routing.choice_forbidden", result
+    assert list(refused) == result["refused"], result
+
+
+async def test_create_refuses_a_profile(setup) -> None:
     handler, db = setup
     result = await _create(handler, profile_id="standard-high-codex",
                            intelligence_class="standard-high")
-    assert result.get("success") is True, result
-    assert result["provider_intent"] == PREFERRED
-    assert (await db.get_task(result["task_id"])).provider_intent == PREFERRED
+    _assert_refused(result, "profile_id")
+    assert await db.list_tasks(project_id="p") == []
 
 
-async def test_create_with_pin_is_pinned_and_audited(setup) -> None:
+async def test_create_refuses_a_pin_and_audits_nothing(setup) -> None:
     handler, db = setup
     result = await _create(handler, profile_id="standard-high-codex",
                            intelligence_class="standard-high", pin=True)
-    assert result.get("success") is True, result
-    task = await db.get_task(result["task_id"])
-    assert task.provider_intent == PINNED
-    audit = await db.get_task_meta(task.id, "provider_intent_audit")
-    assert audit["intent"] == PINNED and audit["by"] == "human:local-operator"
-    assert audit["previous"] is None and audit["at"] > 0
+    _assert_refused(result, "profile_id", "pin")
+    assert await db.list_tasks(project_id="p") == []
 
 
-async def test_create_with_explicit_intent_value(setup) -> None:
+async def test_create_refuses_an_explicit_intent_value(setup) -> None:
     handler, db = setup
-    result = await _create(handler, profile_id="standard-high-codex",
-                           intelligence_class="standard-high", provider_intent=CLASS_ONLY)
-    assert (await db.get_task(result["task_id"])).provider_intent == CLASS_ONLY
+    result = await _create(handler, intelligence_class="standard-high",
+                           provider_intent=CLASS_ONLY)
+    _assert_refused(result, "provider_intent")
+    assert await db.list_tasks(project_id="p") == []
 
 
 async def test_create_with_a_class_hint_is_unrouted_and_class_only(setup) -> None:
@@ -187,27 +197,25 @@ async def test_create_with_nothing_leaves_the_default_implicit_and_class_only(se
 
 async def test_pin_without_a_profile_is_refused(setup) -> None:
     handler, db = setup
-    result = await _create(handler, pin=True)
-    assert result["code"] == "provider_intent.profile_required"
-    result = await _create(handler, provider_intent=PREFERRED)
-    assert result["code"] == "provider_intent.profile_required"
+    _assert_refused(await _create(handler, pin=True), "pin")
+    _assert_refused(await _create(handler, provider_intent=PREFERRED), "provider_intent")
     assert await db.list_tasks(project_id="p") == []
 
 
 async def test_unknown_intent_is_refused(setup) -> None:
     handler, _db = setup
     result = await _create(handler, profile_id="standard-high-codex", provider_intent="sticky")
-    assert result["code"] == "provider_intent.invalid"
+    _assert_refused(result, "profile_id", "provider_intent")
 
 
-async def test_ensure_task_carries_intent(setup) -> None:
+async def test_ensure_task_refuses_intent(setup) -> None:
     handler, db = setup
     result = await handler._cmd_ensure_task({
         "project_id": "p", "title": "Ensured", "dedup_key": "k1",
         "profile_id": "standard-high-codex", "intelligence_class": "standard-high", "pin": True,
     })
-    assert result.get("success") is True, result
-    assert (await db.get_task(result["task_id"])).provider_intent == PINNED
+    _assert_refused(result, "profile_id", "pin")
+    assert await db.list_tasks(project_id="p") == []
 
 
 # -- pin permission -------------------------------------------------------------
@@ -218,21 +226,17 @@ async def test_worker_token_may_not_pin(setup) -> None:
     for args in ({"pin": True}, {"provider_intent": PINNED}):
         result = await _as(handler, WORKER_SCOPE, lambda a=args: _create(
             handler, profile_id="standard-high-codex", reason="found it", **a))
-        assert result["success"] is False
-        assert result["code"] == "provider_intent.pin_not_permitted"
-        assert next(iter(args)) in result["error"]
+        _assert_refused(result, "profile_id", next(iter(args)))
     assert await db.list_tasks(project_id="p") == []
 
 
-async def test_elevated_supervisor_may_pin(setup) -> None:
+async def test_elevated_supervisor_may_not_pin(setup) -> None:
+    """The supervisor files with hints like everyone else (spec §5.2)."""
     handler, db = setup
     result = await _as(handler, SUPERVISOR_SCOPE, lambda: _create(
         handler, profile_id="standard-high-codex", intelligence_class="standard-high", pin=True))
-    assert result.get("success") is True, result
-    task = await db.get_task(result["task_id"])
-    assert task.provider_intent == PINNED
-    audit = await db.get_task_meta(task.id, "provider_intent_audit")
-    assert audit["by"] == "human:local-operator"  # no principal bound in this harness
+    _assert_refused(result, "profile_id", "pin")
+    assert await db.list_tasks(project_id="p") == []
 
 
 async def _held_worker_session(db) -> None:
@@ -256,68 +260,69 @@ async def test_worker_filing_inherits_no_intent(setup) -> None:
     assert task.profile_id is None and task.provider_intent == CLASS_ONLY
 
 
-async def test_worker_filing_with_explicit_profile_is_preferred(setup) -> None:
+async def test_worker_filing_with_explicit_profile_is_refused(setup) -> None:
     handler, db = setup
     await _held_worker_session(db)
+    before = len(await db.list_tasks(project_id="p"))
     named = await _as(handler, WORKER_SCOPE, lambda: _create(
         handler, reason="found it", profile_id="standard-high-claude"))
-    assert named.get("success") is True, named
-    assert (await db.get_task(named["task_id"])).provider_intent == PREFERRED
+    _assert_refused(named, "profile_id")
+    assert len(await db.list_tasks(project_id="p")) == before
 
 
 # -- edit_task -------------------------------------------------------------------
 
 
 async def _plain_task(db, task_id="t1", **fields) -> Task:
+    fields.setdefault("route_source", route_source_for(fields.get("profile_id")))
     task = Task(id=task_id, project_id="p", title="t", description="x",
                 status=TaskStatus.READY, intelligence_class="standard-high", **fields)
     await db.create_task(task)
     return task
 
 
-async def test_edit_profile_is_preferred_pin_is_pinned_clear_is_class_only(setup) -> None:
+async def test_edit_refuses_a_profile_and_a_pin(setup) -> None:
     handler, db = setup
     await _plain_task(db)
-    result = await handler._cmd_edit_task({"task_id": "t1", "profile_id": "standard-high-codex"})
-    assert "error" not in result, result
-    assert (await db.get_task("t1")).provider_intent == PREFERRED
-    await handler._cmd_edit_task({"task_id": "t1", "profile_id": "standard-high-codex",
-                                  "pin": True})
-    assert (await db.get_task("t1")).provider_intent == PINNED
-    audit = await db.get_task_meta("t1", "provider_intent_audit")
-    assert audit["previous"] == PREFERRED and audit["intent"] == PINNED
-    await handler._cmd_edit_task({"task_id": "t1", "profile_id": None})
+    _assert_refused(
+        await handler._cmd_edit_task({"task_id": "t1", "profile_id": "standard-high-codex"}),
+        "profile_id",
+    )
+    _assert_refused(
+        await handler._cmd_edit_task({"task_id": "t1", "profile_id": "standard-high-codex",
+                                      "pin": True}),
+        "profile_id", "pin",
+    )
     task = await db.get_task("t1")
     assert task.profile_id is None and task.provider_intent == CLASS_ONLY
+    assert await db.get_task_meta("t1", "provider_intent_audit") is None
 
 
-async def test_edit_intent_alone(setup) -> None:
+async def test_edit_refuses_an_intent_alone(setup) -> None:
     handler, db = setup
     await _plain_task(db, profile_id="standard-high-codex")
-    result = await handler._cmd_edit_task({"task_id": "t1", "provider_intent": PINNED})
-    assert "error" not in result, result
-    assert "provider_intent" in result["fields"]
+    for intent in (PINNED, CLASS_ONLY):
+        result = await handler._cmd_edit_task({"task_id": "t1", "provider_intent": intent})
+        _assert_refused(result, "provider_intent")
     task = await db.get_task("t1")
-    assert (task.profile_id, task.provider_intent) == ("standard-high-codex", PINNED)
-    await handler._cmd_edit_task({"task_id": "t1", "provider_intent": CLASS_ONLY})
-    assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
+    assert (task.profile_id, task.provider_intent) == ("standard-high-codex", CLASS_ONLY)
 
 
-async def test_edit_pin_needs_a_profile(setup) -> None:
+async def test_edit_intent_without_a_profile_is_refused(setup) -> None:
     handler, db = setup
     await _plain_task(db)
     result = await handler._cmd_edit_task({"task_id": "t1", "provider_intent": PREFERRED})
-    assert result["code"] == "provider_intent.profile_required"
+    _assert_refused(result, "provider_intent")
     assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
 
 
-async def test_edit_intent_rides_the_routing_guard(setup) -> None:
+async def test_edit_intent_is_refused_even_on_a_running_task(setup) -> None:
     handler, db = setup
     await _plain_task(db, profile_id="standard-high-codex")
     await db.update_task("t1", status=TaskStatus.IN_PROGRESS)
     result = await handler._cmd_edit_task({"task_id": "t1", "provider_intent": PINNED})
-    assert "running or claimed" in result["error"]
-    # ``pin: false`` alone is not a routing edit (a CLI flag pair may always send it).
+    _assert_refused(result, "provider_intent")
+    # ``pin: false`` chooses nothing (a CLI flag pair may always send it).
     result = await handler._cmd_edit_task({"task_id": "t1", "title": "renamed", "pin": False})
     assert "error" not in result, result
 
@@ -327,67 +332,67 @@ async def test_worker_may_not_pin_by_edit(setup) -> None:
     await _plain_task(db, profile_id="standard-high-codex")
     result = await _as(handler, WORKER_SCOPE, lambda: handler._cmd_edit_task(
         {"task_id": "t1", "pin": True}))
-    assert result["code"] == "provider_intent.pin_not_permitted"
+    _assert_refused(result, "pin")
     assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
 
 
-# -- task_route ------------------------------------------------------------------
+# -- the override and aq task route ------------------------------------------------
 
 
-async def test_task_route_by_a_caller_is_preferred(setup) -> None:
+async def test_an_override_pins_its_provider_and_audits_the_intent(setup) -> None:
+    """Mandatory routing §7: an override is a human's statement, so it pins."""
     handler, db = setup
+    handler.config.swarm.enabled = True  # a pool has slots only while the swarm runs
     await _plain_task(db)
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-codex"})
-    assert result["success"] is True and result["provider_intent"] == PREFERRED
-    assert (await db.get_task("t1")).provider_intent == PREFERRED
+    result = await handler._cmd_task_route_override({
+        "task_id": "t1", "profile_id": "standard-high-codex",
+        "reason": "the provider is the requirement here",
+    })
+    assert result["success"] is True and result["provider_intent"] == PINNED, result
+    assert (await db.get_task("t1")).provider_intent == PINNED
+    audit = await db.get_task_meta("t1", "provider_intent_audit")
+    assert (audit["intent"], audit["previous"]) == (PINNED, CLASS_ONLY)
 
 
-async def test_task_route_from_the_playbook_is_class_only(setup) -> None:
+async def test_task_route_hands_a_pinned_task_back_class_only(setup) -> None:
     handler, db = setup
+    handler.config.swarm.enabled = True
     await _plain_task(db)
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-codex",
-                                            "provider_intent": CLASS_ONLY})
-    assert result["success"] is True
+    await handler._cmd_task_route_override({
+        "task_id": "t1", "profile_id": "standard-high-codex",
+        "reason": "the provider is the requirement here",
+    })
+    result = await handler._cmd_task_route({"task_id": "t1"})
+    assert result["success"] is True, result
+    task = await db.get_task("t1")
+    assert (task.profile_id, task.provider_intent) == (None, CLASS_ONLY)
+
+
+async def test_a_worker_may_not_pin_by_override(setup) -> None:
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+
+    handler, db = setup
+    handler.config.swarm.enabled = True
+    await _plain_task(db)
+    worker = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, session_id="s1", project_id="p",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["task_route_override"]),
+    )
+    with principal_context(worker):
+        result = await handler.execute("task_route_override", {
+            "task_id": "t1", "profile_id": "standard-high-codex",
+            "reason": "the provider is the requirement here",
+        })
+    assert result["code"] == "routing.not_permitted", result
     assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
-    # A routed class_only row is the default: no audit write.
-    assert await db.get_task_meta("t1", "provider_intent_audit") is None
-
-
-async def test_task_route_never_downgrades_on_the_same_provider(setup) -> None:
-    handler, db = setup
-    await _plain_task(db, profile_id="standard-high-claude", provider_intent=PREFERRED)
-    await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-claude",
-                                   "provider_intent": CLASS_ONLY})
-    assert (await db.get_task("t1")).provider_intent == PREFERRED
-    # pinned stays pinned against a weaker intent on the same provider...
-    await db.update_task_routing("t1", profile_id="standard-high-claude",
-                                 intelligence_class=None, preferred_workspace_id=None,
-                                 provider_intent=PINNED)
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-claude",
-                                            "provider_intent": PREFERRED})
-    assert result["provider_intent"] == PINNED
-    # ...but a route onto another provider takes the intent it was given.
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-codex",
-                                            "provider_intent": CLASS_ONLY})
-    assert result["provider_intent"] == CLASS_ONLY
-    assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
-
-
-async def test_task_route_pin_permission(setup) -> None:
-    handler, db = setup
-    await _plain_task(db)
-    result = await _as(handler, WORKER_SCOPE, lambda: handler._cmd_task_route(
-        {"task_id": "t1", "profile_id": "standard-high-codex", "pin": True}))
-    assert result["code"] == "provider_intent.pin_not_permitted"
-    result = await handler._cmd_task_route(
-        {"task_id": "t1", "profile_id": "standard-high-codex", "pin": True})
-    assert result["provider_intent"] == PINNED
 
 
 # -- aq-graph ------------------------------------------------------------------
 
 
-async def test_graph_node_intents(setup) -> None:
+async def test_graph_nodes_carry_no_intent(setup) -> None:
+    """A graph names no profile or pin (spec §5.1): the whole graph is refused."""
     handler, db = setup
     graph = {
         "version": 1,
@@ -401,52 +406,56 @@ async def test_graph_node_intents(setup) -> None:
         ],
     }
     result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
+    _assert_refused(result, "named.profile", "pinned.profile", "pinned.pin")
+    assert await db.list_tasks(project_id="p") == []
+
+    graph["nodes"] = graph["nodes"][2:]
+    result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
     assert "error" not in result, result
     by_title = {t.title: t for t in await db.list_tasks(project_id="p")}
-    assert by_title["Named"].provider_intent == PREFERRED
-    assert by_title["Pinned"].provider_intent == PINNED
     assert by_title["Classed"].profile_id is None
     assert by_title["Classed"].class_hint == "deep-high"
     assert by_title["Classed"].provider_intent == CLASS_ONLY
 
 
-async def test_graph_profile_fill_in_is_preferred(setup) -> None:
+async def test_graph_profile_fill_in_is_refused(setup) -> None:
     handler, db = setup
     graph = {"version": 1, "nodes": [{"key": "a", "title": "Filled"}]}
     result = await handler._cmd_create_task_graph({
         "project_id": "p", "graph": graph, "profile_id": "standard-high-codex",
         "intelligence_class": "standard-high",
     })
-    assert "error" not in result, result
-    task = next(t for t in await db.list_tasks(project_id="p") if t.title == "Filled")
-    assert (task.profile_id, task.provider_intent) == ("standard-high-codex", PREFERRED)
+    _assert_refused(result, "profile_id")
+    assert await db.list_tasks(project_id="p") == []
 
 
-async def test_graph_pin_without_profile_is_an_error(setup) -> None:
+async def test_graph_pin_is_refused_with_or_without_a_profile(setup) -> None:
     handler, db = setup
     graph = {"version": 1, "nodes": [
         {"key": "a", "title": "No profile", "pin": True},
         {"key": "b", "title": "Class hint", "intelligence_class": "deep-high", "pin": True},
     ]}
     result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
+    _assert_refused(result, "a.pin", "b.pin")
     rules = sorted((e["rule"], e["node"]) for e in result["errors"])
-    assert rules == [("pin_without_profile", "a"), ("pin_without_profile", "b")]
+    assert rules == [("routing_choice_forbidden", "a"), ("routing_choice_forbidden", "b")]
     assert await db.list_tasks(project_id="p") == []
 
 
-async def test_graph_pin_must_be_a_boolean(setup) -> None:
+async def test_graph_pin_of_any_value_is_refused(setup) -> None:
     handler, _db = setup
-    graph = {"version": 1, "nodes": [
-        {"key": "a", "title": "A", "profile": "standard-high-codex", "pin": "yes"}]}
+    graph = {"version": 1, "nodes": [{"key": "a", "title": "A", "pin": "yes"}]}
     result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
-    assert any(e["rule"] == "bad_field_type" for e in result["errors"]), result
+    _assert_refused(result, "a.pin")
 
 
 async def test_graph_still_refuses_provider_harness_and_model(setup) -> None:
     handler, _db = setup
-    graph = {"version": 1, "nodes": [{"key": "a", "title": "A", "provider": "openai"}]}
-    result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
-    assert any(e["rule"] == "unsupported_routing" for e in result["errors"]), result
+    for key, value in (("provider", "openai"), ("harness", "codex"), ("model", "gpt")):
+        graph = {"version": 1, "nodes": [{"key": "a", "title": "A", key: value}]}
+        result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
+        _assert_refused(result, f"a.{key}")
+        assert [e["rule"] for e in result["errors"]] == ["routing_choice_forbidden"], result
 
 
 async def test_worker_inline_graph_may_not_pin(setup) -> None:
@@ -455,18 +464,20 @@ async def test_worker_inline_graph_may_not_pin(setup) -> None:
         {"key": "a", "title": "A", "profile": "standard-high-codex", "pin": True}]}
     result = await _as(handler, WORKER_SCOPE, lambda: handler._cmd_create_task_graph(
         {"project_id": "p", "graph": graph}))
-    assert result["code"] == "provider_intent.pin_not_permitted"
+    _assert_refused(result, "a.profile", "a.pin")
     assert await db.list_tasks(project_id="p") == []
 
 
-def test_unpinned_nodes_serialise_exactly_as_before() -> None:
-    from src.task_graph import parse_graph
+def test_nodes_serialise_without_a_route() -> None:
+    from src.task_graph import GraphParseError, parse_graph
 
     graph = parse_graph({"version": 1, "nodes": [
-        {"key": "a", "title": "A", "profile": "x"},
-        {"key": "b", "title": "B", "profile": "x", "pin": True}]})
-    a, b = (node.to_dict() for node in graph.nodes)
-    assert "pin" not in a and b["pin"] is True
+        {"key": "a", "title": "A", "intelligence_class": "deep-high"}]})
+    (a,) = (node.to_dict() for node in graph.nodes)
+    assert "pin" not in a and "profile" not in a
+    with pytest.raises(GraphParseError) as caught:
+        parse_graph({"version": 1, "nodes": [{"key": "b", "title": "B", "pin": True}]})
+    assert [e.rule for e in caught.value.errors] == ["routing_choice_forbidden"]
 
 
 FORMULA = """---
@@ -488,7 +499,8 @@ nodes:
 """
 
 
-async def test_vault_formula_pin_is_honoured(tmp_path) -> None:
+async def test_vault_formula_pin_is_refused(tmp_path) -> None:
+    """A formula routes nothing either: its pin is refused at cook time."""
     db = Database(lease_dsn("provider_intent_formula.db"))
     await db.initialize()
     try:
@@ -498,7 +510,11 @@ async def test_vault_formula_pin_is_honoured(tmp_path) -> None:
         (vault_root / "formulas").mkdir(parents=True)
         (vault_root / "formulas" / "pinned-work.md").write_text(FORMULA, encoding="utf-8")
         registry = FormulaRegistry()
-        assert load_from_vault(registry, str(vault_root)) == []
+        # The formula's graph is parsed as it loads, so the refusal lands in
+        # the registry's errors (``aq doctor`` names it) and the formula is
+        # never offered.
+        errors = load_from_vault(registry, str(vault_root))
+        assert len(errors) == 1 and "chooses a route" in errors[0], errors
         orch = MagicMock()
         orch.db = db
         orch._emit_notify = AsyncMock()
@@ -509,9 +525,8 @@ async def test_vault_formula_pin_is_honoured(tmp_path) -> None:
         handler = CommandHandler(orch, config)
         handler._active_project_id = None
         result = await handler._cmd_formula_cook({"name": "pinned-work", "project_id": "p1"})
-        assert result.get("success") is True, result
-        art = next(t for t in await db.list_tasks(project_id="p1") if t.title == "Art pass")
-        assert (art.profile_id, art.provider_intent) == ("astra-high-codex", PINNED)
+        assert result.get("success") is False, result
+        assert await db.list_tasks(project_id="p1") == []
     finally:
         await db.close()
 
@@ -598,8 +613,10 @@ async def test_explicit_routing_reads_the_pinned_profiles_vendor(setup) -> None:
     routing = ExplicitRouting(db_getter=lambda: db)
     tasks = [
         Task(id="a", project_id="p", title="", description="", profile_id="standard-high-codex",
+        route_source="legacy",
              intelligence_class="standard-high", provider_intent=PINNED),
         Task(id="b", project_id="p", title="", description="", profile_id="standard-high-claude",
+        route_source="legacy",
              intelligence_class="standard-high", provider_intent=PREFERRED),
     ]
     routes = await routing.routes_for(tasks)

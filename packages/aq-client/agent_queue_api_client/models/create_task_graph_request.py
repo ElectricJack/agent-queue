@@ -19,8 +19,7 @@ T = TypeVar("T", bound="CreateTaskGraphRequest")
 class CreateTaskGraphRequest:
     """
     Attributes:
-        profile_id (None | str | Unset): Default profile for graph nodes without an explicit profile.
-        intelligence_class (None | str | Unset): Default intelligence class for graph nodes without an explicit class.
+        intelligence_class (None | str | Unset): Default intelligence-class hint for graph nodes without their own.
         project_id (None | str | Unset): Owning project
         graph (CreateTaskGraphRequestGraphType0 | None | Unset): Graph document (version/vars/defaults/parent/nodes)
         spec_path (None | str | Unset): Vault spec path whose fenced aq-graph block defines the graph, relative to the
@@ -37,7 +36,6 @@ class CreateTaskGraphRequest:
             review is approved. An unknown or withdrawn review refuses the whole graph; an approved one gates nothing.
     """
 
-    profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     project_id: None | str | Unset = UNSET
     graph: CreateTaskGraphRequestGraphType0 | None | Unset = UNSET
@@ -51,12 +49,6 @@ class CreateTaskGraphRequest:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.create_task_graph_request_graph_type_0 import CreateTaskGraphRequestGraphType0
-
-        profile_id: None | str | Unset
-        if isinstance(self.profile_id, Unset):
-            profile_id = UNSET
-        else:
-            profile_id = self.profile_id
 
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
@@ -109,8 +101,6 @@ class CreateTaskGraphRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if profile_id is not UNSET:
-            field_dict["profile_id"] = profile_id
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
         if project_id is not UNSET:
@@ -137,15 +127,6 @@ class CreateTaskGraphRequest:
         from ..models.create_task_graph_request_graph_type_0 import CreateTaskGraphRequestGraphType0
 
         d = dict(src_dict)
-
-        def _parse_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
 
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
@@ -223,7 +204,6 @@ class CreateTaskGraphRequest:
         after_review = _parse_after_review(d.pop("after_review", UNSET))
 
         create_task_graph_request = cls(
-            profile_id=profile_id,
             intelligence_class=intelligence_class,
             project_id=project_id,
             graph=graph,

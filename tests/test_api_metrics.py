@@ -15,21 +15,17 @@ from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.metrics import MAX_POINTS, build_metrics_router, choose_step
 from src.api.models.metrics import MetricsSample, PerfMetrics
 from src.api.websocket import _FORWARDED_PREFIXES, _metrics_event_allowed
-from src.database import Database
 from src.metrics.histogram import new_hist, observe
 from src.metrics.perf import PerfRegistry
 from src.metrics.sampler import METRIC_TICK_EVENT, aggregate_samples
-from tests.db_fixtures import lease_dsn
 
 BASE = 1_700_000_000.0
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("m.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("m.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -272,6 +268,8 @@ def test_a_sample_with_a_perf_block_validates_and_a_bare_one_defaults():
     registry = PerfRegistry()
     registry.observe_route("GET /api/x", 12, 200)
     registry.observe_stream_handshake("WS /ws/events", 4, accepted=True)
+    operation = registry.operation_started("git.fetch")
+    registry.operation_finished(operation, 7, "completed")
     perf = {
         "enabled": True,
         **registry.snapshot(),
@@ -286,6 +284,9 @@ def test_a_sample_with_a_perf_block_validates_and_a_bare_one_defaults():
     sample = MetricsSample.model_validate({"ts": 1.0, "perf": perf})
     assert sample.perf.api.routes["GET /api/x"].latency.count == 1
     assert sample.perf.api.streams["WS /ws/events"].handshake.count == 1
+    assert sample.perf.operations["git.fetch"].latency.count == 1
+    assert sample.perf.operations["git.fetch"].outcomes["completed"] == 1
+    assert sample.perf.operations["git.fetch"].peak_in_flight == 1
     assert sample.perf.host.psi.reason == "psi_unavailable"
     assert sample.perf.host.test_slots.used is None
     assert MetricsSample.model_validate({"ts": 1.0}).perf == PerfMetrics()
