@@ -15,6 +15,7 @@ import time
 import pytest
 
 from src.playbooks.definition import (
+    AgentTaskStep,
     DuplicateJsonKey,
     PlaybookDefinition,
     load_definition_json,
@@ -61,6 +62,8 @@ TWIN_INVENTORY = StubInventory(
         "item",
         "leaf",
         "worker",
+        "reviewer",
+        "final-reviewer",
         "wide",
         "hollow",
         "ghost",
@@ -87,15 +90,28 @@ def load_invalid(code: str) -> PlaybookDefinition:
     return load_definition_json((INVALID_DIR / f"{code}.json").read_text())
 
 
+def test_agent_task_accepts_fidelity_reviewer_role():
+    step = AgentTaskStep.model_validate({
+        "rule": "review_batch",
+        "title": "Review the held batch",
+        "profile_id": "fidelity-reviewer",
+        "objective": {"type": "literal", "value": "Check source fidelity before structure"},
+        "transitions": {"done": "end", "runtime_error": "oops"},
+        "source": source(1),
+    })
+    assert step.profile_id == "fidelity-reviewer"
+
+
 class TestDiagnosticSet:
-    """§6.8 — the closed 48-code set.
+    """§6.8 — the closed 49-code set.
 
     47 in the child plan; ``narrowing_not_subset`` is the 48th, added with the
     authoring surface for ``AgentTaskStep.capability_narrowing``.
+    B3 adds ``unsupported_feature`` for artifact/executor compatibility.
     """
 
     def test_the_set_is_closed_and_partitioned(self):
-        assert len(DIAGNOSTIC_CODES) == 48
+        assert len(DIAGNOSTIC_CODES) == 49
         assert VALIDATOR_CODES | MODEL_CODES | COMPILER_ONLY_CODES == DIAGNOSTIC_CODES
         assert not VALIDATOR_CODES & MODEL_CODES
         assert not VALIDATOR_CODES & COMPILER_ONLY_CODES
@@ -217,8 +233,15 @@ class TestRuleClosure:
 class TestLoops:
     """§6.3."""
 
-    def test_nested_loops_are_rejected(self):
-        assert "nested_loop" in codes(check(load_invalid("nested_loop")))
+    def test_properly_nested_loops_are_accepted(self):
+        payload = load_invalid("nested_loop").model_dump(mode="json")
+        for loop_id in ("level3", "level4", "level5"):
+            payload["steps"].pop(loop_id)
+        payload["steps"]["inner"]["body_entry"] = "body"
+        payload["steps"]["body"]["transitions"] = {"done": "inner", "skipped": "inner"}
+        assert not {"nested_loop", "loop_body_escapes"} & codes(check(
+            load_definition_json(json.dumps(payload))
+        ))
 
     def test_a_body_step_may_not_leave_by_an_undeclared_exit(self):
         found = check(load_invalid("loop_body_escapes"))
@@ -753,9 +776,28 @@ class TestProfilesAndCapabilities:
     def test_a_narrowing_agent_task_is_accepted(self):
         artifact = json.loads((INVALID_DIR / "capability_not_subset.json").read_text())
         artifact["steps"]["classify"]["profile_id"] = "wide"
-        artifact["steps"]["delegate"]["profile_id"] = "worker"
+        artifact["steps"]["delegate"]["profile_id"] = "reviewer"
         found = check(PlaybookDefinition.model_validate(artifact))
         assert "capability_not_subset" not in codes(found)
+
+    def test_hint_only_delegation_defers_capability_checks_to_runtime(self):
+        artifact = json.loads((INVALID_DIR / "capability_not_subset.json").read_text())
+        artifact["steps"]["delegate"].pop("profile_id")
+        artifact["steps"]["delegate"]["intelligence_class"] = "deep-high"
+        artifact["steps"]["delegate"]["task_type"] = "design"
+        found = check(PlaybookDefinition.model_validate(artifact))
+        assert "unknown_profile" not in codes(found)
+        assert "capability_not_subset" not in codes(found)
+        assert "delegation_runtime_checked" in codes(found)
+
+        definition = PlaybookDefinition.model_validate(artifact)
+        inventory = StubInventory(TWIN_INVENTORY.names | {"deep-high", "design"})
+        assert "unknown_identifier" not in codes(check(definition, inventory=inventory))
+        undeclared = check(definition, inventory=TWIN_INVENTORY)
+        missing = [d.message for d in undeclared if d.code == "unknown_identifier"]
+        assert len(missing) == 2
+        assert any("deep-high" in message for message in missing)
+        assert any("design" in message for message in missing)
 
     def test_a_narrowing_naming_an_ungranted_capability_is_an_error(self):
         """The executor intersects, so this would otherwise be a silent no-op."""

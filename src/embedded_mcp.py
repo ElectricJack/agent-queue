@@ -4,7 +4,8 @@ Shares the daemon's Orchestrator, Database, EventBus, and CommandHandler
 instead of creating its own.  Serves on streamable-http transport via uvicorn.
 
 Also serves the FastAPI REST API (``/api/*``, ``/health``, ``/ready``,
-``/plans/*``, ``/docs``) on the same port for the ``aq`` CLI and other clients.
+``/plans/*``) on the same port for the ``aq`` CLI and other clients. Dashboard
+assets and HTML documentation UIs are not hosted by this process.
 
 This module must be imported lazily (after orchestrator initialization)
 because importing the ``mcp`` SDK takes ~3 seconds.
@@ -119,6 +120,10 @@ async def run_mcp_server(
         health_provider=health_provider,
         plan_content_provider=plan_content_provider,
     )
+    # Preserve API startup/shutdown (health collection, stream cleanup) when
+    # adding the MCP manager lifespan. Capture once, before supervision wraps
+    # it, so a server restart cannot recursively wrap its previous lifespan.
+    api_lifespan = fastapi_app.router.lifespan_context
 
     # --- Supervised uvicorn loop -------------------------------------------
 
@@ -133,7 +138,7 @@ async def run_mcp_server(
             mcp_app = mcp.streamable_http_app()
 
             # Mount MCP sub-app at root on the FastAPI app.
-            # FastAPI's own routes (/api/*, /health, /docs, etc.) take
+            # FastAPI's own routes (/api/*, /health, etc.) take
             # precedence; MCP handles /mcp underneath.
             # Replace — never accumulate — the root mount: a supervised
             # restart would otherwise append another Mount pointing at the
@@ -150,8 +155,9 @@ async def run_mcp_server(
             # run the session manager ourselves via FastAPI's lifespan.
             @asynccontextmanager
             async def _combined_lifespan(app):
-                async with mcp.session_manager.run():
-                    yield
+                async with api_lifespan(app) as state:
+                    async with mcp.session_manager.run():
+                        yield state
 
             fastapi_app.router.lifespan_context = _combined_lifespan
 

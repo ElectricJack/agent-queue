@@ -162,3 +162,115 @@ async def test_spec_approve_refuses_reviewed_file_and_allows_plain_spec(handler,
         "spec_approve", {"project_id": "p", "spec_path": str(plain_path)}
     )
     assert approved["success"] is True, approved
+
+
+def _review_graph() -> dict:
+    """Three nodes: two with no in-graph ``needs`` and one that waits on a sibling."""
+    return {
+        "version": 1,
+        "parent": {"title": "Build the reviewed design"},
+        "nodes": [
+            {"key": "schema", "title": "Add the schema"},
+            {"key": "api", "title": "Expose the API", "needs": ["schema"]},
+            {"key": "docs", "title": "Document the design"},
+        ],
+    }
+
+
+async def _approve(handler, review: dict) -> None:
+    decided = await handler.execute(
+        "review_decide",
+        {"review_id": review["review_id"], "revision": 1, "decision": "approve"},
+    )
+    assert decided["success"] is True, decided
+
+
+async def test_graph_after_review_gates_every_node_until_approved(handler, submit_review):
+    review = await submit_review()
+    created = await handler.execute(
+        "create_task_graph",
+        {"project_id": "p", "graph": _review_graph(), "after_review": review["review_id"]},
+    )
+    assert created.get("created") is True, created
+    node_ids = {node["key"]: node["task_id"] for node in created["nodes"]}
+    assert created["after_review"] == {
+        "review_id": review["review_id"],
+        "gate_id": review["gate_id"],
+        "gated_task_ids": created["task_ids"],
+    }
+
+    # Every node waits on the review's gate — the dependent one too, so no
+    # edge type can let it past an unapproved review.  The container and its
+    # phases are not claimable work and are left alone.
+    assert await handler.db.get_gate_waiters(review["gate_id"]) == set(node_ids.values())
+    for task_id in node_ids.values():
+        assert (await handler.db.get_task(task_id)).is_blocked is True
+
+    await _approve(handler, review)
+    assert (await handler.db.get_task(node_ids["schema"])).is_blocked is False
+    assert (await handler.db.get_task(node_ids["docs"])).is_blocked is False
+    # Still behind its sibling: approval releases the gate, not the graph's edges.
+    assert (await handler.db.get_task(node_ids["api"])).is_blocked is True
+
+
+async def test_graph_after_review_dry_run_reports_the_gate_and_writes_nothing(
+    handler, submit_review
+):
+    review = await submit_review()
+    report = await handler.execute(
+        "create_task_graph",
+        {
+            "project_id": "p",
+            "graph": _review_graph(),
+            "after_review": review["review_id"],
+            "dry_run": True,
+        },
+    )
+    assert report["dry_run"] is True, report
+    assert report["after_review"]["review_id"] == review["review_id"]
+    assert report["after_review"]["gated_task_ids"] == report["task_ids"]
+    assert await handler.db.get_gate_waiters(review["gate_id"]) == set()
+    assert await handler.db.list_tasks(project_id="p") == []
+
+
+async def test_graph_after_review_on_approved_review_gates_nothing(handler, submit_review):
+    review = await submit_review()
+    await _approve(handler, review)
+
+    created = await handler.execute(
+        "create_task_graph",
+        {"project_id": "p", "graph": _review_graph(), "after_review": review["review_id"]},
+    )
+    assert created.get("created") is True, created
+    assert created["after_review"]["gated_task_ids"] == []
+    assert await handler.db.get_gate_waiters(review["gate_id"]) == set()
+    by_key = {node["key"]: node["task_id"] for node in created["nodes"]}
+    assert (await handler.db.get_task(by_key["schema"])).is_blocked is False
+
+
+async def test_graph_after_review_refuses_withdrawn_and_unknown_before_writing(
+    handler, submit_review
+):
+    withdrawn = await submit_review()
+    assert (
+        await handler.execute(
+            "review_withdraw", {"review_id": withdrawn["review_id"], "reason": "Superseded"}
+        )
+    )["success"] is True
+
+    closed = await handler.execute(
+        "create_task_graph",
+        {"project_id": "p", "graph": _review_graph(), "after_review": withdrawn["review_id"]},
+    )
+    assert closed["success"] is False
+    assert closed["error_code"] == "review_closed"
+
+    missing = await handler.execute(
+        "create_task_graph",
+        {"project_id": "p", "graph": _review_graph(), "after_review": "rev-missing"},
+    )
+    assert missing["success"] is False
+    assert missing["error_code"] == "not_found"
+
+    # Refused up front: a graph is never filed ungated behind a bad review id.
+    assert await handler.db.list_tasks(project_id="p") == []
