@@ -1,61 +1,65 @@
 # CI at integration boundaries
 
-Full GitHub CI runs automatically on pull requests into `main` and on pushes to
-`aq/integration/**`, `aq/batches/**` (the Git-first train's batch candidates) and
-`aq/parent/**`. A push to `main` does not launch it, and
-neither does a push to a feature branch that has no PR. Manual testing is
-available through `workflow_dispatch`:
+This repository's [Tests workflow](../../.github/workflows/tests.yml) runs on:
+
+- Pull requests into `dev`, `staging` and `main` (opened, synchronized,
+  reopened or marked ready for review).
+- Pushes to `aq/integration/**`, `aq/batches/**`, `aq/parent/**`,
+  `aq/promote/**` and `aq/backmerge/**`.
+- Explicit `workflow_dispatch` and reusable `workflow_call` invocations.
+
+Delivery-branch pushes and feature-branch pushes without a PR do not directly
+trigger that workflow. The [delivery audit](../../.github/workflows/main-attestation.yml)
+observes pushes to `dev`, `staging` and `main`; when App attestation variables
+are configured and trusted branch attestation is absent, it invokes Tests as a
+reusable fallback. With those variables unset, no fallback CI runs. Those checks use the prefix
+`unattested-ci /`. A committed `promotion-source-audit` check set can authorize
+that evidence for promotion source admission; candidate checks and publication
+attestations retain their canonical names. See [promotion flows](promotion-flow.md).
+
+A newer push cancels obsolete Tests work on the same ref. Draft PRs wait until
+ready for review. A same-repository PR from `aq/integration/**` skips its own
+run because the branch's push already tests that head. The workflow matrix is
+the current suite inventory; it is no longer the historical four-arm layout.
+
+Manual feature testing is available through:
 
 ```bash
 gh workflow run tests.yml --ref YOUR_FEATURE_BRANCH
 ```
 
-All four required suites remain enabled. `main` only receives work that was
-tested before it landed: a PR's own run, an integration candidate that the train
-promotes by its exact tested SHA, or the development publisher's pre-publish
-validation. A promoted candidate keeps its integration run's check runs on the
-commit, so `main`'s head still shows them. The per-commit `main` run this
-replaced only repeated that work: `main` ran the suite 66 times between
-2026-09-22 and 2026-09-24, about 13 minutes each across four arms.
+A manual run is useful evidence for a person, but cannot stand in for a required
+push-event observation. Required jobs are evaluated individually on the exact
+candidate; an unrelated workflow failure does not make a successful required
+job fail. Missing, cancelled and unavailable evidence never becomes a pass.
+See [required-job settlement](../specs/design/required-job-train-settlement.md).
 
-A newer push cancels obsolete CI on the same PR or integration branch. A draft
-PR runs once it is marked ready for review. A same-repository PR from an
-`aq/integration/**` branch skips its own run, because the push to that branch
-already tests the same head. The unused GitHub merge queue trigger is removed;
-enabling GitHub's merge queue later requires restoring that trigger.
+The [candidate status workflow](../../.github/workflows/train-candidate.yml)
+posts `aq-train/candidate` after a successful Tests push run on
+`aq/integration/**` or `aq/batches/**`. The Git-first train independently
+requires its configured exact checks, reviews, branch lease and attestation
+before an expected-old fast-forward. A check run on a PR merge commit does not
+prove a different batch candidate passed.
+
+Epic checks are advisory by default. Only an enabled project playbook's
+`tables.parent_episode.required_checks` makes them a gate. This does not relax
+root or promotion checks. The retained parent verification adapter can publish
+an immutable `aq/parent/<task>/<operation-hash>/<generation>/<sha>` snapshot
+for historical parent operations; that adapter does not start a Subject runtime.
+Current epic assembly and root delivery run through the train.
 
 The [CI main sentinel](../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md)
-still judges `main`'s head from the check runs on that commit. A head that is
-not an exact tested candidate has none of its own and reads as `pending`, so the
-sentinel waits rather than filing a repair.
-
-AQ's parent verification poller publishes the assembled parent SHA to an
-immutable `aq/parent/<task>/<operation-hash>/<generation>/<sha>` snapshot ref.
-Only parents awaiting verification are selected. It does not rename the parent,
-change its contents, or alter frozen child delivery targets. This also covers a
-leaf that later becomes a parent, regardless of its original branch name.
-Retries reuse an identical remote ref; a conflicting ref is never overwritten.
-The normal authenticated observer records CI evidence against the exact parent
-operation, generation and SHA, then emits the existing verification event.
-Stale results cannot verify a newer parent generation. Snapshot refs are retained
-for audit; this change does not delete them. If a parent CI run is canceled,
-rerun it explicitly with `gh run rerun RUN_ID`; replaying an existing snapshot
-does not push another ref or silently start replacement CI.
-
-Existing task branch names remain valid; feature branches do not need renaming
-to opt out of automatic CI. `aq/feature/<task>` is the naming convention for new
-manually created feature branches. The CI boundary is the assembled snapshot,
-not the spelling of a worker's existing branch.
+observes check evidence on the configured head; a commit with no exact evidence
+remains pending. It does not treat a successful worker close as CI proof.
 
 ## Rollout to existing branches
 
-GitHub reads push workflow definitions from the pushed revision. Changing main
-alone cannot retroactively change old feature branches. Merge the workflow
-update from main into long-lived branches when their owners can safely do so.
-Already-running feature workflows may be canceled without canceling the root
-integration candidate or parent verification run. Until old branches receive
-the update, their old workflow may still start a run.
+GitHub reads push workflow definitions from the pushed revision. A workflow
+change on the default branch does not update older candidate trees. Merge the
+reviewed workflow change into a retained candidate through its authorized writer
+when necessary, then test the changed exact SHA. Replaying an unchanged ref or
+manually dispatching Tests cannot fabricate the required push run.
 
-A `pull_request` run reads the workflow from the PR's merge with `main`, so a
-PR from an old branch follows this policy as soon as it is on `main`, unless the
-branch itself edits `tests.yml`.
+Branch names do not change this rule: existing task branches remain valid, and
+`aq/feature/<task>` is a convention for manually created feature branches.
+The actual trigger list and trusted producer policy decide which CI counts.
