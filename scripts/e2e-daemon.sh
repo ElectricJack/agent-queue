@@ -34,7 +34,8 @@ running_pid() {
     # /proc is Linux/WSL; on a kernel without it, fall back to trusting the
     # pid rather than refusing to manage the daemon at all.
     if [ -r "/proc/$pid/cmdline" ]; then
-        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "src.main" || return 1
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | \
+            grep -Eq "src.main|scripts.e2e.daemon" || return 1
     fi
     echo "$pid"
 }
@@ -69,7 +70,8 @@ ready_report() {
 
 cmd_start() {
     if pid="$(running_pid)"; then
-        if ready_ok; then
+        if python3 "$REPO_ROOT/scripts/e2e/probe.py" --url "$AQ_E2E_API_URL" \
+            --quiet --timeout 10 --wait 15; then
             echo "already running (pid $pid) at $AQ_E2E_API_URL"
             return 0
         fi
@@ -102,7 +104,7 @@ cmd_start() {
     (
         cd "$REPO_ROOT"
         export PATH="$E2E_BIN:$PATH"
-        exec python3 -m src.main "$E2E_CONFIG"
+        exec python3 -m scripts.e2e.daemon "$E2E_CONFIG"
     ) >>"$E2E_LOG" 2>&1 &
     echo $! > "$E2E_PID_FILE"
 

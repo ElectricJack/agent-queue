@@ -7,7 +7,6 @@ const mutate = vi.hoisted(() => vi.fn());
 vi.mock("../../api/hooks", () => ({
   useProjects: () => ({ data: [{ id: "agent-queue", name: "Agent Queue" }] }),
   useCreateTask: () => ({ mutate, isPending: false, error: null }),
-  useProfiles: () => ({ data: [{ id: "standard-high-codex", name: "standard-high-codex" }] }),
   useIntelligenceClasses: () => ({
     data: {
       success: true,
@@ -43,39 +42,26 @@ describe("CreateTaskModal", () => {
     });
   });
 
-  it("offers Pin to this provider, unchecked and disabled until a profile is chosen", async () => {
+  it("offers no profile or pin: the router picks the route from the hints", async () => {
     render(<CreateTaskModal open onClose={vi.fn()} defaultProjectId="agent-queue" />);
-    const pin = screen.getByRole("checkbox", { name: "Pin to this provider" });
-    expect(pin).not.toBeChecked();
-    expect(pin).toBeDisabled();
+    expect(screen.queryByLabelText("Profile")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Pin to this provider" })).toBeNull();
+    expect(screen.getByText(/hint to the project's router/)).toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText("Title *"), "Pinned work");
-    await userEvent.selectOptions(screen.getByLabelText("Intelligence class *"), "fast-low");
-    await userEvent.selectOptions(screen.getByLabelText("Profile"), "standard-high-codex");
-    expect(pin).toBeEnabled();
-    expect(pin).not.toBeChecked();
-    await userEvent.click(pin);
-    await userEvent.click(screen.getByRole("button", { name: "Create Task" }));
-
-    expect(mutate.mock.calls[0]![0]).toEqual({
-      title: "Pinned work",
-      project_id: "agent-queue",
-      intelligence_class: "fast-low",
-      profile_id: "standard-high-codex",
-      pin: true,
-    });
-  });
-
-  it("sends a chosen profile without pin when the box stays unchecked", async () => {
-    render(<CreateTaskModal open onClose={vi.fn()} defaultProjectId="agent-queue" />);
-    await userEvent.type(screen.getByLabelText("Title *"), "Preferred work");
-    await userEvent.selectOptions(screen.getByLabelText("Intelligence class *"), "fast-low");
-    await userEvent.selectOptions(screen.getByLabelText("Profile"), "standard-high-codex");
+    await userEvent.type(screen.getByLabelText("Title *"), "Hinted work");
+    await userEvent.selectOptions(screen.getByLabelText("Intelligence class *"), "deep-high");
+    await userEvent.selectOptions(screen.getByLabelText("Type"), "design");
     await userEvent.click(screen.getByRole("button", { name: "Create Task" }));
 
     const body = mutate.mock.calls[0]![0];
-    expect(body.profile_id).toBe("standard-high-codex");
-    expect(body).not.toHaveProperty("pin");
-    expect(body).not.toHaveProperty("provider_intent");
+    expect(body).toEqual({
+      title: "Hinted work",
+      project_id: "agent-queue",
+      intelligence_class: "deep-high",
+      task_type: "design",
+    });
+    for (const refused of ["profile_id", "pin", "provider_intent"]) {
+      expect(body).not.toHaveProperty(refused);
+    }
   });
 });
