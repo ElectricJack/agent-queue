@@ -1,0 +1,37 @@
+{
+  "shared_definitions": {
+    "src/main.py::_validate_config_only": {
+      "baseline_span": [
+        669,
+        695
+      ],
+      "landing_span": [
+        646,
+        672
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/main.py::import from src.config import ConfigValidationError, load_config": {
+      "baseline_span": [
+        35,
+        36
+      ],
+      "landing_span": [
+        35,
+        36
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/main.py::run": {
+      "baseline_span": [
+        174,
+        519
+      ],
+      "landing_span": [
+        174,
+        511
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
