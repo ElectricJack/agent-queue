@@ -876,6 +876,8 @@ class ClaimQueryMixin:
             sessions.c.task_id.is_(None),
             sessions.c.claim_phase.is_(None),
             sessions.c.desired_state == "running",
+            sessions.c.state.in_(("starting", "running")),
+            sessions.c.ended_at.is_(None),
             func.coalesce(sessions.c.claim_refusal["retry_at"].as_float(), 0) <= now,
         ]
         if cap is not None:
@@ -910,6 +912,8 @@ class ClaimQueryMixin:
         record = _row_to_session(row)
         if took:
             return "slot", record, row["workspace_binding"]
+        if record.state not in {"starting", "running"} or record.ended_at is not None:
+            return "drain_requested", record, None
         if (record.claim_phase != "active" and record.claim_refusal
                 and record.claim_refusal["retry_at"] > now):
             return "claim_refusal", record, None
