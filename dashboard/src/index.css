@@ -249,13 +249,7 @@
 .pb-safe { padding-bottom: var(--safe-bottom); }
 .px-safe { padding-left: var(--safe-left); padding-right: var(--safe-right); }
 
-/* Touch targets: primary controls are at least 44 CSS px square in the focus
-   shell at every width, and anywhere below the compact breakpoint. Desktop
-   density elsewhere is unchanged. */
-[data-focus-shell] [data-primary-control] {
-  min-height: 44px;
-  min-width: 44px;
-}
+/* Primary controls remain usable when the shell collapses on phones. */
 @media (max-width: 767.98px) {
   [data-primary-control] {
     min-height: 44px;
@@ -269,4 +263,21 @@
     min-height: 44px;
     min-width: 44px;
   }
+}
+
+/* Detail pages contain untrusted prose, URLs and long task/session identifiers. */
+.dashboard-page {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dashboard-page :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select) {
+  min-width: 0;
+  max-width: 100%;
+}
+@media (max-width: 767.98px) {
+  .dashboard-page :where(button, select, summary, input:not([type="checkbox"]):not([type="radio"])),
+  [aria-label="Navigation"] :where(button, a) {
+    min-height: 44px;
+  }
+  .dashboard-page button { min-width: 44px; }
 }

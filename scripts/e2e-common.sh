@@ -29,8 +29,8 @@ E2E_PG_PASSWORD="${E2E_PG_PASSWORD:-agent_queue_dev}"
 E2E_DB_NAME="${E2E_DB_NAME:-agent_queue_e2e}"
 E2E_PG_BASE="${E2E_PG_USER}:${E2E_PG_PASSWORD}@${E2E_PG_HOST}:${E2E_PG_PORT}"
 # The daemon speaks asyncpg; dbsetup.py speaks plain libpq-style asyncpg.
-E2E_DB_URL="postgresql+asyncpg://${E2E_PG_BASE}/${E2E_DB_NAME}"
-E2E_ADMIN_DSN="postgresql://${E2E_PG_BASE}/postgres"
+E2E_DB_URL="${E2E_DB_URL:-postgresql+asyncpg://${E2E_PG_BASE}/${E2E_DB_NAME}}"
+E2E_ADMIN_DSN="${E2E_ADMIN_DSN:-postgresql://${E2E_PG_BASE}/postgres}"
 
 E2E_CONFIG="$AQ_E2E_HOME/config.yaml"
 E2E_VAULT="$AQ_E2E_HOME/vault"
@@ -66,4 +66,18 @@ export AQ_API_URL="$AQ_E2E_API_URL"
 
 e2e_aq() {
     "${E2E_AQ[@]}" "$@"
+}
+
+# Liveness only, for ownership/reset checks. Readiness still uses probe.py.
+# Use the declared Python runtime; the native toolchain need not contain curl.
+e2e_health_answers() {
+    python3 - "$AQ_E2E_API_URL" "${1:-10}" <<'PY'
+import sys
+import urllib.request
+try:
+    with urllib.request.urlopen(sys.argv[1] + "/api/health", timeout=float(sys.argv[2])):
+        pass
+except Exception:
+    sys.exit(1)
+PY
 }

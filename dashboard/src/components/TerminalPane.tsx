@@ -159,7 +159,7 @@ export default function TerminalPane({ title, status, tabs, primary, details, on
   </Chrome.Provider>;
 }
 
-/** Standalone/focus terminals get the same chrome; tiled terminals populate their window's header. */
+/** Standalone terminals get the same chrome; tiled terminals populate their window's header. */
 export function TerminalToolbar({ title, primary, details, standalone = false }: {
   title: string; primary: ReactNode; details: ReactNode; standalone?: boolean;
 }) {

@@ -12,7 +12,7 @@ three phones plus an Android 412×915): the phone attaches like the desktop and
 asks for history and its size back, the screen fills its host, rotation and the
 on-screen keyboard resize tmux, a touch drag scrolls the scrollback with
 momentum, typing goes over the attach, and its colours match the desktop
-terminal's. `focus-session` also covers a refused attach: the same terminal
+terminal's. `session-detail` also covers a refused attach: the same terminal
 shows the refusal and keeps input disabled.
 
 The `terminal-parity` check runs at the same four sizes and opens the **host
@@ -27,7 +27,7 @@ screenshots are the side-by-side evidence in
 
 `check:terminal-parity` runs Playwright against the same isolated production
 bundle at iPhone 14, iPhone SE and Android Pixel 7 viewports. It compares the
-host shell with the focus session, flock agent, pool instance, full session's
+host shell with the canonical session, flock agent, pool instance, session's
 Pane tab and session-peek drawer. It verifies raw keyboard input, rotation,
 visualViewport keyboard coverage, fitted PTY rows/columns and touch scrolling
 back through all 300 fixture history lines. It writes a JSON report and exact
@@ -57,7 +57,7 @@ npm -w dashboard run check:layout -- --only graph-theme,graph-cards
 
 ```bash
 npm -w dashboard run build
-npm -w dashboard run check:layout [-- --only focus-task --profiles phone-390]
+npm -w dashboard run check:layout [-- --only task-detail --profiles phone-390]
 npm -w dashboard run check:layout:selftest
 ```
 
