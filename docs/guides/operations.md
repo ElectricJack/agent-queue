@@ -64,7 +64,14 @@ Expected outcome: either the explanation identifies a task-level blocker, or the
 
 For a cross-project stall sweep, run `aq doctor --check stall.sweep` (or `aq --json doctor --check stall.sweep` for structured findings). It reads every ACTIVE project and reports old unclaimed work, completed blockers that still hold dependents, idle sessions at a prompt or usage limit, repeated session starts, stale delivery, publisher skips and errors, disabled providers with queued tasks, non-design work routed to the expensive `deep-high-claude` profile, and the validation container state. It is read-only, has no `--fix`, and caps concurrent task explanations at eight. Paths for logs, the vault, and project checkouts come from the active configuration and repository records. A `restore_branch` finding is emitted only when `task explain` names that blocker; an unclaimed dependent with no such reason is ordinary queued work.
 
+A `stranded_child` finding is a completed child of a container epic that nothing can deliver: it has a pushed branch, no pull request and no delivery receipt after fifteen minutes, and its container has no live collector — no collection episode, no live operation, no Subject walking the episode, or a container that is already terminal. Both pull-request lines require a `pr_url` to be on the row already, so a child that never got one is invisible to them; this line names which part of the container's path is missing. The close path opens such a child's pull request to the default branch itself when the container has no collector at completion time (`src/integration/stranded_children.py`); the sweep reports what that leg could not cover, such as a GitHub failure or a completion that predates the leg. Fix the container — reopen its collection or re-file the child under a collecting parent — rather than opening a second pull request for a branch the train will still collect.
+
 ## State ownership
+
+Every agent execution belongs to the flock, including global and project
+supervisors. See [Flock sessions](flock-sessions.md) for the registration
+invariant, history filters, inactive supervisor cleanup, and the
+`sessions.untracked` check included in `stall.sweep`.
 
 | State | Owner and location | What an operator may infer |
 |---|---|---|
@@ -116,15 +123,58 @@ Whether anything brings the daemon back after a reboot or a crash is `aq service
 
 ## Daemon updates
 
+`aq update --check` previews the selected code. With no deploy selection configured,
+updates keep following the installation's upstream branch. Set the operator configuration
+to select the newest stable semantic version in a tag family:
+
+```yaml
+deploy:
+  tag_glob: "v*"
+  target: main
+```
+
+`aq update --ref v0.2.0` selects one tag explicitly. Tags must exist on origin, be
+annotated, peel to a commit and be reachable from `origin/<deploy.target>`. An invalid
+selection refuses before stopping the daemon. A release install runs at a detached
+commit; `~/.agent-queue/deploy.json` records the tag, tag object, peeled commit, previous
+commit and installation time. Local edits and commits remain refusal conditions.
+`aq update --ref main` selects an unreleased branch explicitly. Older releases require
+`--allow-rollback`; this changes code while retaining the database. Schema compatibility
+is governed by the release's additive-migration checks.
+
+For a fresh bootstrap, `AQ_REF=v0.2.0` selects a tag and `AQ_TAG_GLOB='v*'` selects the
+newest matching stable version. `AQ_PROMOTION_TARGET` selects its reachability branch
+(default `main`). Without either selector the bootstrap installs `main`; an empty
+configured tag family falls back to `main` with an unreleased-install message.
+The daemon's `update_and_restart` command launches the same operator updater and reports
+its process and `~/.agent-queue/update.log`; that response indicates launch, and the log
+contains the eventual outcome.
+
 `aq start` and `aq restart` do more than replace a process, and each step is a postcondition — a failure is reported, not a reason to claim a clean start and lose it:
 
 - **Harness environment scrub.** Every `AQ_*` marker, session/DB key (`AQ_DB_SCOPE`, `AQ_DATABASE_URL`, `AGENT_QUEUE_DB`) and Claude/Code/Codex session variable is stripped from the daemon's environment before launch. This fixes the 2026-09-21 incident, where a worker's `AQ_DB_SCOPE=worker` / DB-isolation keys leaked into the daemon and made it read the wrong database and silently refuse to migrate. `aq start` warns if it detects an enclosing harness marker at call time.
-- **Database backup when not at head.** If the database is Postgres and its stamped schema does not match the checkout's Alembic head, `aq start` dumps it to `~/.agent-queue/backups/pre-deploy-<UTC>.sql` before proceeding and then exits (code 12–15) if the dump or its integrity marker is missing. When the database is already at head, no backup is taken.
+- **Database backup when not at head.** If the stamped schema does not match the checkout's Alembic head, `aq start` dumps it to `~/.agent-queue/backups/pre-deploy-<UTC>.dump` before proceeding and then exits (code 12–15) if the dump or archive inspection fails. Local and Docker clients both produce PostgreSQL custom archives, the same format as `aq db backup` and the update backup. When the database is already at head, no startup backup is taken.
+- **Startup health wait.** The CLI polls `/health` for up to 120 seconds, accepting healthy (200) and degraded (503) responses while the launched child is alive. Timeout diagnostics read only the final 64 KiB of the log, then recheck health before stopping that child. A daemon that became healthy during diagnostics is kept; an exited child fails immediately. Cleanup preserves a PID file naming another instance.
 - **`/ready` wait.** After the daemon is up, `aq start` polls `{api_base}/ready` for up to 60 seconds and reports whether the daemon is fully ready, rather than assuming a daemon that answers `/health` is also reconciling pools.
 - **Stale-worktree fix.** The daemon then runs `aq doctor --check pools.stale_worktree_checkouts --fix` to release any worktrees it now owns. A failure here is downgraded to a warning and never undoes a successful start.
 - **Start lock and stop marker.** `aq start` holds `~/.agent-queue/daemon.lock` (with its PID inside) from before the database wait to the end of these checks, and removes `~/.agent-queue/daemon.stopped`; every `aq stop` (also the stop inside `aq restart` and `aq update`) and the daemon's `shutdown` command write that marker. A stop recorded while a start is running wins: the start checks the marker again just before it spawns the daemon, and `aq stop` waits briefly for a start in progress to settle. A lock whose owner process is gone is abandoned and cleared by the next start. The auto-restart watchdog (`aq service`) reads both: it never races a start in progress and never starts a daemon that was stopped on purpose. A `daemon.pid` whose process is gone, or whose PID now belongs to another program (after a reboot), is treated as stale.
 
 All of the above is built into `aq start` and `aq restart`, so an operator update no longer needs a separate wrapper to scrub the environment, dump the database, and run the doctor step. To update, run `aq restart --no-dashboard`; do not run a plain `aq stop` then `aq start` — `aq stop` also tears down the agent tmux sessions, including the one performing the update. Verify daemon health and the supervisor's live terminal after the restart; a stored session status alone can be stale.
+
+Disaster recovery is the separate operator command `aq db restore <backup.dump>`.
+Stop the daemon and end every agent session first. Preflight checks the dump's
+Alembic revision against the checkout, prints its UTC timestamp and counts of
+newer tasks, events, durable waits, gates, operator decisions and messages. Repeat
+the timestamp with `--accept-data-loss <timestamp>` to proceed. Restore writes a
+fresh `backups/pre-restore-<UTC>.dump` before replacing archived objects in one
+transaction. `--force` overrides the live-daemon refusal; it does not override
+the agent-session or data-loss checks. See
+[backup and restore](../reference/database/migrations.md#backup-and-restore).
+
+On the PG18 install, `aq-postgres` uses the named `pgdata` volume mounted at
+`/var/lib/postgresql`, with the version-specific data directory beneath it.
+Backup and restore use the existing server; they never run Compose. Do not
+compose-up PostgreSQL using an older checkout's volume layout.
 
 ## Symptom-to-command troubleshooting
 
@@ -139,6 +189,7 @@ All of the above is built into `aq start` and `aq restart`, so an operator updat
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | `aq doctor --check integration.stale_schedule`; `aq integration clear-stale-request PROJECT` (dry run) | the outstanding request's batch ended (aborted, empty, gone, or promoted without its lease) vs. a live batch or an undelivered `sweep_due` | The scheduler frees a `stale` request on its next pass; `--fix` or `clear-stale-request --apply --request-id ID --reason ...` frees it now. A `blocked` verdict names unresolved write evidence to settle first. See [A train never sweeps](integration-troubleshooting.md#a-train-never-sweeps). |
 | A train root is `COMPLETED` but has no PR and never enters a batch | `aq integration redrive-root TASK` (dry run) | a childless or verified root whose PR was never opened vs. an unverified epic, a head already on `main`, or a moved branch | The daemon opens a missing root PR on its own within minutes; `redrive-root --apply --head SHA --reason ...` opens it now for the reported head. Report `blocked` and `nothing_to_redrive` verdicts. See [A completed root has no pull request](integration-troubleshooting.md#a-completed-root-has-no-pull-request). |
 | A train epic stalls: a child is `COMPLETED`, the parent stays `PAUSED`, siblings sit `READY` and are never claimed | `aq doctor --check integration.stuck_children`; `aq integration redrive-child TASK` (dry run) | a child whose published head the collector could not prove (moved or unpublished branch) vs. one held by a reviewer's rejection or open review, a no-code child, or a parent not collecting | The collector records completion evidence on its own for a child whose head proves out; `redrive-child --apply --head SHA --reason ...` records it now and queues the parent's collection. Report `blocked` verdicts. See [A completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled). |
+| A train epic's parent stays `PAUSED`; `redrive-child` says "no live collection operation" | `aq integration reopen-collection PARENT` (dry run) | the parent's collection operation was cancelled (`cancel-preserving`) vs. an unresolved push, a live or unsettled writer, a hold, or a moved branch | `reopen-collection --apply --head SHA --reason ...` reactivates the operation in its episode, reclaims the collector fence and opens a fresh repair stage for the one current conflict. Report `ambiguous`/`blocked` verdicts. See [A parent's collection was cancelled](integration-troubleshooting.md#a-parents-collection-was-cancelled). |
 | A delivered branch is never cleaned up; cleanup names `integration owner … is reserved` | `aq doctor --check integration.finished_branch_owners` | an ownership row left behind for a task that finished, was archived or was deleted after the project left the hierarchy modes (nothing in development mode releases one) | Run it through the daemon: `--fix` releases only rows whose task is finished or gone, in a repository no hierarchy/train project integrates, with nothing live naming the task or branch and — for an attached writer — the session provider's stop proof. It changes the ownership row only and records an `integration.branch_owner_released` event per row. Re-run the check; kept rows name their blocker. |
 | A branch discard or cleanup is parked | `aq doctor --check integration.branch_discards`; `aq integration status PROJECT` | remote deletion failure vs active ownership | The check's `--fix` only re-arms its durable pending discard; the next drain re-derives head and ownership. Verify status; manually delete a remote ref only when the evidence says it is no longer owned. |
 | Dashboard says disconnected or charts stop | browser network/WebSocket diagnostics; `/health`; `/ready`; inspect the Metrics tab and `GET /api/metrics/series` | browser/WebSocket break, disabled sampler, daemon readiness failure, or absent retained history | Reconnect the browser after checking endpoint status. If history exists but live updates do not, investigate the connection. If the sampler is disabled by configuration, enable it through the approved configuration workflow and verify a new `metrics.tick`; do not invent missing historical points. |
@@ -225,6 +276,14 @@ AQ routes standard-library logging through structured logging. Console formats a
 When collecting an incident, filter or preserve correlation fields where present: `task_id`, `project_id`, `cycle_id`, `component`, `hook_id`, `agent_id`, and `command`. They are bound through async work and make it possible to join a doctor finding, a task, a session and a daemon event without guessing from timestamps.
 
 ## What doctor fixes — and what it will not do
+
+`aq doctor --check playbooks.orphaned_runs` reports V2 runs left executing by a
+previous daemon with no driver in the current process. Startup and each playbook
+cycle recover bounded pages automatically. The check names the run, playbook,
+step and lifecycle; it is read-only. Recovery replays safe commands with their
+existing attempt keys, preserves waits and loop frames, and pauses ambiguous
+external effects for an operator decision. A paused run is outside this check:
+its wait or decision owns resumption. Disabling playbooks also pauses recovery.
 
 `aq doctor --fix` selects only checks that declared a fix and returned `warn` or `error`, then reruns them. It is not a general "repair the system" button. Prefer `--check ID --fix` during an incident so the intended mutation is obvious.
 

@@ -64,7 +64,7 @@ def conversation_preconditions(
         unmet.append("no_channel")
     if not config.messages.enabled:
         unmet.append("messages_disabled")
-    # How the daemon cold-starts ``supervisor-global`` (src/messages/session_lens.py).
+    # Conversation inputs use the enabled session delivery mechanism.
     if not config.sessions.enabled:
         unmet.append("sessions_disabled")
     if cutover_status != "complete":

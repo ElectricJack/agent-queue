@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.git.manager import repository_urls_match
 from src.reports.authoring import surface_map
 from src.reports.git import read_git_evidence
 from src.reports.hourly import MAX_BRIEF_BYTES, hash_brief
@@ -70,26 +71,46 @@ def _tests(row: dict) -> list[str]:
     )
 
 
-def _repository(project: dict, sources: dict) -> tuple[tuple[str, ...], str, str] | None:
+async def _repository(
+    project: dict, sources: dict, git: Any
+) -> tuple[tuple[str, ...], str, str] | None:
     """Checkout paths to try, default branch and repository id for *project*.
 
     The configured repository's own path comes first. Development clone rows
-    carry no path and a linked source can move, so the project's one
-    project-repo base workspace, which its worktrees come from, follows.
+    carry no path and a linked source can move, so a verified project-repo
+    base workspace, which its worktrees come from, follows.
     """
     bases = [
-        row["workspace_path"]
+        row
         for row in sources.get("workspaces", [])
         if row["project_id"] == project["id"]
         and (row.get("kind_id") or "project-repo") == "project-repo"
     ]
-    base = tuple(bases) if len(bases) == 1 else ()
     candidates = [row for row in sources.get("repos", []) if row["project_id"] == project["id"]]
     selected_id = project.get("integration_repository_id")
     if selected_id:
         candidates = [row for row in candidates if row["id"] == selected_id]
     elif len(candidates) > 1:
         candidates = [row for row in candidates if row["url"] == project.get("repo_url")]
+    if len(bases) > 1:
+        configured_url = (
+            candidates[0].get("url") if len(candidates) == 1 else project.get("repo_url")
+        )
+        if not configured_url:
+            return None
+        for row in bases:
+            path = row["workspace_path"]
+            remote_url = await git.aget_remote_url(path)
+            if not remote_url or not repository_urls_match(configured_url, remote_url, base=path):
+                return None
+        bases.sort(
+            key=lambda row: (
+                row.get("name") != f"{project['id']}-primary",
+                row["workspace_path"],
+            )
+        )
+        bases = bases[:1]
+    base = tuple(row["workspace_path"] for row in bases)
     if len(candidates) == 1:
         repo = candidates[0]
         path = repo["source_path"] if repo["source_type"] == "link" else repo["checkout_base_path"]
@@ -187,6 +208,12 @@ def _fit_brief(brief: dict) -> None:
         }
         for project_id, observed in brief["git"].items()
     }
+    # Reminder rows survive every day, but may not crowd all evidence out of
+    # the bounded brief. Keep their total and explicitly count omitted rows.
+    reminders = brief.get("waiting_on_you", {})
+    while _size(brief) > MAX_BRIEF_BYTES and reminders.get("items"):
+        reminders["items"].pop()
+        reminders["more"] += 1
     facts = [{**fact, "detail": _compact(fact["detail"])} for fact in brief["facts"]]
     members = {
         project["id"]: {group: project[group] for group in _GROUPS} for project in brief["projects"]
@@ -237,6 +264,7 @@ async def collect_morning_evidence(
     window: dict,
     now: float,
     project_ids: tuple[str, ...] | None = None,
+    channel_id: str | None = None,
     previous_heads: dict[str, str] | None = None,
     reported_keys: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
@@ -247,7 +275,8 @@ async def collect_morning_evidence(
     proposed cursor. No model, reservation, message, transport, or file write.
     """
     snapshot = await db.collect_morning_report_sources(
-        since=window["replay_since"], until=window["until"], project_ids=project_ids
+        since=window["replay_since"], until=window["until"], project_ids=project_ids,
+        **({"channel_id": channel_id} if channel_id is not None else {})
     )
     sources = snapshot["sources"]
     gaps = list(snapshot["gaps"])
@@ -259,7 +288,7 @@ async def collect_morning_evidence(
     git_reads: dict[str, dict] = {}
     for project in project_rows:
         project_id = project["id"]
-        repo = _repository(project, sources)
+        repo = await _repository(project, sources, git)
         if repo is None:
             git_reads[project_id] = {
                 "head": None,
@@ -398,6 +427,11 @@ async def collect_morning_evidence(
                 "unresolved": row["status"] in ("FAILED", "BLOCKED"),
             },
         )
+    for row in sources.get("asks", []):
+        add("ask", row, at=float(row["updated_at"]), detail={
+            "summary": row["context"].get("title", ""), "severity": row["severity"],
+            "unresolved": True, "ask_id": row["id"],
+        })
     for row in sources.get("escalations", []):
         add(
             "escalation",
@@ -407,7 +441,7 @@ async def collect_morning_evidence(
                 "state": row["state"],
                 "severity": row["severity"],
                 "summary": row["summary"][:1000],
-                "unresolved": row["state"] in ("needs_human", "reply_received", "resolving"),
+                "unresolved": row["state"] == "needs_human",
             },
         )
     for row in sources.get("attempts", []):
@@ -481,7 +515,7 @@ async def collect_morning_evidence(
                 "failures": [
                     fact["key"]
                     for fact in local_facts
-                    if fact["source"] in ("incident", "escalation", "attempt")
+                    if fact["source"] in ("incident", "escalation", "ask", "attempt")
                     or fact["detail"].get("outcome") == "fail"
                 ],
             }
@@ -489,6 +523,12 @@ async def collect_morning_evidence(
     brief = {
         "version": 1,
         "kind": "morning",
+        "needs_you": snapshot.get("needs_you", {"count": None, "source_health": "refreshing"}),
+        "waiting_on_you": {
+            "items": snapshot.get("waiting_on_you", [])[:10],
+            "count": len(snapshot.get("waiting_on_you", [])),
+            "more": max(0, len(snapshot.get("waiting_on_you", [])) - 10),
+        },
         "window": window,
         "facts": facts,
         "projects": project_briefs,
@@ -517,7 +557,7 @@ async def collect_morning_evidence(
         "omitted": {"facts": 0},
     }
     _fit_brief(brief)
-    has_changes = bool(brief["facts"])
+    has_changes = bool(brief["facts"]) or brief["waiting_on_you"]["count"] > 0
     would_suppress = not has_changes and brief["coverage"]["complete"]
     return {
         "brief": brief,
