@@ -52,8 +52,9 @@ from src.models import Project, SessionRecord, Task
 _ID_KEYS = ("task_id", "project_id", "session_id")
 
 #: In-set commands with no entry in the tool-definition registry.  Asserted as
-#: an exact equality so the exemption cannot quietly grow.
-_NO_DEFINITION = {"prime", "session_drain_ack"}
+#: an exact equality so the exemption cannot quietly grow.  ``read_file`` is
+#: registered by the aq-files plugin, not the built-in registry.
+_NO_DEFINITION = {"prime", "read_file", "session_drain_ack"}
 
 #: ``message_inbox`` addresses a mailbox by ``to_kind``/``to_id``, so it has
 #: no ID-triple property in its schema — the plan's floor listed it, but the

@@ -1,5 +1,30 @@
 # Wait outcome integration contract
 
+## Terminal owners and refused deadlines — 2026-10-22
+
+Terminal task source events retire the owner's waits through the shared
+archive/deletion retirement path: cancel pending outcomes and outstanding
+deadlines, clear edges, withdraw incidents, and cancel continuations and
+reservations without sending a wake. This includes scheduler waits and retracts
+the terminal owner's downstream priority donations. The listener reobserves the
+current task under graph/component locks, so a delayed terminal event cannot cancel a reopened
+attempt. Deadline firing repeats this retirement check to recover old terminal
+owners even when their source event has already been consumed.
+
+A permanent owner/request refusal quarantines only that deadline by setting
+`cancelled_at`. The service records `wait.deadline_quarantined` with the exact
+refusal and sends one durable project-supervisor notice in the same leased
+transaction. It then removes the heap entry and processes later deadlines.
+Unavailable infrastructure, lost leases and unknown errors remain retryable and
+must not be marked fired or permanently cancelled.
+
+`aq wait cancel <wait-id>` also lets a live project supervisor or local operator
+cancel an orphaned task wait before escalation. A failed owner fence is required;
+the transaction retires only that wait, its deadlines, edges, incidents and
+continuations. It preserves resolved outcomes, any replacement claim and its
+task-level reservations, and never pauses or wakes the task. Worker cancellation
+continues to require the exact live holder.
+
 ## Resume recovery correction — 2026-10-21
 
 Continuation maintenance runs independently of the source listener and main

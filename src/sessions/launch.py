@@ -61,6 +61,17 @@ async def launch_session(
     That path verifies the committed registration rather than inserting twice.
     The caller owns token/workspace rollback and provider failure attribution.
     """
+    if record.project_id:
+        from src.projects.storage_binding import read_binding
+
+        binding = await read_binding(db, record.project_id, conn=conn)
+        if binding is not None:
+            env = {key: value for key, value in spec.env.items()
+                   if key not in {"CCACHE_DIR", "SCCACHE_DIR"}}
+            cache = binding.get("cache")
+            if cache:
+                env["CCACHE_DIR" if cache["kind"] == "ccache" else "SCCACHE_DIR"] = cache["dir"]
+            spec = replace(spec, env=env)
     key = (id(db), record.id)
     if key in _launching:
         raise ValueError("session launch is already in progress")
