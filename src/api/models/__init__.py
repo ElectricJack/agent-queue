@@ -49,7 +49,9 @@ class TaskBrief(BaseModel):
 def _category_modules() -> tuple[object, ...]:
     from src.api.models import (
         agent,
+        ask,
         collaboration,
+        cron,
         dashboard,
         decision,
         digest,
@@ -58,15 +60,18 @@ def _category_modules() -> tuple[object, ...]:
         files,
         gate,
         git,
+        integration,
         mcp,
         memory,
         message,
         object_loop,
+        operator,
         playbook,
         graph,
         playbook_v2,
         plugin,
         project,
+        policy,
         project_onboarding,
         review,
         report,
@@ -85,12 +90,16 @@ def _category_modules() -> tuple[object, ...]:
     return (
         test_selection,
         task,
+        cron,
         project,
+        policy,
         project_onboarding,
         review,
         agent,
+        ask,
         dashboard,
         git,
+        integration,
         memory,
         files,
         system,
@@ -115,6 +124,7 @@ def _category_modules() -> tuple[object, ...]:
         job,
         knowledge,
         records,
+        operator,
     )
 
 

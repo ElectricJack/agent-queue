@@ -53,13 +53,15 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   a shipped profile or skill changes nothing on an existing install. `aq doctor --check
   profiles.system_drift` / `skills.installed_drift` name the gap; `aq agent
   profile-reseed --profile-id <id> --grants-only` merges new grants without clobbering
-  operator edits. The exception is the supervisor's `## Capabilities`: the daemon merges
+  operator edits. The exceptions are the supervisor and worker templates' `## Capabilities`: the daemon merges
   shipped grants its vault copy lacks on every start and profile reload, additively
   (`src/profiles/capability_sync.py`; frontmatter `capability_sync: false` opts out).
 - **Reviewed playbook bundles** (`tests/fixtures/playbooks/v2/<id>/`): after editing, run
   `scripts/rebuild-reviewed-playbook-artifacts.py`, update the `manifest.md` digests, and
-  copy the bundle to `src/prompts/reviewed_playbooks/<id>/` — the only path an install
-  imports from.
+  review the recorded inputs in `tests/fixtures/generated_sources/playbooks/<id>/`.
+  The authoring command refreshes the fixture and shipped copies; assembly uses
+  `scripts/generate-recorded-artifacts.py` to project these approved inputs unchanged.
+  `src/prompts/reviewed_playbooks/<id>/` is the only path an install imports from.
 - **Import the `.aq/claim.json` helpers from `src/claim_file.py`**, never from
   `src.commands.claim_commands`, or `src.sessions` and `src.commands` form an import cycle.
 - **`openapi.json` and both API clients are generated.** After any change to
@@ -129,10 +131,11 @@ agent on the machine. Rationale and the baseline workflow:
   failure never fails your task and never justifies weakening or skipping a test; name it
   in the close summary. Task authors specify focused and area checks, never "run the full
   suite before closing".
-- **Adding or moving a test module:** `python scripts/generate-selection-catalogue.py` and
-  commit `tests/selection_catalogue.json`; a new module must match an area in
-  `tests/selection_areas.yaml`, and a new file outside an owned path needs a rule in
-  `tests/selection_rules.yaml` (`tests/test_selection_catalogue.py` names what is missing).
+- **Adding or moving a test module, or changing its `src` imports:** run
+  `python scripts/generate-selection-catalogue.py` and commit `tests/selection_catalogue.json`;
+  a new module must match an area in `tests/selection_areas.yaml`, and a new file outside an
+  owned path needs a rule in `tests/selection_rules.yaml` (`tests/test_selection_catalogue.py`
+  names what is missing). Naming a test file whose catalogue entry is stale is a usage error.
 - **Swarm end to end:** after any change to claims, pools, formulas, the task hierarchy or
   provider failover, run `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` (real daemon,
   real PostgreSQL, no LLM, ~8 min) — [docs/guides/e2e-swarm.md](docs/guides/e2e-swarm.md).
@@ -188,6 +191,10 @@ only. In a worktree slot never run `alembic upgrade`, `alembic stamp` or `aq sta
 
 ## Restarting after an update
 
+For tag deployments, configure `deploy.tag_glob` and `deploy.target` in operator config,
+then run `aq update` (or `aq update --ref <tag>`). It validates annotated tags and records
+the detached deployment in `~/.agent-queue/deploy.json`; no selection keeps branch updates.
+
 Use `aq restart --no-dashboard`: it preserves agent sessions, the updating supervisor's
 included, so the daemon re-adopts them. **Never plain `aq stop` then `aq start` for an
 update** — `aq stop` kills every agent tmux session. If a stopped phase is needed:
@@ -204,6 +211,9 @@ this lets a worker session manage the daemon.
 - Publish before you close: `aq git push`, then `aq task close <id> --outcome pass|fail
   --summary "..."`, recording each check with `--test` / `--command`. Never push main or
   merge yourself.
+- **Never edit the daemon's live checkout**, the operator's main clone that the daemon
+  runs from. Work in a worktree. Uncommitted edits there make every auto-deploy skip
+  (2026-10-14: about 17 hours of skipped deploys).
 - Operator surfaces (`aq task list`, `aq doctor`, `aq session …`) answer `out of scope`
   to a worker token; that is scope, not a bug. The normative policy for admitting,
   delivering and recovering work is [docs/concepts/factory-policy.md](docs/concepts/factory-policy.md).

@@ -1,8 +1,9 @@
-"""Physical-line ownership, table and no-hidden-journal integration ratchets.
+"""Physical-line ownership and table integration ratchets.
 
 During replacement the *fixed* recorded baseline permits 15,000 overlapping
-lines. Set the manifest phase to s4_modules when retiring the legacy modules;
-that immediately enforces the final caps, with no allowance to carry forward.
+lines, plus the explicitly recorded one-time batch exception. Set the manifest
+phase to s4_modules when retiring the legacy modules; that immediately enforces
+the final caps, with no allowance to carry forward.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import runpy
+import sys
 
 import pytest
 
@@ -55,23 +58,8 @@ def test_fixed_baseline_and_allowance(manifest):
             ownership.FINAL_TABLE_CAP, ownership.TARGET_TABLES) == (11_999, 19_999, 10, 5)
 
 
-def test_integration_owned_surface_is_inventoried(report):
-    assert report["unknown"] == [], (
-        "Uninventoried integration-owned definitions; review and add ownership, "
-        "never raise the baseline:\n" + "\n".join(report["unknown"])
-    )
-
-
 def test_integration_size_and_table_budget(report, manifest):
     assert ownership.budget_errors(report, manifest) == []
-
-
-def test_no_new_metadata_or_operation_event_journal(report):
-    assert report["unknown_sinks"] == [], (
-        "Unreviewed task metadata/op_events/audit writer; classify ordinary state "
-        "versus forbidden ref replay/duplicate lifecycle in the manifest:\n"
-        + "\n".join(report["unknown_sinks"])
-    )
 
 
 def test_pinned_table_predicate_names_all_45(manifest):
@@ -85,7 +73,19 @@ def test_pinned_table_predicate_names_all_45(manifest):
 
 
 def test_replacement_adds_no_new_integration_storage_category(report, manifest):
-    assert report["tables"].keys() <= manifest["baseline"]["tables"].keys(), (
+    # The approved author-close category remains visible and charged. No
+    # unreviewed category inherits this exact feature disposition.
+    assert manifest["storage_dispositions"] == {
+        "integration_close_attempts": {
+            "task": "stark-willow-95.15",
+            "authority": "Approved fast-smooth-integration section 5 and current task close "
+                         "contract, 2026-10-21",
+            "purpose": "Version-fenced retained author candidate and wait evidence, never delivery "
+                       "truth. Additive table charged; no cap increase.",
+        },
+    }
+    approved = set(manifest["storage_dispositions"]) if manifest["phase"] == "transition" else set()
+    assert report["tables"].keys() <= manifest["baseline"]["tables"].keys() | approved, (
         "Replacement reshapes the existing five tables; a renamed journal or "
         "new storage category needs a design disposition, not unused table allowance."
     )
@@ -102,7 +102,7 @@ def test_inventory_covers_named_shared_surfaces(report, manifest):
         "src/tools/definitions.py", "dashboard/src/components/EpicDelivery.tsx",
         "dashboard/src/components/epicDeliveryFormat.ts",
         "dashboard/src/pages/TaskDetail.tsx",
-        "src/prompts/reviewed_playbooks/root-train/source.md",
+        "src/prompts/integration_playbooks/root-train.md",
     }
     assert required <= report["spans"].keys()
     assert all(manifest["exclusions"].values())
@@ -119,7 +119,9 @@ def test_recorded_ownership_report_and_landing_delta(manifest):
     assert recorded["complete_baseline"] == manifest["baseline"]
     assert recorded["actual_landing"] == manifest["landing"]
     assert recorded["shared_definitions"] == manifest["shared"]
-    assert recorded["transition"]["owned_total_cap"] == 155_499
+    assert recorded["transition"]["original_owned_total_cap"] == 155_499
+    assert recorded["transition"]["owned_total_cap"] == ownership.transition_owned_cap(manifest)
+    assert recorded["transition"]["batch_exception"] == manifest["transition_exception"]
     assert recorded["transition"]["expires_at"] == "s4_modules"
     assert recorded["landing_delta"]["owned_lines"] == -2_431
     assert recorded["landing_delta"]["remaining_owned_allowance"] == 17_431
@@ -215,6 +217,10 @@ def test_unknown_owned_definitions_fail_coverage(tmp_path, text):
     "from src.database.tables import task_metadata as hidden\n"
     "def replay(conn):\n    conn.execute(insert(hidden).values(key='ref_updates'))\n",
     "def replay(conn):\n    conn.execute(text('INSERT INTO op_events VALUES (1)'))\n",
+    "def replay(conn):\n    conn.execute(insert(system_config).values(key='ref_updates'))\n",
+    "from src.database.tables import system_config as hidden\n"
+    "def replay(conn):\n    conn.execute(update(hidden).values(value='replay'))\n",
+    "def replay(conn):\n    conn.execute(text('DELETE FROM system_config'))\n",
     "from src.database.tables import events as hidden\n"
     "def replay(conn):\n    conn.execute(insert(hidden).values(payload='ref_updates'))\n",
 ])
@@ -286,9 +292,59 @@ def test_renamed_owned_table_cannot_hide_from_table_budget(tmp_path):
     assert "ref_updates" in ownership.inventory(tmp_path, manifest)["tables"]
 
 
+def test_generic_table_in_mixed_import_keeps_integration_schema_charged(tmp_path):
+    manifest = _fixture_manifest(tmp_path)
+    _write(tmp_path, "src/database/tables.py",
+           'human_asks = Table("human_asks", metadata)\n'
+           'integration_subjects = Table("integration_subjects", metadata)\n')
+    _write(tmp_path, "src/integration/use.py",
+           "from src.database.tables import human_asks, integration_subjects\n"
+           "def apply():\n    return human_asks, integration_subjects\n")
+    manifest["generic_dependencies"] = {
+        "src/database/tables.py::human_asks": "Shared human decision evidence.",
+    }
+    manifest["shared"] = {"src/database/tables.py::integration_subjects": {}}
+    result = ownership.inventory(tmp_path, manifest)
+    assert result["unknown"] == []
+    assert set(result["tables"]) == {"integration_subjects"}
+    assert result["spans"]["src/database/tables.py"] == [2]
+    assert result["spans"]["src/integration/use.py"] == [1, 2, 3]
+
+
+def test_human_ask_evidence_keeps_source_authority_charged(report, manifest):
+    for name in ("human_asks", "ask_decision_previews", "ask_decisions"):
+        assert f"src/database/tables.py::{name}" in manifest["generic_dependencies"]
+        assert name not in report["tables"]
+    path = "src/asks/sources.py"
+    source = ownership.python_source(path, (ROOT / path).read_bytes())
+    units = {unit.name: unit for unit in source.units}
+    for name in ("IntegrationAdapter", "authorize_source"):
+        assert f"{path}::{name}" in manifest["shared"]
+        assert set(range(units[name].start, units[name].end + 1)) <= set(report["spans"][path])
+
+
+def test_ingest_storage_keeps_outbox_adapter_charged(report, manifest):
+    for name in ("ingest_batches", "ingest_batch_members", "ingest_batch_receipts"):
+        assert f"src/database/tables.py::{name}" in manifest["generic_dependencies"]
+        assert name not in report["tables"]
+    path = "src/integration/outbox.py"
+    source = ownership.python_source(path, (ROOT / path).read_bytes())
+    adapter = next(unit for unit in source.units if unit.name == "enqueue_batch_event")
+    assert set(range(adapter.start, adapter.end + 1)) <= set(report["spans"][path])
+    assert "integration_outbox" in report["tables"]
+
+
+def test_operator_decision_storage_keeps_stack_authorization_charged(report, manifest):
+    assert "src/database/tables.py::operator_decisions" in manifest["generic_dependencies"]
+    assert "operator_decisions" not in report["tables"]
+    path = "src/integration/stacked_branches.py"
+    assert report["spans"][path] == list(range(1, (ROOT / path).read_bytes().count(b"\n") + 1))
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"
+    copy.pop("transition_exception", None)
     baseline = copy["baseline"]
     result = {"groups": {"engine": baseline["groups"]["engine"] + 15_001},
               "total": baseline["total"] + 15_001,
@@ -300,6 +356,152 @@ def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy["baseline"]["total"] += 99_999
     copy["baseline"]["groups"]["engine"] += 99_999
     assert ownership.budget_errors(result, copy) == errors
+
+
+def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest):
+    exception = manifest["transition_exception"]
+    assert exception == ownership.TRANSITION_BATCH_EXCEPTION
+    assert exception["original_owned_total_cap"] == 155_499
+    measured = exception["measured_owned_total"]
+    assert measured == report["total"]
+    assert exception["measured_engine_lines"] == report["groups"]["engine"]
+    assert exception["measured_table_count"] == len(report["tables"])
+    assert exception["storage_categories"] == ["integration_close_attempts"]
+    assert exception["delta"] == measured - 155_499
+    assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
+        1_293, 2_166,
+    ]
+    assert exception["batch_measured_delta"] == measured - 158_958
+    grant, = exception["supplemental_grants"]
+    assert grant["task_id"] == "fresh-apex-30"
+    assert grant["approval_message_id"] == "msg-4e25c0d3"
+    assert grant["authorized_delta"] == 5
+    assert grant["prior_owned_total_cap"] + grant["authorized_delta"] == 160_825
+    assert grant["measured_owned_total"] == 160_825
+    amendments = {item["task_id"]: item for item in exception["amendments"]}
+    assert set(amendments) == {
+        "solid-impact-56", "agile-beacon-80", "nimble-torrent-12", "prime-impact-40",
+        "quick-pinnacle-97",
+        "stark-beacon-94",
+    }
+    amendment = amendments["solid-impact-56"]
+    assert amendment["task_id"] == "solid-impact-56"
+    assert amendment["authorized_owned_delta"] == 17
+    assert grant["measured_owned_total"] + amendment["authorized_owned_delta"] == 160_842
+    merged = exception["merge_measurement"]
+    assert merged["task_id"] == "fresh-apex-30"
+    assert merged["approval_message_id"] == "msg-a10c7ab8ff2946f8b1f27528a407524c"
+    assert merged["decision_id"] == "size-cap-delegation-2026-10-23"
+    assert merged["authorized_owned_delta"] == grant["authorized_delta"] == 5
+    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == 160_884
+    assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]
+            == 85_321)
+    composition = exception["batch_composition"]
+    assert composition["source_revision"] == exception["measured_source_revision"]
+    assert set(composition["member_sources"]) == {
+        "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
+        "quick-pinnacle-97",
+        "stark-beacon-94",
+    }
+    assert composition["base_revision"] == merged["dev_source_revision"]
+    assert composition["base_owned_total"] == merged["dev_owned_total"]
+    assert composition["base_engine_lines"] == merged["dev_engine_lines"]
+    assert composition["approved_deltas"] == {
+        "fresh-apex-30": {"owned": 5, "engine": 5},
+        "agile-beacon-80": {"owned": 65, "engine": 65},
+        "nimble-torrent-12": {"owned": 1, "engine": 0},
+        "prime-impact-40": {"owned": 103, "engine": 82},
+        "quick-pinnacle-97": {"owned": 28, "engine": 28},
+        "stark-beacon-94": {"owned": 21, "engine": 21},
+    }
+    # Keep historical member measurements separate from the combined exact grant.
+    orphan_launch = amendments["quick-pinnacle-97"]
+    assert orphan_launch["previous_owned_total"] == 161_053
+    assert orphan_launch["measured_owned_total"] == 161_081
+    assert orphan_launch["measured_engine_lines"] == 85_496
+    assert orphan_launch["measured_table_count"] == 45
+    assert orphan_launch["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert orphan_launch["decision_message_id"] == "msg-e2dd5a423516458eb564e745a12ab30e"
+    assert orphan_launch["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1884"
+    for task_id in ("agile-beacon-80", "nimble-torrent-12", "prime-impact-40", "quick-pinnacle-97"):
+        grant_delta = composition["approved_deltas"][task_id]
+        assert grant_delta["owned"] == amendments[task_id]["authorized_owned_delta"]
+        assert grant_delta["engine"] == amendments[task_id]["authorized_engine_delta"]
+        assert amendments[task_id]["decision_message_id"] in exception["decision_message_ids"]
+    assert composition["base_owned_total"] + sum(
+        delta["owned"] for delta in composition["approved_deltas"].values()
+    ) == measured
+    assert composition["base_engine_lines"] + sum(
+        delta["engine"] for delta in composition["approved_deltas"].values()
+    ) == exception["measured_engine_lines"]
+    repair = amendments["stark-beacon-94"]
+    assert repair["decision_id"] == "size-cap-delegation-2026-10-23"
+    assert repair["operator_decision"] == "6679052c"
+    assert repair["operator_task"] == "sharp-cascade-53"
+    assert repair["pr_url"] == "https://github.com/ElectricJack/agent-queue/pull/1817"
+    assert repair["previous_owned_total"] + repair["authorized_owned_delta"] == 161_074
+    assert (repair["previous_engine_lines"] + repair["authorized_engine_delta"]
+            == 85_489)
+    assert repair["previous_table_count"] + repair["authorized_table_delta"] == 45
+    assert repair["measured_source_revision"] == "24d081eecf0c00a912a064e37ba616334382e263"
+    assert ownership.transition_owned_cap(manifest) == measured
+    too_large = {**report, "total": measured + 1}
+    assert ownership.budget_errors(too_large, manifest) == [
+        f"owned total: {measured + 1:,} exceeds {measured:,} in transition",
+    ]
+    # Changing the historical snapshot still cannot enlarge the exception.
+    copy = deepcopy(manifest)
+    copy["baseline"]["total"] += 99_999
+    assert ownership.budget_errors(too_large, copy) == ownership.budget_errors(too_large, manifest)
+    copy.pop("transition_exception")
+    assert ownership.transition_owned_cap(copy) == 155_499
+    assert ownership.budget_errors({**report, "total": measured}, copy) == [
+        f"owned total: {measured:,} exceeds 155,499 in transition",
+    ]
+    # The exception is an upper bound: later genuine reductions still pass.
+    assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("batch_id", "another-batch"),
+    ("decision_message_id", "another-decision"),
+    ("measured_source_revision", "another-source"),
+    ("delta", 1_294),
+    ("measured_owned_total", 156_793),
+    ("original_owned_total_cap", 155_500),
+])
+def test_batch_exception_cannot_be_reused_or_enlarged(manifest, field, value):
+    copy = deepcopy(manifest)
+    copy["transition_exception"][field] = value
+    assert ownership.budget_errors({}, copy) == ["unapproved integration transition exception"]
+
+
+@pytest.mark.parametrize("phase", ["transition", "s4_modules", "final"])
+def test_cutover_evidence_uses_the_enforced_caps(manifest, report, monkeypatch, phase):
+    copy = deepcopy(manifest)
+    copy["phase"] = phase
+    monkeypatch.setattr(ownership, "load_manifest", lambda: copy)
+    monkeypatch.setattr(ownership, "inventory", lambda *_: report)
+    monkeypatch.setitem(sys.modules, "integration_ownership", ownership)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    script = runpy.run_path(str(ROOT / "scripts/integration-cutover-evidence.py"))
+    result = script["ownership"]()
+    assert result["budget_errors"] == ownership.budget_errors(report, copy)
+    transition = phase == "transition"
+    assert result["owned_cap_in_phase"] == (
+        ownership.transition_owned_cap(copy) if transition else 19_999)
+    assert result["engine_cap_in_phase"] == (97_627 if transition else 11_999)
+    assert result["table_cap_in_phase"] == (45 if transition else 10)
+    assert result["transition_exception"] == (copy["transition_exception"] if transition else None)
+    ledger = json.loads((ROOT / "docs/gates/git-first-cutover/ledger.json").read_text())
+    ledger["ownership"] = result
+    rendered = script["render"](ledger)
+    if transition:
+        assert f"{ownership.transition_owned_cap(copy):,} transition cap" in rendered
+        assert copy["transition_exception"]["decision_message_id"] in rendered
+    else:
+        assert f"19,999 {phase} cap" in rendered
+        assert "one-time batch exception: none" in rendered
 
 
 @pytest.mark.parametrize("phase", ["s4_modules", "final"])
