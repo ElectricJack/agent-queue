@@ -1,0 +1,7 @@
+{
+  "exclusions": {
+    "src/waits/adapters/legacy_escalation.py::authorise": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/waits/adapters/legacy_escalation.py::bind": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/waits/adapters/legacy_escalation.py::execute_mutation": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged."
+  }
+}
