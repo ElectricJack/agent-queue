@@ -136,8 +136,15 @@ Both flags are repeatable and both are refused when git already proves the work
 (the ordinary backfill then records that proof instead), when the task is not
 `COMPLETED`, or when `--apply` has no nonblank `--reason`. A container with no
 branch of its own is decided the same way; `--abandon-epic` is the same decision
-by name for a container, and refuses a task with no children. Nothing is deleted;
-removing the rows restores the previous state.
+by name for a container, and refuses a task with no children. By default, apply
+queues their branches for retirement (verified backup, then deletion).
+
+Add `--keep-branch` to preview and apply when the abandoned source branches must
+remain. The report includes `keep_branch: true`; the recorded decision includes
+`[branches: keep]`, and no retirements are queued for the selected tasks or their
+undelivered descendants. The train still honours the `abandoned` rows. This option
+requires an abandon flag, excludes `--relanded`, and does not cancel previously
+queued retirement or prevent later explicit disposal or proven-merged cleanup.
 
 Re-run the ordinary backfill afterwards: it lists whatever still cannot be
 accounted for, and every such task needs its own decision here.

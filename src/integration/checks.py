@@ -233,8 +233,9 @@ class HostedChecks:
         if producer.observer.expected_event == "pull_request":
             # A PR run tests the merge ref. It must never satisfy bare-head
             # candidate checks, even when the source OID and names are identical.
+            event = "pull_request+push" if producer.observer.allow_push_fallback else "pull_request"
             self.required = self.required.model_copy(update={
-                "producer_id": self.required.producer_id + ":pull_request",
+                "producer_id": self.required.producer_id + ":" + event,
             })
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:

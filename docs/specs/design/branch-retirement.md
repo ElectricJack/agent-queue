@@ -48,6 +48,16 @@ delete with `branches=keep` remains an explicit preservation choice. Archive's
 existing delivery and live-session admission guards remain required; admitted
 archives now retire their branches instead of leaving orphan refs indefinitely.
 
+Legacy source abandonment also supports explicit preservation:
+`scripts/backfill-legacy-deliveries.py PROJECT --abandon-task TASK --keep-branch`
+(or `--abandon-epic EPIC --keep-branch`). Preview reports `keep_branch`; apply
+still requires a reason and records the usual `abandoned` delivery decision,
+including for selected undelivered descendants, with `[branches: keep]` in its
+audit reason. It queues no branch retirements. Without this option, abandonment
+continues to queue retirement. The option requires an abandon selection and
+cannot be combined with `--relanded`; it does not cancel existing retirements
+or exempt branches from later explicit disposal or ordinary proven-merged cleanup.
+
 The earlier `branch_deletion_audit` schema and revision remain as history.
 Pending, held or failed rows are imported once into retirement intents; their recorded
 SHA stays a deletion precondition, and the old audit is settled on confirmation.

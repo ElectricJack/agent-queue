@@ -354,6 +354,38 @@ async def test_slow_batches_commit_only_processed_prefix_and_renew_before_contin
                for row in await records(runtime_env, wait_source_events))
 
 
+async def test_observation_retries_are_bounded_and_keep_monotonic_cursor(runtime_env, caplog):
+    now = [NOW]
+    service = runtime(runtime_env, clock=lambda: now[0])
+    service.listener.retry_batch_size = 1
+    for n in range(3):
+        await runtime_env.db.wait_source_commit(
+            source_key="test:retry", generation=0, revision=str(n),
+            outcome_ref=f"retry:{n}", payload={}, occurred_at=NOW,
+        )
+    dispatch = service.listener._dispatch = AsyncMock(return_value=30)
+    await service.listener.tick()
+    cursor = (await records(runtime_env, wait_listener_cursors))[0]["last_seq"]
+    assert dispatch.await_count == 3
+    assert "wait.source_observation_deferred" in caplog.text
+    assert "source_key=test:retry" in caplog.text
+    assert all(event["dispatched_at"] is None
+               for event in await records(runtime_env, wait_source_events))
+    now[0] += 31
+    dispatch.reset_mock()
+    dispatch.return_value = 0
+    await service.listener.tick()
+    assert dispatch.await_count == 1
+    assert (await records(runtime_env, wait_listener_cursors))[0]["last_seq"] == cursor
+    assert sum(event["dispatched_at"] is not None
+               for event in await records(runtime_env, wait_source_events)) == 1
+    # A bounded retry pass leaves the remaining durable events for later ticks.
+    await service.listener.tick()
+    await service.listener.tick()
+    assert all(event["dispatched_at"] is not None
+               for event in await records(runtime_env, wait_source_events))
+
+
 async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_event(runtime_env):
     env = runtime_env
     for n in range(3):
@@ -1044,6 +1076,9 @@ async def test_listener_retries_preparation_if_cursor_advances_during_git(runtim
             # A competing drain committed the first event while this drain
             # prepared Git. Its cursor must be re-read under the lease lock.
             async with env.db._engine.begin() as other:
+                await other.execute(update(wait_source_events).where(
+                    wait_source_events.c.seq == source[0]["seq"],
+                ).values(dispatched_at=NOW))
                 await other.execute(update(wait_listener_cursors).where(
                     wait_listener_cursors.c.listener_key == "source",
                 ).values(last_seq=source[0]["seq"]))
