@@ -13,7 +13,8 @@ export function prefetchInitialRoute(queryClient: QueryClient, pathname: string)
   if (matchPath("/metrics", pathname)) {
     return queryClient.prefetchQuery(metricsSeriesQuery("1h"));
   }
-  const project = matchPath("/projects/:projectId/tasks", pathname);
+  const project = matchPath("/projects/:projectId/tasks-knowledge", pathname)
+    ?? matchPath("/projects/:projectId/tasks", pathname);
   if (project?.params.projectId) {
     // React Router decodes the same parameter when the workspace mounts.
     let projectId: string;

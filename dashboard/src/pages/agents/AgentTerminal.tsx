@@ -4,17 +4,14 @@ import { useStartAgentTerminal, type FlockAgent } from "../../api/agents";
 import { useProjects } from "../../api/hooks";
 import type { SessionSummary } from "../../api/hooks";
 import InteractiveTerminal from "../../components/InteractiveTerminal";
-import WatchTerminal from "../../components/WatchTerminal";
-import { useCompactViewport } from "../../hooks/useCompactViewport";
-import { focusSessionHref } from "../focus/routes";
 
 export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAgent; focusRequest?: string | null }) {
   const running = !!agent.session_id && (agent.session_state === "running" || agent.session_state === "draining");
   const tmux = agent.session_provider === "tmux";
   const start = useStartAgentTerminal();
   const { data: projects = [] } = useProjects();
-  const compact = useCompactViewport();
   const [projectId, setProjectId] = useState("");
+  const supervisor = agent.role === "supervisor" || agent.id === "supervisor-global";
   const sleeping = agent.session_state === "sleeping";
   const starting = agent.session_state === "starting" || agent.session_state === "stopping";
   const taskOwned = !!agent.current_task_id || agent.state === "busy";
@@ -44,9 +41,11 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
         <p className="max-w-sm text-xs leading-relaxed text-gray-500">
           {agent.session_id
             ? "Session state: " + (agent.session_state || "unknown") + ". Viewing this agent will not wake or restart it."
-            : "This worker has no live terminal. Viewing it does not start a session."}
+            : "This agent has no live terminal. Viewing it does not start a session."}
         </p>
-        <label className="flex w-full max-w-sm flex-col gap-1 text-left text-xs text-gray-400">
+        {supervisor ? (
+          <p className="max-w-sm text-xs text-gray-400">Supervisor access: {agent.project_id || "all projects"}.</p>
+        ) : <label className="flex w-full max-w-sm flex-col gap-1 text-left text-xs text-gray-400">
           Project
           <select aria-label={"Project for " + agent.name + " terminal"} value={projectId}
             onChange={(event) => setProjectId(event.target.value)} disabled={!canStart || start.isPending}
@@ -56,12 +55,12 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
               <option key={project.id} value={project.id}>{project.name} ({project.id})</option>
             ))}
           </select>
-        </label>
-        <button type="button" disabled={!canStart || start.isPending}
-          onClick={() => start.mutate({ agent_id: agent.id, ...(projectId ? { project_id: projectId } : {}) })}
+        </label>}
+        {!agent.session_backed && <button type="button" disabled={!canStart || start.isPending}
+          onClick={() => start.mutate({ agent_id: agent.id, ...(!supervisor && projectId ? { project_id: projectId } : {}) })}
           className="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
           {start.isPending || starting ? "Starting…" : sleeping ? "Resume terminal" : "Start terminal"}
-        </button>
+        </button>}
         {!canStart && (
           <p className="max-w-sm text-xs text-gray-500">
             {taskOwned ? "The assigned task controls this session."
@@ -74,14 +73,6 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
       </div>
     );
   }
-  // Below 768 px, never attach: an attach sizes the agent's real tmux window to
-  // this viewer (`window-size latest`), and a trusted LAN or tailnet origin may
-  // open that socket. Mobile dashboard spec §2.3, plan D1. The phone terminal
-  // watches, and types through the input-only socket once Type is on.
-  if (compact) {
-    return <WatchTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name}
-      focusHref={focusSessionHref(agent.session_id!)} />;
-  }
   return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} focusRequest={focusRequest} />;
 }
 
@@ -93,7 +84,6 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
  * on the Settings tab does.
  */
 export function PoolInstanceTerminal({ instance, focusRequest }: { instance: SessionSummary | null; focusRequest?: string | null }) {
-  const compact = useCompactViewport();
   const live = instance && (instance.state === "running" || instance.state === "draining");
   // `SessionSummary.provider` is the session transport (tmux), not the LLM one.
   const tmux = !instance?.provider || instance.provider === "tmux";
@@ -113,11 +103,6 @@ export function PoolInstanceTerminal({ instance, focusRequest }: { instance: Ses
         </p>
       </div>
     );
-  }
-  // Never attached below 768 px, as in AgentTerminal; the link pins this process.
-  if (compact) {
-    return <WatchTerminal key={instance.id} sessionId={instance.id} name={instance.name}
-      focusHref={focusSessionHref(instance.id, { started: instance.started_at })} />;
   }
   return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} focusRequest={focusRequest} />;
 }
