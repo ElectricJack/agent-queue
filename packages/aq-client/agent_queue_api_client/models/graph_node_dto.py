@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..models.loop_node_detail_dto import LoopNodeDetailDTO
     from ..models.node_advanced_dto import NodeAdvancedDTO
     from ..models.node_badge_dto import NodeBadgeDTO
+    from ..models.script_node_detail_dto import ScriptNodeDetailDTO
     from ..models.source_ref_dto import SourceRefDTO
     from ..models.step_explanation_dto import StepExplanationDTO
     from ..models.wait_node_detail_dto import WaitNodeDetailDTO
@@ -40,6 +41,7 @@ class GraphNodeDTO:
             blocks activation.
         source (SourceRefDTO): Where in the authoring Markdown this element came from.
         advanced (NodeAdvancedDTO): Advanced view.  Canonical data, never the default explanation.
+        script (None | ScriptNodeDetailDTO | Unset):
         description (None | str | Unset):
         entry (bool | Unset):  Default: False.
         terminal_outcome (None | str | Unset):
@@ -59,6 +61,7 @@ class GraphNodeDTO:
     explanation: StepExplanationDTO
     source: SourceRefDTO
     advanced: NodeAdvancedDTO
+    script: None | ScriptNodeDetailDTO | Unset = UNSET
     description: None | str | Unset = UNSET
     entry: bool | Unset = False
     terminal_outcome: None | str | Unset = UNSET
@@ -73,6 +76,7 @@ class GraphNodeDTO:
     def to_dict(self) -> dict[str, Any]:
         from ..models.ai_node_detail_dto import AiNodeDetailDTO
         from ..models.loop_node_detail_dto import LoopNodeDetailDTO
+        from ..models.script_node_detail_dto import ScriptNodeDetailDTO
         from ..models.wait_node_detail_dto import WaitNodeDetailDTO
 
         id = self.id
@@ -88,6 +92,14 @@ class GraphNodeDTO:
         source = self.source.to_dict()
 
         advanced = self.advanced.to_dict()
+
+        script: dict[str, Any] | None | Unset
+        if isinstance(self.script, Unset):
+            script = UNSET
+        elif isinstance(self.script, ScriptNodeDetailDTO):
+            script = self.script.to_dict()
+        else:
+            script = self.script
 
         description: None | str | Unset
         if isinstance(self.description, Unset):
@@ -160,6 +172,8 @@ class GraphNodeDTO:
                 "advanced": advanced,
             }
         )
+        if script is not UNSET:
+            field_dict["script"] = script
         if description is not UNSET:
             field_dict["description"] = description
         if entry is not UNSET:
@@ -191,6 +205,7 @@ class GraphNodeDTO:
         from ..models.loop_node_detail_dto import LoopNodeDetailDTO
         from ..models.node_advanced_dto import NodeAdvancedDTO
         from ..models.node_badge_dto import NodeBadgeDTO
+        from ..models.script_node_detail_dto import ScriptNodeDetailDTO
         from ..models.source_ref_dto import SourceRefDTO
         from ..models.step_explanation_dto import StepExplanationDTO
         from ..models.wait_node_detail_dto import WaitNodeDetailDTO
@@ -209,6 +224,23 @@ class GraphNodeDTO:
         source = SourceRefDTO.from_dict(d.pop("source"))
 
         advanced = NodeAdvancedDTO.from_dict(d.pop("advanced"))
+
+        def _parse_script(data: object) -> None | ScriptNodeDetailDTO | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                script_type_0 = ScriptNodeDetailDTO.from_dict(data)
+
+                return script_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | ScriptNodeDetailDTO | Unset, data)
+
+        script = _parse_script(d.pop("script", UNSET))
 
         def _parse_description(data: object) -> None | str | Unset:
             if data is None:
@@ -316,6 +348,7 @@ class GraphNodeDTO:
             explanation=explanation,
             source=source,
             advanced=advanced,
+            script=script,
             description=description,
             entry=entry,
             terminal_outcome=terminal_outcome,

@@ -30,6 +30,7 @@ import {
   SEMANTIC_NODE_TYPE,
   TRAVERSED_EDGE_WIDTH,
   UNTRAVERSED_EDGE_OPACITY,
+  connectedEdgeStyle,
   selectedEdgeStyle,
   type RunOverlayInput,
 } from "./types";
@@ -156,10 +157,24 @@ export default function PlaybookSemanticGraphCanvas({
     [positionedNodes, selectedNodeId, select, onSaveLayout],
   );
 
+  // Every edge out of or into the selected step — failure edges included,
+  // whatever their kind — so the full neighbourhood of the step reads at a
+  // glance. Computed here, in the canvas, rather than per card: this canvas is
+  // where selection state lives, and both event scopes run through it.
+  const connectedEdgeIds = useMemo(() => {
+    if (selectedNodeId === null) return new Set<string>();
+    return new Set(
+      edges
+        .filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
+        .map((edge) => edge.id),
+    );
+  }, [edges, selectedNodeId]);
+
   const decoratedEdges = useMemo(
     () =>
       edges.map((edge) => {
         const selected = edge.id === selectedEdgeId;
+        const connected = connectedEdgeIds.has(edge.id);
         return {
           ...edge,
           selected,
@@ -167,12 +182,23 @@ export default function PlaybookSemanticGraphCanvas({
           // a screen reader announces which transition is picked, not just that
           // one can be.
           domAttributes: { ...edge.domAttributes, "aria-pressed": selected },
+          // A picked edge emphasises over its connected neighbours, which rise
+          // over the faded default edges. Clearing the selection restores the
+          // defaults: `connectedEdgeIds` empties with it.
+          style: selected
+            ? selectedEdgeStyle(connectedEdgeStyle(edge.style ?? {}))
+            : connected
+              ? connectedEdgeStyle(edge.style ?? {})
+              : edge.style,
           ...(selected
-            ? { style: selectedEdgeStyle(edge.style ?? {}), zIndex: (edge.zIndex ?? 0) + 1 }
-            : {}),
+            ? { zIndex: (edge.zIndex ?? 0) + 2 }
+            : connected
+              ? { zIndex: (edge.zIndex ?? 0) + 1 }
+              : {}),
+          data: { ...edge.data, connected },
         };
       }),
-    [edges, selectedEdgeId],
+    [edges, selectedEdgeId, connectedEdgeIds],
   );
 
   const edgeKinds = useMemo(
@@ -233,6 +259,14 @@ export default function PlaybookSemanticGraphCanvas({
           <Controls position="bottom-right" showInteractive={false} />
           {overlayApplied && (
             <Panel position="top-right">
+              {graph?.execution_requirements && (
+                <details className="mb-2 max-w-sm rounded bg-gray-950 p-2 text-xs text-gray-200">
+                  <summary>Execution requirements</summary>
+                  <p>Features: {graph.execution_requirements.required_features?.join(", ") || "None"}</p>
+                  <p>Required capabilities: {graph.execution_requirements.required_capabilities?.join(", ") || "Not declared"} (not grants)</p>
+                  <p>State schema: {graph.execution_requirements.state_schema_version ?? "Not used"}</p>
+                </details>
+              )}
               <section
                 aria-label="Run overlay"
                 className="rounded border border-gray-700 bg-gray-950/95 px-3 py-2 text-[10px] text-gray-300"
