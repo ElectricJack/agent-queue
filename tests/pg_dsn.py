@@ -46,6 +46,19 @@ _IDENT_RE = re.compile(r"[^a-zA-Z0-9_]")
 _UNSET = object()
 _CACHED_DSN: object | str | None = _UNSET
 _CACHED_RUN_ID: object | str = _UNSET
+_COLLECTION_ONLY = False
+
+
+def require_postgres_dependency() -> None:
+    """Fail closed on an undeclared database dependency, even with a cached DSN."""
+    if os.environ.get("AQ_TEST_PG_MODE") == "pure":
+        raise RuntimeError(
+            "PostgreSQL dependency requested by a pure target; declare the target's "
+            "PostgreSQL dependency (AQ_TEST_PG_MODE=postgres) and private cluster"
+        )
+    if _COLLECTION_ONLY:
+        raise RuntimeError("PostgreSQL resources cannot be created during collection-only runs")
+
 
 # Creation order is ownership proof. Teardown issues the drops newest first,
 # scratch children before the process's worker database.
@@ -349,6 +362,7 @@ class _OwnerLease:
 async def _hold_owner_lock(admin_dsn: str) -> None:
     """Take this process's owner lock before its first ``CREATE DATABASE``."""
     global _OWNER
+    require_postgres_dependency()
     if _OWNER is None:
         lease = _OwnerLease(admin_dsn, _owner_token())
         await lease.acquire()
@@ -571,6 +585,11 @@ def ensure_worker_postgres_dsn() -> str | None:
     DSN is used only to reach the disposable server's maintenance database.
     """
     global _CACHED_DSN
+    # Historical modules resolve a DSN at import time. Collection must never
+    # create databases, even when a maintenance DSN is available.
+    if _COLLECTION_ONLY:
+        return None
+    require_postgres_dependency()
     if _CACHED_DSN is not _UNSET:
         return _CACHED_DSN  # type: ignore[return-value]
     base = os.environ.get("POSTGRES_TEST_DSN", "").strip()

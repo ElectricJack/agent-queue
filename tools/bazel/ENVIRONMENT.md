@@ -15,8 +15,10 @@ forwards SIGTERM/SIGINT and contains descendants if it is killed outright.
 
 `Runtime` contains the absolute Python executable, declared input roots,
 toolchain binary/library directories, optional git helper directory and declared
-shell. When supplied, the shell is also mounted at /bin/sh for native helpers and
+shell and `env_executable`. When supplied, the shell is also mounted at /bin/sh for native helpers and
 Python shell subprocesses; this never imports the host /bin/sh implicitly.
+The declared `env_executable` is mounted at `/usr/bin/env` for executable scripts'
+shebangs; use H1's native `bin/env`, never an undeclared host helper.
 Populate it from H1's native toolchain `files`/`binaries` and the hermetic Python
 runfiles. Include the complete Python standard library, native libraries, ELF
 loader, git helpers, test sources/data, and symlink destinations. A runfiles
@@ -43,6 +45,35 @@ Inside the target, H3/H4 may add the disposable credentials and private DSN they
 just created to that copy. They must never obtain those values from the host
 worker. In particular the parent's AQ_DB_SCOPE/refusal sentinel stays untouched.
 Pytest plugin autoload is disabled; B1 declares and loads required plugins.
+
+H4's E2E adapter lives in `scripts/e2e/environment.py`. `world_env(home,
+environment=target, postgres_dsn=owned_dsn)` creates independent private HOME,
+XDG and tmux state through the same H2 factory, and preserves Unix socket query
+parameters in the database URLs consumed by the legacy shell kit. The target
+owns the scratch directory and its H3 cluster; E2E reset only recreates the
+world's marked home and database. `create_test_environment(root=..., runtime=...)`
+is the caller-owned lifetime variant used for those persistent layouts. Its root
+must be an empty private directory, removed by the caller with its scratch tree.
+The ordinary context-managed factory delegates to that same implementation.
+
+For E2E targets, B1 calls `run_postgres_target(..., tcp=True,
+python_paths=(source_root, generated_client_root, declared_dependencies_root))`.
+H3 writes a private `AQ_TEST_ENVIRONMENT` manifest containing the complete runtime,
+explicit Python import paths, target scratch root and its own database URLs.
+`world_env` reads this manifest when `AQ_TEST_PG_MODE=postgres`; a missing manifest
+or loopback listener fails instead of falling back to host tools or a host DSN.
+The daemon uses H3's reserved loopback port inside the private network namespace:
+the production wait listener currently expects a TCP URL. Pytest's database
+substrate retains H3's Unix-socket URL. H3 owns both listener and cluster cleanup.
+Long CLI socket paths use a temporary directory in H3's explicitly declared
+private socket root and are removed after the preloaded CLI exits. Policy-case
+children also allocate their own HOME/XDG/tmp state through this factory.
+
+Without an explicit target, `world_env` selects the legacy backend's installed
+Python and standard system tool directories, and its already-admitted disposable
+`POSTGRES_TEST_DSN`. This is environment sanitization, not namespace isolation or
+a hermetic runtime claim. The parent worker environment is never modified.
+The shell kit's liveness checks use its Python runtime, without requiring curl.
 
 The helper creates user, mount, network, IPC and PID namespaces. It maps the
 caller to UID/GID 1000 inside, binds only declared inputs and private writable
@@ -82,3 +113,52 @@ libraries. It is a local boundary fixture, not a replacement for H1's locked
 Bazel runtime. Without the flag the real namespace cases are visibly skipped;
 that is not acceptance evidence. With the flag, unsupported/missing isolation
 fails instead of skipping. V3 owns hosted shadow workflow integration.
+
+With `AQ_BAZEL_POSTGRES_RUNTIME` set to H1's materialized native runtime, the same
+file runs all 22 stateful E2E scenarios across four concurrent H3 targets. Each
+target has its own cluster, namespace, factory environment, API port and marked
+home; the S1/S2/S3 prerequisite chain and resets execute through the real fixture.
+The acceptance fixture declares this runner's Python/dependency files explicitly;
+it does not claim locked Python dependency parity, which belongs to B1/V3.
+
+## H3 PostgreSQL targets
+
+For a PostgreSQL consumer, await `postgres_cluster.run_postgres_target(environment,
+binaries, command, cwd=...)` instead of `run_isolated`. Supply `PostgresBinaries`
+with absolute `initdb`, `postgres`, `pg_ctl`, and `psql` paths from H1's native
+toolchain. The launcher validates these as declared executable inputs and enters
+H2's boundary before running `initdb`. Its Bazel library carries
+`//:postgres_test_migrations` (all migrations and `alembic.ini`) as data; consuming
+targets must retain that closure so migration edits invalidate their actions.
+
+Each target/shard gets a new cluster, data directory, socket directory, port and
+database. Unix sockets are the default; `tcp=True` enables private loopback.
+Long Bazel paths use a short symlink in the namespace's private `/tmp`, pointing
+to sockets under TEST_TMPDIR. PostgreSQL runs in the foreground for bounded
+termination, with H2's PID namespace containing any remaining descendants.
+No cluster is shared across targets or shards.
+
+Only the child receives the new `POSTGRES_TEST_DSN`, `AQ_TEST_PG_MODE=postgres`,
+`AQ_REQUIRE_POSTGRES_TESTS=1`, and `AQ_DB_SCOPE=test`. Parent worker sentinels stay
+untouched. Existing owner locks, migrated templates, clones and lease pools then
+operate within this private cluster. The lower-level `postgres_cluster` async
+context manager requires the caller to enter H2 first for hermetic execution.
+
+B1 sets `AQ_TEST_PG_MODE=pure` on pure target children. Root pytest fixtures then
+allocate no PostgreSQL resources, and an attempted PG dependency fails with a
+declaration diagnostic. Collection-only invocations never require a DSN or
+provision a database. Unset mode preserves legacy DSN-based test execution and
+the existing `aq test` CLI admission contract.
+
+For the real lifecycle and namespace acceptance cases, explicitly supply H1's
+materialized locked native runtime; there is no ambient binary discovery:
+
+```bash
+AQ_BAZEL_ISOLATION=1 AQ_BAZEL_POSTGRES_RUNTIME=/absolute/path/to/native/runtime \
+  aq test tests/test_postgres_test_substrate.py tests/test_pg_dsn.py \
+  tests/test_bazel_environment.py -m 'not perf and not migration and not tmux and not integration'
+```
+
+The outer legacy harness still needs a separate disposable POSTGRES_TEST_DSN.
+The marker override includes the substrate's `slow` arm. Without the runtime
+setting, real PostgreSQL lifecycle cases visibly skip and do not prove acceptance.
