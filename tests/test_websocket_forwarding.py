@@ -24,6 +24,23 @@ def test_forwarded_prefixes_include_wave4_events() -> None:
         )
 
 
+@pytest.mark.parametrize("event_type", ["project.paused", "project.resumed"])
+async def test_project_pause_events_reach_the_dashboard(event_type):
+    bus = EventBus(env="dev")
+    manager = WebSocketManager(bus)
+    queue = asyncio.Queue()
+    manager._clients["viewer"] = queue
+    manager._client_scope["viewer"] = RequestScope(kind="local")
+    manager.start()
+    try:
+        await bus.emit(event_type, {"project_id": "p"})
+    finally:
+        manager.shutdown()
+    event, frame = queue.get_nowait()
+    assert event["_event_type"] == event_type
+    assert json.loads(frame)["project_id"] == "p"
+
+
 async def test_playbook_run_lifecycle_reaches_the_dashboard() -> None:
     """The V2 engine's own event names, not the unpublished ``notify.*`` ones.
 
