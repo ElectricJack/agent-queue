@@ -615,6 +615,9 @@ which only happens when something republishes the layout underneath the toggle.
 
 ### 6.6 Focus mode
 
+- Selecting or reselecting the entered container leaves its children visible and the
+  current scope intact. Selection decorates the frame without changing its stacking
+  order: container frames stay below child task cards, including when selected.
 - Any container card or header has a **Focus** action. It sets `?focus=<id>`; the tiles
   query sends `root=<id>` and the variant is forced to `all`. **Show completed** is
   disabled while focused.

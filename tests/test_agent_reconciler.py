@@ -15,6 +15,7 @@ from src.models import (
     Project,
     ProjectStatus,
     RepoSourceType,
+    SessionRecord,
     Task,
     TaskStatus,
     Workspace,
@@ -101,24 +102,26 @@ async def test_creates_one_agent_for_one_ready_task(db):
     ("existing", "expected_name"),
     [
         ([], "Review Spec Ingest"),
-        ([("spec-ingest", "Review Spec Ingest", True)], "Review Spec Ingest 2"),
+        ([("named-worker", "Review Spec Ingest", True)], "Review Spec Ingest 2"),
         (
             [
-                ("spec-ingest", "Review Spec Ingest", True),
-                ("spec-ingest", "Review Spec Ingest 2", True),
+                ("named-worker", "Review Spec Ingest", True),
+                ("named-worker", "Review Spec Ingest 2", True),
             ],
             "Review Spec Ingest 3",
         ),
-        ([("spec-ingest", "Review Spec Ingest 2", True)], "Review Spec Ingest"),
-        ([("spec-ingest", "Review Spec Ingest", False)], "Review Spec Ingest"),
+        ([("named-worker", "Review Spec Ingest 2", True)], "Review Spec Ingest"),
+        ([("named-worker", "Review Spec Ingest", False)], "Review Spec Ingest"),
         ([("other-profile", "Review Spec Ingest", True)], "Review Spec Ingest"),
-        ([("spec-ingest", "Operator Name", True)], "Review Spec Ingest"),
+        ([("named-worker", "Operator Name", True)], "Review Spec Ingest"),
     ],
 )
 async def test_new_agent_uses_display_name_with_only_needed_suffix(db, existing, expected_name):
-    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
-    await db.update_profile("spec-ingest", name="Review Spec Ingest")
-    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="spec-ingest")
+    # Ordinary profiles can create a replacement identity; persistent roles
+    # instead wait for their saved agent, regardless of its availability.
+    await _seed_project_with_profile(db, project_id="p", profile_id="named-worker")
+    await db.update_profile("named-worker", name="Review Spec Ingest")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="named-worker")
     # These unavailable identities do not serve demand, but enabled agents of
     # the same profile still reserve their names. Other roster entries do not.
     for index, (profile_id, name, enabled) in enumerate(existing):
@@ -132,7 +135,7 @@ async def test_new_agent_uses_display_name_with_only_needed_suffix(db, existing,
     agents = await db.list_agents()
     created = [agent for agent in agents if not agent.id.startswith("existing-")]
 
-    assert report.created == [("p", "spec-ingest")]
+    assert report.created == [("p", "named-worker")]
     assert len(created) == 1
     assert created[0].name == expected_name
     assert (await reconciler.reconcile()).created == []
@@ -161,6 +164,135 @@ async def test_pool_profile_demand_creates_no_task_agent(db):
 
     assert (await AgentReconciler(db).reconcile()).created == []
     assert await db.list_agents() == []
+
+
+@pytest.mark.parametrize("state,deleted", [
+    (AgentState.RETIRED, False), (AgentState.ERROR, False),
+    (AgentState.BUSY, False), (AgentState.IDLE, True),
+])
+async def test_stale_task_pointer_without_live_session_does_not_consume_cap(db, state, deleted):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest", max_agents=1)
+    await db.create_task(Task(
+        id="old", project_id="p", title="Old", description="", status=TaskStatus.IN_PROGRESS,
+    ))
+    await db.create_agent(Agent(
+        id="historical", name="Historical", profile_id="other", state=state,
+        current_task_id="old", deleted_at=_time.time() if deleted else None,
+    ))
+    await _seed_ready_task(db, task_id="new", project_id="p", profile_id="spec-ingest")
+    before = await db.get_task("old")
+
+    report = await AgentReconciler(db).reconcile()
+
+    assert report.created == [("p", "spec-ingest")]
+    assert await db.get_task("old") == before
+    # Counting never releases evidence or resurrects a historical definition.
+    assert (await db.get_agent("historical")).current_task_id == "old"
+    assert (await db.get_agent("historical")).state == state
+
+
+@pytest.mark.parametrize("state,project_id,blocked", [
+    ("starting", "p", True), ("running", "p", True), ("draining", "p", True),
+    ("stopped", "p", False), ("sleeping", "p", False),
+    ("running", "other", False), ("running", None, False),
+])
+async def test_project_cap_tracks_live_sessions_without_task_or_agent_pointers(
+    db, state, project_id, blocked,
+):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest", max_agents=1)
+    await _seed_bare_project(db, project_id="other")
+    await _seed_ready_task(db, task_id="new", project_id="p", profile_id="spec-ingest")
+    await db.create_session(SessionRecord(
+        id="session", project_id=project_id, profile_id="other", harness="codex",
+        provider="fake", name="session", lifecycle="pool", work_dir="/tmp",
+        epoch="epoch", instance_token="token", started_at=1,
+        state=state, desired_state="stopped",
+    ))
+    report = await AgentReconciler(db).reconcile()
+
+    assert report.created == ([] if blocked else [("p", "spec-ingest")])
+    if blocked:
+        assert any("1/1 live sessions" in reason for _, reason in report.skipped)
+        assert any("max_concurrent_agents=1" in reason for _, reason in report.skipped)
+
+
+@pytest.mark.parametrize("availability", [
+    "idle", "busy", "disabled", "live_session", "suppressed", "incompatible",
+])
+async def test_existing_role_definition_is_reused_or_waited_for_without_duplication(db, availability):
+    from src.models import SessionRecord
+
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
+    await db.create_profile(AgentProfile(
+        id="pool", name="Pool", harness="codex", default_class="deep-high", lifecycle="pool",
+    ))
+    await _seed_ready_task(db, task_id="ingest", project_id="p", profile_id="spec-ingest")
+    await db.update_task("ingest", intelligence_class="deep-high")
+    role = Agent(
+        id="role-agent", name="Review Spec Ingest", profile_id="spec-ingest",
+        intelligence_class="deep-high", harness="codex",
+    )
+    if availability == "busy":
+        await db.create_task(Task(
+            id="other", project_id="p", title="Other ingestion", description="",
+            status=TaskStatus.IN_PROGRESS, profile_id="spec-ingest", route_source="role",
+        ))
+        role.state, role.current_task_id, role.last_heartbeat = AgentState.BUSY, "other", _time.time()
+    elif availability == "disabled":
+        role.enabled = False
+    elif availability == "incompatible":
+        role.intelligence_class = "fast-low"
+    await db.create_agent(role)
+    await db.create_agent(Agent(id="pool-agent", name="Deep Codex", profile_id="pool"))
+    if availability == "live_session":
+        await db.create_session(SessionRecord(
+            id="role-session", agent_id=role.id, project_id="p", profile_id="spec-ingest",
+            harness="codex", provider="fake", name="role-session", lifecycle="task",
+            state="running", work_dir="/tmp", epoch="e", instance_token="test", started_at=1,
+        ))
+    before = await db.get_agent(role.id)
+    report = await AgentReconciler(db).reconcile(
+        suppressed_agent_ids=frozenset({role.id}) if availability == "suppressed" else frozenset(),
+    )
+    assert report.created == [] and report.reassigned == []
+    assert {agent.id for agent in await db.list_agents()} == {role.id, "pool-agent"}
+    assert await db.get_agent(role.id) == before
+
+
+async def test_role_bootstraps_one_global_definition_for_cross_project_demand(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
+    await _seed_bare_project(db, project_id="q")
+    for project_id in ("p", "q"):
+        await _seed_ready_task(
+            db, task_id=f"ingest-{project_id}", project_id=project_id, profile_id="spec-ingest",
+        )
+    # Different demand cannot mint a second copy of the same role identity.
+    await db.update_task("ingest-p", intelligence_class="deep-high")
+    await db.update_task("ingest-q", intelligence_class="standard-high")
+    report = await AgentReconciler(db).reconcile()
+    assert report.created == [("p", "spec-ingest")]
+    agents = await db.list_agents()
+    assert len(agents) == 1 and agents[0].profile_id == "spec-ingest"
+    assert (await AgentReconciler(db).reconcile()).created == []
+
+
+async def test_idle_role_definition_does_not_supply_ordinary_implementation_work(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="worker")
+    await db.update_profile("worker", default_class="deep-high")
+    await db.create_profile(AgentProfile(
+        id="spec-ingest", name="Ingest", harness="claude", default_class="deep-high",
+    ))
+    await db.create_agent(Agent(
+        id="role-agent", name="Review Spec Ingest", profile_id="spec-ingest",
+        harness="codex", intelligence_class="deep-high",
+    ))
+    await _seed_ready_task(db, task_id="implementation", project_id="p", profile_id="worker")
+    await db.update_task("implementation", intelligence_class="deep-high")
+    before = await db.get_agent("role-agent")
+    report = await AgentReconciler(db).reconcile()
+    assert report.created == [("p", "worker")]
+    assert len(await db.list_agents()) == 2
+    assert await db.get_agent("role-agent") == before
 
 
 async def _seed_bare_project(db, *, project_id="p", max_agents=1):
