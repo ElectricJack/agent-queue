@@ -9,7 +9,8 @@
   ],
   "default-assignment-routing": [
     "tests/fixtures/playbooks/v2/default-assignment-routing",
-    "src/prompts/reviewed_playbooks/default-assignment-routing"
+    "src/prompts/reviewed_playbooks/default-assignment-routing",
+    "docs/playbooks/shared-fleet/default-assignment-routing"
   ],
   "default-pipeline": [
     "tests/fixtures/playbooks/v2/default-pipeline",
@@ -48,6 +49,10 @@
     "tests/fixtures/playbooks/v2/stuck-task-watch",
     "src/prompts/reviewed_playbooks/stuck-task-watch"
   ],
+  "stuck-task-watch-reminder": [
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder",
+    "src/prompts/reviewed_playbooks/stuck-task-watch-reminder"
+  ],
   "supervisor-digest": [
     "tests/fixtures/playbooks/v2/supervisor-digest",
     "src/prompts/reviewed_playbooks/supervisor-digest"
@@ -59,5 +64,9 @@
   "supervisor-hourly-report": [
     "tests/fixtures/playbooks/v2/supervisor-hourly-report",
     "src/prompts/reviewed_playbooks/supervisor-hourly-report"
+  ],
+  "fast-smooth-train": [
+    "tests/fixtures/playbooks/v2/fast-smooth-train",
+    "src/prompts/reviewed_playbooks/fast-smooth-train"
   ]
 }

@@ -385,3 +385,129 @@ async def test_origin_materialization_is_derived_from_git_without_changing_filin
             assert old["retired_at"] == 100.0
     assert await service._origins(101.0) == 0
     assert await repo.run("rev-parse", "source") == source
+
+
+@pytest.mark.parametrize("obstacle", [
+    None, "manual_hold", "writer", "unlanded", "moved", "epic", "untouched_candidate",
+    "deleted_candidate", "deleted_epic", "live_session", "locked_workspace",
+])
+async def test_delivered_batch_retires_only_idle_proven_repairs(
+    db, tmp_path, repository, obstacle,
+):
+    from src.integration.repair import ordinary_repair_id
+    from src.sessions.obsolete import ObsoleteClose
+
+    repo = repository
+    source = await repo.commit("delivered")
+    await repo.run("push", "origin", "source")
+    if obstacle != "unlanded":
+        await repo.publish()
+    if obstacle == "moved":
+        await repo.commit("unpublished-repair")
+        await repo.run("push", "origin", "source")
+    if obstacle == "epic":
+        await repo.run("push", "origin", repo.base + ":refs/heads/epic")
+    starting = source
+    if obstacle in {"untouched_candidate", "deleted_candidate"}:
+        await repo.run("commit", "--allow-empty", "-m", "disposable candidate")
+        starting = await repo.run("rev-parse", "HEAD")
+        await repo.run("push", "origin", "source")
+        if obstacle == "deleted_candidate":
+            await repo.run("push", "origin", ":source")
+            await repo.git._arun(["gc", "--prune=now"], cwd=str(repo.remote))
+    await db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(repo.remote), default_branch="main",
+    ))
+    task_id = ordinary_repair_id("delivered-batch", 1)
+    original = {"batch_id": "delivered-batch", "attempt": 1, "repository_id": "r",
+                "target_ref": "refs/heads/source", "starting_sha": starting}
+    async with db.immediate() as conn:
+        await conn.execute(insert(t.tasks).values(
+            id=task_id, project_id="p", repo_id="r", title="Repair delivered batch",
+            description="", status="IN_PROGRESS" if obstacle == "writer" else "READY",
+            branch_name="source", created_by_kind="system", created_by_id="delivered-batch",
+            dedup_key="repair:delivered-batch:1", created_at=1.0, updated_at=2.0,
+        ))
+        await conn.execute(insert(t.task_context).values(
+            id=task_id, task_id=task_id, type="snippet", label="Repair input",
+            content=json.dumps(original), created_at=1.0,
+        ))
+        await conn.execute(insert(t.tasks).values(
+            id="dependent", project_id="p", title="Waiting work", description="",
+            status="READY", is_blocked=1, created_at=1.0, updated_at=2.0,
+        ))
+        await conn.execute(insert(t.task_dependencies).values(
+            task_id="dependent", depends_on_task_id=task_id, dep_type="blocks",
+        ))
+        if obstacle == "manual_hold":
+            await conn.execute(insert(t.task_labels).values(task_id=task_id, label="hold:human"))
+        if obstacle == "live_session":
+            # Keep the task READY and unassigned: only the actual writer row
+            # protects this stale task projection from retirement.
+            await conn.execute(insert(t.sessions).values(
+                id="repair-writer", task_id=task_id, project_id="p", profile_id="worker",
+                harness="codex", provider="fake", name="repair-writer", lifecycle="task",
+                state="running", desired_state="running", work_dir=str(repo.path),
+                epoch="test", instance_token="writer-instance", started_at=1.0,
+            ))
+        if obstacle == "locked_workspace":
+            # No session or assigned agent exists; the retained checkout alone
+            # must remain untouched until its normal recovery releases it.
+            await conn.execute(insert(t.workspaces).values(
+                id="repair-checkout", project_id="p", workspace_path=str(repo.path),
+                locked_by_task_id=task_id, locked_at=1.0, created_at=1.0,
+            ))
+        await conn.execute(insert(t.integration_batches).values(
+            id="delivered-batch", project_id="p", repository_id="r",
+            target_ref="refs/heads/epic" if obstacle in {"epic", "deleted_epic"}
+            else "refs/heads/main",
+            request_id="delivered-batch", source_manifest_digest="manifest", base_sha=repo.base,
+            integration_branch="source", lifecycle="sealing", final_main_sha=source,
+            policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+            repair_attempt_count=1, created_at=1.0, updated_at=2.0,
+        ))
+        await conn.execute(insert(t.integration_batch_members).values(
+            batch_id="delivered-batch", ordinal=0, task_id="original", repository_id="r",
+            source_sha=source, source_base_sha=repo.base, reviewed_head_sha=source,
+            reviewed_tree_sha=await repo.run("rev-parse", source + "^{tree}"), review_evidence={},
+        ))
+        await conn.execute(update(t.integration_batches).where(
+            t.integration_batches.c.id == "delivered-batch",
+        ).values(lifecycle="promoted"))
+    close = ObsoleteClose(db, release_owner=None, git_manager=repo.git, clock=lambda: 100.0)
+    service = GitTruthReconciler(db, repo.git, data_dir=tmp_path, obsolete_close=close)
+    expected = obstacle in {None, "epic", "untouched_candidate", "deleted_candidate", "deleted_epic"}
+    assert await service._repairs(100.0) == int(expected)
+    async with db._engine.connect() as conn:
+        status = await conn.scalar(select(t.tasks.c.status).where(t.tasks.c.id == task_id))
+        assert (status == "COMPLETED") == expected
+        assert bool(await conn.scalar(select(t.tasks.c.is_blocked).where(
+            t.tasks.c.id == "dependent",
+        ))) != expected
+        if expected:
+            marker = await conn.scalar(select(t.task_metadata.c.value).where(
+                t.task_metadata.c.task_id == task_id, t.task_metadata.c.key == "obsolete",
+            ))
+            assert "already delivered" in marker
+            assert await conn.scalar(select(func.count()).select_from(t.task_completion_records)) == 0
+        elif obstacle == "live_session":
+            assert await conn.scalar(select(t.sessions.c.state).where(
+                t.sessions.c.id == "repair-writer",
+            )) == "running"
+        elif obstacle == "locked_workspace":
+            assert await conn.scalar(select(t.workspaces.c.locked_by_task_id).where(
+                t.workspaces.c.id == "repair-checkout",
+            )) == task_id
+    assert await service._repairs(101.0) == 0
+    if obstacle in {"live_session", "locked_workspace"}:
+        async with db.immediate() as conn:
+            if obstacle == "live_session":
+                await conn.execute(update(t.sessions).where(
+                    t.sessions.c.id == "repair-writer",
+                ).values(state="stopped", desired_state="stopped"))
+            else:
+                await conn.execute(update(t.workspaces).where(
+                    t.workspaces.c.id == "repair-checkout",
+                ).values(locked_by_task_id=None, locked_at=None))
+        assert await service._repairs(102.0) == 1
