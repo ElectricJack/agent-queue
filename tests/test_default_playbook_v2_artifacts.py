@@ -48,31 +48,32 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 
-#: Frontmatter id -> the shipped Markdown it was compiled from.
+#: Frontmatter id -> the shipped Markdown it was compiled from. Retired policies
+#: retain their reviewed source for audit, outside the auto-installed defaults.
 SHIPPED_SOURCES: dict[str, str] = {
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
+    "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
+    "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
-    "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
+    "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
-    "agent-queue-parent-integration": (
-        "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
-    ),
-    "agent-queue-root-train": "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md",
-    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "blocked-task-escalation": "src/prompts/reviewed_playbooks/blocked-task-escalation/source.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
-    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
+    "supervisor-digest": "src/prompts/reviewed_playbooks/supervisor-digest/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
-    "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
-    "root-train": "src/prompts/integration_playbooks/root-train.md",
     "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
     "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
+HISTORICAL_TRAIN_IDS = (
+    "agent-queue-parent-integration", "agent-queue-root-train", "parent-integration", "root-train",
+)
 
 #: §3.4, locked.
 REQUIRED_REVIEW_KEYS = frozenset(
@@ -125,7 +126,11 @@ def playbook_id_for(source: Path) -> str:
 
 
 def _fixture(playbook_id: str) -> Path:
-    return FIXTURE_ROOT / playbook_id
+    root = (
+        FIXTURE_ROOT.parent / "historical-v2"
+        if playbook_id in HISTORICAL_TRAIN_IDS else FIXTURE_ROOT
+    )
+    return root / playbook_id
 
 
 def _read_review(playbook_id: str) -> tuple[dict[str, Any], str]:
@@ -549,18 +554,20 @@ def _routing_policy_block(source: str) -> str:
 #: risk-aware revision approved as rev-azure-flare revision 1, with no
 #: priority gate on any lane, as decided in review rev-wise-impact, plus the
 #: ``operator`` kind that routes setup work only to scoped operator rungs
-#: (docs/guides/operator-workers.md).
+#: (docs/guides/operator-workers.md), and standard-first bugfix escalation
+#: (docs/specs/design/routing-live-context.md).
 SHIPPED_ROUTING_POLICY_SHA256 = (
-    "sha256:66ba5e4acd3f5a900139067d9bc182dd47c1683a26c162ac8e8840c16ceff421"
+    "sha256:82e852857e630dfb459b4ddac5f9244ffafb70c2656dbfedd9447c0a8db17412"
 )
 
 ROUTING_BUNDLES = (
     FIXTURE_ROOT / "default-assignment-routing",
     DAEMON_REVIEWED_BUNDLES / "default-assignment-routing",
+    REPO_ROOT / "docs/playbooks/shared-fleet/default-assignment-routing",
 )
 
 
-@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped"))
+@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped", "shared-fleet"))
 def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None:
     """Mandatory routing §6.3: the reviewed prose and the executed policy cannot drift.
 
@@ -588,8 +595,8 @@ def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None
     for step_id, step in plans.items():
         policy = _inputs(step)["policy"]
         assert policy == {"type": "literal", "value": block}, step_id
-    # The block is a valid policy: the approved risk-aware revision
-    # (rev-azure-flare revision 1), pinned so a policy edit is a reviewed change.
+    # The block is the standard-first bugfix policy (agile-delta-86), pinned
+    # so a policy edit remains an explicit change.
     policy, digest = parse_policy(block)
     assert digest == SHIPPED_ROUTING_POLICY_SHA256
     assert set(policy.risk) == {"medium", "high", "very_high"}
@@ -856,3 +863,19 @@ def test_capabilities_granted_unused_by_src() -> None:
         "capabilities_granted is read by production code; a reviewed fixture would "
         "become an authority claim:\n" + "\n".join(offenders)
     )
+
+
+@pytest.mark.parametrize("playbook_id", HISTORICAL_TRAIN_IDS)
+def test_retired_train_policy_is_archived_and_cannot_validate_for_install(playbook_id):
+    """Retain the reviewed bytes without offering a policy for deleted engines."""
+    archived = REPO_ROOT / "docs/history/legacy-train-policies" / playbook_id
+    assert playbook_id not in shipped_reviewed_playbook_ids()
+    for name in ("source.md", "artifact.json", "artifact.sha256", "manifest.md", "diagnostics.json"):
+        assert (archived / name).read_bytes() == (_fixture(playbook_id) / name).read_bytes()
+    raw = (archived / "artifact.json").read_bytes()
+    assert canonical_bytes(_artifact(playbook_id)) == raw
+    assert (archived / "artifact.sha256").read_text().strip() == (
+        "sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+    diagnostics = validate_definition(_artifact(playbook_id), contracts=RegistryContractLookup())
+    assert any(d.code == "unknown_command" and d.severity == "error" for d in diagnostics)

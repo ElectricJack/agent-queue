@@ -38,6 +38,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
+from src.knowledge.extraction_schema import register_extraction_schema
 from src.asks.schema import register_ask_schema_events
 from src.records.schema import register_record_schema_events
 
@@ -62,7 +63,9 @@ projects = Table(
     Column("promotion_flow", JSONB(none_as_null=True), nullable=True),
     # Read-side rebinding of immutable pre-cutover root origins, not provenance.
     Column("default_branch_cutover", JSONB(none_as_null=True), nullable=True),
+    Column("storage_binding", JSONB(none_as_null=True), nullable=True),
     Column("preferred_provider", Text, nullable=True),
+    Column("supervisor_enabled", Boolean, nullable=False, server_default=false()),
     # The router binding (mandatory-routing spec §8, revision a00000000043):
     # every project names the routing playbook that routes its tasks.  There
     # is no project default profile; ``default_profile_id`` was dropped.
@@ -194,6 +197,7 @@ tasks = Table(
     Column("title", Text, nullable=False),
     Column("description", Text, nullable=False),
     Column("priority", Integer, nullable=False, server_default="100"),
+    Column("effective_priority", Integer, nullable=False, server_default="100"),
     Column("status", Text, nullable=False, server_default="DEFINED"),
     Column("verification_type", Text, nullable=False, server_default="auto_test"),
     Column("retry_count", Integer, nullable=False, server_default="0"),
@@ -231,6 +235,9 @@ tasks = Table(
     # 0/1 matches the table's existing flag style (e.g. is_plan_subtask).
     # Recomputed by the query layer; never written directly.
     Column("is_blocked", Integer, nullable=False, server_default="0"),
+    # Independent admission hold, cleared only by atomic ingestion release.
+    Column("held_batch_id", Text, nullable=True),
+    Index("ix_tasks_held_batch_id", "held_batch_id"),
     Column("dedup_key", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
     # Discord thread opened for this task.  Persisted because the bot's
@@ -302,9 +309,10 @@ tasks = Table(
     Column("legacy_completion_id", Text, nullable=False,
            server_default=text("'legacy:' || gen_random_uuid()::text")),
     # The §10 pool work query's three access paths.  All three carry
-    # ``priority, created_at`` as their trailing key columns so
-    # ``select_ready_for_profile``'s ``ORDER BY priority, created_at LIMIT 1``
-    # is an index-ordered scan that stops at the first admissible row, rather
+    # ``effective_priority, created_at`` as their trailing key columns for
+    # the wait graph's derived priority ordering (hibernation implementation §5).
+    # The claim reader adopts this order in the admission leaf. An ordered scan
+    # stops at the first admissible row, rather
     # than a materialise-and-sort of the whole frontier: the correlated
     # predicates in ``_frontier_where`` are then evaluated once instead of
     # once per frontier row (2,500 rows -> 10 shared buffers at the §15.2
@@ -326,7 +334,7 @@ tasks = Table(
         "project_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
     ),
     Index(
@@ -335,7 +343,7 @@ tasks = Table(
         "profile_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
     ),
     # The affinity probe.  Partial because affinity is the exception: the
@@ -348,8 +356,24 @@ tasks = Table(
         "project_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
+        postgresql_where=text("affinity_agent_id IS NOT NULL"),
+    ),
+    # The wait schema installs effective-priority indexes before the wait
+    # runtime is active. Keep the current base-priority claim path ordered
+    # until its owning leaf adopts and maintains the priority projection.
+    Index(
+        "idx_tasks_base_claim_frontier",
+        "project_id", "status", "is_blocked", "priority", "created_at",
+    ),
+    Index(
+        "idx_tasks_base_claim_frontier_by_profile",
+        "project_id", "profile_id", "status", "is_blocked", "priority", "created_at",
+    ),
+    Index(
+        "idx_tasks_base_claim_frontier_by_affinity",
+        "affinity_agent_id", "project_id", "status", "is_blocked", "priority", "created_at",
         postgresql_where=text("affinity_agent_id IS NOT NULL"),
     ),
     # Group progress and tree queries walk parent_task_id.
@@ -383,6 +407,7 @@ TASK_DEP_TYPES = (
     "parent-child",
     "waits-for",
     "conditional-blocks",
+    "delivery-of",
     "discovered-from",
     "related",
     "duplicates",
@@ -390,7 +415,7 @@ TASK_DEP_TYPES = (
 )
 """Typed dependency edge kinds — see docs/specs/design/work-graph.md.
 
-Only ``blocks``/``parent-child``/``waits-for``/``conditional-blocks`` gate
+Only ``blocks``/``parent-child``/``waits-for``/``conditional-blocks``/``delivery-of`` gate
 readiness; the rest are informational.  The tuple order is the check
 constraint's order and must stay stable (it is embedded in the migration).
 """
@@ -1003,7 +1028,7 @@ hierarchy_migration_rejects = Table(
 # ``{"tasks": [...], "edges": [...]}`` — see the plan's Interfaces block.
 # ---------------------------------------------------------------------------
 
-TASK_PROPOSAL_STATUSES = ("draft", "ready", "committed", "discarded")
+TASK_PROPOSAL_STATUSES = ("draft", "ready", "held", "committed", "discarded")
 _TASK_PROPOSAL_STATUS_CHECK = (
     "status IN (" + ", ".join(f"'{s}'" for s in TASK_PROPOSAL_STATUSES) + ")"
 )
@@ -1023,6 +1048,100 @@ task_proposals = Table(
     Column("updated_at", Float, nullable=False),
     CheckConstraint(_TASK_PROPOSAL_STATUS_CHECK, name="ck_task_proposals_status"),
     Index("idx_task_proposals_project_status", "project_id", "status"),
+)
+
+# Held ingestion is keyed by the existing proposal identity. Historical task
+# references deliberately survive task archival/retirement; they are not FKs
+# to live tasks. Batch/proposal/project ownership remains database-enforced.
+ingest_batches = Table(
+    "ingest_batches",
+    metadata,
+    Column("batch_id", Text, ForeignKey("task_proposals.id"), primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("source_review_id", Text, nullable=False),
+    Column("source_revision", Integer, nullable=False),
+    Column("source_content_sha256", Text, nullable=False),
+    Column("decision_id", Text, nullable=False),
+    Column("design_review_id", Text, nullable=True),
+    Column("design_revision", Integer, nullable=True),
+    Column("design_content_sha256", Text, nullable=True),
+    Column("lineage_kind", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("structure_revision", Integer, nullable=False, server_default="1"),
+    Column("structure_digest", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="held"),
+    Column("check_results", JSONB(none_as_null=True), nullable=True),
+    Column("reviewer_task_id", Text, nullable=True),
+    Column("reviewer_session_id", Text, nullable=True),
+    Column("reviewer_claim_epoch", Integer, nullable=True),
+    Column("release_actor", Text, nullable=True),
+    Column("release_revision", Integer, nullable=True),
+    Column("release_digest", Text, nullable=True),
+    Column("released_at", Float, nullable=True),
+    Column("release_receipt", JSONB(none_as_null=True), nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "state IN ('held','reviewing','needs_scope','released','retired')",
+        name="ck_ingest_batches_state",
+    ),
+    CheckConstraint(
+        "lineage_kind IN ('resolved','none')",
+        name="ck_ingest_batches_lineage_kind",
+    ),
+    CheckConstraint(
+        "(design_review_id IS NULL AND design_revision IS NULL "
+        "AND design_content_sha256 IS NULL) OR "
+        "(design_review_id IS NOT NULL AND design_revision IS NOT NULL "
+        "AND design_content_sha256 IS NOT NULL)",
+        name="ck_ingest_batches_design_lineage",
+    ),
+    UniqueConstraint(
+        "project_id", "source_review_id", "source_revision", "source_content_sha256",
+        name="uq_ingest_batches_source",
+    ),
+)
+
+ingest_batch_members = Table(
+    "ingest_batch_members",
+    metadata,
+    Column("batch_id", Text, ForeignKey("ingest_batches.batch_id"), primary_key=True),
+    Column("task_id", Text, primary_key=True),
+    Column("member_key", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("section_anchor", Text, nullable=False),
+    Column("primary_outcome", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("retired_reason", Text, nullable=True),
+    Column("created_revision", Integer, nullable=False),
+    Column("retired_revision", Integer, nullable=True),
+    CheckConstraint(
+        "role IN ('container','leaf','operational_root')",
+        name="ck_ingest_batch_members_role",
+    ),
+    CheckConstraint("state IN ('active','retired')", name="ck_ingest_batch_members_state"),
+    UniqueConstraint("batch_id", "member_key", name="uq_ingest_batch_members_key"),
+)
+
+ingest_batch_receipts = Table(
+    "ingest_batch_receipts",
+    metadata,
+    Column("receipt_id", Text, primary_key=True),
+    Column("batch_id", Text, ForeignKey("ingest_batches.batch_id"), nullable=False),
+    Column("structure_revision", Integer, nullable=False),
+    Column("structure_digest", Text, nullable=False),
+    Column("reviewer_task_id", Text, nullable=False),
+    Column("reviewer_session_id", Text, nullable=False),
+    Column("passing", Boolean, nullable=False, server_default=false()),
+    Column("section_verdicts", JSONB(none_as_null=True), nullable=False),
+    Column("reverse_coverage_verdict", Text, nullable=False),
+    Column("walkthrough_verdict", Text, nullable=False),
+    Column("structural_findings", JSONB(none_as_null=True), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Index(
+        "uq_ingest_batch_receipts_passing", "batch_id", "structure_revision",
+        unique=True, postgresql_where=text("passing"),
+    ),
 )
 
 task_tools = Table(
@@ -1129,6 +1248,19 @@ transcript_usage_calls = Table(
         "AND cache_read_tokens >= 0 AND cache_write_tokens >= 0",
         name="ck_transcript_usage_calls_nonnegative",
     ),
+    Index("idx_transcript_usage_calls_updated", "updated_at", "usage_key"),
+)
+
+# Permanent exact membership fence: batches replace old per-call counter rows.
+transcript_usage_fences = Table(
+    "transcript_usage_fences",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("usage_keys", JSONB, nullable=False),
+    Column("archived_at", Float, nullable=False),
+    Column("archive_path", Text, nullable=False),
+    Index("idx_transcript_usage_fences_keys", "usage_keys", postgresql_using="gin",
+          postgresql_ops={"usage_keys": "jsonb_path_ops"}),
 )
 
 benchmark_stage_spans = Table(
@@ -1273,6 +1405,12 @@ workspaces = Table(
     Column("locked_at", Float, nullable=True),
     Column("lock_mode", Text, nullable=True),
     Column("enabled", Boolean, nullable=False, server_default=true()),
+    # Why and when ``enabled`` last went false, as ``"<code>: <detail>"``
+    # (``src.workspace_disable``).  NULL while enabled, and on rows disabled
+    # before the column existed.  The slot reconciler reads the code to decide
+    # whether a disabled worktree slot may be restored.
+    Column("disabled_reason", Text, nullable=True),
+    Column("disabled_at", Float, nullable=True),
     # Worktree slots (worktree-execution spec §3.2).  NULL for clones,
     # links and base rows; 0..N-1 for slot worktrees.
     Column("slot_index", Integer, nullable=True),
@@ -1319,6 +1457,8 @@ workspace_kinds = Table(
     # JSON-encoded list[str] of shell commands run after a slot is created.
     # Text for SQLite/PG parity, matching the existing JSON-in-Text usage.
     Column("worktree_setup", Text, nullable=False, server_default="[]"),
+    Column("max_slots", Integer, nullable=True),
+    CheckConstraint("max_slots > 0", name="ck_workspace_kinds_max_slots"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -1478,6 +1618,14 @@ sessions = Table(
     Column("claim_phase_at", Float, nullable=True),
     Column("last_claim_epoch", Integer, nullable=True),
     Column("last_claim_result", Text, nullable=True),
+    Column("claim_failure_count", Integer, nullable=False, server_default="0"),
+    Column("claim_failure_reason", Text, nullable=True),
+    Column("claim_failure_at", Float, nullable=True),
+    # Last failed preparation observation; diagnostic, never a task binding.
+    Column("failed_preparation", JSONB, nullable=True),
+    # Session-wide refusal streak/cooldown, independent of a failed task's backoff.
+    Column("claim_refusal", JSONB, nullable=True),
+    Column("supervisor_health", JSONB, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch
@@ -1541,6 +1689,10 @@ task_session_attempts = Table(
     Column("outcome", Text, nullable=True),
     Column("session_key", Text, nullable=True),
     Index("idx_task_session_attempts_task", "task_id", "started_at"),
+    # Recovery's latest-attempt fence matches both identities and breaks
+    # timestamp ties by ID. A backward scan supplies the complete order;
+    # sorting inside this correlated lookup would sort on every claim.
+    Index("idx_task_session_attempts_recovery", "task_id", "project_id", "started_at", "id"),
     Index("idx_task_session_attempts_session", "session_id", "started_at"),
 )
 
@@ -1561,12 +1713,15 @@ messages = Table(
     Column("created_at", Float, nullable=False),
     Column("delivered_at", Float, nullable=True),
     Column("read_at", Float, nullable=True),
+    Column("last_notified_at", Float, nullable=True),
+    Column("notification_attempts", Integer, nullable=False, server_default="0"),
     Column("archive_after_inject", Integer, nullable=False, server_default="0"),
     Column("archived_at", Float, nullable=True),
     Column("reply_to_id", Text, ForeignKey("messages.id"), nullable=True),
     Column("via", Text, nullable=True),  # null | "transcript_tail"
     Column("body_kind", Text, nullable=True),
     Column("pane_open", Text, nullable=True),  # JSON blob {view, args}
+    Column("provenance", JSONB, nullable=True),
     CheckConstraint(
         "from_kind IN ('session','user','system')",
         name="ck_messages_from_kind",
@@ -2414,6 +2569,80 @@ playbook_activations = Table(
     Index("idx_playbook_activations_health", "health"),
 )
 
+playbook_private_values = Table(
+    "playbook_private_values",
+    metadata,
+    Column("value_id", Text, primary_key=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("scope_kind", Text, nullable=False),
+    Column("scope_owner", Text, nullable=False),
+    Column("format_version", Integer, nullable=False),
+    Column("content_type", Text, nullable=False),
+    Column("ciphertext", LargeBinary, nullable=False),
+    Column("key_id", Text, nullable=False),
+    Column("nonce", LargeBinary, nullable=False),
+    Column("digest", Text, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    Column("expires_at", Float),
+    CheckConstraint("owner_kind IN ('run', 'namespace', 'snapshot')",
+                    name="ck_playbook_private_values_owner_kind"),
+    CheckConstraint("scope_kind IN ('system', 'project', 'profile')",
+                    name="ck_playbook_private_values_scope_kind"),
+    CheckConstraint("byte_count >= 0", name="ck_playbook_private_values_byte_count"),
+    CheckConstraint("format_version > 0", name="ck_playbook_private_values_format_version"),
+    CheckConstraint("octet_length(nonce) = 12", name="ck_playbook_private_values_nonce"),
+    CheckConstraint("owner_id <> '' AND scope_owner <> ''", name="ck_playbook_private_values_owner"),
+    Index("idx_private_values_owner", "owner_kind", "owner_id"),
+    Index("idx_private_values_expiry", "expires_at"),
+)
+
+observation_snapshots = Table(
+    "observation_snapshots", metadata,
+    Column("snapshot_id", Text, primary_key=True),
+    Column("producer", Text, nullable=False),
+    Column("producer_version", Integer, nullable=False),
+    Column("authority_fingerprint", Text, nullable=False),
+    Column("scope_kind", Text, nullable=False),
+    Column("scope_owner", Text, nullable=False),
+    Column("run_id", Text),
+    Column("request_hash", Text, nullable=False),
+    Column("observed_at", Float, nullable=False),
+    Column("materialized_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("manifest", JSONB, nullable=False),
+    Column("coverage", JSONB, nullable=False),
+    Column("envelope", JSONB, nullable=False),
+    Column("complete", Boolean, nullable=False),
+    Column("page_count", Integer, nullable=False),
+    Column("content_digest", Text, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    CheckConstraint("producer_version > 0", name="ck_observation_snapshots_version"),
+    CheckConstraint("scope_kind IN ('system', 'project', 'profile') AND scope_owner <> ''",
+                    name="ck_observation_snapshots_scope"),
+    CheckConstraint("page_count >= 0 AND byte_count >= 0", name="ck_observation_snapshots_sizes"),
+    CheckConstraint("expires_at > materialized_at", name="ck_observation_snapshots_expiry"),
+    Index("idx_observation_snapshots_expiry", "expires_at"),
+    Index("idx_observation_snapshots_scope", "scope_kind", "scope_owner"),
+    Index("idx_observation_snapshots_run", "run_id"),
+)
+
+observation_snapshot_pages = Table(
+    "observation_snapshot_pages", metadata,
+    Column("snapshot_id", Text, ForeignKey("observation_snapshots.snapshot_id", ondelete="CASCADE"),
+           primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("token_hash", Text, nullable=False, unique=True),
+    Column("private_reference", JSONB, nullable=False),
+    Column("content_digest", Text, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    Column("row_count", Integer, nullable=False),
+    Column("artifact", Boolean, nullable=False),
+    CheckConstraint("ordinal >= 0 AND byte_count >= 0 AND row_count >= 0",
+                    name="ck_observation_snapshot_pages_sizes"),
+)
+
 playbook_v2_runs = Table(
     "playbook_v2_runs",
     metadata,
@@ -2484,6 +2713,7 @@ playbook_step_receipts = Table(
     Column("turn_index", Integer, nullable=False, server_default="-1"),
     Column("operator_decision_id", Text, nullable=True),
     Column("iteration", Integer, nullable=False, server_default="-1"),
+    Column("iteration_path", Text, nullable=False, server_default=""),
     Column("attempt", Integer, nullable=False, server_default="1"),
     Column("idempotency_key", Text, nullable=False),
     Column("snapshot_version", Integer, nullable=False, server_default="0"),
@@ -2530,6 +2760,7 @@ playbook_step_receipts = Table(
         "run_id",
         "step_id",
         "iteration",
+        "iteration_path",
         "attempt",
         "turn_index",
         "receipt_kind",
@@ -2542,6 +2773,7 @@ playbook_step_receipts = Table(
         "run_id",
         "step_id",
         "iteration",
+        "iteration_path",
         "attempt",
         "turn_index",
     ),
@@ -2559,6 +2791,7 @@ playbook_waits = Table(
     ),
     Column("step_id", Text, nullable=False),
     Column("iteration", Integer, nullable=False, server_default="-1"),
+    Column("iteration_path", Text, nullable=False, server_default=""),
     Column("kind", Text, nullable=False),
     Column("event_type", Text, nullable=False, server_default=""),
     Column("correlation_key", Text, nullable=False, server_default=""),
@@ -2582,6 +2815,7 @@ playbook_waits = Table(
         "run_id",
         "step_id",
         "iteration",
+        "iteration_path",
         unique=True,
         postgresql_where=text("state = 'active'"),
     ),
@@ -3281,6 +3515,9 @@ integration_branch_owners = Table(
     Column("workspace_id", Text, nullable=True),
     Column("confirmed_workspace_id", Text, nullable=True),
     Column("expires_at", Float, nullable=True),
+    # Publication delegation binding and audit for the holder
+    # ``publication-delegation:<id>``; cleared by the next acquisition.
+    Column("delegation", JSONB(none_as_null=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),
@@ -3617,6 +3854,8 @@ integration_batches = Table(
     Column("target_ref", Text, nullable=True),
     Column("intent", Text, nullable=False, server_default="open"),
     Column("repair_attempt_count", Integer, nullable=False, server_default="0"),
+    Column("fixer_state", JSONB(none_as_null=True), nullable=True),
+    Column("fixer_queue", JSONB(none_as_null=True), nullable=True),
     Column("request_id", Text, nullable=False),
     Column("trigger", Text, nullable=True),
     Column("source_manifest_digest", Text, nullable=False),
@@ -3858,7 +4097,7 @@ integration_candidate_resolutions = Table(
     Column("operation_id", Text, nullable=False),
     Column("operation_episode_id", Text, nullable=False),
     Column("stage_ordinal", Integer, nullable=False),
-    Column("stage_deadline_at", Float, nullable=False),
+    Column("stage_deadline_at", Float, nullable=True),
     Column("project_id", Text, nullable=False),
     Column("repair_task_id", Text, nullable=False),
     Column("repair_session_id", Text, nullable=False),
@@ -4379,6 +4618,8 @@ integration_check_evidence = Table(
     Column("check_name", Text, nullable=True),
     Column("run_url", Text, nullable=True),
     Column("due_at", Float, nullable=True),
+    # Independent of refreshable verdicts: one durable CI-owner request per exact check.
+    Column("check_reconciliation", JSONB, nullable=True),
     Index(
         "uq_integration_check_evidence_producer_run_attempt_checks",
         "producer_id",
@@ -4853,7 +5094,7 @@ integration_release_results = Table(
     Column("released_at", Float, nullable=False),
 )
 
-# Task 11 rollout controls.  Waivers/transitions/consumptions/applicability
+# Task 11 rollout controls.  Waivers/transitions/consumptions
 # are evidence, not mutable state; dual-dialect migrations install database
 # triggers that reject UPDATE and DELETE.  Only the per-project suppression
 # projection is deliberately reversible.
@@ -4964,47 +5205,6 @@ integration_history_waiver_consumptions = Table(
     CheckConstraint(
         "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
         name="ck_integration_waiver_consumptions_blocker_digest",
-    ),
-)
-
-integration_legacy_gate_applicability = Table(
-    "integration_legacy_gate_applicability",
-    metadata,
-    Column("project_id", Text, nullable=False),
-    Column("gate_id", Text, nullable=False),
-    Column("waiver_id", Text, nullable=False),
-    Column("transition_id", Text, nullable=False),
-    Column("blocker_digest", Text, nullable=False),
-    Column("applicable", Boolean, nullable=False),
-    Column("created_at", Float, nullable=False),
-    PrimaryKeyConstraint("project_id", "gate_id", name="pk_integration_legacy_gate_applicability"),
-    ForeignKeyConstraint(
-        ["project_id"],
-        ["projects.id"],
-        name="fk_integration_legacy_gate_applicability_project",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["gate_id"],
-        ["gates.id"],
-        name="fk_integration_legacy_gate_applicability_gate",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["waiver_id"],
-        ["integration_history_waivers.id"],
-        name="fk_integration_legacy_gate_applicability_waiver",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["transition_id"],
-        ["integration_rollout_transitions.id"],
-        name="fk_integration_legacy_gate_applicability_transition",
-        ondelete="RESTRICT",
-    ),
-    CheckConstraint(
-        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
-        name="ck_integration_legacy_gate_applicability_blocker_digest",
     ),
 )
 
@@ -5301,8 +5501,8 @@ integration_subjects = Table(
         "AND budget_deadline_at IS NULL AND budget_attempt_limit IS NULL "
         "AND budget_attempts = 0) OR "
         "(budget_ordinal IS NOT NULL AND budget_ordinal >= 0 AND budget_class IS NOT NULL "
-        "AND budget_started_at IS NOT NULL AND budget_deadline_at IS NOT NULL "
-        "AND budget_deadline_at >= budget_started_at)",
+        "AND budget_started_at IS NOT NULL "
+        "AND (budget_deadline_at IS NULL OR budget_deadline_at >= budget_started_at))",
         name="ck_integration_subjects_budget",
     ),
     CheckConstraint(
@@ -5622,6 +5822,331 @@ agent_waits = Table(
 )
 
 
+# Verified waits and hibernation state (implementation spec §5). These tables
+# are inert until the v2 readers and writers are enabled by the cutover.
+wait_records = Table(
+    "wait_records",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("origin", Text, nullable=False),
+    Column("session_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("condition_kind", Text, nullable=False),
+    Column("condition", JSONB, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_watermark_seq", BigInteger, nullable=False),
+    Column("verification_state", Text, nullable=False),
+    Column("evidence_ref", Text, nullable=False),
+    Column("verified_at", Float, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("escalate_at", Float, nullable=True),
+    Column("due_at", Float, nullable=True),
+    Column("ceiling_anchor_at", Float, nullable=True),
+    Column("sleep_decision", Text, nullable=True),
+    Column("decision_reason", Text, nullable=True),
+    Column("decision_inputs", JSONB, nullable=True),
+    Column("idempotency_key", Text, nullable=True),
+    Column("request_hash", Text, nullable=False),
+    Column("claimed", Text, nullable=True),
+    Column("outcome", Text, nullable=False, server_default="pending"),
+    Column("resolved_at", Float, nullable=True),
+    Column("result_ref", Text, nullable=True),
+    Column("blocking", Boolean, nullable=False, server_default=false()),
+    Column("cleared_at", Float, nullable=True),
+    Column("legacy_kind", Text, nullable=True),
+    Column("legacy_id", Text, nullable=True),
+    Column("wake_delivered_at", Float, nullable=True),
+    Column("version", Integer, nullable=False, server_default="1"),
+    CheckConstraint(
+        "owner_kind IN ('task','session','scheduler','playbook','integration')",
+        name="ck_wait_records_owner_kind",
+    ),
+    CheckConstraint(
+        "origin IN ('agent','scheduler','integration','playbook','human')",
+        name="ck_wait_records_origin",
+    ),
+    CheckConstraint(
+        "condition_kind IN ('task','dependency','job','ci_check','ci_run','pull_request',"
+        "'batch','message','human','timer','resource','playbook_condition','close_merge')",
+        name="ck_wait_records_condition_kind",
+    ),
+    CheckConstraint(
+        "verification_state IN ('verified','stale','unavailable')",
+        name="ck_wait_records_verification_state",
+    ),
+    CheckConstraint(
+        "sleep_decision IN ('in_place','hibernate')", name="ck_wait_records_sleep_decision"
+    ),
+    CheckConstraint(
+        "outcome IN ('pending','satisfied','cancelled','lifted_by_supervisor','source_unavailable')",
+        name="ck_wait_records_outcome",
+    ),
+    Index(
+        "uq_wait_records_active_owner",
+        "owner_kind",
+        "owner_id",
+        unique=True,
+        postgresql_where=text("outcome = 'pending' AND origin <> 'scheduler'"),
+    ),
+    Index(
+        "uq_wait_records_idempotency",
+        "project_id",
+        "owner_kind",
+        "owner_id",
+        "claim_epoch",
+        "idempotency_key",
+        unique=True,
+        postgresql_where=text("idempotency_key IS NOT NULL"),
+    ),
+    Index(
+        "uq_wait_records_scheduler_blocker",
+        "owner_kind",
+        "owner_id",
+        "source_key",
+        "source_generation",
+        unique=True,
+        postgresql_where=text("origin = 'scheduler'"),
+    ),
+    Index(
+        "uq_wait_records_legacy",
+        "legacy_kind",
+        "legacy_id",
+        unique=True,
+        postgresql_where=text("legacy_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_wait_records_source",
+        "source_key",
+        "source_generation",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+    Index(
+        "idx_wait_records_project_pending",
+        "project_id",
+        "created_at",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+)
+
+wait_edges = Table(
+    "wait_edges",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("waiter_key", Text, nullable=False),
+    Column("waiter_project_id", Text, nullable=False),
+    Column("blocker_key", Text, nullable=False),
+    Column("blocker_project_id", Text, nullable=False),
+    Column("relation", Text, nullable=False),
+    Column("source_revision", Text, nullable=False),
+    Column("active", Boolean, nullable=False, server_default=true()),
+    Column("created_at", Float, nullable=False),
+    Column("cleared_at", Float, nullable=True),
+    CheckConstraint("relation IN ('semantic','resource')", name="ck_wait_edges_relation"),
+    Index("idx_wait_edges_waiter", "waiter_key", postgresql_where=text("active")),
+    Index("idx_wait_edges_blocker", "blocker_key", postgresql_where=text("active")),
+)
+
+wait_source_events = Table(
+    "wait_source_events",
+    metadata,
+    Column("seq", BigInteger, Identity(), primary_key=True),
+    Column("id", Text, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_revision", Text, nullable=False),
+    Column("occurred_at", Float, nullable=False),
+    Column("committed_at", Float, nullable=False),
+    Column("outcome_ref", Text, nullable=False),
+    Column("payload_hash", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("dispatched_at", Float, nullable=True),
+    UniqueConstraint("id", name="uq_wait_source_events_id"),
+    UniqueConstraint(
+        "source_key", "source_generation", "source_revision", name="uq_wait_source_events_revision"
+    ),
+    Index(
+        "idx_wait_source_events_undispatched",
+        "seq",
+        postgresql_where=text("dispatched_at IS NULL"),
+    ),
+)
+
+wait_listener_cursors = Table(
+    "wait_listener_cursors",
+    metadata,
+    Column("listener_key", Text, primary_key=True),
+    Column("last_seq", BigInteger, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("listener_key IN ('source','timer')", name="ck_wait_listener_cursors_key"),
+)
+
+wait_deadlines = Table(
+    "wait_deadlines",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("deadline_type", Text, nullable=False),
+    Column("due_at", Float, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("fired_at", Float, nullable=True),
+    Column("cancelled_at", Float, nullable=True),
+    CheckConstraint(
+        "deadline_type IN ('due','escalation','ceiling','transition','reservation')",
+        name="ck_wait_deadlines_type",
+    ),
+    UniqueConstraint(
+        "wait_id", "deadline_type", "generation", name="uq_wait_deadlines_wait_type_gen"
+    ),
+    Index(
+        "idx_wait_deadlines_due",
+        "due_at",
+        postgresql_where=text("fired_at IS NULL AND cancelled_at IS NULL"),
+    ),
+)
+
+wait_escalations = Table(
+    "wait_escalations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("escalation_id", Text, ForeignKey("escalations.id"), nullable=False),
+    Column("raised_at", Float, nullable=False),
+    Column("original_age_seconds", Float, nullable=False),
+    Column("supervisor_session_id", Text, nullable=True),
+    Column("decision", Text, nullable=True),
+    Column("decided_at", Float, nullable=True),
+    Column("note", Text, nullable=True),
+    Column("prior_escalation_id", Text, nullable=True),
+    CheckConstraint(
+        "decision IN ('extend','wake','cancel','reroute','escalate_to_human')",
+        name="ck_wait_escalations_decision",
+    ),
+)
+
+continuations = Table(
+    "continuations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    # Retain the suspension audit after its task is deleted or archived.
+    Column("task_id", Text, nullable=False),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("suspension_generation", Integer, nullable=False),
+    Column("summary", Text, nullable=True),
+    Column("summary_sha256", Text, nullable=True),
+    Column("summary_degraded", Boolean, nullable=False, server_default=false()),
+    Column("facts", JSONB, nullable=False),
+    Column("branch", Text, nullable=False),
+    Column("saved_head", Text, nullable=True),
+    Column("prior_status", Text, nullable=False),
+    Column("held_cursor_seq", BigInteger, nullable=False),
+    Column("resume_state", Text, nullable=False),
+    Column("hold_reason", Text, nullable=True),
+    Column("launch_attempts", Integer, nullable=False, server_default="0"),
+    Column("new_session_id", Text, nullable=True),
+    Column("envelope_id", Text, nullable=True),
+    Column("created_at", Float, nullable=True),
+    Column("stopped_at", Float, nullable=True),
+    Column("resumed_at", Float, nullable=True),
+    Column("acknowledged_at", Float, nullable=True),
+    Column("version", Integer, nullable=False, server_default="1"),
+    CheckConstraint(
+        "resume_state IN ('sleeping','queued','reserved','launching','delivered',"
+        "'acknowledged','held','failed','cancelled')",
+        name="ck_continuations_resume_state",
+    ),
+    CheckConstraint("octet_length(summary) <= 8192", name="ck_continuations_summary_bytes"),
+    Index(
+        "uq_continuations_active_task",
+        "task_id",
+        unique=True,
+        postgresql_where=text("resume_state NOT IN ('acknowledged','failed','cancelled')"),
+    ),
+    UniqueConstraint("wait_id", "suspension_generation", name="uq_continuations_intent"),
+)
+
+admission_reservations = Table(
+    "admission_reservations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, nullable=True),  # retained admission audit identity
+    Column("continuation_id", Text, ForeignKey("continuations.id"), nullable=True),
+    Column("scope", JSONB, nullable=False),
+    Column("effective_priority", Integer, nullable=False),
+    Column("provenance", Text, nullable=False),
+    Column("deadline_at", Float, nullable=False),
+    Column("fifo_seq", BigInteger, Identity(), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("consumed_by_session_id", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("granted_at", Float, nullable=True),
+    Column("consumed_at", Float, nullable=True),
+    CheckConstraint(
+        "provenance IN ('branch_blocker','resume','train_repair')",
+        name="ck_admission_reservations_provenance",
+    ),
+    CheckConstraint(
+        "state IN ('pending','overdue','granted','consumed','cancelled')",
+        name="ck_admission_reservations_state",
+    ),
+    Index(
+        "uq_admission_reservations_subject",
+        text("COALESCE(task_id, continuation_id)"),
+        unique=True,
+        postgresql_where=text("state IN ('pending','overdue','granted')"),
+    ),
+)
+
+wait_measurements = Table(
+    "wait_measurements",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("condition_kind", Text, nullable=False),
+    Column("source_class", Text, nullable=False),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("waited_seconds", Float, nullable=False),
+    Column("hibernated", Boolean, nullable=False),
+    Column("evicted", Boolean, nullable=False),
+    Column("summary_tokens", Integer, nullable=True),
+    Column("resume_tokens", Integer, nullable=True),
+    Column("teardown_seconds", Float, nullable=True),
+    Column("setup_seconds", Float, nullable=True),
+    Column("rebuild_seconds", Float, nullable=True),
+    Column("cache_hit_rate", Float, nullable=True),
+    Column("workspace_path", Text, nullable=True),
+    Column("recorded_at", Float, nullable=False),
+    Index(
+        "idx_wait_measurements_bucket",
+        "project_id",
+        "condition_kind",
+        "source_class",
+        "recorded_at",
+    ),
+)
+
+wait_priority_projection = Table(
+    "wait_priority_projection",
+    metadata,
+    Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
+    Column("donor_task_id", Text, nullable=True),
+    Column("donor_path", JSONB, nullable=False),
+    Column("graph_version", BigInteger, nullable=False),
+    Column("computed_at", Float, nullable=False),
+)
+
+
 # Task identities are soft references so archival preserves collaboration history.
 collaboration_threads = Table(
     "collaboration_threads",
@@ -5723,21 +6248,27 @@ jobs = Table(
     "jobs",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("project_id", Text, nullable=False),
+    Column("project_id", Text, nullable=True),
     Column("task_id", Text, nullable=True),
     Column("owner_kind", Text, nullable=False),
     Column("owner_id", Text, nullable=False),
     Column("submitter_session_id", Text, nullable=True),
     Column("claim_epoch", Integer, nullable=True),
     Column("integration_operation_id", Text, nullable=True),
+    Column("playbook_run_id", Text, ForeignKey("playbook_v2_runs.run_id", ondelete="RESTRICT")),
+    Column("playbook_step_id", Text),
+    Column("iteration_path", Text),
+    Column("attempt", Integer),
+    Column("artifact_digest", Text),
+    Column("input_root", Text),
     Column("idempotency_key", Text, nullable=False),
     Column("request_hash", Text, nullable=False),
     Column("preset", Text, nullable=False),
     Column("preset_version", Integer, nullable=False),
     Column("argv", JSON, nullable=False),
     Column("contract", JSON, nullable=False),
-    Column("workspace_id", Text, nullable=False),
-    Column("workspace_generation", Integer, nullable=False),
+    Column("workspace_id", Text, nullable=True),
+    Column("workspace_generation", Integer, nullable=True),
     Column("input_mode", Text, nullable=False),
     Column("input_ref", Text, nullable=True),
     Column("input_fingerprint", Text, nullable=True),
@@ -5772,7 +6303,20 @@ jobs = Table(
     UniqueConstraint(
         "project_id", "owner_kind", "owner_id", "idempotency_key", name="uq_jobs_owner_key"
     ),
-    CheckConstraint("owner_kind IN ('task','integration')", name="ck_jobs_owner_kind"),
+    CheckConstraint("owner_kind IN ('task','integration','playbook')", name="ck_jobs_owner_kind"),
+    CheckConstraint(
+        "(owner_kind = 'playbook' AND playbook_run_id IS NOT NULL "
+        "AND owner_id = playbook_run_id AND playbook_step_id IS NOT NULL "
+        "AND iteration_path IS NOT NULL AND attempt IS NOT NULL AND attempt > 0 "
+        "AND artifact_digest IS NOT NULL AND input_root IS NOT NULL "
+        "AND task_id IS NULL AND workspace_id IS NULL AND workspace_generation IS NULL) OR "
+        "(owner_kind IN ('task','integration') AND project_id IS NOT NULL "
+        "AND workspace_id IS NOT NULL AND workspace_generation IS NOT NULL "
+        "AND playbook_run_id IS NULL)", name="ck_jobs_owner_fields",
+    ),
+    Index("uq_jobs_playbook_operation", "playbook_run_id", "playbook_step_id",
+          "iteration_path", "attempt", unique=True,
+          postgresql_where=text("owner_kind = 'playbook'")),
     CheckConstraint("input_mode IN ('live','snapshot')", name="ck_jobs_input_mode"),
     CheckConstraint("job_class IN ('shared','exclusive')", name="ck_jobs_class"),
     CheckConstraint("weight > 0 AND priority_band BETWEEN 0 AND 2", name="ck_jobs_capacity"),
@@ -5782,6 +6326,14 @@ jobs = Table(
     ),
     Index("idx_jobs_state_submitted", "state", "submitted_at"),
     Index("idx_jobs_task_submitted", "task_id", "submitted_at"),
+)
+
+job_input_pins = Table(
+    "job_input_pins", metadata,
+    Column("job_id", Text, ForeignKey("jobs.id", ondelete="RESTRICT"), primary_key=True),
+    Column("input_root", Text, nullable=False),
+    Column("input_digest", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
 )
 
 job_workspace_pins = Table(
@@ -6777,8 +7329,6 @@ record_compatibility_usage = Table(
 
 register_record_schema_events(metadata)
 
-from src.knowledge.extraction_schema import register_extraction_schema  # noqa: E402
-
 register_extraction_schema(metadata)
 
 # Human instructions survive supervisor sessions and message consumption.
@@ -6809,6 +7359,77 @@ operator_decisions = Table(
     Index("ix_operator_decisions_object", "project_id", "object_kind", "object_id"),
 )
 
+# Durable namespaces deliberately have no FK to mutable playbook/source rows.
+playbook_state_namespaces = Table(
+    "playbook_state_namespaces", metadata,
+    Column("namespace_id", Text, primary_key=True),
+    Column("scope_kind", Text, nullable=False),
+    Column("scope_owner", Text, nullable=False),
+    Column("playbook_id", Text, nullable=False),
+    Column("state_schema_version", Integer, nullable=False),
+    Column("revision", BigInteger, nullable=False, server_default="0"),
+    Column("key_count", Integer, nullable=False, server_default="0"),
+    Column("value_bytes", BigInteger, nullable=False, server_default="0"),
+    Column("journal_bytes", BigInteger, nullable=False, server_default="0"),
+    Column("replay_floor", Float),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("scope_kind", "scope_owner", "playbook_id", "state_schema_version",
+                     name="uq_playbook_state_namespace_identity"),
+    CheckConstraint("state_schema_version > 0", name="ck_playbook_state_namespace_version"),
+    CheckConstraint("scope_kind IN ('system', 'project', 'profile') AND scope_owner <> '' "
+                    "AND (scope_kind <> 'system' OR scope_owner = 'system') AND playbook_id <> ''",
+                    name="ck_playbook_state_namespace_scope"),
+    CheckConstraint("revision >= 0 AND key_count >= 0 AND value_bytes >= 0 AND journal_bytes >= 0",
+                    name="ck_playbook_state_namespace_accounting"),
+)
+
+playbook_state_entries = Table(
+    "playbook_state_entries", metadata,
+    Column("namespace_id", Text, ForeignKey("playbook_state_namespaces.namespace_id"),
+           primary_key=True),
+    Column("record_space", Text, primary_key=True),
+    Column("key", Text, primary_key=True),
+    Column("value_reference", JSONB),
+    Column("value_bytes", BigInteger, nullable=False, server_default="0"),
+    Column("revision", BigInteger, nullable=False),
+    Column("tombstone", Boolean, nullable=False, server_default=false()),
+    Column("expires_at", Float),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("episode", BigInteger, nullable=False, server_default="0"),
+    Column("active", Boolean, nullable=False, server_default=false()),
+    Column("source_partition", JSONB),
+    Column("first_seen", Float),
+    Column("last_seen", Float),
+    Column("last_notified", Float),
+    Column("last_observation_id", Text),
+    Column("last_observed_at", Float),
+    Column("message_id", Text),
+    Column("replay_floor", Float),
+    CheckConstraint("record_space IN ('kv', 'notification') AND key <> ''",
+                    name="ck_playbook_state_entry_identity"),
+    CheckConstraint("revision > 0 AND value_bytes >= 0 AND episode >= 0",
+                    name="ck_playbook_state_entry_counters"),
+    CheckConstraint("record_space <> 'notification' OR expires_at IS NULL",
+                    name="ck_playbook_state_notification_no_expiry"),
+    CheckConstraint("NOT tombstone OR NOT active", name="ck_playbook_state_tombstone_inactive"),
+)
+
+playbook_state_operations = Table(
+    "playbook_state_operations", metadata,
+    Column("namespace_id", Text, ForeignKey("playbook_state_namespaces.namespace_id"),
+           primary_key=True),
+    Column("operation_key", Text, primary_key=True),
+    Column("request_digest", Text, nullable=False),
+    Column("result_reference", JSONB, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    Column("revision", BigInteger, nullable=False),
+    Column("message_id", Text),
+    Column("committed_at", Float, nullable=False),
+    CheckConstraint("operation_key <> '' AND byte_count >= 0 AND revision > 0",
+                    name="ck_playbook_state_operation_identity"),
+)
 
 # Human communication ledgers (implementation specification, 2026-10-11 §3.1).
 # Source task/session ids remain soft references. Audit owners never cascade.
@@ -7100,3 +7721,52 @@ ask_action_tokens = Table(
 # Fresh metadata must enforce the same append-only audit boundary as Alembic.
 
 register_ask_schema_events(metadata)
+
+# Migration progress is independent of source/timer listener leases. Per-object
+# receipts survive partial passes; identity '*' is the guarded phase completion.
+wait_bridge_progress = Table(
+    'wait_bridge_progress', metadata,
+    Column('project_id', Text, ForeignKey('projects.id'), primary_key=True),
+    Column('phase', Text, primary_key=True),
+    Column('identity', Text, primary_key=True),
+    Column('state', Text, nullable=False),
+    Column('evidence', JSONB, nullable=False),
+    Column('updated_at', Float, nullable=False),
+    CheckConstraint("phase IN ('project','agent-waits','audit','sessionless')",
+                    name='ck_wait_bridge_progress_phase'),
+    CheckConstraint("state IN ('pending','complete','held')",
+                    name='ck_wait_bridge_progress_state'),
+)
+
+# A close proposal retains source/candidate identity, never asserts delivery.
+integration_close_attempts = Table(
+    "integration_close_attempts", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("session_id", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_task_id", Text, nullable=False),
+    Column("target_ref", Text, nullable=False),
+    Column("source_oid", Text, nullable=False),
+    Column("base_oid", Text),
+    Column("candidate_oid", Text),
+    Column("candidate_path", Text),
+    Column("candidate_ref", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("policy_digest", Text),
+    Column("evidence", JSONB, nullable=False),
+    Column("close_args", JSONB, nullable=False),
+    Column("budget_wait_id", Text),
+    Column("last_failure", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("task_id", "session_id", "claim_epoch", "source_oid", "target_ref",
+                     name="uq_integration_close_generation"),
+    CheckConstraint("state IN ('preparing','needs_author','checking','publish_uncertain',"
+                    "'finished','deferred','cancelled')", name="ck_integration_close_state"),
+    CheckConstraint("version >= 0 AND attempts >= 0", name="ck_integration_close_counters"),
+)

@@ -47,7 +47,6 @@ from src.config import (
     ReportQuietHoursConfig,
     ReportsConfig,
 )
-from src.database import Database
 from src.database.tables import doc_reviews, escalations, human_asks, messages, tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.supervisor import (
@@ -68,7 +67,6 @@ from src.escalations.transport import SinkTransport
 from src.event_bus import EventBus
 from src.models import Project, Task, TaskCompletion
 from src.orchestrator import Orchestrator
-from tests.db_fixtures import lease_dsn
 
 CHANNEL = "424242424242424242"
 CADENCE = 120.0 * 60.0
@@ -142,13 +140,11 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("digest-supervisor"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("digest-supervisor")
     await database.create_project(Project(id="p", name="Agent Queue"))
     await database.create_project(Project(id="other", name="Other"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -496,6 +492,7 @@ async def test_needs_you_counts_pending_sources_during_discussion_not_diagnostic
             incident_key=f"question:{state}",
             supervisor_owner="supervisor-p",
             summary="Choose a branch",
+            task_title="Choose a release branch",
             investigation="Two branches contain the fix",
             decision_requested="Which branch should ship?",
             severity="medium",
@@ -508,6 +505,28 @@ async def test_needs_you_counts_pending_sources_during_discussion_not_diagnostic
             await conn.execute(
                 update(escalations).where(escalations.c.id == row["id"]).values(values)
             )
+    await db.create_escalation(
+        id="esc-answered-stale",
+        project_id="p",
+        source_kind="question",
+        source_identity="answered-stale",
+        incident_key="question:answered-stale",
+        supervisor_owner="supervisor-p",
+        summary="Choose a branch",
+        task_title="Choose a release branch",
+        investigation="Two branches contain the fix",
+        decision_requested="Which branch should ship?",
+        severity="medium",
+        now=live_anchor() + 30,
+    )
+    await db.accept_escalation_reply(
+        "esc-answered-stale", transport="dashboard", external_message_id="answer",
+        verified_actor="human:jack", text="Authorization granted", received_at=live_anchor() + 40,
+    )
+    await db.transition_escalation(
+        "esc-answered-stale", expected_revision=1, new_state="stale", now=live_anchor() + 60,
+        terminal_outcome="No activity after the recorded answer",
+    )
     await db.create_escalation(
         id="esc-delivery",
         project_id="p",
@@ -792,3 +811,65 @@ def test_digest_hash_includes_the_full_pending_set_not_the_visible_cap():
     assert len(before["needs_you"]["items"]) == 5
     assert before["needs_you"]["omitted"] == 96
     assert facts_hash(before) != facts_hash(after)
+
+
+def human_reminders(count=12):
+    return [dict(wait_id=f"w-{i:02}", project_id="p", task_id=f"task-{i}", title="Question",
+                 subject="task_comment", age_seconds=86400 * (20 - i), created_at=BASE + i)
+            for i in reversed(range(count))]
+
+
+def test_human_reminders_are_capped_oldest_first_without_hourly_wake_or_age_churn():
+    brief = _idle_brief(waiting_on_you=human_reminders())
+    reminders = brief["waiting_on_you"]
+    assert reminders["count"] == 12 and reminders["more"] == 2
+    assert [row["wait_id"] for row in reminders["items"]] == [f"w-{i:02}" for i in range(10)]
+    assert brief["counts"]["needs_you"] == 0
+    identity = facts_hash(brief)
+    for row in reminders["items"]:
+        row["age_seconds"] += 86400 * 3
+    assert facts_hash(brief) == identity
+    assert _decide(brief, previous_facts_hash=identity).action == SKIP_UNCHANGED
+    assert _decide(brief, previous_facts_hash=None).action == SKIP_UNCHANGED
+
+
+def test_authored_and_fallback_digest_keep_daily_human_reminder_within_budget():
+    brief = _idle_brief(waiting_on_you=human_reminders())
+    authored = render_authored_digest("Needs you: no new approvals.\n" + "x" * 900,
+                                      base_url=BASE_URL, facts=brief)
+    assert "Waiting on you (12)" in authored
+    assert authored.index("Needs you") < authored.index("Waiting on you")
+    assert len(authored) <= 600 and authored.endswith(f"<{BASE_URL}/focus/inbox>")
+    deterministic = f"📊 Work completed.\nNeeds you: nothing new.\n<{BASE_URL}/focus/inbox>"
+    fallback = fallback_text(deterministic, brief)
+    assert "Waiting on you (12)" in fallback
+    assert fallback.endswith(f"<{BASE_URL}/focus/inbox>") and len(fallback) <= 600
+    assert "Waiting on you (12)" in fallback_text("", brief)
+
+
+def test_authored_digest_receives_delivery_waits_as_separate_facts():
+    waiting = [{"task_id": "consumer.4", "project_id": "p", "reason": "Land source.6 on dev"}]
+    facts = _idle_brief(waiting_on_delivery=waiting)
+    assert facts["counts"]["waiting_on_delivery"] == 1
+    assert facts["waiting_on_delivery"]["items"] == waiting
+    assert facts["stuck"]["items"] == []
+
+
+def test_empty_activity_fallback_names_frozen_delivery_wait():
+    facts = _idle_brief(waiting_on_delivery=[{
+        "task_id": "consumer.4", "reason": "Land source.6 on dev; refresh aq/epic",
+    }])
+    text = fallback_text("", facts)
+    assert "Waiting on delivery" in text
+    assert "source.6 on dev" in text and "aq/epic" in text
+
+
+def test_empty_fallback_keeps_delivery_wait_and_daily_human_reminder_together():
+    facts = _idle_brief(
+        waiting_on_you=human_reminders(),
+        waiting_on_delivery=[{"task_id": "consumer.4", "reason": "Land source.6 on dev"}],
+    )
+    text = fallback_text("", facts)
+    assert "Waiting on delivery: consumer.4: Land source.6 on dev" in text
+    assert "Waiting on you (12)" in text
+    assert len(text) <= 600

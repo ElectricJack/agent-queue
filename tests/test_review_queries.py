@@ -786,7 +786,7 @@ class TestMigration:
             trans = await conn.begin()
             try:
                 await _remove_ask_transport_fixture(conn)
-                await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
+                await conn.run_sync(_run(_load_migration("a00000000096_human_ask_decisions"), "downgrade"))
                 # Rewind to a00000000013: no review tables, no delegation
                 # column, and a gate-type CHECK without 'review'.
                 await conn.execute(
@@ -846,7 +846,7 @@ class TestMigration:
             trans = await conn.begin()
             try:
                 await _remove_ask_transport_fixture(conn)
-                await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
+                await conn.run_sync(_run(_load_migration("a00000000096_human_ask_decisions"), "downgrade"))
                 # Alembic downgrades the later attachment revision before
                 # revision 14; its foreign key must be removed in that order.
                 attachments = _load_migration("a00000000046_review_attachments")
