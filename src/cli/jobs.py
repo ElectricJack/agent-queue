@@ -30,6 +30,7 @@ def submit(
     project_id=None,
     task_id=None,
     session_id=None,
+    attempt_id=None,
 ):
     # Mint before contacting the daemon; no local fallback on an ambiguous response.
     key = idempotency_key or str(uuid.uuid4())
@@ -42,6 +43,7 @@ def submit(
         project_id=project_id,
         task_id=task_id,
         session_id=session_id,
+        attempt_id=attempt_id,
     )
     click.echo(f"Job submission key: {key}", err=True)
     return _execute(ctx, "job_submit", {k: v for k, v in params.items() if v is not None})
@@ -59,6 +61,8 @@ def job():
 @click.option("--project-id", default=None)
 @click.option("--task-id", default=None)
 @click.option("--session-id", default=None, help="Owner session for local operator waits.")
+@click.option("--attempt-id", default=None,
+              help="Pin this attempt's editor build for a capture (matter_render only).")
 @claim_epoch_option
 @click.argument("argv", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
@@ -72,6 +76,8 @@ def job_submit(ctx, **kwargs):
 @click.option("--preset", required=True)
 @click.option("--idempotency-key", default=None)
 @click.option("--wait", is_flag=True)
+@click.option("--attempt-id", default=None,
+              help="Pin this attempt's editor build for a capture (matter_render only).")
 @claim_epoch_option
 @click.argument("argv", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context

@@ -15,12 +15,14 @@ import time
 from pydantic import ValidationError
 from sqlalchemy import insert, select, update
 
+from src.waits.sources import insert_message_with_source_event
+from src.task_templates import render_task_template
 from src.commands.contracts.object_loop import (
     ObjectCheckpointReadArgs, ObjectLoopReconcileArgs, ObjectLoopStartArgs,
     ObjectLoopInputsArgs, ObjectScoreRecordArgs, Reservation, Variant,
 )
 from src.database.tables import (
-    doc_review_revisions, doc_reviews, object_loops, tasks,
+    doc_review_revisions, doc_reviews, object_loops, task_completion_records, tasks,
 )
 from src.object_loop.contracts import validate_score_receipt
 
@@ -32,9 +34,77 @@ _TERMINAL = {"COMPLETED", "BLOCKED"}
 #: the ceiling that was in force when it was admitted, never a silent raise.
 _DEFAULT_MAX_ROUNDS = 8
 
-
 def _error(message: str) -> dict:
     return {"success": False, "error": message}
+
+
+def _frozen_inputs(state: dict) -> dict:
+    """The comparison inputs fixed for this attempt, named for a worker packet."""
+    return {
+        "reference_kind": state.get("reference_kind", "calibrated"),
+        "reference_sha256": state["reference_sha256"],
+        "rig_sha256": state["rig_sha256"],
+        "scorer_sha256": state["scorer_sha256"],
+        "render_profile_sha256": state["render_profile_sha256"],
+        "policy_sha256": state["policy_sha256"],
+        "mandatory_views": list(state["mandatory_views"]),
+    }
+
+
+def _round_handoff(state: dict) -> dict:
+    """The incumbent bundle, every earlier round's changes, and the frozen inputs."""
+    return {
+        "attempt_id": state["attempt_id"],
+        "round_id": state["round_id"],
+        "incumbent": {
+            "sha256": state["incumbent_sha256"],
+            "artifact": state.get("incumbent_artifact"),
+            "capture_sha256": state.get("incumbent_capture_sha256"),
+        },
+        "prior_rounds": list(state.get("round_history") or []),
+        "frozen_inputs": _frozen_inputs(state),
+        "instructions": render_task_template("object-round-handoff", attempt_id=state["attempt_id"]),
+    }
+
+
+def _branch_and_commit(branch: str | None, commits: str | None) -> dict:
+    """The branch and head commit a close recorded, or the reason it named none."""
+    try:
+        recorded = json.loads(commits) if isinstance(commits, str) else list(commits or [])
+    except ValueError:
+        recorded = []
+    return {
+        "branch": branch,
+        "commit": recorded[-1] if recorded else None,
+    }
+
+
+async def _round_commits(conn, task_ids: list[str]) -> dict:
+    """Each candidate task's branch and commit, as its own close recorded them.
+
+    Read from the completion record rather than resolved from git here: the
+    worktree slot a round worker used is released when it settles, so the branch
+    is gone by the time the next round's packet is written, while the close that
+    named the branch and the commit is durable evidence.
+    """
+    ids = sorted(set(task_ids))
+    if not ids:
+        return {}
+    rows = await conn.execute(
+        select(
+            task_completion_records.c.task_id,
+            task_completion_records.c.branch,
+            task_completion_records.c.commits,
+        )
+        .where(task_completion_records.c.task_id.in_(ids))
+        .order_by(task_completion_records.c.completed_at.desc(), task_completion_records.c.id.desc())
+    )
+    found: dict[str, dict] = {}
+    for row in rows.mappings():
+        found.setdefault(
+            row["task_id"], _branch_and_commit(row["branch"], row["commits"])
+        )
+    return found
 
 
 def _budget(reservation: Reservation) -> dict:
@@ -132,6 +202,59 @@ async def _review_verdict(conn, state: dict) -> bool:
 
 
 class ObjectLoopCommandsMixin:
+    async def _readable_object_loops(self, request, *, require_object: bool = True) -> list:
+        """Fence evidence reads by authenticated project and live held provenance."""
+        from src.api.auth import RequestScope
+        from src.api.scope import held_task_for_session
+        from src.commands.principal import current_principal
+
+        scope = self._job_scope()
+        principal = current_principal()
+        project_id = scope.get("project_id") or (principal.project_id if principal else None)
+        if project_id and request.project_id not in (None, project_id):
+            raise ValueError("out of scope: project_id mismatch")
+        project_id = project_id or request.project_id
+        object_id = getattr(request, "object_id", None)
+        held = None
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            held = await held_task_for_session(self.db, RequestScope(
+                kind="session", project_id=scope.get("project_id"),
+                task_id=scope.get("task_id"), session_id=scope.get("session_id"),
+            ))
+            session = await self.db.get_session(scope.get("session_id")) if held else None
+            if (held is None or (scope.get("session_instance_token")
+                    and session.instance_token != scope["session_instance_token"])):
+                raise ValueError("out of scope: object evidence requires a live held task")
+            if (request.task_id not in (None, held.id)
+                    or request.session_id not in (None, scope.get("session_id"))):
+                raise ValueError("out of scope: task/session mismatch")
+            marker = await self.db.get_task_meta(held.id, "object_experiment")
+            if not isinstance(marker, dict) or not marker.get("object_id"):
+                if not require_object:
+                    return []
+                raise ValueError("out of scope: held task has no object provenance")
+            if object_id and object_id != marker["object_id"]:
+                raise ValueError("out of scope: object_id mismatch")
+            object_id = marker["object_id"]
+        query = select(object_loops)
+        if project_id:
+            query = query.where(object_loops.c.project_id == project_id)
+        if object_id:
+            query = query.where(object_loops.c.object_id == object_id)
+        async with self.db._engine.connect() as conn:
+            rows = (await conn.execute(query)).mappings().all()
+        if held:
+            rows = [row for row in rows if (
+                held.id == row.finalization_task_id
+                or (held.created_by_kind == "object_loop" and held.created_by_id == row.object_id
+                    and held.parent_task_id == row.epic_task_id)
+                or (marker.get("purpose") == "bootstrap"
+                    and held.parent_task_id == row.epic_task_id)
+            )]
+            if not rows and require_object:
+                raise ValueError("out of scope: held task does not belong to this object loop")
+        return rows
+
     async def _cmd_artifact_verify(self, args: dict) -> dict:
         """Resolve a durable artifact URI and re-hash the bytes it names.
 
@@ -141,10 +264,38 @@ class ObjectLoopCommandsMixin:
         or ``https://`` URI belongs to the external artifact adapter, not here.
         """
         from src.commands.contracts.object_loop import ArtifactVerifyArgs
-        from src.object_loop.artifacts import ArtifactError, verify
+        from src.object_loop.artifacts import ArtifactError, metadata, parse_uri, verify
+        from src.object_loop.evidence import artifact_digests
+        from src.commands.principal import current_principal
 
         try:
             request = ArtifactVerifyArgs.model_validate(args)
+            principal = current_principal()
+            scope = self._job_scope()
+            if scope.get("kind") == "session" or (principal and principal.enforced):
+                rows = await self._readable_object_loops(request, require_object=False)
+                digest = parse_uri(request.uri)
+                project_id = scope.get("project_id") or (
+                    principal.project_id if principal else None
+                ) or request.project_id
+                allowed = bool(scope.get("elevated") and not project_id)
+                for row in rows:
+                    if allowed:
+                        break
+                    if digest in await asyncio.to_thread(
+                        artifact_digests, self.config.data_dir, row.state,
+                    ):
+                        allowed = True
+                        break
+                if not allowed:
+                    # Captures can be verified before a score names them, and
+                    # bootstrap jobs can run before the loop row exists.
+                    retained = await asyncio.to_thread(metadata, self.config.data_dir, request.uri)
+                    job_id = ((retained or {}).get("origin") or {}).get("job_id")
+                    job = await self._job_for_scope(job_id) if job_id else None
+                    allowed = bool(job and (not project_id or job["project_id"] == project_id))
+                if not allowed:
+                    return _error("out of scope: artifact does not belong to an accessible object")
             return {"success": True, **await asyncio.to_thread(
                 verify, self.config.data_dir, request.uri, request.sha256
             )}
@@ -174,6 +325,43 @@ class ObjectLoopCommandsMixin:
         return {"success": True, **inputs}
 
     async def _cmd_object_loop_start(self, args: dict) -> dict:
+        result = await self._start_object_loop(args)
+        if result.get("success"):
+            return result
+        result.setdefault("error_code", "object_loop.start_refused")
+        # Only validated, in-project roots can own durable refusal evidence.
+        try:
+            request = ObjectLoopStartArgs.model_validate(args)
+        except ValidationError:
+            return result
+        epic = await self.db.get_task(request.epic_task_id)
+        if epic is None or epic.project_id != request.project_id or epic.parent_task_id:
+            return result
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from src.database.tables import messages
+
+        refusal = {
+            "object_id": request.object_id, "attempt_id": request.attempt_id,
+            "error_code": result["error_code"], "error": result.get("error"),
+            "failed_at": time.time(),
+        }
+        # The same refusal across event/timer replays produces one durable notice.
+        identity = json.dumps([request.project_id, request.epic_task_id,
+                               request.attempt_id, result.get("error")])
+        message_id = "msg-object-start-" + hashlib.sha256(identity.encode()).hexdigest()
+        async with self.db.immediate() as conn:
+            await self.db._upsert_meta(epic.id, "object_start_refusal", refusal, conn=conn)
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id=message_id, project_id=request.project_id,
+                from_kind="system", from_id="object-loop",
+                to_kind="session", to_id=f"supervisor-{request.project_id}",
+                subject=f"Object loop start refused: {request.object_id}",
+                body=f"Object {request.object_id}, epic {epic.id}: {result.get('error')}",
+                created_at=time.time(),
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        return result
+
+    async def _start_object_loop(self, args: dict) -> dict:
         try:
             request = ObjectLoopStartArgs.model_validate(args)
             if len(set(request.mandatory_views)) != len(request.mandatory_views):
@@ -247,7 +435,13 @@ class ObjectLoopCommandsMixin:
                 raise ValueError("brief review gate is missing")
             state["brief_checkpoint"]["gate_id"] = review.gate_id
             if not await _approval_valid(conn, request.project_id, state["brief_checkpoint"]):
-                raise ValueError("brief review is not approved at the exact revision")
+                raise ValueError(
+                    f"brief review {request.brief_review_id} is not approved at the exact "
+                    f"revision: cooked start packet pins revision {request.brief_review_revision}; "
+                    f"current revision is {review.current_revision} ({review.state}). "
+                    "The brief revision/hash must match the approved revision; "
+                    "update the start packet explicitly before retrying."
+                )
             gate_id, _created = await self.db.create_gate(
                 request.project_id, "event", f"Finalize object {request.object_id}",
                 await_id=f"object:{request.object_id}:terminal", waiter_task_ids=[task_id], conn=conn,
@@ -265,12 +459,13 @@ class ObjectLoopCommandsMixin:
                 "parent_id": request.epic_task_id,
                 "title": f"Finalize object {request.object_id}",
                 "description": (
-                    "Verify retained evaluation artifacts, checkpoints and stop reason. "
+                    render_task_template("object-result-handoff") + "\nInternal inputs: "
                     f"reference_kind={request.reference_kind}."
-                    + (" Self-reference results are indicative, for plumbing only."
+                    + (render_task_template("object-self-reference")
                        if request.reference_kind == "self" else "")
                 ),
                 "task_type": "chore",
+                "deliverables": [{"id": "result", "kind": "review", "target": "other"}],
                 "dedup_key": f"object:{request.object_id}:finalize",
                 "_after_create_on": bootstrap,
                 "_created_by_kind": "object_loop",
@@ -296,10 +491,36 @@ class ObjectLoopCommandsMixin:
                 "state": state, "created": True}
 
     async def _cmd_object_checkpoint_read(self, args: dict) -> dict:
+        from src.object_loop.evidence import final_evidence
+        from src.commands.principal import PrincipalKind, current_principal
+
         try:
             request = ObjectCheckpointReadArgs.model_validate(args)
-        except ValidationError as exc:
+            principal = current_principal()
+            if principal and principal.kind is PrincipalKind.PLAYBOOK:
+                from src.playbooks.invocation import current_invocation
+
+                invocation = current_invocation()
+                # This read acts for a project run, never for a worker whose
+                # claim/epoch/instance-token fences cannot survive a kind switch.
+                # Session-origin runs must continue to use the direct session read.
+                if (invocation is None or not principal.project_id
+                        or principal.session_id is not None or principal.task_id is not None
+                        or not principal.parent_run_id or not principal.parent_step_id
+                        or invocation.run_id != principal.parent_run_id
+                        or invocation.step_id != principal.parent_step_id
+                        or "object_checkpoint_read" not in invocation.aq_commands
+                        or not principal.policy.allows_aq_command("object_checkpoint_read")
+                        or request.task_id is not None or request.session_id is not None):
+                    raise ValueError("out of scope: checkpoint read requires a project playbook "
+                                     "invocation without session/task identity")
+                if (self._job_scope() or {}).get("project_id") not in (None, principal.project_id):
+                    raise ValueError("out of scope: inherited project_id mismatch")
+            rows = await self._readable_object_loops(request)
+        except (ValidationError, ValueError) as exc:
             return _error(str(exc))
+        if not rows:
+            return _error("object loop not found in project")
         async with self.db.immediate() as conn:
             row = (await conn.execute(select(object_loops).where(
                 object_loops.c.object_id == request.object_id,
@@ -308,9 +529,10 @@ class ObjectLoopCommandsMixin:
             if row is None:
                 return _error("object loop not found in project")
             approved = await _review_verdict(conn, row.state)
-            return {"success": True, "object_id": request.object_id, "version": row.version,
-                    "approved": approved if row.state.get("checkpoint") else False,
-                    "state": row.state}
+        evidence = await asyncio.to_thread(final_evidence, self.config.data_dir, row.state)
+        return {"success": True, "object_id": request.object_id, "version": row.version,
+                "approved": approved if row.state.get("checkpoint") else False,
+                "state": row.state, "evidence": evidence}
 
     async def _cmd_object_loop_reconcile(self, args: dict) -> dict:
         try:
@@ -393,6 +615,16 @@ class ObjectLoopCommandsMixin:
                     tasks.c.id != row.finalization_task_id,
                 ))).mappings().all()
                 if all(_task_settled(child) for child in children):
+                    # The finalizer can read only its own task. Give it the
+                    # retained baseline and best captures before releasing it,
+                    # including after restart; never require sibling authority.
+                    from src.object_loop.evidence import final_evidence
+
+                    evidence = await asyncio.to_thread(final_evidence, self.config.data_dir, state)
+                    await conn.execute(update(tasks).where(
+                        tasks.c.id == row.finalization_task_id,
+                    ).values(description=render_task_template("object-result-handoff") + "\nInternal evidence (for the worker):\n"
+                             + json.dumps(evidence, sort_keys=True)))
                     gate_to_release = row.terminal_gate_id
                 else:
                     stopped_outcome = "waiting_for_settlement"
@@ -424,6 +656,8 @@ class ObjectLoopCommandsMixin:
                             "mandatory_views": state["mandatory_views"],
                             "reservation": variant["reservation"],
                             "publication": "artifact_only",
+                            "round_handoff": _round_handoff(state),
+                            "review_guidance": render_task_template("object-internal-handoff"),
                             **({"result_interpretation": "indicative; plumbing only"}
                                if state.get("reference_kind") == "self" else {}),
                         }, sort_keys=True), "candidate",
@@ -448,15 +682,13 @@ class ObjectLoopCommandsMixin:
                                 "project_id": row.project_id,
                                 "expected_version": row.version + 1,
                                 "loop_state": state,
+                                "frozen_inputs": _frozen_inputs(state),
+                                "round_handoff": _round_handoff(state),
                                 "handoff": (
-                                    "Independently validate immutable candidate/capture bundles "
-                                    "from the configured artifact adapter. Before closing, use "
-                                    "aq task set HELD_TASK --note with object-score:1 followed "
-                                    "by a newline and a complete JSON ObjectScoreRecordArgs "
-                                    "packet. Use this expected_version and your held task as "
-                                    "score_task_id. Do not call loop mutators or publish assets."
+                                    render_task_template("object-score-handoff")
                                 ),
                                 "mandatory_views": state["mandatory_views"],
+                                "review_guidance": render_task_template("object-internal-handoff"),
                                 "publication": "artifact_only"}, sort_keys=True), "score",
                     approval_gate_id=(state.get("last_approved_checkpoint") or
                                       state["brief_checkpoint"])["gate_id"],
@@ -483,6 +715,43 @@ class ObjectLoopCommandsMixin:
         ids = [member["task_id"] for member in state["wave"]]
         rows = (await conn.execute(select(tasks).where(tasks.c.id.in_(ids)))).mappings().all()
         return {row.id: row for row in rows}
+
+    async def _record_round_history(self, conn, state, receipts, promoted) -> None:
+        """Append this round's scored variants to the attempt's handoff history.
+
+        Bounded by the round ceiling and the three-variant wave, so the loop row
+        stays small. A replay of the same fingerprint returns before this runs,
+        so a round is never recorded twice.
+        """
+        commits = await _round_commits(conn, [r.task_id for r in receipts])
+        history = list(state.get("round_history") or [])
+        scored = {r.task_id for r in receipts}
+        if {entry["task_id"] for entry in history} & scored:
+            return
+        for receipt in receipts:
+            artifact = next(
+                (a for a in receipt.artifacts if a.sha256 == receipt.candidate_sha256), None
+            )
+            metrics = [m for m in receipt.per_view.values() if m is not None]
+            history.append({
+                "round_id": receipt.round_id,
+                "variant_id": receipt.variant_id,
+                "task_id": receipt.task_id,
+                "candidate_sha256": receipt.candidate_sha256,
+                "candidate_artifact": artifact.model_dump() if artifact else None,
+                "artifacts": [a.model_dump() for a in receipt.artifacts],
+                "capture_receipts": [c.model_dump() for c in receipt.capture_receipts],
+                "branch": commits.get(receipt.task_id, {}).get("branch"),
+                "commit": commits.get(receipt.task_id, {}).get("commit"),
+                "validity": receipt.validity,
+                "promoted": promoted is not None and receipt.variant_id == promoted,
+                "hypothesis": receipt.hypothesis,
+                "patch_scope": list(receipt.patch_scope),
+                "predicted_effect": receipt.predicted_effect,
+                "observed_delta": receipt.observed_delta,
+                "mean_loss": (sum(m.loss for m in metrics) / len(metrics)) if metrics else None,
+            })
+        state["round_history"] = history
 
     async def _ensure_object_child(
         self, conn, loop, key, title, description, purpose, *, approval_gate_id: str
@@ -617,11 +886,19 @@ class ObjectLoopCommandsMixin:
                     if artifact.sha256 == winner.candidate_sha256
                 )
                 state["incumbent_loss"] = winner_loss
+                state["best_receipt"] = winner.model_dump()
                 state["selected_variant_id"] = winner.variant_id
                 state["plateau_count"] = 0
             else:
                 state["selected_variant_id"] = None
                 state["plateau_count"] += 1
+            # Every scored variant of this round becomes the next round's handoff:
+            # its bundle, the branch and commit that produced it, what it claimed
+            # and what it measured. A round worker that cannot read what the
+            # rounds before it changed cannot build on them.
+            await self._record_round_history(
+                conn, state, request.receipts, state.get("selected_variant_id")
+            )
             if not eligible:
                 state["repair_count"] += 1
             try:
@@ -658,6 +935,8 @@ class ObjectLoopCommandsMixin:
                             or review.current_revision != request.review_revision
                             or revision.content_sha256 != request.review_sha256):
                         raise ValueError("checkpoint review revision is missing or foreign")
+                    if review.decider != "supervisor":
+                        raise ValueError("internal checkpoint review must have supervisor decider")
                     state["checkpoint"] = {"review_id": request.review_id,
                                            "revision": request.review_revision,
                                            "sha256": request.review_sha256,

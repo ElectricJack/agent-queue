@@ -57,6 +57,10 @@ class TestExactGitProvenance:
         final = await _provenance_commit(provenance_repo, "two", message="two\n\nAQ-Task: task")
         completed = CompletedSource(CompletionIdentity("p", "r", "task", "close-1"), final)
         marker = await store.write_completion(completed, claim_epoch=1)
+        assert completed.identity.ref.startswith("refs/aq/provenance/completions/")
+        assert completed.identity.ref in await store.run("ls-remote", "origin")
+        assert "aq-provenance" not in await store.run("ls-remote", "--heads", "origin")
+        assert "aq-provenance" not in await store.run("for-each-ref", "--format=%(refname)")
         await store.run("checkout", "-b", "target", base)
         # Force an actual rewrite, not cherry-pick's optional fast-forward.
         await _provenance_commit(provenance_repo, "target-only")
@@ -117,12 +121,12 @@ class TestExactGitProvenance:
         monkeypatch.setattr(git, "_apush_oid", refused)
         results = await store.write_completions([*fresh, taken, kept])
         # One transfer carries every absent ref, and nothing else.
-        assert [sorted(tips) for tips in pushes] == [sorted(c.identity.branch for c in fresh)]
+        assert [sorted(tips) for tips in pushes] == [sorted(c.identity.ref for c in fresh)]
         assert not single
         for completed in fresh:
             assert (await store.read_completion(completed.identity))["source_oid"] == completed.source_oid
             assert results[completed.identity] == await store.run(
-                "rev-parse", "refs/remotes/origin/" + completed.identity.branch)
+                "rev-parse", completed.identity.ref)
         # A generation bound to other evidence fails alone; an identical one is kept.
         assert isinstance(results[taken.identity], ValueError)
         assert "already binds different evidence" in str(results[taken.identity])
@@ -138,7 +142,194 @@ class TestExactGitProvenance:
         conflicted = await store.write_completions(
             [CompletedSource(split, first), CompletedSource(split, second)])
         assert "two sources" in str(conflicted[split])
-        assert split.branch not in await store.run("ls-remote", "origin")
+        assert split.ref not in await store.run("ls-remote", "origin")
+
+    @pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+    @pytest.mark.parametrize(
+        "observation", ["absent", "read_error", "mismatch", "correct", "false_success"]
+    )
+    async def test_publication_cause_survives_unverified_final_readback(
+        self, provenance_repo, monkeypatch, batched, observation,
+    ):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        completed = CompletedSource(CompletionIdentity("p", "r", "task", "close-1"), base)
+        ref = completed.identity.ref
+        reads, publications = [], []
+        real_read = git.als_remote_qualified_refs
+        cause = (
+            "\x1b\r" * 600
+            + "remote hook declined https://alice:secret-password@github.com/acme/repo.git "
+            "GH_TOKEN=ghp_0123456789abcdefghijklmnop\nAuthorization: Bearer private-header\n"
+            "immutable publication rejected"
+        )
+
+        async def publish(checkout, tips, **kwargs):
+            publications.append((checkout, tips, kwargs))
+            return {ref: RemoteRefResult(
+                RemoteRefState.PRESENT if observation == "false_success" else RemoteRefState.ERROR,
+                oid=tips[ref] if observation == "false_success" else None,
+                error=cause,
+            )}
+
+        async def read(checkout, refs, **kwargs):
+            reads.append(list(refs))
+            if len(reads) == 1:
+                return await real_read(checkout, refs, **kwargs)
+            assert len(reads) == 2 and list(refs) == [ref]
+            oid = publications[0][1][ref]
+            result = {
+                "absent": RemoteRefResult(RemoteRefState.ABSENT),
+                "read_error": RemoteRefResult(
+                    RemoteRefState.ERROR,
+                    error="read denied https://reader:read-secret@github.com/acme/repo.git",
+                ),
+                "mismatch": RemoteRefResult(RemoteRefState.PRESENT, oid=base),
+                "correct": RemoteRefResult(RemoteRefState.PRESENT, oid=oid),
+                "false_success": RemoteRefResult(RemoteRefState.ABSENT),
+            }[observation]
+            return {ref: result}
+
+        monkeypatch.setattr(git, "apush_new_refs", publish)
+        monkeypatch.setattr(git, "als_remote_qualified_refs", read)
+        if batched:
+            result = (await store.write_completions([completed], claim_epoch=7))[completed.identity]
+        else:
+            try:
+                result = await store.write_completion(completed, claim_epoch=7)
+            except GitError as exc:
+                result = exc
+        [(_checkout, tips, kwargs)] = publications
+        oid = tips[ref]
+        assert kwargs == {"qualified": True, "repository_url": store.repository_url}
+        assert len(reads) == 2
+        if observation == "correct":
+            assert result == oid
+            record = await store.read_completion(completed.identity)
+            assert record["claim_epoch"] == 7 and record["source_oid"] == base
+            assert record["identity"]["generation"] == "close-1"
+        else:
+            assert isinstance(result, GitError)
+            diagnostic = str(result)
+            assert "complete provenance is not verified" in diagnostic
+            assert "remote hook declined" in diagnostic
+            assert "immutable publication rejected" in diagnostic
+            assert f"ref={ref}" in diagnostic and f"expected_oid={oid}" in diagnostic
+            assert "readback=[" in diagnostic and "publication=[" in diagnostic
+            if observation == "read_error":
+                assert "read denied" in diagnostic
+            if observation == "mismatch":
+                assert f"readback=[present, oid={base}]" in diagnostic
+            for secret in ("secret-password", "ghp_0123456789abcdefghijklmnop", "private-header",
+                           "read-secret", "\x1b", "\r", "\n"):
+                assert secret not in diagnostic
+            assert len(diagnostic) < 2600
+            assert await store.read_completion(completed.identity) is None
+
+    async def test_batch_failure_diagnostics_do_not_borrow_a_peer_publication_error(
+        self, provenance_repo, monkeypatch,
+    ):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        completions = [CompletedSource(CompletionIdentity("p", "r", task, "g"), base)
+                       for task in ("a", "b")]
+
+        async def publish(_checkout, tips, **_kwargs):
+            return {item.identity.ref: RemoteRefResult(
+                RemoteRefState.ERROR, error=f"{item.identity.task_id} hook declined")
+                for item in completions}
+
+        monkeypatch.setattr(git, "apush_new_refs", publish)
+        results = await store.write_completions(completions)
+        for item, peer in (completions, completions[::-1]):
+            assert isinstance(results[item.identity], GitError)
+            assert f"{item.identity.task_id} hook declined" in str(results[item.identity])
+            assert f"{peer.identity.task_id} hook declined" not in str(results[item.identity])
+
+    @pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+    async def test_manager_transfer_and_read_error_both_survive_final_absent_readback(
+        self, provenance_repo, monkeypatch, batched,
+    ):
+        import subprocess
+
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        item = CompletedSource(CompletionIdentity("p", "r", "task", "g"), base)
+        real_run, real_read = git.arun_git_result, git.als_remote_qualified_refs
+        reads, pushes = [], []
+
+        async def run(args, **kwargs):
+            if args[0] == "push":
+                pushes.append(args)
+                return subprocess.CompletedProcess(args, 1, "", (
+                    "remote hook declined https://alice:password@github.com/o/r\n"
+                    "Authorization: Bearer private-header\ncausal transfer failed"
+                ))
+            return await real_run(args, **kwargs)
+
+        async def read(checkout, refs, **kwargs):
+            reads.append(list(refs))
+            if len(reads) == 2:
+                return {item.identity.ref: RemoteRefResult(
+                    RemoteRefState.ERROR, error="transfer readback unavailable")}
+            return await real_read(checkout, refs, **kwargs)
+
+        monkeypatch.setattr(git, "arun_git_result", run)
+        monkeypatch.setattr(git, "als_remote_qualified_refs", read)
+        if batched:
+            error = (await store.write_completions([item]))[item.identity]
+        else:
+            with pytest.raises(GitError) as caught:
+                await store.write_completion(item)
+            error = caught.value
+        assert isinstance(error, GitError)
+        assert len(reads) == 3 and len(pushes) == 1
+        assert f"--force-with-lease={item.identity.ref}:{'0' * 40}" in pushes[0]
+        diagnostic = str(error)
+        assert "readback=[absent]" in diagnostic
+        assert "transfer readback unavailable" in diagnostic
+        assert "causal transfer failed" in diagnostic and "remote hook declined" in diagnostic
+        assert "password" not in diagnostic and "private-header" not in diagnostic
+        assert await store.read_completion(item.identity) is None
+
+    @pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+    @pytest.mark.parametrize("legacy", [False, True], ids=["current", "legacy"])
+    async def test_repository_read_authority_failure_prevents_publication(
+        self, provenance_repo, monkeypatch, batched, legacy,
+    ):
+        from unittest.mock import AsyncMock
+
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        item = CompletedSource(CompletionIdentity("p", "r", "task", "g"), base)
+        failed_ref = "refs/heads/" + item.identity.legacy_branch if legacy else item.identity.ref
+
+        async def denied(_checkout, refs, **_kwargs):
+            return {ref: RemoteRefResult(
+                RemoteRefState.ERROR, error="authority denied https://user:secret@github.com/o/r"
+            ) if ref == failed_ref else RemoteRefResult(RemoteRefState.ABSENT) for ref in refs}
+
+        push = AsyncMock()
+        monkeypatch.setattr(git, "als_remote_qualified_refs", denied)
+        monkeypatch.setattr(git, "apush_new_refs", push)
+        if batched:
+            error = (await store.write_completions([item]))[item.identity]
+        else:
+            with pytest.raises(GitError) as caught:
+                await store.write_completion(item)
+            error = caught.value
+        assert isinstance(error, GitError) and "authority denied" in str(error)
+        assert "secret" not in str(error)
+        push.assert_not_awaited()
+        assert await store.read_completion(item.identity) is None
 
     async def test_archive_and_source_branch_deletion_preserve_git_proof(self, provenance_repo, db):
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -161,6 +352,7 @@ class TestExactGitProvenance:
         await store.run("branch", "-D", "aq/task")
         fresh = path.parent / "fresh"
         await git.acreate_checkout(str(remote), str(fresh), no_checkout=True)
+        await git.afetch_origin(str(fresh), repository_url=str(remote), all_heads=True)
         retained = GitProvenance(git, str(fresh), repository_url=str(remote))
         assert await retained.contained(completed, source)
         assert await db.get_task("task") is None
@@ -181,6 +373,8 @@ class TestExactGitProvenance:
         assert not await store.contained(original, repair)
         evidence = await store.write_replacement(source_oid=repair, base_oid=repair_base,
             replaces=[original], authority="repair_contract", reason="all work resolved")
+        assert evidence in await store.run("ls-remote", "origin", "refs/aq/provenance/replacements/*")
+        assert "aq-provenance" not in await store.run("ls-remote", "--heads", "origin")
         assert await store.contained(original, repair)
         assert not await store.contained(original, await store.run("rev-parse", repair + "^"))
         reopened = CompletedSource(CompletionIdentity("p", "r", "task", "close-2"), final)
@@ -238,7 +432,7 @@ class TestExactGitProvenance:
         assert not await store.contained(item, base)
         async def failed(*args, **kwargs):
             raise GitError("network unavailable")
-        monkeypatch.setattr(store.git, "als_remote_ref", failed)
+        monkeypatch.setattr(store.git, "als_remote_qualified_refs", failed)
         with pytest.raises(GitError, match="network unavailable"):
             await store.write_completion(item)
 
@@ -250,6 +444,220 @@ class TestExactGitProvenance:
         await store.write_completion(item, artifact=False)
         assert (await store.read_completion(item.identity))["artifact"] is False
         assert not await store.contained(item, base)
+
+
+class TestProvenanceNamespaceMigration:
+    async def _legacy(self, provenance_repo):
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, path, remote, _base = provenance_repo
+        source = await _provenance_commit(provenance_repo, "legacy-source")
+        item = CompletedSource(CompletionIdentity("p", "r", "task", "g"), source)
+        marker = await store.write_completion(item)
+        # Model a pre-upgrade remote and bare/local branch without rewriting its object.
+        await git._arun(["update-ref", "refs/heads/" + item.identity.legacy_branch, marker],
+                       cwd=str(remote))
+        await git._arun(["update-ref", "-d", item.identity.ref], cwd=str(remote))
+        await store.run("update-ref", "refs/heads/" + item.identity.legacy_branch, marker)
+        await store.run("update-ref", "-d", item.identity.ref)
+        return item, marker
+
+    async def test_dry_run_changes_no_refs_and_apply_preserves_exact_object(self, provenance_repo):
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, _base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        assert (await store.read_completion(item.identity))["source_oid"] == item.source_oid
+        remote_before = await store.run("ls-remote", "origin")
+        local_before = await store.run("for-each-ref", "--format=%(refname) %(objectname)")
+        config_before = (path / ".git" / "config").read_bytes()
+        migration = ProvenanceMigration(git)
+        preview = await migration.run(str(remote), checkout=str(path))
+        assert preview["outcome"] == "preview" and len(preview["rows"]) == 2
+        assert await store.run("ls-remote", "origin") == remote_before
+        assert await store.run("for-each-ref", "--format=%(refname) %(objectname)") == local_before
+        assert (path / ".git" / "config").read_bytes() == config_before
+        applied = await migration.run(str(remote), checkout=str(path), dry_run=False)
+        assert applied["outcome"] == "migrated" and applied["remaining"] == 0
+        assert {row["action"] for row in applied["rows"]} == {"migrated"}
+        assert await store.run("rev-parse", item.identity.ref) == marker
+        assert marker in await store.run("ls-remote", "origin", item.identity.ref)
+        assert "aq-provenance" not in await store.run("ls-remote", "--heads", "origin")
+        assert "aq-provenance" not in await store.run("for-each-ref", "--format=%(refname)")
+        assert await store.contained(item, item.source_oid)
+        assert (await migration.run(str(remote), dry_run=False))["rows"] == []
+
+    async def test_backstop_keeps_live_legacy_refs_and_audits_before_deletion(self, provenance_repo):
+        from contextlib import asynccontextmanager
+
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, _base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        allowed = False
+        audits = []
+
+        @asynccontextmanager
+        async def guard(branch):
+            assert branch == item.identity.legacy_branch
+            yield allowed
+
+        def audit(scope, branch, oid, proof):
+            assert branch == item.identity.legacy_branch and oid == marker
+            assert proof == "provenance:" + item.identity.ref
+            audits.append((scope, branch, oid))
+
+        migration = ProvenanceMigration(git)
+        held = await migration.run(str(remote), checkout=str(path), dry_run=False,
+                                   deletion_guard=guard, audit_delete=audit)
+        assert all(row["action"] == "blocked" for row in held["rows"])
+        assert audits == []
+        assert await git.arev_parse(str(remote), "refs/heads/" + item.identity.legacy_branch) == marker
+        assert await git.arev_parse(str(path), "refs/heads/" + item.identity.legacy_branch) == marker
+        allowed = True
+        original_remote_delete = git.adelete_remote_ref_exact
+        original_local_delete = git.adelete_local_ref_exact
+
+        async def remote_delete(*args, **kwargs):
+            assert ("remote", item.identity.legacy_branch, marker) in audits
+            return await original_remote_delete(*args, **kwargs)
+
+        async def local_delete(*args, **kwargs):
+            assert ("local", item.identity.legacy_branch, marker) in audits
+            return await original_local_delete(*args, **kwargs)
+
+        git.adelete_remote_ref_exact = remote_delete
+        git.adelete_local_ref_exact = local_delete
+        applied = await migration.run(str(remote), checkout=str(path), dry_run=False,
+                                      deletion_guard=guard, audit_delete=audit)
+        assert all(row["action"] == "migrated" for row in applied["rows"])
+
+    @pytest.mark.parametrize("failure", ["conflict", "copy", "moved", "invalid"])
+    async def test_failed_copy_or_changed_old_ref_is_never_deleted(
+        self, provenance_repo, monkeypatch, failure,
+    ):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, _path, remote, base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        old_ref = "refs/heads/" + item.identity.legacy_branch
+        if failure == "conflict":
+            await git._arun(["update-ref", item.identity.ref, base], cwd=str(remote))
+        elif failure == "copy":
+            async def failed_copy(checkout, tips, **kwargs):
+                return {ref: RemoteRefResult(RemoteRefState.ERROR, error="copy failed")
+                        for ref in tips}
+            monkeypatch.setattr(git, "apush_new_refs", failed_copy)
+        elif failure == "moved":
+            delete = git.adelete_remote_ref_exact
+            async def changed(checkout, branch, expected_old_oid, **kwargs):
+                await git._arun(["update-ref", old_ref, base], cwd=str(remote))
+                await delete(checkout, branch, expected_old_oid, **kwargs)
+            monkeypatch.setattr(git, "adelete_remote_ref_exact", changed)
+        else:
+            await git._arun(["update-ref", old_ref, base], cwd=str(remote))
+        result = await ProvenanceMigration(git).run(str(remote), dry_run=False)
+        assert result["outcome"] == "blocked"
+        assert result["rows"][0]["action"] == "blocked"
+        expected = base if failure in {"moved", "invalid"} else marker
+        assert (await git.als_remote_ref(str(store.checkout), item.identity.legacy_branch)).oid == expected
+
+    async def test_replacement_migration_and_fresh_fetched_snapshot(self, provenance_repo):
+        from src.integration.delivery_truth import delivery_snapshot
+        from src.integration.provenance import GitProvenance
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, base = provenance_repo
+        item, _marker = await self._legacy(provenance_repo)
+        await store.run("checkout", "-b", "repair", base)
+        await _provenance_commit(provenance_repo, "target-work")
+        repair_base = await store.run("rev-parse", "HEAD")
+        await store.run("cherry-pick", item.source_oid)
+        repair = await store.run("rev-parse", "HEAD")
+        replacement = await store.write_replacement(source_oid=repair, base_oid=repair_base,
+            replaces=[item], authority="operator", reason="entire source replaced")
+        ref = (await store.run("for-each-ref", "--format=%(refname)",
+                               "refs/aq/provenance/replacements/")).strip()
+        legacy = "refs/heads/aq-provenance/" + ref.removeprefix("refs/aq/provenance/")
+        await git._arun(["update-ref", legacy, replacement], cwd=str(remote))
+        await git._arun(["update-ref", "-d", ref], cwd=str(remote))
+        applied = await ProvenanceMigration(git).run(str(remote), dry_run=False, limit=1)
+        assert applied["remaining"] == 1
+        assert (await ProvenanceMigration(git).run(str(remote), dry_run=False))["remaining"] == 0
+        fresh = str(path.parent / "observer")
+        await git.acreate_checkout(str(remote), fresh, no_checkout=True)
+        snapshot = await delivery_snapshot(git, fresh, project_id="p", repository_id="r",
+            repository_url=str(remote), target_ref="refs/heads/main")
+        assert item.identity.ref in snapshot.source_heads
+        retained = GitProvenance(git, fresh, repository_url=str(remote))
+        assert (await retained.read_completion(item.identity, refs=snapshot.source_heads))["source_oid"] == item.source_oid
+        assert await retained.read_completion(item.identity, refs={}) is None
+        assert await retained.contained(item, repair)
+
+    @pytest.mark.parametrize("failure", ["conflict", "attached", "moved"])
+    async def test_local_migration_preserves_conflicting_attached_or_changed_head(
+        self, provenance_repo, monkeypatch, failure,
+    ):
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        old_ref = "refs/heads/" + item.identity.legacy_branch
+        if failure == "conflict":
+            await store.run("update-ref", item.identity.ref, base)
+        elif failure == "attached":
+            await store.run("checkout", item.identity.legacy_branch)
+        else:
+            delete = git.adelete_local_ref_exact
+            async def changed(checkout, *, ref, expected_old_oid):
+                await store.run("update-ref", ref, base)
+                await delete(checkout, ref=ref, expected_old_oid=expected_old_oid)
+            monkeypatch.setattr(git, "adelete_local_ref_exact", changed)
+        result = await ProvenanceMigration(git).run(
+            str(remote), checkout=str(path), dry_run=False,
+        )
+        local = [row for row in result["rows"] if row["scope"] == "local"]
+        assert result["outcome"] == "blocked" and local[0]["action"] == "blocked"
+        assert await store.run("rev-parse", old_ref) == (base if failure == "moved" else marker)
+
+    async def test_writers_never_rebind_legacy_generation(self, provenance_repo):
+        from src.integration.provenance import CompletedSource
+
+        _git, store, _path, _remote, base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        conflicting = CompletedSource(item.identity, base)
+        with pytest.raises(ValueError, match="already binds"):
+            await store.write_completion(conflicting)
+        assert isinstance((await store.write_completions([conflicting]))[item.identity], ValueError)
+        assert (await store.git.als_remote_qualified_refs(
+            store.checkout, [item.identity.ref]))[item.identity.ref].oid is None
+        assert await store.write_completion(item) == marker
+        assert "aq-provenance" in await store.run("ls-remote", "--heads", "origin")
+
+    async def test_operator_command_uses_designated_repo_and_refuses_worker(self, provenance_repo, db):
+        from types import SimpleNamespace
+        from src.commands.integration_commands import IntegrationCommandsMixin
+        from src.commands.principal import (
+            ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL, principal_context,
+        )
+
+        git, _store, _path, remote, _base = provenance_repo
+        await self._legacy(provenance_repo)
+        await db.create_project(Project(id="p", name="P"))
+        await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE,
+                                       url=str(remote)))
+        await db.update_project("p", integration_repository_id="r")
+        handler = IntegrationCommandsMixin()
+        handler.db = db
+        handler.orchestrator = SimpleNamespace(git=git)
+        request = {"project_id": "p", "dry_run": True}
+        preview = await handler._cmd_integration_migrate_provenance_refs(request)
+        assert preview["success"] and preview["outcome"] == "preview"
+        with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION,
+                               policy=TRUSTED_LOCAL.policy, project_id="p")):
+            refused = await handler._cmd_integration_migrate_provenance_refs(request)
+        assert not refused["success"] and refused["outcome"] == "refused"
 
 
 class TestLegacyGitProvenanceMigration:
@@ -289,131 +697,8 @@ class TestLegacyGitProvenanceMigration:
                 "timestamp": row["created_at"],
             } for row in rows])
 
-    async def test_history_beyond_one_thousand_deliveries_pages_instead_of_refusing(
-        self, provenance_repo, db, monkeypatch
-    ):
-        """keen-quest: agent-queue's 1602 deliveries refused every page."""
-        from src.integration import provenance_migration
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import Task, TaskCompletion
 
-        git, store, _path, remote, _base = provenance_repo
-        first = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, first)
-        late = await _provenance_commit(provenance_repo, "two")
-        await git.apush_branch(store.checkout, "aq/task")
-        await db.create_task(Task(id="late", project_id="p", repo_id="r", title="L", description="d"))
-        await db.save_task_completion(TaskCompletion(id="late-g", task_id="late", outcome="pass",
-                                                      commits=[], completed_at=2))
-        noise = [self._delivery(f"noise-{i:04d}", [{"task_id": f"other-{i}", "source_sha": first}],
-                                created_at=3 + i) for i in range(1201)]
-        # The only proof for the commits-less close sits past every chunk.
-        proof = self._delivery("proof", [{"task_id": "late", "source_sha": late}], created_at=9999,
-            evidence={"completion_sources": [
-                {"task_id": "late", "completion_id": "late-g", "source_sha": late}]})
-        await self._retain(db, [*noise, proof])
-        migration = ProvenanceMigration(db, git)
-        page = await migration.run("p", limit=1)
-        assert page["success"] and page["next_offset"] == 1
-        assert [(i["task_id"], i["source_oid"]) for i in page["inventory"]] == [("task", first)]
-        assert page["legacy_heads"] == [] and page["ambiguous"] == []
-        page = await migration.run("p", limit=1, offset=1, apply=True)
-        assert [(i["task_id"], i["source_oid"], i["action"]) for i in page["inventory"]] == [
-            ("late", late, "written")]
-        assert [head["id"] for head in page["legacy_heads"]] == ["proof"]
-        assert page["next_offset"] is None
-        # Only a page's own relevant history is bounded, with an actionable remedy.
-        monkeypatch.setattr(provenance_migration, "MAX_PAGE_HISTORY", 0)
-        with pytest.raises(ValueError, match="smaller --limit or --task-id"):
-            await migration.run("p", limit=1, offset=1)
 
-    async def test_held_task_scope_binds_only_its_fenced_contract_sources(self, provenance_repo, db):
-        """--task-id migrates exactly the source generations a held repair's close needs."""
-        from src.integration.provenance import CompletionIdentity
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import Task, TaskCompletion
-
-        git, store, _path, remote, base = provenance_repo
-        source = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, source, commits=[])
-        contract, rows = [{"task_id": "task", "source_sha": source}], []
-        # A source closed again after its park, and one whose close reported
-        # another commit, cannot be bound from the contract.
-        for identity, commits, closed in (("reclosed", [], 50), ("elsewhere", [base], 1)):
-            await db.create_task(Task(id=identity, project_id="p", repo_id="r", title="S",
-                                      description="d", status=TaskStatus.COMPLETED))
-            await db.save_task_completion(TaskCompletion(id=identity + "-g", task_id=identity,
-                outcome="pass", commits=commits, completed_at=closed))
-            contract.append({"task_id": identity, "source_sha": source})
-        await db.create_task(Task(id="unrelated", project_id="p", repo_id="r", title="U",
-                                  description="d", status=TaskStatus.COMPLETED))
-        await db.save_task_completion(TaskCompletion(id="u", task_id="unrelated", outcome="pass",
-                                                      commits=[source], completed_at=3))
-        await db.create_task(Task(id="repair", project_id="p", repo_id="r", title="R",
-                                  description="d", status=TaskStatus.IN_PROGRESS))
-        await db.set_task_meta("repair", "development_repair_sources", contract)
-        await db.set_task_meta("repair", "development_repair_evidence", {"delivery_id": "parked"})
-        rows.append(self._delivery("parked", contract, created_at=10, state="parked"))
-        await self._retain(db, rows)
-        migration = ProvenanceMigration(db, git)
-        preview = await migration.run("p", task_id="repair")
-        assert [(i["task_id"], i["source_oid"], i["action"]) for i in preview["inventory"]] == [
-            ("task", source, "would_write")]
-        reasons = {item["task_id"]: item["reason"] for item in preview["ambiguous"]}
-        assert set(reasons) == {"reclosed", "elsewhere"}
-        assert "missing or ambiguous" in reasons["reclosed"]
-        assert "conflicts with the held repair contract" in reasons["elsewhere"]
-        assert preview["repairs"] == [] and preview["next_offset"] is None
-        applied = await migration.run("p", task_id="repair", apply=True)
-        assert applied["inventory"][0]["action"] == "written"
-        await git.afetch_origin(store.checkout, repository_url=str(remote))
-        record = await store.read_completion(CompletionIdentity("p", "r", "task", "g"))
-        assert record["source_oid"] == source
-        # The paged inventory never infers a source from a repair contract.
-        # Once retained, the paged inventory reports the generation present.
-        paged = await migration.run("p")
-        assert {(i["task_id"], i["action"]) for i in paged["inventory"]} >= {("task", "present")}
-        assert "reclosed" in {item["task_id"] for item in paged["ambiguous"]}
-        # Without a contract, a task scopes to its own passing generations.
-        own = await migration.run("p", task_id="unrelated")
-        assert [(i["task_id"], i["generation"]) for i in own["inventory"]] == [("unrelated", "u")]
-        with pytest.raises(ValueError, match="does not belong"):
-            await migration.run("p", task_id="missing")
-
-    async def test_dry_run_apply_archive_ambiguity_and_idempotence(self, provenance_repo, db):
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import Task, TaskCompletion
-
-        git, store, _path, remote, _base = provenance_repo
-        source = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, source[:12])
-        await db.archive_task("task", abandon_undelivered=True,
-                              abandon_reason="Archive legacy fixture before provenance migration")
-        await db.create_task(Task(id="ambiguous", project_id="p", repo_id="r", title="T", description="d"))
-        await db.save_task_completion(TaskCompletion(id="missing", task_id="ambiguous", outcome="pass",
-                                                      commits=[], completed_at=2))
-        before = await store.run("ls-remote", "origin")
-        local_refs = await store.run("show-ref")
-        migration = ProvenanceMigration(db, git)
-        with pytest.raises(ValueError, match="explicit boolean"):
-            await migration.run("p", apply="false")
-        preview = await migration.run("p")
-        assert preview["outcome"] == "inventory"
-        assert preview["inventory"][0]["source_oid"] == source
-        assert preview["inventory"][0]["archived"]
-        assert preview["ambiguous"][0]["task_id"] == "ambiguous"
-        assert await store.run("ls-remote", "origin") == before
-        assert await store.run("show-ref") == local_refs
-        applied = await migration.run("p", apply=True)
-        assert applied["inventory"][0]["action"] == "written"
-        after = await store.run("ls-remote", "origin")
-        again = await migration.run("p", apply=True)
-        assert again["inventory"][0]["action"] == "present"
-        assert await store.run("ls-remote", "origin") == after
-        assert (await db.get_task_completion("ambiguous")).commits == []
 
     async def _completed(self, db, identity, *, commits=None, completed_at=2, branch=True):
         from src.models import Task, TaskCompletion
@@ -426,437 +711,23 @@ class TestLegacyGitProvenanceMigration:
                 id=identity + "-g", task_id=identity, outcome="pass", commits=commits,
                 completed_at=completed_at))
 
-    async def test_apply_page_publishes_in_batches_and_reports_counts(
-        self, provenance_repo, db, monkeypatch
-    ):
-        """noble-horizon: a page wrote each generation with its own remote round trips."""
-        from src.integration import provenance_migration
-        from src.integration.provenance_migration import ProvenanceMigration
 
-        git, store, _path, remote, _base = provenance_repo
-        source = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, source)
-        for i in range(4):
-            await self._completed(db, f"more-{i}", commits=[source], completed_at=2 + i)
-        await self._completed(db, "unsourced", commits=[], completed_at=9)
-        monkeypatch.setattr(provenance_migration, "BIND_BATCH", 2)
-        pushes = []
-        real_push = git.apush_new_refs
 
-        async def counted(checkout, tips, **kwargs):
-            pushes.append(len(tips))
-            return await real_push(checkout, tips, **kwargs)
 
-        monkeypatch.setattr(git, "apush_new_refs", counted)
-        migration = ProvenanceMigration(db, git)
-        preview = await migration.run("p")
-        assert preview["counts"] == {
-            "generations": 6, "present": 0, "written": 0, "would_write": 5,
-            "missing_generation": 0, "ambiguous": 1, "repairs": 0, "fallback": 6}
-        assert not preview["budget_exhausted"] and pushes == []
-        applied = await migration.run("p", apply=True)
-        # Three batches of two; the unsourced generation is reported, not written.
-        assert pushes == [2, 2, 1]
-        assert applied["counts"]["written"] == 5 and applied["counts"]["ambiguous"] == 1
-        assert [item["task_id"] for item in applied["ambiguous"]] == ["unsourced"]
-        again = await migration.run("p", apply=True)
-        assert again["counts"]["present"] == 5 and pushes == [2, 2, 1]
 
-    async def test_page_stops_at_its_time_budget_and_resumes_without_gaps(
-        self, provenance_repo, db, monkeypatch
-    ):
-        """noble-horizon: every page is bounded in time and next_offset loses nothing."""
-        from src.integration import provenance_migration
-        from src.integration.provenance_migration import ProvenanceMigration
 
-        git, store, _path, remote, _base = provenance_repo
-        source = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, source)
-        for i in range(2):
-            await self._completed(db, f"more-{i}", commits=[source], completed_at=2 + i)
-        for i in range(3):
-            await self._completed(db, f"gone-{i}")  # COMPLETED, branch, no generation
-        # A spent budget still runs one batch per page, so each page advances.
-        monkeypatch.setattr(provenance_migration, "BIND_BATCH", 1)
-        monkeypatch.setattr(provenance_migration, "PAGE_TIME_BUDGET", 0.0)
-        migration = ProvenanceMigration(db, git)
-        seen, missing, offset, pages = [], [], 0, 0
-        while offset is not None:
-            page = await migration.run("p", apply=True, limit=10, offset=offset)
-            pages += 1
-            seen += [item["task_id"] for item in page["inventory"]]
-            missing += [item["task_id"] for item in page["ambiguous"]]
-            assert page["counts"]["generations"] == len(page["inventory"])
-            assert not page["zero_fallback"] or page["next_offset"] is None
-            offset = page["next_offset"]
-        assert pages == 3
-        assert seen == ["task", "more-0", "more-1"]
-        assert missing == ["gone-0", "gone-1", "gone-2"]
-        assert page["budget_exhausted"] is False
-        # A held task's run is repeated instead of paged.
-        scoped = await migration.run("p", task_id="task")
-        assert scoped["next_offset"] is None and scoped["inventory"][0]["action"] == "present"
 
-    async def test_task_scope_reports_a_completed_task_without_any_generation(
-        self, provenance_repo, db
-    ):
-        """fresh-ember.8: --task-id answered zero_fallback for a close with no generation."""
-        from src.integration.provenance_migration import ProvenanceMigration
 
-        git, _store, _path, remote, source = provenance_repo
-        await self._seed(db, remote, source)
-        await self._completed(db, "no-generation")
-        await self._completed(db, "branchless", branch=False)
-        migration = ProvenanceMigration(db, git)
-        scoped = await migration.run("p", task_id="no-generation", apply=True)
-        assert scoped["inventory"] == [] and not scoped["zero_fallback"]
-        assert scoped["ambiguous"] == [{"task_id": "no-generation", "generation": None,
-                                        "reason": "missing immutable completion generation"}]
-        assert scoped["counts"]["missing_generation"] == 1 and scoped["fallback_count"] == 1
-        # An organizational close has nothing to bind and nothing unknown.
-        organizational = await migration.run("p", task_id="branchless")
-        assert organizational["ambiguous"] == [] and organizational["zero_fallback"]
 
-    async def test_task_scope_records_a_completed_source_that_is_not_on_main(
-        self, provenance_repo, db
-    ):
-        """noble-horizon: --task-id --apply turns missing provenance into Git evidence."""
-        from src.integration.delivery_truth import (
-            DeliveryState,
-            delivery_snapshot,
-            load_delivery_requests,
-        )
-        from src.integration.provenance_migration import ProvenanceMigration
 
-        git, store, path, remote, _base = provenance_repo
-        source = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, source)
-        await db.update_task("task", branch_name="aq/task")
 
-        async def evidence():
-            requests = await load_delivery_requests(
-                db, {"task"}, repository_id="r", target_ref="refs/heads/main")
-            snapshot = await delivery_snapshot(
-                git, path, project_id="p", repository_id="r", repository_url=str(remote),
-                target_ref="refs/heads/main")
-            assert not await store.ancestor(source, snapshot.target_oid)
-            result = await snapshot.evaluate(requests["task"])
-            return result.state, result.reason, result.source_oid
 
-        assert await evidence() == (DeliveryState.UNKNOWN, "missing_git_provenance", None)
-        applied = await ProvenanceMigration(db, git).run("p", task_id="task", apply=True)
-        assert [(i["task_id"], i["action"]) for i in applied["inventory"]] == [("task", "written")]
-        assert applied["zero_fallback"] and applied["counts"]["written"] == 1
-        assert await evidence() == (DeliveryState.PENDING, "git_completion", source)
-
-    async def test_operator_attests_the_source_a_legacy_close_never_recorded(
-        self, provenance_repo, db
-    ):
-        """nimble-bridge.7: a commits-less close that only a delivery manifest located."""
-        from src.integration.provenance_migration import ProvenanceMigration
-
-        git, store, _path, remote, _base = provenance_repo
-        source = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, source, commits=[])
-        await db.update_task("task", branch_name="aq/task")
-        # A manifest-only locator is never bound automatically.
-        await self._retain(db, [self._delivery(
-            "parked", [{"task_id": "task", "source_sha": source}], created_at=5, state="parked")])
-        migration = ProvenanceMigration(db, git)
-        unattested = await migration.run("p", task_id="task", apply=True)
-        assert unattested["inventory"] == []
-        assert "missing or ambiguous" in unattested["ambiguous"][0]["reason"]
-        preview = await migration.run("p", task_id="task", source=source)
-        assert [(i["action"], i["authority"]) for i in preview["inventory"]] == [
-            ("would_write", "operator")]
-        applied = await migration.run("p", task_id="task", source=source, apply=True)
-        assert [(i["task_id"], i["source_oid"], i["action"]) for i in applied["inventory"]] == [
-            ("task", source, "written")]
-        assert applied["zero_fallback"] and applied["counts"]["written"] == 1
-        paged = await migration.run("p")
-        assert [(i["task_id"], i["action"]) for i in paged["inventory"]] == [("task", "present")]
-        # Once retained, another attestation cannot rebind the generation.
-        other = await _provenance_commit(provenance_repo, "two")
-        await git.apush_branch(store.checkout, "aq/task")
-        rebind = await migration.run("p", task_id="task", source=other, apply=True)
-        assert rebind["inventory"] == [] and "conflicts" in rebind["ambiguous"][0]["reason"]
-
-    async def test_an_attested_source_never_overrides_recorded_evidence_or_a_contract(
-        self, provenance_repo, db
-    ):
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import Task, TaskCompletion
-
-        git, store, _path, remote, base = provenance_repo
-        source = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, source)
-        await self._completed(db, "unpublished", commits=[])
-        await db.create_task(Task(
-            id="repair", project_id="p", repo_id="r", title="R", description="d",
-            status=TaskStatus.COMPLETED))
-        await db.set_task_meta("repair", "development_repair_sources",
-                               [{"task_id": "task", "source_sha": source}])
-        migration = ProvenanceMigration(db, git)
-        # The close reported its own source: an attestation cannot replace it,
-        # before or after that source is retained.
-        reported = await migration.run("p", task_id="task", source=base, apply=True)
-        assert reported["inventory"] == []
-        assert "conflicts with the generation's recorded source" in reported["ambiguous"][0]["reason"]
-        await migration.run("p", task_id="task", apply=True)
-        before = await store.run("ls-remote", "origin")
-        retained = await migration.run("p", task_id="task", source=base, apply=True)
-        assert retained["inventory"] == [] and retained["ambiguous"][0]["task_id"] == "task"
-        confirmed = await migration.run("p", task_id="task", source=source)
-        assert [(i["action"], i["authority"]) for i in confirmed["inventory"]] == [
-            ("present", "operator")]
-        # An object the repository lacks is unknown, not bound.
-        lacking = await migration.run("p", task_id="unpublished", source="f" * 40, apply=True)
-        assert lacking["inventory"] == [] and lacking["ambiguous"][0]["task_id"] == "unpublished"
-        assert await store.run("ls-remote", "origin") == before
-        with pytest.raises(ValueError, match="repair contract"):
-            await migration.run("p", task_id="repair", source=source)
-        with pytest.raises(ValueError, match="needs --task-id"):
-            await migration.run("p", source=source)
-        await db.transition_task("unpublished", TaskStatus.READY)
-        with pytest.raises(ValueError, match="COMPLETED"):
-            await migration.run("p", task_id="unpublished", source=source)
-        await self._completed(db, "failed-close")
-        await db.save_task_completion(TaskCompletion(
-            id="failed-g", task_id="failed-close", outcome="fail", commits=[], completed_at=4))
-        # A close that did not pass is attested on its own reasoned path.
-        with pytest.raises(ValueError, match="did not pass requires a reason"):
-            await migration.run("p", task_id="failed-close", source=source)
-
-    @pytest.mark.parametrize("no_artifact", [False, True])
-    async def test_operator_attests_a_completion_that_did_not_pass(
-        self, provenance_repo, db, no_artifact,
-    ):
-        """grand-rapids-78: solid-rapids-21 was closed COMPLETED over a failed close."""
-        import json
-
-        from src.integration.delivery_truth import DeliveryState
-        from src.integration.development import DevelopmentIntegration
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import TaskCompletion
-
-        git, _store, path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "failed-close", branch=False)
-        # The audited base it read, not an artifact of its own, and no pass.
-        await db.save_task_completion(TaskCompletion(
-            id="failed-g", task_id="failed-close", outcome="fail", commits=[base], completed_at=2))
-        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
-        before = (await observer.observe(["failed-close"])).get("failed-close")
-        assert (before.state, before.reason) == (
-            DeliveryState.UNKNOWN, "missing_git_provenance")
-        migration = ProvenanceMigration(db, git)
-        with pytest.raises(ValueError, match="requires --task-id and a reason"):
-            await migration.run("p", task_id="failed-close", no_artifact=True, apply=True)
-        if not no_artifact:
-            with pytest.raises(ValueError, match="did not pass requires a reason"):
-                await migration.run("p", task_id="failed-close", source=base, apply=True)
-        applied = await migration.run(
-            "p", task_id="failed-close", source=None if no_artifact else base,
-            no_artifact=no_artifact, reason="research close, no code delivered",
-            apply=True, operator_id="supervisor-p",
-        )
-        assert [(i["generation"], i["action"], i["authority"], i["artifact"],
-                 i["completion_outcome"]) for i in applied["inventory"]] == [
-            ("failed-g", "written", "operator", not no_artifact, "fail")]
-        proof = (await observer.observe(["failed-close"])).get("failed-close")
-        assert proof.state == (DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED)
-        assert proof.source_oid == base
-        # No pass is fabricated: the failed close is retained verbatim.
-        assert (await db.get_task_completion("failed-close")).outcome == "fail"
-        assert (await db.get_task("failed-close")).status == TaskStatus.COMPLETED
-        again = await migration.run(
-            "p", task_id="failed-close", source=None if no_artifact else base,
-            no_artifact=no_artifact, reason="research close, no code delivered", apply=True,
-        )
-        assert again["inventory"][0]["action"] == "present"
-        audit = await db.get_recent_events(event_type="development.provenance_attested")
-        assert json.loads(audit[-1]["payload"])["results"][0]["completion_outcome"] == "fail"
-
-    @pytest.mark.parametrize("refusal", ["uncontained", "manifest"])
-    async def test_a_failed_completion_attestation_refuses_what_it_cannot_prove(
-        self, provenance_repo, db, refusal,
-    ):
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import TaskCompletion
-
-        git, store, _path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "failed-close", branch=False)
-        await db.save_task_completion(TaskCompletion(
-            id="failed-g", task_id="failed-close", outcome="fail", commits=[], completed_at=2))
-        migration = ProvenanceMigration(db, git)
-        if refusal == "uncontained":
-            # Work the target does not hold is never cleared by an attestation.
-            elsewhere = await _provenance_commit(provenance_repo, "elsewhere")
-            await git.apush_branch(store.checkout, "aq/task")
-            refs = await store.run("ls-remote", "origin")
-            result = await migration.run(
-                "p", task_id="failed-close", source=elsewhere,
-                reason="delivered elsewhere", apply=True)
-            assert result["inventory"] == []
-            assert "not contained in the target branch" in result["ambiguous"][0]["reason"]
-        else:
-            await self._retain(db, [self._delivery("proven", [], created_at=5, evidence={
-                "completion_sources": [{"task_id": "failed-close", "completion_id": "failed-g",
-                                        "source_sha": base}]})])
-            refs = await store.run("ls-remote", "origin")
-            result = await migration.run(
-                "p", task_id="failed-close", no_artifact=True,
-                reason="claimed artifact-free", apply=True)
-            assert result["inventory"] == []
-            assert "conflicts with recorded source" in result["ambiguous"][0]["reason"]
-        assert await store.run("ls-remote", "origin") == refs
-        completion = await db.get_task_completion("failed-close")
-        assert completion is None or completion.outcome == "fail"
-        assert not (await migration.run("p", task_id="failed-close"))["inventory"]
-
-    async def test_cli_waits_longer_than_a_page_may_run(self):
-        from src.cli.client import _COMMAND_TIMEOUTS
-        from src.integration.provenance_migration import PAGE_TIME_BUDGET
-
-        # The budget bounds when the last batch may start; a batch's transfer
-        # and the page's clone still need room inside the client's wait.
-        assert _COMMAND_TIMEOUTS["integration_migrate_provenance"] >= PAGE_TIME_BUDGET * 4
-        assert _COMMAND_TIMEOUTS["integration_adopt_legacy_deliveries"] == 600.0
-
-    @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
-    async def test_operator_attests_a_completed_task_without_a_completion_row(
-        self, provenance_repo, db, recorded_id,
-    ):
-        import json
-
-        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
-        from src.integration.development import DevelopmentIntegration
-        from src.integration.delivery_truth import DeliveryState
-        from src.integration.provenance_migration import ProvenanceMigration
-
-        git, store, path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "missing-row")
-        if recorded_id:
-            await db.set_task_meta("missing-row", DEVELOPMENT_COMPLETION_ID_KEY, recorded_id)
-        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
-        before = (await observer.observe(["missing-row"])).get("missing-row")
-        assert before.state == DeliveryState.UNKNOWN
-        generation = before.request.completion_id
-        assert generation == recorded_id if recorded_id else generation.startswith("legacy:")
-        migration = ProvenanceMigration(db, git)
-        with pytest.raises(ValueError, match="requires a reason"):
-            await migration.run("p", task_id="missing-row", source=base, apply=True)
-        refs = await store.run("ls-remote", "origin")
-        preview = await migration.run("p", task_id="missing-row", source=base, reason="already delivered")
-        assert preview["inventory"][0]["action"] == "would_write"
-        assert await store.run("ls-remote", "origin") == refs
-        applied = await migration.run(
-            "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
-            operator_id="supervisor-p",
-        )
-        assert applied["counts"]["written"] == 1
-        proof = (await observer.observe(["missing-row"])).get("missing-row")
-        assert (proof.state, proof.source_oid) == (DeliveryState.CONTAINED, base)
-        assert await db.get_task_completion("missing-row") is None
-        assert (await db.get_task("missing-row")).status == TaskStatus.COMPLETED
-        repeated = await migration.run(
-            "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
-        )
-        assert repeated["inventory"][0]["action"] == "present"
-        audit = await db.get_recent_events(event_type="development.provenance_attested")
-        assert any(json.loads(event["payload"])["operator_id"] == "supervisor-p" for event in audit)
-        await db.transition_task("missing-row", TaskStatus.READY)
-        await db.transition_task("missing-row", TaskStatus.COMPLETED)
-        reopened = (await observer.observe(["missing-row"])).get("missing-row")
-        assert reopened.request.completion_id != generation
-        assert reopened.state == DeliveryState.UNKNOWN
-
-    @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
-    @pytest.mark.parametrize("no_artifact", [False, True])
-    async def test_missing_row_attestation_survives_findings_and_description_edits(
-        self, provenance_repo, db, recorded_id, no_artifact,
-    ):
-        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
-        from src.integration.development import DevelopmentIntegration
-        from src.integration.delivery_truth import DeliveryState
-        from src.integration.provenance_migration import ProvenanceMigration
-
-        git, _store, path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "legacy")
-        if recorded_id:
-            await db.set_task_meta("legacy", DEVELOPMENT_COMPLETION_ID_KEY, recorded_id)
-        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
-        db.set_delivery_observer(observer)
-        await ProvenanceMigration(db, git).run(
-            "p", task_id="legacy", source=None if no_artifact else base,
-            no_artifact=no_artifact, reason="legacy work reviewed", apply=True,
-        )
-        expected = DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED
-        generation = (await observer.observe(["legacy"])).get("legacy").request.completion_id
-        version = await db.get_task_updated_at("legacy")
-        await db.add_task_comment("legacy", "ordinary comment", author_kind="supervisor",
-                                  author_id="supervisor-p")
-        proof = (await observer.observe(["legacy"])).get("legacy")
-        assert proof.request.task_version > version
-        assert (proof.request.completion_id, proof.state) == (generation, expected)
-        await db.update_task_description("legacy", "confirmed findings", expected_description="d")
-        proof = (await observer.observe(["legacy"])).get("legacy")
-        assert (proof.request.completion_id, proof.state) == (generation, expected)
-        await db.update_task("legacy", description="edited description")
-        await db.transition_task("legacy", TaskStatus.COMPLETED)
-        await db.update_task("legacy", status=TaskStatus.COMPLETED)
-        proof = (await observer.observe(["legacy"])).get("legacy")
-        assert (proof.request.completion_id, proof.state) == (generation, expected)
-        assert await db.archive_task("legacy")
-        proof = (await observer.observe(["legacy"])).get("legacy")
-        assert proof.request.archived
-        assert proof.state == expected
-        assert proof.source_oid == base
-
-    @pytest.mark.parametrize("raw_update", [False, True])
-    async def test_legacy_generation_rotates_only_across_completed_boundary(
-        self, provenance_repo, db, raw_update,
-    ):
-        from src.integration.development import DevelopmentIntegration
-        from src.integration.delivery_truth import DeliveryState
-        from src.integration.provenance_migration import ProvenanceMigration
-
-        git, _store, path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "legacy")
-        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
-        await ProvenanceMigration(db, git).run(
-            "p", task_id="legacy", source=base, reason="legacy work reviewed", apply=True,
-        )
-        before = (await observer.observe(["legacy"])).get("legacy")
-        if raw_update:
-            await db.update_task("legacy", status=TaskStatus.READY)
-        else:
-            await db.transition_task("legacy", TaskStatus.READY)
-        opened = (await observer.observe(["legacy"])).get("legacy")
-        assert opened.request.legacy_generation != before.request.legacy_generation
-        if raw_update:
-            await db.update_task("legacy", status=TaskStatus.COMPLETED)
-        else:
-            await db.transition_task("legacy", TaskStatus.COMPLETED)
-        reclosed = (await observer.observe(["legacy"])).get("legacy")
-        assert reclosed.request.legacy_generation != opened.request.legacy_generation
-        assert reclosed.request.completion_id != before.request.completion_id
-        assert reclosed.state == DeliveryState.UNKNOWN
 
     @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
     @pytest.mark.parametrize("no_artifact", [False, True])
     @pytest.mark.parametrize("reopened", [False, True])
     async def test_upgrade_restores_audited_timestamp_identity_only_before_reopen(
-        self, provenance_repo, db, recorded_id, no_artifact, reopened,
+        self, provenance_repo, schema_db, recorded_id, no_artifact, reopened,
     ):
         import hashlib
         import json
@@ -866,10 +737,11 @@ class TestLegacyGitProvenanceMigration:
         from alembic.operations import Operations
 
         from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
-        from src.integration.development import DevelopmentIntegration
+        from src.integration.development import DevelopmentPrimitives
         from src.integration.delivery_truth import DeliveryState
         from src.integration.provenance import CompletedSource, CompletionIdentity
 
+        db = schema_db
         git, store, path, remote, base = provenance_repo
         await self._seed(db, remote, base)
         await self._completed(db, "legacy")
@@ -907,7 +779,7 @@ class TestLegacyGitProvenanceMigration:
 
         async with db._engine.begin() as conn:
             await conn.run_sync(upgrade_old_schema)
-        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
+        observer = DevelopmentPrimitives(db, data_dir=path / "data", git=git).delivery_observer
         db.set_delivery_observer(observer)
         proof = (await observer.observe(["legacy"])).get("legacy")
         if reopened:
@@ -931,220 +803,11 @@ class TestLegacyGitProvenanceMigration:
             archived if not reopened else proof
         )
 
-    @pytest.mark.parametrize("recorded_id", [None, "missing-close"])
-    @pytest.mark.parametrize("no_artifact", [False, True])
-    async def test_missing_row_attestation_survives_archival(
-        self, provenance_repo, db, recorded_id, no_artifact,
-    ):
-        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
-        from src.integration.development import DevelopmentIntegration
-        from src.integration.delivery_truth import DeliveryState
-        from src.integration.provenance_migration import ProvenanceMigration
 
-        git, _store, path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "legacy")
-        await db.update_task("legacy", claim_epoch=7)
-        if recorded_id:
-            await db.set_task_meta("legacy", DEVELOPMENT_COMPLETION_ID_KEY, recorded_id)
-        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
-        db.set_delivery_observer(observer)
-        await ProvenanceMigration(db, git).run(
-            "p", task_id="legacy", source=None if no_artifact else base,
-            no_artifact=no_artifact, reason="legacy work reviewed", apply=True,
-        )
-        assert await db.archive_task("legacy")
-        proof = (await observer.observe(["legacy"])).get("legacy")
-        assert proof.request.archived
-        assert proof.request.claim_epoch == 0
-        assert proof.state == (DeliveryState.NO_ARTIFACT if no_artifact else DeliveryState.CONTAINED)
-        assert proof.source_oid == base
-        assert await db.get_task_completion("legacy") is None
 
-    async def test_operator_attests_artifact_free_research_without_a_completion_row(
-        self, provenance_repo, db,
-    ):
-        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
-        from src.integration.development import DevelopmentIntegration
-        from src.integration.delivery_truth import DeliveryState
-        from src.integration.provenance_migration import ProvenanceMigration
 
-        git, _store, path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "research", branch=False)
-        await db.set_task_meta("research", DEVELOPMENT_COMPLETION_ID_KEY, "missing-research-close")
-        observer = DevelopmentIntegration(db, data_dir=path / "data", git=git).delivery_observer
-        assert (await observer.observe(["research"])).get("research").state == DeliveryState.UNKNOWN
-        migration = ProvenanceMigration(db, git)
-        with pytest.raises(ValueError, match="requires --task-id and a reason"):
-            await migration.run("p", task_id="research", no_artifact=True, apply=True)
-        result = await migration.run(
-            "p", task_id="research", no_artifact=True, reason="research only; no code", apply=True,
-        )
-        assert result["inventory"][0]["artifact"] is False
-        assert (await observer.observe(["research"])).get("research").state == DeliveryState.NO_ARTIFACT
-        assert await db.get_task_completion("research") is None
-        rejected = await migration.run(
-            "p", task_id="task", no_artifact=True, reason="incorrect declaration", apply=True,
-        )
-        assert "conflicts with recorded source" in rejected["ambiguous"][0]["reason"]
-        await self._completed(db, "recorded-code", commits=[])
-        await self._retain(db, [self._delivery("evidence-only", [], created_at=5, evidence={
-            "completion_sources": [{"task_id": "recorded-code", "completion_id": "recorded-code-g",
-                                    "source_sha": base}],
-        })])
-        rejected = await migration.run(
-            "p", task_id="recorded-code", no_artifact=True, reason="incorrect declaration", apply=True,
-        )
-        assert "conflicts with recorded source" in rejected["ambiguous"][0]["reason"]
 
-    @pytest.mark.parametrize("change", ["reopen", "repair_contract"])
-    async def test_missing_row_attestation_refuses_a_generation_changed_during_git_observation(
-        self, provenance_repo, db, monkeypatch, change,
-    ):
-        from src.integration.provenance_migration import ProvenanceMigration
 
-        git, store, _path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "missing-row")
-        refs = await store.run("ls-remote", "origin")
-        create = git.acreate_checkout
-
-        async def reopen(*args, **kwargs):
-            await create(*args, **kwargs)
-            if change == "reopen":
-                await db.transition_task("missing-row", TaskStatus.READY)
-            else:
-                await db.set_task_meta("missing-row", "development_repair_sources", [
-                    {"task_id": "task", "source_sha": base},
-                ])
-
-        monkeypatch.setattr(git, "acreate_checkout", reopen)
-        with pytest.raises(ValueError, match="completion changed|acquired a repair contract"):
-            await ProvenanceMigration(db, git).run(
-                "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
-            )
-        assert await store.run("ls-remote", "origin") == refs
-
-    async def test_missing_row_attestation_refuses_an_active_writer(self, provenance_repo, db):
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import SessionRecord
-
-        git, store, path, remote, base = provenance_repo
-        await self._seed(db, remote, base)
-        await self._completed(db, "missing-row")
-        await db.create_session(SessionRecord(
-            id="writer", task_id="missing-row", project_id="p", profile_id="worker-codex",
-            harness="codex", provider="tmux", name="writer", lifecycle="pool", state="running",
-            work_dir=str(path), epoch="test", instance_token="test", started_at=1,
-        ))
-        refs = await store.run("ls-remote", "origin")
-        with pytest.raises(ValueError, match="live session"):
-            await ProvenanceMigration(db, git).run(
-                "p", task_id="missing-row", source=base, reason="already delivered", apply=True,
-            )
-        assert await store.run("ls-remote", "origin") == refs
-
-    async def test_command_handler_migration_uses_registered_typed_contract(self, provenance_repo, db, handler):
-        from src.commands.contracts.integration import IntegrationMigrateProvenanceArgs
-        from src.commands.contracts.registry import ContractRegistry
-        from src.commands.contracts.integration import register_integration_contracts
-        from unittest.mock import AsyncMock, patch
-
-        git, _store, _path, remote, source = provenance_repo
-        await self._seed(db, remote, source)
-        registry = ContractRegistry()
-        register_integration_contracts(registry)
-        registration = registry.get("integration_migrate_provenance")
-        assert registration is not None
-        # The adapter must retain inventory details and call the migration
-        # command even after the registration loop advances its local name.
-        with patch("src.commands.contracts.builtin._handler") as factory:
-            factory.return_value.execute = AsyncMock(return_value={
-                "success": True, "outcome": "inventory", "inventory": [{"task_id": "task"}],
-                "ambiguous": [{"task_id": "old", "reason": "missing"}],
-                "fallback_generations": [{"task_id": "old", "generation": "g"}],
-                "fallback_count": 1, "zero_fallback": False,
-                "operations": [{"operation_id": "pending-action"}],
-            })
-            result = await registration.invoke(IntegrationMigrateProvenanceArgs(project_id="p"), None)
-            factory.return_value.execute.assert_awaited_once_with("integration_migrate_provenance",
-                {"project_id": "p", "apply": False, "limit": 500, "offset": 0, "task_id": None,
-                 "source": None, "no_artifact": False, "reason": None})
-            assert result.value.inventory == [{"task_id": "task"}]
-            assert result.value.ambiguous[0]["task_id"] == "old"
-            assert result.value.fallback_generations[0]["generation"] == "g"
-            assert result.value.fallback_count == 1 and not result.value.zero_fallback
-            assert result.value.operations == [{"operation_id": "pending-action"}]
-        handler.orchestrator.git = git
-        result = await handler.execute("integration_migrate_provenance", {"project_id": "p"})
-        assert result["success"] and result["outcome"] == "inventory"
-        scoped = await handler.execute("integration_migrate_provenance",
-                                       {"project_id": "p", "task_id": "task"})
-        assert scoped["success"] and [i["task_id"] for i in scoped["inventory"]] == ["task"]
-        missing = await handler.execute("integration_migrate_provenance",
-                                        {"project_id": "p", "task_id": "absent"})
-        assert missing["outcome"] == "blocked" and "does not belong" in missing["error"]
-
-    @pytest.mark.parametrize("binding_style", ["superseded", "adopted"])
-    async def test_complete_legacy_repair_is_retained_and_incomplete_evidence_reported(
-        self, provenance_repo, db, binding_style
-    ):
-        from src.integration.provenance import CompletedSource, CompletionIdentity
-        from src.integration.provenance_migration import ProvenanceMigration
-        from src.models import Task, TaskCompletion
-
-        git, store, _path, remote, base = provenance_repo
-        original = await _provenance_commit(provenance_repo, "one")
-        await git.apush_branch(store.checkout, "aq/task")
-        await self._seed(db, remote, original)
-        await store.run("checkout", "-b", "repair", base)
-        await _provenance_commit(provenance_repo, "advanced-main")
-        await store.run("cherry-pick", original)
-        repair = await store.run("rev-parse", "HEAD")
-        await store.run("branch", "-f", "main", repair)
-        await git.apush_branch(store.checkout, "main")
-        await db.create_task(Task(id="repair", project_id="p", repo_id="r", title="Repair", description="d"))
-        await db.transition_task("repair", TaskStatus.COMPLETED)
-        await db.save_task_completion(TaskCompletion(id="rg", task_id="repair", outcome="pass",
-                                                      commits=[repair], completed_at=2))
-        contract = [{"task_id": "task", "source_sha": original}]
-        await db.set_task_meta("repair", "development_repair_sources", contract)
-        row = {"id": "legacy", "project_id": "p", "repository_id": "r", "target_ref": "refs/heads/main",
-               "expected_sha": base, "prepared_sha": repair, "state": "delivered",
-               "manifest": [{"task_id": "repair", "source_sha": repair},
-                            {"task_id": "task", "source_sha": original, "superseded_by": "repair"}],
-               "evidence": {}, "reason": "repair", "created_at": 3, "updated_at": 3}
-        if binding_style == "adopted":
-            await db.save_task_completion(TaskCompletion(
-                id="older-rg", task_id="repair", outcome="pass", commits=[base], completed_at=1.5,
-            ))
-            row.update(state="adopted", manifest=contract, evidence={
-                "resolved_by_delivered_repair": {"task_id": "repair", "completion_id": "rg"},
-            })
-        await self._retain(db, [row, {
-            **row, "id": "operator", "manifest": [{"task_id": "task", "source_sha": original,
-                                                    "acceptance": "operator_equivalent"}],
-        }])
-        migration = ProvenanceMigration(db, git)
-        refs = await store.run("ls-remote", "origin")
-        preview = await migration.run("p")
-        assert preview["repairs"][0]["replaces"][0]["identity"]["generation"] == "g"
-        assert preview["ambiguous"][0]["task_id"] == "task"
-        assert "operator equivalence" in preview["ambiguous"][0]["reason"]
-        assert await store.run("ls-remote", "origin") == refs
-        result = await migration.run("p", apply=True)
-        assert result["repairs"][0]["action"] == "written"
-        assert not result["zero_fallback"], "ambiguous operator equivalence is still named"
-        await git.afetch_origin(store.checkout, repository_url=str(remote))
-        assert await store.contained(CompletedSource(CompletionIdentity("p", "r", "task", "g"), original), repair)
-        after = await store.run("ls-remote", "origin")
-        await migration.run("p", apply=True)
-        assert await store.run("ls-remote", "origin") == after
-        # An inventory page missing the repair generation cannot infer it.
-        page = await migration.run("p", limit=1)
-        assert page["next_offset"] == 1
-        assert any(item["task_id"] == "repair" for item in page["ambiguous"])
 
 
 # ---------------------------------------------------------------------------
@@ -1153,12 +816,18 @@ class TestLegacyGitProvenanceMigration:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    """Create a real in-memory database for tests."""
+async def schema_db():
+    """Fresh initialization for tests that downgrade and upgrade the schema."""
     database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
+
+
+@pytest.fixture
+async def db(reuse_database):
+    """Fresh PostgreSQL adapter with rows reset between command tests."""
+    return await reuse_database("test.db")
 
 
 @pytest.fixture

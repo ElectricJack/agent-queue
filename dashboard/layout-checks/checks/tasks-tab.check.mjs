@@ -42,18 +42,19 @@ export async function run(t) {
   const list = '[role=region][aria-label="Task list"]';
   await t.page.$eval(list, (el) => { el.scrollTop = 900; el.dispatchEvent(new Event("scroll")); });
   await t.page.waitForFunction((sel) => document.querySelector(sel).scrollTop > 0, {}, list);
-  const scrolled = await t.page.$eval(list, (el) => el.scrollTop);
   const card = await t.page.$$eval("[data-task-row]", (els) => {
     const top = document.querySelector('[aria-label="Task list"]').getBoundingClientRect().top;
     return els.find((el) => el.getBoundingClientRect().top > top + 40)?.getAttribute("data-task-row");
   });
   assert.ok(card && TASK_IDS.includes(card), `no card below the list's top edge (${card})`);
   await t.page.click(`[data-task-row="${card}"]`);
-  await t.page.waitForSelector('[role=dialog][aria-label="Pane"]');
-  await expectLayout(t, { primary: ['[aria-label="Close pane"]'] });
+  await t.page.waitForSelector('[role=dialog][aria-label="Record detail"]');
+  // Clicking scrolls a partially visible card into view; closing must preserve that position.
+  const scrolled = await t.page.$eval(list, (el) => el.scrollTop);
+  await expectLayout(t, { primary: ['[aria-label="Back to list"]'] });
   await t.shot("pane");
   await t.page.goBack();
-  await t.page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Pane"]'));
+  await t.page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Record detail"]'));
   const after = await t.page.$eval(list, (el) => el.scrollTop);
   assert.ok(Math.abs(after - scrolled) <= 2, `list scroll moved from ${scrolled} to ${after}`);
 

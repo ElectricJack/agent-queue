@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -31,6 +31,13 @@ class JobSubmitArgs(CommandArgs):
     preset: str = Field(min_length=1)
     argv: list[str] = Field(default_factory=list)
     idempotency_key: str = Field(min_length=1, max_length=200)
+    # The object-loop attempt a capture belongs to. AQ pins that attempt's
+    # editor build once and launches the pinned copy for every capture in it,
+    # so a rebuild of the shared build cannot move the preset under an attempt
+    # that is still running. Only ``matter_render`` has an editor to pin.
+    attempt_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"
+    )
     wait: bool = False
 
 
@@ -49,6 +56,7 @@ class JobResultArgs(JobGetArgs):
 
 
 class JobLogsArgs(JobGetArgs):
+    stream: Literal["stdout", "stderr"] = "stdout"
     after: int = Field(default=0, ge=0)
     limit: int = Field(default=65536, ge=1, le=1048576)
 
@@ -73,7 +81,11 @@ class JobRetainArgs(JobGetArgs):
 
 class JobValue(CommandValue):
     job: dict[str, Any]
-    wait: AgentWaitRecord | None = None
+    wait: AgentWaitRecord | dict[str, Any] | None = None
+    wait_id: str | None = None
+    decision: dict[str, Any] | None = None
+    continuation_id: str | None = None
+    generation: int | None = None
     next_step: str | None = None
 
 
@@ -99,6 +111,7 @@ class JobRetainValue(CommandValue):
     rig_sha256: str | None = None
     render_profile: dict[str, Any] | None = None
     render_profile_sha256: str | None = None
+    editor_pin: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     captures: list[dict[str, Any]] = Field(default_factory=list)
     next_step: str | None = None

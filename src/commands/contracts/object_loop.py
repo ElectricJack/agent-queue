@@ -90,6 +90,8 @@ class ObjectScoreRecordArgs(CommandArgs):
 class ObjectCheckpointReadArgs(CommandArgs):
     object_id: str = Field(min_length=1, max_length=128, pattern=IDENTIFIER)
     project_id: str
+    task_id: str | None = None
+    session_id: str | None = None
 
 
 class ArtifactVerifyArgs(CommandArgs):
@@ -97,6 +99,9 @@ class ArtifactVerifyArgs(CommandArgs):
 
     uri: str = Field(min_length=1, max_length=2048)
     sha256: str | None = Field(default=None, pattern=SHA256)
+    project_id: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
 
 
 class ArtifactVerifyValue(CommandValue):
@@ -119,12 +124,18 @@ class ObjectLoopInputsValue(CommandValue):
 
 
 class ObjectLoopValue(CommandValue):
+    error: str | None = None
+    error_code: str | None = None
     object_id: str | None = None
     version: int | None = None
     state: dict[str, Any] | None = None
     created: bool | None = None
     outcome: str | None = None
     approved: bool | None = None
+
+
+class ObjectCheckpointReadValue(ObjectLoopValue):
+    evidence: dict[str, Any] | None = None
 
 
 def register_object_loop_contracts(registry) -> None:
@@ -135,7 +146,7 @@ def register_object_loop_contracts(registry) -> None:
          SideEffectClass.COMPOSITE, loop),
         ("object_score_record", ObjectScoreRecordArgs, ObjectLoopValue,
          SideEffectClass.UPDATE, loop),
-        ("object_checkpoint_read", ObjectCheckpointReadArgs, ObjectLoopValue,
+        ("object_checkpoint_read", ObjectCheckpointReadArgs, ObjectCheckpointReadValue,
          SideEffectClass.READ, loop),
         ("object_loop_inputs", ObjectLoopInputsArgs, ObjectLoopInputsValue,
          SideEffectClass.READ, loop),
@@ -153,7 +164,9 @@ def register_object_loop_contracts(registry) -> None:
                 raw = await _handler().execute(name, args.model_dump())
             if not raw.get("success"):
                 return CommandResult(
-                    outcome="rejected", value=result_model.model_construct(),
+                    outcome="rejected", value=result_model(**{
+                        k: raw[k] for k in result_model.model_fields if k in raw
+                    }),
                     summary=str(raw.get("error") or "rejected"),
                 )
             return CommandResult(
@@ -169,6 +182,8 @@ def register_object_loop_contracts(registry) -> None:
                     name=name, args_model=args_model, result_model=result_model,
                     capability=name, side_effect=effect, retry_safe=True,
                     idempotency=IdempotencySpec(mode="natural"),
+                    receipt_projection=("error", "error_code")
+                    if issubclass(result_model, ObjectLoopValue) else (),
                     outcomes=(
                         OutcomeSpec(name="completed", classification=OutcomeClass.SUCCESS),
                         OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),

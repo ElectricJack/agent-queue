@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:9a1e11b44521c29c41c3b4f8e09cda1137c5fabefd87c111a108d2f57bc34d9c` |
+| Contract fingerprint | `sha256:906acedb11b97e20292b52f36e24ea31243ea4182fcce418dc2cb65cc6028fbc` |
 
 ## Parameters
 
@@ -36,7 +36,7 @@ Redacted in receipts and explanations: `reason`.
 | `gate_id` | `string \| null` | — |
 | `expected_version` | `integer \| null` | — |
 | `subject_version` | `integer \| null` | — |
-| `engine` | `"legacy" \| "reconciler" \| null` | — |
+| `engine` | `"reconciler" \| null` | — |
 
 Projected into the run receipt: `subject_id`, `gate_id`, `expected_version`, `subject_version`, `engine`.
 

@@ -72,6 +72,7 @@ async def test_idle_deletion_hides_worker_preserving_history_and_repeat_is_safe(
     assert await db.soft_delete_agent("a") is True
     deleted = await db.get_agent("a")
     assert deleted.deleted_at is not None and not deleted.enabled
+    assert deleted.current_task_id is None
     assert deleted.model == "saved" and deleted.name == "Keep history"
     assert await db.list_agents() == []
     assert [a.id for a in await db.list_agents(include_deleted=True)] == ["a"]
@@ -183,3 +184,48 @@ async def test_delete_and_reserve_have_exactly_one_winner(db):
     agent = await db.get_agent("a")
     assert (agent.deleted_at is not None) == deleted
     assert (agent.state == AgentState.BUSY) == reserved
+
+
+@pytest.mark.parametrize("state", [AgentState.RETIRED, "RETIRED"])
+@pytest.mark.parametrize("evidence", ["assignment", "workspace", "session"])
+async def test_retirement_keeps_pointer_to_still_owned_task(db, state, evidence):
+    # Pause, orphan and closed-owner recovery find a torn-down pool agent
+    # through this pointer while its claim is retained.
+    await db.create_task(Task(
+        id="t", project_id="p", title="Owned", description="", status=TaskStatus.IN_PROGRESS,
+        assigned_agent_id="a" if evidence == "assignment" else None,
+    ))
+    await db.update_agent("a", state=AgentState.BUSY, current_task_id="t")
+    if evidence == "session":
+        await db.create_session(record(state="stopped", lifecycle="pool"))
+    if evidence == "workspace":
+        await db.create_workspace(Workspace(
+            id="w", project_id="p", workspace_path="/work", source_type=RepoSourceType.LINK,
+            locked_by_agent_id="a", locked_by_task_id="t",
+        ))
+    before = await db.get_task("t")
+
+    await db.update_agent("a", state=state)
+
+    retired = await db.get_agent("a")
+    assert retired.state == AgentState.RETIRED and retired.current_task_id == "t"
+    assert await db.get_task("t") == before
+
+
+@pytest.mark.parametrize("stale", ["completed", "failed", "reassigned"])
+async def test_retirement_clears_pointer_to_work_it_no_longer_owns(db, stale):
+    await db.create_agent(Agent(id="other", name="Successor", profile_id="worker"))
+    await db.create_task(Task(
+        id="t", project_id="p", title="Old", description="",
+        status={"completed": TaskStatus.COMPLETED, "failed": TaskStatus.FAILED}.get(
+            stale, TaskStatus.IN_PROGRESS),
+        assigned_agent_id="other" if stale == "reassigned" else "a",
+    ))
+    await db.update_agent("a", state=AgentState.BUSY, current_task_id="t")
+    before = await db.get_task("t")
+
+    await db.update_agent("a", state=AgentState.RETIRED)
+
+    retired = await db.get_agent("a")
+    assert retired.state == AgentState.RETIRED and retired.current_task_id is None
+    assert await db.get_task("t") == before

@@ -7,6 +7,7 @@ source and revision checks; preparation alone never records an injected citation
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, text, update
@@ -46,6 +47,35 @@ def context_enabled(config):
                 and getattr(getattr(config, "memory", None), "enabled", False))
 
 
+#: Refusals that mean *this caller may not read this scope* rather than *this
+#: request was wrong*: the corpus is not available here, or the principal's
+#: policy lacks the read grant. A delivery surface whose knowledge context is
+#: an enrichment (prime, launch prompts) degrades on exactly these codes and
+#: still renders its ordinary body; every other ``RecordError`` — a stale
+#: claim, an over-budget prompt, an unavailable execution — is a real failure
+#: of the read and keeps surfacing.
+ACCESS_REFUSAL_CODES = frozenset({"record.forbidden", "knowledge.disabled"})
+
+
+def context_bundle_commands(config, query=""):
+    """The ``aq_commands`` a project-scoped bundle costs the calling profile.
+
+    Derived from the two grant checks :meth:`ContextService.prepare_on` makes
+    rather than restated, so a caller that is refused a read can be told which
+    grant is missing without a second copy of the rules drifting. Reading any
+    scope always needs ``knowledge_show``; lexical discovery additionally needs
+    ``record_search``, and only when the request actually reaches it (a
+    query to search with and a non-zero discovery budget).
+
+    Names only — an operator reads this to find the missing grant, so it never
+    carries record content.
+    """
+    commands = ["knowledge_show"]
+    if query and ContextBudget.from_config(config).discovery_items:
+        commands.append("record_search")
+    return tuple(commands)
+
+
 @dataclass(frozen=True)
 class BootstrapPrincipal:
     """Daemon-only prelaunch identity; never accepted from command arguments."""
@@ -82,6 +112,17 @@ class ContextService(KnowledgeService):
     def __init__(self, db, config):
         super().__init__(db, config.knowledge)
         self.app_config = config
+
+    async def _configured_budget(self, conn, session_id):
+        from src.sessions.context import read_context
+
+        row = (await conn.execute(select(sessions).where(
+            sessions.c.id == session_id,
+        ))).mappings().first()
+        observation = await read_context(SimpleNamespace(**row) if row else None)
+        return ContextBudget.from_config(
+            self.app_config, model_context_window=observation.get("model_context_window"),
+        )
 
     async def _owner(self, conn, principal, claim_epoch, *, bootstrap=False):
         if principal is None or not principal.session_id or not principal.session_instance_token:
@@ -221,9 +262,9 @@ class ContextService(KnowledgeService):
             raise RecordError("record.stale_claim")
         principal = replace(principal, task_id=owner["task_id"])
         accesses = await self._scopes(conn, principal, project_ids, global_scope, bootstrap=bootstrap)
-        budget = budget or ContextBudget.from_config(self.app_config)
+        configured = await self._configured_budget(conn, principal.session_id)
+        budget = budget or configured
         # A caller may reduce the budget, never bypass configured/operator limits.
-        configured = ContextBudget.from_config(self.app_config)
         budget = replace(budget, **{
             k: min(getattr(budget, k), getattr(configured, k))
             for k in ("input_tokens", "knowledge_tokens", "knowledge_bytes",
@@ -254,7 +295,7 @@ class ContextService(KnowledgeService):
                 seen.add(key)
         if query and budget.discovery_items:
             for access in accesses:
-                if not principal.policy.allows_aq_command("knowledge_search"):
+                if not principal.policy.allows_aq_command("record_search"):
                     raise RecordError("record.forbidden")
                 rows = await lexical_search_on(conn, access=access, query=query,
                                                 limit=budget.discovery_items)
@@ -340,7 +381,7 @@ class ContextService(KnowledgeService):
             raise RecordError("context.expired")
         if not bundle.budget["fits"]:
             raise RecordError(bundle.budget["diagnostic"] or "context.over_budget")
-        configured = ContextBudget.from_config(self.app_config)
+        configured = await self._configured_budget(conn, principal.session_id)
         requested = ContextBudget(**bundle.budget["requested"])
         if any(getattr(requested, k) > getattr(configured, k) for k in (
             "input_tokens", "knowledge_tokens", "knowledge_bytes", "discovery_tokens",

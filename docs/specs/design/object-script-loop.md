@@ -1,9 +1,10 @@
 # Object-script loop contracts (AQ-2)
 
 AQ coordinates bounded evaluation rounds for an external object generator and
-scorer. Matter owns rendering and image metrics. A reviewed V2 playbook (AQ-3)
-will call these commands; this change does not activate a playbook or run a
-capture. The approved source is Matter review `rev-amber-zenith`, revision 2.
+scorer. Matter owns rendering and image metrics. The optional reviewed V2
+`object-loop` playbook calls these commands; its presence does not activate policy
+or run a capture. See the [review and activation handoff](../../guides/object-loop.md).
+The approved source is Matter review `rev-amber-zenith`, revision 2.
 
 ## Commands
 
@@ -99,12 +100,56 @@ rechecked when a score is recorded.
 ## Evidence and publication
 
 Candidate workers receive exact hashes, a base artifact pointer, mandatory
-views and their reservation in their task description. They publish immutable
-candidate and capture bundles outside their worktree. The receipt names
-durable URIs and SHA-256 digests; the object command validates the schema,
-cross-references and completeness. The external artifact adapter remains
-responsible for serving bytes by those URIs and verifying their digest during
-materialization. Arbitrary local paths are not accepted as durable URIs.
+views, their reservation and a `round_handoff` block in their task
+description. They publish immutable candidate and capture bundles outside their
+worktree. The receipt names durable URIs and SHA-256 digests; the object
+command validates the schema, cross-references and completeness. The external
+artifact adapter remains responsible for serving bytes by those URIs and
+verifying their digest during materialization. Arbitrary local paths are not
+accepted as durable URIs.
+
+### The round handoff
+
+A candidate worker can only build on the rounds before it if it is told what
+they changed. Every recorded score appends its wave's variants to the loop
+row's `round_history`, each entry carrying the round and variant, the task,
+the candidate identity and its retained bundle artifact, the branch and commit
+that produced it — read from the task's own close record, because the worktree
+slot a round used is released when it settles — the validity, the hypothesis,
+the patch scope, the predicted and observed effect and the mean loss. Round 0
+has no such history; that is what the incumbent bundle artifact is for.
+
+The next candidate packet carries that history as `round_handoff`, together
+with the incumbent bundle and capture identity, the frozen comparison inputs
+(`reference_kind`, `reference_sha256`, `rig_sha256`, `scorer_sha256`,
+`render_profile_sha256`, `policy_sha256`, `mandatory_views`) and explicit
+instructions: materialize the incumbent bundle and verify its digest, read the
+earlier rounds' retained artifacts and branches in scope, capture only under
+the attempt's frozen inputs, and submit every capture of the attempt under the
+same `--attempt-id`. Scorer packets carry the same block, because a score is
+only meaningful when candidate and reference were compared under one preset.
+The history is bounded by the round ceiling and the three-variant wave.
+
+### The editor pin
+
+One attempt, one editor build. `matter_render` launches the editor named by
+`resources.jobs.matter_editor`, which is a shared build that can be rebuilt
+while an attempt is running — and then the attempt's pinned render profile
+names bytes no later capture will produce, and every later capture's score is
+refused as foreign. So `job_submit --attempt-id ATTEMPT` copies that build once
+into `{data_dir}/editor-pins/binaries/<sha256>/<name>`, records the attempt's
+pin, and every later submission of the same attempt launches that copy. The
+copy is written through a temporary file and renamed, and verified against the
+source digest, so a rebuild *during* the copy is refused rather than pinned
+half-old, half-new. A new attempt id re-pins; a recorded pin whose binary went
+missing or stopped hashing true is refused as `jobs.editor_pin_lost` instead of
+being silently replaced, because a swapped build would swap the preset under a
+running attempt. Submission without an attempt id still launches a
+content-addressed copy, so one job's editor cannot move between submission and
+execution, but it has no cross-job continuity. Pins older than the retention
+window that no surviving attempt record names are swept with the other job
+retention. The attempt id is the start packet's `attempt_id`, so the baseline
+capture and every round's captures share one profile.
 
 ### Producing the two identities a receipt needs
 
@@ -135,17 +180,62 @@ URI and re-hashes the bytes behind it. A URI is a claim; something has to check
 it. `s3://` and `https://` receipts belong to the external artifact adapter and
 are refused here rather than guessed at.
 
+### Scoped evidence reads and the finalizer
+
+Object workers, including the finalizer, may read `object_checkpoint_read` and
+verify artifacts belonging to their own object. Authority comes from the live
+held task and its persisted object provenance, never an object named in editable
+task prose. A stale claim, another object or another project grants no access.
+Workers may also verify artifacts retained by their own jobs before a score or
+loop checkpoint exists; the stored job origin and live task ownership supply
+that authority.
+Supervisors may read checkpoints and evidence in their project; the global
+supervisor may read all projects. Both commands require explicit profile grants.
+`object_checkpoint_read` also admits a live PLAYBOOK invocation whose run and
+step match its server-derived principal, with an explicit project restriction
+and the command granted by both principal and artifact. It may read only the
+named object-loop row in that project. Unscoped runs, mismatched invocation pins,
+session-origin runs and authored task/session selectors are refused. Session-origin
+runs use the direct session read instead: switching principal kind must never
+bypass a worker's claim, epoch, instance-token or object-provenance fences.
+This exception applies only to checkpoint reads; every other held-work command,
+including `artifact_verify`, remains unavailable to PLAYBOOK callers.
+Existing worker templates need an operator grants-only reseed; the supervisor
+receives these grants through its existing additive capability sync.
+
+Before releasing the finalizer, AQ resolves a per-view evidence bundle containing
+verified Before and After image URIs, hashes and local artifact paths. Before
+images come from the retained baseline capture receipt's image digests; After
+images come from the best scored receipt (or the baseline if none was promoted).
+The original capture run paths are never used. Missing or corrupt evidence is
+reported per view and cannot be presented as verified. Checkpoint reads expose
+the same bundle for a retry after artifact availability changes. Round handoffs
+retain capture and artifact pointers as well as candidate identities, so earlier
+round evidence remains readable after their workspaces and run directories expire.
+
 ### The render profile
 
 `render_profile_sha256` is the digest of a canonical render-profile document:
 the preset that produced the pixels — `editor_sha256`, `adapter_sha256`,
-`gpu_id`, the admitted rig's `hold_frames`, the view set with each view's
-resolution, and the VT readiness counters that prove the frame had converged —
-plus the admitted candidate and rig identities and the capture's readiness
-state. The document is built from named fields only and hashed in AQ's single
-canonical JSON form, so run ids, request ids, timestamps and absolute paths
-cannot leak into it: one preset yields one digest, and any change to any of
-those inputs changes it.
+`gpu_id`, the admitted rig's `hold_frames` and `rig_sha256`, and the view set
+with each view's resolution and format. The document is built from named
+fields only and hashed in AQ's single canonical JSON form, so run ids, request
+ids, timestamps and absolute paths cannot leak into it: one preset yields one
+digest, and any change to any of those inputs changes it.
+
+The object under test is deliberately *not* in it. The profile is the preset, so
+two candidates rendered under the same editor, adapter, GPU lease, rig and view
+set share one digest — which is the only way a candidate that is not the
+incumbent can be scored at all: folding `candidate_sha256` into the digest gave
+every non-incumbent a profile no start packet had pinned, and its receipt was
+refused as foreign. The rig digest covers the view set and the lights the rig
+fixes, so moving either still changes the profile.
+
+What the *capture reported* is recorded beside the profile as `observed` and is
+never hashed: the per-view VT readiness counters and the capture's readiness
+state describe what this object produced, and a heavier object legitimately
+queues more VT work. Convergence is still proved, by the retained capture
+receipt and by the scorer's own `ready`/`decoded` flags.
 
 `hold_frames` is the rig's *admitted budget*, not the frames a run happened to
 settle on. A real four-view capture reports 95, 96, 95 and 106 stable frames for
@@ -170,6 +260,38 @@ as PostgreSQL JSONB. Images and raw logs stay in the artifact store. Its task
 references are soft so normal archive cleanup does not erase the loop record.
 
 ## Reviewed policy and formulas (AQ-3)
+
+### Audience and decisions
+
+Each attempt has two documents for Jack: a brief before admission and one
+final result after settlement. The brief names the object in ordinary words,
+the maximum number of rounds and the total budget. The result pairs before
+and after images for every view, explains whether the object improved and by
+how much (or why a measured comparison is unavailable), and says what would
+help the next run. Neither document exposes attempt/round IDs or terms such
+as receipts, incumbent or plateau. The finalization task must submit this
+result as an `other` review; retries reuse that review rather than adding one.
+
+Scoring, probes, capture checks, variations and continuation checkpoints are
+internal. The loop decides within its fixed limits; any review authored by an
+internal `object_experiment` task, including a descendant probe, has decider
+`supervisor`, independently of the project's review delegation setting. Such
+tasks have no implicit human-review deliverable. Explicit review deliverables
+still apply and route to the supervisor. Only the finalization task routes a
+result to `user`. Checkpoint packets must name a supervisor review. The brief
+remains the exact, approved document required for admission.
+Experiment review audiences cannot be changed by generic review delegation.
+The schema migration also reroutes existing reviews with these experiment
+markers, preserving their documents and decisions.
+
+Supervisor reviews stay out of the human Reviews inbox, Discord review
+notifications, dashboard toasts and activity gates, and the digest's requests
+for human decisions. Review lifecycle events carry their decider for this
+filtering. Result screenshots labeled Before/After are paired by view in two
+columns with plain captions, without candidate IDs or hashes. A blocked loop
+retains its detailed evidence for the project supervisor, who handles recovery.
+Jack receives a single plain-English sentence only if he needs to do something;
+ordinary capture failures or exhausted limits require no human decision.
 
 The opt-in `object-loop` V2 bundle is shipped inactive. Its command grants do
 not include review decisions, provider routing, source publication or activation.
@@ -198,6 +320,23 @@ the current completed scorer's latest packet is eligible. The bridge parses
 the entire JSON document (never prose extraction), verifies scope/identity,
 and leaves measurement validation and version fencing to `object_score_record`.
 Workers receive no loop-mutator or sibling-task authority.
+
+The reviewed sweep uses the V2 `collections_v1` feature: a lexical `filter`
+selects approved starts bound to the running artifact and another selects
+registered loops bound to it, before each bounded `foreach`. The producer's
+32-object ceiling applies before selection. Filters preserve order; the
+typed input bridge supplies every eligibility field. All five event rules
+remain independent closed graphs with the same recovery timer. Selection
+does not migrate another policy's objects or grant approval. The ordered
+decision table remains stopped, deadline, failed scorer, checkpoint, score,
+then reconciliation; command calls and continuation fallbacks are unchanged.
+
+The $100 operating budget is the approved start packet's whole-attempt
+`limits.usd`, not a new per-round budget or a hard-coded replacement for
+other approved budgets. Forward that packet and its round ceiling unchanged;
+the existing reservation commands enforce them. Script execution, additional
+human waits, and integration-only policy primitives are not substitutes for
+the object's atomic validation and settlement commands.
 
 The artifact chooses continuation, checkpoint, defect and deadline stops.
 Rejected continuation is retried once as a score-bearing stop, preserving a

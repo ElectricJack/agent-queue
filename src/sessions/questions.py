@@ -173,10 +173,14 @@ class AgentQuestionService:
                  harness_registry=None):
         self.db, self.bus, self.providers, self.config = db, bus, providers, config
         self._locks = _LOCKS.setdefault(db, weakref.WeakValueDictionary())
-        #: ``harness -> native store | None``; tests point it at a fixture.
-        #: The registry lets a second harness on the same CLI share its store.
+        #: ``(harness, project_id) -> native store | None``; tests point it at
+        #: a fixture.  The registry lets a second harness on the same CLI share
+        #: its store, and the project scope lets a project harness file that
+        #: shadows the id take its store with it.
         self._native_sources = native_sources or (
-            lambda harness: resolve_native_question_source(harness, registry=harness_registry)
+            lambda harness, project_id=None: resolve_native_question_source(
+                harness, registry=harness_registry, project_id=project_id
+            )
         )
         self._native_scanned: dict[str, float] = {}
 
@@ -347,15 +351,15 @@ class AgentQuestionService:
     def _lower_bound(row):
         return max(row.started_at or 0, row.claim_phase_at or 0)
 
-    def _native_source(self, harness):
+    def _native_source(self, harness, project_id=None):
         try:
-            return self._native_sources(harness)
+            return self._native_sources(harness, project_id)
         except Exception:
             logger.warning("native question source for %s failed", harness, exc_info=True)
             return None
 
     async def _native_snapshot(self, row, source=None):
-        source = source or self._native_source(row.harness)
+        source = source or self._native_source(row.harness, row.project_id)
         if source is None:
             return None
         return await asyncio.to_thread(source.snapshot, row.work_dir, self._lower_bound(row))
@@ -400,7 +404,7 @@ class AgentQuestionService:
                 or (row.lifecycle == "pool" and row.claim_phase != "active")
             ):
                 continue
-            source = self._native_source(row.harness)
+            source = self._native_source(row.harness, row.project_id)
             if source is None:
                 continue
             seen.add(row.id)
@@ -571,7 +575,7 @@ class AgentQuestionService:
             source_identity=q["id"],
             incident_key=f"{kind}:{q['id']}",
             supervisor_owner=f"supervisor-{q['project_id']}",
-            task_title=task.title if task else None,
+            task_title=task.title if task else f"Question about {q['task_id']}",
             task_status=getattr(task.status, "value", str(task.status)) if task else None,
             summary=f"Worker question {q['id']} on task {q['task_id']} is stuck",
             investigation=investigation,
@@ -657,8 +661,13 @@ class AgentQuestionService:
                     q = await self.db.get_agent_question(pending["id"])
                     if q["state"] not in PENDING_QUESTION_STATES:
                         continue
-                    if await self._current(q) is None:
+                    current = await self._current(q)
+                    if current is None:
                         await self._stale(q)
+                    elif not self.providers.create(current.provider, self.config).supports(Cap.NUDGE):
+                        # A refused human reservation must not leave an undeliverable
+                        # question suppressing recovery forever.
+                        await self._stale(q, reason="provider cannot accept guarded input")
                     elif q["state"] == "answered":
                         await self._deliver(q, now)
                         await self._check_undelivered(q["id"], now)
@@ -707,6 +716,34 @@ class AgentQuestionService:
         )
         return await self._updated(q["id"])
 
+    async def answer_on(self, conn, decision):
+        """Accept a frozen ask answer with its source receipt before delivery."""
+        from sqlalchemy import update
+        from src.asks.models import AskError
+        from src.database.tables import agent_questions
+        qid = decision["packet"]["source"]["key"]
+        q = await self.db.lock_question_source_on(conn, qid)
+        if q and q["ask_decision_id"] == decision["id"]:
+            return {"question_id": qid, "decision_id": decision["id"], "state": q["state"]}
+        if not q or q["state"] not in {"human", "supervisor"}:
+            raise AskError("ask.stale_source", "Question is no longer awaiting an answer")
+        row = await self.db.question_claim_current_on(conn, q)
+        if not row:
+            raise AskError("ask.stale_source", "Question belongs to an expired claim/session")
+        body = decision["overall_note"]
+        if (not body.strip() or len(body) > _MAX_ANSWER
+                or any(ord(c) < 32 and c not in "\n\r\t" for c in body)):
+            raise AskError("ask.context_missing", "Answer is empty or contains terminal controls")
+        provider = self.providers.create(row["provider"], self.config)
+        if not provider.supports(Cap.NUDGE):
+            raise AskError("ask.unsupported_source", "Provider cannot accept guarded input")
+        await conn.execute(update(agent_questions).where(agent_questions.c.id == qid).values(
+            state="answered", answer=body.strip(), answered_by=decision["actor_id"],
+            ask_decision_id=decision["id"], updated_at=time.time(),
+        ))
+        await self.db._upsert_meta(q["task_id"], _answered_key(qid), str(time.time()), conn=conn)
+        return {"question_id": qid, "decision_id": decision["id"], "state": "answered"}
+
     async def answer(
         self, question_id, body, *, actor, human, verified_escalation_id=None
     ):
@@ -720,21 +757,8 @@ class AgentQuestionService:
         async with self._lock(q["session_id"]):
             q = await self.db.get_agent_question(question_id)
             if human:
-                incident = (
-                    await self.db.get_escalation(verified_escalation_id)
-                    if isinstance(verified_escalation_id, str)
-                    else None
-                )
-                if (
-                    incident is None
-                    or incident["source_kind"] != "question"
-                    or incident["source_identity"] != q["id"]
-                    or incident["project_id"] != q["project_id"]
-                    or incident["state"] != "resolving"
-                ):
-                    return {
-                        "error": "human answers must be applied by the owning supervisor through the bound escalation"
-                    }
+                return {"error": "Human answers require a versioned ask decision",
+                        "error_code": "ask.context_missing"}
             elif q["requires_human"] or q["state"] == "human":
                 return {"error": "this question requires a human answer"}
             if q["state"] not in ("supervisor", "human"):
@@ -841,10 +865,24 @@ class AgentQuestionService:
             return {**q, "escalation_id": incident["id"]}
 
     async def _deliver(self, q, now):
+        from src.asks.source_operations import project_paused
+        if await project_paused(self.db, q["project_id"]):
+            return
         if not getattr(self.config.messages, "enabled", False):
             # The nudge points at ``aq message status``, which refuses while
             # messages are disabled; keep the answer until it can be read.
             return
+        if q.get("ask_decision_id"):
+            async with self.db._engine.connect() as conn:
+                decision = await self.db.get_ask_decision(q["ask_decision_id"], conn=conn)
+            if not decision:
+                return
+            actor = decision["actor_id"]
+            prefix = "human:discord:"
+            if actor.startswith(prefix) and actor[len(prefix):] not in {
+                str(user) for user in self.config.discord.authorized_users
+            }:
+                return  # A revoked human cannot resume a worker through a queued answer.
         token = uuid.uuid4().hex
         if not await self.db.claim_agent_question_delivery(q["id"], token, now):
             return
@@ -888,6 +926,8 @@ class AgentQuestionService:
                 if not await self._native_cleared(row, q["turn_id"]):
                     logger.warning("question %s: native dialog still open after Escape", q["id"])
                     return
+            if not await self.db.begin_question_submission(q["id"], token):
+                return
             # Hold the actual claim/session rows across bounded terminal I/O.
             # A concurrent claim release cannot swap the pool's task between
             # validation and provider submission, even from another daemon.
@@ -896,6 +936,8 @@ class AgentQuestionService:
                 if conn is None:
                     stale = True
                 else:
+                    if await project_paused(self.db, q["project_id"], conn=conn):
+                        raise NotSubmitted("Project is paused")
                     async with asyncio.timeout(30):
                         await provider.nudge(handle, _answer_nudge(q["id"]))
                     delivered = True
@@ -907,7 +949,7 @@ class AgentQuestionService:
             if stale:
                 await self._stale(q)
         except (NudgeDeferred, NotSubmitted):
-            pass  # A draft/paste ambiguity retains the durable answer.
+            await self.db.question_submission_not_sent(q["id"], token)
         except Exception:
             logger.warning("question delivery failed for %s", q["id"], exc_info=True)
         finally:
@@ -986,6 +1028,9 @@ class AgentQuestionService:
         async with self.db.agent_question_delivery_guard(q["id"], token) as conn:
             if conn is None:
                 return None
+            from src.asks.source_operations import project_paused
+            if await project_paused(self.db, q["project_id"], conn=conn):
+                return False
             snapshot = await self._native_snapshot(row)
             if snapshot is None or not snapshot.dismissable(q["turn_id"]):
                 return False

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/job.py`](../../../src/commands/contracts/job.py) |
-| Contract fingerprint | `sha256:62f7455c15fa29539becb81e4906159f1cecbf1c5d7c0e4c46944e0cdb39071d` |
+| Contract fingerprint | `sha256:6cc0ec21c5cb51f42f2e683aec6be55af8530e8e6832a026660170273702a076` |
 
 ## Parameters
 
@@ -37,6 +37,7 @@
 | `rig_sha256` | `string \| null` | — |
 | `render_profile` | `object \| null` | — |
 | `render_profile_sha256` | `string \| null` | — |
+| `editor_pin` | `object \| null` | — |
 | `artifacts` | `object[]` | — |
 | `captures` | `object[]` | — |
 | `next_step` | `string \| null` | — |

@@ -1,10 +1,16 @@
-# Agent Queue train policy handoff
+# Historical Agent Queue train policy handoff
 
-The project-scoped bundles in `src/prompts/reviewed_playbooks/` are compiled
-against the current V2 command and event registries. The parent route handles
-the current `integration_complete_parent` outcomes, including idempotent
+This config and its activation examples record the retired subject engines.
+The reviewed bundles are archived in `docs/history/legacy-train-policies/` and
+cannot be imported against the current command registry. Use the active Git-first
+train described in [the runbook](../guides/git-first-train-runbook.md).
+
+At the time of this handoff, the project-scoped bundles were compiled
+against the then-current V2 command and event registries. The parent route handled
+the `integration_complete_parent` outcomes, including idempotent
 `already_completed` and terminal `failed`. The policy JSON binds their exact
-artifact identities and the fifteen `Tests (...)` and `E2E CLI (...)` checks from
+artifact identities and the sixteen `Tests (...)`, `E2E CLI (...)` and
+`Dashboard (typecheck/build)` checks from
 `.github/workflows/tests.yml` to the producer `"15368"`, GitHub Actions' numeric
 App id, on both boundaries.
 
@@ -19,17 +25,22 @@ refuses it with the preflight blocker `ci_producer_not_numeric`. The earlier
 revision of this file used the slug, so an installed agent-queue policy bound
 from it must be rebound to this JSON before App mode.
 
-The `ci-4c6e0c2a989c` check set (the planner's digest of the names; the same
-fifteen names were earlier labelled `tests-yml-v3`) requires all eight `Tests (default-N/8)` shards
-and all four `E2E CLI (...)` scenario groups. When adopting the split workflow,
-a supervisor or operator must rebind the
-installed policy to this JSON and replace any explicit `Tests (default)` merge
-requirement or GitHub branch rule with the complete shard and scenario set. A worker's
-workflow change does not update an installed project policy.
+The `ci-4f7c710bba01` check set (the planner's digest of the names) adds
+`Dashboard (typecheck/build)` to the previous fifteen-check set
+`ci-4c6e0c2a989c`. It requires all eight `Tests (default-N/8)` shards, all four
+`E2E CLI (...)` scenario groups, and a dashboard that typechecks and builds.
+The operator must approve this check-set version bump before a supervisor or
+operator rebinds the installed policy to this JSON and updates the
+`AQ_INTEGRATION_REQUIRED_CHECK_VERSION` Actions variable. Regenerate the App
+trust manifest alongside the policy; replace any explicit legacy merge
+requirement or GitHub branch rule with the complete required set. Existing
+operations retain their frozen policy snapshots. A worker's workflow change
+does not update an installed project policy. See
+[App-mode check-set rotation](app-mode-train.md#95-changing-the-required-check-set-rotation).
 
-The bundles are copied to `vault/reviewed-playbooks/<id>/` when the deployed
-daemon seeds reviewed bundles. Only a project-scoped supervisor or local
-operator should run the following commands. Review the manifest and source
+The former seeding path copied these bundles to `vault/reviewed-playbooks/<id>/`.
+The following commands record that historical activation procedure; they are
+not valid setup instructions for the current train. Review the manifest and source
 first. Do not change the project's development mode until the approved cutover
 prerequisites allow a drain; that mode is the current publisher's validation
 gate. Use the fresh integration generation for every mutation.
@@ -39,8 +50,8 @@ aq playbook v2-validate --path reviewed-playbooks/agent-queue-parent-integration
 aq playbook v2-validate --path reviewed-playbooks/agent-queue-root-train/artifact.json
 aq playbook v2-import --path reviewed-playbooks/agent-queue-parent-integration
 aq playbook v2-import --path reviewed-playbooks/agent-queue-root-train
-aq playbook activate --playbook-id agent-queue-parent-integration --artifact-sha256 sha256:4f3bf46a93c26507e7920deb93cf3b97cbe5caa6d8ad834fd0dec30d00825122 --enabled
-aq playbook activate --playbook-id agent-queue-root-train --artifact-sha256 sha256:387536e8e7b0a903270073ae6ce69f51a4dd4eb44ddd3cfdf50939b84d8ae6db --enabled
+aq playbook activate --playbook-id agent-queue-parent-integration --artifact-sha256 sha256:6b0d8f4ad2432eec5a09934ce89cd37f115e1f41f0e9cb7616bc5b96ff2b60ec --enabled
+aq playbook activate --playbook-id agent-queue-root-train --artifact-sha256 sha256:0b01412a51b1e122fa4f7fd85a79380a2e0e0f3d05b04a4cb5ff2116f172b8bb --enabled
 aq playbook activation-health --playbook-id agent-queue-parent-integration
 aq playbook activation-health --playbook-id agent-queue-root-train
 ```

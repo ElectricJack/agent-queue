@@ -11,15 +11,13 @@ import pytest
 from sqlalchemy import event, insert, select
 
 from src.database import Database, tables as t
-from src.git.manager import RemoteRefResult, RemoteRefState
 from src.integration.models import Fence
 from src.integration.observe import (
     DatabaseObservationReader,
-    GitObservationReader,
     IntegrationObserver,
     ObservationRows,
 )
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIState,
     ObserveSubjectArgs,
     PolicyArtifactPin,
@@ -839,7 +837,8 @@ async def test_writer_push_baseline_uses_last_builder_write_not_a_late_reconcili
     assert (await observe(data, git)).writer.status is WriterStatus.CLAIMED
 
 
-async def test_current_operation_budget_conflicts_and_proven_writer_push():
+@pytest.mark.parametrize("deadline, limit", [(950, 2), (None, 2), (950, 0), (None, 0)])
+async def test_current_operation_budget_conflicts_and_proven_writer_push(deadline, limit):
     data = writer_snapshot(
         "IN_PROGRESS", [{"id": "live", "task_id": "repair", "state": "running", "started_at": 900}]
     )
@@ -855,10 +854,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
                 "starting_sha": BASE,
                 "intelligence_class": "deep-high",
                 "started_at": 800,
-                "deadline_at": 950,
+                "deadline_at": deadline,
                 "attempts": 1,
                 "dossier": {
-                    "budget": {"attempt_limit": 2},
+                    "budget": {"attempt_limit": limit},
                     "supervisor_recovery": {
                         "reason": "unchanged",
                         "subject": {"candidate_sha": HEAD},
@@ -893,6 +892,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
     assert facts.writer.fence_token == 4 and facts.budget.intelligence_class == "deep-high"
     assert facts.budget.attempts == 1 and facts.no_progress and not facts.ladder_exhausted
     assert facts.conflicts[0].files == ("a.py", "z.py")
+
+    assert facts.budget.deadline_at == deadline
+    assert facts.budget.attempt_limit == (limit or None)
+    assert facts.budget.expired(100_000) == (deadline is not None)
 
 
 async def test_journals_keep_only_unresolved_writes_and_ci_requests_are_pending():
@@ -1078,68 +1081,6 @@ async def test_missing_publisher_authority_stays_absent_and_collector_belongs_to
     assert type(plain) is SubjectFacts  # no shared contract edits
 
 
-async def test_git_adapter_uses_authorized_repository_and_strict_reads_only():
-    git = AsyncMock()
-    git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
-    git.ais_ancestor.return_value = None
-    adapter = GitObservationReader(git)
-    repository = snapshot().repository
-    assert (await adapter.remote_head(repository, "refs/heads/main")).sha == HEAD
-    git.als_remote_ref.assert_awaited_once_with(
-        "/checkout", "main", repository_url=repository["url"]
-    )
-    assert await adapter.is_ancestor(repository, BASE, HEAD) is None
-    git.ais_ancestor.assert_awaited_once_with("/checkout", BASE, HEAD, strict=True)
-    git.afetch_origin.assert_not_called()
-    git.apush_branch.assert_not_called()
-
-
-async def test_git_adapter_reads_remote_heads_in_batched_chunks(monkeypatch):
-    from src.integration import observe as observe_module
-
-    monkeypatch.setattr(observe_module, "_REMOTE_REF_CHUNK", 2)
-
-    async def read(path, branches, *, repository_url):
-        if "boom" in branches:
-            raise ConnectionError("do not expose exception detail")
-        return {
-            branch: RemoteRefResult(RemoteRefState.ABSENT)
-            if branch == "gone"
-            else RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
-            for branch in branches
-        }
-
-    git = AsyncMock()
-    git.als_remote_refs.side_effect = read
-    repository = snapshot().repository
-    refs = [
-        "refs/heads/main",
-        "refs/heads/gone",
-        "refs/heads/-bad",
-        "refs/tags/v1",
-        "refs/heads/a",
-        "refs/heads/boom",
-    ]
-    heads = await GitObservationReader(git).remote_heads(repository, refs)
-    assert {ref: (head.ref, head.state) for ref, head in heads.items()} == {
-        "refs/heads/main": ("refs/heads/main", "present"),
-        "refs/heads/gone": ("refs/heads/gone", "absent"),
-        "refs/heads/-bad": ("refs/heads/-bad", "unknown"),
-        "refs/tags/v1": ("refs/tags/v1", "unknown"),
-        "refs/heads/a": ("refs/heads/a", "unknown"),
-        "refs/heads/boom": ("refs/heads/boom", "unknown"),
-    }
-    assert heads["refs/heads/main"].sha == HEAD
-    assert [call.args for call in git.als_remote_refs.await_args_list] == [
-        ("/checkout", ["main", "gone"]),
-        ("/checkout", ["a", "boom"]),
-    ]
-    assert {call.kwargs["repository_url"] for call in git.als_remote_refs.await_args_list} == {
-        repository["url"]
-    }
-    git.als_remote_ref.assert_not_called()
-
-
 async def test_observer_reads_every_remote_head_in_one_batched_port_call():
     class Batched(Git):
         async def remote_head(self, repository, ref):
@@ -1301,7 +1242,7 @@ async def test_database_reader_enforces_read_only_snapshot_over_real_existing_ta
 
 @pytest.mark.parametrize("state", [CIState.GREEN, CIState.RED, CIState.PENDING, CIState.INFRA])
 async def test_reconciler_candidate_reads_live_checks_without_evidence_rows(state):
-    from src.integration.subjects import CIEvidence
+    from src.integration.runtime_contracts import CIEvidence
 
     data = snapshot(engine="reconciler")
     live = AsyncMock(return_value=CIEvidence(head_sha=HEAD, state=state, observed_at=NOW))
@@ -1313,7 +1254,7 @@ async def test_reconciler_candidate_reads_live_checks_without_evidence_rows(stat
 
 
 async def test_live_candidate_checks_cannot_answer_another_sha_or_use_stale_green():
-    from src.integration.subjects import CIEvidence
+    from src.integration.runtime_contracts import CIEvidence
 
     data = with_rows(snapshot(engine="reconciler"), integration_check_evidence=[ci_row()])
     for answer in (CIEvidence(head_sha=OTHER, state=CIState.GREEN), OSError("offline")):
@@ -1324,67 +1265,14 @@ async def test_live_candidate_checks_cannot_answer_another_sha_or_use_stale_gree
         assert facts.ci_state is CIState.INFRA
 
 
-async def test_shadow_candidate_keeps_snapshot_evidence_without_remote_ci():
-    data = snapshot(engine="legacy")
-    live = AsyncMock()
-    await IntegrationObserver(Reader(data), Git(), candidate_ci=live).observe(data.subject)
-    live.assert_not_awaited()
-
-
-async def test_root_live_reader_uses_frozen_check_set_and_exact_candidate(monkeypatch):
-    from types import SimpleNamespace
-    from src.git.github_contracts import GitHubRepositoryBinding
-    from src.integration.root_runtime import root_candidate_ci_reader
-    from tests.test_integration_ci_producers import github
-
-    client, trust = github(app=False)
-    client.checks[0]["head_sha"] = HEAD
-    client.workflows[0]["head_sha"] = HEAD
-    client.jobs[0]["head_sha"] = HEAD
-    data = with_rows(snapshot(engine="reconciler"), integration_batches=[{
-        **snapshot().all("integration_batches")[0],
-        "policy_snapshot": {"root": {"required_checks": {
-            "producer_id": "15368", "version": "v1", "names": ["unit"]}}},
-    }])
-    service = SimpleNamespace(_load_trust=AsyncMock(return_value=(trust, client)))
-    owner = SimpleNamespace(
-        db=SimpleNamespace(get_repo=AsyncMock(return_value=object())),
-        github_repository_binding_resolver=AsyncMock(
-            return_value=GitHubRepositoryBinding(123, "acme/widgets")),
-        integration_attestation_service=service,
+async def test_reconciler_without_current_candidate_does_not_probe_remote_ci():
+    data = with_rows(
+        snapshot(engine="reconciler"), integration_candidate_revisions=[]
     )
-    facts = await IntegrationObserver(
-        Reader(data), Git(), candidate_ci=root_candidate_ci_reader(owner)
-    ).observe(data.subject)
-    assert facts.ci_state is CIState.GREEN and facts.ci[0].evidence_id is None
-    state = service._load_trust.await_args.args[0]
-    assert state["candidate_sha"] == HEAD
-    assert state["policy_snapshot"]["root"]["required_checks"]["names"] == ["unit"]
-    assert all(HEAD in call.args[0] or "jobs" in call.args[0]
-               for call in client.paged_items.await_args_list)
-
-
-async def test_git_adapter_reads_many_heads_in_batched_round_trips():
-    git = AsyncMock()
-    refs = [f"refs/heads/aq/member-{index:03d}" for index in range(250)]
-
-    async def batch(path, branches, *, repository_url):
-        return {
-            branch: RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
-            if branch.endswith("0")
-            else RemoteRefResult(RemoteRefState.ABSENT)
-            for branch in branches
-        }
-
-    git.als_remote_refs.side_effect = batch
-    adapter = GitObservationReader(git)
-    repository = snapshot().repository
-    heads = await adapter.remote_heads(repository, [*refs, "refs/tags/v1"])
-    assert list(heads) == [*refs, "refs/tags/v1"]
-    assert heads[refs[0]].state == "present" and heads[refs[0]].sha == HEAD
-    assert heads[refs[1]].state == "absent" and heads["refs/tags/v1"].state == "unknown"
-    assert git.als_remote_refs.await_count == 2  # chunked, never one call per ref
-    git.als_remote_ref.assert_not_called()
+    live = AsyncMock()
+    facts = await IntegrationObserver(Reader(data), Git(), candidate_ci=live).observe(data.subject)
+    live.assert_not_awaited()
+    assert facts.ci_state is CIState.NONE
 
 
 async def test_observer_prefers_batched_remote_heads_and_keeps_errors_unknown():
@@ -1408,3 +1296,51 @@ async def test_observer_prefers_batched_remote_heads_and_keeps_errors_unknown():
 
     facts = await observe(snapshot(), Broken())
     assert all(head.state == "unknown" for head in facts.remote_heads)
+
+
+@pytest.mark.parametrize("kind", [SubjectKind.ROOT_BATCH, SubjectKind.PARENT_EPISODE])
+@pytest.mark.parametrize("expiry,competing", [(NOW + 1, True), (NOW, False), (NOW - 1, False)])
+async def test_managed_competing_lease_is_observed_for_root_and_parent(kind, expiry, competing):
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.playbooks.integration_policy import IntegrationPolicyFacts
+
+    ref = "refs/heads/main" if kind is SubjectKind.ROOT_BATCH else "refs/heads/aq/parent"
+    data = with_rows(snapshot(kind), integration_branch_owners=[publisher_owner(
+        ref=ref, owner_role="repair", owner_id="repair", handoff_state="attached",
+        session_id="worker", workspace_id="work", holder="repair", fence=5, expires_at=expiry,
+    )])
+    facts_type = IntegrationPolicyFacts if kind is SubjectKind.ROOT_BATCH else ParentPolicyFacts
+    facts = await IntegrationObserver(Reader(data), Git(), clock=lambda: NOW,
+                                      facts_type=facts_type).observe(data.subject)
+    assert facts.competing_lease is competing
+
+
+@pytest.mark.parametrize("remote_sha", [None, OTHER])
+@pytest.mark.parametrize("live_reader", [False, True])
+async def test_unpublished_candidate_requests_publication_without_hosted_or_cached_ci(
+    remote_sha, live_reader
+):
+    data = with_rows(snapshot(engine="reconciler"), integration_check_evidence=[ci_row()])
+    git = Git()
+    git.heads["refs/heads/aq/batch"] = remote_sha
+    git.ancestry = {}
+    live = AsyncMock(side_effect=RuntimeError("commit missing on remote"))
+    facts = await IntegrationObserver(
+        Reader(data), git, candidate_ci=live if live_reader else None
+    ).observe(data.subject)
+    assert facts.ci_state is CIState.NONE
+    assert facts.ci[0].evidence_id is None
+    assert "ancestry_unknown:source" not in facts.unknown
+    live.assert_not_awaited()
+
+
+async def test_unreadable_candidate_ref_does_not_authorize_publication_recovery():
+    data = snapshot(engine="reconciler")
+    git = Git()
+    git.remote_head = AsyncMock(return_value=RemoteHead(ref="refs/heads/aq/batch", state="unknown"))
+    # Preserve the identity of each requested ref even when every read fails.
+    git.remote_head.side_effect = lambda repository, ref: RemoteHead(ref=ref, state="unknown")
+    live = AsyncMock(side_effect=OSError("offline"))
+    facts = await IntegrationObserver(Reader(data), git, candidate_ci=live).observe(data.subject)
+    assert "remote_unknown:refs/heads/aq/batch" in facts.unknown
+    assert facts.ci_state is CIState.INFRA

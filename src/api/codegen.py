@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, create_model
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
+from src.api.models.ask import ASK_ARGS, AskErrorResponse
 from src.api.models import get_all_request_models, get_all_response_models
 from src.api.models.dashboard import (
     DashboardStateConflictResponse,
@@ -43,7 +44,6 @@ from src.routing.filing import GUARDED_COMMANDS, REFUSED_ROUTING_ARGS, ROUTING_C
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
-    _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,
     _TOOL_CATEGORIES,
 )
@@ -55,8 +55,17 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
+
+    "ask_intake", "ask_button",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
     "reconcile_collaborations",  # daemon-only expiry and retention
+    "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 
@@ -165,22 +174,31 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "report_brief",
             "report_submit",
             "delete_task",
+            "remove_task",
             "archive_task",
             "delete_project",
             "provider_allocation_apply",
+            "policy_export",
+            "policy_diff",
+            "policy_apply",
+            "wait_register", "wait_get", "wait_list", "wait_cancel",
+            "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+            "wait_decide", "wait_lift", "wait_legacy_bridge",
         }
     )
     | DASHBOARD_STATE_COMMANDS
+    | frozenset(ASK_ARGS)
 )
 
 #: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
 #: with :class:`~src.api.models.task.HierarchyRefusalResponse`.
 HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
-    {"delete_task", "archive_task", "delete_project"}
+    {"delete_task", "remove_task", "archive_task", "delete_project"}
 )
 
 # Non-default statuses keyed by the command and its stable command error code.
 ERROR_STATUS: dict[tuple[str, str], int] = {
+    ("review_reopen", "unauthorized"): 403,
     ("edit_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "class_referenced"): 409,
@@ -428,6 +446,7 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 for field in REFUSED_ROUTING_ARGS:
                     if field in raw_body and field not in args:
                         args[field] = raw_body[field]
+        args = {key: value for key, value in args.items() if not key.startswith("_")}
         for _key in SERVER_OWNED_ARG_KEYS:
             args.pop(_key, None)
 
@@ -505,37 +524,20 @@ def build_category_routers() -> list[APIRouter]:
     response_models = get_all_response_models()
     request_models = get_all_request_models()
 
-    # Build complete tool map
-    tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
-    try:
-        from src.mcp_registration import _discover_all_commands
+    # All generated routes expose the legacy transport view of the shared
+    # descriptor snapshot; dedicated request DTOs remain authoritative below.
+    from src.commands.command_inventory import command_snapshot
 
-        discovered = _discover_all_commands()
-        for name, defn in discovered.items():
-            if name not in tool_map:
-                tool_map[name] = defn
-    except Exception:
-        pass
-
-    # Collect internal plugin tool definitions
-    plugin_categories: dict[str, str] = {}
-    try:
-        from src.plugins.internal import collect_internal_tool_definitions
-
-        for category, tool_defs in collect_internal_tool_definitions():
-            for defn in tool_defs:
-                name = defn["name"]
-                if name not in tool_map:
-                    tool_map[name] = defn
-                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
-                    plugin_categories[name] = category
-    except Exception:
-        pass
-
-    # ``_discover_all_commands`` already stamps ``_FALLBACK_INPUT_SCHEMAS``
-    # onto the commands that have no ``_ALL_TOOL_DEFINITIONS`` entry, so every
-    # definition in ``tool_map`` carries the real properties by the time it
-    # gets here (src/tools/definitions.py).  Plugin definitions ship their own.
+    snapshot = command_snapshot()
+    plugin_names = {plugin.name for plugin in snapshot.plugins}
+    tool_map = {
+        name: descriptor.tool_definition() for name, descriptor in snapshot.commands.items()
+        if name in snapshot.handler_names or name in snapshot.explicit_names
+        or name in plugin_names
+    }
+    plugin_categories = {
+        plugin.name: plugin.category for plugin in snapshot.plugins if plugin.category
+    }
 
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
@@ -628,7 +630,9 @@ def build_category_routers() -> list[APIRouter]:
                         422: {
                             "description": "Command error",
                             **(
-                                {"model": DashboardStateErrorResponse}
+                                {"model": AskErrorResponse}
+                                if cmd_name in ASK_ARGS
+                                else {"model": DashboardStateErrorResponse}
                                 if cmd_name in DASHBOARD_STATE_COMMANDS
                                 else {"model": JobErrorResponse}
                                 if cmd_name.startswith("job_")

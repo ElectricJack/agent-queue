@@ -26,11 +26,14 @@ handful of its methods (``get_task``, ``get_task_contexts``,
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
 from src.deliverables import resolve_task_deliverables
+from src.models import ProjectStatus
+from src.waits.policy import enabled as waits_enabled
 
 from . import sections as _sections
 from .models import PrimeDocument
@@ -64,6 +67,24 @@ class PrimeRenderer:
         body = baseline + ("\n\n" + bundle.to_markdown() if bundle.items else "")
         return replace(doc, sections=sections, override_markdown=body, context_bundle=bundle)
 
+    @staticmethod
+    def with_context_unavailable(doc, code):
+        """Record an access refusal in the context slot, carrying no evidence.
+
+        The mirror of :meth:`with_context` for a principal whose policy or
+        scope refused the read: the document keeps every other section and says
+        in one sentence, code only, that the enrichment is missing.
+        """
+        section = _sections.build_context_unavailable_section(code)
+        baseline = doc.to_markdown()
+        sections = tuple(
+            section if s.key == "l2_context" else s for s in doc.sections
+        )
+        if not any(s.key == "l2_context" for s in doc.sections):
+            sections = (*sections, section)
+        body = baseline.rstrip() + "\n\n" + f"## {section.title}\n\n{section.body}\n"
+        return replace(doc, sections=sections, override_markdown=body, context_bundle=None)
+
     async def render_for_task(
         self,
         task_id: str,
@@ -71,6 +92,7 @@ class PrimeRenderer:
         session_id: str | None = None,
         work_dir: str | None = None,
         mark_messages_delivered: bool = False,
+        bounded_worker: bool = True,
     ) -> PrimeDocument:
         """Render the full prime document for *task_id*.
 
@@ -141,6 +163,15 @@ class PrimeRenderer:
 
         observation = await read_context(sess)
 
+        continuation = None
+        if getattr(sess, "state", None) in live_states and getattr(self.db, "_engine", None):
+            from src.database.queries.continuation_queries import continuation_prime_context
+
+            async with self.db._engine.connect() as conn:
+                continuation = await continuation_prime_context(
+                    conn, task_id=task_id, project_id=task.project_id, session_id=sess.id,
+                )
+
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),
             await _sections.build_project_role_section(
@@ -148,8 +179,10 @@ class PrimeRenderer:
             ),
             _sections.build_task_section(
                 task,
+                bounded_worker=bounded_worker,
                 deliverables=await resolve_task_deliverables(self.db, task),
                 review_deliverables=await _sections.build_review_deliverable_summary(self.db, task),
+                review_revision=await _sections.build_review_revision_summary(self.db, task),
                 integration_delivery=await _sections.build_integration_delivery_summary(
                     self.db, task
                 ),
@@ -158,7 +191,9 @@ class PrimeRenderer:
                 ),
             ),
             await _sections.build_task_context_section(
-                self.db, self.config, task, session_id=session_id
+                self.db, self.config, task, session_id=session_id,
+                bounded_worker=bounded_worker,
+                continuation=continuation,
             ),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),
             await _sections.build_messages_section(
@@ -171,6 +206,7 @@ class PrimeRenderer:
                 task=task,
                 session=sess if getattr(sess, "state", None) in live_states else None,
                 work_dir=effective_work_dir,
+                continuation=continuation,
             ),
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
@@ -180,10 +216,15 @@ class PrimeRenderer:
                 else None,
                 registry=self.harness_registry,
                 config=self.config, session=sess, observation=observation,
+                # The task's project, which is the scope the session was
+                # launched from -- a project harness file shadows the system
+                # one (``orchestrator/execution.py``).
+                project_id=task.project_id,
             ),
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,
+                waits_enabled=waits_enabled(self.config, task.project_id),
                 development=development,
                 regenerate=(
                     (getattr(project, "hierarchical_integration_policy", None) or {}).get(
@@ -194,6 +235,12 @@ class PrimeRenderer:
                 allow_emergent_work=allow_emergent_work,
             ),
         )
+
+        if continuation is not None:
+            section_tuple = (*section_tuple[:2],
+                             _sections.build_wait_outcome_section(continuation),
+                             _sections.build_compaction_summary_section(continuation),
+                             *section_tuple[2:])
 
         doc = PrimeDocument(
             task_id=task_id,
@@ -207,6 +254,17 @@ class PrimeRenderer:
 
         override_template = load_override(effective_work_dir)
         if override_template:
+            override_body = apply_override(override_template, doc)
+            if continuation is not None:
+                # The resume contract survives an override that predates waits.
+                required_keys = {"wait_outcome", "compaction_summary", "task", "task_context", "messages"}
+                required = tuple(s for s in doc.sections if s.key in required_keys)
+                supplemental = replace(doc, sections=tuple(
+                    replace(s, body="") if s.key in required_keys else s for s in doc.sections
+                ))
+                override_body = replace(doc, sections=required).to_markdown() + "\n" + apply_override(
+                    override_template, supplemental,
+                )
             doc = PrimeDocument(
                 task_id=doc.task_id,
                 session_id=doc.session_id,
@@ -215,7 +273,77 @@ class PrimeRenderer:
                 rendered_at=doc.rendered_at,
                 work_dir=doc.work_dir,
                 branch=doc.branch,
-                override_markdown=apply_override(override_template, doc),
+                override_markdown=override_body,
             )
 
+        doc = _with_pause_notice(doc, project)
+        if bounded_worker:
+            from src.knowledge.context import context_enabled
+
+            if (
+                context_enabled(self.config)
+                and task.project_id in self.config.knowledge.enabled_projects
+            ):
+                from src.knowledge.budget import ContextBudget
+
+                doc = _fit_worker_previews(
+                    doc, ContextBudget.from_config(
+                        self.config, model_context_window=observation.get("model_context_window"),
+                    ), override_template, project,
+                )
         return doc
+
+
+def _fit_worker_previews(doc, budget, override_template, project):
+    """Reduce only losslessly pageable prose; the delivery gate owns refusal.
+
+    Reassemble the actual override and pause notice after every reduction.
+    Independent section ceilings cannot guarantee an aggregate fit, and an
+    override may expand a section more than once. No database reads or writes
+    occur here, so message delivery and current repair fences are not replayed.
+    """
+    for key in ("task_context", "task", "messages"):
+        if override_template and not re.search(r"\{\{\s*" + re.escape(key) + r"\s*\}\}", override_template):
+            # Omitted slots cannot contribute bytes to this delivery.
+            continue
+        section = next((s for s in doc.sections if s.key == key), None)
+        if section is None or section.preview is None:
+            continue
+        preview = section.preview
+        if len(preview.render(doc.task_id, 0).encode("utf-8")) >= len(section.body.encode("utf-8")):
+            # A short complete paragraph can cost less than its continuation
+            # command. Keep it instead of growing the required prompt.
+            continue
+        limit = min(preview.max_bytes, len(preview.text.encode("utf-8")))
+        # Even a zero-length excerpt retains the complete read instruction.
+        # The pointer's bytes are counted by account(), not guessed here.
+        while limit > 0:
+            accounting = budget.account(doc.to_markdown())
+            if accounting["fits"]:
+                return doc
+            overflow = accounting["total_tokens"] - budget.input_tokens
+            limit = max(0, limit - max(1, overflow))
+            section = replace(section, body=preview.render(doc.task_id, limit))
+            doc = replace(doc, sections=tuple(
+                section if s.key == key else s for s in doc.sections
+            ), override_markdown=None)
+            if override_template:
+                doc = replace(doc, override_markdown=apply_override(override_template, doc))
+            doc = _with_pause_notice(doc, project)
+    return doc
+
+
+_PAUSED_NOTICE = (
+    "\n\n## Project paused\n\n"
+    "Stop at the next safe point and preserve progress with aq task comment. "
+    "Keep your claim and wait for project resume before continuing work, "
+    "submitting reviews or requesting human decisions. A pending wait "
+    "completing does not authorize continuing while paused.\n"
+)
+
+
+def _with_pause_notice(doc: PrimeDocument, project: Any) -> PrimeDocument:
+    """Append the pause hold after overrides so a local template cannot hide it."""
+    if project is None or project.status != ProjectStatus.PAUSED:
+        return doc
+    return replace(doc, override_markdown=doc.to_markdown().rstrip() + _PAUSED_NOTICE)

@@ -31,6 +31,7 @@ class ObjectScoreRecordResponse(ObjectLoopResponse):
 
 class ObjectCheckpointReadResponse(ObjectLoopResponse):
     approved: bool
+    evidence: dict[str, Any]
 
 
 class ArtifactVerifyResponse(BaseModel):

@@ -1,4 +1,4 @@
-"""Additive sync of shipped capabilities into the vault supervisor profile.
+"""Additive sync of shipped capabilities into vault system profiles.
 
 Seeding is write-if-absent, so every control a release granted the shipped
 supervisor stayed ``capability denied`` on an existing install until someone
@@ -85,6 +85,9 @@ SHIPPED_SUPERVISOR = _profile(
     ["integration_eject", "integration_status", "review_dispatch", "task_show"],
 )
 SHIPPED_REVIEWER = _profile("reviewer", ["task_close", "task_show"])
+INGEST_AND_REVIEW_PROFILES = (
+    "spec-ingest", "final-reviewer", "planner", "playbook-compiler", "reviewer", "triage",
+)
 
 
 def _write(path: Path, text: str) -> None:
@@ -137,13 +140,18 @@ def test_setting_reads_booleans_and_boolean_words():
     assert capability_sync_setting(_profile("x", [])) is None
 
 
-def test_only_the_supervisor_is_synced_by_default():
-    assert DEFAULT_SYNCED_PROFILE_IDS == {"supervisor"}
-    assert capability_sync_enabled("supervisor", _profile("supervisor", []))
-    assert not capability_sync_enabled("reviewer", _profile("reviewer", []))
-    assert not capability_sync_enabled(
-        "supervisor", _profile("supervisor", [], frontmatter="capability_sync: false\n")
-    )
+def test_all_shipped_system_profiles_are_synced_by_default():
+    defaults = Path(shipped_profile_path("supervisor")).parent.parent
+    assert DEFAULT_SYNCED_PROFILE_IDS == {
+        path.parent.name for path in defaults.glob("*/profile.md")
+    }
+    assert set(INGEST_AND_REVIEW_PROFILES) <= DEFAULT_SYNCED_PROFILE_IDS
+    for name in DEFAULT_SYNCED_PROFILE_IDS:
+        assert capability_sync_enabled(name, _profile(name, []))
+        assert not capability_sync_enabled(
+            name, _profile(name, [], frontmatter="capability_sync: false\n")
+        )
+    assert not capability_sync_enabled("my-own", _profile("my-own", []))
     assert capability_sync_enabled(
         "reviewer", _profile("reviewer", [], frontmatter="capability_sync: true\n")
     )
@@ -214,14 +222,14 @@ def test_opt_out_leaves_the_vault_copy_alone(root, data_dir):
     assert _backups(vault) == []
 
 
-def test_other_profiles_sync_only_when_they_opt_in(root, data_dir):
-    stale = _profile("reviewer", ["task_show"])
+def test_shipped_profile_can_opt_out_and_reenable_sync(root, data_dir):
+    stale = _profile("reviewer", ["task_show"], frontmatter="capability_sync: false\n")
     _write(_vault(data_dir, "reviewer"), stale)
 
     assert sync_profile_capabilities(data_dir, "reviewer", root=root).status == STATUS_DISABLED
     assert _vault(data_dir, "reviewer").read_text(encoding="utf-8") == stale
 
-    opted_in = stale.replace("name: Reviewer\n", "name: Reviewer\ncapability_sync: true\n")
+    opted_in = stale.replace("capability_sync: false", "capability_sync: true")
     _write(_vault(data_dir, "reviewer"), opted_in)
     result = sync_profile_capabilities(data_dir, "reviewer", root=root)
     assert result.status == STATUS_SYNCED
@@ -247,14 +255,18 @@ def test_a_vault_copy_without_capabilities_fails_without_writing(root, data_dir)
 
 
 def test_a_non_shipped_profile_fails(root, data_dir):
+    custom = _profile("my-own", ["task_show"], frontmatter="capability_sync: true\n")
+    _write(_vault(data_dir, "my-own"), custom)
     result = sync_profile_capabilities(data_dir, "my-own", root=root)
     assert result.status == STATUS_FAILED
     assert "not a shipped system profile" in result.error
+    assert _vault(data_dir, "my-own").read_text(encoding="utf-8") == custom
+    assert _backups(_vault(data_dir, "my-own")) == []
 
 
 def test_sync_shipped_capabilities_touches_only_synced_profiles(root, data_dir):
     _write(_vault(data_dir), STALE_SUPERVISOR)
-    stale_reviewer = _profile("reviewer", ["task_show"])
+    stale_reviewer = _profile("reviewer", ["task_show"], frontmatter="capability_sync: false\n")
     _write(_vault(data_dir, "reviewer"), stale_reviewer)
 
     results = {r.profile_id: r for r in sync_shipped_capabilities(data_dir, root=root)}
@@ -265,37 +277,48 @@ def test_sync_shipped_capabilities_touches_only_synced_profiles(root, data_dir):
     assert _vault(data_dir, "reviewer").read_text(encoding="utf-8") == stale_reviewer
 
 
-def test_the_real_shipped_supervisor_restores_the_2026_09_24_denials(data_dir):
-    """The shipped file itself, minus the controls that were denied that day."""
-    shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
-    denied = [
-        "integration_release_stale_owners",
-        "integration_retry_cleanup",
-        "integration_eject",
-        "review_dispatch",
-        "integration_adopt_legacy_deliveries",
-    ]
-    start = shipped.index("## Capabilities")
-    end = shipped.index("## Rules")
-    block = shipped[start:end]
-    for name in denied:
-        assert f'    "{name}",\n' in block, name
-        block = block.replace(f'    "{name}",\n', "", 1)
-    block = block.replace('"plugin_tools": [\n', '"plugin_tools": [\n    "operator_plugin_tool",\n', 1)
-    stale = shipped[:start] + block + shipped[end:]
-    _write(_vault(data_dir), stale)
+@pytest.mark.parametrize("profile_id", INGEST_AND_REVIEW_PROFILES)
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_existing_ingest_and_review_profiles_gain_grants_preserving_operator_edits(
+    data_dir, profile_id, opt_out,
+):
+    shipped = Path(shipped_profile_path(profile_id)).read_text(encoding="utf-8")
+    grants = ["approved_spec_packet", "wait_register"] if profile_id == "spec-ingest" else ["task_show"]
+    stale = shipped
+    for grant in grants:
+        assert f'    "{grant}"' in shipped
+        # Handle both the final and non-final entries of the JSON list.
+        stale = stale.replace(f',\n    "{grant}"\n', '\n')
+        stale = stale.replace(f'    "{grant}",\n', '')
+    stale = stale.replace('"harness": "claude"', '"harness": "codex"')
+    stale = stale.replace('"aq_commands": [', '"aq_commands": ["operator_custom_command",', 1)
+    stale += "\n## Operator Notes\nRetain these words.\n"
+    if opt_out:
+        stale = stale.replace("---\n", "---\ncapability_sync: false\n", 1)
+    vault = _vault(data_dir, profile_id)
+    _write(vault, stale)
 
-    result = sync_profile_capabilities(data_dir, "supervisor")
+    result = sync_profile_capabilities(data_dir, profile_id)
 
+    if opt_out:
+        assert result.status == STATUS_DISABLED
+        assert vault.read_text(encoding="utf-8") == stale
+        assert _backups(vault) == []
+        return
     assert result.status == STATUS_SYNCED
-    assert sorted(result.added["aq_commands"]) == sorted(denied)
-    parsed = parse_profile(_vault(data_dir).read_text(encoding="utf-8"))
-    assert parsed.errors == []
-    shipped_caps = parse_profile(shipped).capabilities
-    for ns, names in shipped_caps.items():
-        assert set(names) <= set(parsed.capabilities[ns]), ns
-    assert "operator_plugin_tool" in parsed.capabilities["plugin_tools"]
-    assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
+    assert result.added == {"aq_commands": grants}
+    merged = vault.read_text(encoding="utf-8")
+    assert merged.split("## Capabilities")[0] == stale.split("## Capabilities")[0]
+    assert (
+        merged.split("## Capabilities", 1)[1].split("```", 2)[2]
+        == stale.split("## Capabilities", 1)[1].split("```", 2)[2]
+    )
+    assert set(grants + ["operator_custom_command"]) <= set(_aq_commands(vault))
+    assert Path(result.backup_path).read_text(encoding="utf-8") == stale
+    assert sync_profile_capabilities(data_dir, profile_id).status == STATUS_CURRENT
+    assert _backups(vault) == [Path(result.backup_path)]
+
+
 
 
 def test_the_real_shipped_supervisor_syncs_the_escalation_resolve_grant(data_dir):
@@ -405,32 +428,35 @@ async def test_publish_is_silent_when_nothing_changed(root, data_dir):
 # --- the vault watcher reload ----------------------------------------------
 
 
-async def test_watcher_reload_merges_before_the_db_sync(data_dir, monkeypatch):
+@pytest.mark.parametrize("profile_id", ("supervisor", *INGEST_AND_REVIEW_PROFILES))
+async def test_watcher_reload_merges_before_the_db_sync(data_dir, monkeypatch, profile_id):
     from src.profiles import sync as sync_mod
 
-    shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
-    stale = shipped.replace('    "review_dispatch",\n', "", 1)
+    grant = "wait_register" if profile_id == "spec-ingest" else "task_show"
+    shipped = Path(shipped_profile_path(profile_id)).read_text(encoding="utf-8")
+    stale = shipped.replace(f',\n    "{grant}"\n', '\n')
+    stale = stale.replace(f'    "{grant}",\n', "", 1)
     assert stale != shipped
-    vault = _vault(data_dir)
+    vault = _vault(data_dir, profile_id)
     _write(vault, stale)
 
     seen: list[list[str]] = []
 
     async def _fake_sync(parsed, db, *, source_path=None, fallback_id=None):
         seen.append(list(parsed.capabilities["aq_commands"]))
-        return sync_mod.ProfileSyncResult(success=True, profile_id="supervisor", action="updated")
+        return sync_mod.ProfileSyncResult(success=True, profile_id=profile_id, action="updated")
 
     monkeypatch.setattr(sync_mod, "sync_profile_to_db", _fake_sync)
     bus = _Bus()
     change = VaultChange(
-        path=str(vault), rel_path="agent-types/supervisor/profile.md", operation="modified"
+        path=str(vault), rel_path=f"agent-types/{profile_id}/profile.md", operation="modified"
     )
 
     await sync_mod.on_profile_changed([change], db=object(), event_bus=bus, data_dir=data_dir)
 
-    assert "review_dispatch" in _aq_commands(vault)
+    assert grant in _aq_commands(vault)
     (synced_commands,) = seen
-    assert "review_dispatch" in synced_commands
+    assert grant in synced_commands
     assert [e for e, _ in bus.emitted] == [CAPABILITIES_SYNCED_EVENT]
     assert bus.emitted[0][1]["trigger"] == "reload"
 
@@ -575,15 +601,22 @@ async def test_fix_reports_a_refused_merge(check_root, data_dir):
 
 @pytest.fixture
 async def stale_orchestrator(tmp_path):
-    """An orchestrator initialised over a vault whose supervisor is stale."""
+    """An orchestrator initialised over stale system profiles."""
     from src.orchestrator import Orchestrator
 
     data_dir = tmp_path / "data"
     shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
-    stale = shipped.replace('    "integration_eject",\n', "", 1)
+    stale = shipped.replace('    "integration_status",\n', "", 1)
     stale = stale.replace('"aq_commands": [\n', '"aq_commands": [\n    "operator_custom_command",\n', 1)
-    assert "integration_eject" not in stale
+    assert "integration_status" not in stale
     _write(_vault(str(data_dir)), stale)
+    for profile_id in INGEST_AND_REVIEW_PROFILES:
+        grant = "wait_register" if profile_id == "spec-ingest" else "task_show"
+        shipped = Path(shipped_profile_path(profile_id)).read_text(encoding="utf-8")
+        stale = shipped.replace(f',\n    "{grant}"\n', '\n')
+        stale = stale.replace(f'    "{grant}",\n', '', 1)
+        assert stale != shipped
+        _write(_vault(str(data_dir), profile_id), stale)
 
     config = AppConfig(
         database=DatabaseConfig(url=lease_dsn("capability-sync.db")),
@@ -596,14 +629,72 @@ async def stale_orchestrator(tmp_path):
     await orch.db.close()
 
 
-async def test_daemon_start_merges_the_supervisor_before_the_db_sync(stale_orchestrator):
+async def test_daemon_start_merges_system_profiles_before_the_db_sync(stale_orchestrator):
     data_dir = stale_orchestrator.config.data_dir
     commands = _aq_commands(_vault(data_dir))
-    assert "integration_eject" in commands
+    assert "integration_status" in commands
     assert "operator_custom_command" in commands
     assert len(_backups(_vault(data_dir))) == 1
 
     profile = await stale_orchestrator.db.get_profile("supervisor")
     assert profile is not None
-    assert "integration_eject" in profile.aq_commands
+    assert "integration_status" in profile.aq_commands
     assert "operator_custom_command" in profile.aq_commands
+
+    for profile_id in INGEST_AND_REVIEW_PROFILES:
+        grant = "wait_register" if profile_id == "spec-ingest" else "task_show"
+        assert grant in _aq_commands(_vault(data_dir, profile_id))
+        assert len(_backups(_vault(data_dir, profile_id))) == 1
+        profile = await stale_orchestrator.db.get_profile(profile_id)
+        assert profile is not None
+        assert grant in profile.aq_commands
+
+
+def test_existing_supervisor_gains_object_evidence_reads(data_dir):
+    shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
+    grants = ["artifact_verify", "object_checkpoint_read", "job_retain"]
+    stale = shipped
+    for name in grants:
+        assert f'    "{name}",\n' in shipped
+        stale = stale.replace(f'    "{name}",\n', "", 1)
+    vault = _vault(data_dir)
+    _write(vault, stale)
+    result = sync_profile_capabilities(data_dir, "supervisor")
+    assert result.status == STATUS_SYNCED
+    assert result.added == {"aq_commands": grants}
+    assert set(grants) <= set(_aq_commands(vault))
+    assert Path(result.backup_path).read_text(encoding="utf-8") == stale
+    assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
+
+
+@pytest.mark.parametrize("profile_id", ["worker-claude", "worker-codex", "worker-opencode"])
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_existing_custom_worker_receives_routine_grants_without_replacing_operator_rules(
+    tmp_path, profile_id, opt_out,
+):
+    data_dir = str(tmp_path)
+    shipped = Path(shipped_profile_path(profile_id)).read_text()
+    grants = {
+        "git_pull", "git_push", "git_create_pr", "dry_run_playbook",
+        "task_children", "task_progress", "get_git_status",
+    }
+    stale = shipped
+    for grant in grants:
+        assert f'    "{grant}",' in shipped
+        stale = stale.replace(f'    "{grant}",\n', "")
+    stale = stale.replace('"aq_commands": [', '"aq_commands": ["operator_custom_command",', 1)
+    stale += "\n## Operator Notes\nRetain these words.\n"
+    if opt_out:
+        stale = stale.replace("---\n", "---\ncapability_sync: false\n", 1)
+    vault = Path(data_dir) / "vault" / "agent-types" / profile_id / "profile.md"
+    _write(vault, stale)
+    result = sync_profile_capabilities(data_dir, profile_id)
+    assert result.status == (STATUS_DISABLED if opt_out else STATUS_SYNCED)
+    refreshed = vault.read_text()
+    assert "Retain these words." in refreshed
+    assert "operator_custom_command" in refreshed
+    if opt_out:
+        assert refreshed == stale
+    else:
+        assert grants <= {name for names in parse_profile(refreshed).capabilities.values() for name in names}
+        assert sync_profile_capabilities(data_dir, profile_id).status == STATUS_CURRENT

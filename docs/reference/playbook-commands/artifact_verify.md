@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/object_loop.py`](../../../src/commands/contracts/object_loop.py) |
-| Contract fingerprint | `sha256:84ed64f723e5b3b193a4fff91f612eee15e0526f347c630b002b12a7fdbb4bdd` |
+| Contract fingerprint | `sha256:5ef6c128dda9d4a8cffa5e07c13cdb55a4702ab71cbc9ca711071ccbf3accafb` |
 
 ## Parameters
 
@@ -22,6 +22,9 @@
 |---|---|---|---|---|
 | `uri` | `string` | yes | — | — |
 | `sha256` | `string \| null` | no | `null` | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `task_id` | `string \| null` | no | `null` | — |
+| `session_id` | `string \| null` | no | `null` | — |
 
 ## Result
 
@@ -47,7 +50,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using uri, sha256 | — | always |
+| Read using uri, sha256, project_id, task_id, session_id | — | always |
 
 <!-- aq:generated:end -->
 

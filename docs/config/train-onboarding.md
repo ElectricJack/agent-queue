@@ -1,5 +1,11 @@
 # Train onboarding for every project
 
+> Historical runbook: the old train/development publisher, shadow cutover and
+> rollback controls were removed on 2026-10-04. Commands for those paths below
+> are retained as historical context. Use the [current Git-first train runbook](../guides/git-first-train-runbook.md)
+> for configuration, delivery and recovery. `app-setup`, `app-verify` and
+> `trust-manifest` remain available for App diagnostics.
+
 Jack (2026-09-27): every AQ project should deliver through the integration
 train. This runbook covers the other nine active projects. agent-queue keeps
 its own reviewed policy and handoff,
@@ -67,7 +73,7 @@ aq playbook v2-validate --path reviewed-playbooks/root-train/artifact.json
 aq playbook v2-import --path reviewed-playbooks/parent-integration
 aq playbook v2-import --path reviewed-playbooks/root-train
 aq playbook activate --playbook-id parent-integration --artifact-sha256 sha256:67a4f1e68ce35dc2c2ec53611d246c84c709bf88d48e352ff1f15105c5ddfdf0 --enabled
-aq playbook activate --playbook-id root-train --artifact-sha256 sha256:6681dd209a52e011b7f8f49f32a6d952782ec64a5e3df68da2ab7a34a01a25cf --enabled
+aq playbook activate --playbook-id root-train --artifact-sha256 sha256:1a56083121b48f032199cd7657768c874f549c70970cb6236e8a5378bcc1e1c6 --enabled
 aq playbook activation-health --playbook-id parent-integration
 aq playbook activation-health --playbook-id root-train
 ```
@@ -155,7 +161,7 @@ gh api repos/OWNER/REPO/commits/SHA/check-runs --jq '.check_runs[] | [.name, .ap
 Run from agent-queue itself, the planner reproduces
 [agent-queue-train-policy.json](agent-queue-train-policy.json) byte for byte
 in either credential mode, with no `--check-version`: its check-set version is
-the derived `ci-4c6e0c2a989c`.
+the derived `ci-4f7c710bba01`, including `Dashboard (typecheck/build)`.
 
 ## 3. App credential mode
 
@@ -437,10 +443,8 @@ review until its workflow lands.
 
 ### Local remotes: matter-engine-web, quilt-trader-web, agent-queue-site
 
-These push to bare repositories under `~/.agent-queue/local-remotes/`.
-Hierarchy and train need github.com (`delivery_path_problems` and the
-`integration.delivery_path` doctor check), and no pull request can exist on
-disk. Their train is the **development publisher**. It keeps the batch
+These push to bare repositories under `~/.agent-queue/local-remotes/`, which
+cannot host pull requests. Their train is the **development publisher**. It keeps the batch
 journal, dependency ordering and the exact-lease push, needs no forge, and
 replaces agile-ridge's per-task direct delivery for these projects:
 
