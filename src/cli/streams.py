@@ -23,6 +23,7 @@ def stream() -> None:
     context_settings={"ignore_unknown_options": True},
 )
 @click.option("--title", default=None, help="Header label shown in the pane")
+@click.option("--idempotency-key", default=None, help="Replay a finite job submission")
 @click.option("--session-id", "session_id", required=True, help="Owning session id")
 @click.option("-p", "--project", "project_id", default=None, help="Owning project id")
 @click.option("--cwd", required=True, help="Working directory for the command")
@@ -32,15 +33,21 @@ def stream() -> None:
 def stream_start(
     ctx: click.Context, title: str | None, session_id: str,
     project_id: str | None, cwd: str, argv: tuple[str, ...],
+    idempotency_key: str | None,
 ) -> None:
     """Start a streamable command: ``aq stream start -- pytest tests/ -x``."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    import uuid
+
     command = list(argv)
+    idempotency_key = idempotency_key or "stream-" + uuid.uuid4().hex
+    click.echo(f"Stream submission key: {idempotency_key}", err=True)
 
     async def _start():
         async with _get_client(api_url) as client:
             return await client.start_stream(
                 command, cwd, title=title, session_id=session_id, project_id=project_id,
+                idempotency_key=idempotency_key,
             )
 
     result = _run(_start())

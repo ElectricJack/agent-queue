@@ -17,6 +17,8 @@ class MessageReplyRequest:
     Attributes:
         message_id (str): Message being replied to
         body (str): Markdown reply body
+        client_key (None | str | Unset):
+        claim_epoch (int | None | Unset):
         subject (None | str | Unset): Optional subject line
         from_kind (None | str | Unset): Override the inferred replier kind
         from_id (None | str | Unset): Override the inferred replier id
@@ -25,6 +27,8 @@ class MessageReplyRequest:
 
     message_id: str
     body: str
+    client_key: None | str | Unset = UNSET
+    claim_epoch: int | None | Unset = UNSET
     subject: None | str | Unset = UNSET
     from_kind: None | str | Unset = UNSET
     from_id: None | str | Unset = UNSET
@@ -35,6 +39,18 @@ class MessageReplyRequest:
         message_id = self.message_id
 
         body = self.body
+
+        client_key: None | str | Unset
+        if isinstance(self.client_key, Unset):
+            client_key = UNSET
+        else:
+            client_key = self.client_key
+
+        claim_epoch: int | None | Unset
+        if isinstance(self.claim_epoch, Unset):
+            claim_epoch = UNSET
+        else:
+            claim_epoch = self.claim_epoch
 
         subject: None | str | Unset
         if isinstance(self.subject, Unset):
@@ -68,6 +84,10 @@ class MessageReplyRequest:
                 "body": body,
             }
         )
+        if client_key is not UNSET:
+            field_dict["client_key"] = client_key
+        if claim_epoch is not UNSET:
+            field_dict["claim_epoch"] = claim_epoch
         if subject is not UNSET:
             field_dict["subject"] = subject
         if from_kind is not UNSET:
@@ -85,6 +105,24 @@ class MessageReplyRequest:
         message_id = d.pop("message_id")
 
         body = d.pop("body")
+
+        def _parse_client_key(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        client_key = _parse_client_key(d.pop("client_key", UNSET))
+
+        def _parse_claim_epoch(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
 
         def _parse_subject(data: object) -> None | str | Unset:
             if data is None:
@@ -125,6 +163,8 @@ class MessageReplyRequest:
         message_reply_request = cls(
             message_id=message_id,
             body=body,
+            client_key=client_key,
+            claim_epoch=claim_epoch,
             subject=subject,
             from_kind=from_kind,
             from_id=from_id,
