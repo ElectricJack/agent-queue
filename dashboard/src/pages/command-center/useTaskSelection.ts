@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useShellPaneStore } from "../../panes/store";
+import { rememberTaskPreview } from "../../panes/task-detail/preview";
 import type { SelectableTask } from "./types";
 
 /** Selection follows the detail pane, including its close button and Escape. */
@@ -13,6 +14,7 @@ export function useTaskSelection() {
     if (task.playbook_run_id) {
       open("playbook-run-inspector", { runId: task.playbook_run_id, taskId: task.id });
     } else {
+      rememberTaskPreview(task);
       open("task-detail", { taskId: task.id });
     }
   }, [open]);

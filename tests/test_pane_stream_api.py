@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -17,6 +18,10 @@ from src.sessions.fake import FakeProvider
 from src.sessions.pane_broadcaster import PaneBroadcaster
 from src.sessions.provider import SessionSpec
 from tests.db_fixtures import lease_dsn
+
+HARNESS_FRAMES = (
+    Path(__file__).parents[1] / "dashboard" / "layout-checks" / "fixtures" / "pane-frames.json"
+)
 
 
 @pytest.fixture
@@ -100,14 +105,13 @@ async def test_pane_stream_emits_screen_frame(db):
     app, broadcaster = await _app(db, provider)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                            timeout=5.0) as client:
-        async with client.stream(
-            "GET", "/api/sessions/sid1/pane", params={"max_seconds": "0.3"}
-        ) as resp:
-            assert resp.status_code == 200
-            body = b""
-            async for chunk in resp.aiter_bytes():
-                body += chunk
+                            timeout=5.0) as client, client.stream(
+        "GET", "/api/sessions/sid1/pane", params={"max_seconds": "0.3"}
+    ) as resp:
+        assert resp.status_code == 200
+        body = b""
+        async for chunk in resp.aiter_bytes():
+            body += chunk
     frames = _frames(body.decode())
     assert frames
     assert frames[0]["source"] == "pane"
@@ -129,8 +133,8 @@ async def test_pane_stream_unknown_session_404(db):
 
 @pytest.mark.asyncio
 async def test_pane_stream_without_peek_capability_409(db):
-    from src.sessions.subprocess import SubprocessProvider
     from src.sessions.provider import Cap
+    from src.sessions.subprocess import SubprocessProvider
 
     provider = SubprocessProvider(config=None)
     # Force the no-PEEK shape without depending on the class's caps.
@@ -166,14 +170,13 @@ async def test_cap_refusal_is_a_200_error_frame_not_a_429(db):
     broadcaster.max_sessions = 1
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test",
-                            timeout=5.0) as client:
-        async with client.stream(
-            "GET", "/api/sessions/sidA/pane", params={"max_seconds": "0.2"}
-        ) as first:
-            assert first.status_code == 200
-            async for _ in first.aiter_bytes():
-                pass
-            resp = await client.get("/api/sessions/sidB/pane")
+                            timeout=5.0) as client, client.stream(
+        "GET", "/api/sessions/sidA/pane", params={"max_seconds": "0.2"}
+    ) as first:
+        assert first.status_code == 200
+        async for _ in first.aiter_bytes():
+            pass
+        resp = await client.get("/api/sessions/sidB/pane")
 
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -201,13 +204,12 @@ async def test_stream_end_leaves_no_subscriber_behind(db):
     transport = ASGITransport(app=app)
     body = b""
     async with AsyncClient(transport=transport, base_url="http://test",
-                            timeout=5.0) as client:
-        async with client.stream(
-            "GET", "/api/sessions/sid1/pane", params={"max_seconds": "0.2"}
-        ) as resp:
-            assert resp.status_code == 200
-            async for chunk in resp.aiter_bytes():
-                body += chunk
+                            timeout=5.0) as client, client.stream(
+        "GET", "/api/sessions/sid1/pane", params={"max_seconds": "0.2"}
+    ) as resp:
+        assert resp.status_code == 200
+        async for chunk in resp.aiter_bytes():
+            body += chunk
 
     # The stream really did attach (ASGITransport only hands the body over
     # once the generator has finished, so this is the proof available here).
@@ -258,3 +260,41 @@ async def test_cancelled_stream_still_detaches(db):
 
     assert watch.subscribers == set()
     await broadcaster.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_layout_harness_pane_frames_match_the_real_stream(db):
+    """The dashboard layout checks replay pane-frames.json through a stub; its
+    frames must have the real route's keys and value types, or the checks
+    exercise a stream the dashboard never receives."""
+    provider = FakeProvider(config=None)
+    await provider.start(
+        SessionSpec(session_name="s-c", work_dir="/w", command=("x",),
+                     instance_token="tok")
+    )
+    provider.sessions["s-c"].output.append("\x1b[32mcolour\x1b[0m")
+    await _make_session(db, session_id="sidc", name="s-c")
+
+    app, broadcaster = await _app(db, provider)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                            timeout=5.0) as client, client.stream(
+        "GET", "/api/sessions/sidc/pane", params={"max_seconds": "0.3"}
+    ) as resp:
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        body = b"".join([chunk async for chunk in resp.aiter_bytes()])
+    await broadcaster.shutdown()
+    real = _frames(body.decode())[0]
+    assert real["type"] == "screen"
+
+    fixtures = json.loads(HARNESS_FRAMES.read_text(encoding="utf-8"))
+    assert fixtures, "the harness replays no frames"
+    for session, frames in fixtures.items():
+        assert frames, f"{session}: no frames"
+        for frame in frames:
+            assert set(frame) == set(real), f"{session}: {sorted(frame)} != {sorted(real)}"
+            for key, value in real.items():
+                numeric = isinstance(value, (int, float)) and isinstance(frame[key], (int, float))
+                assert numeric or type(frame[key]) is type(value), (
+                    f"{session}.{key}: {type(frame[key]).__name__} != {type(value).__name__}"
+                )

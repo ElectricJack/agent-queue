@@ -6,11 +6,13 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import time
+import uuid
 
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
 from src.orchestrator.base_workspace import base_checkout_refusal
 from src.logging_config import CorrelationContext
-from src.discord.notifications import format_task_started
+from src.notifications.render import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
 from src.api.models.agent import AgentSettings, AgentSummary
 from src.notifications.events import (
@@ -21,6 +23,7 @@ from src.notifications.events import (
     TaskThreadOpenEvent,
 )
 from src.review_keys import is_review_completion
+from src.providers.inflight import LAUNCH_REFUSED, ProviderFailure
 from src.models import (
     AgentOutput,
     AgentResult,
@@ -52,6 +55,55 @@ _SLOT_WAIT_REASONS = frozenset(
     {"slot_lost_race", "slot_warming", "slot_stalled", "slots_full"}
 )
 
+#: How long an accepted close waits on one best-effort pull-request open after
+#: its terminal transition.  A train root's open reads the project-wide
+#: delivery observation, which a busy project can hold for many minutes
+#: (amber-flare-10); the close's record, writer handoff and claim release must
+#: not wait behind it.  Past the bound the open keeps running detached and its
+#: outcome is logged; a root it missed is retried by the root PR reconciler.
+CLOSE_PUBLICATION_TIMEOUT_SECONDS = 30.0
+
+#: Strong references to publications that outlived their close.
+_DETACHED_CLOSE_PUBLICATIONS: set[asyncio.Task] = set()
+
+
+async def _bounded_close_publication(task_id: str, label: str, publish) -> dict | None:
+    """Run ``publish()`` for at most the close bound; None when it is still running.
+
+    The open is shielded, so neither the bound nor a cancelled close stops it:
+    pull-request creation is idempotent per head, so letting it finish is
+    never a duplicate, while cancelling it mid-write could be a half-done one.
+    Its exception, when it settles inside the bound, propagates to the caller.
+    """
+    job = asyncio.ensure_future(publish())
+    _DETACHED_CLOSE_PUBLICATIONS.add(job)
+    job.add_done_callback(_DETACHED_CLOSE_PUBLICATIONS.discard)
+    try:
+        return await asyncio.wait_for(asyncio.shield(job), CLOSE_PUBLICATION_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "Task %s: %s still running after %.0fs; the close finishes without "
+            "waiting for it",
+            task_id, label, CLOSE_PUBLICATION_TIMEOUT_SECONDS,
+        )
+
+        def _settled(done: asyncio.Task) -> None:
+            if done.cancelled():
+                logger.warning("Task %s: detached %s was cancelled", task_id, label)
+            elif done.exception() is not None:
+                logger.warning(
+                    "Task %s: detached %s failed", task_id, label,
+                    exc_info=done.exception(),
+                )
+            else:
+                logger.info(
+                    "Task %s: detached %s outcome: %s",
+                    task_id, label, (done.result() or {}).get("outcome"),
+                )
+
+        job.add_done_callback(_settled)
+        return None
+
 
 class ExecutionMixin:
     """Agent execution pipeline methods mixed into Orchestrator."""
@@ -73,6 +125,11 @@ class ExecutionMixin:
                 yield
             finally:
                 owners.pop(task_id, None)
+
+    def _task_control_held(self, task_id: str) -> bool:
+        """Whether a completion, preparation or pause holds *task_id*'s control lock."""
+        lock = (getattr(self, "_task_control_locks", None) or {}).get(task_id)
+        return lock is not None and lock.locked()
 
     async def _execute_task_safe(self, action: AssignAction) -> None:
         """Top-level wrapper for background task execution (layer 1 of 3).
@@ -215,6 +272,8 @@ class ExecutionMixin:
             resolve_agent_profile, resolve_task_profile, task_agent_mismatch,
         )
 
+        from dataclasses import replace
+
         if agent is None or not agent.enabled or agent.role != "worker":
             return "worker is unavailable"
         if effective_route is None:
@@ -222,12 +281,9 @@ class ExecutionMixin:
             if task is None:
                 return "awaiting intelligence route"
         else:
-            from dataclasses import replace
-
             task = replace(task, intelligence_class=effective_route.intelligence_class)
         profiles = {profile.id: profile for profile in await self.db.list_profiles()}
-        project = await self.db.get_project(task.project_id)
-        task_profile = resolve_task_profile(task, project, profiles)
+        task_profile = resolve_task_profile(task, profiles)
         if task.profile_id and task_profile is None:
             return f"required profile '{task.profile_id}' is not configured"
         return task_agent_mismatch(
@@ -264,8 +320,12 @@ class ExecutionMixin:
         """
         task = await self.db.get_task(action.task_id)
         if task is not None:
+            batch = await self._delivery_admission([task.id])
+            task = await self.db.get_task(task.id)
             if task.is_blocked:
                 return "task has unresolved gates or dependencies"
+            if task.id not in batch.allowed:
+                return "prerequisite delivery is pending or unknown"
             agent = await self.db.get_agent(action.agent_id)
             mismatch = await self._check_agent_routing(task, agent)
             if mismatch:
@@ -555,9 +615,7 @@ class ExecutionMixin:
         except Exception:
             pass
 
-        # Notify that work is starting via typed event.
-        # The DiscordNotificationHandler stores the returned message for
-        # later deletion and handles embed/view creation.
+        # Notify transport-neutral consumers that work is starting.
         start_msg = format_task_started(task, agent, workspace=ws_obj)
         if not _is_reopened:
             await self._emit_notify(
@@ -611,10 +669,8 @@ class ExecutionMixin:
         await self._launch_session_for_task(action, task, profile, workspace)
         return
 
-    # ======================================================================
-    # Session runtime -- launch and return (session-runtime spec §4, §6)
-    # ======================================================================
-
+    # ===============================================================    # Session runtime -- launch and return (session-runtime spec §4, §6)
+    # ===============================================================
     def _is_session_routed(self, profile) -> bool:
         """True when this profile's tasks run as sessions.
 
@@ -739,18 +795,30 @@ class ExecutionMixin:
         from src.models import SessionRecord
         from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
         current = await self.db.get_task(action.task_id)
+        resuming = getattr(action, "continuation_id", None) is not None
         if (
             current is None
-            or current.status not in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            or current.status not in ((TaskStatus.RESUME_PENDING,) if resuming
+                                      else (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS))
             or current.assigned_agent_id != action.agent_id
             or current.claim_epoch != task.claim_epoch
         ):
             logger.info("Task %s changed ownership or stopped before session launch", action.task_id)
             return
         task = current
+        if await self.db.ingest_held_task_ids({task.id}):
+            # Held after assignment: the batch awaits fidelity review (design §4).
+            await self._fail_session_launch(action, task, "ingest_held", notify=False)
+            return
         agent = await self.db.get_agent(action.agent_id)
         routed_task, effective_route = await self._effective_assignment_task(task)
+        batch = await self._delivery_admission([task.id])
+        task = await self.db.get_task(task.id)
         mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None
+        if (task.id not in batch.allowed or not await batch.matches()
+                or not await batch.is_fresh(task.id)
+                or batch.pr is not None and not await batch.pr.verify_workspace(task.id, workspace)):
+            mismatch = "prerequisite delivery is pending or unknown"
         if mismatch is None and routed_task is None:
             mismatch = "awaiting intelligence route"
         if mismatch is None:
@@ -766,7 +834,7 @@ class ExecutionMixin:
         profile = await self._resolve_profile(task)
         worker_profile = await self.db.get_profile(agent.profile_id)
         profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
-        from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
+        from src.sessions.provider import SessionDiedDuringStartup
 
         harness_name = getattr(profile, "harness", "") or ""
         harness = self.harness_registry.get(harness_name, task.project_id)
@@ -780,15 +848,61 @@ class ExecutionMixin:
             )
             return
 
+        # Pre-launch check (provider-failover D11 mechanism 1): nothing starts
+        # against an unavailable provider, and a recovering one admits one
+        # canary at a time (D4).  The scheduler already skips suppressed
+        # workers; this closes the race with a state change since its tick.
+        availability = getattr(self, "provider_availability", None)
+        launch_provider = availability.provider_for_harness(harness_name, task.project_id) if (
+            availability is not None
+        ) else ""
+        # Canonical dashed form: this id rides the harness's session-id flag
+        # (``claude --session-id``) and Claude Code rejects a dashless hex
+        # string with "Invalid session ID. Must be a valid UUID."  Minted
+        # here so a probation canary is admitted as this session (D4).
+        session_id = str(_uuid.uuid4())
+        if availability is not None:
+            admitted, refusal_reason = availability.admit_launch(
+                launch_provider, session_id=session_id
+            )
+            if not admitted:
+                # A refusal is the provider's, never the task's (D13): an
+                # unavailable provider sends the task back to READY for the
+                # failover sweep; a recovering one whose canary is in flight
+                # pauses it briefly with its provider_pause record.
+                await self._fail_session_launch(
+                    action,
+                    task,
+                    refusal_reason or f"provider {launch_provider} unavailable",
+                    backoff=float(availability.config.launch.suspect_backoff_seconds),
+                    notify=False,
+                    failure=ProviderFailure(
+                        kind=LAUNCH_REFUSED,
+                        provider=launch_provider,
+                        harness=harness_name,
+                        profile_id=getattr(profile, "id", None),
+                        detail=refusal_reason or "",
+                    ),
+                )
+                return
+
+        def release_canary() -> None:
+            # A launch that never ran proves nothing either way: let the next
+            # one be the probation canary (D4), as the pool path's rollback does.
+            if availability is not None:
+                availability.release_canary(launch_provider, session_id=session_id)
+
         provider_name = self.config.sessions.provider
         try:
             provider = self.session_providers.create(provider_name, self.config)
         except ValueError as exc:
+            release_canary()
             await self._fail_session_launch(action, task, str(exc))
             return
 
         work_dir = workspace or ""
         if not work_dir:
+            release_canary()
             await self._fail_session_launch(
                 action, task, "session launch needs a work_dir but none was prepared"
             )
@@ -803,13 +917,10 @@ class ExecutionMixin:
             self.db, work_dir, profile, project_id=task.project_id
         )
         if refusal:
+            release_canary()
             await self._fail_session_launch(action, task, refusal)
             return
 
-        # Canonical dashed form: this id rides the harness's session-id flag
-        # (``claude --session-id``) and Claude Code rejects a dashless hex
-        # string with "Invalid session ID. Must be a valid UUID."
-        session_id = str(_uuid.uuid4())
         instance_token = _uuid.uuid4().hex
         # A per-session bearer token.  aq-surface Phase S2 wired real
         # session-scoped mint via :class:`SessionTokenStore`; the sha256
@@ -828,7 +939,8 @@ class ExecutionMixin:
             api_token = _uuid.uuid4().hex
         resume_key = None
         try:
-            resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
+            if not resuming:
+                resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
         except Exception:
             pass
         if resume_key:
@@ -866,6 +978,9 @@ class ExecutionMixin:
             },
         )
 
+        from src.git.identity import resolve_git_identity
+
+        project = await self.db.get_project(task.project_id)
         spec = self.session_spec_builder.build_task_spec(
             task=task,
             profile=profile,
@@ -877,11 +992,16 @@ class ExecutionMixin:
             api_token=api_token,
             resume_key=resume_key,
             workspace_source_type=source_type,
-            extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch)},
+            extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch), **({
+                "AQ_CONTINUATION_ID": action.continuation_id,
+                "AQ_CONTINUATION_GENERATION": str(action.generation),
+            } if resuming else {})},
+            git_identity=resolve_git_identity(self.config, project).identity,
         )
 
         launched_at = time.time()
-        from dataclasses import replace
+        from src.sessions.launch import SessionLaunchUncertain, launch_session
+
         launch_record = SessionRecord(
             id=session_id, task_id=task.id, agent_id=action.agent_id,
             last_claim_epoch=claim_epoch,
@@ -895,12 +1015,15 @@ class ExecutionMixin:
             work_dir=work_dir, epoch=self.daemon_epoch, instance_token=instance_token,
             started_at=launched_at, last_activity=launched_at,
             hooks_provisioned=spec.hooks_provisioned,
+            git_identity_digest=spec.git_identity_digest,
         )
 
-        project = await self.db.get_project(task.project_id)
-        hierarchy_enabled = getattr(
-            project, "hierarchical_integration_mode", "disabled"
-        ) in {"hierarchy", "train"}
+        if resuming:
+            await self.wait_service.lifecycle.resume.bind_launch(action, launch_record)
+
+        from src.integration.train_policy import worker_integration_enabled
+
+        hierarchy_enabled = await worker_integration_enabled(self.db, project)
         integration_ownership = None
         integration_fence = None
         if hierarchy_enabled:
@@ -936,6 +1059,7 @@ class ExecutionMixin:
                         workspace_id=ws_row.id,
                     )
                 )
+                release_canary()
                 await self._fail_session_launch(
                     action,
                     task,
@@ -946,19 +1070,11 @@ class ExecutionMixin:
 
         async def record_failed_launch(reason):
             try:
-                if hierarchy_enabled:
+                if await self.db.get_session(launch_record.id) is not None:
                     await self.db.update_session(
-                        launch_record.id,
-                        state="stopped",
-                        desired_state="stopped",
-                        ended_at=time.time(),
-                        end_reason=reason,
-                    )
-                else:
-                    await self.db.create_session(replace(
-                        launch_record, state="stopped", desired_state="stopped",
+                        launch_record.id, state="stopped", desired_state="stopped",
                         ended_at=time.time(), end_reason=reason,
-                    ))
+                    )
             except Exception:
                 # Recording failure must not prevent the existing resource
                 # cleanup and retry backoff from running.
@@ -972,63 +1088,71 @@ class ExecutionMixin:
                 async with integration_ownership.mutation_exclusion(
                     integration_fence, state="attached", expected_role=integration_role
                 ) as conn:
-                    await provider.start(spec)
-                    await self.db.update_session(
-                        session_id, conn=conn, state="running", last_activity=time.time()
+                    await launch_session(
+                        self.db, provider, spec, launch_record, registered=True, conn=conn,
+                        bus=self.bus,
                     )
             else:
-                await provider.start(spec)
+                await launch_session(self.db, provider, spec, launch_record, bus=self.bus)
+        except SessionLaunchUncertain as exc:
+            logger.exception("Task %s: launch retained for session reconciliation", task.id)
+            release_canary()
+            if resuming:
+                await self._fail_session_launch(action, task, str(exc))
+                return
+            if integration_ownership is not None:
+                # Keep the failed writer visible while the existing handoff
+                # protocol proves it stopped. Unknown termination retains
+                # the workspace/agent and records handoff_pending for retry.
+                await self.db.update_session(
+                    session_id, state="draining", desired_state="stopped",
+                )
+                await self._fail_session_launch(action, task, str(exc))
+            return
         except SessionDiedDuringStartup as exc:
             await record_failed_launch("startup_exit")
+            failure = None
+            if availability is not None:
+                # Only a startup death is provider evidence (D2): a typed
+                # login/usage dialog is strong, anything else is weak.
+                await availability.record_startup_death(
+                    exc,
+                    harness=harness_name,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    session_id=session_id,
+                    profile_id=getattr(profile, "id", None),
+                )
+                # The dialog, its signal, harness and profile travel as
+                # fields, not only as the formatted reason (D2): they decide
+                # whether this death is the provider's (D13).
+                failure = ProviderFailure.from_startup_death(
+                    exc,
+                    provider=launch_provider,
+                    harness=harness_name,
+                    profile_id=getattr(profile, "id", None),
+                    session_id=session_id,
+                )
             await self._fail_session_launch(
                 action,
                 task,
                 f"session died during startup: {exc}",
                 stderr_path=exc.start_stderr_path,
+                failure=failure,
             )
             return
         except Exception as exc:
             await record_failed_launch("launch_failed")
+            release_canary()
             await self._fail_session_launch(action, task, f"session launch failed: {exc}")
             return
 
-        # Legacy projects retain their original post-start insert. Enabled
-        # projects already moved STARTING -> RUNNING under ownership
-        # exclusion above, so a crash leaves a discoverable starting row.
-        if not hierarchy_enabled:
-            now = time.time()
-            try:
-                await self.db.create_session(
-                    replace(launch_record, state="running", last_activity=now)
-                )
-            except Exception as exc:
-            # The process is already running and now has no row, so nothing
-            # would ever reconcile it.  Kill what we just started before
-            # handing the task back to the scheduler -- otherwise the generic
-            # handler upstairs sets the task READY and releases the
-            # workspace while a live agent is still writing to it.
-                logger.error("Task %s: session row insert failed", task.id, exc_info=True)
-                try:
-                    await provider.stop(
-                        SessionHandle(
-                            name=spec.session_name,
-                            provider=provider.name,
-                            instance_token=instance_token,
-                        ),
-                        grace=2.0,
-                    )
-                except Exception:
-                    logger.error(
-                        "Task %s: could not stop the orphan session %s",
-                        task.id,
-                        spec.session_name,
-                        exc_info=True,
-                    )
-                await self._fail_session_launch(
-                    action, task, f"session started but its row could not be written: {exc}"
-                )
-                return
         await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
+        # The operator-handoff checkpoint was applied by this launch's prepare;
+        # keeping it would replay the handoff on every later prepare.
+        await self.db.delete_task_meta(task.id, "supervisor_recovery_checkpoint")
+        # Likewise the saved-WIP resume point (``stranded_work.RESUME_POINT_META``).
+        await self.db.delete_task_meta(task.id, "failover_resume_checkpoint")
         logger.info(
             "Task %s: session %s started (%s/%s) in %s",
             task.id,
@@ -1037,18 +1161,19 @@ class ExecutionMixin:
             harness.id,
             work_dir,
         )
-        await self.bus.emit(
-            "session.started",
-            {
-                "session_id": session_id,
-                "name": spec.session_name,
-                "task_id": task.id,
-                "project_id": task.project_id,
-                "provider": provider.name,
-                "harness": harness.id,
-                "work_dir": work_dir,
-            },
-        )
+        if integration_ownership is not None:
+            await self.bus.emit(
+                "session.started",
+                {
+                    "session_id": session_id,
+                    "name": spec.session_name,
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "provider": provider.name,
+                    "harness": harness.id,
+                    "work_dir": work_dir,
+                },
+            )
 
     async def _fail_session_launch(
         self,
@@ -1058,23 +1183,56 @@ class ExecutionMixin:
         stderr_path: str | None = None,
         *,
         integration_resources_released: bool = False,
+        backoff: float = 60,
+        notify: bool = True,
+        failure: ProviderFailure | None = None,
     ) -> None:
-        """Pause the task with a backoff after a failed session launch."""
-        backoff = 60
-        logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        """Pause the task with a backoff after a failed session launch.
+
+        ``notify=False`` is for a launch the daemon refused on purpose (an
+        unavailable provider, provider-failover D11): the task is held, not
+        broken, and a "launch failed" notice would be noise.
+
+        *failure* carries the structured fields of a provider-shaped failure
+        (the startup dialog, its signal, harness, profile, provider -- D2).
+        When :func:`src.providers.inflight.decide` attributes it to the
+        provider (D13) the task spends no retry and is never paused into the
+        dead provider: ``tripped`` returns it to READY for the failover sweep,
+        ``suspect`` pauses it ``launch.suspect_backoff_seconds`` with its
+        ``provider_pause`` record.  Anything unattributed keeps the flat
+        ``session_launch_failed`` backoff below.
+        """
+        from src.providers import inflight
+
+        if getattr(action, "continuation_id", None):
+            await self.wait_service.lifecycle.resume.failed(
+                action, task, reason, handler=self._command_handler,
+            )
+            return
+
+        availability = getattr(self, "provider_availability", None)
+        disposition = inflight.decide(availability, failure)
+        if disposition == inflight.TRIPPED:
+            notify = False
+            logger.warning(
+                "Task %s: session launch failed on unavailable provider %s -- %s; "
+                "returning it to the queue for re-routing",
+                task.id,
+                failure.provider,
+                reason,
+            )
+        elif notify:
+            logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        else:
+            logger.info("Task %s: session launch refused -- %s", task.id, reason)
         integration_released = integration_resources_released or (
             await self.arelease_integration_writer_for_retry(
                 task, reason="session_launch_failed"
             )
         )
-        await self.db.transition_task(
-            action.task_id,
-            TaskStatus.PAUSED,
-            context="session_launch_failed",
-            resume_after=time.time() + backoff,
-            assigned_agent_id=None,
-        )
-        if integration_released is not False:
+        now = time.time()
+
+        async def release_launch_claim() -> None:
             if integration_released is None:
                 # Preserve the legacy unmanaged launch cleanup contract.
                 await self.db.update_agent(
@@ -1083,10 +1241,69 @@ class ExecutionMixin:
             else:
                 await self.db.release_agent_for_task(action.agent_id, action.task_id)
             await self._release_workspaces_for_task(action.task_id)
+
+        held_claim = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+        if disposition == inflight.UNATTRIBUTED:
+            await self.db.transition_task(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context="session_launch_failed",
+                resume_after=now + backoff,
+                assigned_agent_id=None,
+            )
+            if integration_released is not False:
+                await release_launch_claim()
+        elif disposition == inflight.TRIPPED and integration_released is not False:
+            # Release *before* the task becomes claimable again: the release
+            # frees every workspace locked by this task id, and a READY task
+            # can be reassigned the moment it is written.
+            await release_launch_claim()
+            await self.db.transition_task_with_meta(
+                action.task_id,
+                TaskStatus.READY,
+                meta={},
+                context=inflight.CONTEXT_UNAVAILABLE,
+                from_statuses=held_claim,
+                resume_after=None,
+                assigned_agent_id=None,
+            )
+        else:
+            # ``suspect``, or ``tripped`` while an integration owner keeps the
+            # workspace: a short provider pause, which the failover sweep
+            # resumes at once when the provider is down.  Released first too
+            # -- the sweep can make the task claimable at any moment.
+            backoff = float(availability.config.launch.suspect_backoff_seconds)
+            if disposition == inflight.TRIPPED:
+                context = inflight.CONTEXT_UNAVAILABLE
+            elif failure.kind == inflight.LAUNCH_REFUSED:
+                context = inflight.CONTEXT_RECOVERING
+            else:
+                context = inflight.CONTEXT_SUSPECT
+            if integration_released is not False:
+                await release_launch_claim()
+            await self.db.transition_task_with_meta(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context=context,
+                from_statuses=held_claim,
+                resume_after=now + backoff,
+                assigned_agent_id=None,
+                meta={
+                    inflight.PROVIDER_PAUSE_META: inflight.provider_pause_record(
+                        availability,
+                        failure,
+                        context=context,
+                        resume_after=now + backoff,
+                        now=now,
+                    )
+                },
+            )
+        if not notify:
+            return
         detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""
         await self._emit_text_notify(
             f"**Session launch failed:** task `{task.id}` -- {reason}. "
-            f"Retrying in {backoff}s.{detail}",
+            f"Retrying in {backoff:g}s.{detail}",
             project_id=action.project_id,
         )
 
@@ -1113,12 +1330,15 @@ class ExecutionMixin:
         work_outcome: str = "",
         failure_class: str = "",
         commit: str = "",
+        completion_id: str | None = None,
         notes: str = "",
         expect_claim_epoch: int | None = None,
         pool: bool = False,
         session_live: bool = False,
         session_id: str | None = None,
         review_evidence_snapshot: dict | None = None,
+        skip_open_subtasks: bool = False,
+        accepted_close: dict | None = None,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
 
@@ -1135,6 +1355,14 @@ class ExecutionMixin:
         session: it keeps its workspace agent-lock and instance token, so
         ``release_session_task_resources`` (a full release) is skipped —
         ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
+
+        ``accepted_close`` is the close's identity (``close_identity``).  Every
+        transition below that accepts the close -- and is followed by the
+        caller saving its completion record -- passes it on, so the identity
+        is stored in that status write's own transaction and a restart before
+        the record is saved can prove the close was accepted.  The accepted
+        repair-delegate path is the exception: it already owns a durable
+        record (``completion_record_id``).
         """
         agent = (
             await self.db.get_agent(task.assigned_agent_id)
@@ -1176,7 +1404,24 @@ class ExecutionMixin:
             project=project,
             close_session_live=session_live,
             work_outcome=work_outcome,
+            accepted_close=accepted_close,
         )
+        from src.integration.repair import OrdinaryRepairService
+
+        ordinary_repair = await OrdinaryRepairService(self.db).input(task.id)
+        ordinary_fence = None
+        if ordinary_repair is not None:
+            from src.integration.lock import BranchLock
+            from src.integration.models import BranchKey, Fence
+
+            lease = await BranchLock(self.db).get(BranchKey(
+                repository_id=ordinary_repair["repository_id"],
+                branch=ordinary_repair["target_ref"],
+            ))
+            if lease and lease.holder == task.id:
+                ordinary_fence = Fence(
+                    target=lease.target, owner_id=task.id, token=lease.fence,
+                )
         repair_scope = await self.db.get_repair_filing_scope(
             task.id, session_id=session_id
         )
@@ -1184,7 +1429,66 @@ class ExecutionMixin:
             repair_scope is not None
             and repair_scope.get("writer_kind") == "repair_delegate"
         )
+        if repair_delegate and repair_scope["target_kind"] == "batch":
+            from src.integration.reconciler_repair_close import close_reconciler_delegate
+
+            reconciled = await close_reconciler_delegate(
+                self, task, repair_scope, session_id=session_id,
+                claim_epoch=expect_claim_epoch, outcome=outcome, commit=commit,
+                accepted_close=accepted_close, skip_open_subtasks=skip_open_subtasks,
+            )
+            if reconciled is not None:
+                if reconciled.get("pipeline_ok") and not pool:
+                    await self.release_session_task_resources(
+                        task.id, agent_id=task.assigned_agent_id,
+                        workspace_path=workspace_path, expect_claim_epoch=expect_claim_epoch,
+                    )
+                return reconciled
         if repair_delegate and not repair_scope["active"]:
+            if outcome == "pass" and repair_scope["target_kind"] == "batch":
+                from src.integration.accepted_repair import complete_accepted_delegate
+
+                accepted = await complete_accepted_delegate(
+                    self.db, task.id, session_id=session_id,
+                    claim_epoch=expect_claim_epoch, commit=commit,
+                    skip_open_subtasks=skip_open_subtasks,
+                )
+                if accepted is not None:
+                    # Acceptance already detached the checkout and transferred
+                    # the branch. Only the ordinary claim/resource release is
+                    # left; never run the attached-writer pipeline a second time.
+                    if not pool:
+                        await self.release_session_task_resources(
+                            task.id, agent_id=task.assigned_agent_id,
+                            workspace_path=workspace_path,
+                            expect_claim_epoch=expect_claim_epoch,
+                        )
+                    return {
+                        "status": TaskStatus.COMPLETED.value, "pr_url": None,
+                        "pipeline_ok": True, "retry_count": None,
+                        "completion_source": accepted["head_sha"],
+                        "completion_record_id": accepted["completion_id"],
+                        "preserve_terminal_task": True,
+                    }
+            retired = await self.db.get_retired_integration_writer(task.id)
+            if retired is not None:
+                # Not a stale race the writer can fix by retrying: the
+                # operation ended, or its stage expired and the operation moved
+                # on, so no close of this delegate can ever be accepted.  Say
+                # so, so the worker acknowledges its drain instead of waiting.
+                from src.integration.delegate_release import retired_writer_close_feedback
+
+                feedback = retired_writer_close_feedback(retired)
+                return {
+                    "status": task.status.value,
+                    "pr_url": None,
+                    "pipeline_ok": False,
+                    "retry_count": None,
+                    "verification_retry": True,
+                    "issues": [feedback],
+                    "feedback": feedback,
+                    "retired": retired,
+                }
             return {
                 "status": task.status.value,
                 "pr_url": None,
@@ -1199,23 +1503,28 @@ class ExecutionMixin:
         # else in this function would ever look at the workspace — which is
         # exactly how five commits left a slot worktree and vanished
         # (``src/orchestrator/stranded_work.py``).  Push first, and refuse
-        # the close when the push fails and the agent is still there to fix
-        # it.  Runs before any transition: a refused close must leave the
-        # task exactly as it found it.
+        # the close when preservation fails or cannot be proved and the
+        # agent is still there to fix it. Runs before any transition: a
+        # refused close leaves the task exactly as it found it.
         stranded = None
         if outcome != "pass" and not repair_delegate:
             stranded = await self._preserve_unpushed_on_failure(
                 task, workspace_path, project_id=task.project_id
             )
-            if stranded.status == "push_failed" and session_live:
+            if session_live and (
+                stranded.status == "push_failed"
+                or stranded.status == "unknown" and workspace_path is not None
+            ):
                 from src.orchestrator.stranded_work import unpushed_close_issues
 
                 issues = unpushed_close_issues(stranded)
                 current = await self.db.get_task(task.id)
                 logger.warning(
-                    "Task %s: close refused, %d commit(s) are on no remote branch",
+                    "Task %s: close refused, preservation status=%s, count=%d: %s",
                     task.id,
+                    stranded.status,
                     stranded.count,
+                    stranded.error,
                 )
                 return {
                     "status": (current or task).status.value,
@@ -1246,26 +1555,33 @@ class ExecutionMixin:
 
         pr_url = None
         completed_ok = True
-        managed_parent_suspended = False
         managed_parent_completed = False
+        train_leaf_root = False
         repair_writer_closed = False
         repair_writer_head = None
         repair_commit_proof = None
+        verifier_operation = None
         if outcome == "pass":
             try:
                 children = await self.db.get_children(task.id, limit=1)
                 checkpoint = await self.db.get_integration_checkpoint(task.id)
-                hierarchy_enabled = (
-                    getattr(project, "hierarchical_integration_mode", "disabled")
-                    in {"hierarchy", "train"}
-                )
+                from src.integration.train_policy import worker_integration_enabled
+
+                hierarchy_enabled = await worker_integration_enabled(self.db, project)
                 managed_parent = bool(
                     hierarchy_enabled
                     and (children or checkpoint and checkpoint.get("episode_id") is not None)
                 )
                 hierarchy_managed = bool(hierarchy_enabled and checkpoint)
                 verifier_operation = await self.db.get_integration_verifier_operation(task.id)
-                if repair_delegate:
+                if ordinary_repair is not None:
+                    if (workspace_path is None
+                        or task.repo_id != ordinary_repair["repository_id"]
+                        or task.branch_name != ordinary_repair["target_ref"].removeprefix("refs/heads/")):
+                        raise ValueError("ordinary repair publication target changed")
+                    # Normal completion provenance below verifies the clean,
+                    # exact published source. Delivery belongs to the train.
+                elif repair_delegate:
                     from src.git.manager import is_valid_git_oid
                     from src.integration.hierarchy import resolve_workspace_repair_proof
                     from src.integration.repair import repair_subject_sha
@@ -1325,14 +1641,31 @@ class ExecutionMixin:
                     repair_writer_closed = True
                 elif verifier_operation is not None:
                     # A branchless verifier owns no source branch and must
-                    # never enter the legacy direct/main integration path.
-                    # It may close only after it has used the guarded parent
-                    # completion command successfully.
-                    result = await self._phase_verify(ctx)
+                    # never enter the legacy direct/main or PR verification
+                    # path.  Its dedicated proof checks the exact fenced
+                    # parent checkout and completes that parent atomically.
+                    result = await self._phase_verify_aggregate_verifier(
+                        ctx, verifier_operation
+                    )
                     completed_ok = result not in (PhaseResult.STOP, PhaseResult.ERROR)
                     parent = await self.db.get_task(verifier_operation["parent_task_id"])
+                    parent_completed = bool(
+                        parent is not None and parent.status is TaskStatus.COMPLETED
+                    )
+                    if parent is None:
+                        from src.database.queries.task_identity import resolve_task_identity_on
+
+                        async with self.db._engine.connect() as conn:
+                            identity = await resolve_task_identity_on(
+                                conn, verifier_operation["parent_task_id"]
+                            )
+                        parent_completed = bool(
+                            identity is not None
+                            and identity.archived
+                            and identity.status == TaskStatus.COMPLETED.value
+                        )
                     if completed_ok and (
-                        parent is None or parent.status is not TaskStatus.COMPLETED
+                        not parent_completed
                     ):
                         ctx.verification_retry_in_session = True
                         ctx.verification_issues = [
@@ -1342,20 +1675,19 @@ class ExecutionMixin:
                         ctx.verification_feedback = ctx.verification_issues[0]
                 elif managed_parent or hierarchy_managed:
                     # A managed parent is a source-branch producer, not a
-                    # legacy container merge.  Verify only the clean pushed
-                    # owned branch, then durably suspend its collection
-                    # episode.  Child promotion and aggregate verification
-                    # are separate fenced phases.
-                    result = await self._phase_verify(ctx)
+                    # legacy PR/main delivery.  Verify only its clean,
+                    # pushed, owned branch, then durably suspend its
+                    # collection episode.  Child promotion and aggregate
+                    # verification are separate fenced phases.
+                    if checkpoint is None:
+                        raise HierarchyError("invariant_error", "managed parent has no checkpoint")
+                    result = await self._phase_verify_hierarchy_producer(ctx, checkpoint)
                     completed_ok = result not in (PhaseResult.STOP, PhaseResult.ERROR)
                     if completed_ok:
                         from src.integration.hierarchy import (
                             HierarchyIntegration,
                             verify_workspace_checkpoint,
                         )
-
-                        if checkpoint is None:
-                            raise HierarchyError("invariant_error", "managed parent has no checkpoint")
 
                         async def verify_checkpoint(task_row, repo_row, head):
                             return await verify_workspace_checkpoint(
@@ -1380,26 +1712,32 @@ class ExecutionMixin:
                             # producer leg.  Aggregate evidence must already
                             # pin this exact generation/head; otherwise keep
                             # the live verifier attached so it can finish.
-                            from src.integration.parent_completion import ParentCompletion
+                            from src.integration.records import (
+                                AWAITING_TRUSTED_VERIFICATION,
+                                ParentEpisodeRecords,
+                            )
 
-                            if (
-                                checkpoint["current_verification_id"] is None
-                                or checkpoint["verified_generation"]
-                                != checkpoint["generation"]
-                                or checkpoint["verified_sha"] != head
-                            ):
-                                ctx.verification_retry_in_session = True
-                                ctx.verification_issues = [
-                                    "Record successful aggregate verification for the current "
-                                    "parent generation and head before closing."
-                                ]
-                                ctx.verification_feedback = ctx.verification_issues[0]
+                            generation = int(checkpoint["generation"])
+                            binding = await ParentEpisodeRecords(
+                                self.db, git_manager=self.git
+                            ).diagnose_trusted_binding(task.id, generation, head)
+                            if binding is not None:
+                                # No trusted evidence binds this subject: a wait
+                                # on the CI producer, not a fixable git issue.
+                                await self._trusted_evidence_refusal(ctx, task.id, binding)
                             else:
-                                completion = await ParentCompletion(self.db).complete_parent(
-                                    task.id, int(checkpoint["generation"]), head
+                                completion = await ParentEpisodeRecords(
+                                    self.db, git_manager=self.git
+                                ).complete_parent(
+                                    task.id, generation, head,
+                                    accepted_close=accepted_close,
                                 )
                                 if completion["outcome"] == "completed":
                                     managed_parent_completed = True
+                                elif completion["outcome"] == AWAITING_TRUSTED_VERIFICATION:
+                                    await self._trusted_evidence_refusal(
+                                        ctx, task.id, completion
+                                    )
                                 else:
                                     ctx.verification_retry_in_session = True
                                     ctx.verification_issues = [
@@ -1408,16 +1746,30 @@ class ExecutionMixin:
                                     ]
                                     ctx.verification_feedback = ctx.verification_issues[0]
                         elif managed_parent:
-                            await hierarchy.checkpoint_and_suspend_parent(
-                                task.id,
-                                head,
-                                int(checkpoint["generation"]),
-                                expect_claim_epoch=expect_claim_epoch,
-                            )
-                            managed_parent_suspended = True
-                            pr_url = None
+                            # The train's epic lane, not a parent episode,
+                            # collects this container: it closes normally at
+                            # its exact final published head.  A refusal
+                            # writes nothing and keeps the claim live.
+                            try:
+                                await hierarchy.checkpoint_container_completion(
+                                    task.id,
+                                    head,
+                                    int(checkpoint["generation"]),
+                                    expect_claim_epoch=expect_claim_epoch,
+                                )
+                            except HierarchyError as exc:
+                                ctx.verification_retry_in_session = True
+                                ctx.verification_issues = [
+                                    f"Container checkpoint was refused: {exc}."
+                                ]
+                                ctx.verification_feedback = ctx.verification_issues[0]
                         else:
                             await hierarchy.checkpoint_leaf_completion(task.id, head)
+                            train_leaf_root = bool(
+                                task.parent_task_id is None
+                                and getattr(project, "hierarchical_integration_mode", None)
+                                == "train"
+                            )
                 else:
                     pr_url, completed_ok = await self._run_completion_pipeline(ctx)
             except Exception:
@@ -1448,6 +1800,7 @@ class ExecutionMixin:
                 "pipeline_ok": False,
                 "retry_count": None,
                 "verification_retry": True,
+                "escalated": ctx.verification_escalated,
                 "issues": list(ctx.verification_issues),
                 "feedback": ctx.verification_feedback,
             }
@@ -1456,10 +1809,146 @@ class ExecutionMixin:
         # branches are terminal and must not bump the counter.
         new_retry: int | None = None
         verification_reopened = outcome == "pass" and ctx.verification_reopened
-        if managed_parent_suspended:
-            new_status = TaskStatus.PAUSED
-            context = "integration_parent_suspended"
-        elif repair_writer_closed:
+        from src.integration.train_sources import TRAIN_MODES
+
+        git_completion = bool(
+            outcome == "pass" and completed_ok
+            and not (managed_parent_completed or repair_writer_closed)
+            and verifier_operation is None
+            and (getattr(project, "hierarchical_integration_mode", None) in TRAIN_MODES
+                 or ordinary_repair is not None)
+        )
+        completion_source = None
+        completion_commits = None
+        if git_completion and commit and (not workspace_path or not task.branch_name):
+            feedback = "A completion with a recorded code artifact requires its exact published task branch."
+            return {
+                "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                "verification_retry": True, "issues": [feedback], "feedback": feedback,
+            }
+        if git_completion and workspace_path and task.branch_name:
+            try:
+                if ordinary_repair is not None or await self._task_uses_git(ctx):
+                    from src.integration.provenance import record_worker_completion
+
+                    completion_id = completion_id or str(uuid.uuid4())
+                    no_code = await self._task_produces_no_code(ctx)
+                    # Development: a proven-empty no-code slot owes containment, not a push.
+                    no_code_proven = no_code and ctx.no_work_proven and getattr(
+                        project, "hierarchical_integration_mode", None) == "development"
+                    completion_source = await record_worker_completion(
+                        self.db, self.git, task, project, workspace_path,
+                        completion_id, commit=commit, no_code_intent=no_code,
+                        allow_unpublished_no_change=await self._vault_only_delivery(ctx),
+                        no_code_proven=no_code_proven,
+                    )
+                    origin = await self.db.get_task_branch_origin_for_promotion(
+                        task.id, task.repo_id or project.integration_repository_id,
+                    )
+                    completion_commits = (
+                        [] if no_code_proven or origin and origin["base_sha"] == completion_source
+                        else [completion_source]
+                    )
+            except Exception as exc:
+                # Publication failures leave the same claim/worktree live.
+                # No successful close can precede verified complete evidence.
+                await self._development_delivery_refusal(ctx, exc)
+                return {
+                    "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                    "verification_retry": True, "escalated": ctx.verification_escalated,
+                    "issues": list(ctx.verification_issues), "feedback": ctx.verification_feedback,
+                }
+        if (
+            session_live and outcome == "pass" and completed_ok and not git_completion
+            and not (managed_parent_completed or repair_writer_closed)
+            and verifier_operation is None and await self._task_uses_git(ctx)
+            and not await self._vault_only_delivery(ctx)
+            and not (await self._task_produces_no_code(ctx) and ctx.no_work_proven)
+        ):
+            # Train closes already bind their published head through provenance.
+            # Other live code sessions owe the same publication before release.
+            from src.git.manager import GitError, RemoteRefState
+
+            try:
+                branch = task.branch_name
+                if not branch:
+                    raise GitError("The task has no recorded branch to verify on origin")
+                local_head = await self.git.arev_parse(workspace_path, branch)
+                remote = await self.git.als_remote_ref(workspace_path, branch)
+                if (not local_head or remote.state is not RemoteRefState.PRESENT
+                    or remote.oid != local_head):
+                    raise GitError(
+                        f"Publish the exact task branch with `aq git push`: origin/{branch} "
+                        f"must equal {local_head or 'the local task head'} "
+                        f"(observed {remote.oid or remote.state.value})"
+                    )
+            except (GitError, OSError) as exc:
+                feedback = str(exc)
+                return {
+                    "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                    "verification_retry": True, "issues": [feedback], "feedback": feedback,
+                }
+
+        if outcome == "pass" and completed_ok:
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
+
+            ci = await verify_completion_ci(
+                self.db, getattr(self, "git", None), self.config, task, project,
+                commit=commit, workspace_path=workspace_path,
+            )
+            if ci is not None:
+                if ci["state"] != "green":
+                    feedback = (
+                        f"{describe_completion_ci(ci)} Resolve the named stage or checks "
+                        "or wait for CI and retry close."
+                    )
+                    return {
+                        "status": task.status.value, "pr_url": pr_url, "pipeline_ok": False,
+                        "verification_retry": True, "issues": [feedback], "feedback": feedback,
+                        "ci": ci,
+                    }
+                # Bind accepted completion to the checked SHA, including explicit
+                # commit and post-pipeline auto-remediation paths.
+                completion_source = ci["head_sha"]
+                completion_commits = [completion_source]
+                await self.db.set_task_meta(task.id, "completion_ci", ci)
+                # Recovery must preserve the checked SHA if the daemon dies
+                # after the terminal transition but before the record write.
+                from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+
+                draft = await self.db.get_task_meta(task.id, PENDING_COMPLETION_KEY)
+                if (accepted_close is not None and isinstance(draft, dict)
+                        and draft.get("identity") == accepted_close):
+                    draft["completion"]["commits"] = completion_commits
+                    await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
+        close_merge_result = None
+        if (git_completion and completion_source and task.parent_task_id
+                and completion_id and outcome == "pass" and completed_ok):
+            from src.integration.close_runtime import DaemonClose
+
+            close_runtime = DaemonClose(self)
+            operation = await close_runtime.store.get(completion_id)
+            if operation is not None:
+                try:
+                    close_merge_result = await close_runtime.run(completion_id)
+                except Exception as exc:
+                    return {"status": task.status.value, "pipeline_ok": False,
+                            "verification_retry": True, "issues": [str(exc)],
+                            "feedback": "Retain the source and candidate; continue this close."}
+                if not close_merge_result["completed"]:
+                    return {"status": task.status.value, "pipeline_ok": False,
+                            "verification_retry": True, "close_merge": close_merge_result}
+                # Source S, never integration candidate M, is the completion.
+                from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+
+                draft = await self.db.get_task_meta(task.id, PENDING_COMPLETION_KEY)
+                if draft and draft.get("identity") == accepted_close:
+                    draft["completion"]["commits"] = [completion_source]
+                    await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
+        if repair_writer_closed:
             new_status = TaskStatus.COMPLETED
             context = "integration_repair_delegate_closed"
         elif outcome == "pass" and completed_ok:
@@ -1477,7 +1966,11 @@ class ExecutionMixin:
             # COMPLETED: the agent's word triggers verification but does not
             # replace its verdict.
             new_status = TaskStatus.BLOCKED
-            context = "session_close_pipeline_stop"
+            context = (
+                "verification_failed"
+                if ctx.verification_issues and not ctx.verification_infrastructure_failure
+                else "session_close_pipeline_stop"
+            )
         elif failure_class == "hard":
             new_status = TaskStatus.BLOCKED
             context = "session_close_hard_failure"
@@ -1497,15 +1990,50 @@ class ExecutionMixin:
                 new_status = TaskStatus.READY
                 context = "retry"
 
+        slot_restored = False
+        if ordinary_repair is not None and pool and workspace_path:
+            # Restore before accepting the close or releasing its lease. A
+            # managed job pin is a temporary refusal, not a failed repair:
+            # keep this exact claim and reservation for the worker's retry.
+            from src.jobs.policy import JobError
+
+            slot = await self._slot_workspace_at(workspace_path)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().restore_slot_after_task(slot, task_id=task.id)
+                    slot_restored = True
+                except JobError as exc:
+                    if str(exc) != "jobs.workspace_busy":
+                        raise
+                    feedback = (
+                        "Close deferred: a managed job still pins this workspace. "
+                        "Wait for the job to settle, then retry close with the same claim."
+                    )
+                    return {
+                        "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                        "verification_retry": True, "close_deferred": "jobs.workspace_busy",
+                        "issues": [feedback], "feedback": feedback,
+                    }
+
         # Persist a pipeline-discovered PR on the row so the review policy
         # (final-reviewer trigger, downstream ``pr-merged`` gates) can see
         # it even when the agent never called ``aq task set --pr-url``.
         pr_kwargs = {"pr_url": pr_url} if pr_url else {}
+        # A ``pull_request`` completion leaves its work on that open PR, so
+        # ``blocks`` dependents wait on its ``pr-merged`` gate rather than on
+        # COMPLETED alone.  Managed projects deliver through their own paths.
+        if pr_url and new_status == TaskStatus.COMPLETED:
+            from src.integration.delivery_path import MANAGED_MODES
+
+            if (
+                getattr(project, "hierarchical_integration_mode", None) not in MANAGED_MODES
+                and await self._effective_integration_mode(task) == "pull_request"
+            ):
+                pr_kwargs["pr_merge_gate"] = pr_url
         try:
-            if managed_parent_suspended or managed_parent_completed:
-                # The suspension transition and episode reservation above
-                # or guarded parent completion are authoritative writes; do
-                # not run generic completion.
+            if managed_parent_completed:
+                # Guarded parent completion is authoritative; do not run
+                # generic completion again.
                 pass
             elif verification_reopened:
                 # _reopen_with_verification_feedback performed the state
@@ -1524,19 +2052,23 @@ class ExecutionMixin:
                     fence_token=int(repair_scope["fence_token"]),
                     head_sha=repair_writer_head,
                     commit_proof=repair_commit_proof,
+                    accepted_close=accepted_close,
                 )
                 if closed["outcome"] != "completed":
+                    feedback = closed.get(
+                        "feedback", "Repair stage ownership changed during close."
+                    )
                     return {
                         "status": (await self.db.get_task(task.id)).status.value,
                         "pr_url": None,
                         "pipeline_ok": False,
                         "retry_count": None,
                         "verification_retry": True,
-                        "issues": ["Repair stage ownership changed during close."],
-                        "feedback": "Repair stage ownership changed during close.",
+                        "issues": [feedback],
+                        "feedback": feedback,
                     }
             elif review_evidence_snapshot is not None and new_status == TaskStatus.COMPLETED:
-                from src.integration.review_evidence import ReviewEvidenceProducer
+                from src.integration.reviews import ReviewEvidenceProducer
 
                 async with self.db.immediate() as conn:
                     transition = await ReviewEvidenceProducer(
@@ -1548,6 +2080,8 @@ class ExecutionMixin:
                         context=context,
                         assigned_agent_id=None,
                         expect_claim_epoch=expect_claim_epoch,
+                        skip_open_subtasks=skip_open_subtasks,
+                        accepted_close=accepted_close,
                         **pr_kwargs,
                     )
                 await self.db.log_blocked_flips(transition.flipped)
@@ -1561,6 +2095,23 @@ class ExecutionMixin:
                     retry_count=new_retry,
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
+                    skip_open_subtasks=skip_open_subtasks,
+                    accepted_close=accepted_close,
+                    **pr_kwargs,
+                )
+            elif git_completion and completion_source is not None and new_status == TaskStatus.COMPLETED:
+                # The git ref was retained above. Publish its generation id
+                # atomically with COMPLETED, before event subscribers and the
+                # command's full completion-record write can take their time.
+                await self.db.transition_task_with_meta(
+                    task.id,
+                    new_status,
+                    meta={DEVELOPMENT_COMPLETION_ID_KEY: completion_id},
+                    context=context,
+                    assigned_agent_id=None,
+                    expect_claim_epoch=expect_claim_epoch,
+                    skip_open_subtasks=skip_open_subtasks,
+                    accepted_close=accepted_close,
                     **pr_kwargs,
                 )
             else:
@@ -1570,6 +2121,8 @@ class ExecutionMixin:
                     context=context,
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
+                    skip_open_subtasks=skip_open_subtasks,
+                    accepted_close=accepted_close,
                     **pr_kwargs,
                 )
         except HierarchyError as exc:
@@ -1580,6 +2133,35 @@ class ExecutionMixin:
             refreshed = await self.db.get_task(task.id)
             if refreshed:
                 new_status = refreshed.status
+
+        # A childless train root closes through the leaf checkpoint above, and
+        # no parent completion follows to open its PR -- yet the train seats
+        # only roots that have one (``eligible_root_page_on``).  Open it now,
+        # before ``task.completed`` hydrates the row.  Best-effort: a GitHub
+        # failure must not undo a committed COMPLETED, and the root PR
+        # reconciler (``src/integration/root_pull_requests.py``) retries it.
+        # Bounded, because it reads the shared delivery observation.
+        if train_leaf_root and new_status == TaskStatus.COMPLETED:
+            from src.integration.root_pull_requests import EpicPullRequestService
+
+            try:
+                opened = await _bounded_close_publication(
+                    task.id, "train root pull request",
+                    lambda: EpicPullRequestService(
+                        self.db, git_manager=self.git
+                    ).open_for_epic(task.id),
+                )
+                if opened is not None:
+                    logger.info("Task %s: train root pull request outcome: %s",
+                                task.id, opened["outcome"])
+                    pr_url = opened.get("pr_url") or pr_url
+            except Exception:
+                logger.warning(
+                    "Task %s: could not open the train root pull request; "
+                    "the root PR reconciler will retry",
+                    task.id,
+                    exc_info=True,
+                )
 
         # ``task.failed`` is the trigger for the reflection playbook
         # (``vault/templates/reflection-playbook.md`` -> deep tier) and for
@@ -1673,11 +2255,10 @@ class ExecutionMixin:
                     task.id,
                     exc_info=True,
                 )
-        # The ``notify.*`` transports (Discord today) lost their task-outcome
-        # feed when the legacy execution tail was deleted: that tail was the
+        # The ``notify.*`` consumers lost their task-outcome feed when the
+        # legacy execution tail was deleted: that tail was the
         # only emitter of ``notify.task_completed`` / ``notify.task_failed`` /
-        # ``notify.task_blocked``, so ``DiscordNotificationHandler`` kept the
-        # subscriptions but never heard from any of them again.  Session close
+        # ``notify.task_blocked``, so subscribers never heard from them again. Session close
         # is now the only place an ordinary task reaches a terminal state, so
         # the pairing is restored here with the tail's own mapping: retryable
         # failure -> task_failed, retries spent -> task_blocked.  Best-effort,
@@ -1730,29 +2311,41 @@ class ExecutionMixin:
         # (amber-delta).  A pool close takes the same path with the
         # detach-only proof (``pool=True``) also releases completed root and
         # suspended parent writers before their claim bindings disappear.
+        #
+        # A close that is *not* COMPLETED needs the same release, and for
+        # longer (brisk-delta).  Every claim in a managed project attaches an
+        # owner row to the session, so a ``--outcome fail`` close -- READY on
+        # a retry, BLOCKED once retries are spent -- used to walk past this
+        # block with the fence still ``attached`` to a session that was about
+        # to disappear.  Nothing could undo it afterwards: ``_release_claim_on``
+        # and ``_terminate_pool_session_locked`` both (correctly) protect an
+        # attached owner, so the claim never released, and the task's own
+        # retry then failed forever with ``prepare_failed`` / "canonical branch
+        # is not reserved by this task".  The self-transfer restores the same
+        # task's ``reserved`` fence, which is exactly what that retry needs.
         completed_writer = False
-        if completed_ok and new_status == TaskStatus.COMPLETED and task.repo_id and task.branch_name:
+        failed_writer = False
+        if task.repo_id and task.branch_name:
             from src.integration.models import BranchKey
             from src.integration.ownership import BranchOwnership
 
-            completed_owner = await BranchOwnership(self.db).get_owner(
+            close_owner = await BranchOwnership(self.db).get_owner(
                 BranchKey(repository_id=task.repo_id, branch=task.branch_name)
             )
-            completed_writer = bool(
-                completed_owner and completed_owner["owner_id"] == task.id
-                and completed_owner["owner_role"] in {"worker", "repair"}
+            owns_own_branch = bool(
+                close_owner and close_owner["owner_id"] == task.id
+                and close_owner["owner_role"] in {"worker", "repair"}
             )
-        # A close that puts the task back on the frontier -- git verification
-        # returning fixable issues to a session that is already gone, or a
-        # transient failure inside the retry budget -- leaves the task still
-        # owning its integration branch with no writer attached to it.  That
-        # row has to go back to ``reserved`` here, while the session/workspace
-        # evidence the handoff proof reads is still intact: the next claim of
-        # this same task requires ``handoff_state == 'reserved'``
-        # (``workspace.py`` ``_integration_owner_fence``), so an ``attached``
-        # row left behind fails *every* future claim with "canonical branch is
-        # not reserved by this task" and burns a pool worker each time
-        # (fair-willow, observed on a re-queued ``verifier``).
+            if completed_ok and new_status == TaskStatus.COMPLETED:
+                completed_writer = owns_own_branch
+            elif (
+                new_status != TaskStatus.COMPLETED
+                # Parent and repair completion own their release/workspaces
+                # and must not receive the leaf restore this leg performs.
+                and not repair_writer_closed
+                and not managed_parent_completed
+            ):
+                failed_writer = owns_own_branch
         requeued_writer = False
         if new_status == TaskStatus.READY and task.repo_id and task.branch_name:
             from src.integration.models import BranchKey
@@ -1768,42 +2361,61 @@ class ExecutionMixin:
                 and requeued_owner["owner_role"] in REQUEUE_INTEGRATION_OWNER_ROLES
                 and requeued_owner["handoff_state"] != "reserved"
             )
+        from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES, RETRYABLE_INTEGRATION_OWNER_ROLES
+
         release_needed = (
-            repair_writer_closed
-            or managed_parent_suspended
-            or completed_writer
+            repair_writer_closed or completed_writer or failed_writer
             or requeued_writer
         )
+        if ordinary_repair is not None:
+            # Publication is normal completion data. The managed lease can
+            # expire/release without a legacy delegate-close or stop proof.
+            if ordinary_fence is not None:
+                await BranchLock(self.db).release(ordinary_fence)
+            if completed_ok and new_status == TaskStatus.COMPLETED:
+                resumed = await OrdinaryRepairService(self.db).resume_completed(task.id)
+                train = getattr(self, "integration_train", None)
+                if resumed is not None and train is not None:
+                    train.wake(resumed["project_id"], resumed["repository_id"],
+                               resumed["target_ref"])
+            release_needed = False
         handoff_unproven = False
         if release_needed:
+            if failed_writer:
+                # Both handoff proofs end in ``detach_workspace_for_integration_handoff``,
+                # which requires a porcelain-clean checkout whose branch tip
+                # equals the freshly fetched origin tip.  A passing close
+                # arrives that way; a failing one does not.
+                # ``_preserve_unpushed_on_failure`` (above) has already pushed
+                # the commits, but the *dirt* is only cleared by
+                # ``restore_slot_after_task``, which the pool close runs later,
+                # after this point.  Run it here instead: it touches git and
+                # the salvage archive only -- never ``sessions.task_id`` or
+                # ``workspaces.locked_by_task_id``, which are the evidence the
+                # proof reads -- so it is safe this early, and without it an
+                # ordinary dirty fail close would fail the proof and stall on
+                # ``retain_claim``.  ``slot_restored`` tells ``_cmd_task_close``
+                # not to salvage a second time.
+                slot_restored = await self._restore_slot_before_handoff_proof(
+                    workspace_path, task.id
+                )
             # Stop/detach the writer while preserving its durable reserved
             # fence so the successor's transfer can be proven.  The release
             # keeps the owner's own role -- a repair delegate ends up
             # ``repair``/``reserved``, not stuck ``attached`` to the session
             # this close is about to tear down.
-            from src.orchestrator.workspace import (
-                REQUEUE_INTEGRATION_OWNER_ROLES,
-                RETRYABLE_INTEGRATION_OWNER_ROLES,
-            )
-
-            # ``requeued_writer`` is exclusive with the other three legs --
-            # they are COMPLETED/PAUSED closes and this one is READY -- so the
-            # pre-existing reason wording is left exactly as it was.
-            if requeued_writer:
-                release_reason = context
-            elif repair_writer_closed:
-                release_reason = "integration_repair_delegate_closed"
-            else:
-                release_reason = "integration_parent_suspended"
             released = await self.arelease_integration_writer_for_retry(
                 task,
-                reason=release_reason,
-                pool=pool,
-                roles=(
-                    REQUEUE_INTEGRATION_OWNER_ROLES
-                    if requeued_writer
-                    else RETRYABLE_INTEGRATION_OWNER_ROLES
+                reason=(
+                    "integration_repair_delegate_closed"
+                    if repair_writer_closed
+                    else "integration_writer_close_failed"
+                    if failed_writer
+                    else "integration_parent_suspended"
                 ),
+                pool=pool,
+                roles=(REQUEUE_INTEGRATION_OWNER_ROLES if requeued_writer
+                       else RETRYABLE_INTEGRATION_OWNER_ROLES),
             )
             # ``False`` is a *failed proof*, not a no-op: the writer may still
             # hold the checkout.  Releasing the workspace or the claim anyway
@@ -1835,7 +2447,23 @@ class ExecutionMixin:
             "pr_url": pr_url,
             "pipeline_ok": completed_ok,
             "retry_count": new_retry,
+            # ``_cmd_task_close`` reads this to skip its own
+            # ``restore_slot_after_task``: the failing-writer release above
+            # already ran one, and salvaging a clean slot twice re-walks the
+            # archive path for nothing.
+            "slot_restored": slot_restored,
         }
+        if close_merge_result is not None:
+            response["close_merge"] = close_merge_result
+        if repair_writer_closed:
+            # The canonical ref may be absent from the base checkout used by
+            # task close. Preserve the head proved under the repair writer's
+            # fence rather than making the completion infer it there.
+            response["completion_source"] = repair_writer_head
+        elif git_completion or completion_source is not None:
+            response["completion_source"] = completion_source
+            if completion_commits is not None:
+                response["completion_commits"] = completion_commits
         if handoff_unproven:
             # ``_cmd_task_close`` reads this to skip the pool teardown
             # (``restore_slot_after_task`` / ``release_claim`` / claim file).
@@ -1850,6 +2478,46 @@ class ExecutionMixin:
             response["unmerged_branch"] = stranded.branch
             response["unmerged_commit"] = stranded.commit
         return response
+
+    async def _restore_slot_before_handoff_proof(
+        self, workspace_path: str | None, task_id: str
+    ) -> bool:
+        """Clean a failing writer's slot so its handoff proof can succeed.
+
+        Both integration-handoff proofs finish in
+        ``detach_workspace_for_integration_handoff``, which treats any
+        uncommitted change as a failed proof.  A failing close reaches the
+        release with its commits already pushed
+        (:meth:`_preserve_unpushed_on_failure`) but its working tree still
+        dirty, because the only thing that cleans it --
+        ``WorktreeSlotManager.restore_slot_after_task`` -- runs later, in
+        ``_cmd_task_close``.  Running it here is what keeps an ordinary dirty
+        fail close from stalling on ``retain_claim``; it archives the dirt to
+        a task context exactly as the later call would, and touches no
+        database binding the proof reads.
+
+        Returns True when the restore actually ran, so ``_cmd_task_close``
+        can skip salvaging the same slot a second time.  Never raises: a slot
+        that cannot be restored simply fails the proof below, which is
+        already a handled outcome.
+        """
+        if not workspace_path:
+            return False
+        try:
+            slot = await self._slot_workspace_at(workspace_path)
+            if slot is None:
+                return False
+            await self._worktree_slots().restore_slot_after_task(
+                slot, task_id=task_id, detach_pushed_branch=False
+            )
+            return True
+        except Exception:
+            logger.warning(
+                "Task %s: could not restore slot before integration handoff proof",
+                task_id,
+                exc_info=True,
+            )
+            return False
 
     async def _preserve_unpushed_on_failure(
         self, task, workspace_path: str | None, *, project_id: str | None = None
@@ -1876,13 +2544,13 @@ class ExecutionMixin:
                 event_bus=self.bus,
                 project_id=project_id,
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Task %s: unpushed-work check failed", task.id, exc_info=True
             )
             from src.orchestrator.stranded_work import StrandedWork
 
-            return StrandedWork(status="unknown")
+            return StrandedWork(status="unknown", error=f"{type(exc).__name__}: {exc}")
 
         if stranded.branch and stranded.status in ("pushed", "no_remote", "push_failed"):
             try:
