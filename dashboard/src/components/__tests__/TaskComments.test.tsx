@@ -10,6 +10,10 @@ const fixtures = vi.hoisted(() => Object.fromEntries(["t1", "t2"].map((id) => [i
   id, project_id: "demo", title: `Task ${id}`, description: "Requirements", status: "IN_PROGRESS",
 }])));
 const api = vi.hoisted(() => ({ taskComment: vi.fn(), taskComments: vi.fn(), taskCommentEdit: vi.fn(), taskCommentDelete: vi.fn() }));
+vi.mock("../../api/waits", () => ({
+  useWaitExplain: () => ({ data: { waits: [] }, isPending: false, error: null }),
+}));
+
 vi.mock("../../api/client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../api/client")>(), ...api,
 }));

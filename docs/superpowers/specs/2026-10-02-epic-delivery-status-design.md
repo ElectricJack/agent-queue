@@ -155,11 +155,16 @@ The first rule that matches wins.
      and `unknown` — or an identity that moved during the observation — is
      `Delivery evidence unavailable`/`stale` instead of a claim that delivery is
      settled by the absence of evidence.
-   * An epic that completed outside the train is `not_tracked` (`Completed
-     outside the train`). That covers no checkpoint, a cancelled collection,
-     a root never train-verified, or a parent that finished without
-     collecting it. The train never owed such an epic a receipt, so its
-     silence is not a blocker.
+   * A managed completed root with a branch/checkpoint still owes delivery.
+     Without current aggregate verification it is `queued` (`Waiting for
+     aggregate verification`), owned by the integration train, including after
+     a cancelled legacy collection. Missing checkpoint evidence on a root
+     branch is `unknown`. Canonical pending/unknown delivery evidence remains
+     authoritative even without a legacy checkpoint. These roots never read
+     as completed solely because implementation settlement completed them.
+   * An organizational container without a branch/checkpoint, or a nested epic
+     whose parent finished without collecting it, can be `not_tracked`
+     (`Completed outside the train`).
    * Missing evidence for an epic still in flight (no checkpoint, an episode
      with no live operation, an archived verifier, a readiness error) is
      `unknown` with `evidence: unavailable`.
