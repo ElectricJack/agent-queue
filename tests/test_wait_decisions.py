@@ -10,7 +10,7 @@ from sqlalchemy import insert, update
 from src.database.tables import (
     admission_reservations, continuations, escalation_deliveries, escalations, events,
     messages, sessions, task_comments, task_context, tasks, wait_deadlines, wait_edges,
-    wait_escalations, wait_records,
+    wait_escalations, wait_records, wait_source_events,
 )
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.event_schemas import validate_event
@@ -227,18 +227,54 @@ async def test_extend_preserves_age_receipt_ceiling_and_allows_next_incident(env
     assert all(row["state"] == "cancelled" for row in resolved.values())
 
 
-async def test_same_deadline_generation_concurrently_creates_one_incident(env):
+@pytest.mark.parametrize("graph_timeout", [0.0, 0.25])
+@pytest.mark.parametrize("force_contention", [False, True])
+async def test_same_deadline_generation_concurrently_creates_one_incident(
+    env, monkeypatch, graph_timeout, force_contention,
+):
+    monkeypatch.setattr("src.waits.graph.BACKGROUND_GRAPH_LOCK_TIMEOUT", graph_timeout)
     now = [NOW + 60]
     service = service_for(env, now)
     receipt = await waiting(env, escalate_after_seconds=60)
     assert await service.lease()
     args = {"wait_id": receipt["wait_id"], "deadline_type": "escalation", "generation": 1}
-    results = await asyncio.gather(*(service.command("wait_deadline_fire", args) for _ in range(2)))
+    if force_contention:
+        entered, release = asyncio.Event(), asyncio.Event()
+        handlers = service.orch.wait_deadline_handlers
+        effect = handlers["escalation"]
+
+        async def hold_effect(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await effect(*args, **kwargs)
+
+        monkeypatch.setitem(handlers, "escalation", hold_effect)
+        async with asyncio.timeout(30):
+            async with asyncio.TaskGroup() as group:
+                first = group.create_task(service.command("wait_deadline_fire", args))
+                await entered.wait()
+                try:
+                    second = await service.command("wait_deadline_fire", args)
+                    assert second["error_code"] == "wait.graph_busy", second
+                finally:
+                    release.set()
+        results = [first.result(), second]
+    else:
+        results = await asyncio.gather(*(
+            service.command("wait_deadline_fire", args) for _ in range(2)
+        ))
     assert sum(result["success"] for result in results) == 1, results
-    assert next(result for result in results if not result["success"])["error_code"] == (
-        "wait.deadline_stale"
-    )
+    refused = next(result for result in results if not result["success"])
+    if refused["error_code"] == "wait.graph_busy":
+        # Background deadlines defer under contention; retry after the winner commits.
+        refused = await service.command("wait_deadline_fire", args)
+    assert not refused["success"] and refused["error_code"] == "wait.deadline_stale", refused
     assert len(await records(env, escalations)) == len(await records(env, wait_escalations)) == 1
+    deadline = next(row for row in await records(env, wait_deadlines)
+                    if row["deadline_type"] == "escalation")
+    assert deadline["fired_at"] == now[0] and deadline["cancelled_at"] is None
+    assert len([row for row in await records(env, events)
+                if row["event_type"] == "wait.escalated"]) == 1
     notices = await records(env, messages)
     assert len(notices) == 1 and notices[0]["body_kind"] == "wait_escalation"
     assert not await records(env, escalation_deliveries)
@@ -313,12 +349,45 @@ async def test_decision_rechecks_owner_and_source_fences(env, fence):
             await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
         elif fence == "pause":
             await conn.execute(update(tasks).where(tasks.c.id == "owner").values(status="PAUSED"))
-        else:
-            await conn.execute(update(tasks).where(tasks.c.id == "source").values(status="COMPLETED"))
-    assert not (await decide(service, receipt, "wake"))["success"]
+    if fence == "source":
+        # Undispatched source evidence belongs to the listener, not the supervisor.
+        await env.db.transition_task("source", TaskStatus.COMPLETED)
+    result = await decide(service, receipt, "wake")
+    assert not result["success"]
+    if fence == "source":
+        assert result["error_code"] == "wait.not_escalated"
+        assert "dispatch its evidence first" in result["error"]
     assert (await records(env))[0]["outcome"] == "pending"
     assert len(await records(env, messages)) == 1
     assert (await records(env, wait_escalations))[0]["decided_at"] is None
+
+
+@pytest.mark.parametrize("decision", ["wake", "extend"])
+async def test_decision_settles_source_whose_evidence_was_consumed(env, decision):
+    # A restart-era owner fence failure stamps the terminal event dispatched
+    # without committing. Neither the cursor nor redispatch revisits it, so
+    # the supervisor decision reverifies the source instead of deadlocking.
+    receipt, service, _, _ = await escalated(env, hibernate=True)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).values(dispatched_at=NOW))
+    seq = max(row["seq"] for row in await records(env, wait_source_events))
+    result = await decide(service, receipt, decision)
+    assert result["success"] and result["outcome"] == "satisfied", result
+    assert result["decision"] == decision and "not applied" in result["next_step"]
+    wait = (await records(env))[0]
+    assert wait["outcome"] == "satisfied" and "supervisor_decision" not in wait["decision_inputs"]
+    assert (await records(env, continuations))[0]["resume_state"] == "queued"
+    assert (await env.db.get_task("owner")).status is TaskStatus.RESUME_PENDING
+    incident = (await records(env, escalations))[0]
+    assert incident["state"] == "cancelled" and incident["terminal_outcome"] == "source_satisfied"
+    assert incident["terminal_evidence"]["automatic_rule"] == "wait_source_cleared"
+    assert incident["terminal_evidence"]["source_seq"] == seq
+    audit = [json.loads(row["payload"]) for row in await records(env, events)
+             if row["event_type"] == "wait.decided"]
+    assert len(audit) == 1 and audit[0]["reason"] == "source_reverified"
+    assert audit[0]["decision"] == decision and audit[0]["source_seq"] == seq
+    assert not (await decide(service, receipt, "wake"))["success"]
 
 
 async def test_source_satisfaction_with_escalation_is_one_atomic_commit(env):

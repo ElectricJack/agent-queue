@@ -1,5 +1,17 @@
 # Promotion cutover: immutable origins and exact receipt reversal
 
+`integration_cutover_plan` admits the local operator, a live named supervisor
+within its project scope (including the global supervisor), or an operator
+worker with the command's audited request-local grant. After authorization and
+designated-repository validation, these read-only previews may supplement hidden
+App ruleset bypass actors through the daemon's existing administrator login.
+That reader is restricted to GETs of ruleset details for the bound repository;
+the App and administrator policy observations must agree. Missing administrator
+access, hidden actors or differing policy observations still refuse the preview.
+This does not authorize cutover application, reverse, or GitHub configuration
+writes by supervisors. The existing application authority and saved-plan fences
+remain in force.
+
 Task `wise-ember-69.5` revises the origin rewrite in the release plan's
 cutover step. Materialized origins are immutable provenance. Cutover must
 leave every origin row and its guard unchanged.

@@ -1,7 +1,8 @@
 """Git facts for the reduced train, without delivery records or state mutations.
 
 A visit reuses the fetched delivery snapshot and the completion source locator.
-Overlapping readers share only fetches started after their own arrival.
+Tick readers share one repository observation; other overlapping readers share
+only fetches started after their own arrival.
 Only immutable Git facts survive visits, keyed by repository and source/target
 OIDs. Task identity, authorization and remote freshness are checked separately
 at use; a cached fact never authorizes a close or publication on its own.
@@ -15,6 +16,8 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
@@ -32,7 +35,8 @@ from src.integration.delivery_truth import (
     delivery_snapshot,
 )
 from src.integration.provenance import CompletionIdentity, GitProvenance
-from src.integration.selection_metrics import selection_count
+from src.integration.selection_metrics import selection_count, selection_stage
+from src.metrics.operation_profile import profiled_lock
 
 logger = logging.getLogger(__name__)
 LEGACY_CONTRACT_VERSION = "legacy-equivalence-v1"
@@ -108,6 +112,30 @@ class _SharedFetch:
     readers: int = 0
 
 
+_SNAPSHOT_SCOPE: ContextVar[dict | None] = ContextVar("git_snapshot_scope", default=None)
+
+
+@contextmanager
+def snapshot_scope(*, reuse=False):
+    """Share one repository acquisition among the tasks dispatched by a tick.
+
+    This is an explicit observation boundary, never a time-based freshness cache.
+    A publication's follow-up observation must enter a new scope. Callers still
+    recheck remote freshness and mutable authority before acting on a proof.
+    """
+    if reuse and _SNAPSHOT_SCOPE.get() is not None:
+        yield
+        return
+    from src.integration.repository_recovery import retained_checkout_scope
+
+    token = _SNAPSHOT_SCOPE.set({})
+    try:
+        with retained_checkout_scope():
+            yield
+    finally:
+        _SNAPSHOT_SCOPE.reset(token)
+
+
 class GitTruth:
     """Bounded OID-pair cache and nonblocking fetch backoff for repository visits."""
 
@@ -116,6 +144,7 @@ class GitTruth:
         retry_delay: float = 1, max_retry_delay: float = 60,
         clock: Callable[[], float] = time.monotonic,
         share_fetches: bool = False,
+        skip_unchanged: bool = False,
         contract_version: str = LEGACY_CONTRACT_VERSION,
     ):
         if cache_limit < 1 or retry_delay <= 0 or max_retry_delay < retry_delay:
@@ -134,9 +163,55 @@ class GitTruth:
         self._objects: OrderedDict[tuple, str] = OrderedDict()
         self._failures: dict[tuple[str, str], tuple[float, float, str]] = {}
         self.share_fetches = share_fetches
+        self.skip_unchanged = skip_unchanged
         self._fetches: dict[tuple[str, str, str, str], _SharedFetch] = {}
 
+    def _scope_key(self, store, project_id, repository_id, repository_url):
+        return (str(store), project_id, repository_id, repository_url,
+                self.contract_version, self.skip_unchanged)
+
+    async def tick_snapshot(self, store: str, **options) -> GitTruthSnapshot | None:
+        """Join a tick's existing acquisition before opening/locking its store again."""
+        scope = _SNAPSHOT_SCOPE.get()
+        key = self._scope_key(store, options["project_id"], options["repository_id"],
+                              options["repository_url"])
+        if scope is None or key not in scope:
+            return None
+        return await self.snapshot(store, **options)
+
     async def snapshot(
+        self, store: str, *, project_id: str, repository_id: str,
+        repository_url: str, target_ref: str,
+    ) -> GitTruthSnapshot:
+        options = dict(project_id=project_id, repository_id=repository_id,
+                       repository_url=repository_url, target_ref=target_ref)
+        scope = _SNAPSHOT_SCOPE.get()
+        if scope is None:
+            return await self._shared_snapshot(store, **options)
+        key = self._scope_key(store, project_id, repository_id, repository_url)
+        shared = scope.setdefault(key, _SharedFetch())
+        with selection_stage("snapshot_scope_wait"):
+            async with profiled_lock(shared.lock, "wait.snapshot_scope_lock"):
+                if shared.error is not None:
+                    raise shared.error
+                if shared.snapshot is None:
+                    try:
+                        shared.snapshot = await self._shared_snapshot(store, **options)
+                    except asyncio.CancelledError:
+                        shared.error = SharedFetchCancelled("shared fetch was cancelled")
+                        raise
+                    except Exception as exc:
+                        shared.error = exc
+                        raise
+                else:
+                    selection_count("tick_snapshot_hits")
+                # Share fetched refs, never another caller's answers/freshness marks.
+                observed = replace(shared.snapshot.observation,
+                                   _cache={}, _identities={}, _freshness={})
+                return replace(shared.snapshot, truth=self, observation=observed).for_target(
+                    target_ref)
+
+    async def _shared_snapshot(
         self, store: str, *, project_id: str, repository_id: str,
         repository_url: str, target_ref: str,
     ) -> GitTruthSnapshot:
@@ -157,7 +232,7 @@ class GitTruth:
         arrival = shared.fetch_starts
         shared.readers += 1
         try:
-            async with shared.lock:
+            async with profiled_lock(shared.lock, "wait.shared_fetch_lock"):
                 if shared.error is not None:
                     raise shared.error
                 if shared.fetch_starts <= arrival:
@@ -194,10 +269,12 @@ class GitTruth:
                 contract_version=self.contract_version,
             ), retry_at=failure[0])
         selection_count("fetch_starts")
-        observation = await delivery_snapshot(
-            self.git, store, project_id=project_id, repository_id=repository_id,
-            repository_url=repository_url, target_ref=target_ref,
-        )
+        with selection_stage("snapshot_acquisition"):
+            observation = await delivery_snapshot(
+                self.git, store, project_id=project_id, repository_id=repository_id,
+                repository_url=repository_url, target_ref=target_ref,
+                skip_unchanged=self.skip_unchanged,
+            )
         observation = replace(observation, contract_version=self.contract_version)
         retry_at = None
         if observation.error and observation.error.startswith("snapshot_git_error:"):

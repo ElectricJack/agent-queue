@@ -628,6 +628,73 @@ async def test_operator_intent_refuses_launch(db, fixer, intent):
     runtime.start.assert_not_awaited()
 
 
+async def test_abort_during_liveness_probe_cannot_become_deferred_again(db, fixer):
+    service, runtime, _ = fixer
+    await allocate(service)
+    original = await state(db)
+    await register(db, original, "sleeping")
+
+    async def abort_then_report_stopped(_state):
+        await BatchStore(db).set_intent("batch-fix", "aborted", operator_id="operator",
+                                        reason="Withdraw epic refresh")
+        return False
+
+    runtime.alive.side_effect = abort_then_report_stopped
+    assert (await allocate(service))["outcome"] == "held"
+    row = await db.get_integration_batch("batch-fix")
+    assert row["intent"] == row["lifecycle"] == "aborted"
+    assert row["fixer_state"]["status"] == "aborted"
+    assert row["fixer_queue"]["status"] == "operator_decision"
+    assert (await db.get_session(original["session_id"])).desired_state == "stopped"
+    assert not await notices(db, supervisor=True)
+    # A restarted allocator must neither dispatch nor notify this stopped fixer.
+    restarted = BatchFixerService(db, runtime)
+    assert (await allocate(restarted, NEXT))["outcome"] == "held"
+    await restarted.settle_green("batch-fix", NEXT)
+    assert (await state(db))["status"] == "aborted"
+    runtime.start.assert_awaited_once()
+    notice, = await notices(db)
+    assert "was aborted" in notice["body"]
+
+
+async def test_abort_during_push_failure_preserves_terminal_decision(db, live_fixer):
+    from src.git.manager import GitError
+
+    service, runtime, _, session, *_ = live_fixer
+
+    async def abort_then_fail(_batch, _session):
+        await BatchStore(db).set_intent("real", "aborted", operator_id="operator",
+                                        reason="Withdraw epic refresh")
+        raise GitError("publication evidence is unavailable")
+
+    runtime.push = AsyncMock(side_effect=abort_then_fail)
+    with pytest.raises(GitError, match="publication evidence"):
+        await service.command(principal_for(session), action="push")
+    row = await db.get_integration_batch("real")
+    assert row["fixer_state"]["status"] == "aborted"
+    assert row["fixer_queue"]["status"] == "operator_decision"
+    assert not await notices(db, supervisor=True)
+
+
+async def test_aborted_family_fixer_cannot_be_dispatched_to_successor(db, fixer):
+    service, runtime, _ = fixer
+    await allocate(service)
+    store = BatchStore(db)
+    await store.set_intent("batch-fix", "aborted", operator_id="operator", reason="Withdraw")
+    successor = Batch("old-resume-successor", "p", "r", "refs/heads/dev")
+    await store.freeze(successor, await store.members("batch-fix"),
+                       trees={"one": "e" * 40, "two": "f" * 40})
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == successor.id)
+                           .values(fixer_queue={"family_id": "batch-fix"}))
+    restarted = BatchFixerService(db, runtime)
+    assert (await allocate_on(restarted, successor.id))["outcome"] == "held"
+    assert "pending_binding" not in await state(db)
+    runtime.start.assert_awaited_once()
+    notice, = await notices(db)
+    assert "was aborted" in notice["body"]
+
+
 async def test_withdrawn_candidate_refuses_launch(db, fixer):
     service, runtime, _ = fixer
     result = await service.allocate("batch-fix", target_ref=candidate_ref("batch-fix"),
@@ -716,6 +783,7 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
     repo = RetainedRepository("r", store, GitHubRepositoryBinding(123, "test/repo"), "main")
     lane = SimpleNamespace(service=SimpleNamespace(
         gitops=SimpleNamespace(repository=AsyncMock(return_value=repo)),
+        publication_eligibility=AsyncMock(return_value=AsyncMock(return_value=True)),
         _authorized=AsyncMock(return_value=True),
     ))
     orch = SimpleNamespace(db=db, git=transport, config=config, daemon_epoch="epoch",
@@ -1146,6 +1214,40 @@ async def test_deferred_unchanged_due_observation_does_not_readmit_or_lose_fixes
         batch.id + "-resume-")
 
 
+@pytest.mark.parametrize("legacy_queue", [False, True])
+async def test_restart_never_resumes_explicitly_aborted_refresh(batch_env, legacy_queue):
+    from src.integration.fixer_batches import FixerBatches, defer_on
+    from src.integration.train import TrainTarget
+    from tests.test_integration_gitops import git
+
+    db, _, repo, _, head, store, original, members, green, _, snapshot, service = batch_env
+    await store.set_intent(original.id, "aborted")
+    batch = Batch("train-epic-refresh-withdrawn", "p", "r", original.target_ref)
+    await store.freeze(batch, members, trees={
+        m.task_id: git(repo.store, "rev-parse", m.source_sha + "^{tree}") for m in members})
+    git(repo.store, "push", "origin", head + ":" + candidate_ref(batch.id),
+        head + ":" + batch.target_ref)
+    async with db.immediate() as conn:
+        await defer_on(conn, await db.get_integration_batch(batch.id), now=0,
+                       reason="launch_retry", head_sha=head, revisit_seconds=30)
+    deferred = (await db.get_integration_batch(batch.id))["fixer_queue"]
+    await store.set_intent(batch.id, "aborted", reason="Operator withdrew refresh")
+    if legacy_queue:
+        # Pre-fix late callbacks could restore deferred metadata after abort.
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(fixer_queue=deferred, fixer_state={"status": "aborted"}))
+    green.add(head)  # Even exact green cannot revive the operator's cancellation.
+    restarted = FixerBatches(db, clock=lambda: 10000)
+    target = TrainTarget("p", "r", batch.target_ref, "epic")
+    for _ in range(2):
+        assert await restarted.resume(target, await snapshot(batch), service) is None
+    async with db._engine.connect() as conn:
+        assert not await conn.scalar(select(integration_batches.c.id).where(
+            integration_batches.c.id.startswith(batch.id + "-resume-")))
+
+
 async def test_reduced_red_reuses_one_session_and_requires_clean_fenced_rebind(db, live_fixer):
     from pathlib import Path
 
@@ -1376,3 +1478,48 @@ async def test_fixer_honors_configured_round_budget_above_three(db, fixer):
     assert result["outcome"] == "deferred"
     assert result["reason"] == "fixer CI round budget exhausted"
     assert len(await notices(db, supervisor=True)) == 1
+
+
+@pytest.mark.parametrize("authority", ["local", "supervisor", "worker", "foreign", "stopped"])
+async def test_rebind_authority_control_checks_live_owning_supervisor(db, live_fixer, authority):
+    from dataclasses import replace
+
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import TRUSTED_LOCAL, principal_context
+    from src.models import SessionRecord
+
+    service, runtime, orch, row, _, source, _ = live_fixer
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(integration_train=SimpleNamespace(repair=service))
+    principal = principal_for(row)
+    if authority == "local":
+        principal = TRUSTED_LOCAL
+    elif authority != "worker":
+        supervisor = SessionRecord(
+            id=str(uuid4()), project_id="foreign" if authority == "foreign" else "p",
+            profile_id="supervisor", harness="codex", provider="fake", name="n-supervisor",
+            work_dir="/supervisor",
+            lifecycle="named", epoch="new", instance_token="supervisor-instance",
+            started_at=1, state="stopped" if authority == "stopped" else "running",
+            desired_state="running",
+        )
+        if authority == "foreign":
+            await db.create_project(Project(id="foreign", name="Foreign"))
+        await db.create_session(supervisor)
+        principal = replace(principal_for(supervisor), elevated=True)
+    before = await db.get_integration_batch("real")
+    with principal_context(principal):
+        result = await handler._cmd_integration_rebind_batch_authority({
+            "batch_id": "real", "reason": "recover after daemon restart", "dry_run": False,
+        })
+    after = await db.get_integration_batch("real")
+    if authority in {"local", "supervisor"}:
+        assert result["success"] and result["outcome"] == "rebound", result
+        assert result["candidate_sha"] == source
+        assert after["fixer_state"]["authority_refresh"]["reason"] == "recover after daemon restart"
+        assert after["repair_attempt_count"] == before["repair_attempt_count"]
+        assert runtime.git.pushes == 0
+    else:
+        assert result["outcome"] == "refused", result
+        assert after["fixer_state"] == before["fixer_state"]

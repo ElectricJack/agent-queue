@@ -105,6 +105,9 @@ function visibleContext(g, scrollTop) {
 export async function run(t) {
   await t.page.goto(t.url(`/reviews/${REVIEW}`), { waitUntil: "networkidle0" });
   await t.page.waitForSelector('[data-review-body] h3');
+  // The canonical ask route has a scrollable header above the review. Read the
+  // document before interacting, as a user would on a short viewport.
+  await t.page.$eval("[data-review-body]", (el) => el.scrollIntoView({ block: "start" }));
   // A transformed scrolling ancestor would contain a non-portaled fixed editor.
   await t.page.$eval('[data-review-body]', (el) => el.style.transform = "translateZ(0)");
   const scrollTop = await scrollToSection(t.page);
@@ -166,6 +169,8 @@ export async function run(t) {
   await assertDraft(t.page, "Clarify these details.");
   await t.shot("resized-draft");
   await t.page.keyboard.press("Escape");
+  await assertDraft(t.page, "Clarify these details.");
+  await t.page.click('[aria-label="Add review comment"] button::-p-text(Discard draft)');
   await t.page.waitForFunction(() => !document.querySelector("#review-comment-body"));
   assert.equal(await t.page.evaluate(() => document.activeElement.textContent.trim()), "Comment on this section");
   assert.equal(await t.page.$eval('[data-review-body]', (el) => el.scrollTop), resized.scrollTop);

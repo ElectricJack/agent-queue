@@ -15,28 +15,26 @@ T = TypeVar("T", bound="WaitDecideArgs")
 class WaitDecideArgs:
     """
     Attributes:
-        wait_id (str):
         decision (WaitDecideArgsDecision):
         note (str):
         project_id (None | str | Unset):
+        wait_id (None | str | Unset):
         extend_seconds (float | None | Unset):
         to (None | str | Unset):
         expected_generation (int | None | Unset):
         continuation_id (None | str | Unset):
     """
 
-    wait_id: str
     decision: WaitDecideArgsDecision
     note: str
     project_id: None | str | Unset = UNSET
+    wait_id: None | str | Unset = UNSET
     extend_seconds: float | None | Unset = UNSET
     to: None | str | Unset = UNSET
     expected_generation: int | None | Unset = UNSET
     continuation_id: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
-        wait_id = self.wait_id
-
         decision = self.decision.value
 
         note = self.note
@@ -46,6 +44,12 @@ class WaitDecideArgs:
             project_id = UNSET
         else:
             project_id = self.project_id
+
+        wait_id: None | str | Unset
+        if isinstance(self.wait_id, Unset):
+            wait_id = UNSET
+        else:
+            wait_id = self.wait_id
 
         extend_seconds: float | None | Unset
         if isinstance(self.extend_seconds, Unset):
@@ -75,13 +79,14 @@ class WaitDecideArgs:
 
         field_dict.update(
             {
-                "wait_id": wait_id,
                 "decision": decision,
                 "note": note,
             }
         )
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if wait_id is not UNSET:
+            field_dict["wait_id"] = wait_id
         if extend_seconds is not UNSET:
             field_dict["extend_seconds"] = extend_seconds
         if to is not UNSET:
@@ -96,8 +101,6 @@ class WaitDecideArgs:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        wait_id = d.pop("wait_id")
-
         decision = WaitDecideArgsDecision(d.pop("decision"))
 
         note = d.pop("note")
@@ -110,6 +113,15 @@ class WaitDecideArgs:
             return cast(None | str | Unset, data)
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        def _parse_wait_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        wait_id = _parse_wait_id(d.pop("wait_id", UNSET))
 
         def _parse_extend_seconds(data: object) -> float | None | Unset:
             if data is None:
@@ -148,10 +160,10 @@ class WaitDecideArgs:
         continuation_id = _parse_continuation_id(d.pop("continuation_id", UNSET))
 
         wait_decide_args = cls(
-            wait_id=wait_id,
             decision=decision,
             note=note,
             project_id=project_id,
+            wait_id=wait_id,
             extend_seconds=extend_seconds,
             to=to,
             expected_generation=expected_generation,

@@ -37,8 +37,58 @@ EVIDENCE = (t.messages, t.playbook_state_namespaces, t.playbook_state_entries,
             t.playbook_private_values)
 # A dry run must leave every one of these exactly as it found them.
 WRITES = tuple(table.name for table in EVIDENCE if table is not t.messages)
+# The independent inbox delivery pass can advance these on an existing message
+# while the dry run executes. Identity, content, addressing and provenance must
+# still match, including for messages outside the watch's subject filter.
+MESSAGE_DELIVERY_FIELDS = frozenset({
+    "delivered_at", "read_at", "last_notified_at", "notification_attempts",
+    "archived_at", "via", "pane_open",
+})
 WATCH_SUBJECTS = ("Stuck-task observation",)
 WORLD_BUDGET = 840  # stay inside the daemon's first timer.15m window
+
+
+def assert_dry_run_unchanged(before, after):
+    assert {name: after[name] for name in WRITES} == {name: before[name] for name in WRITES}
+
+    def messages(records):
+        return {row["id"]: {key: value for key, value in row.items()
+                            if key not in MESSAGE_DELIVERY_FIELDS}
+                for row in records[t.messages.name]}
+
+    assert messages(after) == messages(before)
+
+
+def test_dry_run_evidence_allows_concurrent_message_delivery():
+    before = {table.name: [] for table in EVIDENCE}
+    before[t.messages.name] = [{
+        "id": "existing", "body": "observation", "last_notified_at": None,
+        "notification_attempts": 0, "via": None,
+    }]
+    after = {**before, t.messages.name: [{
+        **before[t.messages.name][0], "last_notified_at": 1,
+        "notification_attempts": 1, "via": "nudge",
+    }]}
+    assert_dry_run_unchanged(before, after)
+
+
+@pytest.mark.parametrize("change", ["insert", "delete", "body", "provenance", *WRITES])
+def test_dry_run_evidence_rejects_writes_despite_concurrent_delivery(change):
+    before = {table.name: [] for table in EVIDENCE}
+    before[t.messages.name] = [{"id": "existing", "body": "observation", "provenance": {}}]
+    after = {**before, t.messages.name: [{
+        **before[t.messages.name][0], "notification_attempts": 1, "via": "nudge",
+    }]}
+    if change == "insert":
+        after[t.messages.name].append({"id": "unexpected", "subject": "another subject"})
+    elif change == "delete":
+        after[t.messages.name].clear()
+    elif change in {"body", "provenance"}:
+        after[t.messages.name][0][change] = "changed"
+    else:
+        after[change] = [{"unexpected": "write"}]
+    with pytest.raises(AssertionError):
+        assert_dry_run_unchanged(before, after)
 
 
 class WatchWorld:
@@ -211,9 +261,7 @@ def test_reviewed_watch_through_disposable_daemon(tmp_path):
             "tick_time": datetime.now(UTC).isoformat()}})
         assert dry["dry_run"] is True
         after_dry = watch.evidence()
-        assert {name: after_dry[name] for name in WRITES} == \
-            {name: unchanged[name] for name in WRITES}
-        assert watch.watch_messages(after_dry) == watch.watch_messages(unchanged)
+        assert_dry_run_unchanged(unchanged, after_dry)
 
         def refreshed(identity, revision):
             # Every complete tick refreshes a present key: one revision, no message.

@@ -52,6 +52,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from scripts.e2e.environment import child_env
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 AQ_LAUNCHER = os.path.join(REPO_ROOT, "scripts", "e2e", "aq.py")
 API_URL = os.environ.get("AQ_API_URL", "http://127.0.0.1:8099").rstrip("/")
@@ -131,7 +133,7 @@ def _cli_env(
     ``AQ_DB_SCOPE`` is deliberately retained; this helper never authorizes an
     upgrade or starts a daemon.
     """
-    env = dict(os.environ)
+    env = child_env(os.environ)
     env["AQ_API_URL"] = API_URL
     # A fixture session must resolve its own task and claim. Inheriting the
     # caller's task makes `prime` address a task outside the disposable world.
@@ -625,6 +627,22 @@ class Worker:
             "session", "drain-ack", "--session-id", self.session_id, check_ok=False
         )
 
+    def drain_and_wait(self) -> dict:
+        """Finish the worker protocol and prove its execution seat was released."""
+        self.drain_ack()
+
+        def stopped():
+            shown = api_checked("session_show", {"session_id": self.session_id})
+            row = shown.get("session") or shown
+            return row if row.get("state") == "stopped" else None
+
+        row = wait_for(stopped, what=f"session {self.session_id} to reach state=stopped")
+        check(
+            row.get("end_reason") == "drained",
+            f"fresh-context session stopped for {row.get('end_reason')!r}, not 'drained'",
+        )
+        return row
+
 
 def claim_fixture(
     worker: Worker, task_ids: str | list[str], *, what: str, targeted: bool = False,
@@ -898,8 +916,6 @@ def s2_claim_loop(state: dict) -> str:
     check(nxt["session"]["claims"] == 1, f"claim counter should be 1: {nxt['session']}")
     check(task_show(first_task)["status"] in ("COMPLETED", "DONE"), "first task did not close")
 
-    worker.drain_ack()
-
     # The reconciler now retires the agent, frees the workspace, and the
     # sizer starts a replacement for the still-unclaimed third task.
     #
@@ -908,16 +924,7 @@ def s2_claim_loop(state: dict) -> str:
     # three consequences that do: the session row goes terminal, the slot it
     # held comes back, and `pools.orphan_agents` (which *does* read agent
     # rows) stays clean, which it would not if the agent were left behind.
-    def _retired():
-        shown = api_checked("session_show", {"session_id": worker.session_id})
-        row = shown.get("session") or shown
-        return row if row.get("state") == "stopped" else None
-
-    stopped = wait_for(_retired, what=f"session {worker.session_id} to reach state=stopped")
-    check(
-        stopped.get("end_reason") == "drained",
-        f"fresh-context session stopped for {stopped.get('end_reason')!r}, not 'drained'",
-    )
+    worker.drain_and_wait()
 
     orphan_check = _swarm_checks().get("pools.orphan_agents", {})
     check(
@@ -1035,6 +1042,10 @@ def s3_worker_filed_work(state: dict) -> str:
     check(not left, f"{filed_id} is still gate-blocked after routing: {left}")
 
     worker.close(summary="S3 held task")
+    # This runner is the fake worker: it must acknowledge its own drain.
+    # A closed task leaves a live process until that handshake completes;
+    # carrying it into S4 consumes the seat reserved for formula children.
+    worker.drain_and_wait()
     return f"{filed_id} DEFINED + discovered-from {held} + routing gate {gate_id} resolved"
 
 
@@ -1293,8 +1304,7 @@ def s7_claim_race(state: dict) -> str:
         nonlocal outcomes
         procs = []
         for sid, token in tokens:
-            env = dict(os.environ)
-            env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
+            env = _cli_env(token=token, session_id=sid)
             procs.append(
                 subprocess.Popen(
                     [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
@@ -1357,6 +1367,7 @@ def _git_text(path: str, *args: str) -> str:
         check=False,
         text=True,
         timeout=30,
+        env=child_env(os.environ),
     )
     check(
         proc.returncode == 0,
@@ -2491,10 +2502,11 @@ def _ensure_phased_development_project(
         subprocess.run(
             ["git", "init", "--bare", "--initial-branch=main", str(remote)],
             check=True,
-            capture_output=True,
+            capture_output=True, env=child_env(os.environ),
         )
     if not source.exists():
-        subprocess.run(["git", "clone", str(remote), str(source)], check=True, capture_output=True)
+        subprocess.run(["git", "clone", str(remote), str(source)], check=True, capture_output=True,
+                       env=child_env(os.environ))
     if not (source / "README.md").exists():
         _git_text(str(source), "config", "user.name", "AQ E2E")
         _git_text(str(source), "config", "user.email", "e2e@example.test")

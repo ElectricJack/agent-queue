@@ -32,7 +32,7 @@ const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
 /**
  * The route is the project scope; query parameters travel with every tab.
  * `scope` overrides the route for a page that is not under
- * /projects/:projectId — the focus home passes its `?project=`.
+ * /projects/:projectId; callers may also supply an explicit project scope.
  */
 export function TaskWorkspaceProvider({ children, scope }: { children: ReactNode; scope?: { projectId?: string } }) {
   const route = useParams<{ projectId: string }>();

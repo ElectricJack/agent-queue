@@ -17,10 +17,10 @@ import time
 
 from sqlalchemy import select
 
-from src.database.tables import integration_check_evidence, repos, wait_records
+from src.database.tables import repos, wait_records
 from src.git.manager import GitError
 from src.git.github_contracts import GitHubAccessError, rate_limit_cause
-from src.integration.checks import Conclusion, evaluate
+from src.integration.checks import Conclusion, evaluate, lock_check_evidence
 from src.integration.runtime_contracts import HeadIdentity
 from src.waits.adapters.ci import CIAdapter
 from src.waits.adapters.pull_request import PullRequestAdapter
@@ -33,8 +33,8 @@ KINDS = ("ci_check", "ci_run", "pull_request")
 # Final conclusions plus cancellation: each is a result the waiter must read.
 TERMINAL = frozenset({Conclusion.SUCCESS, Conclusion.FAILURE, Conclusion.MISSING,
                       Conclusion.CANCELLED})
-# Reads also run under the graph fence during registration and dispatch. Keep
-# their remote work below the listener renewal interval and control lock budget.
+# Registration may read under the graph fence; listener dispatch prepares reads
+# before taking it. Bound remote work below the listener renewal interval.
 OBSERVATION_TIMEOUT_SECONDS = 5.0
 
 
@@ -86,21 +86,16 @@ class CheckWatcher:
         return {"ci_reader": self.read, "pr_reader": self.read}
 
     async def lock_source(self, conn, cond):
-        """Keep repository binding/cache stable across the fresh remote verdict.
+        """Fence repository/cache identities when applying a fresh remote verdict.
 
-        Remote state cannot be transaction locked: read() re-verifies the
-        exact head and check with its authenticated provider on every dispatch.
-        Events and cached results never substitute for that observation.
+        Remote state cannot be transaction locked. Listener dispatch prepares
+        read() before GRAPH_LOCK and revalidates these SQL bindings under this
+        fence. Events and cached results never substitute for that observation.
         """
-        await conn.execute(select(repos.c.id).where(
-            repos.c.id == cond.parameters["repository_id"],
-            repos.c.project_id == cond.context["project_id"],
-        ).with_for_update(read=True))
-        table = integration_check_evidence
-        await conn.execute(select(table.c.id).where(
-            table.c.repository_id == cond.parameters["repository_id"],
-            table.c.sha == cond.parameters["head_sha"],
-        ).order_by(table.c.id).with_for_update(read=True))
+        await lock_check_evidence(
+            conn, cond.parameters["repository_id"], cond.parameters["head_sha"],
+            project_id=cond.context["project_id"],
+        )
 
     @staticmethod
     def head(cond):

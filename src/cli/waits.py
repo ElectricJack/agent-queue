@@ -418,6 +418,7 @@ def wait_ack(ctx, wait_id, continuation_id, generation, claim_epoch):
             "reroute",
             "escalate_to_human",
             "requeue",
+            "retire",
         ]
     ),
     required=True,
@@ -433,6 +434,20 @@ def wait_ack(ctx, wait_id, continuation_id, generation, claim_epoch):
 def wait_decide(ctx, **params):
     """Record a supervisor decision on a wait or held continuation."""
     emit(ctx, _execute(ctx, "wait_decide", {k: v for k, v in params.items() if v is not None}))
+
+
+@wait.command("retire")
+@click.argument("continuation_id")
+@click.option("--expected-generation", type=click.IntRange(min=1), required=True)
+@click.option("--note", required=True)
+@click.option("--project", "project_id", default=None)
+@click.pass_context
+@_handle_errors
+def wait_retire(ctx, **params):
+    """Retire a continuation and pause its task, retaining its saved work."""
+    emit(ctx, _execute(ctx, "wait_decide", {
+        "decision": "retire", **{k: v for k, v in params.items() if v is not None},
+    }))
 
 
 @wait.command("lift")
@@ -465,3 +480,14 @@ def wait_bridge(ctx, project_id, apply, mode):
     if project_id:
         params["project_id"] = project_id
     emit(ctx, _execute(ctx, "wait_legacy_bridge", params))
+
+
+@wait.command("source-redispatch")
+@click.option("--source-seq", required=True, type=click.IntRange(min=1))
+@click.option("--project", "project_id", required=True)
+@click.option("--note", required=True)
+@click.pass_context
+@_handle_errors
+def wait_source_redispatch(ctx, **params):
+    """Reobserve one persisted source event using normal scoped dispatch."""
+    emit(ctx, _execute(ctx, "wait_source_redispatch", params))

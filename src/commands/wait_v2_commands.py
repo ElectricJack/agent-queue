@@ -48,6 +48,43 @@ def service_source_commit(handler, service):
 
 
 class WaitV2CommandsMixin:
+    async def recover_continuation_incident(self, args):
+        """Route task recovery IDs from resume holds to their existing fenced owner."""
+        from src.commands.principal import TRUSTED_LOCAL
+        from src.database.tables import continuations, escalations
+
+        async with self.db._engine.connect() as conn:
+            incident = (await conn.execute(select(escalations).where(
+                escalations.c.id == args.get('incident_id'),
+                escalations.c.source_kind == 'continuation',
+            ))).mappings().first()
+            if incident is None:
+                return None
+            intent = (await conn.execute(select(continuations).where(
+                continuations.c.task_id == args['task_id'],
+                continuations.c.facts['hold_escalation_id'].astext == incident['id'],
+                continuations.c.resume_state == 'held',
+            ))).mappings().first()
+        if intent is None or incident['task_id'] != args['task_id']:
+            return refusal('task_recovery.refused', 'Continuation incident is stale or not found')
+        if (args['decision'] != 'retry' or args.get('operator_release')
+                or args.get('expected_hold_at') is not None):
+            return refusal('task_recovery.refused',
+                           'Continuation resume holds use decision retry; inspect aq wait explain')
+        service = getattr(self.orchestrator, 'wait_service', None)
+        if service is None:
+            return refusal('wait.unavailable', 'Continuation recovery service is unavailable')
+        try:
+            result = await service.lifecycle.resume.requeue({
+                'wait_id': intent['wait_id'], 'continuation_id': intent['id'],
+                'expected_generation': intent['suspension_generation'], 'note': args['reason'].strip(),
+            }, principal=current_principal() or TRUSTED_LOCAL, scope=self._current_scope or {},
+                handler=self, incident_id=incident['id'])
+        except WaitError as exc:
+            return refusal(exc.code, str(exc), **exc.details)
+        return {**result, 'task_id': args['task_id'], 'incident_id': incident['id'],
+                'decision': 'retry'}
+
     async def repair_wait_orphans(self, *, project_id=None):
         """Doctor's mutating command boundary; never a public worker tool."""
         from src.waits.recovery import repair_orphans
@@ -75,14 +112,20 @@ class WaitV2CommandsMixin:
                 or principal.session_instance_token != session.instance_token):
             return
         async with self.db._engine.begin() as conn:
-            intent_id = await conn.scalar(select(continuations.c.id).where(
+            intent = (await conn.execute(select(
+                continuations.c.id, continuations.c.wait_id,
+                continuations.c.suspension_generation, continuations.c.resume_state,
+            ).where(
                 continuations.c.new_session_id == session_id,
-                continuations.c.resume_state == "launching",
-            ))
-            if intent_id:
-                await mark_delivered(conn, continuation_id=intent_id, session_id=session_id,
+                continuations.c.resume_state.in_(("launching", "delivered")),
+            ))).mappings().first()
+            if intent and intent['resume_state'] == 'launching':
+                await mark_delivered(conn, continuation_id=intent['id'], session_id=session_id,
                                      instance_token=session.instance_token,
                                      claim_epoch=session.last_claim_epoch, now=time.time())
+            if intent:
+                return dict(wait_id=intent['wait_id'], continuation_id=intent['id'],
+                            generation=intent['suspension_generation'])
 
     async def _wait_mutation_fence(self, name, principal, *, mutating):
         if (not mutating or principal is None
@@ -126,6 +169,11 @@ class WaitV2CommandsMixin:
     async def wait_service_drain(self, listener, watermark):
         with principal_context(ExecutionPrincipal.service("waits-listener")):
             return await self.wait_listener_drain(listener, watermark)
+
+    async def wait_service_report_lag(self, listener):
+        with principal_context(ExecutionPrincipal.service("waits-listener")):
+            self._wait_listener_authorize(listener)
+            return await listener.report_lag()
 
     async def wait_service_quarantine_deadline(self, timers, deadline, refusal):
         """Internal service mutation; no public worker quarantine authority."""
@@ -369,6 +417,16 @@ class WaitV2CommandsMixin:
             return None
         if filters is None:
             filters = await self._wait_v2_read_filter(args)
+        if args.get("decision") == "retire":
+            from src.database.tables import continuations
+
+            async with self.db._engine.connect() as conn:
+                wait_id = await conn.scalar(select(continuations.c.wait_id).where(
+                    continuations.c.id == args["continuation_id"],
+                ))
+            if wait_id is None or args.get("wait_id", wait_id) != wait_id:
+                raise WaitError("continuation.stale_generation", "continuation target changed")
+            args["wait_id"] = wait_id
         record = await self._wait_v2_row(args["wait_id"]) if args.get("wait_id") else None
         if args.get("wait_id") and record is None:
             raise WaitError("wait.source_unresolved", "wait not found")
@@ -478,6 +536,7 @@ class WaitV2CommandsMixin:
                     scope = {"project_id": project}
                     params["project_id"] = project
                 else:
+                    # Source re-dispatch shares the project filter without a wait id.
                     scope = await self._wait_v2_authorize_target(params)
             elif name in SERVICE_WAIT_COMMANDS or name == "wait_legacy_bridge":
                 scope = None
@@ -513,6 +572,16 @@ class WaitV2CommandsMixin:
 
     async def _cmd_wait_lift(self, args):
         return await self._wait_v2_command("wait_lift", args)
+
+    async def _cmd_wait_source_redispatch(self, args):
+        from src.waits.listener import LeaseLost, ListenerUnavailable
+
+        try:
+            return await self._wait_v2_command("wait_source_redispatch", args)
+        except TimeoutError:
+            return refusal("wait.unavailable", "source re-dispatch timed out before dispatch")
+        except (LeaseLost, ListenerUnavailable) as exc:
+            return refusal("wait.unavailable", str(exc))
 
     async def _cmd_wait_source_commit(self, args):
         return await self._wait_v2_command("wait_source_commit", args)

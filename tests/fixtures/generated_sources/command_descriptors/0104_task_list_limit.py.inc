@@ -6,8 +6,10 @@ def _task_list_limit_changes():
     )
 
 
-def _before_task_list_limit_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+def _before_task_list_limit_catalogue(catalogue=None):
+    # Compose independent catalogue deltas while preserving their frozen hashes.
+    if catalogue is None:
+        catalogue = _before_wait_source_redispatch_catalogue()
     evidence = _task_list_limit_changes()["transport_definitions"]["list_tasks"]
     [definition] = [row for row in catalogue["explicit"] if row["name"] == "list_tasks"]
     assert definition == evidence["definition"]
@@ -39,10 +41,12 @@ def test_task_list_limit_only_adds_optional_positive_limit():
     assert definition == transport["previous_definition"]
     assert _digest(transport["definition"]) == transport["sha256"]
     assert _digest(transport["previous_definition"]) == transport["previous_sha256"]
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+    catalogue = _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
+    rendered = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
-    previous = json.dumps(_before_task_list_limit_catalogue(), indent=2) + "\n"
+    previous = json.dumps(_before_task_list_limit_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
 
 
