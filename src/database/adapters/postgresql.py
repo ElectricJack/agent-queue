@@ -31,6 +31,8 @@ from src.database.queries.agent_question_queries import AgentQuestionQueriesMixi
 from src.database.queries.api_session_token_queries import ApiSessionTokenQueriesMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
 from src.database.queries.ask_queries import AskQueriesMixin
+from src.database.queries.ask_delivery_queries import AskDeliveryQueriesMixin
+from src.database.queries.ask_input_queries import AskInputQueriesMixin
 from src.database.queries.assignment_route_queries import AssignmentRouteQueryMixin
 from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
@@ -95,12 +97,17 @@ from src.database.queries.transcript_queries import TranscriptQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
+from src.database.queries.wait_source_queries import WaitSourceQueriesMixin
 
 logger = logging.getLogger(__name__)
 
 
 class PostgreSQLDatabaseAdapter(
+    WaitSourceQueriesMixin,
+
     AskQueriesMixin,
+    AskDeliveryQueriesMixin,
+    AskInputQueriesMixin,
     RecordQueryMixin,
     KnowledgeQueryMixin,
     JobQueriesMixin,
