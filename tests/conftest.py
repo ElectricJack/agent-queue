@@ -182,6 +182,39 @@ def _restore_root_logging():
 
 
 @pytest.fixture(autouse=True)
+def _restore_command_handler_provider():
+    """Undo the process-global command handler provider a test installs.
+
+    ``Orchestrator.set_command_handler`` calls ``set_handler_provider``, which
+    points the global ``CONTRACTS`` registry at the live handler's descriptors
+    composed with its plugin registry. Nothing uninstalls it, so a later test
+    in the same worker that expects offline discovery (the packaged command
+    catalogue, the codegen routers) sees that handler's plugin definitions —
+    with runtime ``_plugin`` / ``_category`` keys — and its outcome depends on
+    shard order. On CI, ``test_orchestrator.py`` startup tests leaked into
+    ``test_cli_startup_offline.py`` and ``test_api_client_contract.py``.
+
+    Restore whatever was installed before the test, so a module-scoped
+    provider survives, and only touch the modules once something imported them.
+    """
+    import sys
+
+    def installed():
+        builtin = sys.modules.get("src.commands.contracts.builtin")
+        registry = sys.modules.get("src.commands.contracts.registry")
+        return (builtin, builtin._handler_provider if builtin else None,
+                registry, registry.CONTRACTS._snapshot_provider if registry else None)
+
+    _, saved_handler, _, saved_snapshot = installed()
+    yield
+    builtin, handler, registry, snapshot = installed()
+    if builtin is not None and handler is not saved_handler:
+        builtin._handler_provider = saved_handler
+    if registry is not None and snapshot is not saved_snapshot:
+        registry.CONTRACTS.configure_snapshot_provider(saved_snapshot)
+
+
+@pytest.fixture(autouse=True)
 def _no_provider_login_probes(monkeypatch):
     """Never shell out to ``codex login status`` / ``claude auth status``.
 
