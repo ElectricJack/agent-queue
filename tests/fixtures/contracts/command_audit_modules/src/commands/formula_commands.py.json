@@ -1,0 +1,169 @@
+{
+  "formula_cook": {
+    "argument_reads_diagnostic_only": [
+      "dry_run",
+      "name",
+      "parent_id",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_formula_vars_arg": "sha256:a86b798e1e9cb9f0edf5f2b42a4cfca12d1a8387569006ee31bec1913707340c",
+      "_phases_need_root_refusal": "sha256:d481798f50c5a538259072e7b8e68c4924aed7265363813f73bdbc54e1f7528d"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/formula_commands.py:FormulaCommandsMixin._cmd_formula_cook",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'formula_cook is not available to agent sessions'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'name is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required (no active project set)'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{project_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "vars_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{**parent_error, 'success': False}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "phases_refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refused"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'graph validation failed with {len(errors)} error(s) — nothing was created', 'errors': [e.to_dict() for e in errors], 'warnings': [w.to_dict() for w in warnings]}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': f'hierarchy.{exc.code}', 'error': f'hierarchy.{exc.code}: {exc.detail} — nothing was created'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "report"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7a92554060112dfdf3964c4928af2410022c8e0e2c2df929f33bae7e346af1a0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_formula_commands.py",
+      "tests/test_object_loop_playbook.py",
+      "tests/test_provider_intent.py"
+    ]
+  },
+  "formula_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/formula_commands.py:FormulaCommandsMixin._cmd_formula_list",
+    "resource_gates": [
+      "catalogue_only"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'formulas': [{'name': f.name, 'description': f.description, 'scope': f.scope, 'extends': f.extends, 'vars': _decls_dict(f.vars), 'path': f.rel_path} for f in formulas]}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9d3811d5222eac8f45b1811fba8d37be4bd61fabb780ab0ad2de4abefce5ae26",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_formula_commands.py"
+    ]
+  },
+  "formula_show": {
+    "argument_reads_diagnostic_only": [
+      "as_cooked",
+      "name"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_formula_show_as_cooked": "sha256:eb6eccf4aeeae4df165434bb4d7cb65539f47c22a7d2a95e986ac307f37b96e5",
+      "_formula_vars_arg": "sha256:a86b798e1e9cb9f0edf5f2b42a4cfca12d1a8387569006ee31bec1913707340c"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/formula_commands.py:FormulaCommandsMixin._cmd_formula_show",
+    "resource_gates": [
+      "catalogue_only"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._formula_show_as_cooked(as_cooked)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'name or as_cooked is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "vars_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: not errors",
+        "return": "{'success': not errors, 'name': resolved.leaf.name, 'scope': resolved.leaf.scope, 'path': resolved.leaf.rel_path, 'chain': [f.name for f in resolved.chain], 'chain_sha': resolved.chain_sha, 'vars': {'declared': _decls_dict(merged_var_decls(resolved.chain)), 'effective': resolved.vars}, 'graph': graph.to_dict() if graph is not None else resolved.document, 'errors': [e.to_dict() for e in errors], 'warnings': [w.to_dict() for w in warnings]}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2a71a8ff417001a68997c41c195a0c228a72c732c6707f2af4eb039b00261f5b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_formula_commands.py"
+    ]
+  }
+}

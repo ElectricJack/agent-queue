@@ -95,7 +95,7 @@ import. The table below is what
 | Grant or revoke policy authority | No | Yes, with the grant | Yes |
 | Share a record with another project | No | Yes, with the grant | Yes |
 | Share a **global** record | No | Needs elevation, **no** project pin, and the `knowledge_share` grant | Yes |
-| **Erase** (`knowledge redact`) | No | Yes, with the grant | Yes |
+| **Erase** (`knowledge redact`) | No | No | Yes |
 | Legacy import inventory (`knowledge import`) | No | No | Yes |
 | Task-mapping backfill or outbox replay (`record repair`) | No | No | Yes |
 
@@ -106,16 +106,16 @@ and `knowledge_redact`. Elevation alone is not enough — the principal's policy
 must also allow the operation, so a supervisor profile that accidentally
 carries the command name still cannot decide, verify, grant, share or erase.
 
-The last two rows are stronger than elevation: `knowledge_import` and
-`record repair` both check `PrincipalKind.LOCAL` outright
+The last three rows are stronger than elevation: `knowledge_redact`,
+`knowledge_import` and `record repair` check `PrincipalKind.LOCAL` outright
 ([src/commands/knowledge_commands.py](../../src/commands/knowledge_commands.py),
-`_cmd_knowledge_import` and `_cmd_record_repair`). `record repair` additionally
-refuses to apply unless `knowledge.enabled` is on.
+`_cmd_knowledge_import` and `_cmd_record_repair`, and
+[src/knowledge/redaction.py](../../src/knowledge/redaction.py), `redact`).
+`record repair` additionally refuses to apply unless `knowledge.enabled` is on.
 
-> **Note.** The K05 design describes `knowledge redact` as local-operator only.
-> The shipped authorisation code admits an elevated supervisor holding the
-> grant. Treat the design as the intent and the code as the behaviour: in a
-> rehearsal, prefer the local operator.
+> **Note.** The generic authorization grant does not bypass redaction's
+> local-principal check. An elevated supervisor holding `knowledge_redact`
+> still cannot erase payloads.
 
 Four further boundaries are worth stating because they surprise operators:
 
@@ -199,10 +199,8 @@ from one instant. `aq stop --keep-sessions` preserves agent sessions; plain
 ```bash
 aq stop --keep-sessions
 
-# PostgreSQL. $AQ_DB_URL must be THIS install's database.url from
-# ~/.agent-queue/config.yaml — not agent_queue_e2e, and not one of the worker
-# override variables. See the warning below.
-pg_dump --format=custom --file=/secure/backup/aq-knowledge.dump "$AQ_DB_URL"
+# PostgreSQL: the configured database.url in ~/.agent-queue/config.yaml.
+aq db backup /secure/backup/aq-knowledge.dump
 sha256sum /secure/backup/aq-knowledge.dump | tee /secure/backup/aq-knowledge.dump.sha256
 sha256sum -c /secure/backup/aq-knowledge.dump.sha256
 
@@ -246,15 +244,19 @@ Notes on the archives:
   `pg_restore --list /secure/backup/aq-knowledge.dump | grep knowledge_records`.
 - There is a second, smaller safety net worth knowing about: when the stamped
   schema is behind the checkout's Alembic head, `aq start` dumps the database to
-  `~/.agent-queue/backups/pre-deploy-<UTC>.sql` before it proceeds. That dump is
+  `~/.agent-queue/backups/pre-deploy-<UTC>.dump` before it proceeds. That dump is
   a schema-migration guard, not a knowledge backup — it is only taken when the
-  schema is behind, it is a plain SQL dump rather than a custom-format archive,
+  schema is behind, it uses the same PostgreSQL custom format as `aq db backup`,
   and it never contains the vault. Do not treat it as satisfying this section.
+  `aq db restore <dump>` checks the archived schema, requires ended agent sessions
+  and explicit `--accept-data-loss <dump-timestamp>`, and takes a recovery backup
+  before restoring the configured database.
 
 ### What this backup deliberately does not do
 
-There is no `aq db backup`, and adding one is not this runbook's business. The
-backups are access-controlled operator artifacts; the domain does not manage
+`aq db backup` captures the database, including knowledge history, but does not
+capture the vault or its artifact files. The backups are access-controlled
+operator artifacts; the domain does not manage
 their retention, and it does not expose a restore or import bypass either
 ([knowledge protection (K05)](../specs/design/knowledge-protection.md)).
 
