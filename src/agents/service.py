@@ -6,10 +6,13 @@ from types import SimpleNamespace
 
 from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
 from src.agents.liveness import LIVE_SESSION_STATES, is_live, session_last_activity
+from src.agents.sessions import session_role
 from src.models import AgentState, TaskStatus
 
 _ACTIVE_SESSIONS = set(LIVE_SESSION_STATES)
-_ACTIVE_TASKS = {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+_ACTIVE_TASKS = {
+    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+}
 
 
 def configured_settings(agent) -> dict:
@@ -23,14 +26,20 @@ def configured_settings(agent) -> dict:
     }
 
 
-async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> list[dict]:
-    """Return durable identities; a project filter means current assignment."""
-    from src.agents.subagents import subagent_counts
+async def list_agent_flock(
+    orchestrator, *, project_id: str | None = None, agents=None, sessions=None, tasks=None,
+) -> list[dict]:
+    """Return durable agents and live named supervisors in their current project."""
+    from src.agents.subagents import build_subagent_index, subagent_counts
 
     db = orchestrator.db
-    agents = await db.list_agents()
-    sessions = await db.list_sessions()
-    tasks = await db.list_tasks()
+    agents = await db.list_agents() if agents is None else agents
+    sessions = await db.list_flock_sessions() if sessions is None else sessions
+    # Every use below (current session, current task, sub-agent fold) treats
+    # a task outside _ACTIVE_TASKS exactly like a missing one, so only those
+    # rows are read -- hydrating the whole table (10k rows) was ~90% of this
+    # read's latency and one long event-loop stall (wise-ember.16).
+    tasks = await db.list_tasks(statuses=_ACTIVE_TASKS) if tasks is None else tasks
     task_by_id = {task.id: task for task in tasks}
     questions_by_session: dict[str, list[dict]] = {}
     for question in await db.list_agent_questions(project_id=project_id, pending_only=True):
@@ -47,17 +56,29 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
     lease_ttl = getattr(getattr(config, "sessions", None), "lease_ttl_seconds", 0) or 0
     registry = getattr(orchestrator, "harness_registry", None)
     builder = getattr(orchestrator, "session_spec_builder", None)
+    # Each agent's candidate sessions come from these two maps rather than a
+    # scan of every session per agent (agents x sessions was ~350k steps per
+    # read). Positions keep the candidates in list order, which the stable
+    # sort below relies on to break ties exactly as before.
+    by_agent: dict[str, list[tuple[int, object]]] = {}
+    unlinked_by_task: dict[str, list[tuple[int, object]]] = {}
+    for position, session in enumerate(sessions):
+        if session.agent_id:
+            by_agent.setdefault(session.agent_id, []).append((position, session))
+        elif session.task_id:
+            unlinked_by_task.setdefault(session.task_id, []).append((position, session))
+    subagent_index = await build_subagent_index(
+        db, sessions, tasks, agents={agent.id: agent for agent in agents},
+    )
     rows = []
     for agent in agents:
-        owned = [
-            session for session in sessions
-            if session.agent_id == agent.id or (
-                not session.agent_id and agent.current_task_id
-                and session.task_id == agent.current_task_id
-            )
-        ]
+        candidates = list(by_agent.get(agent.id, ()))
+        if agent.current_task_id:
+            candidates += unlinked_by_task.get(agent.current_task_id, ())
+            candidates.sort(key=lambda entry: entry[0])
+        owned = [session for _, session in candidates]
 
-        def is_current_session(candidate) -> bool:
+        def is_current_session(candidate, agent=agent) -> bool:
             if candidate.state not in _ACTIVE_SESSIONS:
                 return False
             if not candidate.task_id:
@@ -108,11 +129,12 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
         if harness is None:
             harness = SimpleNamespace(id=harness_id or "", command=harness_id or "", provider="")
         settings = {"llm_provider": None, "model": None, "intelligence_class": None}
-        if effective is not None and builder is not None:
+        if not live and effective is not None and builder is not None:
             settings = resolve_launch_settings(
                 effective, harness, builder, task.intelligence_class if task else None,
+                for_display=True,
             )
-        elif effective is not None:
+        elif not live and effective is not None:
             settings["model"] = getattr(effective, "model", None) or None
             settings["intelligence_class"] = getattr(effective, "default_class", None) or None
         if live:
@@ -155,7 +177,8 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
                     for key in ("id", "question", "state", "requires_human", "created_at")
                 }
         count = await subagent_counts(
-            db, agent.id, sessions, tasks, native_by_session=native_by_session
+            db, agent.id, sessions, tasks,
+            native_by_session=native_by_session, index=subagent_index,
         )
         last_activity = session_last_activity(live)
         state = agent.state.value.lower()
@@ -185,4 +208,43 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
             "session_tokens_used": agent.session_tokens_used,
             **count,
         })
+    # Named supervisors are execution identities even when no agent owns them.
+    # Keep one selectable row per live execution and avoid duplicating a linked row.
+    represented = {row["session_id"] for row in rows}
+    for session in sessions:
+        if (session.id in represented or session.lifecycle != "named"
+                or session.state not in _ACTIVE_SESSIONS
+                or session.project_id is None
+                or session_role(session) != "supervisor"
+                or (project_id is not None and session.project_id != project_id)):
+            continue
+        name = f"Supervisor · {session.project_id}"
+        last_activity = session_last_activity(session)
+        count = await subagent_counts(
+            db, f"session:{session.id}", sessions, tasks, owned_sessions=[session],
+            native_by_session=native_by_session, index=subagent_index,
+        )
+        rows.append({
+            "id": f"session:{session.id}", "name": name, "profile_id": session.profile_id,
+            "role": "supervisor", "enabled": True, "state": session.state,
+            "provider": session.llm_provider, "harness": session.harness,
+            "model": session.model, "intelligence_class": session.intelligence_class,
+            "project_id": session.project_id, "current_project_id": session.project_id,
+            "session_id": session.id, "session_state": session.state,
+            "session_provider": session.provider, "session_backed": True,
+            "settings": {"name": name, "profile_id": session.profile_id},
+            "last_activity": last_activity,
+            "live": is_live(last_activity, now=now, ttl=lease_ttl),
+            **count,
+        })
+    token_store = getattr(orchestrator, "token_store", None)
+    for row in rows:
+        if row["role"] == "supervisor":
+            row["session_address"] = f"supervisor-{row['project_id'] or 'global'}"
+            stamp = row["last_activity"]
+            row["idle_seconds"] = max(0, now - stamp) if stamp is not None else None
+            row["auth_health"] = (
+                token_store.auth_health(row["session_id"])
+                if token_store is not None and row["session_id"] else {"state": "unknown"}
+            )
     return sorted(rows, key=lambda row: (row["role"] != "supervisor", row["name"].casefold(), row["id"]))
