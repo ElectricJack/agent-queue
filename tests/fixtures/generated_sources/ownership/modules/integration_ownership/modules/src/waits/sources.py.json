@@ -1,0 +1,22 @@
+{
+  "exclusions": {
+    "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source evidence bridge for batch transitions. It writes only the universal wait outbox; integration policy and authoritative batch state remain in src/integration."
+  },
+  "generic_dependencies": {
+    "src/waits/sources.py::_SOURCE_SEQUENCE_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::execute_batch_mutation": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership.",
+    "src/waits/sources.py::execute_workspace_release": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::import from src.waits.resource_sources import resource_invalidation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::import from src.waits.source_sql import _SEQUENCE_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::insert_message_with_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_dependency_change": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_source_change": "Generic dependency observation fanout on upstream evidence changes; integration callers remain charged independently.",
+    "src/waits/sources.py::record_pool_observations": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::record_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_task_transition": "Generic task/dependency source evidence shared by all wait consumers; not integration policy."
+  }
+}
