@@ -89,6 +89,8 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/database/queries/claim_queries.py` | Frontier fallback and attempt-progress inference from code/noop receipt | admission; policy_docs for attempt accounting |
 | `src/database/queries/integration_train_queries.py` | Root receipt predicate, pending requests and delivered-source lookup | dispatch; admission |
 | `src/database/queries/integration_delivery_queries.py` | Promotion finalizer receipt read/insert; public receipt listing | close_merge; policy_docs |
+| `src/database/queries/blocked_state.py` | Blocked-state projection reads landed root/parent receipts | admission |
+| `src/task_graph/readiness.py` | Readiness reads delivery receipts for sibling/parent landing | admission |
 | `src/database/base.py` | Receipt-list query protocol | policy_docs |
 | `src/commands/surface_commands.py` | Task delivery display via receipt-list API | dashboard; policy_docs |
 | `src/commands/integration_commands.py` | Compatibility integration delivery/status commands | cutover; policy_docs |
@@ -117,25 +119,101 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/integration/release.py` | Terminal batch release proof from receipt ordinals/reservations | dispatch; policy_docs |
 | `src/integration/cutover.py` | Receipt inventory, target retagging writer and trigger controls | cutover |
 | `src/integration/task_deletion.py` | Receipt snapshot for historical deletion audit | policy_docs; retain audit without delivery authority |
+| `src/integration/truth_reconciler.py` | Idempotent historical receipt after fresh Git verification and retained immutable witness; records first observation, never receipt-based delivery authority | watchdog; policy_docs; retain audit without delivery authority |
 | `src/integration/legacy_backfill.py` | Historical delivery attestation/relanding and receipt-based source locator | cutover; policy_docs |
 | `src/integration/shadow.py` | Indirect selected_receipt_id comparison against Git | cutover; policy_docs |
 | `src/integration/promotion_contracts.py` | Promotion receipt IDs in historical result contract | policy_docs; retain recovery identity if needed |
 | `src/database/tables.py` | Receipt schema, foreign keys, receipt primitive enum | policy_docs; separately gated post-rollback migration |
 | `src/database/legacy_sqlite_import.py` | Offline historical import table inventory | policy_docs; historical import is not runtime authority |
 
-Actual SQL writes are `integration_delivery_queries._finalize_integration_promotion_on`,
-`records.RecordsPrimitives.record_receipt_on`, `records.ParentEpisodeRecords.record_disposition`,
-`child_delivery.ChildDelivery._reissue_receipt`, and `cutover` receipt retagging.
-The records class names are described by their methods; future retirement must
-remove the write statements and their command/primitive routes, not just readers.
-S1 does not invoke or change these writes. Historical tables/foreign keys remain
-until rollback retention and separately approved destructive migration permit deletion.
+### Admission consumer disposition (S4)
+
+`AdmissionView` freezes eligible IDs, reasons and hierarchy evidence once per
+request. Scheduler, pool demand, task explain, dependency readiness and verified
+wait admission project that view. Claims gather fresh evidence before locks and
+recheck graph, route, completion generation, repository, target and project policy
+under their existing claim fences. Configured pool bounds and warm floors remain
+capacity policy, separately represented from eligible task demand.
+
+The admission-owned receipt fallbacks in `hierarchy_queries`, `claim_queries`,
+`blocked_state`, `task_graph/readiness`, `hierarchy`, `removal_guard`,
+`source_repairs`, `drain_owners` and `doctor/stall_checks` are removed. SQL blocked
+state projects source completion for `delivery-of`; the view separately proves
+current default-target containment. Unknown or unloaded evidence, including a
+missing truthful observer, permits worker preparation without asserting
+containment or restoring receipt eligibility. The agent merges prerequisite
+state from Git; proven negative ancestry may withhold work. Publication and
+destructive cleanup retain their current-proof requirements. Cleanup materializes
+historical resource identities without treating receipt presence as delivery and
+revalidates current default-target proof before destructive legacy cleanup.
+
+Shared inventory entries remain explicit transition work: `integration_train_queries`
+and `root_pull_requests` still contain legacy root selection/diagnostic receipt
+reads owned jointly with dispatch; `observe` and `parent_source` retain the old
+parent episode/recovery protocol owned with close_merge/policy_docs;
+`epic_delivery` retains the shadow display projection owned with dashboard. These
+paths are not declared inactive or retired by S4. Their owning stages must remove
+the remaining authority before the final policy_docs retirement ratchet permits
+activation. Receipt IDs retained on cleanup items and failed delivery diagnostics
+are historical operation identity, never positive eligibility proof.
+
+Unused legacy entry points are retired rather than carried against the transition
+size allowance: `RepairService.return_green_delegate_branch` (the standalone
+wrapper), `RepairService.record_batch_rebuild_conflict_on`, and the unreferenced
+`parent_intents` continuation module. Current delegate close still calls
+`return_green_delegate_branch_on` inside its transaction. Git-first batch conflict
+repair follows `batch-conflict-repair-starts.md`; subject visits own continuations.
+
+### Receipt writer retirement (S4 policy_docs)
+
+Receipts are read-only historical audit (spec §3.3); nothing active writes one as
+delivery authority. The S1 writers are retired: the promotion finalizer
+`finalize_integration_promotion` and its `DatabaseBackend` stub,
+`RecordsPrimitives.record_receipt[_on]` with its `RECORD_RECEIPT` binding (the
+primitive is unbound and invokes as `primitive_unavailable`; `RecordsPrimitives`
+itself was later removed as test-only), the
+`ChildDelivery._reissue_receipt` path (a receipt predating the current completion
+now blocks until Git-first delivery proves containment), and the
+settled-claim receipt fallback in `claim_queries`.
+
+Three write statements remain, none granting delivery:
+`truth_reconciler.GitTruthReconciler._repair` (audit after fresh Git
+verification, watchdog), `cutover._Activation.write_on` (operator target retag,
+cutover) and `records.ParentEpisodeRecords.record_disposition` (failed/withdrawn
+lifecycle audit, close_merge). `task_deletion` and `legacy_sqlite_import` copy
+rows through generic helpers. `tests/test_delivery_receipt_retirement.py` pins
+these writers and every module that still names the table with its owner;
+both sets only shrink, and admission consumers read none. Historical
+tables/foreign keys remain until rollback retention and a separately approved
+destructive migration permit deletion.
+
+The later `azure-ridge-72` adapter retirement removed the unused
+`parent_subjects` receipt query with its parent observer. Its baseline inventory
+entry above is historical; the receipt-reader ratchet no longer includes that
+module. Parent episode records and historical recovery remain retained.
 
 `main_promotion.py`, named in the approved spec's baseline inventory, is absent in
 this checkout. Promotion runtime uses `promotion_steps.py` and train publication;
 there is no file to retire under the old name. `parent_adapters.py` has no receipt
 read/write at this base. Unrelated knowledge request receipts, playbook step receipts
 and CI attestations are separate contracts and are not delivery proof.
+
+### §16 supersession closure (S4 policy_docs)
+
+- Receipt authority: retired as above and ratcheted; §11.3 never restores it.
+- Timed root sealing: `train.cadence_seconds` and `train.settling_cap_seconds`
+  are deprecated. They parse so stored `policy_snapshot` values validate, and
+  dispatch ignores them. The doctor no-progress alert is the only reader of
+  `settling_cap_seconds`, and treats it as a threshold. Shipped instructions that
+  promise a quiet-period seal fail `tests/test_factory_policy_instructions.py`.
+- Table ratchet: the cap of 45 holds. The never-written
+  `integration_legacy_gate_applicability` is retired (revision `a00000000119`
+  drops it only while it is empty), and the cap was not raised. The integration
+  line cap is restored by its own owner task; this stage does not raise it.
+- Worker scope: synced worker templates grant only `integration_continue_close`
+  and `integration_batch_fix`. Both are session-scoped in `src/api/scope.py`.
+- Deferred: destroying historical tables needs its own approved migration. Files
+  missing from this checkout are not re-created.
 
 ## Equivalent-proof and retained-source consumers
 

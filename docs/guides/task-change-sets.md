@@ -3,7 +3,7 @@
 Supervisors stage any change involving multiple tasks as one proposal. This
 prevents a scheduler tick from claiming a newly created task before its blockers
 have been added. Nothing in a proposal is live until the human decision and
-`task_batch_commit` succeed; creates, edits, dependencies, controls and comments
+its source application succeed; creates, edits, dependencies, controls and comments
 then become visible together.
 
 Preview a YAML or JSON file, then stage the same file:
@@ -23,7 +23,7 @@ tasks:
   - tempId: prerequisite
     title: Implement shared schema
     description: Add the schema before either API starts.
-    intelligence_class: high
+    intelligence_class: standard-high
     parent_id: existing-container
 edits:
   - task_id: existing-api
@@ -49,7 +49,9 @@ comments:
 `title` and `description` (which may be empty). Edges, comments and `parent_id`
 can reference temporary ids or existing task ids in the same project. Edits
 require an existing `task_id` and accept `title`, `description`, `priority`,
-`intelligence_class` and `task_type` hints, `parent_id`, and a lifecycle `action`.
+`intelligence_class` and `task_type` hints, `parent_id`, and a lifecycle `action`
+or an allowed `status` transition (not both). Direct execution, suspended-state
+and completion status writes are refused; use the owning lifecycle protocol.
 Use `parent_id: null` to detach to the root. The action can be `pause`, `resume`,
 `block` or `archive`; `reason` documents an archive. Archiving requires a terminal
 subtree, includes descendants, and retains existing integration and live-session
@@ -64,9 +66,14 @@ containers; `parent-child` and valid `waits-for` membership keep their existing
 semantics. Routing profiles are chosen by the router; a proposal may carry hints
 but cannot choose a profile.
 
-The existing proposal preview presents the diff and comments. The pipeline's
-human gate must await the exact proposal id and resolve `approve` or `approved`.
-Then the pipeline commits it, or an authorized supervisor runs:
+The proposal preview presents the diff and comments. Approve and Discard first
+prepare a decision packet for the current proposal digest, project and gate;
+the confirmation applies that exact packet. Approval resolves the bound gate
+and materializes the proposal in one transaction. A materialization conflict
+rolls back the approval too. Decline discards the proposal and cancels its gate,
+retaining any approval hold without emitting an approval release.
+
+An authorized supervisor can still replay an already approved materialization:
 
 ```bash
 aq task batch-commit --proposal-id prop-abc123
@@ -92,3 +99,82 @@ transaction failure stays ready with its approval and rolls back all changes.
 Replaying a successful commit returns the original created ids and omissions.
 The proposal read endpoint retains its receipt, and `task.change_set_committed`
 records the actor, source, reviewed diff and receipt in the same transaction.
+
+Human command callers use `ask_prepare_decision` with the ask's
+`decision_generation`, `source_fingerprint` and `feedback_version`, then
+`ask_decide` with the returned preview id and a stable idempotency key.
+`gate_show` exposes the bound ask. An unversioned human `gate_resolve` refuses
+with the ask link instead of interpreting an actor label or arbitrary reply.
+Generic human gates additionally require producer-owned `approval_hold_v1`
+semantics and complete context. Missing context leaves an owned request with
+no decision controls. Decline keeps waiters blocked; `gate_reopen` requires the
+current version and creates a new decision generation. Technical and routing
+gates retain their specialized mechanisms.
+
+
+## Scoped edits to held ingestion batches
+
+The assigned live fidelity reviewer, or a project supervisor, can update a held
+batch with `task_batch_update`. Supply `proposal_id`, `expected_revision` and
+`operations` instead of the ordinary proposal `payload`. Every task reference
+must name an active batch member (its stable member key or task id), or a new
+leaf's `tempId` in the same update. No member may have an active claim.
+
+```json
+{
+  "proposal_id": "prop-example",
+  "expected_revision": 1,
+  "operations": [
+    {"kind": "rewrite", "task_id": "api", "changes": {"acceptance": ["Verify the approved API contract"]}},
+    {"kind": "reparent", "task_id": "api", "parent_id": "core"},
+    {"kind": "rewire", "edges": [{"from": "docs", "to": "api", "reason": "Documents the API output"}]}
+  ]
+}
+```
+
+Supported kinds are `rewrite` (`changes`), `reparent` (`parent_id`), `rewire`
+(`edges` / `remove_edges`), `add_leaf` (`task`), `split` (`task_id`, `tasks`,
+`reason`), `combine` (`task_ids`, `task`, `reason`), `move_to_root`
+(`delivery_targets`), and `retire` (`task_id`, `reason`, optional
+`replacement_task_id`, `satisfied_by`, `rewire`). New leaves carry the same
+source mapping, outcome, acceptance and constraints as ingestion tasks and
+require a structural parent or explicit operational placement. Retirement
+preserves history and rewires typed dependencies through the obsolete lifecycle;
+it records no successful implementation. References outside the batch and
+profile/provider/model pins are refused.
+
+The final graph and automatic checks run in the same transaction as every write.
+A hard finding rolls everything back with `validation_failed`. Structural edits
+bump the revision, recompute the canonical digest and supersede earlier review
+receipts. Title, priority, tags and whitespace-only description edits preserve
+the revision and usable receipts. The response includes the current revision,
+digest, membership and before/after diff; `check_results.last_diff` retains that
+diff. An applied scope answer permits editing a `needs_scope` batch again;
+the update keeps the graph held for review and release.
+
+## Recovery and legacy proposals
+
+`aq doctor --check ingestion.held_batches` inventories held batches with their
+revision, reviewer identity, retry budget and age. It identifies missing or
+terminal reviewers, stale passing receipts and uncommitted legacy `spec:`
+proposals. `batch_reconcile` repairs at most twenty eligible wakeups per pass
+after a sixty-second retry interval. Domain rows determine recovery; delivered
+events alone do not prove that dispatch or release completed. Reconciliation
+never clears a hold, answers a scope question or resets exhausted dispatches.
+
+`aq doctor --check ingestion.legacy_proposals --fix` can adopt a ready,
+uncommitted legacy proposal into held revision 1. Adoption revalidates the
+graph, retains the original proposal payload and source as audit evidence,
+and reserves normal fidelity-review dispatch in the same transaction. A
+matching immutable approval packet is required; a `spec:` path or mutable
+frontmatter cannot authorize it. Unresolved or declined human gates remain
+gated. Use `--leave-gated` with doctor to keep all legacy proposals on their
+existing approval path. A source without an approval decision first needs an
+explicit operator review or standalone snapshot; `spec_ingest_legacy_adopt`
+then accepts its `proposal_id`, `decision_id` and optional `packet_sha256`.
+Adoption and successful release both return their existing receipts on replay.
+
+Downgrade refuses while any batch is held, reviewing or awaiting scope, before
+dropping any schema objects. Release needs the current passing fidelity receipt.
+Retirement must use the evidence-preserving obsolete lifecycle and resolve
+dependencies; changing task status or clearing `held_batch_id` is not retirement.
