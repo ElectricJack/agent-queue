@@ -20,20 +20,29 @@ const harnesses = [
 ];
 
 export default function AgentDefinitionFields({
-  value, onChange, allowSupervisor = false,
+  value, onChange, allowSupervisor = false, allowPoolProfiles = true,
 }: {
   value: DefinitionForm;
   allowSupervisor?: boolean;
+  /**
+   * Offer ``lifecycle: pool`` profiles in the profile picker. False on the
+   * create-an-agent form, where such a profile would silently produce pool
+   * capacity instead of the durable worker the operator asked for.
+   */
+  allowPoolProfiles?: boolean;
   onChange: (next: DefinitionForm) => void;
 }) {
   const id = useId();
   const { data: profiles = [] } = useProfiles();
   const { data: classes } = useAgentIntelligenceClasses();
-  // pool_status is the only surface that reports a profile's lifecycle;
-  // ProfileSummary does not carry it.
-  const poolIds = poolProfileIds(usePoolStatus().data ?? []);
+  const poolIds = poolProfileIds(usePoolStatus().data ?? [], profiles);
   const lifecycle = value.profile_id ? (poolIds.has(value.profile_id) ? "pool" : "task") : null;
   const availableProfiles = profiles.filter((profile) => allowSupervisor || profile.id !== "supervisor");
+  // A pool profile stays visible but unselectable when pools are disallowed:
+  // hiding it entirely leaves an operator hunting for a profile they know
+  // exists, with nothing to say why it is not on offer here.
+  const ineligible = (profile: { id: string }) =>
+    !allowPoolProfiles && poolIds.has(profile.id);
   const set = <K extends keyof DefinitionForm>(key: K, next: DefinitionForm[K]) => onChange({ ...value, [key]: next });
   return (
     <div className="grid gap-4 sm:grid-cols-2">
@@ -48,7 +57,11 @@ export default function AgentDefinitionFields({
           {value.profile_id && (allowSupervisor || value.profile_id !== "supervisor") && !availableProfiles.some((p) => p.id === value.profile_id) && (
             <option value={value.profile_id}>{value.profile_id}</option>
           )}
-          {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
+          {availableProfiles.map((profile) => (
+            <option key={profile.id} value={profile.id} disabled={ineligible(profile)}>
+              {(profile.name || profile.id) + (ineligible(profile) ? " — pool profile" : "")}
+            </option>
+          ))}
         </select>
         {lifecycle && (
           <span className="mt-1 block text-[10px] text-gray-500">

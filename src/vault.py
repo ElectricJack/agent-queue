@@ -49,6 +49,10 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # recorded the ``ensure_task`` creation-point refusal (task
         # solid-harbor-68).  Rules unchanged; prose only.
         "21ff23549f6df0b908aecb73e54bd516610fd662eddf3a89760060a1b8fd2c5f",
+        # Reviews retired (cf0002b9c), but the commit rule had no approval
+        # filter and every failure reached a ``completed`` terminal
+        # (policy-simplification task agile-glacier.2).
+        "5ade5c846886562f31e6342420ce60696f9c1c7aeb9fa18b10e99b7f08eed31b",
     }
 )
 
@@ -283,7 +287,7 @@ system prompt as-is.
 ## Config
 ```json
 {
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "permission_mode": "auto"
 }
 ```
@@ -743,7 +747,7 @@ a starter template — update it as you discover project-specific patterns.
   the combined result
 
 ## Database and State Testing
-- Use temporary databases (in-memory SQLite, temp-dir-backed files)
+- Use temporary databases (a scratch PostgreSQL database per test)
   for isolation — never test against shared or production data
 - Always initialize and tear down the database in fixtures:
   `await db.initialize()` / `yield db` / `await db.close()`
@@ -1003,7 +1007,7 @@ broad rewrites unless the task explicitly calls for refactoring.
 ## Config
 ```json
 {
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "permission_mode": "auto"
 }
 ```
@@ -1142,7 +1146,7 @@ to Opus only when the work genuinely requires deeper reasoning.
 ## Config
 ```json
 {
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "permission_mode": "auto"
 }
 ```
@@ -1360,9 +1364,8 @@ def ensure_vault_layout(data_dir: str) -> None:
     packs) into ``vault/templates/`` if they don't already exist.  See
     :func:`ensure_default_templates` for details.
 
-    Installs default system playbooks (``task-outcome.md``, etc.) into
-    ``vault/system/playbooks/`` if they don't already exist.  See
-    :func:`ensure_default_playbooks` for details.
+    On first installation only, installs the explicit minimal system playbooks.
+    Subsequent startups never restore deleted playbooks or refresh their sources.
 
     The supervisor's own ``profile.md`` (roadmap §4.2.3) is written to
     ``vault/agent-types/supervisor/profile.md`` if it doesn't already exist.
@@ -1371,15 +1374,17 @@ def ensure_vault_layout(data_dir: str) -> None:
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
     """
+    from src.playbooks.required import install_initial_playbooks
+
+    install_initial_playbooks(data_dir)
     for subdir in _STATIC_DIRS:
         path = os.path.join(data_dir, subdir)
         os.makedirs(path, exist_ok=True)
 
     ensure_default_templates(data_dir)
     ensure_default_harnesses(data_dir)
-    ensure_default_playbooks(data_dir)
+    ensure_default_formulas(data_dir)
     ensure_default_intelligence_classes(data_dir)
-    ensure_default_agent_type_playbooks(data_dir)
     # Ship the supervisor/planner/reviewer profiles into vault before
     # legacy per-profile writers run, so a fresh install boots with the
     # spec §4/§9 profiles the SessionLens and planner flow expect.
@@ -1455,6 +1460,11 @@ def ensure_default_templates(data_dir: str) -> dict:
     _write_if_missing("profile-template.md", PROFILE_TEMPLATE)
     _write_if_missing("playbook-template.md", PLAYBOOK_TEMPLATE)
 
+    from src.task_templates import SHIPPED_TASK_TEMPLATES
+
+    for template in sorted(SHIPPED_TASK_TEMPLATES.glob("*.md")):
+        _write_if_missing(os.path.join("tasks", template.name), template.read_text(encoding="utf-8"))
+
     # Starter knowledge packs (profiles spec §4)
     for agent_type, files in _STARTER_KNOWLEDGE.items():
         for filename, content in files.items():
@@ -1471,27 +1481,40 @@ def ensure_default_templates(data_dir: str) -> dict:
     return result
 
 
+_RETIRED_PLAYBOOK_KINDS = frozenset({"assignment-routing"})
+
+
+def _retired_playbook_kind(path: str) -> bool:
+    """True when the file's frontmatter declares a playbook kind AQ no longer compiles."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    if not head.startswith("---"):
+        return False
+    for line in head.split("\n")[1:]:
+        if line.strip() == "---":
+            break
+        key, _sep, value = line.partition(":")
+        if key.strip() == "kind":
+            return value.strip().strip("\"'") in _RETIRED_PLAYBOOK_KINDS
+    return False
+
+
 def ensure_default_playbooks(data_dir: str) -> dict:
     """Install default playbook files into ``vault/system/playbooks/`` if absent.
 
-    Copies bundled playbook markdown files from ``src/prompts/default_playbooks/``
-    into the vault's system playbook directory.  These playbooks are compiled at
-    first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
+    Legacy explicit seeding helper; startup uses ``install_initial_playbooks``.
+    The default directory supplies the inventory, but Markdown is copied from
+    the reviewed bundle so a second packaged source cannot reinstall stale text.
 
-    Default playbooks (playbooks spec §12):
-
-    - ``task-outcome.md`` — consolidates post-action reflection, spec-drift
-      detection, and error-recovery monitoring into a single playbook triggered
-      on ``task.completed`` and ``task.failed``.
-    - ``system-health-check.md`` — checks for stuck tasks, blocked tasks with
-      no resolution path, and unresponsive agents every 30 minutes.
-      Triggered on ``timer.30m``.
-    - ``codebase-inspector.md`` — periodically inspects a random section of the
-      codebase for quality issues, security risks, and documentation gaps.
-      Triggered on ``timer.4h``.
-    - ``dependency-audit.md`` — runs dependency vulnerability checks
-      (pip-audit + check-outdated-deps) and creates tasks for critical issues.
-      Triggered on ``timer.24h``.
+    The bundled set includes the default pipeline and assignment policies,
+    supervisor failure triage, provider failover, and the provider-usage probe.
+    Retired playbooks are deliberately absent, so a
+    restart cannot reseed them after their catalog entry is deleted. The
+    directory is discovered mechanically so adding a reviewed source does not
+    require a second production inventory.
 
     The operation is **idempotent**: existing files in the vault are never
     overwritten, except for a byte-for-byte known legacy ``default-pipeline``
@@ -1519,7 +1542,20 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     for filename in sorted(os.listdir(defaults_dir)):
         if not filename.endswith(".md"):
             continue
-        src_path = os.path.join(defaults_dir, filename)
+        if filename in {
+            "blocked-task-escalation.md", "supervisor-digest.md", "supervisor-hourly-report.md",
+        }:
+            continue
+        src_path = os.path.join(
+            os.path.dirname(__file__),
+            "prompts",
+            "reviewed_playbooks",
+            filename[:-3],
+            "source.md",
+        )
+        if not os.path.isfile(src_path):
+            logger.warning("Default playbook has no reviewed source, skipping: %s", filename)
+            continue
         dst_path = os.path.join(playbooks_dir, filename)
 
         if os.path.exists(dst_path):
@@ -1535,6 +1571,20 @@ def ensure_default_playbooks(data_dir: str) -> dict:
                         filename,
                     )
                     continue
+            if _retired_playbook_kind(dst_path):
+                # ``kind: assignment-routing`` has no compiler any more
+                # (assignment routing is an authored pipeline since
+                # 2026-09-06), so a vault copy of that shape can never run.
+                # Keep the operator's bytes beside it and ship the current
+                # source; a customised policy belongs in a project copy.
+                shutil.copy2(dst_path, dst_path + ".bak")
+                shutil.copy2(src_path, dst_path)
+                result["updated"].append(filename)
+                logger.info(
+                    "Replaced default playbook of a retired kind: %s (backup at %s.bak)",
+                    filename, filename,
+                )
+                continue
             result["skipped"].append(filename)
             logger.debug("Default playbook already exists, skipping: %s", filename)
             continue
@@ -1554,10 +1604,28 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     return result
 
 
+def ensure_default_formulas(data_dir: str) -> dict:
+    """Seed packaged graph recipes without overwriting operator edits."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent / "prompts" / "formulas"
+    destination = Path(data_dir) / "vault" / "formulas"
+    destination.mkdir(parents=True, exist_ok=True)
+    result = {"created": [], "skipped": []}
+    for path in sorted(source.glob("*.md")):
+        target = destination / path.name
+        if target.exists():
+            result["skipped"].append(path.name)
+        else:
+            shutil.copy2(path, target)
+            result["created"].append(path.name)
+    return result
+
+
 def ensure_default_intelligence_classes(data_dir: str) -> dict:
     """Install bundled intelligence classes into ``vault/intelligence-classes/``.
 
-    Idempotent — an existing file is never overwritten.
+    Idempotent — an existing or retired file is never overwritten.
     """
     defaults_dir = os.path.join(
         os.path.dirname(__file__), "prompts", "default_intelligence_classes"
@@ -1573,7 +1641,7 @@ def ensure_default_intelligence_classes(data_dir: str) -> dict:
         if not filename.endswith(".md"):
             continue
         dst = os.path.join(dst_root, filename)
-        if os.path.exists(dst):
+        if os.path.exists(dst) or os.path.exists(dst + ".retired"):
             result["skipped"].append(filename)
             continue
         shutil.copy2(os.path.join(defaults_dir, filename), dst)
@@ -1639,6 +1707,15 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
     never overwritten. Editing a shipped skill (in any of the four
     locations) survives daemon restarts. To pick the shipped version
     back up in one place, delete that copy and restart.
+
+    The cost of that rule is silent drift the other way: once a shipped
+    skill is *corrected* in-tree, every install that already has the old
+    file keeps handing agents stale guidance. ``aq doctor --check
+    skills.installed_drift`` (:mod:`src.doctor.skill_checks`) reports it,
+    and ``--fix`` backs each drifted copy up as ``SKILL.md.bak`` beside
+    itself before re-copying the shipped version. An agent inside a task
+    worktree cannot do this — the installed copies live outside the
+    workspace — so a skill fix ships here and the operator runs the check.
 
     Args:
         data_dir: Ignored — skills ship into per-user harness dirs so

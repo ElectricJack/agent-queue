@@ -21,10 +21,15 @@ class ProfileSummary:
         harness (None | str | Unset):
         default_class (str | Unset):  Default: ''.
         codex_full_auto (bool | Unset):  Default: False.
+        codex_service_tier (None | str | Unset):
         claude_dangerously_skip_permissions (bool | Unset):  Default: False.
         allowed_tools (list[str] | Unset):
         mcp_servers (list[str] | Unset):
         has_system_prompt (bool | Unset):  Default: False.
+        lifecycle (str | Unset):  Default: 'task'.
+        min_active (int | None | Unset):
+        max_active (int | None | Unset):
+        min_per_project (int | None | Unset):
     """
 
     id: str
@@ -33,10 +38,15 @@ class ProfileSummary:
     harness: None | str | Unset = UNSET
     default_class: str | Unset = ""
     codex_full_auto: bool | Unset = False
+    codex_service_tier: None | str | Unset = UNSET
     claude_dangerously_skip_permissions: bool | Unset = False
     allowed_tools: list[str] | Unset = UNSET
     mcp_servers: list[str] | Unset = UNSET
     has_system_prompt: bool | Unset = False
+    lifecycle: str | Unset = "task"
+    min_active: int | None | Unset = UNSET
+    max_active: int | None | Unset = UNSET
+    min_per_project: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +66,12 @@ class ProfileSummary:
 
         codex_full_auto = self.codex_full_auto
 
+        codex_service_tier: None | str | Unset
+        if isinstance(self.codex_service_tier, Unset):
+            codex_service_tier = UNSET
+        else:
+            codex_service_tier = self.codex_service_tier
+
         claude_dangerously_skip_permissions = self.claude_dangerously_skip_permissions
 
         allowed_tools: list[str] | Unset = UNSET
@@ -67,6 +83,26 @@ class ProfileSummary:
             mcp_servers = self.mcp_servers
 
         has_system_prompt = self.has_system_prompt
+
+        lifecycle = self.lifecycle
+
+        min_active: int | None | Unset
+        if isinstance(self.min_active, Unset):
+            min_active = UNSET
+        else:
+            min_active = self.min_active
+
+        max_active: int | None | Unset
+        if isinstance(self.max_active, Unset):
+            max_active = UNSET
+        else:
+            max_active = self.max_active
+
+        min_per_project: int | None | Unset
+        if isinstance(self.min_per_project, Unset):
+            min_per_project = UNSET
+        else:
+            min_per_project = self.min_per_project
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -84,6 +120,8 @@ class ProfileSummary:
             field_dict["default_class"] = default_class
         if codex_full_auto is not UNSET:
             field_dict["codex_full_auto"] = codex_full_auto
+        if codex_service_tier is not UNSET:
+            field_dict["codex_service_tier"] = codex_service_tier
         if claude_dangerously_skip_permissions is not UNSET:
             field_dict["claude_dangerously_skip_permissions"] = claude_dangerously_skip_permissions
         if allowed_tools is not UNSET:
@@ -92,6 +130,14 @@ class ProfileSummary:
             field_dict["mcp_servers"] = mcp_servers
         if has_system_prompt is not UNSET:
             field_dict["has_system_prompt"] = has_system_prompt
+        if lifecycle is not UNSET:
+            field_dict["lifecycle"] = lifecycle
+        if min_active is not UNSET:
+            field_dict["min_active"] = min_active
+        if max_active is not UNSET:
+            field_dict["max_active"] = max_active
+        if min_per_project is not UNSET:
+            field_dict["min_per_project"] = min_per_project
 
         return field_dict
 
@@ -117,6 +163,15 @@ class ProfileSummary:
 
         codex_full_auto = d.pop("codex_full_auto", UNSET)
 
+        def _parse_codex_service_tier(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        codex_service_tier = _parse_codex_service_tier(d.pop("codex_service_tier", UNSET))
+
         claude_dangerously_skip_permissions = d.pop("claude_dangerously_skip_permissions", UNSET)
 
         allowed_tools = cast(list[str], d.pop("allowed_tools", UNSET))
@@ -125,6 +180,35 @@ class ProfileSummary:
 
         has_system_prompt = d.pop("has_system_prompt", UNSET)
 
+        lifecycle = d.pop("lifecycle", UNSET)
+
+        def _parse_min_active(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        min_active = _parse_min_active(d.pop("min_active", UNSET))
+
+        def _parse_max_active(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_active = _parse_max_active(d.pop("max_active", UNSET))
+
+        def _parse_min_per_project(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        min_per_project = _parse_min_per_project(d.pop("min_per_project", UNSET))
+
         profile_summary = cls(
             id=id,
             name=name,
@@ -132,10 +216,15 @@ class ProfileSummary:
             harness=harness,
             default_class=default_class,
             codex_full_auto=codex_full_auto,
+            codex_service_tier=codex_service_tier,
             claude_dangerously_skip_permissions=claude_dangerously_skip_permissions,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             has_system_prompt=has_system_prompt,
+            lifecycle=lifecycle,
+            min_active=min_active,
+            max_active=max_active,
+            min_per_project=min_per_project,
         )
 
         profile_summary.additional_properties = d

@@ -8,10 +8,16 @@ owning subsystem has not landed yet are listed in
 contract those owners must follow.
 """
 
+from src.doctor.ask_checks import ask_checks
 from src.doctor.builtin import builtin_checks
 from src.doctor.capability_checks import capability_checks
+from src.doctor.dashboard_server_checks import dashboard_server_checks
+from src.doctor.dashboard_state_checks import dashboard_state_checks
 from src.doctor.db_checks import db_checks
+from src.doctor.discord_config_checks import discord_config_checks
+from src.doctor.escalation_checks import escalation_checks
 from src.doctor.formula_checks import formula_checks
+from src.doctor.git_checks import git_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.integration_checks import integration_checks
 from src.doctor.intelligence_class_checks import intelligence_class_checks
@@ -22,15 +28,24 @@ from src.doctor.models import (
     DoctorContext,
     Severity,
 )
+from src.doctor.perf_checks import perf_checks
 from src.doctor.playbook_v2_checks import playbook_v2_checks
 from src.doctor.pool_checks import pool_checks
-from src.doctor.project_checks import project_checks
 from src.doctor.profile_checks import profile_checks
+from src.doctor.project_checks import project_checks
+from src.doctor.provider_checks import provider_checks
+from src.doctor.record_checks import record_checks
 from src.doctor.resource_checks import resource_checks
+from src.doctor.review_checks import review_checks
+from src.doctor.routing_checks import routing_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
+from src.doctor.service_checks import service_checks
 from src.doctor.session_checks import session_checks
+from src.doctor.skill_checks import skill_checks
+from src.doctor.stall_checks import stall_checks
 from src.doctor.task_checks import task_checks
 from src.doctor.workspace_checks import workspace_checks
+from src.doctor.wait_checks import wait_checks
 
 __all__ = [
     "RESERVED_CHECK_IDS",
@@ -39,28 +54,44 @@ __all__ = [
     "DoctorContext",
     "DoctorRegistry",
     "Severity",
+    "ask_checks",
     "builtin_checks",
     "capability_checks",
+    "dashboard_server_checks",
+    "dashboard_state_checks",
     "db_checks",
     "default_registry",
+    "discord_config_checks",
+    "escalation_checks",
     "exit_code_for",
     "formula_checks",
+    "git_checks",
     "integration_checks",
     "intelligence_class_checks",
+    "perf_checks",
     "playbook_v2_checks",
-    "project_checks",
     "profile_checks",
+    "project_checks",
+    "provider_checks",
+    "record_checks",
     "resource_checks",
+    "routing_checks",
     "run_doctor",
+    "service_checks",
     "session_checks",
+    "skill_checks",
+    "stall_checks",
     "task_checks",
     "workspace_checks",
+    "wait_checks",
 ]
 
 
 def default_registry() -> DoctorRegistry:
     """A registry pre-populated with every built-in check."""
     registry = DoctorRegistry()
+    for check in ask_checks():
+        registry.register(check)
     for check in builtin_checks():
         registry.register(check)
     for check in hierarchy_checks():
@@ -75,9 +106,17 @@ def default_registry() -> DoctorRegistry:
         registry.register(check)
     for check in resource_checks():
         registry.register(check)
+    for check in perf_checks():
+        registry.register(check)
     for check in session_checks():
         registry.register(check)
+    for check in skill_checks():
+        registry.register(check)
+    for check in stall_checks():
+        registry.register(check)
     for check in integration_checks():
+        registry.register(check)
+    for check in git_checks():
         registry.register(check)
     for check in capability_checks():
         registry.register(check)
@@ -87,8 +126,28 @@ def default_registry() -> DoctorRegistry:
         registry.register(check)
     for check in db_checks():
         registry.register(check)
+    for check in dashboard_state_checks():
+        registry.register(check)
+    for check in dashboard_server_checks():
+        registry.register(check)
+    for check in discord_config_checks():
+        registry.register(check)
     for check in playbook_v2_checks():
         registry.register(check)
     for check in project_checks():
+        registry.register(check)
+    for check in provider_checks():
+        registry.register(check)
+    for check in review_checks():
+        registry.register(check)
+    for check in escalation_checks():
+        registry.register(check)
+    for check in routing_checks():
+        registry.register(check)
+    for check in service_checks():
+        registry.register(check)
+    for check in record_checks():
+        registry.register(check)
+    for check in wait_checks():
         registry.register(check)
     return registry

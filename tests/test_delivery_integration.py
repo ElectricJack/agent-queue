@@ -6,8 +6,8 @@ the three delivery paths the P3 wave promises end-to-end:
 
 1. **Nudge into a sleeping supervisor.**  A ``user → session:supervisor-<pid>``
    message triggers :meth:`SessionLens.ensure_started`, spins up a fake
-   supervisor session, and the cascade nudges the message in and marks it
-   delivered ``via="nudge"``.
+   supervisor session, and the cascade records a pointer notification.
+   The message stays pending until the supervisor reads its body.
 
 2. **Prime picks up a message parked against a busy task.**  A
    ``user → task:<id>`` message finds the task's session mid-turn, is
@@ -17,24 +17,30 @@ the three delivery paths the P3 wave promises end-to-end:
 3. **Reply thread.**  A reply flows back on the supervisor thread and
    ``message.list`` (command layer) surfaces both sides of the exchange.
 
-The test uses ``run_one_cycle`` where cheap and calls the specific cascade
-step (``_deliver_messages``) where the wider cycle would drag in irrelevant
-work.  Both are on the real ``Orchestrator`` instance — no stubs.
+Tests that drive individual passes stop the independent consumer first, so
+the real cascade fallback and delivery engine run without a competing pass.
+A separate test starts the consumer and awaits delivery without a scheduler
+cycle. Both paths use the real ``Orchestrator`` instance — no stubs.
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.runtimes.base import Runtime
+from src.sessions.launch import launch_session
 from src.sessions.provider import SessionSpec
 from src.sessions.spec import named_session_name
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +61,7 @@ class _NullRuntimeFactory:
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -72,6 +78,11 @@ async def orch(tmp_path):
 
     o = Orchestrator(config, runtimes=_NullRuntimeFactory())
     await o.initialize()
+    assert o.message_delivery_service.running
+    # These tests drive individual delivery passes and inspect their counts.
+    # Stop the autonomous consumer before seeding mailboxes so it cannot race
+    # those passes; the background-delivery test below exercises it separately.
+    await o.message_delivery_service.stop()
     # Seed the supervisor profile the SessionLens needs to cold-start the
     # supervisor session (spec §6: only supervisor-named sessions are
     # wake-on-demand).
@@ -122,7 +133,9 @@ PROJECT_ID = "p-int"
 
 
 async def _seed_project(orch):
-    await orch.db.create_project(Project(id=PROJECT_ID, name="integration"))
+    await orch.db.create_project(Project(
+        id=PROJECT_ID, name="integration", supervisor_enabled=True,
+    ))
 
 
 def _supervisor_address(project_id: str = PROJECT_ID) -> str:
@@ -131,6 +144,22 @@ def _supervisor_address(project_id: str = PROJECT_ID) -> str:
 
 def _supervisor_runtime_name(project_id: str = PROJECT_ID) -> str:
     return named_session_name("supervisor", project_id)
+
+
+async def _read_as_supervisor(handler, message_id):
+    row = await handler.db.get_session_by_name(_supervisor_runtime_name())
+    assert row is not None
+    result = await handler.execute("message_status", {
+        "message_id": message_id,
+        "_scope": {
+            "kind": "session", "session_id": row.id, "project_id": PROJECT_ID,
+            "session_instance_token": row.instance_token, "elevated": True,
+        },
+    })
+    assert "error" not in result, result
+    assert result["state"] == "acknowledged" and result["via"] == "read"
+    assert result["delivered_at"] is not None and result["acknowledged_at"] is not None
+    return result
 
 
 async def _seed_busy_task_session(orch, *, task_id: str = "t-busy"):
@@ -146,16 +175,16 @@ async def _seed_busy_task_session(orch, *, task_id: str = "t-busy"):
     )
     fake = orch.session_providers.create("fake")
     session_name = f"s-{task_id}"
-    handle = await fake.start(
+    handle = await launch_session(
+        orch.db,
+        fake,
         SessionSpec(
             session_name=session_name,
             work_dir=str(orch.config.workspace_dir),
             command=("claude",),
             instance_token="tok-busy",
-        )
-    )
-    fake.sessions[handle.name].activity = time.time()  # fresh → busy
-    await orch.db.create_session(
+            env={"AQ_SESSION_ID": f"sess-{task_id}"},
+        ),
         SessionRecord(
             id=f"sess-{task_id}",
             project_id=PROJECT_ID,
@@ -172,6 +201,7 @@ async def _seed_busy_task_session(orch, *, task_id: str = "t-busy"):
             state="running",
         )
     )
+    fake.sessions[handle.name].activity = time.time()  # fresh → busy
     return handle
 
 
@@ -179,16 +209,16 @@ async def _seed_idle_supervisor_session(orch):
     """Running FakeProvider supervisor session with stale activity (idle)."""
     fake = orch.session_providers.create("fake")
     runtime_name = _supervisor_runtime_name()
-    handle = await fake.start(
+    handle = await launch_session(
+        orch.db,
+        fake,
         SessionSpec(
             session_name=runtime_name,
             work_dir=str(orch.config.workspace_dir),
             command=("claude",),
             instance_token="tok-sup",
-        )
-    )
-    fake.sessions[handle.name].activity = time.time() - 300  # stale → idle
-    await orch.db.create_session(
+            env={"AQ_SESSION_ID": "sess-sup"},
+        ),
         SessionRecord(
             id="sess-sup",
             project_id=PROJECT_ID,
@@ -204,7 +234,124 @@ async def _seed_idle_supervisor_session(orch):
             state="running",
         )
     )
+    fake.sessions[handle.name].activity = time.time() - 300  # stale → idle
     return handle
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux provider is POSIX-only")
+async def test_idle_opencode_sidebar_pointer_is_submitted_then_body_is_read(orch, handler, monkeypatch):
+    from tests.test_tmux_opencode_composer import OpenCodePane, provider_for
+
+    await _seed_project(orch)
+    handle = await _seed_busy_task_session(orch)
+    await orch.db.update_session("sess-t-busy", provider="tmux", harness="opencode")
+    pane = OpenCodePane(width=120, sidebar=True)
+    provider = provider_for(pane)
+    provider.is_running = AsyncMock(return_value=True)
+    provider.last_activity = AsyncMock(return_value=time.time() - 300)
+    monkeypatch.setitem(orch.session_providers._instances, "tmux", provider)
+    monkeypatch.setattr("src.sessions.tmux._SUBMIT_POLLS", ((0.0,),) * 4)
+    result = await handler.execute("message_send", {
+        "project_id": PROJECT_ID,
+        "from_kind": "user", "from_id": "supervisor",
+        "to_kind": "session", "to_id": "sess-t-busy",
+        "body": "Grants restored; publish your held task branch and close it.",
+    })
+    message_id = result["message_id"]
+    pointer = f"Handle `aq message status {message_id} --json` (running it marks the message read)."
+
+    await orch.message_delivery.run_delivery_pass()
+    assert pane.submitted == [pointer]
+    assert provider._fenced.call_args.args[0].name == handle.name
+    stored = await orch.db.get_message(message_id)
+    assert stored.notification_attempts == 1 and stored.via == "nudge"
+    assert stored.delivered_at is None and stored.read_at is None
+    assert "Grants restored" not in "\n".join(pane.transcript)
+    # No duplicate prompt before the notification backoff, and the actual
+    # recipient's command read, rather than Enter, establishes the receipt.
+    await orch.message_delivery.run_delivery_pass()
+    assert pane.submitted == [pointer]
+    read = await handler.execute("message_status", {
+        "message_id": message_id,
+        "_scope": {
+            "kind": "session", "session_id": "sess-t-busy", "task_id": "t-busy",
+            "project_id": PROJECT_ID, "session_instance_token": handle.instance_token,
+        },
+    })
+    assert read["message"]["body"] == result["message"]["body"]
+    assert read["state"] == "acknowledged" and read["via"] == "read"
+    assert read["delivered_at"] is not None and read["acknowledged_at"] is not None
+    await orch.message_delivery.run_delivery_pass()
+    assert pane.submitted == [pointer]
+
+
+# ---------------------------------------------------------------------------
+# Independent delivery without a scheduler cycle
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundDelivery:
+    @pytest.mark.parametrize("already_running", [False, True])
+    async def test_delivers_persisted_message_without_a_scheduler_cycle(
+        self, orch, handler, already_running, monkeypatch
+    ):
+        await _seed_project(orch)
+        if already_running:
+            await _seed_idle_supervisor_session(orch)
+        result = await handler.execute(
+            "message_send",
+            {
+                "project_id": PROJECT_ID,
+                "to_kind": "session",
+                "to_id": _supervisor_address(),
+                "from_kind": "user",
+                "from_id": "discord:1",
+                "body": "deliver without a scheduler pass",
+            },
+        )
+        assert "error" not in result, result
+        message_id = result["message_id"]
+        assert (await orch.db.get_message(message_id)).delivered_at is None
+        notified, delivered = asyncio.Event(), asyncio.Event()
+        fake = orch.session_providers.create("fake")
+        original_nudge = fake.nudge
+
+        async def nudge(*args, **kwargs):
+            await original_nudge(*args, **kwargs)
+            notified.set()
+
+        monkeypatch.setattr(fake, "nudge", nudge)
+
+        def on_delivered(payload):
+            if payload["message_id"] == message_id:
+                delivered.set()
+
+        unsubscribe = orch.bus.subscribe("message.delivered", on_delivered)
+        # The enqueue event happened while the consumer was stopped. Starting
+        # it must recover the durable row without a new event or cascade call.
+        orch.message_delivery_service.start()
+        try:
+            await asyncio.wait_for(notified.wait(), timeout=5)
+            assert len(fake.starts) == 1
+            assert fake.sent_nudges == [
+                (
+                    _supervisor_runtime_name(),
+                    f"Handle `aq message status {message_id} --json` (running it marks the message read).",
+                )
+            ]
+            stored = await orch.db.get_message(message_id)
+            assert stored.delivered_at is None
+            assert stored.via == "nudge"
+            assert stored.read_at is None
+            assert stored.last_notified_at is not None and stored.notification_attempts == 1
+            assert not delivered.is_set()
+            read = await _read_as_supervisor(handler, message_id)
+            assert read["message"]["body"] == "deliver without a scheduler pass"
+            await asyncio.wait_for(delivered.wait(), timeout=5)
+        finally:
+            await orch.message_delivery_service.stop()
+            unsubscribe()
+        assert not orch.message_delivery_service.running
 
 
 # ---------------------------------------------------------------------------
@@ -247,12 +394,17 @@ class TestUserToSupervisorNudge:
         assert len(fake.sent_nudges) == 1
         nudged_name, nudged_text = fake.sent_nudges[0]
         assert nudged_name == runtime_name
-        assert message_id in nudged_text
-        assert "what's the status?" in nudged_text
+        # The nudge is a width-bounded pointer at the message, never its body
+        # (src/messages/delivery.py ``_render_nudge``).
+        assert nudged_text == f"Handle `aq message status {message_id} --json` (running it marks the message read)."
+        assert "what's the status?" not in nudged_text
 
         stored = await orch.db.get_message(message_id)
-        assert stored.delivered_at is not None
+        assert stored.delivered_at is None and stored.read_at is None
+        assert stored.last_notified_at is not None and stored.notification_attempts == 1
         assert stored.via == "nudge"
+        read = await _read_as_supervisor(handler, message_id)
+        assert read["message"]["body"] == "what's the status?"
 
         # The cold-started supervisor row must line up with the
         # execution.py canon: id equals the dashed session_id the harness
@@ -307,13 +459,16 @@ class TestRunningSupervisorAddressResolution:
         assert message_id in nudged_text
 
         stored = await orch.db.get_message(message_id)
-        assert stored.delivered_at is not None
+        assert stored.delivered_at is None and stored.read_at is None
+        assert stored.last_notified_at is not None and stored.notification_attempts == 1
         assert stored.via == "nudge"
+        read = await _read_as_supervisor(handler, message_id)
+        assert read["message"]["body"] == "already awake?"
 
 
 class TestMixedRecipientPass:
     """Approved plan item 2: one pass over a busy task, an idle supervisor
-    and a user recipient delivers exactly the deliverable two, skips the
+    and a user recipient delivers the user message, notifies the supervisor, skips the
     busy task without touching it, and fans the user message out as
     ``message.sent``."""
 
@@ -375,7 +530,7 @@ class TestMixedRecipientPass:
 
         assert result == {
             "success": True,
-            "delivered": 2,
+            "delivered": 1,
             "skipped_busy": 1,
             "parked": 0,
         }
@@ -389,7 +544,11 @@ class TestMixedRecipientPass:
         assert len(payloads) == 1
         assert payloads[0]["to_kind"] == "user"
         assert (await orch.db.get_message(to_user["message_id"])).via == "platform"
-        assert (await orch.db.get_message(to_supervisor["message_id"])).via == "nudge"
+        supervisor_msg = await orch.db.get_message(to_supervisor["message_id"])
+        assert supervisor_msg.via == "nudge" and supervisor_msg.notification_attempts == 1
+        assert supervisor_msg.delivered_at is None and supervisor_msg.read_at is None
+        read = await _read_as_supervisor(handler, to_supervisor["message_id"])
+        assert read["message"]["body"] == "for the supervisor"
 
         # The busy task's message and the task row itself are untouched.
         task_msg = await orch.db.get_message(to_task["message_id"])
@@ -473,9 +632,11 @@ class TestReplyThread:
         assert "error" not in send, send
         original_id = send["message_id"]
 
-        # Deliver the original (this cold-starts the supervisor + nudges).
+        # Notify the supervisor; the body stays pending until it reads or replies.
         await orch._deliver_messages()
-        assert (await orch.db.get_message(original_id)).delivered_at is not None
+        original = await orch.db.get_message(original_id)
+        assert original.delivered_at is None and original.read_at is None
+        assert original.notification_attempts == 1
 
         # Supervisor replies through the command layer (what an agent-side
         # ``aq reply`` invocation ultimately calls).
@@ -492,6 +653,9 @@ class TestReplyThread:
         )
         assert "error" not in reply_result, reply_result
         reply_id = reply_result["reply_id"]
+        original = await orch.db.get_message(original_id)
+        assert original.delivered_at is not None and original.read_at is not None
+        assert original.via == "nudge"
 
         # message.list scoped to the thread returns both rows, threaded.
         listing = await handler.execute(

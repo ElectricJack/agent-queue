@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GateCreateRequest,
 ) -> Response[GateCreateResponse | GateCreateResponse422]:
-    """Create a new gate; optionally attach it to waiter tasks.
+    """Open a gate, and block the tasks waiting on it until it resolves.
 
-     Create a new gate; optionally attach it to waiter tasks.
+     Open a gate, and block the tasks waiting on it until it resolves.
 
     Args:
         body (GateCreateRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GateCreateRequest,
 ) -> GateCreateResponse | GateCreateResponse422 | None:
-    """Create a new gate; optionally attach it to waiter tasks.
+    """Open a gate, and block the tasks waiting on it until it resolves.
 
-     Create a new gate; optionally attach it to waiter tasks.
+     Open a gate, and block the tasks waiting on it until it resolves.
 
     Args:
         body (GateCreateRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GateCreateRequest,
 ) -> Response[GateCreateResponse | GateCreateResponse422]:
-    """Create a new gate; optionally attach it to waiter tasks.
+    """Open a gate, and block the tasks waiting on it until it resolves.
 
-     Create a new gate; optionally attach it to waiter tasks.
+     Open a gate, and block the tasks waiting on it until it resolves.
 
     Args:
         body (GateCreateRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GateCreateRequest,
 ) -> GateCreateResponse | GateCreateResponse422 | None:
-    """Create a new gate; optionally attach it to waiter tasks.
+    """Open a gate, and block the tasks waiting on it until it resolves.
 
-     Create a new gate; optionally attach it to waiter tasks.
+     Open a gate, and block the tasks waiting on it until it resolves.
 
     Args:
         body (GateCreateRequest):

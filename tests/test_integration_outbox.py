@@ -1,0 +1,2044 @@
+"""Durable delivery tests for hierarchical-integration events."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import asyncio
+import json
+import os
+import time
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import DBAPIError
+
+from src.config import PlaybooksConfig
+from src.database.tables import (
+    integration_operation_artifact_pins,
+    integration_batches,
+    integration_outbox,
+    integration_outbox_artifact_pins,
+    integration_repair_operations,
+    playbook_activations,
+    playbook_artifacts,
+    playbook_pending_events,
+    playbook_v2_runs,
+)
+from src.integration.outbox import (
+    IntegrationOutbox,
+    DestinationArtifactUnavailable,
+    NoIntegrationEventConsumer,
+    PROMOTION_EVENT_TYPES,
+    RETRY_EXHAUSTED_PREFIX,
+    UNSUBSCRIBED_EVENT_TYPES,
+    enqueue_integration_event,
+    enqueue_batch_event,
+    freeze_destination_manifest,
+    load_acceptance_state,
+)
+from src.models import Project, RepoConfig, RepoSourceType
+from src.playbooks.artifact_store import ArtifactStore
+from src.playbooks.definition import PlaybookDefinition
+from src.playbooks import runtime as runtime_module
+from src.playbooks.runtime import V2PlaybookRuntime
+
+
+NOW = 1_789_000_000.0
+
+
+@pytest.mark.parametrize("event_type", [
+    "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+])
+async def test_batch_event_atomic_replay_and_consumer_requirement(db, event_type):
+    batch = {"project_id": "p", "batch_id": "b", "structure_revision": 2,
+             "structure_digest": "current", "reviewer_task_id": None,
+             "release_revision": 1, "release_digest": "released"}
+    with pytest.raises(RuntimeError, match="rollback"):
+        async with db.immediate() as conn:
+            await enqueue_batch_event(conn, batch, event_type, now=NOW)
+            raise RuntimeError("rollback")
+    assert not await _outbox_rows(db)
+    async with db.immediate() as conn:
+        event_id = await enqueue_batch_event(conn, batch, event_type, now=NOW)
+        assert await enqueue_batch_event(
+            conn, {**batch, "reviewer_task_id": "later-assignment"}, event_type, now=NOW,
+        ) == event_id
+    rows = await _outbox_rows(db)
+    assert len(rows) == 1
+    assert rows[0]["payload"]["reviewer_task_id"] is None
+    assert rows[0]["payload"]["structure_digest"] == (
+        "released" if event_type == "batch.released" else "current")
+
+    async def no_consumer(*args):
+        raise NoIntegrationEventConsumer("no matching policy")
+
+    outbox = IntegrationOutbox(db, no_consumer, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    row = (await _outbox_rows(db))[0]
+    assert (row["delivered_at"] is None) == (event_type in {"batch.held", "batch.receipt_recorded"})
+    outbox._accept_event = lambda *_args: asyncio.sleep(0, result=True)
+    await outbox.dispatch_due(NOW + 1)
+    assert (await _outbox_rows(db))[0]["delivered_at"] is not None
+
+
+@pytest.fixture
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("integration-outbox.db")
+    await database.create_project(Project(id="p", name="integration project"))
+    yield database
+
+
+def _terminal_playbook(
+    playbook_id: str,
+    event_type: str,
+    *,
+    scope: str = "project",
+    source_digit: str = "1",
+) -> PlaybookDefinition:
+    scope_value = (
+        {"type": "system"}
+        if scope == "system"
+        else {"type": "project", "project_id": "p"}
+    )
+    return PlaybookDefinition.model_validate(
+        {
+            "schema_version": 2,
+            "id": playbook_id,
+            "version": 1,
+            "scope": scope_value,
+            "source_hash": "sha256:" + source_digit * 64,
+            "compiled_at": "2026-09-04T00:00:00Z",
+            "purpose": "routine",
+            "rules": [
+                {
+                    "id": "accept",
+                    "name": "Accept integration event",
+                    "trigger": {"event_type": event_type},
+                    "entry_step": "done",
+                    "source": {"path": "integration.md", "start_line": 1, "end_line": 1},
+                }
+            ],
+            "steps": {
+                "done": {
+                    "type": "terminal",
+                    "rule": "accept",
+                    "title": "Accepted",
+                    "outcome": "completed",
+                    "source": {"path": "integration.md", "start_line": 2, "end_line": 2},
+                }
+            },
+        }
+    )
+
+
+async def _activate(
+    db,
+    compiled_root,
+    playbook_id: str,
+    event_type: str,
+    *,
+    scope: str = "project",
+    source_digit: str = "1",
+) -> tuple[str, str]:
+    definition = _terminal_playbook(
+        playbook_id, event_type, scope=scope, source_digit=source_digit
+    )
+    store = ArtifactStore(str(compiled_root))
+    ref = store.put(
+        definition,
+        source_digest=definition.source_hash,
+        contract_fingerprint=definition.contract_fingerprint(),
+        profile_fingerprint="",
+        compiler_build="test",
+        version=definition.version,
+    )
+    await db.upsert_playbook_artifact(
+        ref,
+        scope="project",
+        scope_identifier="p",
+        path=store.path_for(ref.artifact_sha256),
+        size_bytes=len(store.canonical_bytes(definition)),
+    )
+    await db.set_playbook_activation(
+        playbook_id=playbook_id,
+        scope=scope,
+        scope_identifier="p" if scope == "project" else "",
+        artifact_sha256=ref.artifact_sha256,
+        enabled=True,
+        activated_by="test",
+        health="ready",
+        reasons="[]",
+    )
+    async with db._engine.connect() as conn:
+        activation_id = (
+            await conn.execute(
+                select(playbook_activations.c.activation_id).where(
+                    playbook_activations.c.playbook_id == playbook_id,
+                    playbook_activations.c.scope == scope,
+                )
+            )
+        ).scalar_one()
+    return activation_id, ref.artifact_sha256
+
+
+async def _enable_with_route(
+    db,
+    *,
+    playbook_id: str,
+    activation_id: str,
+    artifact_sha256: str,
+    scope: str,
+    scope_identifier: str,
+    project_id: str = "p",
+    mode: str = "train",
+) -> None:
+    artifact = await db.get_playbook_artifact(artifact_sha256)
+    assert artifact is not None
+    repository_id = f"repo-{project_id}"
+    if await db.get_repo(repository_id) is None:
+        await db.create_repo(
+            RepoConfig(
+                id=repository_id,
+                project_id=project_id,
+                source_type=RepoSourceType.CLONE,
+                url=f"https://github.com/acme/{project_id}.git",
+                default_branch="main",
+            )
+        )
+    boundary = {
+        "required_checks": {
+            "version": "checks-v1",
+            "names": ["Tests (default)"],
+            "producer_id": "1234",
+        },
+        "repair": {
+            "debug_intelligence_class": "deep",
+            "debug_profile_id": "debugger",
+        },
+        "route": {
+            "playbook_id": playbook_id,
+            "scope": scope,
+            "scope_identifier": scope_identifier,
+            "activation_id": activation_id,
+            "artifact": artifact.as_dict(),
+        },
+        "primary_intelligence_class": "standard",
+        "primary_profile_id": "worker",
+    }
+    await db.update_project(
+        project_id,
+        integration_mode="pull_request",
+        integration_repository_id=repository_id,
+        hierarchical_integration_mode=mode,
+        hierarchical_integration_policy={
+            "version": 1,
+            "parent": boundary,
+            "root": boundary,
+            "branchless_parent": "skip",
+            "on_failed_child": "block",
+            "on_main_moved": "rebuild",
+            "cleanup": {},
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
+async def managed_runtimes(db, monkeypatch):
+    """Stop every background dispatcher before its database is closed."""
+    runtimes = []
+    create_runtime = _runtime
+
+    def tracked_runtime(*args, **kwargs):
+        runtime = create_runtime(*args, **kwargs)
+        runtimes.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(__name__ + "._runtime", tracked_runtime)
+    yield
+    for runtime in reversed(runtimes):
+        await runtime.shutdown()
+
+
+def _runtime(db, compiled_root) -> V2PlaybookRuntime:
+    config = SimpleNamespace(
+        compiled_root=str(compiled_root),
+        playbooks=PlaybooksConfig(enabled=True),
+        security=SimpleNamespace(capability_enforcement="enforce"),
+    )
+    return V2PlaybookRuntime(
+        config=config,
+        db=db,
+        handler=SimpleNamespace(),
+        llm=None,
+        bus=None,
+    )
+
+
+async def _enqueue(
+    db, *, event_id="event-1", dedup_key="sealed:operation-1",
+    event_type="integration.sealed", project_id="p",
+) -> None:
+    async with db.immediate() as conn:
+        await enqueue_integration_event(
+            conn,
+            event_id=event_id,
+            dedup_key=dedup_key,
+            project_id=project_id,
+            event_type=event_type,
+            payload={"operation_id": "operation-1"},
+            available_at=NOW,
+        )
+        # The dispatch clock and event age must use the same synthetic epoch.
+        await conn.execute(
+            integration_outbox.update().where(integration_outbox.c.id == event_id)
+            .values(created_at=NOW)
+        )
+
+
+async def _outbox_rows(db):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(select(integration_outbox))).mappings().all()
+
+
+async def _pending_rows(db):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(select(playbook_pending_events))).mappings().all()
+
+
+async def _artifact_pin_rows(db):
+    async with db._engine.connect() as conn:
+        return (
+            await conn.execute(select(integration_outbox_artifact_pins))
+        ).mappings().all()
+
+
+async def _pin_operation_route(
+    db,
+    *,
+    operation_id: str,
+    playbook_id: str,
+    artifact_sha256: str,
+    activation_id: str,
+    scope: str = "project",
+    scope_identifier: str = "p",
+    batch_project_id: str | None = None,
+) -> None:
+    async with db.immediate() as conn:
+        if batch_project_id is not None:
+            await conn.execute(
+                integration_batches.insert().values(
+                    id=operation_id,
+                    project_id=batch_project_id,
+                    repository_id=f"repo-{batch_project_id}",
+                    request_id=f"request-{operation_id}",
+                    trigger="test",
+                    source_manifest_digest="sha256:" + "a" * 64,
+                    base_sha="b" * 40,
+                    lifecycle="sealed",
+                    current_revision=0,
+                    integration_branch=f"refs/heads/aq/integration/{operation_id}",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+        await conn.execute(
+            integration_repair_operations.insert().values(
+                id=operation_id,
+                target_kind="batch",
+                batch_id=operation_id,
+                episode_id=operation_id,
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="test",
+                route_playbook_id=playbook_id,
+                route_scope=scope,
+                route_scope_identifier=scope_identifier,
+                route_activation_id=activation_id,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await conn.execute(
+            integration_operation_artifact_pins.insert().values(
+                operation_id=operation_id,
+                artifact_sha256=artifact_sha256,
+            )
+        )
+
+
+async def _accepted_activation_count(db, event_id: str) -> int:
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(playbook_v2_runs.c.run_id).where(
+                    playbook_v2_runs.c.event_id == event_id
+                )
+            )
+        ).all()
+    return len(rows)
+
+
+async def _wait_for_accepted(db, event_id: str, *, count: int = 1) -> None:
+    async with asyncio.timeout(10):
+        while await _accepted_activation_count(db, event_id) < count:
+            await asyncio.sleep(0.02)
+
+
+async def _wait_for_pending_resolution(db, event_id: str, *, count: int = 1) -> None:
+    async with asyncio.timeout(10):
+        while (
+            sum(
+                row["event_id"] == event_id and row["resolution"] == "dispatched"
+                for row in await _pending_rows(db)
+            )
+            < count
+        ):
+            await asyncio.sleep(0.02)
+
+
+async def test_committed_event_survives_dispatcher_restart(db, tmp_path):
+    await _activate(db, tmp_path / "compiled", "integration-train", "integration.sealed")
+    await _enqueue(db)
+
+    first = _runtime(db, tmp_path / "compiled")
+    await first.refresh()
+    await first.shutdown()
+    del first
+
+    restarted = _runtime(db, tmp_path / "compiled")
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert await _artifact_pin_rows(db) == []
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+@pytest.mark.parametrize("event_type", [
+    "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+])
+async def test_batch_policy_acceptance_survives_restart_without_duplicate_run(db, tmp_path, event_type):
+    await _activate(db, tmp_path / "compiled", "batch-policy", event_type)
+    async with db.immediate() as conn:
+        event_id = await enqueue_batch_event(conn, {
+            "batch_id": "held-batch", "project_id": "p", "structure_revision": 1,
+            "structure_digest": "d" * 64, "reviewer_task_id": None,
+            "release_revision": 1, "release_digest": "d" * 64,
+        }, event_type, now=NOW)
+    first = _runtime(db, tmp_path / "compiled")
+    await first.refresh()
+    assert await first.accept_integration_event(
+        event_type, (await _outbox_rows(db))[0]["payload"], event_id,
+    )
+    # Lose the outbox acknowledgment, then replay against the durable consumer.
+    await first.shutdown()
+    restarted = _runtime(db, tmp_path / "compiled")
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, event_id)
+    await _wait_for_pending_resolution(db, event_id)
+    assert await _accepted_activation_count(db, event_id) == 1
+    await restarted.shutdown()
+
+
+async def test_shutdown_during_pending_claim_releases_lease_for_restart(db, tmp_path, monkeypatch):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "integration-train", "integration.sealed")
+    await _enqueue(db)
+    first = _runtime(db, compiled)
+    await first.refresh()
+    await first.shutdown()
+    assert await first.accept_integration_event(
+        "integration.sealed", (await _outbox_rows(db))[0]["payload"], "event-1"
+    )
+    [row] = await _pending_rows(db)
+    original_claim = db.claim_pending_event_dispatch
+
+    async def cancel_after_commit(*args, **kwargs):
+        token = await original_claim(*args, **kwargs)
+        assert token is not None
+        # Shutdown can cancel the dispatcher while the committed claim is
+        # still returning through the connection's asynchronous cleanup.
+        dispatcher.cancel()
+        await asyncio.sleep(0)
+        return token
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "claim_pending_event_dispatch", cancel_after_commit)
+        dispatcher = asyncio.create_task(first._dispatch_integration_pending(row))
+        with pytest.raises(asyncio.CancelledError):
+            await dispatcher
+
+    [retained] = await _pending_rows(db)
+    assert retained["resolved_at"] is None
+    assert retained["dispatch_claim_token"] is None
+    assert retained["dispatch_claimed_at"] is None
+    assert "CancelledError" in retained["last_error"]
+
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_path):
+    await _activate(db, tmp_path / "compiled", "integration-train", "integration.sealed")
+    await _enqueue(db)
+    first_runtime = _runtime(db, tmp_path / "compiled")
+    await first_runtime.refresh()
+    first_outbox = IntegrationOutbox(db, first_runtime.accept_integration_event, clock=lambda: NOW)
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    async def crash_before_ack(*_args, **_kwargs):
+        raise SimulatedProcessCrash
+
+    first_outbox._acknowledge = crash_before_ack
+    with pytest.raises(SimulatedProcessCrash):
+        await first_outbox.dispatch_due(NOW)
+    await first_runtime.shutdown()
+    assert (await _outbox_rows(db))[0]["delivered_at"] is None
+
+    restarted = _runtime(db, tmp_path / "compiled")
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    await outbox.dispatch_due(NOW)
+    await outbox.dispatch_due(NOW)
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_runtime_restart_replays_an_accepted_but_unstarted_pending_event(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha256 = await _activate(
+        db, compiled, "integration-train", "integration.sealed"
+    )
+    await db.retain_integration_event(
+        playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
+        scope="project",
+        scope_identifier="p",
+        event_type="integration.sealed",
+        event={
+            "_event_type": "integration.sealed",
+            "event_id": "event-1",
+            "project_id": "p",
+            "operation_id": "operation-1",
+        },
+        event_id="event-1",
+        now=NOW,
+    )
+
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+
+    assert await _accepted_activation_count(db, "event-1") == 1
+    [row] = await _pending_rows(db)
+    assert row["resolution"] == "dispatched"
+    [run] = await db.list_runs(playbook_id="integration-train")
+    assert run.context["observed_at"] == NOW
+    assert run.context["observation_id"] == "event-1"
+
+
+async def test_zero_matching_activations_keeps_event_for_retry(db):
+    await _enqueue(db)
+    runtime = _runtime(db, "/tmp/no-integration-artifacts")
+    await runtime.refresh()
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
+
+    assert await outbox.dispatch_due(NOW) == 0
+
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] is None
+    assert row["attempts"] == 1
+    assert row["available_at"] == NOW + 1
+    assert await _pending_rows(db) == []
+
+
+@pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
+async def test_confirmed_unsubscribed_events_are_audited_and_not_retried(db, event_type, caplog):
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, "/tmp/no-integration-artifacts")
+    await runtime.refresh()
+    async def no_subscription(event_type, payload, event_id):
+        assert not await runtime.accept_integration_event(event_type, payload, event_id)
+        # Explicit adapter evidence is essential: ordinary False also means
+        # artifact/activation readiness failure or incomplete fanout.
+        raise NoIntegrationEventConsumer("no subscription matches")
+
+    outbox = IntegrationOutbox(db, no_subscription, clock=lambda: NOW)
+
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert row["attempts"] == 1
+    assert row["last_error"].startswith("unsubscribed: ")
+    assert row["payload"]["event_id"] == "event-1"
+    assert row["destination_manifest"] is None
+    assert await _pending_rows(db) == []
+    assert "integration outbox sink event=event-1" in caplog.text
+    assert f"type={event_type}" in caplog.text
+
+    restarted = IntegrationOutbox(db, no_subscription, clock=lambda: NOW + 7200)
+    assert await restarted.dispatch_due(NOW + 7200) == 0
+    assert (await _outbox_rows(db))[0]["attempts"] == 1
+    assert not await restarted.replay("event-1", now=NOW + 7200)
+
+
+@pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
+async def test_custom_subscriber_accepts_a_normally_unsubscribed_event(db, tmp_path, event_type):
+    await _activate(db, tmp_path / "compiled", "custom-consumer", event_type)
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
+
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert row["last_error"] is None
+    assert row["acceptance_cursor"] == 1
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_unknown_event_quarantine_survives_restart_and_can_be_replayed(db, tmp_path, caplog):
+    await _enqueue(db, event_type="integration.custom_notification")
+    compiled = tmp_path / "compiled"
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    now = [NOW]
+    outbox = IntegrationOutbox(
+        db, runtime.accept_integration_event, max_wait_seconds=3,
+        retry_base_seconds=10, clock=lambda: now[0],
+    )
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["available_at"] == NOW + 3
+    assert not await outbox.replay("event-1", now=NOW)
+
+    now[0] = NOW + 3
+    assert await outbox.dispatch_due(now[0]) == 0
+    [quarantined] = await _outbox_rows(db)
+    assert quarantined["delivered_at"] is None
+    assert quarantined["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+    assert "max_wait=3s" in quarantined["last_error"]
+    assert "no enabled matching playbook" in quarantined["last_error"]
+    assert "integration outbox quarantined event=event-1" in caplog.text
+
+    now[0] = NOW + 100
+    restarted = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: now[0])
+    assert await restarted.dispatch_due(now[0]) == 0
+    assert (await _outbox_rows(db))[0]["attempts"] == 2
+
+    await _activate(db, compiled, "custom-consumer", "integration.custom_notification")
+    await runtime.refresh()
+    assert await restarted.replay("event-1", now=now[0])
+    assert await restarted.dispatch_due(now[0]) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+    [delivered] = await _outbox_rows(db)
+    assert delivered["created_at"] == quarantined["created_at"]
+    assert delivered["payload"] == quarantined["payload"]
+    assert delivered["last_error"] is None
+
+
+@pytest.mark.parametrize("event_type", ["integration.sealed", "integration.cleanup_pending"])
+async def test_quarantined_partial_delivery_retains_receipts_and_artifact_pins(
+    db, tmp_path, event_type,
+):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "integration-train-a", event_type)
+    await _activate(db, compiled, "integration-train-b", event_type)
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    original = db.retain_integration_event
+    calls = 0
+
+    async def crash_on_second_destination(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls % 2 == 0:
+            raise RuntimeError("simulated destination write failure")
+        return await original(**kwargs)
+
+    db.retain_integration_event = crash_on_second_destination
+    now = [NOW]
+    outbox = IntegrationOutbox(
+        db, runtime.accept_integration_event, max_wait_seconds=1, clock=lambda: now[0],
+    )
+    assert await outbox.dispatch_due(now[0]) == 0
+    now[0] = NOW + 1
+    assert await outbox.dispatch_due(now[0]) == 0
+    [quarantined] = await _outbox_rows(db)
+    pins = await _artifact_pin_rows(db)
+    pending = await _pending_rows(db)
+    assert quarantined["delivered_at"] is None
+    assert quarantined["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+    assert "RuntimeError: simulated destination write failure" in quarantined["last_error"]
+    assert len(pins) == 2
+    assert len(pending) == 1
+    assert pending[0]["protected"]
+
+    await runtime.shutdown()
+    restarted_runtime = _runtime(db, compiled)
+    await restarted_runtime.refresh()
+    db.retain_integration_event = original
+    now[0] = NOW + 100
+    restarted = IntegrationOutbox(
+        db, restarted_runtime.accept_integration_event, clock=lambda: now[0],
+    )
+    assert await restarted.dispatch_due(now[0]) == 0
+    assert await restarted.replay("event-1", now=now[0])
+    assert await restarted.dispatch_due(now[0]) == 1
+    await _wait_for_accepted(db, "event-1", count=2)
+    await _wait_for_pending_resolution(db, "event-1", count=2)
+    [delivered] = await _outbox_rows(db)
+    assert delivered["destination_manifest"] == quarantined["destination_manifest"]
+    assert delivered["acceptance_cursor"] == 2
+    assert await _artifact_pin_rows(db) == []
+    assert pending[0]["pending_event_id"] in {
+        row["pending_event_id"] for row in await _pending_rows(db)
+    }
+    assert await _accepted_activation_count(db, "event-1") == 2
+
+
+async def test_declined_partial_fanout_of_normally_unsubscribed_event_is_not_sunk(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "custom-consumer", "integration.cleanup_pending")
+    await _enqueue(db, event_type="integration.cleanup_pending")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    async def capture_then_decline(event_type, payload, event_id):
+        assert await runtime.accept_integration_event(event_type, payload, event_id)
+        # Even incorrect adapter evidence cannot sink a captured destination.
+        raise NoIntegrationEventConsumer("adapter observed an obsolete subscription snapshot")
+
+    outbox = IntegrationOutbox(db, capture_then_decline, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert retry["destination_manifest"] is not None
+    assert retry["acceptance_cursor"] == 1
+    assert len(await _artifact_pin_rows(db)) == 1
+    outbox._accept_event = runtime.accept_integration_event
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_subscribed_artifact_readiness_failure_without_manifest_is_not_sunk(
+    db, tmp_path, monkeypatch,
+):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "custom-consumer", "integration.cleanup_pending")
+    await _enqueue(db, event_type="integration.cleanup_pending")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    original = runtime_module.freeze_destination_manifest
+
+    async def unavailable_artifact(*_args):
+        raise DestinationArtifactUnavailable("event-1")
+
+    monkeypatch.setattr(runtime_module, "freeze_destination_manifest", unavailable_artifact)
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["destination_manifest"] is None
+    assert retry["delivered_at"] is None
+    assert retry["available_at"] == NOW + 1
+    assert not retry["last_error"].startswith("unsubscribed:")
+
+    monkeypatch.setattr(runtime_module, "freeze_destination_manifest", original)
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_project_max_wait_bounds_retry_deadlines_independently(db):
+    await db.create_project(Project(id="q", name="other project"))
+    await _enqueue(db, event_id="p-event", dedup_key="p-event")
+    await _enqueue(db, event_id="q-event", dedup_key="q-event", project_id="q")
+    now = [NOW]
+
+    async def max_wait(project_id):
+        return {"p": 2.0, "q": 5.0}[project_id]
+
+    async def unavailable(*_args):
+        raise OSError("temporarily unavailable")
+
+    outbox = IntegrationOutbox(
+        db, unavailable, project_max_wait=max_wait, retry_base_seconds=100,
+        clock=lambda: now[0],
+    )
+    assert await outbox.dispatch_due(now[0]) == 0
+    rows = {row["project_id"]: row for row in await _outbox_rows(db)}
+    assert rows["p"]["available_at"] == NOW + 2
+    assert rows["q"]["available_at"] == NOW + 5
+    now[0] = NOW + 2
+    assert await outbox.dispatch_due(now[0]) == 0
+    rows = {row["project_id"]: row for row in await _outbox_rows(db)}
+    assert rows["p"]["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+    assert rows["q"]["attempts"] == 1
+    now[0] = NOW + 5
+    outbox._accept_event = lambda *_args: asyncio.sleep(0, result=True)
+    assert await outbox.dispatch_due(now[0]) == 1
+    rows = {row["project_id"]: row for row in await _outbox_rows(db)}
+    assert rows["p"]["delivered_at"] is None
+    assert rows["q"]["delivered_at"] == now[0]
+
+
+@pytest.mark.parametrize("max_wait", [0, -1, float("inf"), float("nan")])
+def test_retry_age_budget_must_be_finite_and_positive(max_wait):
+    with pytest.raises(ValueError, match="max_wait must be finite and positive"):
+        IntegrationOutbox(None, None, max_wait_seconds=max_wait)
+
+
+def _proving(runtime):
+    """The orchestrator adapter's opt-in to explicit no-consumer evidence."""
+
+    async def accept(event_type, payload, event_id):
+        return await runtime.accept_integration_event(
+            event_type, payload, event_id, prove_no_consumer=True
+        )
+
+    return accept
+
+
+async def _set_activation(
+    db, playbook_id, artifact_sha256, *, scope="project", scope_identifier="p",
+    enabled=True, health="ready",
+) -> None:
+    await db.set_playbook_activation(
+        playbook_id=playbook_id,
+        scope=scope,
+        scope_identifier=scope_identifier,
+        artifact_sha256=artifact_sha256,
+        enabled=enabled,
+        activated_by="test",
+        health=health,
+        reasons="[]",
+    )
+
+
+async def _offer(runtime, **kwargs) -> bool:
+    [row] = await _outbox_rows(db=runtime._db)
+    return await runtime.accept_integration_event(
+        row["event_type"], dict(row["payload"]), row["id"], **kwargs
+    )
+
+
+async def test_publication_bus_copy_does_not_bypass_durable_acceptance(db, tmp_path):
+    runtime = _runtime(db, tmp_path / "compiled")
+    runtime._dispatch = AsyncMock()
+    runtime._on_event({"_event_type": "integration.publication_verified", "project_id": "p"})
+    assert not runtime._tasks
+    runtime._dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))
+async def test_runtime_proves_no_consumer_only_when_asked(db, tmp_path, event_type):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "unrelated-consumer", "integration.custom_notification")
+    _, disabled_sha = await _activate(
+        db, compiled, "disabled-consumer", event_type, source_digit="2"
+    )
+    # An operator-disabled subscriber is a deliberate unsubscribe, and
+    # activations outside the event's project cannot receive it at all.
+    await _set_activation(db, "disabled-consumer", disabled_sha, enabled=False, health="disabled")
+    await _set_activation(
+        db, "other-project-consumer", disabled_sha, scope_identifier="q", health="stale_contract",
+    )
+    await _set_activation(
+        db, "agent-consumer", disabled_sha, scope="agent_type", scope_identifier="worker",
+        health="invalid",
+    )
+    await _enqueue(db, event_type=event_type)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert await _offer(runtime) is False
+    with pytest.raises(
+        NoIntegrationEventConsumer,
+        match=f"no ready playbook in scope for project p subscribes to {event_type}",
+    ):
+        await _offer(runtime, prove_no_consumer=True)
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] == NOW
+    assert row["attempts"] == 1
+    assert row["last_error"].startswith("unsubscribed: ")
+    assert row["destination_manifest"] is None
+    assert await _pending_rows(db) == []
+    assert await _artifact_pin_rows(db) == []
+
+
+async def _never_refreshed(db, compiled):
+    return _runtime(db, compiled), "integration.root_delivered"
+
+
+async def _shutting_down(db, compiled):
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    await runtime.shutdown()
+    return runtime, "integration.root_delivered"
+
+
+async def _unready_in_scope_activation(db, compiled):
+    # Its triggers are unknown until it is ready again, so it may subscribe.
+    _, sha = await _activate(db, compiled, "stale-consumer", "integration.custom_notification")
+    await _set_activation(db, "stale-consumer", sha, health="stale_contract")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _unloadable_artifact(db, compiled):
+    _, sha = await _activate(
+        db, compiled, "missing-artifact", "integration.custom_notification", scope="system",
+    )
+    os.remove(ArtifactStore(str(compiled)).path_for(sha))
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _fenced_lifecycle_subscriber(db, compiled):
+    # Lifecycle playbooks serve only through a frozen route; a subscription
+    # that is fenced off is still a subscription, not proof of none.
+    await _activate(db, compiled, "root-train", "integration.root_delivered", scope="system")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.root_delivered"
+
+
+async def _integration_route_event(db, compiled):
+    # Route events depend on a frozen operation route that is unavailable
+    # here (the project is not enabled); that is never an unsubscribe.
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "integration.sealed"
+
+
+async def _promotion_route_event(db, compiled):
+    # A real promotion subscriber fenced by an unavailable route must retry.
+    # Only proof of no matching subscription can sink an inactive notification.
+    await _activate(db, compiled, "promotion-request", "promotion.request_due")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "promotion.request_due"
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        _never_refreshed,
+        _shutting_down,
+        _unready_in_scope_activation,
+        _unloadable_artifact,
+        _fenced_lifecycle_subscriber,
+        _integration_route_event,
+        _promotion_route_event,
+    ],
+    ids=lambda scenario: scenario.__name__.strip("_"),
+)
+async def test_runtime_withholds_no_consumer_proof_it_cannot_establish(
+    db, tmp_path, scenario,
+):
+    runtime, event_type = await scenario(db, tmp_path / "compiled")
+    await _enqueue(db, event_type=event_type)
+
+    assert await _offer(runtime, prove_no_consumer=True) is False
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [row] = await _outbox_rows(db)
+    assert row["delivered_at"] is None
+    assert row["available_at"] == NOW + 1
+    assert row["last_error"] == "no enabled matching playbook durably accepted the event"
+
+
+async def test_runtime_proof_rereads_activations_committed_after_its_refresh(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _enqueue(db, event_type="integration.cleanup_pending")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    # The subscriber commits before the runtime's refresh observes it.
+    await _activate(db, compiled, "custom-consumer", "integration.cleanup_pending")
+
+    outbox = IntegrationOutbox(db, _proving(runtime), clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert not retry["last_error"].startswith("unsubscribed:")
+
+    await runtime.refresh()
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1")
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
+async def test_runtime_proof_for_an_unknown_event_type_stays_bounded_not_sunk(db, tmp_path):
+    await _enqueue(db, event_type="integration.custom_notification")
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    now = [NOW]
+    outbox = IntegrationOutbox(
+        db, _proving(runtime), max_wait_seconds=3, retry_base_seconds=10, clock=lambda: now[0],
+    )
+
+    assert await outbox.dispatch_due(now[0]) == 0
+    [retry] = await _outbox_rows(db)
+    assert retry["delivered_at"] is None
+    assert retry["last_error"].startswith("NoIntegrationEventConsumer: no ready playbook")
+    now[0] = NOW + 3
+    assert await outbox.dispatch_due(now[0]) == 0
+    [quarantined] = await _outbox_rows(db)
+    assert quarantined["delivered_at"] is None
+    assert quarantined["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+
+
+async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "integration-train-a", "integration.sealed")
+    await _activate(db, compiled, "integration-train-b", "integration.sealed")
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    original = db.retain_integration_event
+    calls = 0
+
+    async def crash_on_second_destination(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated destination write failure")
+        return await original(**kwargs)
+
+    db.retain_integration_event = crash_on_second_destination
+    outbox = IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    assert len(await _pending_rows(db)) == 1
+
+    db.retain_integration_event = original
+    assert await outbox.dispatch_due(NOW + 1) == 1
+    await _wait_for_accepted(db, "event-1", count=2)
+    await _wait_for_pending_resolution(db, "event-1", count=2)
+    await runtime.shutdown()
+
+    rows = await _pending_rows(db)
+    assert len(rows) == 2
+    assert len({row["playbook_id"] for row in rows}) == 2
+    assert all(row["protected"] for row in rows)
+    assert await _accepted_activation_count(db, "event-1") == 2
+
+
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(
+    db, tmp_path, supplied_time
+):
+    activation_id, artifact_sha256 = await _activate(
+        db, tmp_path / "compiled", "integration-train", "integration.sealed"
+    )
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    # Exercise one dispatch directly without the reconciler claiming the same
+    # row or clearing last_error for its next retry before we inspect it.
+    await runtime.shutdown()
+    pending_id = await db.retain_integration_event(
+        playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
+        scope="project",
+        scope_identifier="p",
+        event_type="integration.sealed",
+        event={
+            "_event_type": "integration.sealed",
+            "event_id": "event-1",
+            "project_id": "p",
+            "operation_id": "operation-1",
+            "_received_at": supplied_time,
+        },
+        event_id="event-1",
+        now=NOW,
+    )
+    [row] = await db.get_pending_events([pending_id])
+
+    async def partial_dispatch(event, *_args, **_kwargs):
+        assert event["_received_at"] == NOW
+        return SimpleNamespace(
+            rules_selected=("accepted", "crashed-before-run"),
+            run_ids=("run-1",),
+        )
+
+    runtime._engine.dispatch_event = partial_dispatch
+    await runtime._dispatch_integration_pending(row)
+
+    [retained] = await db.get_pending_events([pending_id])
+    assert retained["protected"] is True
+    assert "no durable playbook run" in retained["last_error"]
+
+
+async def test_protected_pending_events_ignore_generic_expiry_overflow_and_discard(
+    db, tmp_path
+):
+    activation_id, artifact_sha256 = await _activate(
+        db, tmp_path / "compiled", "integration-train", "integration.sealed"
+    )
+    await db.retain_integration_event(
+        playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
+        scope="project",
+        scope_identifier="p",
+        event_type="integration.sealed",
+        event={"event_id": "protected", "project_id": "p", "operation_id": "op"},
+        event_id="protected",
+        now=NOW,
+    )
+    db.set_playbook_pending_event_quota(1)
+    db.set_playbook_pending_event_overflow("drop_oldest")
+    first = await db.retain_pending_event(
+        playbook_id="ordinary",
+        scope="system",
+        scope_identifier="",
+        event_type="task.completed",
+        event={"event_id": "ordinary-1"},
+        event_id="ordinary-1",
+        dedup_key="ordinary-1",
+        reason="unavailable",
+        now=NOW,
+        ttl_seconds=1,
+    )
+    second = await db.retain_pending_event(
+        playbook_id="ordinary",
+        scope="system",
+        scope_identifier="",
+        event_type="task.completed",
+        event={"event_id": "ordinary-2"},
+        event_id="ordinary-2",
+        dedup_key="ordinary-2",
+        reason="unavailable",
+        now=NOW + 0.5,
+        ttl_seconds=1,
+    )
+
+    await db.purge_pending_events(NOW + 10, resolved_before=0)
+    assert not await db.resolve_pending_event(
+        (await _pending_rows(db))[0]["pending_event_id"],
+        resolution="discarded",
+        resolved_by="operator",
+        now=NOW + 10,
+        resolution_reason="generic cleanup",
+    )
+
+    rows = await _pending_rows(db)
+    protected = [row for row in rows if row["event_id"] == "protected"]
+    assert len(protected) == 1
+    assert protected[0]["resolved_at"] is None
+    assert first != second
+    [dropped] = [row for row in rows if row["pending_event_id"] == first]
+    assert dropped["resolution"] == "discarded"
+
+
+async def test_protected_destination_identity_includes_activation_scope(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    system_activation, system_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="system",
+    )
+    project_activation, project_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="project",
+    )
+    event = {
+        "event_id": "shared",
+        "project_id": "p",
+        "operation_id": "op",
+    }
+    system = await db.retain_integration_event(
+        playbook_id="integration-train",
+        activation_id=system_activation,
+        artifact_sha256=system_sha,
+        scope="system",
+        scope_identifier="",
+        event_type="integration.sealed",
+        event=event,
+        event_id="shared",
+        now=NOW,
+    )
+    project = await db.retain_integration_event(
+        playbook_id="integration-train",
+        activation_id=project_activation,
+        artifact_sha256=project_sha,
+        scope="project",
+        scope_identifier="p",
+        event_type="integration.sealed",
+        event=event,
+        event_id="shared",
+        now=NOW,
+    )
+
+    assert system != project
+    assert len(await _pending_rows(db)) == 2
+
+
+async def test_scoped_destinations_dispatch_only_their_pinned_activation(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _system_id, system_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="system",
+    )
+    project_id, project_sha = await _activate(
+        db,
+        compiled,
+        "integration-train",
+        "integration.sealed",
+        scope="project",
+    )
+    await _enable_with_route(
+        db,
+        playbook_id="integration-train",
+        activation_id=project_id,
+        artifact_sha256=project_sha,
+        scope="project",
+        scope_identifier="p",
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="integration-train",
+        artifact_sha256=project_sha,
+        activation_id=project_id,
+    )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert await IntegrationOutbox(db, runtime.accept_integration_event, clock=lambda: NOW).dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1", count=1)
+    await _wait_for_pending_resolution(db, "event-1", count=1)
+    await runtime.shutdown()
+
+    async with db._engine.connect() as conn:
+        runs = (await conn.execute(select(playbook_v2_runs))).mappings().all()
+    assert [row["artifact_sha256"] for row in runs] == [project_sha]
+    assert system_sha != project_sha
+
+
+async def test_one_system_route_services_two_projects_without_crossing_identity(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha = await _activate(
+        db,
+        compiled,
+        "root-integration-train",
+        "integration.sweep_due",
+        scope="system",
+    )
+    await db.create_project(Project(id="p2", name="second integration project"))
+    for project_id in ("p", "p2"):
+        await _enable_with_route(
+            db,
+            playbook_id="root-integration-train",
+            activation_id=activation_id,
+            artifact_sha256=artifact_sha,
+            scope="system",
+            scope_identifier="",
+            project_id=project_id,
+        )
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+
+    for ordinal, project_id in enumerate(("p", "p2"), start=1):
+        event_id = f"event-{ordinal}"
+        operation_id = f"integration-sweep:{project_id}:1"
+        async with db.immediate() as conn:
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=event_id,
+                project_id=project_id,
+                event_type="integration.sweep_due",
+                payload={"project_id": project_id, "operation_id": operation_id},
+                available_at=NOW,
+            )
+        assert await runtime.accept_integration_event(
+            "integration.sweep_due",
+            {
+                "project_id": project_id,
+                "operation_id": operation_id,
+            },
+            event_id,
+        )
+    await runtime.shutdown()
+
+    rows = sorted(await _pending_rows(db), key=lambda row: row["event_id"])
+    assert [row["scope"] for row in rows] == ["system", "system"]
+    assert [row["scope_identifier"] for row in rows] == ["", ""]
+    assert [json.loads(row["event"])["project_id"] for row in rows] == ["p", "p2"]
+
+
+async def test_system_route_rejects_disabled_or_policyless_project(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    await _activate(
+        db,
+        compiled,
+        "root-integration-train",
+        "integration.sweep_due",
+        scope="system",
+    )
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    for ordinal, (project_id, operation_id) in enumerate(
+        (("p", "integration-sweep:p:1"), ("p", "integration-sweep:p:2")), start=1
+    ):
+        async with db.immediate() as conn:
+            await enqueue_integration_event(
+                conn,
+                event_id=f"event-{ordinal}",
+                dedup_key=f"event-{ordinal}",
+                project_id=project_id,
+                event_type="integration.sweep_due",
+                payload={"project_id": project_id, "operation_id": operation_id},
+                available_at=NOW,
+            )
+
+    assert not await runtime.accept_integration_event(
+        "integration.sweep_due",
+        {"project_id": "p", "operation_id": "integration-sweep:p:1"},
+        "event-1",
+    )
+    assert not await runtime.accept_integration_event(
+        "integration.sweep_due",
+        {"project_id": "", "operation_id": "integration-sweep:p:2"},
+        "event-2",
+    )
+    assert await _pending_rows(db) == []
+    await runtime.shutdown()
+
+
+@pytest.mark.parametrize("audit_activation_present", [True, False])
+async def test_system_frozen_operation_route_rejects_another_project(
+    db, tmp_path, audit_activation_present
+):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha = await _activate(
+        db,
+        compiled,
+        "root-integration-train",
+        "integration.sealed",
+        scope="system",
+    )
+    await db.create_project(Project(id="p2", name="second integration project"))
+    for project_id in ("p", "p2"):
+        await _enable_with_route(
+            db,
+            playbook_id="root-integration-train",
+            activation_id=activation_id,
+            artifact_sha256=artifact_sha,
+            scope="system",
+            scope_identifier="",
+            project_id=project_id,
+        )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="root-integration-train",
+        artifact_sha256=artifact_sha,
+        activation_id=activation_id if audit_activation_present else None,
+        scope="system",
+        scope_identifier="",
+        batch_project_id="p",
+    )
+    async with db.immediate() as conn:
+        for project_id in ("p", "p2"):
+            await enqueue_integration_event(
+                conn,
+                event_id=f"event-{project_id}",
+                dedup_key=f"event-{project_id}",
+                project_id=project_id,
+                event_type="integration.sealed",
+                payload={"project_id": project_id, "operation_id": "operation-1"},
+                available_at=NOW,
+            )
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p2", "operation_id": "operation-1"},
+        "event-p2",
+    )
+    assert await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-p",
+    )
+    [pending] = await _pending_rows(db)
+    assert json.loads(pending["event"])["project_id"] == "p"
+    await runtime.shutdown()
+
+
+async def test_large_fanout_acceptance_resumes_in_bounded_pages(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    for ordinal in range(65):
+        await _activate(
+            db,
+            compiled,
+            f"integration-train-{ordinal:02d}",
+            "integration.sealed",
+        )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+    original = db.retain_integration_event
+    accepted: list[str] = []
+
+    async def record_destination(**kwargs):
+        accepted.append(kwargs["activation_id"])
+        return await original(**kwargs)
+
+    db.retain_integration_event = record_destination
+    payload = {"project_id": "p", "operation_id": "operation-1"}
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert len(accepted) == 32
+    assert not await runtime.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert len(accepted) == 64
+    assert await runtime.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert len(accepted) == 65
+    assert len(await _pending_rows(db)) == 65
+
+
+async def test_managed_project_does_not_admit_legacy_merge_sweep_destination(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "pr-merge-sweep", "integration.sealed")
+    async with db.immediate() as conn:
+        await db.set_integration_legacy_suppression_on(
+            conn,
+            project_id="p",
+            generation=0,
+            merge_sweep_suppressed=True,
+            final_review_route_suppressed=True,
+            legacy_gate_creation_suppressed=True,
+            policy_snapshot={},
+            now=NOW,
+        )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert not await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    assert await _pending_rows(db) == []
+    await runtime.shutdown()
+
+
+
+
+async def test_reactivation_does_not_replace_an_accepted_artifact(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _old_activation, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    accepting = _runtime(db, compiled)
+    await accepting.refresh()
+    accepting._schedule_integration_pending = lambda _rows: None
+    assert await accepting.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    await accepting.shutdown()
+
+    _new_activation, new_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    assert new_sha != old_sha
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+
+    async with db._engine.connect() as conn:
+        runs = (await conn.execute(select(playbook_v2_runs))).mappings().all()
+    assert [row["artifact_sha256"] for row in runs] == [old_sha]
+
+
+async def test_new_operation_event_uses_frozen_owner_and_current_sibling_artifacts(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    owner_activation, owner_old_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="1"
+    )
+    _sibling_activation, sibling_sha = await _activate(
+        db, compiled, "integration-observer", "integration.sealed", source_digit="3"
+    )
+    await _enable_with_route(
+        db,
+        playbook_id="hierarchical-delivery",
+        activation_id=owner_activation,
+        artifact_sha256=owner_old_sha,
+        scope="project",
+        scope_identifier="p",
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256=owner_old_sha,
+        activation_id=owner_activation,
+    )
+    _same_owner_activation, owner_new_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="2"
+    )
+    assert owner_new_sha != owner_old_sha
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    runtime._schedule_integration_pending = lambda _rows: None
+
+    assert await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    await runtime.shutdown()
+
+    pending = {row["playbook_id"]: row for row in await _pending_rows(db)}
+    assert pending["hierarchical-delivery"]["artifact_sha256"] == owner_old_sha
+    assert pending["integration-observer"]["artifact_sha256"] == sibling_sha
+    assert owner_new_sha not in {row["artifact_sha256"] for row in pending.values()}
+
+
+async def test_disabled_frozen_owner_still_accepts_new_operation_event(
+    db, tmp_path
+):
+    compiled = tmp_path / "compiled"
+    owner_activation, owner_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="1"
+    )
+    sibling_activation, sibling_sha = await _activate(
+        db, compiled, "integration-observer", "integration.sealed", source_digit="3"
+    )
+    await _enable_with_route(
+        db,
+        playbook_id="hierarchical-delivery",
+        activation_id=owner_activation,
+        artifact_sha256=owner_sha,
+        scope="project",
+        scope_identifier="p",
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256=owner_sha,
+        activation_id=owner_activation,
+    )
+    await db.set_playbook_activation(
+        playbook_id="hierarchical-delivery",
+        scope="project",
+        scope_identifier="p",
+        artifact_sha256=owner_sha,
+        enabled=False,
+        activated_by="test",
+        health="disabled",
+        reasons="[]",
+    )
+    await _enqueue(db)
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+
+    assert await runtime.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+    state = await load_acceptance_state(db, "event-1")
+    assert state.manifest == tuple(
+        sorted(
+            (
+                {
+                    "activation_id": owner_activation,
+                    "playbook_id": "hierarchical-delivery",
+                    "scope": "project",
+                    "scope_identifier": "p",
+                    "artifact_sha256": owner_sha,
+                },
+                {
+                    "activation_id": sibling_activation,
+                    "playbook_id": "integration-observer",
+                    "scope": "project",
+                    "scope_identifier": "p",
+                    "artifact_sha256": sibling_sha,
+                },
+            ),
+            key=lambda item: (item["activation_id"], item["artifact_sha256"]),
+        )
+    )
+    pending = {row["activation_id"]: row for row in await _pending_rows(db)}
+    assert pending[owner_activation]["artifact_sha256"] == owner_sha
+    assert pending[sibling_activation]["artifact_sha256"] == sibling_sha
+    await runtime.shutdown()
+
+
+async def test_operation_pin_is_a_reference_for_gc_file_rechecks(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, old_sha = await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="1"
+    )
+    await _pin_operation_route(
+        db,
+        operation_id="operation-1",
+        playbook_id="hierarchical-delivery",
+        artifact_sha256=old_sha,
+        activation_id=activation_id,
+    )
+    await _activate(
+        db, compiled, "hierarchical-delivery", "integration.sealed", source_digit="2"
+    )
+
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+    assert old_sha not in {sha for sha, _path in collected}
+    # The file collector re-checks references after the artifact row has been
+    # deleted. Temporarily bypass FK triggers in this test transaction so the
+    # normalized operation pin must protect the hash on its own.
+    async with db._engine.connect() as conn:
+        await conn.execute(text("SET LOCAL session_replication_role = replica"))
+        await conn.execute(
+            delete(playbook_artifacts).where(
+                playbook_artifacts.c.artifact_sha256 == old_sha
+            )
+        )
+        await conn.commit()
+
+    assert await db.filter_referenced_artifact_shas([old_sha]) == {old_sha}
+
+
+async def test_restart_reconciler_drains_more_than_one_bounded_page(
+    db, tmp_path, monkeypatch
+):
+    # The property under test is paging: the restart reconciler must keep
+    # refilling its bounded replay slots until every retained row has been
+    # dispatched, not stop after the first page.  A small page keeps the test
+    # about paging rather than SQLite throughput: every dispatch is a real
+    # playbook run behind the serialized ``immediate()`` writer lock, so 101
+    # events at the production page size need well over the 10s wait on a
+    # loaded runner.
+    monkeypatch.setattr(runtime_module, "_INTEGRATION_REPLAY_PAGE_SIZE", 4)
+    total = 9  # two full pages and a partial third
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha256 = await _activate(
+        db, compiled, "integration-train", "integration.sealed"
+    )
+    for ordinal in range(total):
+        event_id = f"event-{ordinal:03d}"
+        await db.retain_integration_event(
+            playbook_id="integration-train",
+            activation_id=activation_id,
+            artifact_sha256=artifact_sha256,
+            scope="project",
+            scope_identifier="p",
+            event_type="integration.sealed",
+            event={
+                "_event_type": "integration.sealed",
+                "event_id": event_id,
+                "project_id": "p",
+                "operation_id": f"operation-{ordinal:03d}",
+            },
+            event_id=event_id,
+            now=NOW + ordinal,
+        )
+
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    async with asyncio.timeout(10):
+        while (
+            sum(
+                row["resolution"] == "dispatched"
+                for row in await _pending_rows(db)
+            )
+            < total
+        ):
+            await asyncio.sleep(0.02)
+    await restarted.shutdown()
+
+    assert await _accepted_activation_count(db, f"event-{total - 1:03d}") == 1
+    assert sum(row["resolution"] == "dispatched" for row in await _pending_rows(db)) == total
+
+
+async def test_artifact_retention_keeps_pending_pin(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    accepting = _runtime(db, compiled)
+    await accepting.refresh()
+    accepting._integration_reconciler_task.cancel()
+    await asyncio.gather(accepting._integration_reconciler_task, return_exceptions=True)
+    accepting._integration_reconciler_task = None
+    accepting._integration_wakeup.clear()
+    accepting._schedule_integration_pending = lambda _rows: None
+    assert await accepting.accept_integration_event(
+        "integration.sealed",
+        {"project_id": "p", "operation_id": "operation-1"},
+        "event-1",
+    )
+
+    await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+
+    assert old_sha not in {sha for sha, _path in collected}
+    [pending] = await _pending_rows(db)
+    assert pending["activation_id"] == activation_id
+    assert pending["artifact_sha256"] == old_sha
+
+
+async def test_artifact_retention_keeps_unaccepted_manifest_pin(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    await freeze_destination_manifest(
+        db,
+        "event-1",
+        [
+            {
+                "activation_id": activation_id,
+                "playbook_id": "integration-train",
+                "scope": "project",
+                "scope_identifier": "p",
+                "artifact_sha256": old_sha,
+            }
+        ],
+    )
+    [pin] = await _artifact_pin_rows(db)
+    assert pin["artifact_sha256"] == old_sha
+    await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+
+    collected = await db.collect_playbook_artifacts(
+        NOW + 1_000_000, min_versions=0, limit=100
+    )
+
+    assert old_sha not in {sha for sha, _path in collected}
+
+
+async def test_artifact_gc_retains_a_candidate_on_concurrent_fk_conflict(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    await _enqueue(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            text(
+                "CREATE FUNCTION test_concurrent_artifact_pin() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN "
+                "INSERT INTO integration_outbox_artifact_pins(event_id, artifact_sha256) "
+                "VALUES ('event-1', OLD.artifact_sha256); RETURN OLD; END $$"
+            )
+        )
+        await conn.execute(text(
+            "CREATE TRIGGER test_concurrent_artifact_pin BEFORE DELETE ON "
+            "playbook_artifacts FOR EACH ROW "
+            f"WHEN (OLD.artifact_sha256 = '{old_sha}') "
+            "EXECUTE FUNCTION test_concurrent_artifact_pin()"
+        ))
+
+    try:
+        collected = await db.collect_playbook_artifacts(
+            NOW + 1_000_000, min_versions=0, limit=100
+        )
+    finally:
+        async with db.immediate() as conn:
+            await conn.execute(text(
+                "DROP TRIGGER test_concurrent_artifact_pin ON playbook_artifacts"
+            ))
+            await conn.execute(text("DROP FUNCTION test_concurrent_artifact_pin()"))
+
+    assert old_sha not in {sha for sha, _path in collected}
+    assert await db.get_playbook_artifact(old_sha) is not None
+
+
+async def test_gc_win_does_not_freeze_an_unusable_artifact_manifest(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    _activation_id, old_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="1"
+    )
+    await _enqueue(db)
+    accepting = _runtime(db, compiled)
+    await accepting.refresh()
+    accepting._integration_reconciler_task.cancel()
+    await asyncio.gather(accepting._integration_reconciler_task, return_exceptions=True)
+    accepting._integration_reconciler_task = None
+    accepting._integration_wakeup.clear()
+    accepting._schedule_integration_pending = lambda _rows: None
+
+    _same_activation, new_sha = await _activate(
+        db, compiled, "integration-train", "integration.sealed", source_digit="2"
+    )
+    collected = await db.collect_playbook_artifacts(
+        time.time() + 1_000_000, min_versions=0, limit=100
+    )
+    assert old_sha in {sha for sha, _path in collected}
+
+    payload = {"project_id": "p", "operation_id": "operation-1"}
+    assert not await accepting.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    assert (await load_acceptance_state(db, "event-1")).manifest is None
+    assert await accepting.accept_integration_event(
+        "integration.sealed", payload, "event-1"
+    )
+    [pending] = await _pending_rows(db)
+    assert pending["artifact_sha256"] == new_sha
+
+
+async def test_reconciler_recovers_after_transient_pending_list_failure(db, tmp_path):
+    compiled = tmp_path / "compiled"
+    activation_id, artifact_sha256 = await _activate(
+        db, compiled, "integration-train", "integration.sealed"
+    )
+    await db.retain_integration_event(
+        playbook_id="integration-train",
+        activation_id=activation_id,
+        artifact_sha256=artifact_sha256,
+        scope="project",
+        scope_identifier="p",
+        event_type="integration.sealed",
+        event={
+            "_event_type": "integration.sealed",
+            "event_id": "event-1",
+            "project_id": "p",
+            "operation_id": "operation-1",
+        },
+        event_id="event-1",
+        now=NOW,
+    )
+    original = db.list_pending_integration_events
+    fail_once = True
+
+    async def transient_failure(**kwargs):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("transient pending read")
+        return await original(**kwargs)
+
+    db.list_pending_integration_events = transient_failure
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    try:
+        async with asyncio.timeout(2):
+            while not (await _pending_rows(db))[0]["resolved_at"]:
+                await asyncio.sleep(0.02)
+    finally:
+        await runtime.shutdown()
+
+    assert (await _pending_rows(db))[0]["resolution"] == "dispatched"
+
+
+async def test_refresh_restarts_a_completed_reconciler(db, tmp_path):
+    runtime = _runtime(db, tmp_path / "compiled")
+    await runtime.refresh()
+    stopped = runtime._integration_reconciler_task
+    stopped.cancel()
+    await asyncio.gather(stopped, return_exceptions=True)
+    assert stopped.cancelled()
+
+    await runtime.refresh()
+    restarted = runtime._integration_reconciler_task
+    try:
+        assert restarted is not stopped
+        assert not restarted.done()
+    finally:
+        await runtime.shutdown()
+
+
+async def test_acceptance_cursor_cannot_regress(db):
+    await _enqueue(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            integration_outbox.update()
+            .where(integration_outbox.c.id == "event-1")
+            .values(acceptance_cursor=1)
+        )
+
+    with pytest.raises(DBAPIError, match="acceptance cursor cannot decrease"):
+        async with db.immediate() as conn:
+            await conn.execute(
+                integration_outbox.update()
+                .where(integration_outbox.c.id == "event-1")
+                .values(acceptance_cursor=0)
+            )
+
+
+async def test_retry_delay_is_exponential_and_bounded(db):
+    await _enqueue(db)
+
+    async def unavailable(*_args, **_kwargs):
+        return False
+
+    outbox = IntegrationOutbox(
+        db,
+        unavailable,
+        retry_base_seconds=2,
+        retry_max_seconds=5,
+        clock=lambda: now,
+    )
+    for now, expected in ((NOW, NOW + 2), (NOW + 2, NOW + 6), (NOW + 6, NOW + 11)):
+        assert await outbox.dispatch_due(now) == 0
+        [row] = await _outbox_rows(db)
+        assert row["available_at"] == expected
+
+
+async def test_dispatch_page_is_bounded(db):
+    for index in range(3):
+        await _enqueue(db, event_id=f"event-{index}", dedup_key=f"sealed:{index}")
+
+    accepted: list[str] = []
+
+    async def accept(_event_type, payload, event_id):
+        accepted.append(event_id)
+        return True
+
+    outbox = IntegrationOutbox(db, accept, page_size=2, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 2
+    assert len(accepted) == 2
+
+
+async def test_promotion_only_pages_do_not_dispatch_or_starve_behind_legacy_events(db):
+    async with db.immediate() as conn:
+        for index in range(7):
+            await enqueue_integration_event(conn, event_id=f"legacy-{index}",
+                dedup_key=f"legacy-{index}", project_id="p",
+                event_type="integration.sealed", payload={}, available_at=NOW - 1)
+        for index, event_type in enumerate(sorted(PROMOTION_EVENT_TYPES)):
+            await enqueue_integration_event(conn, event_id=f"promotion-{index}",
+                dedup_key=f"promotion-{index}", project_id="p",
+                event_type=event_type, payload={}, available_at=NOW)
+    accepted = []
+
+    async def accept(event_type, _payload, _event_id):
+        accepted.append(event_type)
+        return True
+
+    # Restart in the middle of the page scan; all promotion kinds remain
+    # deliverable, while legacy rows retain their attempts and availability.
+    for _restart in range(2):
+        outbox = IntegrationOutbox(db, accept, page_size=2, clock=lambda: NOW)
+        for _page in range(3):
+            await outbox.dispatch_due(NOW, event_types=PROMOTION_EVENT_TYPES)
+    assert sorted(accepted) == sorted(PROMOTION_EVENT_TYPES)
+    rows = await _outbox_rows(db)
+    legacy = [row for row in rows if row["id"].startswith("legacy-")]
+    assert len(legacy) == 7
+    assert all(row["delivered_at"] is None and row["attempts"] == 0
+               and row["available_at"] == NOW - 1 for row in legacy)
+    # An empty filtered scan must finish even though legacy work remains due.
+    assert await outbox.dispatch_due(NOW, event_types=PROMOTION_EVENT_TYPES) == 0
+
+
+async def test_slow_declines_retry_from_completion_and_page_other_projects(db, caplog):
+    await db.create_project(Project(id="q", name="other project"))
+    now = [NOW]
+    async with db.immediate() as conn:
+        for event_id, project_id in (("a", "p"), ("b", "p"), ("c", "q")):
+            await enqueue_integration_event(
+                conn, event_id=event_id, dedup_key=event_id, project_id=project_id,
+                event_type="integration.no_consumer", payload={}, available_at=NOW,
+            )
+    seen = []
+
+    async def decline(_event_type, _payload, event_id):
+        seen.append(event_id)
+        now[0] += 180
+        return False
+
+    outbox = IntegrationOutbox(db, decline, page_size=1, clock=lambda: now[0])
+    for _ in range(3):
+        assert await outbox.dispatch_due(now[0]) == 0
+    assert seen == ["a", "b", "c"]
+    rows = {row["id"]: row for row in await _outbox_rows(db)}
+    assert rows["a"]["available_at"] == NOW + 181
+    assert rows["c"]["available_at"] == NOW + 541
+    assert all(row["delivered_at"] is None for row in rows.values())
+    assert all(row["attempts"] == 1 for row in rows.values())
+    assert "elapsed=180.000s" in caplog.text
+    # Retry keys moved beyond the frozen scan boundary. Wrap, retaining every
+    # historical event and allowing a later activation to accept them.
+    outbox._accept_event = lambda *_args: asyncio.sleep(0, result=True)
+    assert await outbox.dispatch_due(now[0]) == 1
+    rows = {row["id"]: row for row in await _outbox_rows(db)}
+    assert rows["a"]["delivered_at"] == now[0]

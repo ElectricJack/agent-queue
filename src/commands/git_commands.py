@@ -3,11 +3,14 @@
 Provides git-related commands that go through the CommandHandler dispatch
 surface.  Currently contains:
 
-- ``pr_merge`` — merge a PR via ``gh pr merge``.  Only callable by profiles
-  that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in
-  the shipped dv2-phase2 configuration).  A merge is also where the daemon
+- ``pr_merge`` — merge a PR via ``gh pr merge``.  Used only when a task
+  delegates publication and the project's configured publisher is PR-based;
+  callable only by profiles that grant ``pr_merge``.  A merge is also where the daemon
   learns *which branch* the work actually landed on — see
   :meth:`GitCommandsMixin._record_pr_base`.
+- ``task_deliver`` — merge a BLOCKED task's pushed branch into its default
+  branch by hand and complete it; the supervisor's control for work whose
+  close stopped at delivery (a project with no pull-request host).
 """
 
 from __future__ import annotations
@@ -19,15 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 class GitCommandsMixin:
-    """Mixin that adds git PR commands to CommandHandler."""
+    """Git publication and pull request commands for CommandHandler."""
+
 
     async def _cmd_pr_merge(self, args: dict) -> dict:
-        """Merge a PR.  Backs ``aq pr merge`` and the final-reviewer's tool.
+        """Merge a PR.  Backs ``aq pr merge`` and the ``pr_merge`` agent tool.
 
-        Only allowed for profiles that whitelist ``pr_merge`` in
-        ``allowed_tools`` — the profile system enforces the toolset per
-        agent, so worker profiles cannot invoke this even if they discover
-        the command name.
+        Only allowed for profiles that grant ``pr_merge`` — the profile
+        system enforces the toolset per agent, so a profile without it
+        cannot invoke this even if it discovers the command name.
 
         Before merging, the PR's status-check rollup is consulted according
         to ``integration.merge_ci_policy`` — see :meth:`_check_ci_before_merge`.
@@ -39,7 +42,7 @@ class GitCommandsMixin:
         Args:
             project_id: ID of the project whose workspace will be used.
             pr_url: Full GitHub PR URL, e.g. ``https://github.com/o/r/pull/42``.
-            method: Merge strategy — ``"squash"`` (default), ``"merge"``,
+            method: Merge strategy — ``"merge"`` (default), ``"squash"``,
                 or ``"rebase"``.
             force: Merge even when ``merge_ci_policy: required`` would
                 refuse. This waives only the CI policy: immutable PR identity
@@ -51,7 +54,7 @@ class GitCommandsMixin:
         """
         project_id = args.get("project_id")
         pr_url = args.get("pr_url")
-        method = str(args.get("method") or "squash")
+        method = str(args.get("method") or "merge")
         force = bool(args.get("force") or False)
 
         if not project_id:
@@ -66,6 +69,25 @@ class GitCommandsMixin:
                 "pr_url": pr_url,
                 "sha": None,
                 "error": f"unknown project: {project_id}",
+            }
+        if project.hierarchical_integration_mode in {"hierarchy", "train"}:
+            return {
+                "success": False,
+                "outcome": "integration_managed",
+                "pr_url": pr_url,
+                "sha": None,
+                "error": (
+                    "ordinary pr_merge is disabled for hierarchy-managed projects; "
+                    "use the exact integration promotion protocol"
+                ),
+            }
+
+        try:
+            repository = await self.orchestrator.git.bind_github_repository(project.repo_url)
+        except Exception as exc:
+            return {
+                "success": False, "pr_url": pr_url, "sha": None,
+                "error": f"Could not authorize project repository: {exc}",
             }
 
         # ``gh pr merge`` used to run in ``get_project_workspace_path()`` —
@@ -82,12 +104,46 @@ class GitCommandsMixin:
         cwd = self.config.data_dir or os.getcwd()
         os.makedirs(cwd, exist_ok=True)
 
+        # A repeated command may follow a timeout or a gh exit during branch
+        # cleanup.  A canonical merged PR is already settled: do not re-run
+        # CI against a closed PR or issue a second merge request.
+        try:
+            already_merged = await self.orchestrator.git.acheck_pr_merged(
+                cwd, pr_url, repository=repository
+            )
+        except Exception as exc:
+            return {
+                "success": False, "pr_url": pr_url, "sha": None,
+                "outcome": "merge_state_unknown",
+                "error": f"Could not reconcile PR merge state: {exc}",
+            }
+        if already_merged:
+            response = {
+                "success": True, "pr_url": pr_url, "sha": None,
+                "outcome": "already_merged",
+            }
+            try:
+                response.update(await self._record_pr_base(
+                    project, pr_url, cwd, repository=repository
+                ))
+            except Exception:
+                logger.warning("Could not record the base branch for %s", pr_url, exc_info=True)
+            return response
+        if already_merged is None:
+            return {
+                "success": False, "pr_url": pr_url, "sha": None,
+                "outcome": "closed_unmerged",
+                "error": "PR is closed without a confirmed merge",
+            }
+
         # Validate the concrete base/head pair and the merge-base PR diff
         # before CI is consulted. ``force`` is deliberately unavailable here:
         # it can waive a policy opinion about CI, never delivery identity or
         # daemon-owned paths.
         try:
-            identity = await self.orchestrator.git.avalidate_pr_for_merge(cwd, pr_url)
+            identity = await self.orchestrator.git.avalidate_pr_for_merge(
+                cwd, pr_url, repository=repository
+            )
         except Exception as exc:
             return {
                 "success": False,
@@ -96,7 +152,9 @@ class GitCommandsMixin:
                 "error": f"Could not validate immutable PR delivery: {exc}",
             }
 
-        ci = await self._check_ci_before_merge(cwd, pr_url, force=force)
+        ci = await self._check_ci_before_merge(
+            cwd, pr_url, force=force, repository=repository
+        )
         if ci is not None and ci.get("blocked"):
             return {
                 "success": False,
@@ -112,12 +170,15 @@ class GitCommandsMixin:
             method=method,
             expected_head_oid=identity.head_oid,
             expected_base_ref=identity.base_ref,
+            repository=repository,
         )
         response = {
             "success": result["success"],
             "pr_url": pr_url,
             "sha": result.get("sha"),
         }
+        if result.get("outcome"):
+            response["outcome"] = result["outcome"]
         if ci is not None:
             response["ci"] = ci
         if error := result.get("error"):
@@ -126,14 +187,17 @@ class GitCommandsMixin:
             # Best-effort: the merge has already happened, so a failure to
             # annotate it must never be reported as a failed merge.
             try:
-                response.update(await self._record_pr_base(project, pr_url, cwd))
+                response.update(await self._record_pr_base(
+                    project, pr_url, cwd, repository=repository
+                ))
             except Exception:
-                logger.warning(
-                    "Could not record the base branch for %s", pr_url, exc_info=True
-                )
+                logger.warning("Could not record the base branch for %s", pr_url, exc_info=True)
         return response
 
-    async def _check_ci_before_merge(self, cwd: str, pr_url: str, *, force: bool) -> dict | None:
+
+    async def _check_ci_before_merge(
+        self, cwd: str, pr_url: str, *, force: bool, repository=None
+    ) -> dict | None:
         """Apply ``integration.merge_ci_policy`` to a PR about to be merged.
 
         Returns ``None`` when the policy is ``off`` (no ``gh`` call is made
@@ -144,7 +208,7 @@ class GitCommandsMixin:
 
         ``blocked`` is the only field ``_cmd_pr_merge`` acts on.  Under
         ``warn`` it is always ``False`` — the point of ``warn`` is that the
-        verdict becomes *visible* (in the command result the final-reviewer
+        verdict becomes *visible* (in the command result the caller
         reads, and in the daemon log) without changing what merges, which
         is what makes it safe to ship on by default while ``main`` itself
         is red.  Under ``required`` anything but green blocks, including
@@ -159,7 +223,9 @@ class GitCommandsMixin:
 
         required = list(getattr(self.config.integration, "merge_required_checks", []) or [])
         try:
-            entries = await self.orchestrator.git.apr_check_rollup(cwd, pr_url)
+            entries = await self.orchestrator.git.apr_check_rollup(
+                cwd, pr_url, repository=repository
+            )
         except Exception:
             # Probing CI must never be the thing that breaks merging. Any
             # failure here is UNKNOWN, which ``warn`` logs and ``required``
@@ -179,10 +245,34 @@ class GitCommandsMixin:
             "forced": False,
             "message": "",
         }
-        if verdict.is_green:
+
+        # The second question: did those checks run against the base as it
+        # is *now*?  A green head that is behind its base is the #390/#391
+        # shape — each PR green alone, the combination untested.  This is
+        # GitHub's "require branches to be up to date" applied here, where
+        # it can be turned on before the ruleset flag (which would refuse
+        # every fleet merge until pr_merge could recover from it).
+        freshness = None
+        if getattr(self.config.integration, "merge_require_up_to_date", True):
+            try:
+                comparison = await self.orchestrator.git.apr_behind_base(
+                    cwd, pr_url, repository=repository
+                )
+            except Exception:
+                logger.warning("Could not compare %s against its base", pr_url, exc_info=True)
+                comparison = None
+            freshness = ci_gate.classify_base(comparison)
+            ci["base"] = freshness.as_dict()
+
+        problems: list[str] = []
+        if not verdict.is_green:
+            problems.append(f"CI is not green ({verdict.state}): {verdict.summary()}")
+        if freshness is not None and not freshness.is_current:
+            problems.append(f"head is {freshness.summary()} ({freshness.state})")
+        if not problems:
             return ci
 
-        detail = f"CI is not green for {pr_url} ({verdict.state}): {verdict.summary()}"
+        detail = f"{pr_url}: " + "; ".join(problems)
         if policy != ci_gate.MERGE_CI_POLICY_REQUIRED:
             ci["message"] = f"{detail} — merged anyway (integration.merge_ci_policy: {policy})"
             logger.warning("%s", ci["message"])
@@ -193,14 +283,27 @@ class GitCommandsMixin:
             logger.warning("%s", ci["message"])
             return ci
         ci["blocked"] = True
+        remedies = ["fix the failing checks", "wait for the run to finish"]
+        if freshness is not None and not freshness.is_current:
+            parsed = ci_gate.parse_pr_url(pr_url)
+            if parsed is not None:
+                owner, repo, number = parsed
+                remedies.append(
+                    "update the branch so its checks re-run against the current base "
+                    f"(gh api -X PUT repos/{owner}/{repo}/pulls/{number}/update-branch)"
+                )
+            else:
+                remedies.append("update the branch (PUT .../pulls/<n>/update-branch)")
+        remedies.append("pass force=true")
         ci["message"] = (
             f"{detail}. Refusing to merge under integration.merge_ci_policy: required. "
-            "Fix the failing checks, wait for the run to finish, or pass force=true."
+            + ", ".join(remedies[:-1])
+            + f", or {remedies[-1]}."
         )
         logger.warning("%s", ci["message"])
         return ci
 
-    async def _record_pr_base(self, project, pr_url: str, cwd: str) -> dict:
+    async def _record_pr_base(self, project, pr_url: str, cwd: str, *, repository=None) -> dict:
         """Record which branch a merged PR actually landed on.
 
         "Merged" is not the same as "on the default branch".  Pkg 4's workers
@@ -217,7 +320,7 @@ class GitCommandsMixin:
         release dependents.  ``gh`` being unavailable is not an error — the
         merge already happened; the annotation is best-effort.
         """
-        base = await self.orchestrator.git.apr_base_ref(cwd, pr_url)
+        base = await self.orchestrator.git.apr_base_ref(cwd, pr_url, repository=repository)
         if not base:
             return {}
         default_branch = await self.orchestrator._get_default_branch(project)

@@ -27,19 +27,23 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import and_, delete, func, insert, or_, select, text, update
+from sqlalchemy import and_, cast, delete, func, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.config import PENDING_EVENT_OVERFLOW_POLICIES
+from src.waits.sources import execute_playbook_wait_mutation
+
 from src.database.tables import (
+    archived_tasks,
     playbook_artifacts,
     playbook_pending_events,
     playbook_step_receipts,
     playbook_v2_runs,
     playbook_waits,
+    tasks,
 )
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.run_state import (
@@ -49,6 +53,7 @@ from src.playbooks.run_state import (
     DuplicateRun,
     DuplicateWait,
     IllegalLifecycleTransition,
+    InterruptedRun,
     PendingEventIntegrityError,
     PendingEventQuotaExceeded,
     RunIdentityMismatch,
@@ -64,10 +69,13 @@ from src.playbooks.run_state import (
     validate_transition,
 )
 from src.playbooks.waits import (
+    CHILD_MISSING_STATUS,
+    CHILD_TERMINAL_STATUSES,
     EMPTY_WAIT_CHANGES,
     EVENT_ADDRESSABLE_WAIT_KINDS,
     PENDING_EVENT_DISPATCH_LEASE_SECONDS,
     MatchableEvent,
+    SettledChildWait,
     WaitChangeSet,
     WaitClaim,
     WaitRegistration,
@@ -94,6 +102,7 @@ def _receipt_row(receipt: StepReceipt) -> dict:
         "turn_index": receipt.turn_index,
         "operator_decision_id": receipt.operator_decision_id,
         "iteration": receipt.iteration,
+        "iteration_path": receipt.iteration_path,
         "attempt": receipt.attempt,
         "idempotency_key": receipt.idempotency_key,
         "snapshot_version": receipt.snapshot_version,
@@ -131,9 +140,7 @@ PENDING_EVENT_EXPIRY_ACTOR = "retention_sweep"
 # the quota's decision, and the row has to say so rather than look like an
 # operator discard.
 PENDING_EVENT_OVERFLOW_ACTOR = "pending_event_overflow"
-PENDING_EVENT_EXPIRY_REASON = (
-    "expired unresolved after its pending-event retention TTL"
-)
+PENDING_EVENT_EXPIRY_REASON = "expired unresolved after its pending-event retention TTL"
 
 # Inbox rows are resolved immediately because they have already entered the
 # wait-delivery path.  They remain durable for the normal pending-event
@@ -150,6 +157,7 @@ class PendingEventPurge:
 
     expired: int
     purged: int
+
 
 #: One quota warning per playbook per minute — a flood is exactly the case
 #: where an unthrottled warning turns a full retention table into a full disk.
@@ -176,6 +184,7 @@ def _wait_row(wait: WaitSpec, snapshot_version: int) -> dict:
         "run_id": wait.run_id,
         "step_id": wait.step_id,
         "iteration": wait.iteration,
+        "iteration_path": wait.iteration_path,
         "kind": wait.kind,
         "event_type": wait.event_type,
         "correlation_key": wait.correlation_key,
@@ -198,6 +207,7 @@ def _row_to_wait(row) -> WaitSpec:
         run_id=row["run_id"],
         step_id=row["step_id"],
         iteration=int(row["iteration"]),
+        iteration_path=row.get("iteration_path", ""),
         kind=row["kind"],
         event_type=row["event_type"],
         match=json.loads(row["match"]),
@@ -206,14 +216,13 @@ def _row_to_wait(row) -> WaitSpec:
     )
 
 
-def _row_to_claim(
-    row, event: _InboxEvent | None, now: float, *, expired: bool
-) -> WaitClaim:
+def _row_to_claim(row, event: _InboxEvent | None, now: float, *, expired: bool) -> WaitClaim:
     return WaitClaim(
         wait_id=row["wait_id"],
         run_id=row["run_id"],
         step_id=row["step_id"],
         iteration=int(row["iteration"]),
+        iteration_path=row.get("iteration_path", ""),
         kind=row["kind"],
         snapshot_version=int(row["snapshot_version"]),
         claimed_event_id=event.event_id if event is not None else None,
@@ -229,6 +238,8 @@ def _row_to_pending_event(row) -> dict[str, Any]:
     return {
         "pending_event_id": row["pending_event_id"],
         "playbook_id": row["playbook_id"],
+        "activation_id": row["activation_id"],
+        "artifact_sha256": row["artifact_sha256"],
         "scope": row["scope"],
         "scope_identifier": row["scope_identifier"],
         "event_type": row["event_type"],
@@ -247,6 +258,7 @@ def _row_to_pending_event(row) -> dict[str, Any]:
         "resolved_by": row["resolved_by"],
         "resolution": row["resolution"],
         "resolution_reason": row["resolution_reason"],
+        "protected": bool(row["protected"]),
     }
 
 
@@ -292,6 +304,7 @@ def _row_to_receipt(row) -> StepReceipt:
         started_at=row["started_at"],
         snapshot_version=int(row["snapshot_version"]),
         iteration=int(row["iteration"]),
+        iteration_path=row.get("iteration_path", ""),
         attempt=int(row["attempt"]),
         idempotency_key=row["idempotency_key"],
         contract_fingerprint=row["contract_fingerprint"],
@@ -335,8 +348,8 @@ def _run_columns(snapshot: RunSnapshot, payload: bytes) -> dict:
         "parent_step_id": snapshot.parent_step_id,
         "deadline_at": snapshot.deadline_at,
         "cancel_requested_at": snapshot.cancel_requested_at,
-        "summary": snapshot.summary,
-        "error": snapshot.error,
+        "summary": "(redacted)" if snapshot.has_private_data and snapshot.summary else snapshot.summary,
+        "error": "private_run_error" if snapshot.has_private_data and snapshot.error else snapshot.error,
         "error_code": snapshot.error_code,
         "updated_at": snapshot.updated_at,
         "completed_at": snapshot.completed_at,
@@ -361,10 +374,50 @@ class PlaybookRunQueryMixin:
     def set_playbook_state_limits(self, limits: StateLimits) -> None:
         self._playbook_state_limits = limits
 
+    def set_playbook_private_values(self, service: Any) -> None:
+        self._playbook_private_values = service
+
+    def playbook_private_values(self) -> Any:
+        from src.playbooks.private_values import PrivateValueService
+
+        return getattr(self, "_playbook_private_values", None) or PrivateValueService(self._engine)
+
+    async def private_run_owner(self, snapshot: RunSnapshot) -> Any:
+        from src.playbooks.private_values import PrivateOwner, PrivateValueError
+
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(select(playbook_artifacts).where(
+                playbook_artifacts.c.artifact_sha256 == snapshot.artifact_sha256,
+                playbook_artifacts.c.playbook_id == snapshot.playbook_id,
+            ))).mappings().first()
+        if row is None:
+            raise PrivateValueError("private_owner_unavailable")
+        return PrivateOwner("run", snapshot.run_id, row["scope"],
+                            row["scope_identifier"] or "system")
+
+    async def _private_snapshot_payload(self, snapshot: RunSnapshot) -> tuple[bytes, Any]:
+        # Check logical bytes before replacing large values with small handles.
+        serialize_snapshot(snapshot, limits=self.playbook_state_limits(), protect=lambda value: value)
+        from src.playbooks.private_values import PrivateOwner
+
+        owner = (await self.private_run_owner(snapshot) if snapshot.has_private_data
+                 else PrivateOwner("run", snapshot.run_id))
+        batch = self.playbook_private_values().batch(owner)
+        payload = serialize_snapshot(snapshot, limits=self.playbook_state_limits(),
+                                     protect=batch.protect)
+        return payload, batch
+
+    async def resolve_private_snapshot(self, snapshot: RunSnapshot, principal: Any) -> RunSnapshot:
+        body = snapshot.to_body(protect=lambda value: value)
+        resolved = await self.playbook_private_values().resolve(
+            body, owner=await self.private_run_owner(snapshot), principal=principal,
+        )
+        return RunSnapshot.from_body(resolved)
+
     # -- runs ---------------------------------------------------------------
 
     async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot:
-        payload = serialize_snapshot(snapshot, limits=self.playbook_state_limits())
+        payload, private_batch = await self._private_snapshot_payload(snapshot)
         values = {
             "run_id": snapshot.run_id,
             "snapshot_version": snapshot.version,
@@ -373,6 +426,7 @@ class PlaybookRunQueryMixin:
         }
         try:
             async with self.immediate() as conn:
+                await private_batch.persist(conn)
                 await conn.execute(insert(playbook_v2_runs).values(**values))
         except IntegrityError as exc:
             # ``uq_playbook_v2_runs_dispatch_rule``: one matching event
@@ -438,9 +492,7 @@ class PlaybookRunQueryMixin:
             check_result_size(snapshot.run_id, step_id, value, limits=limits)
         for turn in snapshot.llm_turns:
             for message in turn.get("transcript_delta", ()):
-                if message.get("role") != "user" or not isinstance(
-                    message.get("content"), list
-                ):
+                if message.get("role") != "user" or not isinstance(message.get("content"), list):
                     continue
                 for block in message["content"]:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -464,11 +516,13 @@ class PlaybookRunQueryMixin:
         ):
             if want != got:
                 raise RunIdentityMismatch(snapshot.run_id, field, want, got)
-        payload = serialize_snapshot(advanced, limits=limits)
+        if snapshot.has_private_data and receipt.error:
+            receipt = replace(receipt, error="private_run_error")
+        payload, private_batch = await self._private_snapshot_payload(advanced)
 
         try:
             return await self._commit_boundary_txn(
-                snapshot, advanced, receipt, wait_changes, payload, limits
+                snapshot, advanced, receipt, wait_changes, payload, limits, private_batch
             )
         except SnapshotVersionConflict as exc:
             # After the transaction has rolled back, so the audit row is a
@@ -514,9 +568,11 @@ class PlaybookRunQueryMixin:
         wait_changes: WaitChangeSet,
         payload: bytes,
         limits: Any,
+        private_batch: Any,
     ) -> RunSnapshot:
         expected = snapshot.version
         async with self.immediate() as conn:
+            await private_batch.persist(conn)
             current = (
                 (
                     await conn.execute(
@@ -579,7 +635,8 @@ class PlaybookRunQueryMixin:
                     advanced,
                     pending_wait_claims=advanced.pending_wait_claims + immediate_claims,
                 )
-                payload = serialize_snapshot(advanced, limits=limits)
+                payload = serialize_snapshot(advanced, limits=limits, protect=private_batch.protect)
+                await private_batch.persist(conn)
                 await conn.execute(
                     update(playbook_v2_runs)
                     .where(
@@ -629,7 +686,7 @@ class PlaybookRunQueryMixin:
         if wait_changes.clear_run_waits:
             await self.clear_for_run(run_id, conn=conn)
         if wait_ids:
-            await conn.execute(
+            await execute_playbook_wait_mutation(conn,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.wait_id.in_(wait_ids),
@@ -699,7 +756,7 @@ class PlaybookRunQueryMixin:
                 .values(
                     snapshot_version=advanced.version,
                     cancel_requested_by=requested_by,
-                    cancel_reason=reason,
+                    cancel_reason="(redacted)" if snapshot.has_private_data else reason,
                     **_run_columns(advanced, payload),
                 )
             )
@@ -713,6 +770,50 @@ class PlaybookRunQueryMixin:
             if target is RunLifecycle.CANCELLED:
                 await self.clear_for_run(run_id, conn=conn)
         return advanced
+
+    async def list_interrupted_runs(
+        self,
+        *,
+        updated_before: float,
+        after: tuple[float, str] | None = None,
+        exclude_ids: Collection[str] = (),
+        limit: int = 100,
+    ) -> list[InterruptedRun]:
+        """One bounded keyset page of runs a prior process left executing.
+
+        Paused runs have durable wait/decision owners; age is never a reason
+        to execute those. The lifecycle index narrows this read to executing
+        runs, and projections avoid loading their potentially large snapshots.
+        """
+        if limit <= 0:
+            return []
+        table = playbook_v2_runs.c
+        stmt = select(
+            table.run_id, table.playbook_id, table.lifecycle,
+            table.current_step_id, table.updated_at,
+        ).where(
+            table.lifecycle.in_((RunLifecycle.RUNNING.value, RunLifecycle.CANCELLING.value)),
+            table.mode == "live",
+            table.updated_at < updated_before,
+        )
+        if after is not None:
+            stamp, run_id = after
+            stmt = stmt.where(or_(
+                table.updated_at > stamp,
+                and_(table.updated_at == stamp, table.run_id > run_id),
+            ))
+        if exclude_ids:
+            stmt = stmt.where(table.run_id.not_in(tuple(exclude_ids)))
+        stmt = stmt.order_by(table.updated_at, table.run_id).limit(min(limit, 100))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [InterruptedRun(
+            run_id=row["run_id"],
+            playbook_id=row["playbook_id"],
+            lifecycle=RunLifecycle(row["lifecycle"]),
+            current_step_id=row["current_step_id"],
+            updated_at=float(row["updated_at"]),
+        ) for row in rows]
 
     async def list_runs(
         self,
@@ -737,12 +838,74 @@ class PlaybookRunQueryMixin:
             for row in rows
         ]
 
+    async def latest_run_per_playbook(
+        self, playbook_ids: Collection[str] | None = None
+    ) -> dict[str, RunSnapshot]:
+        """The newest run of each playbook, keyed by ``playbook_id``.
+
+        The listing surfaces ("last run" on the playbook cards and tables) need
+        one row per *definition*, not the newest N runs box-wide, so this ranks
+        within each playbook rather than paging ``list_runs``.
+        """
+        ranked = select(
+            playbook_v2_runs.c.playbook_id,
+            playbook_v2_runs.c.snapshot,
+            playbook_v2_runs.c.snapshot_version,
+            func.row_number()
+            .over(
+                partition_by=playbook_v2_runs.c.playbook_id,
+                order_by=(
+                    playbook_v2_runs.c.started_at.desc(),
+                    playbook_v2_runs.c.run_id.desc(),
+                ),
+            )
+            .label("rank"),
+        )
+        if playbook_ids is not None:
+            wanted = list(playbook_ids)
+            if not wanted:
+                return {}
+            ranked = ranked.where(playbook_v2_runs.c.playbook_id.in_(wanted))
+        subquery = ranked.subquery()
+        stmt = select(subquery).where(subquery.c.rank == 1)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return {
+            str(row["playbook_id"]): deserialize_snapshot(
+                row["snapshot"], version=int(row["snapshot_version"])
+            )
+            for row in rows
+        }
+
+    async def count_active_runs_per_playbook(
+        self, playbook_ids: Collection[str] | None = None
+    ) -> dict[str, int]:
+        """Non-terminal run counts for many playbooks in one round trip."""
+        terminal = [state.value for state in TERMINAL_LIFECYCLES]
+        stmt = (
+            select(playbook_v2_runs.c.playbook_id, func.count().label("active"))
+            .where(playbook_v2_runs.c.lifecycle.not_in(terminal))
+            .group_by(playbook_v2_runs.c.playbook_id)
+        )
+        if playbook_ids is not None:
+            wanted = list(playbook_ids)
+            if not wanted:
+                return {}
+            stmt = stmt.where(playbook_v2_runs.c.playbook_id.in_(wanted))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return {str(row["playbook_id"]): int(row["active"]) for row in rows}
+
     async def count_active_runs(self, playbook_id: str) -> int:
         """Non-terminal runs for one playbook, for activation-health summaries."""
         terminal = [state.value for state in TERMINAL_LIFECYCLES]
-        stmt = select(func.count()).select_from(playbook_v2_runs).where(
-            playbook_v2_runs.c.playbook_id == playbook_id,
-            playbook_v2_runs.c.lifecycle.not_in(terminal),
+        stmt = (
+            select(func.count())
+            .select_from(playbook_v2_runs)
+            .where(
+                playbook_v2_runs.c.playbook_id == playbook_id,
+                playbook_v2_runs.c.lifecycle.not_in(terminal),
+            )
         )
         async with self._engine.connect() as conn:
             value = await conn.scalar(stmt)
@@ -755,6 +918,9 @@ class PlaybookRunQueryMixin:
         limit: int = 500,
         offset: int = 0,
         receipt_kinds: Collection[str] | None = None,
+        step_id: str | None = None,
+        iteration: int | None = None,
+        iteration_path: str | None = None,
     ) -> list[StepReceipt]:
         stmt = (
             select(playbook_step_receipts)
@@ -770,6 +936,10 @@ class PlaybookRunQueryMixin:
         )
         if receipt_kinds is not None:
             stmt = stmt.where(playbook_step_receipts.c.receipt_kind.in_(list(receipt_kinds)))
+        for name, value in (("step_id", step_id), ("iteration", iteration),
+                            ("iteration_path", iteration_path)):
+            if value is not None:
+                stmt = stmt.where(playbook_step_receipts.c[name] == value)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).mappings().fetchall()
         return [_row_to_receipt(row) for row in rows]
@@ -778,8 +948,10 @@ class PlaybookRunQueryMixin:
         self, run_id: str, *, receipt_kinds: Collection[str] | None = None
     ) -> int:
         """Number of durable receipt rows for one run."""
-        stmt = select(func.count()).select_from(playbook_step_receipts).where(
-            playbook_step_receipts.c.run_id == run_id
+        stmt = (
+            select(func.count())
+            .select_from(playbook_step_receipts)
+            .where(playbook_step_receipts.c.run_id == run_id)
         )
         if receipt_kinds is not None:
             stmt = stmt.where(playbook_step_receipts.c.receipt_kind.in_(list(receipt_kinds)))
@@ -881,13 +1053,9 @@ class PlaybookRunQueryMixin:
                 return 0
             run_ids = list(doomed)
             await conn.execute(
-                delete(playbook_step_receipts).where(
-                    playbook_step_receipts.c.run_id.in_(run_ids)
-                )
+                delete(playbook_step_receipts).where(playbook_step_receipts.c.run_id.in_(run_ids))
             )
-            await conn.execute(
-                delete(playbook_waits).where(playbook_waits.c.run_id.in_(run_ids))
-            )
+            await conn.execute(delete(playbook_waits).where(playbook_waits.c.run_id.in_(run_ids)))
             await conn.execute(
                 delete(playbook_v2_runs).where(playbook_v2_runs.c.run_id.in_(run_ids))
             )
@@ -923,15 +1091,23 @@ class PlaybookRunQueryMixin:
         an explicit common lock because neither side has a wait row it can
         lock until after the race window has opened.
         """
-        if conn.dialect.name == "postgresql":
-            route = _dumps([playbook_id, scope, scope_identifier])
-            await conn.execute(
-                select(
-                    func.pg_advisory_xact_lock(
-                        func.hashtextextended(route, 0x41515754)
-                    )
-                )
-            )
+        route = _dumps([playbook_id, scope, scope_identifier])
+        await conn.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(route, 0x41515754)))
+        )
+
+    async def _private_inbox_event(self, row, conn: AsyncConnection) -> _InboxEvent:
+        from src.commands.principal import ExecutionPrincipal
+        from src.playbooks.private_values import PrivateOwner
+
+        event = _row_to_inbox_event(row)
+        fields = await self.playbook_private_values().resolve(
+            event.fields,
+            owner=PrivateOwner("namespace", "wait-inbox:" + event.playbook_id,
+                               event.scope, event.scope_identifier or "system"),
+            principal=ExecutionPrincipal.service("playbook-wait-delivery"), conn=conn,
+        )
+        return replace(event, fields=fields)
 
     async def _claim_registered_wait_from_inbox(
         self,
@@ -969,11 +1145,11 @@ class PlaybookRunQueryMixin:
             .fetchall()
         )
         for row in rows:
-            event = _row_to_inbox_event(row)
+            event = await self._private_inbox_event(row, conn)
             if not matches(wait, event):
                 continue
             claimed_at = event.received_at
-            result = await conn.execute(
+            result = await execute_playbook_wait_mutation(conn,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.wait_id == wait.wait_id,
@@ -991,6 +1167,7 @@ class PlaybookRunQueryMixin:
                     run_id=wait.run_id,
                     step_id=wait.step_id,
                     iteration=wait.iteration,
+                    iteration_path=wait.iteration_path,
                     kind=wait.kind,
                     snapshot_version=snapshot_version,
                     claimed_event_id=event.event_id,
@@ -1034,7 +1211,7 @@ class PlaybookRunQueryMixin:
                 .fetchone()
             )
             if existing is not None:
-                return _row_to_inbox_event(existing)
+                return await self._private_inbox_event(existing, conn)
 
         quota = self.playbook_pending_event_quota()
         retained = (
@@ -1056,7 +1233,37 @@ class PlaybookRunQueryMixin:
             _warn_pending_quota(event.playbook_id, quota, now)
             raise PendingEventQuotaExceeded(event.playbook_id, quota)
 
-        insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+        # This routed inbox can outlive a wait registration. Once a run has
+        # private data, all arrivals on its route are protected before storage.
+        from src.playbooks.private_values import PrivateOwner
+        from src.event_schemas import event_field_is_sensitive
+
+        body = cast(playbook_v2_runs.c.snapshot, JSONB)
+        protected = bool(await conn.scalar(
+            select(playbook_v2_runs.c.run_id).select_from(
+                playbook_v2_runs.join(playbook_artifacts,
+                    playbook_v2_runs.c.artifact_sha256 == playbook_artifacts.c.artifact_sha256)
+            ).where(
+                playbook_v2_runs.c.playbook_id == event.playbook_id,
+                playbook_artifacts.c.scope == event.scope,
+                playbook_artifacts.c.scope_identifier == event.scope_identifier,
+                or_(body["private_bindings"] != {}, body["sensitive"] != {},
+                    body["llm_turns"] != [],
+                    func.jsonb_path_exists(
+                        body, cast('$.loop_stack[*] ? (@.private == true)', JSONPATH)
+                    )),
+            ).limit(1)
+        ))
+        fields = dict(event.fields)
+        batch = self.playbook_private_values().batch(PrivateOwner(
+            "namespace", "wait-inbox:" + event.playbook_id, event.scope,
+            event.scope_identifier or "system",
+        ))
+        fields = {name: batch.protect(value) if protected or
+                  event_field_is_sensitive(event.event_type, name) else value
+                  for name, value in fields.items()}
+        await batch.persist(conn)
+        insert_fn = pg_insert
         await conn.execute(
             insert_fn(playbook_pending_events)
             .values(
@@ -1065,7 +1272,7 @@ class PlaybookRunQueryMixin:
                 scope=event.scope,
                 scope_identifier=event.scope_identifier,
                 event_type=event.event_type,
-                event=_dumps(dict(event.fields)),
+                event=_dumps(fields),
                 event_id=event.event_id,
                 dedup_key="",
                 reason=WAIT_EVENT_REASON,
@@ -1077,9 +1284,7 @@ class PlaybookRunQueryMixin:
                 resolved_by=WAIT_EVENT_RESOLVER,
                 resolution="dispatched",
             )
-            .on_conflict_do_nothing(
-                index_elements=[playbook_pending_events.c.pending_event_id]
-            )
+            .on_conflict_do_nothing(index_elements=[playbook_pending_events.c.pending_event_id])
         )
         row = (
             (
@@ -1092,7 +1297,7 @@ class PlaybookRunQueryMixin:
             .mappings()
             .one()
         )
-        return _row_to_inbox_event(row)
+        return await self._private_inbox_event(row, conn)
 
     async def register(
         self, wait: WaitSpec, snapshot_version: int, *, conn: AsyncConnection | None = None
@@ -1114,6 +1319,7 @@ class PlaybookRunQueryMixin:
                             select(
                                 playbook_v2_runs.c.snapshot_version,
                                 playbook_v2_runs.c.playbook_id,
+                                playbook_v2_runs.c.snapshot,
                                 playbook_artifacts.c.scope,
                                 playbook_artifacts.c.scope_identifier,
                             )
@@ -1144,6 +1350,24 @@ class PlaybookRunQueryMixin:
                             snapshot_version,
                         )
                 playbook_id = current["playbook_id"] if current is not None else ""
+                if current is not None and RunSnapshot.from_body(json.loads(current["snapshot"])).has_private_data:
+                    from src.playbooks.private_values import PrivateOwner
+
+                    batch = self.playbook_private_values().batch(PrivateOwner(
+                        "run", wait.run_id, current["scope"],
+                        current["scope_identifier"] or "system",
+                    ))
+                    # A child wait's task id stays joinable: settled_child_waits
+                    # finds the run through it, and the snapshot's
+                    # agent_task_ids already records it in plain text.
+                    values["match"] = _dumps({
+                        name: value if (wait.kind == "agent_task" and name == "task_id")
+                        or (wait.event_type == "job.completed" and name == "job_id")
+                        else batch.protect(value)
+                        for name, value in wait.match.items()
+                    })
+                    values["correlation_key"] = "private:" + uuid.uuid4().hex
+                    await batch.persist(active)
                 if playbook_id:
                     await self._lock_wait_delivery(
                         active,
@@ -1239,8 +1463,7 @@ class PlaybookRunQueryMixin:
                             .where(
                                 playbook_v2_runs.c.playbook_id == canonical.playbook_id,
                                 playbook_artifacts.c.scope == canonical.scope,
-                                playbook_artifacts.c.scope_identifier
-                                == canonical.scope_identifier,
+                                playbook_artifacts.c.scope_identifier == canonical.scope_identifier,
                             )
                             .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
                             .limit(limit)
@@ -1253,9 +1476,19 @@ class PlaybookRunQueryMixin:
                     break
                 for row in rows:
                     cursor = (row["created_at"], row["wait_id"])
-                    if not matches(_row_to_wait(row), canonical):
+                    wait = _row_to_wait(row)
+                    from src.commands.principal import ExecutionPrincipal
+                    from src.playbooks.private_values import PrivateOwner
+
+                    match = await self.playbook_private_values().resolve(
+                        wait.match,
+                        owner=PrivateOwner("run", wait.run_id, canonical.scope,
+                                           canonical.scope_identifier or "system"),
+                        principal=ExecutionPrincipal.service("playbook-wait-delivery"), conn=conn,
+                    )
+                    if not matches(replace(wait, match=match), canonical):
                         continue
-                    result = await conn.execute(
+                    result = await execute_playbook_wait_mutation(conn,
                         update(playbook_waits)
                         .where(
                             playbook_waits.c.wait_id == row["wait_id"],
@@ -1331,7 +1564,7 @@ class PlaybookRunQueryMixin:
                         )
                     )
                     continue
-                result = await conn.execute(
+                result = await execute_playbook_wait_mutation(conn,
                     update(playbook_waits)
                     .where(
                         playbook_waits.c.wait_id == row["wait_id"],
@@ -1344,12 +1577,104 @@ class PlaybookRunQueryMixin:
                 claims.append(_row_to_claim(row, None, now, expired=True))
         return claims
 
-    async def clear_for_run(
-        self, run_id: str, *, conn: AsyncConnection | None = None
-    ) -> int:
+    async def settled_script_waits(self, *, limit: int = 100) -> list[WaitSpec]:
+        """Terminal job truth survives missed events and registration races."""
+        from src.database.tables import jobs
+        from src.jobs.policy import TERMINAL
+
+        job_ref = func.jsonb_extract_path_text(cast(playbook_waits.c.match, JSONB), "job_id")
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(
+                select(playbook_waits).join(jobs, jobs.c.id == job_ref).join(
+                    playbook_v2_runs, playbook_v2_runs.c.run_id == playbook_waits.c.run_id,
+                ).where(
+                    playbook_v2_runs.c.lifecycle == "paused",
+                    playbook_v2_runs.c.error_code.is_(None),
+                    func.jsonb_extract_path_text(
+                        cast(playbook_v2_runs.c.snapshot, JSONB), "wait", "wait_id"
+                    ) == playbook_waits.c.wait_id,
+                    playbook_waits.c.state.in_(("active", "claimed")),
+                    playbook_waits.c.event_type == "job.completed",
+                    jobs.c.owner_kind == "playbook",
+                    jobs.c.playbook_run_id == playbook_waits.c.run_id,
+                    jobs.c.playbook_step_id == playbook_waits.c.step_id,
+                    jobs.c.iteration_path == playbook_waits.c.iteration_path,
+                    jobs.c.state.in_(TERMINAL), jobs.c.cleanup_blocked.is_(False),
+                ).order_by(playbook_waits.c.created_at).limit(max(0, limit))
+            )).mappings().all()
+        return [WaitSpec.from_dict({**row, "match": json.loads(row["match"])}) for row in rows]
+
+    async def settled_child_waits(self, *, limit: int = 100) -> list[SettledChildWait]:
+        """Every active ``agent_task`` wait whose awaited task has settled.
+
+        Read-only, and deliberately so: nothing is claimed.  The registered
+        wait is the engine's idempotency token for a child completion, cleared
+        in the boundary that takes the edge, so a row stays selectable until
+        the resume it earns has actually committed — a crash between this scan
+        and that commit is retried by the next one.
+
+        The join is what keeps ``limit`` honest.  A scan that listed waits and
+        looked each task up afterwards would spend its cap on children that
+        are still running, and a busy install would never reach the settled
+        one behind them.  A wait whose task is in neither ``tasks`` nor
+        ``archived_tasks`` reconciles to :data:`CHILD_MISSING_STATUS` rather
+        than waiting for a row that cannot come back.
+        """
+        if limit <= 0:
+            return []
+        document = cast(playbook_waits.c.match, JSONB)
+        task_ref = func.jsonb_extract_path_text(document, "task_id")
+        status = func.coalesce(tasks.c.status, archived_tasks.c.status)
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(
+                            playbook_waits.c.wait_id,
+                            playbook_waits.c.run_id,
+                            playbook_waits.c.step_id,
+                            task_ref.label("task_id"),
+                            status.label("task_status"),
+                        )
+                        .select_from(
+                            playbook_waits.join(
+                                playbook_v2_runs,
+                                playbook_v2_runs.c.run_id == playbook_waits.c.run_id,
+                            )
+                            .outerjoin(tasks, tasks.c.id == task_ref)
+                            .outerjoin(archived_tasks, archived_tasks.c.id == task_ref)
+                        )
+                        .where(
+                            playbook_waits.c.kind == "agent_task",
+                            playbook_waits.c.state == "active",
+                            playbook_v2_runs.c.lifecycle == RunLifecycle.PAUSED.value,
+                            playbook_v2_runs.c.snapshot_version
+                            == playbook_waits.c.snapshot_version,
+                            task_ref.is_not(None),
+                            or_(status.is_(None), status.in_(sorted(CHILD_TERMINAL_STATUSES))),
+                        )
+                        .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .fetchall()
+            )
+        return [
+            SettledChildWait(
+                wait_id=row["wait_id"],
+                run_id=row["run_id"],
+                step_id=row["step_id"],
+                task_id=row["task_id"],
+                status=CHILD_TERMINAL_STATUSES.get(row["task_status"], CHILD_MISSING_STATUS),
+            )
+            for row in rows
+        ]
+
+    async def clear_for_run(self, run_id: str, *, conn: AsyncConnection | None = None) -> int:
         """Deactivate every active wait of one run; returns how many moved."""
         async with self._wait_conn(conn) as active:
-            result = await active.execute(
+            result = await execute_playbook_wait_mutation(active,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.run_id == run_id,
@@ -1420,6 +1745,7 @@ class PlaybookRunQueryMixin:
             playbook_pending_events.c.playbook_id == playbook_id,
             playbook_pending_events.c.resolved_at.is_(None),
             playbook_pending_events.c.dispatch_claim_token.is_(None),
+            playbook_pending_events.c.protected.is_(False),
         ]
         if exclude is not None:
             held_back.append(playbook_pending_events.c.pending_event_id != exclude)
@@ -1513,7 +1839,7 @@ class PlaybookRunQueryMixin:
         pending_event_id = uuid.uuid4().hex
         try:
             async with self.immediate() as conn:
-                insert_fn = pg_insert if conn.dialect.name == "postgresql" else sqlite_insert
+                insert_fn = pg_insert
                 result = await conn.execute(
                     insert_fn(playbook_pending_events)
                     .values(
@@ -1554,6 +1880,7 @@ class PlaybookRunQueryMixin:
                         .where(
                             playbook_pending_events.c.playbook_id == playbook_id,
                             playbook_pending_events.c.resolved_at.is_(None),
+                            playbook_pending_events.c.protected.is_(False),
                         )
                     )
                 ).scalar_one()
@@ -1571,6 +1898,111 @@ class PlaybookRunQueryMixin:
                     if int(unresolved) - dropped > quota:
                         _warn_pending_quota(playbook_id, quota, now)
                         raise PendingEventQuotaExceeded(playbook_id, quota)
+        except IntegrityError as exc:
+            raise PendingEventIntegrityError(playbook_id) from exc
+        return pending_event_id
+
+    async def retain_integration_event(
+        self,
+        *,
+        playbook_id: str,
+        activation_id: str,
+        artifact_sha256: str,
+        scope: str,
+        scope_identifier: str,
+        event_type: str,
+        event: Mapping[str, Any],
+        event_id: str,
+        now: float,
+    ) -> str:
+        """Durably retain one integration event outside generic loss policy.
+
+        The stable primary key makes a partial multi-playbook delivery safe to
+        retry even after the row was successfully dispatched.  ``protected``
+        rows bypass the ordinary per-playbook flood quota and cannot be
+        expired, overflow-evicted, or manually discarded.  Only the claimed
+        successful-dispatch path may resolve one.
+        """
+        if not event_id or not activation_id or not artifact_sha256:
+            raise ValueError("integration event and destination identity are required")
+        identity = _dumps([activation_id, artifact_sha256, event_id])
+        pending_event_id = uuid.uuid5(uuid.NAMESPACE_OID, f"integration|{identity}").hex
+        body = dict(event)
+        # The same playbook may be activated in more than one scope. The
+        # existing unresolved-row uniqueness is keyed by playbook + dedup, so
+        # scope belongs in the destination identity as well as the stable PK.
+        dedup_key = f"integration:{activation_id}:{artifact_sha256}:{event_id}"
+        try:
+            async with self.immediate() as conn:
+                insert_fn = pg_insert
+                await conn.execute(
+                    insert_fn(playbook_pending_events)
+                    .values(
+                        pending_event_id=pending_event_id,
+                        playbook_id=playbook_id,
+                        activation_id=activation_id,
+                        artifact_sha256=artifact_sha256,
+                        scope=scope,
+                        scope_identifier=scope_identifier,
+                        event_type=event_type,
+                        event=_dumps(body),
+                        event_id=event_id,
+                        dedup_key=dedup_key,
+                        reason="unavailable",
+                        attempts=0,
+                        last_error=None,
+                        received_at=now,
+                        # SQLAlchemy supports infinity on both SQLite and
+                        # PostgreSQL, but a finite year-9999 timestamp keeps
+                        # dumps and database inspection portable.
+                        expires_at=253_402_300_799.0,
+                        protected=True,
+                        dispatch_claim_token=None,
+                        dispatch_claimed_by=None,
+                        dispatch_claimed_at=None,
+                        resolved_at=None,
+                        resolved_by=None,
+                        resolution=None,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=[playbook_pending_events.c.pending_event_id]
+                    )
+                )
+                row = (
+                    (
+                        await conn.execute(
+                            select(playbook_pending_events).where(
+                                playbook_pending_events.c.pending_event_id == pending_event_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                stored = (
+                    row["playbook_id"],
+                    row["activation_id"],
+                    row["artifact_sha256"],
+                    row["scope"],
+                    row["scope_identifier"],
+                    row["event_type"],
+                    row["event_id"],
+                    json.loads(row["event"]),
+                    bool(row["protected"]),
+                )
+                expected = (
+                    playbook_id,
+                    activation_id,
+                    artifact_sha256,
+                    scope,
+                    scope_identifier,
+                    event_type,
+                    event_id,
+                    body,
+                    True,
+                )
+                if stored != expected:
+                    raise PendingEventIntegrityError(playbook_id)
         except IntegrityError as exc:
             raise PendingEventIntegrityError(playbook_id) from exc
         return pending_event_id
@@ -1599,6 +2031,7 @@ class PlaybookRunQueryMixin:
                     playbook_pending_events.c.pending_event_id == pending_event_id,
                     playbook_pending_events.c.resolved_at.is_(None),
                     playbook_pending_events.c.dispatch_claim_token.is_(None),
+                    playbook_pending_events.c.protected.is_(False),
                 )
                 .values(
                     resolved_at=now,
@@ -1747,23 +2180,74 @@ class PlaybookRunQueryMixin:
             return []
         async with self._engine.connect() as conn:
             rows = (
-                await conn.execute(
-                    select(playbook_pending_events).where(
-                        playbook_pending_events.c.pending_event_id.in_(wanted),
-                        playbook_pending_events.c.resolved_at.is_(None),
+                (
+                    await conn.execute(
+                        select(playbook_pending_events).where(
+                            playbook_pending_events.c.pending_event_id.in_(wanted),
+                            playbook_pending_events.c.resolved_at.is_(None),
+                        )
                     )
                 )
-            ).mappings().fetchall()
+                .mappings()
+                .fetchall()
+            )
         by_id = {row["pending_event_id"]: _row_to_pending_event(row) for row in rows}
         return [by_id[event_id] for event_id in wanted if event_id in by_id]
+
+    async def list_pending_integration_events(
+        self,
+        *,
+        limit: int = 100,
+        exclude_ids: Collection[str] = (),
+        stale_before: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return one bounded restart-reconciliation page of protected events."""
+        if limit <= 0:
+            return []
+        conditions = [
+            playbook_pending_events.c.protected.is_(True),
+            playbook_pending_events.c.resolved_at.is_(None),
+        ]
+        excluded = list(dict.fromkeys(exclude_ids))
+        if excluded:
+            conditions.append(playbook_pending_events.c.pending_event_id.not_in(excluded))
+        if stale_before is not None:
+            conditions.append(
+                or_(
+                    playbook_pending_events.c.dispatch_claim_token.is_(None),
+                    playbook_pending_events.c.dispatch_claimed_at <= stale_before,
+                )
+            )
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(playbook_pending_events)
+                        .where(*conditions)
+                        .order_by(
+                            playbook_pending_events.c.attempts,
+                            playbook_pending_events.c.received_at,
+                            playbook_pending_events.c.pending_event_id,
+                        )
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_row_to_pending_event(row) for row in rows]
 
     async def count_pending_events(
         self, playbook_id: str, *, reasons: Collection[str] | None = None
     ) -> int:
         """Unresolved operator-visible events for one playbook."""
-        stmt = select(func.count()).select_from(playbook_pending_events).where(
-            playbook_pending_events.c.playbook_id == playbook_id,
-            playbook_pending_events.c.resolved_at.is_(None),
+        stmt = (
+            select(func.count())
+            .select_from(playbook_pending_events)
+            .where(
+                playbook_pending_events.c.playbook_id == playbook_id,
+                playbook_pending_events.c.resolved_at.is_(None),
+            )
         )
         if reasons is not None:
             stmt = stmt.where(playbook_pending_events.c.reason.in_(list(reasons)))
@@ -1794,6 +2278,7 @@ class PlaybookRunQueryMixin:
                         select(playbook_pending_events.c.pending_event_id)
                         .where(
                             playbook_pending_events.c.resolved_at.is_(None),
+                            playbook_pending_events.c.protected.is_(False),
                             claim_available,
                             playbook_pending_events.c.expires_at <= now,
                         )
@@ -1810,6 +2295,7 @@ class PlaybookRunQueryMixin:
                     .where(
                         playbook_pending_events.c.pending_event_id.in_(list(expiring)),
                         playbook_pending_events.c.resolved_at.is_(None),
+                        playbook_pending_events.c.protected.is_(False),
                         claim_available,
                         playbook_pending_events.c.expires_at <= now,
                     )

@@ -19,6 +19,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.commands.contracts.models import CommandResult
@@ -119,6 +121,7 @@ def build(
     runs = runs or RecordingRunRepository()
     bus = RecordingBus()
     services = EngineServices(
+        private_values=AsyncMock(),
         contracts=registry,
         clock=lambda: 1_000.0,
         artifact_store=store,
@@ -255,6 +258,7 @@ def build_llm(
     runs = runs or RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=AsyncMock(),
             contracts=registry,
             clock=lambda: 1_000.0,
             artifact_store=store,
@@ -384,6 +388,31 @@ class TestRulePerRunDispatch:
         assert len(set(result.run_ids)) == 2
         for run_id in result.run_ids:
             assert runs.snapshots[run_id].dispatch_id == result.dispatch_id
+
+    @pytest.mark.asyncio
+    async def test_managed_project_suppresses_only_legacy_final_review_rule(self):
+        engine, adapter, _runs, _bus, ref = build()
+        artifact = engine.services.artifact_store.load(ref.artifact_sha256)
+        final_rule = artifact.rules[0].model_copy(
+            update={"id": "per-branch-final-review"}
+        )
+        artifact = artifact.model_copy(
+            update={"id": "default-pipeline", "rules": [final_rule, artifact.rules[1]]}
+        )
+        engine.services.artifact_store.put(artifact)
+
+        class SuppressedActivations(StubActivations):
+            async def legacy_final_review_suppressed(self, project_id: str) -> bool:
+                return project_id == "project-alpha"
+
+        engine.activations = SuppressedActivations([artifact_ref_for(artifact)])
+        adapter.queue.append(listed())
+
+        payload = event("task-completed-code")
+        payload["project_id"] = "project-alpha"
+        result = await engine.dispatch_event(payload, TRUSTED_LOCAL)
+
+        assert result.rules_selected == ("sweep",)
 
     @pytest.mark.asyncio
     async def test_a_rules_trigger_filter_can_reject(self):
@@ -1478,6 +1507,7 @@ class TestDecisionAndTerminal:
         [
             ("completed", RunLifecycle.COMPLETED),
             ("failed", RunLifecycle.FAILED),
+            ("blocked", RunLifecycle.BLOCKED),
             ("cancelled", RunLifecycle.CANCELLED),
         ],
     )
@@ -1495,6 +1525,37 @@ class TestDecisionAndTerminal:
             artifact_ref_for(mutated), "review", event("task-completed-code"), TRUSTED_LOCAL
         )
         assert outcome.lifecycle is lifecycle
+
+    @pytest.mark.asyncio
+    async def test_blocked_terminal_returns_and_emits_the_blocked_outcome(self):
+        blocked = RunLifecycle.BLOCKED
+        engine, adapter, runs, bus, _ref = build()
+        artifact = load_artifact("two-rules-one-event.artifact.json")
+        mutated = with_step(
+            artifact,
+            "review-done",
+            artifact.steps["review-done"].model_copy(update={"outcome": "blocked"}),
+        )
+        engine.services.artifact_store.put(mutated)
+        adapter.queue.append(ok())
+
+        outcome = await engine.run_rule(
+            artifact_ref_for(mutated), "review", event("task-completed-code"), TRUSTED_LOCAL
+        )
+
+        assert outcome.lifecycle is blocked
+        assert outcome.outcome == "blocked"
+        finished = [payload for name, payload in bus.events if name == "playbook.v2.run.finished"]
+        assert len(finished) == 1
+        assert finished[0]["run_id"] == outcome.run_id
+        assert finished[0]["lifecycle"] == "blocked"
+        assert finished[0]["outcome"] == "blocked"
+        terminal_receipt = next(
+            receipt
+            for receipt in runs.receipts
+            if receipt.step_id == "review-done" and receipt.receipt_kind == "step"
+        )
+        assert terminal_receipt.outcome == "failure"
 
 
 class TestModes:
@@ -1611,6 +1672,7 @@ def wait_build(
     store.put(artifact)
     runs = runs or RecordingRunRepository()
     services = EngineServices(
+        private_values=AsyncMock(),
         contracts=registry,
         clock=clock or (lambda: 1_000.0),
         artifact_store=store,
@@ -1807,7 +1869,10 @@ class TestDurableWaits:
         outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
         resumed = await engine.resume(
             outcome.run_id,
-            HumanDecision(decision="revise", payload={"resolved_by": "jack"}),
+            HumanDecision(decision="revise", payload={"resolved_by": "jack"},
+                          expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-revise"),
             TRUSTED_LOCAL,
         )
         assert resumed.lifecycle is RunLifecycle.COMPLETED
@@ -1820,13 +1885,15 @@ class TestDurableWaits:
         engine, runs, _waits, ref = wait_engine()
         outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
         resumed = await engine.resume(
-            outcome.run_id, HumanDecision(decision="ship-it"), TRUSTED_LOCAL
+            outcome.run_id, HumanDecision(decision="ship-it", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-invalid"), TRUSTED_LOCAL
         )
-        assert resumed.snapshot.current_step_id == "gate-failed"
+        assert resumed.outcome == "undeclared_human_outcome"
+        assert resumed.lifecycle is RunLifecycle.PAUSED
+        assert resumed.snapshot.wait == outcome.snapshot.wait
         assert "approval" not in resumed.snapshot.bindings
-        assert [r.error_code for r in runs.receipts if r.step_id == "await-approval"][-1] == (
-            "contract_violation"
-        )
+        assert len([r for r in runs.receipts if r.step_id == "await-approval"]) == 1
 
     @pytest.mark.asyncio
     async def test_a_timer_wait_fires_rather_than_timing_out(self):
@@ -1847,18 +1914,18 @@ class TestDurableWaits:
         receipt = [r for r in runs.receipts if r.step_id == "await-review"][-1]
         assert receipt.timed_out is True
         assert receipt.outcome == "timeout"
-        assert receipt.error == "wait deadline fired"
+        assert receipt.error == "private_run_error"
 
     @pytest.mark.parametrize(
-        ("run_deadline", "expected_deadline", "expected_error"),
+        ("run_deadline", "expected_deadline"),
         [
-            (1_000.0 + 60, 1_060.0, "run deadline fired"),
-            (1_000.0 + 9_000, 1_600.0, "wait deadline fired"),
+            (1_000.0 + 60, 1_060.0),
+            (1_000.0 + 9_000, 1_600.0),
         ],
     )
     @pytest.mark.asyncio
     async def test_wait_deadline_and_run_deadline_the_earlier_wins(
-        self, run_deadline, expected_deadline, expected_error
+        self, run_deadline, expected_deadline
     ):
         engine, runs, waits, ref = wait_engine()
         outcome = await engine.run_rule(
@@ -1871,7 +1938,8 @@ class TestDurableWaits:
         assert waits.registered[0].deadline_at == expected_deadline
         await engine.resume(outcome.run_id, TimerFired(wait_id=""), TRUSTED_LOCAL)
         receipt = [r for r in runs.receipts if r.step_id == "await-review"][-1]
-        assert receipt.error == expected_error
+        assert receipt.timed_out is True
+        assert receipt.error == "private_run_error"
 
     @pytest.mark.asyncio
     async def test_wait_does_not_create_a_timer_service_entry(self):
@@ -2037,6 +2105,7 @@ def loop_engine(
     runs = RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=AsyncMock(),
             contracts=registry,
             clock=lambda: 1_000.0,
             artifact_store=store,
@@ -2193,6 +2262,7 @@ class TestSequentialLoops:
         runs = RecordingRunRepository()
         engine = PlaybookEngine(
             services=EngineServices(
+                private_values=AsyncMock(),
                 contracts=registry,
                 clock=lambda: 1_000.0,
                 artifact_store=store,
@@ -2208,7 +2278,7 @@ class TestSequentialLoops:
         assert adapter.names == ["list_tasks"]
         loop_receipt = [r for r in runs.receipts if r.step_id == "for-each-task"][-1]
         assert loop_receipt.error_code == "input_resolution_failed"
-        assert "not a list" in (loop_receipt.error or "")
+        assert loop_receipt.error == "private_run_error"
 
     @pytest.mark.asyncio
     async def test_a_collection_over_max_iterations_is_state_limit_exceeded(self):
@@ -2315,9 +2385,8 @@ class TestSequentialLoops:
         assert live.no_side_effects is True
 
     @pytest.mark.asyncio
-    async def test_a_second_loop_while_one_is_active_is_a_contract_violation(self):
-        """Package 2 rejects a *nested* loop statically; this is the dynamic
-        form of the same thing — two frames, one snapshot field."""
+    async def test_an_inner_loop_resolves_its_own_collection(self):
+        """A different owning frame starts an inner loop, which still needs inputs."""
         from src.playbooks.executors.foreach import ForEachExecutor
 
         artifact = loop_artifact()
@@ -2341,7 +2410,7 @@ class TestSequentialLoops:
             ),
         )
         result = await ForEachExecutor().execute(step, ctx)
-        assert result.outcome == "contract_violation"
+        assert result.outcome == "input_resolution_failed"
 
     @pytest.mark.asyncio
     async def test_a_collection_that_changed_under_an_active_loop_is_refused(self):
@@ -2603,3 +2672,26 @@ class TestCancellation:
         assert resumed.lifecycle is RunLifecycle.CANCELLED
         assert [r.outcome for r in runs.receipts] == ["cancelled"]
 
+
+@pytest.mark.asyncio
+async def test_human_receipt_cannot_consume_a_later_visit_or_event_payload():
+    engine, runs, waits, ref = wait_engine()
+    first = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
+    cause = HumanDecision("revise", expected_wait_id=first.snapshot.wait.wait_id,
+                          expected_artifact_sha256=ref.artifact_sha256, decision_id="visit-one")
+    answered = await engine.resume(first.run_id, cause, TRUSTED_LOCAL)
+    assert answered.lifecycle is RunLifecycle.COMPLETED
+    # Restore the same compiled human step at a distinct durable visit.
+    next_wait = replace(first.snapshot.wait, wait_id="second-visit", iteration=1)
+    next_snapshot = replace(first.snapshot, version=answered.snapshot.version + 1, wait=next_wait)
+    runs.snapshots[first.run_id] = next_snapshot
+    waits.active[next_wait.wait_id] = next_wait
+    receipt_count = len(runs.receipts)
+    replay = await engine.resume(first.run_id, cause, TRUSTED_LOCAL)
+    assert replay.outcome == "decision_replayed"
+    stale = await engine.resume(first.run_id, replace(cause, decision_id="different"), TRUSTED_LOCAL)
+    assert stale.outcome == "stale_human_decision"
+    forged = await engine.resume(first.run_id, EventArrived("fake", {"resolution": "approve"}), TRUSTED_LOCAL)
+    assert forged.outcome == "human_decision_required"
+    assert runs.snapshots[first.run_id].wait.wait_id == "second-visit"
+    assert len(runs.receipts) == receipt_count

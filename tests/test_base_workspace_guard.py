@@ -17,7 +17,6 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.doctor.models import Severity
 from src.doctor.workspace_checks import run_check
 from src.models import (
@@ -32,6 +31,8 @@ from src.orchestrator.base_workspace import (
     base_workspaces,
     list_base_workspaces,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 def _now() -> float:
@@ -39,12 +40,10 @@ def _now() -> float:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "base.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("base.db")
     await database.create_project(Project(id="p1", name="p1"))
     yield database
-    await database.close()
 
 
 async def _base(db, path: str, ws_id: str = "ws-base") -> Workspace:
@@ -159,7 +158,7 @@ class TestDoctorCheck:
                 name=f"n-{sid}",
                 lifecycle="task",
                 work_dir=work_dir,
-                epoch=1,
+                epoch="1",
                 instance_token="tok" + sid,
                 started_at=_now(),
                 state=state,
@@ -256,7 +255,7 @@ class TestLaunchPathRefuses:
         config = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
             workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "base.db"),
+            database=DatabaseConfig(url=lease_dsn("base.db")),
             data_dir=str(tmp_path / "d"),
         )
         orch = Orchestrator(config)
@@ -277,7 +276,7 @@ class TestLaunchPathRefuses:
         )
         task = Task(
             id="t1", project_id="p1", title="review", description="",
-            profile_id="reviewer", created_at=_now(), updated_at=_now(),
+            profile_id="reviewer", route_source="role", created_at=_now(), updated_at=_now(),
         )
         await db.create_task(task)
         await db.update_task(

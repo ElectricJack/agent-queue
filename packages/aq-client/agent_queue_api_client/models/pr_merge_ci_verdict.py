@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.pr_merge_base_freshness import PrMergeBaseFreshness
+
 
 T = TypeVar("T", bound="PrMergeCiVerdict")
 
@@ -28,6 +32,7 @@ class PrMergeCiVerdict:
             failing (list[str] | Unset):
             pending (list[str] | Unset):
             missing (list[str] | Unset):
+            base (None | PrMergeBaseFreshness | Unset):
             blocked (bool | Unset):  Default: False.
             forced (bool | Unset):  Default: False.
             message (str | Unset):  Default: ''.
@@ -39,12 +44,15 @@ class PrMergeCiVerdict:
     failing: list[str] | Unset = UNSET
     pending: list[str] | Unset = UNSET
     missing: list[str] | Unset = UNSET
+    base: None | PrMergeBaseFreshness | Unset = UNSET
     blocked: bool | Unset = False
     forced: bool | Unset = False
     message: str | Unset = ""
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.pr_merge_base_freshness import PrMergeBaseFreshness
+
         policy = self.policy
 
         state = self.state
@@ -62,6 +70,14 @@ class PrMergeCiVerdict:
         missing: list[str] | Unset = UNSET
         if not isinstance(self.missing, Unset):
             missing = self.missing
+
+        base: dict[str, Any] | None | Unset
+        if isinstance(self.base, Unset):
+            base = UNSET
+        elif isinstance(self.base, PrMergeBaseFreshness):
+            base = self.base.to_dict()
+        else:
+            base = self.base
 
         blocked = self.blocked
 
@@ -84,6 +100,8 @@ class PrMergeCiVerdict:
             field_dict["pending"] = pending
         if missing is not UNSET:
             field_dict["missing"] = missing
+        if base is not UNSET:
+            field_dict["base"] = base
         if blocked is not UNSET:
             field_dict["blocked"] = blocked
         if forced is not UNSET:
@@ -95,6 +113,8 @@ class PrMergeCiVerdict:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.pr_merge_base_freshness import PrMergeBaseFreshness
+
         d = dict(src_dict)
         policy = d.pop("policy", UNSET)
 
@@ -107,6 +127,23 @@ class PrMergeCiVerdict:
         pending = cast(list[str], d.pop("pending", UNSET))
 
         missing = cast(list[str], d.pop("missing", UNSET))
+
+        def _parse_base(data: object) -> None | PrMergeBaseFreshness | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                base_type_0 = PrMergeBaseFreshness.from_dict(data)
+
+                return base_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | PrMergeBaseFreshness | Unset, data)
+
+        base = _parse_base(d.pop("base", UNSET))
 
         blocked = d.pop("blocked", UNSET)
 
@@ -121,6 +158,7 @@ class PrMergeCiVerdict:
             failing=failing,
             pending=pending,
             missing=missing,
+            base=base,
             blocked=blocked,
             forced=forced,
             message=message,

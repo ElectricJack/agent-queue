@@ -1,7 +1,7 @@
 {
   "name": "dashboard",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "predev": "npm -w @aq/ts-client run generate",
@@ -13,20 +13,23 @@
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:layout": "node layout-checks/run.mjs",
+    "check:terminal-parity": "node layout-checks/playwright-terminal-parity.mjs",
+    "check:layout:selftest": "node layout-checks/selftest.mjs"
   },
   "dependencies": {
     "@aq/ts-client": "*",
     "@dagrejs/dagre": "^1.1.8",
     "@heroicons/react": "^2.2.0",
     "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-virtual": "^3.14.10",
     "@types/mdast": "^4.0.4",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "@xyflow/react": "^12.11.3",
     "cmdk": "^1.1.1",
     "github-slugger": "^2.0.0",
-    "gray-matter": "^4.0.3",
     "mdast-util-to-string": "^4.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -39,6 +42,7 @@
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
     "uplot": "^1.6.32",
+    "yaml": "^2.9.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -48,6 +52,7 @@
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.6",
+    "@types/jest-axe": "^3.5.9",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
@@ -57,8 +62,11 @@
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.14.0",
+    "jest-axe": "^11.0.0",
     "jsdom": "^30.0.1",
+    "playwright-core": "1.64.0",
     "postcss": "^8.4.49",
+    "puppeteer-core": "24.43.1",
     "tailwindcss": "^4.0.0",
     "typescript": "~5.7.0",
     "typescript-eslint": "^8.18.0",

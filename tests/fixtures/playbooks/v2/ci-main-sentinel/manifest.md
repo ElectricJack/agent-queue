@@ -1,14 +1,15 @@
 ---
 playbook_id: ci-main-sentinel
-artifact_sha256: sha256:0d3a6e40bca21d48426062d29104539b508eaf756d7930e5ab83a8b37b50498c
-source_sha256: sha256:a81b367d27f3a27f04169282e5183ee7925d099ee4ba1113cffb9af1c62f15cd
-contract_fingerprint: sha256:787834ee710a0d62d5159fd6723f67f7faf6843af65dbd561a1e31e4c75f7c5f
+artifact_sha256: sha256:1a72fdfbc5b1979b7be0264eb7336bfd161f4a94fd0fded8ef694c28772648cd
+source_sha256: sha256:1d9d609da7bb5c2fa6f6ac8e80a281a508accebe2f14ceb4b9eedf032fa7b8ee
+contract_fingerprint: sha256:422c596ade1f08822936de82ae7ba1a574cb59f081ff9fa9bd9f4e91d5f2d132
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
   - ci_baseline_status
+  - ci_repair_adopt
   - ensure_task
-  - gate_create
+  - escalation_create
   harness_tools: []
   plugin_tools: []
 profiles_referenced: []

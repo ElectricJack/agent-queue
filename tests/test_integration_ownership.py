@@ -1,0 +1,547 @@
+"""Fenced ownership for repository-qualified integration branches."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+import pytest
+from sqlalchemy import insert, select, text, update
+
+from src.database.tables import integration_branch_owners
+from src.integration.models import BranchKey, Fence
+from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.models import Project, RepoSourceType, Task, Workspace
+
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("ownership.db")
+    await database.create_project(Project(id="p", name="p"))
+    yield database
+
+
+async def test_collector_cannot_acquire_a_branch_while_parent_is_active(db):
+    """Removing the busy check would let two writers mutate one parent ref."""
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="parent")
+
+    parent = await ownership.acquire(target, "parent-session", "parent")
+
+    with pytest.raises(BranchBusy):
+        await ownership.acquire(target, "collector-session", "collector")
+    await ownership.assert_current(parent)
+
+
+async def test_conn_owned_mutation_exclusion_matches_public_guard(db):
+    """The ordered-transaction seam preserves the established public checks."""
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="parent")
+    fence = await ownership.acquire(target, "collector-op", "collector")
+
+    async with db.immediate() as conn:
+        async with ownership.mutation_exclusion_on(
+            conn, fence, state="reserved", expected_role="collector"
+        ) as row:
+            assert row["owner_id"] == "collector-op"
+            assert row["fence_token"] == fence.token
+
+    async with ownership.mutation_exclusion(
+        fence, state="reserved", expected_role="collector"
+    ) as conn:
+        assert conn is not None
+
+    with pytest.raises(BranchBusy, match="role must be repair"):
+        async with db.immediate() as conn:
+            async with ownership.mutation_exclusion_on(
+                conn, fence, state="reserved", expected_role="repair"
+            ):
+                pytest.fail("wrong-role fence entered mutation exclusion")
+
+
+async def test_expired_attached_owner_still_blocks_takeover(db):
+    """Expiry is not evidence that the attached session stopped writing."""
+    target = BranchKey(repository_id="repo", branch="parent")
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id=target.repository_id,
+                ref=target.branch,
+                owner_id="parent-session",
+                owner_role="parent",
+                fence_token=7,
+                handoff_state="attached",
+                session_id="parent-session",
+                workspace_id="slot-1",
+                expires_at=time.time() - 60,
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+
+    with pytest.raises(BranchBusy):
+        await BranchOwnership(db).acquire(target, "collector-session", "collector")
+
+
+async def test_stale_owner_cannot_write_after_confirmed_transfer(db):
+    """Dropping the token increment would allow the old owner to write again."""
+    handoffs: list[dict] = []
+
+    async def confirmed(row: dict) -> bool:
+        handoffs.append(row)
+        return True
+
+    ownership = BranchOwnership(db, confirm_handoff=confirmed)
+    target = BranchKey(repository_id="repo", branch="parent")
+    parent = await ownership.acquire(target, "parent-session", "parent")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.repository_id == target.repository_id)
+            .where(integration_branch_owners.c.ref == target.branch)
+            .values(
+                handoff_state="attached",
+                session_id="parent-session",
+                workspace_id="slot-1",
+            )
+        )
+
+    collector = await ownership.transfer(parent, "collector-session", "collector")
+
+    assert collector.token == parent.token + 1
+    assert collector.owner_id == "collector-session"
+    assert handoffs[0]["owner_id"] == "parent-session"
+    assert handoffs[0]["session_id"] == "parent-session"
+    assert handoffs[0]["workspace_id"] == "slot-1"
+    with pytest.raises(StaleFence):
+        await ownership.assert_current(parent)
+    await ownership.assert_current(collector)
+
+
+async def test_confirmed_transfer_consumes_production_shaped_release_first_try(db):
+    target = BranchKey(repository_id="repo", branch="parent")
+
+    async def release_like_orchestrator(row: dict) -> bool:
+        async with db.immediate() as conn:
+            changed = await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.id == row["id"],
+                    integration_branch_owners.c.fence_token == row["fence_token"],
+                    integration_branch_owners.c.handoff_state == "handoff_pending",
+                )
+                .values(
+                    handoff_state="released",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id=row["workspace_id"],
+                )
+            )
+        return changed.rowcount == 1
+
+    ownership = BranchOwnership(db, confirm_handoff=release_like_orchestrator)
+    repair = await ownership.acquire(target, "repair-task", "repair")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            )
+            .values(
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+
+    confirmation = await ownership.confirm_transfer(repair)
+    assert confirmation["handoff_state"] == "released"
+    assert confirmation["session_id"] is None
+    assert confirmation["workspace_id"] is None
+    assert confirmation["confirmed_workspace_id"] == "repair-workspace"
+    async with db.immediate() as conn:
+        collector = await ownership.transfer_confirmed_on(
+            conn, repair, "collector-op", "collector", confirmation
+        )
+    assert collector == Fence(target=target, owner_id="collector-op", token=2)
+
+
+async def test_confirmed_transfer_rejects_mismatched_released_workspace(db):
+    target = BranchKey(repository_id="repo", branch="parent")
+
+    async def release_wrong_workspace(row: dict) -> bool:
+        async with db.immediate() as conn:
+            changed = await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.id == row["id"],
+                    integration_branch_owners.c.fence_token == row["fence_token"],
+                    integration_branch_owners.c.handoff_state == "handoff_pending",
+                )
+                .values(
+                    handoff_state="released",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id="different-workspace",
+                )
+            )
+        return changed.rowcount == 1
+
+    ownership = BranchOwnership(db, confirm_handoff=release_wrong_workspace)
+    repair = await ownership.acquire(target, "repair-task", "repair")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            )
+            .values(
+                handoff_state="attached",
+                session_id="repair-session",
+                workspace_id="repair-workspace",
+            )
+        )
+
+    with pytest.raises(BranchBusy, match="release evidence changed"):
+        await ownership.confirm_transfer(repair)
+
+
+async def test_confirm_transfer_replays_existing_canonical_release(db):
+    target = BranchKey(repository_id="repo", branch="parent")
+    ownership = BranchOwnership(db)
+    repair = await ownership.acquire(target, "repair-task", "repair")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+            )
+            .values(
+                handoff_state="released",
+                session_id=None,
+                workspace_id=None,
+                confirmed_workspace_id="repair-workspace",
+            )
+        )
+
+    confirmation = await ownership.confirm_transfer(repair)
+
+    assert confirmation["handoff_state"] == "released"
+    assert confirmation["confirmed_workspace_id"] == "repair-workspace"
+
+
+async def test_failed_handoff_keeps_the_old_fence_current(db):
+    """Treating a failed stop confirmation as detached would create two writers."""
+    async def not_confirmed(_row: dict) -> bool:
+        return False
+
+    ownership = BranchOwnership(db, confirm_handoff=not_confirmed)
+    target = BranchKey(repository_id="repo", branch="parent")
+    parent = await ownership.acquire(target, "parent-session", "parent")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.repository_id == target.repository_id)
+            .where(integration_branch_owners.c.ref == target.branch)
+            .values(handoff_state="attached", session_id="parent-session", workspace_id="slot-1")
+        )
+
+    with pytest.raises(BranchBusy):
+        await ownership.transfer(parent, "collector-session", "collector")
+    with pytest.raises(BranchBusy):
+        await ownership.assert_current(parent)
+
+
+async def test_failed_handoff_can_be_retried_with_the_same_fence(db):
+    """Rejecting ``handoff_pending`` forever would wedge a crashed confirmation."""
+    confirmations = iter((False, True))
+
+    async def eventually_confirmed(_row: dict) -> bool:
+        return next(confirmations)
+
+    ownership = BranchOwnership(db, confirm_handoff=eventually_confirmed)
+    target = BranchKey(repository_id="repo", branch="parent")
+    parent = await ownership.acquire(target, "parent-task", "worker")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.repository_id == target.repository_id)
+            .where(integration_branch_owners.c.ref == target.branch)
+            .values(handoff_state="attached", session_id="session-1", workspace_id="slot-1")
+        )
+
+    with pytest.raises(BranchBusy):
+        await ownership.transfer(parent, "collector-op", "collector")
+
+    collector = await ownership.transfer(parent, "collector-op", "collector")
+
+    assert collector == Fence(target=target, owner_id="collector-op", token=2)
+    with pytest.raises(StaleFence):
+        await ownership.assert_current(parent)
+
+
+@pytest.mark.parametrize("first_to_finish", [0, 1, None], ids=["first", "retry", "together"])
+async def test_concurrent_handoff_retries_advance_the_fence_once(db, first_to_finish):
+    """Two successful confirmations must not grant two successor fences."""
+    confirming = [asyncio.Event(), asyncio.Event()]
+    finish = [asyncio.Event(), asyncio.Event()]
+    confirmations = []
+
+    async def confirmed(row: dict) -> bool:
+        index = len(confirmations)
+        confirmations.append(row)
+        confirming[index].set()
+        await finish[index].wait()
+        return True
+
+    ownership = BranchOwnership(db, confirm_handoff=confirmed)
+    target = BranchKey(repository_id="repo", branch="parent")
+    parent = await ownership.acquire(target, "parent-task", "worker")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.repository_id == target.repository_id)
+            .where(integration_branch_owners.c.ref == target.branch)
+            .values(handoff_state="attached", session_id="session-1", workspace_id="slot-1")
+        )
+
+    async def transfer():
+        try:
+            return await ownership.transfer(parent, "collector-op", "collector")
+        except (BranchBusy, StaleFence) as exc:
+            return exc
+
+    async with asyncio.TaskGroup() as group:
+        transfers = [group.create_task(transfer())]
+        await confirming[0].wait()
+        # External confirmation must hold neither a row nor an advisory lock.
+        # Probe before starting the retry so its legitimate SQL transaction
+        # cannot be mistaken for a lock retained by the suspended confirmer.
+        async with db.immediate() as conn:
+            pending = (
+                await conn.execute(
+                    select(integration_branch_owners)
+                    .where(
+                        integration_branch_owners.c.repository_id == target.repository_id,
+                        integration_branch_owners.c.ref == target.branch,
+                    )
+                    .with_for_update(nowait=True)
+                )
+            ).mappings().one()
+            assert pending["handoff_state"] == "handoff_pending"
+            assert pending["fence_token"] == parent.token
+            assert await conn.scalar(text(
+                "SELECT count(*) FROM pg_stat_activity a "
+                "LEFT JOIN pg_locks l ON l.pid = a.pid AND l.locktype = 'advisory' "
+                "WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() "
+                "AND (l.pid IS NOT NULL OR a.state LIKE 'idle in transaction%')"
+            )) == 0
+
+        transfers.append(group.create_task(transfer()))
+        await confirming[1].wait()
+        assert all(row["fence_token"] == parent.token for row in confirmations)
+        assert all(row["owner_id"] == parent.owner_id for row in confirmations)
+        assert all(row["session_id"] == "session-1" for row in confirmations)
+        assert all(row["workspace_id"] == "slot-1" for row in confirmations)
+
+        # Both calls have captured the old fence before either may finalize.
+        # Exercise each winner and real SQL contention without making database
+        # round trips satisfy a one-second latency budget. CI's existing test
+        # watchdog still bounds deadlocks; NOWAIT above diagnoses leaked locks.
+        if first_to_finish is not None:
+            finish[first_to_finish].set()
+            assert await transfers[first_to_finish] == Fence(
+                target=target, owner_id="collector-op", token=2
+            )
+        for release in finish:
+            release.set()
+
+    results = [task.result() for task in transfers]
+    assert len(confirmations) == 2
+    assert sum(isinstance(result, Fence) for result in results) == 1
+    assert sum(isinstance(result, (BranchBusy, StaleFence)) for result in results) == 1
+    winner = next(result for result in results if isinstance(result, Fence))
+    assert winner == Fence(target=target, owner_id="collector-op", token=2)
+    with pytest.raises(StaleFence):
+        await ownership.assert_current(parent)
+    with pytest.raises(StaleFence):
+        await ownership.transfer(parent, "collector-op", "collector")
+    assert len(confirmations) == 2
+    assert await ownership.acquire(target, "collector-op", "collector") == winner
+    await ownership.assert_current(winner)
+
+
+async def test_concurrent_initial_acquisition_has_one_winner_and_one_named_busy(db):
+    """A first-row race must not leak a repository uniqueness IntegrityError."""
+    target = BranchKey(repository_id="repo", branch="parent")
+    ownership = BranchOwnership(db)
+
+    results = await asyncio.gather(
+        ownership.acquire(target, "worker-a", "worker"),
+        ownership.acquire(target, "worker-b", "worker"),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, Fence) for result in results) == 1
+    assert sum(isinstance(result, BranchBusy) for result in results) == 1
+
+
+async def test_released_fence_cannot_write_and_same_owner_reacquires_with_new_token(db):
+    """Returning token N from a released row would revive a detached writer."""
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="parent")
+    old = await ownership.acquire(target, "parent-task", "worker")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.repository_id == target.repository_id)
+            .where(integration_branch_owners.c.ref == target.branch)
+            .values(handoff_state="released", confirmed_workspace_id="slot-1")
+        )
+
+    with pytest.raises(BranchBusy):
+        await ownership.assert_current(old)
+
+    reacquired = await ownership.acquire(target, "parent-task", "worker")
+
+    assert reacquired == Fence(target=target, owner_id="parent-task", token=2)
+    with pytest.raises(StaleFence):
+        await ownership.assert_current(old)
+    await ownership.assert_current(reacquired)
+
+
+async def test_attach_binds_reserved_fence_to_locked_workspace(db, tmp_path):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    await db.create_task(Task(id="task", project_id="p", title="task", description=""))
+    fence = await ownership.acquire(target, "task", "worker")
+    await db.create_workspace(
+        Workspace(
+            id="slot",
+            project_id="p",
+            workspace_path=str(tmp_path / "slot"),
+            source_type=RepoSourceType.WORKTREE,
+            locked_by_task_id="task",
+        )
+    )
+
+    await ownership.attach(fence, "session", "slot")
+
+    owner = await ownership.get_owner(target)
+    assert owner["handoff_state"] == "attached"
+    assert owner["session_id"] == "session"
+    assert owner["workspace_id"] == "slot"
+
+
+async def test_transfer_that_wins_before_attach_prevents_writer_binding(db, tmp_path):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    await db.create_task(Task(id="task", project_id="p", title="task", description=""))
+    fence = await ownership.acquire(target, "task", "worker")
+    await db.create_workspace(
+        Workspace(
+            id="slot",
+            project_id="p",
+            workspace_path=str(tmp_path / "slot"),
+            source_type=RepoSourceType.WORKTREE,
+            locked_by_task_id="task",
+        )
+    )
+    await ownership.transfer(fence, "collector", "collector")
+
+    with pytest.raises(StaleFence):
+        await ownership.attach(fence, "session", "slot")
+
+
+async def test_attach_refuses_shared_base_checkout_without_recording_owner(db, tmp_path):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    await db.create_task(Task(id="task", project_id="p", title="task", description=""))
+    fence = await ownership.acquire(target, "task", "worker")
+    await db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path=str(tmp_path / "base"),
+        locked_by_task_id="task", source_type=RepoSourceType.LINK,
+    ))
+    await db.create_workspace(Workspace(
+        id="slot", project_id="p", workspace_path=str(tmp_path / "slot"),
+        base_workspace_id="base", slot_index=0, source_type=RepoSourceType.WORKTREE,
+    ))
+
+    with pytest.raises(BranchBusy, match="shared base checkout"):
+        await ownership.attach(fence, "session", "base")
+
+    owner = await ownership.get_owner(target)
+    assert owner["handoff_state"] == "reserved"
+    assert owner["workspace_id"] is None
+    assert owner["session_id"] is None
+
+
+async def test_transfer_waits_for_bounded_reserved_mutation_exclusion(db):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    fence = await ownership.acquire(target, "task", "worker")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def prepare():
+        async with ownership.mutation_exclusion(fence):
+            entered.set()
+            await release.wait()
+
+    preparation = asyncio.create_task(prepare())
+    await entered.wait()
+    transfer = asyncio.create_task(ownership.transfer(fence, "collector", "collector"))
+    await asyncio.sleep(0.05)
+    assert not transfer.done()
+    release.set()
+
+    await preparation
+    successor = await transfer
+    assert successor.owner_id == "collector"
+
+
+async def test_train_disable_serializes_with_worker_reservation(db, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.models import RepoConfig
+    from tests.test_integration_train_policy import activate
+
+    await db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/example/project.git", default_branch="main",
+    ))
+    await db.update_project("p", hierarchical_integration_mode="train", integration_repository_id="r")
+    await db.create_task(Task(id="worker", project_id="p", title="Worker", description=""))
+    world = SimpleNamespace(db=db)
+    await activate(world, tmp_path)
+    owners = BranchOwnership(db)
+    target = BranchKey(repository_id="r", branch="worker")
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    locked_row = owners._locked_row
+
+    async def hold_before_reserving(conn, key):
+        entered.set()
+        await proceed.wait()
+        return await locked_row(conn, key)
+
+    monkeypatch.setattr(owners, "_locked_row", hold_before_reserving)
+    acquire = asyncio.create_task(owners.acquire(target, "worker", "worker"))
+    await asyncio.wait_for(entered.wait(), 3)
+    disable = asyncio.create_task(activate(world, tmp_path, enabled=False))
+    try:
+        await asyncio.sleep(0.05)
+        assert not disable.done(), "disable must serialize before checking idle reservations"
+    finally:
+        proceed.set()
+        await asyncio.wait_for(asyncio.gather(acquire, disable), 3)
+    owner = await owners.get_owner(target)
+    assert owner["handoff_state"] == "released"
+    with pytest.raises(BranchBusy, match="playbook is disabled"):
+        await owners.acquire(target, "worker", "worker")

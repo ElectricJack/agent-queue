@@ -5,19 +5,17 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 
 from src.api.graph import build_graph_router
-from src.database import Database
-from src.models import Agent, AgentState, Project, Task
+from src.models import Agent, AgentState, Project, Task, TaskStatus
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "g.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("g.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -91,3 +89,108 @@ async def test_playbook_run_root_exposes_run_identity(db, client_factory):
 
     assert response.status_code == 200
     assert response.json()["tasks"][0]["playbook_run_id"] == "run-123"
+
+
+async def test_list_gate_waiters_for_project_groups_waiters_by_gate(db):
+    await db.create_task(Task(id="t1", project_id="p1", title="One", description=""))
+    await db.create_task(Task(id="t2", project_id="p1", title="Two", description=""))
+    g1, _ = await db.create_gate(
+        project_id="p1", gate_type="human", title="review", waiter_task_ids=["t2", "t1"]
+    )
+    g2, _ = await db.create_gate(project_id="p1", gate_type="timer", title="wait", await_id="x")
+
+    waiters = await db.list_gate_waiters_for_project("p1")
+
+    assert waiters == {g1: ["t1", "t2"]}
+    assert g2 not in waiters
+
+
+async def test_list_graph_task_rows_is_a_narrow_projection(db):
+    await db.create_task(Task(
+        id="t1", project_id="p1", title="One", description="a very long description",
+        priority=10, dedup_key="playbook-run:run-1",
+    ))
+    await db.create_task(Task(id="t2", project_id="p1", title="Two", description="", priority=5))
+
+    rows = await db.list_graph_task_rows("p1")
+
+    assert [r["id"] for r in rows] == ["t2", "t1"]  # priority asc
+    assert set(rows[0]) == {
+        "id", "title", "status", "priority", "is_blocked", "profile_id", "intelligence_class",
+        "assigned_agent_id", "branch_name", "pr_url", "dedup_key", "parent_task_id",
+    }
+    assert rows[1]["dedup_key"] == "playbook-run:run-1"
+    assert rows[1]["is_blocked"] is False
+    assert rows[1]["status"] == "DEFINED"
+
+
+async def test_graph_endpoint_statement_count_does_not_grow_with_tasks(db, client_factory):
+    # 40 tasks in a chain, one gate over half of them.
+    ids = [f"t{i}" for i in range(40)]
+    for tid in ids:
+        await db.create_task(Task(id=tid, project_id="p1", title=tid, description=""))
+    for a, b in zip(ids[1:], ids):
+        await db.add_dependency(a, b)
+    await db.create_gate(project_id="p1", gate_type="human", title="r", waiter_task_ids=ids[:20])
+
+    counter = {"n": 0}
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        counter["n"] += 1
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.get("/api/projects/p1/graph")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["tasks"]) == 40 and len(body["edges"]) == 39
+    assert body["gates"][0]["task_ids"] == sorted(ids[:20])
+    # project + tasks + edges + gates + waiters + agents
+    assert counter["n"] <= 6, counter["n"]
+
+
+async def test_graph_rolls_up_nested_waiting_work(db, client_factory):
+    for task_id, parent_id in (("epic", None), ("phase", "epic"), ("leaf", "phase")):
+        await db.create_task(Task(id=task_id, project_id="p1", title=task_id, description="",
+                                  status=TaskStatus.DEFINED if task_id == "leaf" else TaskStatus.IN_PROGRESS))
+        if parent_id:
+            async with db._engine.begin() as conn:
+                await db.set_parent(task_id, parent_id, conn=conn)
+    async with client_factory() as ac:
+        response = await ac.get("/api/projects/p1/graph")
+    assert response.status_code == 200
+    nodes = {node["id"]: node for node in response.json()["tasks"]}
+    for task_id in ("epic", "phase"):
+        assert nodes[task_id]["status"] == "IN_PROGRESS"
+        assert nodes[task_id]["display_state"] == "waiting"
+        assert nodes[task_id]["child_state_counts"] == {"waiting": 1}
+        assert nodes[task_id]["descendant_state_counts"] == {"DEFINED": 1}
+    assert nodes["leaf"]["display_state"] is None
+
+
+async def test_graph_carries_delivery_readiness_and_epic_reason(db, client_factory, monkeypatch):
+    from sqlalchemy import update
+    from src.database.tables import tasks
+
+    for tid, status in (("epic", TaskStatus.IN_PROGRESS), ("leaf", TaskStatus.READY)):
+        await db.create_task(Task(id=tid, project_id="p1", title=tid, description="", status=status))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "leaf").values(parent_task_id="epic"))
+
+    async def exclusions(ids, **kwargs):
+        return {tid: [{"code": "frontier_epic_refresh_pending", "ref": "epic",
+                       "detail": "Refresh epic aq/epic after source.6 lands on dev"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    async with client_factory() as ac:
+        response = await ac.get("/api/projects/p1/graph")
+    assert response.status_code == 200
+    rows = {row["id"]: row for row in response.json()["tasks"]}
+    assert rows["leaf"]["status"] == "READY"
+    assert rows["leaf"]["claim_readiness"]["claimable"] is False
+    assert "aq/epic" in rows["leaf"]["claim_readiness"]["reason"]
+    assert "source.6" in rows["epic"]["display_reason"]

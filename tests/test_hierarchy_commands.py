@@ -8,21 +8,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
-from src.database import Database
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.models import AgentProfile, DepType, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from src.tools import _ALL_TOOL_DEFINITIONS
+from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         data_dir=str(tmp_path / "data"),
     )
 
@@ -45,6 +45,7 @@ async def handler(db, config):
 
 
 async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
@@ -310,8 +311,7 @@ class TestAbandonChildren:
 
 
 class TestCascadeDeleteLiveDescendants:
-    """Cascade delete refuses rather than pulling a live session out from
-    under a grandchild (spec §7, controller ruling on task 7 review)."""
+    """Confirmed recursive deletion stops live descendants and reports failures."""
 
     async def _grandchild_tree(self, db):
         await mktask(db, "p", status=TaskStatus.DEFINED)
@@ -320,7 +320,7 @@ class TestCascadeDeleteLiveDescendants:
         await db.add_dependency("c", "p", "parent-child")
         await db.add_dependency("gc", "c", "parent-child")
 
-    async def test_refused_while_grandchild_has_live_session(self, handler, db):
+    async def test_confirmed_delete_handles_grandchild_live_session(self, handler, db):
         await self._grandchild_tree(db)
         now = time.time()
         await db.create_session(
@@ -342,15 +342,13 @@ class TestCascadeDeleteLiveDescendants:
             )
         )
 
-        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True})
-        assert res["success"] is False
-        assert res["code"] == "hierarchy.live_descendants"
-        assert res["sessions"] == [{"session_id": "s1", "task_id": "gc"}]
-
-        # Nothing was deleted.
-        assert await db.get_task("p") is not None
-        assert await db.get_task("c") is not None
-        assert await db.get_task("gc") is not None
+        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True, "confirmed": True})
+        assert res["success"] is True, res
+        assert "running_work" in {w["code"] for w in res["warnings"]}
+        assert res["sessions"] == [{"session_id": "s1", "task_id": "gc", "state": "running"}]
+        assert await db.get_task("p") is None
+        assert await db.get_task("c") is None
+        assert await db.get_task("gc") is None
 
     async def test_succeeds_once_session_stopped(self, handler, db):
         await self._grandchild_tree(db)
@@ -375,8 +373,10 @@ class TestCascadeDeleteLiveDescendants:
         )
         await db.update_session("s1", state="stopped")
 
-        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True})
-        assert res == {"deleted": "p", "title": "p"}
+        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True, "confirmed": True})
+        assert res["success"], res
+        assert res["deleted"] == "p"
+        assert res["branch_details"] == []
 
         assert await db.get_task("p") is None
         assert await db.get_task("c") is None
@@ -419,6 +419,36 @@ class TestHierarchyCommands:
         res = await handler._cmd_reparent_task({"task_id": "a", "parent_id": "a"})
         assert res["code"] == "hierarchy.self_parent"
 
+    @pytest.mark.parametrize("state", ["starting", "running", "draining"])
+    async def test_reparent_refuses_live_parent_session_without_agent_pointer(
+        self, handler, db, state
+    ):
+        await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child")
+        await mksession(db, "holder", "parent", state=state)
+        res = await handler._cmd_reparent_task({"task_id": "child", "parent_id": "parent"})
+        assert res["code"] == "hierarchy.live_parent"
+        assert (await db.get_task("child")).parent_task_id is None
+        assert await db.get_typed_dependencies("child") == []
+        async with db.immediate() as conn:
+            assert not await db.is_container("parent", conn=conn)
+
+    async def test_reparent_allows_stopped_parent_session(self, handler, db):
+        await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child")
+        await mksession(db, "holder", "parent", state="stopped")
+        res = await handler._cmd_reparent_task({"task_id": "child", "parent_id": "parent"})
+        assert res["success"] is True
+
+    async def test_reparent_to_current_live_parent_is_idempotent(self, handler, db):
+        await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child")
+        await db.add_dependency("child", "parent", "parent-child")
+        await mksession(db, "holder", "parent")
+        res = await handler._cmd_reparent_task({"task_id": "child", "parent_id": "parent"})
+        assert res["success"] is True
+        assert (await db.get_session("holder")).task_id == "parent"
+
     async def test_reparent_to_current_parent_is_idempotent(self, handler, db):
         await mktask(db, "p1", status=TaskStatus.IN_PROGRESS)
         await mktask(db, "c")
@@ -432,8 +462,268 @@ class TestHierarchyCommands:
     async def test_schema_lists_hierarchy_codes(self, handler):
         res = await handler._cmd_get_schema({})
         assert "container_closed" in res["enums"]["hierarchy_error"]
+        assert "live_parent" in res["enums"]["hierarchy_error"]
+        assert "dependency_on_container" in res["enums"]["hierarchy_error"]
 
     async def test_agent_scope_includes_reads(self):
         from src.api.scope import AGENT_COMMAND_SET
 
         assert {"task_children", "task_progress"} <= AGENT_COMMAND_SET
+
+
+class TestDeleteBranchPolicy:
+    """Branch choices preview resources and report cleanup through the handler."""
+
+    async def _hierarchical_task_with_a_branch(
+        self, db, task_id: str, *, branch: str | None = None
+    ) -> None:
+        from sqlalchemy import insert, update
+
+        from src.database.tables import projects, task_branch_origins
+
+        branch = branch or f"aq/{task_id}"
+        await mktask(db, task_id, status=TaskStatus.FAILED, branch_name=branch)
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(projects)
+                .where(projects.c.id == PROJECT_ID)
+                .values(hierarchical_integration_mode="train", integration_repository_id="repo")
+            )
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id=f"origin-{task_id}",
+                    task_id=task_id,
+                    repository_id="repo",
+                    branch_name=branch,
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=True,
+                    materialized_at=1.0,
+                    created_at=1.0,
+                )
+            )
+
+    async def test_delete_without_confirmation_previews_the_branches(self, db, handler):
+        epic_branch = "aq/epic/retire-the-publisher"
+        await self._hierarchical_task_with_a_branch(
+            db, "has-branch", branch=epic_branch
+        )
+
+        res = await handler.execute("delete_task", {"task_id": "has-branch"})
+
+        assert res["success"] is True
+        assert res["disposition"] == "preview"
+        assert res["branches"] == "keep"
+        assert epic_branch in {b["branch"] for b in res["branch_details"]}
+        assert await db.get_task("has-branch") is not None
+
+    async def test_delete_with_keep_leaves_no_discard_work(self, db, handler):
+        from sqlalchemy import select
+
+        from src.database.tables import task_branch_origins
+
+        await self._hierarchical_task_with_a_branch(db, "keep-branch")
+
+        res = await handler.execute(
+            "delete_task", {"task_id": "keep-branch", "branches": "keep", "confirmed": True}
+        )
+
+        assert res["deleted"] == "keep-branch"
+        assert all(b["action"] == "keep" for b in res["branch_details"])
+        async with db._engine.connect() as conn:
+            state = (
+                await conn.execute(
+                    select(task_branch_origins.c.discard_state).where(
+                        task_branch_origins.c.task_id == "keep-branch"
+                    )
+                )
+            ).scalar_one()
+        assert state is None
+
+    async def test_delete_with_unavailable_checkout_reports_nonfatal_cleanup(self, db, handler):
+        from sqlalchemy import select
+
+        from src.database.tables import task_branch_origins
+
+        epic_branch = "aq/epic/retire-the-publisher"
+        await self._hierarchical_task_with_a_branch(
+            db, "drop-branch", branch=epic_branch
+        )
+
+        res = await handler.execute(
+            "delete_task", {"task_id": "drop-branch", "branches": "delete", "confirmed": True}
+        )
+
+        assert res["deleted"] == "drop-branch"
+        assert epic_branch in {b["branch"] for b in res["branch_details"]}
+        assert "branch_cleanup_incomplete" in {w["code"] for w in res["warnings"]}
+        assert await db.get_task("drop-branch") is None
+        async with db._engine.connect() as conn:
+            origin = (
+                await conn.execute(
+                    select(task_branch_origins).where(
+                        task_branch_origins.c.task_id == "drop-branch"
+                    )
+                )
+            ).mappings().one()
+        assert origin["discard_state"] is None
+        assert origin["retired_at"] is not None
+        assert origin["branch_name"] == epic_branch
+
+    async def test_an_unknown_choice_is_rejected_before_anything_moves(self, db, handler):
+        await self._hierarchical_task_with_a_branch(db, "bad-choice")
+
+        res = await handler.execute(
+            "delete_task", {"task_id": "bad-choice", "branches": "shred"}
+        )
+
+        assert res["success"] is False
+        assert res["code"] == "invalid_branches"
+        assert await db.get_task("bad-choice") is not None
+
+
+class TestHierarchyRefusalsOverHTTP:
+    """Preview choices and confirmed deletion survive the generated HTTP route."""
+
+    @pytest.fixture
+    async def typed_routes(self, handler):
+        """A client serving the generated ``delete_task``/``archive_task`` routes.
+
+        ``ASGITransport``, never ``TestClient``: the latter drives the app on
+        an event loop of its own, and the handler's asyncpg connections belong
+        to this test's loop — every database call would fail with "another
+        operation is in progress" and the route would answer a 422 carrying
+        that error instead of the response under test.
+        """
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from src.api.codegen import _make_input_model, _make_route_handler
+        from src.api.dependencies import get_command_handler
+
+        app = FastAPI()
+        app.dependency_overrides[get_command_handler] = lambda: handler
+        for cmd, path in (
+            ("delete_task", "/api/task/delete"),
+            ("archive_task", "/api/task/archive"),
+        ):
+            schema = next(
+                tool["input_schema"]
+                for tool in _ALL_TOOL_DEFINITIONS
+                if tool["name"] == cmd
+            )
+            route = _make_route_handler(cmd, _make_input_model(cmd, schema))
+            app.add_api_route(path, route, methods=["POST"])
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://t"
+        ) as client:
+            yield client
+
+    async def _integration_owned_task(self, db, task_id: str) -> None:
+        """A COMPLETED task an append-only integration audit row still names."""
+        from sqlalchemy import insert
+
+        from src.database.tables import integration_parent_episodes
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+        await mktask(db, task_id, status=TaskStatus.COMPLETED)
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(integration_parent_episodes).values(
+                    id="ep",
+                    parent_task_id=task_id,
+                    repository_id="repo",
+                    generation=0,
+                    pre_collection_checkpoint_sha="a" * 40,
+                    created_at=1.0,
+                )
+            )
+
+    async def test_confirmed_delete_with_integration_history_succeeds_on_the_wire(
+        self, db, typed_routes
+    ):
+        await self._integration_owned_task(db, "owned")
+
+        response = await typed_routes.post("/api/task/delete", json={"task_id": "owned"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["disposition"] == "preview"
+        assert await db.get_task("owned") is not None
+        response = await typed_routes.post("/api/task/delete", json={"task_id": "owned", "confirmed": True})
+        assert response.status_code == 200, response.text
+        assert response.json()["deleted"] == "owned"
+        assert await db.get_task("owned") is None
+
+    async def test_archive_with_integration_history_succeeds_on_the_wire(
+        self, db, typed_routes
+    ):
+        await self._integration_owned_task(db, "owned")
+
+        response = await typed_routes.post("/api/task/archive", json={"task_id": "owned"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["archived"] == "owned"
+        assert await db.get_task("owned") is None
+
+    async def test_branch_preview_keeps_its_branch_list_on_the_wire(
+        self, db, typed_routes
+    ):
+        """What ``BranchDiscardPrompt`` renders has to reach the browser."""
+        await TestDeleteBranchPolicy()._hierarchical_task_with_a_branch(db, "has-branch")
+
+        response = await typed_routes.post("/api/task/delete", json={"task_id": "has-branch"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["disposition"] == "preview"
+        assert "aq/has-branch" in {b["branch"] for b in body["branch_details"]}
+        assert await db.get_task("has-branch") is not None
+
+
+class TestDeleteIntegrationOwned:
+    """Integration history becomes a warning and survives recursive deletion."""
+
+    async def _repair_verified(self, db, task_id: str) -> None:
+        """A settled batch repair whose historical verifier was *task_id*."""
+        from sqlalchemy import insert
+
+        from src.database.tables import integration_repair_operations
+
+        now = time.time()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(integration_repair_operations).values(
+                    id="op-1",
+                    target_kind="batch",
+                    batch_id="b-1",
+                    parent_task_id=None,
+                    episode_id="ep-batch",
+                    active_stage=0,
+                    state="completed",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    required_check_version="v1",
+                    verifier_task_id=task_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    async def test_confirmed_cascade_delete_keeps_history_and_deletes_tree(self, db, handler):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "c", status=TaskStatus.COMPLETED)
+        await db.add_dependency("c", "p", "parent-child")
+        await self._repair_verified(db, "c")
+
+        res = await handler.execute("delete_task", {"task_id": "p", "cascade": True, "confirmed": True})
+
+        assert res["success"] is True, res
+        assert "integration_owned" in {w["code"] for w in res["warnings"]}
+        assert await db.get_task("p") is None
+        assert await db.get_task("c") is None

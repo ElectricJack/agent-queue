@@ -14,20 +14,11 @@ from src.playbooks.definition import source_digest
 from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 
-SOURCE = """---
-id: router
-kind: assignment-routing
-role: assignment-routing
-profile_id: playbook-compiler
-scope: system
-triggers:
-  - assignment.route.requested
----
-
-# Router
-
-Choose one route and return JSON.
-"""
+SOURCE = (
+    Path("tests/fixtures/playbooks/v2/lowering/output-ref-no-loop.pipeline.md")
+    .read_text(encoding="utf-8")
+    .replace("id: output-ref-no-loop", "id: router")
+)
 
 
 class _Handler(PlaybookCommandsMixin, PlaybookV2CommandsMixin):
@@ -76,7 +67,7 @@ class _Handler(PlaybookCommandsMixin, PlaybookV2CommandsMixin):
 
 async def test_update_source_is_a_v2_command_that_compiles_and_activates(tmp_path) -> None:
     handler = _Handler(tmp_path)
-    updated = SOURCE.replace("Choose one route", "Choose the cheapest reliable route")
+    updated = SOURCE + "\nUpdated prose.\n"
 
     result = await handler._cmd_update_playbook_source(
         {
@@ -90,7 +81,7 @@ async def test_update_source_is_a_v2_command_that_compiles_and_activates(tmp_pat
     assert result["playbook_id"] == "router"
     assert result["version"] == 1
     assert result["node_count"] == 3
-    assert result["triggers"] == ["assignment.route.requested"]
+    assert result["triggers"] == ["task.completed"]
     assert handler.source_path.read_text(encoding="utf-8") == updated
     handler.db.upsert_playbook_artifact.assert_awaited_once()
     activation = handler.db.set_playbook_activation.await_args.kwargs
@@ -148,7 +139,7 @@ async def test_update_source_conflict_does_not_write_or_compile(tmp_path) -> Non
     result = await handler._cmd_update_playbook_source(
         {
             "playbook_id": "router",
-            "markdown": SOURCE.replace("Choose one route", "Changed"),
+            "markdown": SOURCE + "\nChanged.\n",
             "expected_source_hash": "sha256:" + "0" * 64,
         }
     )
@@ -162,9 +153,7 @@ async def test_update_source_conflict_does_not_write_or_compile(tmp_path) -> Non
 
 async def test_update_prose_source_keeps_previous_activation_when_not_lowerable(tmp_path) -> None:
     handler = _Handler(tmp_path)
-    prose = SOURCE.replace("kind: assignment-routing\n", "").replace(
-        "Choose one route", "Describe a new workflow"
-    )
+    prose = SOURCE.replace("kind: pipeline\n", "") + "\nDescribe a new workflow.\n"
 
     result = await handler._cmd_update_playbook_source(
         {

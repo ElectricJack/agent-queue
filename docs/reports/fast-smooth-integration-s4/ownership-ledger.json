@@ -1,0 +1,647 @@
+{
+  "generated_by": "scripts/integration-cutover-evidence.py",
+  "measured_tree": "e6ad3e8541bc79472694c9efec36898be35da85e",
+  "source_base": "3e60b49c6ec251d91862e31f6eb3c16a61e3dd44",
+  "ownership": {
+    "baseline_revision": "2483f634aef2ece9fd3a6e5d92174cc145aa564a",
+    "landing_revision": "8e73e088fa5050621a165b9d13f90ef88334572d",
+    "phase": "transition",
+    "groups": {
+      "shared": 61251,
+      "companions": 11627,
+      "engine": 84299,
+      "policy_sources": 1010,
+      "policy": 489,
+      "ui": 262,
+      "guards": 633
+    },
+    "total": 159571,
+    "tables": 45,
+    "table_cap_in_phase": 45,
+    "uninventoried": [
+      "src/api/graph.py::build_graph_router (lines 32-131)",
+      "src/api/graph.py::import from src.task_graph.readiness import load_readiness (lines 29-29)",
+      "src/assignment_routing.py::claimable_routes (lines 79-109)",
+      "src/build_cache.py::cache_environment (lines 21-27)",
+      "src/build_cache.py::resolved_cache_settings (lines 90-100)",
+      "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_restore_task_origin'] (lines 157-157)",
+      "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_withheld_source'] (lines 135-135)",
+      "src/cli/client.py::_COMMAND_TIMEOUTS['integration_restore_task_origin'] (lines 131-131)",
+      "src/commands/contracts/wait.py::WaitCancelArgs.owner_kind (lines 87-87)",
+      "src/commands/helpers.py::_collect_tree_tasks (lines 419-440)",
+      "src/commands/helpers.py::_count_subtree (lines 441-468)",
+      "src/commands/helpers.py::_count_subtree_by_status (lines 469-494)",
+      "src/commands/helpers.py::_format_task_tree (lines 636-785)",
+      "src/commands/helpers.py::format_dependency_list (lines 842-899)",
+      "src/commands/helpers.py::progress_bar (lines 35-52)",
+      "src/commands/project_relocation_commands.py::ProjectRelocationCommandsMixin._cmd_project_relocate (lines 17-65)",
+      "src/commands/project_relocation_commands.py::import from src.integration.checks import ChecksState, ExactChecks, RequiredChecks (lines 9-9)",
+      "src/commands/project_relocation_commands.py::import from src.integration.development_policy import project_development_pin (lines 10-10)",
+      "src/commands/project_relocation_commands.py::import from src.integration.runtime_contracts import HeadIdentity (lines 11-11)",
+      "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_heartbeat (lines 1991-2050)",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_get_task_tree (lines 1263-1332)",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_children (lines 1333-1356)",
+      "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_flat (lines 700-756)",
+      "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_hierarchical (lines 901-1044)",
+      "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_repair_workspace_checkout (lines 34-38)",
+      "src/database/queries/blocked_state.py::import from src.database.tables import events, gates, task_completion_records, task_delivery_receipts, task_dependencies, task_gates, task_labels, task_metadata, tasks (lines 29-39)",
+      "src/database/queries/claim_queries.py::pool_primary_kind (lines 560-571)",
+      "src/database/queries/continuation_queries.py::retire_task_waits (lines 48-119)",
+      "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_context, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces (lines 45-61)",
+      "src/database/queries/task_reroute_queries.py::import from src.database.queries.claim_queries import _frontier_predicates, pool_primary_kind, route_claimable_in (lines 23-27)",
+      "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_branch_origins, task_dependencies, task_session_attempts, tasks (lines 9-19)",
+      "src/database/queries/wait_queries.py::wait_explain (lines 715-789)",
+      "src/doctor/stall_checks.py::_delivery_stuck_findings (lines 515-543)",
+      "src/doctor/wait_checks.py::wait_checks (lines 73-80)",
+      "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.publication_verified'] (lines 1790-1795)",
+      "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.readiness_changed'] (lines 1768-1777)",
+      "src/git/manager.py::detached_commit_context (lines 217-227)",
+      "src/install/deploy.py::read_record (lines 202-220)",
+      "src/jobs/runner.py::import from src.resources.semaphore import SlotSemaphore, SlotTimeout, full_suite_lock_dir (lines 22-22)",
+      "src/jobs/workspace.py::candidate_workspace (lines 69-144)",
+      "src/metrics/delivery_latency.py::_wait_view (lines 477-497)",
+      "src/metrics/delivery_latency.py::generation_of (lines 68-77)",
+      "src/operator_decisions.py::WITHHELD_RELEASE_SOURCE (lines 57-61)",
+      "src/operator_decisions.py::note_on (lines 76-81)",
+      "src/operator_decisions.py::withheld_release (lines 66-75)",
+      "src/operator_decisions.py::withheld_release_ref (lines 62-65)",
+      "src/orchestrator/core.py::Orchestrator._schedule (lines 4690-4935)",
+      "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, jobs, sessions (lines 10-10)",
+      "src/playbooks/private_values.py::private_value_key_health (lines 43-61)",
+      "src/playbooks/routing.py::_loaded_activations (lines 155-206)",
+      "src/playbooks/runtime.py::V2PlaybookRuntime._on_event (lines 265-285)",
+      "src/profiles/task_execution.py::is_supervisor_profile (lines 15-27)",
+      "src/projects/relocation.py::ProjectRelocation._fences (lines 212-268)",
+      "src/projects/relocation.py::ProjectRelocation.apply (lines 397-489)",
+      "src/projects/relocation.py::import from src.database.tables import integration_branch_owners, jobs, job_workspace_pins, project_integration_leases, projects, repos, sessions, tasks, workspaces (lines 22-25)",
+      "src/projects/relocation.py::import from src.jobs.artifacts import atomic_json, read_json (lines 26-26)",
+      "src/projects/storage_binding.py::bound_path (lines 9-17)",
+      "src/projects/storage_binding.py::read_binding (lines 18-25)",
+      "src/projects/storage_binding.py::repository_path (lines 26-36)",
+      "src/routing/planner.py::plan_route (lines 1258-1474)",
+      "src/routing/sources.py::route_is_claimable (lines 52-58)",
+      "src/sessions/env.py::session_db_isolation (lines 135-161)",
+      "src/sessions/obsolete.py::prepare_retirement_on (lines 151-284)",
+      "src/task_graph/activity.py::attach_activity (lines 199-205)",
+      "src/task_graph/activity.py::load_activity (lines 178-198)",
+      "src/tools/definitions.py::_TOOL_CATEGORIES['integration_batch_fix'] (lines 18-18)",
+      "src/tools/definitions.py::statement:9dbb3d96e20fc1cb (lines 8508-8518)",
+      "src/wait_runtime/cancellation.py::cancel (lines 11-59)",
+      "src/wait_runtime/lifecycle.py::WaitLifecycle.register_in_transaction (lines 36-102)",
+      "src/wait_runtime/resume.py::import from src.wait_runtime.legacy_parking import parked (lines 22-22)",
+      "src/waits/adapters/base.py::fields (lines 35-43)",
+      "src/waits/adapters/base.py::string (lines 44-49)",
+      "src/waits/dispatcher.py::WakeDispatcher.finish (lines 129-239)",
+      "src/waits/dispatcher.py::import from src.wait_runtime.legacy_parking import legacy_parked (lines 28-28)",
+      "src/waits/holding.py::active_wait_for (lines 114-122)",
+      "src/waits/ownership.py::fence_owner (lines 8-55)",
+      "src/waits/watchers/ci.py::CheckWatcher._ci (lines 148-190)",
+      "src/waits/watchers/ci.py::CheckWatcher.head (lines 99-104)",
+      "src/waits/watchers/ci.py::CheckWatcher.lock_source (lines 82-98)",
+      "src/waits/watchers/ci.py::TERMINAL (lines 32-34)",
+      "src/waits/watchers/ci.py::import from src.database.tables import integration_check_evidence, repos, wait_records (lines 19-20)",
+      "src/waits/watchers/ci.py::import from src.integration.checks import Conclusion, evaluate (lines 22-22)",
+      "src/waits/watchers/ci.py::import from src.integration.runtime_contracts import HeadIdentity (lines 23-23)",
+      "src/warm_workspaces.py::WarmWorkspacePool.acquire (lines 42-115)",
+      "src/warm_workspaces.py::import from src.jobs.artifacts import atomic_json, read_json (lines 16-16)",
+      "src/warm_workspaces.py::primary_store (lines 17-34)"
+    ],
+    "unreviewed_writers": [
+      "src/asks/legacy_reset.py::discard::00635d16d37fb1dd71c4bae42449b7d1281cf5e926bbed2a8b06dc6bec86e325",
+      "src/asks/legacy_reset.py::reset::df54c52ad52d09fa866acba8659fc74d57631883065d45dc4f204d939e848188",
+      "src/asks/reconcile.py::scan::71e404c9258ff6031e83ca705bb1737ab820adab28d43b8a1d4cdd1064021268",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::47e4081469e519ba1ff4517fb4e3b8ec7bda6f9adecd25f10447a5341f89d18a",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d",
+      "src/commands/escalation_commands.py::EscalationCommandsMixin._create_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8",
+      "src/commands/integration_commands.py::IntegrationCommandsMixin._reopen_source_ci_once::99067e5d5da4bc5efd63f84a8dbf3d8a88481ddf555f7b70a646a51fe37b5581",
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca",
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647",
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003",
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_add_dependency::a4b11d12e44641f31dec92eda6c8cd14f1b9c6975b961f527226962bd27130a5",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::513842f306aa56e3e63cfa84b52c59c27b3f94d7c784a662f64170e6c03e1d30",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::b611360d398cc725e9ada50f9112d9c7be31f747e1251e86de6d9f03c44ab5f7",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_edit_task::b6009fee9d6fc35151315162ef7595d81bde3db54b069841732e5140523619ff",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_provide_input::0f34c5a5cf7ffa0b7470a2802a0e0a7b49b19ff72d497f0aad42650f0e0ae892",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_dependency::1a08ef791aced41453b664c03655d329ac97c44ad54bc8079a0e8061b3e7eb93",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::223d0f7e6c4889256e3ed2ac86b057584987bd73625610bcb54d446246a0bbcb",
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::d0a23678072f424218ac0a4925ebf887c82e58359a4b99b3a16f86a3e1b51529",
+      "src/commands/task_commands.py::TaskCommandsMixin._create_task::0dfb7d71a735cf01bf69eb2924994003433c6ecb4da10f0c4921536d9b0bfd9a",
+      "src/commands/task_commands.py::TaskCommandsMixin._create_task::410a02b90473dd130b922788f002d371e50f4de6ba4daff1847591088f3deff6",
+      "src/commands/task_commands.py::TaskCommandsMixin._keep_for_delivery::e1c6bc5706b2248baa0f518cec6fe5c9457f7459885dd70390548c8ff888ecea",
+      "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f",
+      "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on::6ee0195b41e365a4f138cbf111c69b21f7782f9b3bc5c059df2281abfd263cfe",
+      "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37",
+      "src/database/queries/continuation_queries.py::retire_task_waits::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8",
+      "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437",
+      "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b",
+      "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437",
+      "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b",
+      "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37",
+      "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37",
+      "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37",
+      "src/database/queries/task_queries.py::TaskQueryMixin._retry_slot_reset_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37",
+      "src/database/queries/task_queries.py::TaskQueryMixin.discard_task_pause_checkpoint::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37",
+      "src/integration/batches.py::BatchStore.reassemble::d5c9659229fbd1c20968daa9af0ba70bc514ac8ab9a77410d85fb433459d14a7",
+      "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660",
+      "src/integration/child_delivery.py::ChildDelivery._adopt_source::c7d104449a70d66ca26fe189a9a028a871a53fdf1db34120d93a682b87d109f1",
+      "src/integration/child_delivery.py::ChildDelivery.run::bb2c4c5d19e39e1bc639add68267e3e3f9d7f4f7480dc07260a55d6c80a1ceff",
+      "src/integration/containment_audit.py::insert_audit::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437",
+      "src/integration/delivery_watchdog.py::_config_put::71e404c9258ff6031e83ca705bb1737ab820adab28d43b8a1d4cdd1064021268",
+      "src/integration/delivery_watchdog.py::_settle_on::5381566393e68ec633aa72ea3aad0b79439276976a942ce34b089ceda48094a7",
+      "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9",
+      "src/integration/owner_recovery.py::OwnerRecovery.restore_task_origin::276a197ddd79d76a1d551da4fcd30b6950a3c8601b16556364400f491731b484",
+      "src/integration/owner_recovery.py::OwnerRecovery.restore_task_origin::f32cc9138004b6a635be06be83beecf1193497268ffe9a70f838e041b3400aa1",
+      "src/integration/preparation_handoff.py::recover_preparation_handoffs::608f2360bd225b1ababc8c68f1c89fa535c9aa8aac7a17e52b6b902351dd8c82",
+      "src/integration/repository_incidents.py::clear_incident::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b",
+      "src/integration/repository_incidents.py::record_incident::71e404c9258ff6031e83ca705bb1737ab820adab28d43b8a1d4cdd1064021268",
+      "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac",
+      "src/integration/stacked_branches.py::StackedBranches.refresh::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec",
+      "src/integration/train_controls.py::TrainControls.release_withheld_source::2d9df3e813a854d8f9680885a47ef904674d4760deb8ba30239b389450e4d599",
+      "src/integration/train_controls.py::TrainControls.settle_batch::6fa9338facb753efbf7dff7ccb989f3f5c856235d9d47d5823156f2d1809121b",
+      "src/integration/train_sources.py::DatabaseBatches._settle_project_delivered::f12935a5a7da1d808ebe870d62412725e218483dee20eff5a7c1e739fe766bfe",
+      "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac",
+      "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::2a67d31d352ea3e6d723c1927b29f55f52d855576c04aa1ff9899093637f01ad",
+      "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::cda00a809de8dac8c704f9da910433579b679b64df6e34c7ec8b86d4e6dc3882",
+      "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::8984da29e38cdef16a89fdb5710ce864b3017bdca5db3309dce9f87f9f13fe70",
+      "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::f2a065e87b9ac1c2c29f709808b528c8ed38ee71d4c075de9a7daf013baee912",
+      "src/orchestrator/pools.py::PoolsMixin._check_pool_progress::f6acd075b5bd9a6a9104d37e66f4885432fd8fd46ebb5c13cd8902504da0de5e",
+      "src/projects/relocation.py::ProjectRelocation.apply::b0443b1cbdcbd2be1c20e315c1e018f45472e7e6804310ecf08bf7c6abc4dd35",
+      "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8",
+      "src/wait_runtime/resume.py::ResumeTransaction.failed::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8",
+      "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5",
+      "src/waits/decisions.py::WaitDecisions.human::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8",
+      "src/waits/decisions.py::WaitDecisions.resolve_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8",
+      "src/waits/dispatcher.py::WakeDispatcher.finish::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8"
+    ],
+    "legacy_sinks_pending_stage4": [
+      "src/commands/git_commands.py::GitCommandsMixin._record_pr_base::2640196177c24b14dc6f061a9ed0349d2f796c10ccc5affa49106456b90139be",
+      "src/commands/git_commands.py::GitCommandsMixin._record_pr_base::850f284411169c6129c656dca5037d124055172dd237d95322d0a706d42f4f73",
+      "src/database/queries/integration_subject_queries.py::IntegrationSubjectQueriesMixin.append_integration_subject_journal::4a70cdc4f2029c032de3a9af830f5cec3a047e7456248c8b461d161f222350ce",
+      "src/database/queries/integration_subject_queries.py::IntegrationSubjectQueriesMixin.append_integration_subject_journal_on::4055e0d096106088406c108319c1bb6f0c8f656a4ef494267587f2fd0e060988",
+      "src/integration/ci_adapters.py::CIAdapters._record::f24a910932fd04223fce85eb802cd0fee6012b1a48ee37ec75cc9a605f928f70",
+      "src/integration/engine.py::RootEngineOwnership.transfer::07681510682d1b980f297c83dd32cee6073abf45d12605fad2eca4f1fd0bb462",
+      "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247",
+      "src/integration/owner_guards.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41",
+      "src/integration/quiesce.py::TrainQuiesce.run::c8bd8e346bc9e9a88d824b9c32abc9bc3203c20d2c9814ad165154e2fd57968d",
+      "src/integration/records.py::append_record_on::2975ebc9f9661128b24c63404fc4fa76e7f5cbabd7d7fb25eb4373858467f1e7",
+      "src/integration/superseded_completion.py::SupersededCompletion.run::3269b48f6c87f0167f0f8b51b4cd513461dce8207576390f7135309e684c4cfd",
+      "src/integration/writers.py::WriterPrimitives._journal_on::d6fd9757273da627a3f0f7f83b6e42a4964f4c99601f882c41267dd01981a676",
+      "src/orchestrator/git_ops.py::GitOpsMixin._phase_integrate::495bbe9c82278c9b769089debd6c7bb39af3eb428ec3191cbd7fa594c59c482f",
+      "src/orchestrator/git_ops.py::GitOpsMixin._trusted_evidence_refusal::77722704d939f3aa1904334d1844b8d329d7a59861d800c90a1ee56c3502cb83"
+    ],
+    "budget_errors": [
+      "owned total: 159,571 exceeds 156,792 in transition"
+    ],
+    "engine_cap_in_phase": 97627,
+    "owned_cap_in_phase": 156792,
+    "transition_exception": {
+      "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+      "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+      "original_owned_total_cap": 155499,
+      "measured_owned_total": 156792,
+      "delta": 1293,
+      "restore_task": "azure-ridge-72",
+      "expires_at": "s4_modules"
+    },
+    "final_caps": {
+      "engine": 11999,
+      "owned_total": 19999,
+      "tables": 10,
+      "target_tables": 5
+    }
+  },
+  "replay": {
+    "reconstructed_cases": 28,
+    "cases": [
+      {
+        "name": "brisk-beacon-64",
+        "family": "no-progress escalation on a root batch",
+        "test": "test_brisk_beacon_64_green_root_head_promotes_despite_no_progress",
+        "assertions": [
+          "15/15 green read before any counter",
+          "promoted despite counter and no-progress fact",
+          "green consumes no attempt and raises no escalation",
+          "no repair allocated",
+          "every child contained in main"
+        ]
+      },
+      {
+        "name": "swift-delta-90",
+        "family": "no-progress escalation on an epic batch",
+        "test": "test_swift_delta_90_green_epic_head_promotes_despite_no_progress",
+        "assertions": [
+          "15/15 green epic candidate contains every child",
+          "promoted despite counter and no-progress fact",
+          "green consumes no attempt and raises no escalation",
+          "epic completes and reaches main",
+          "no repair allocated"
+        ]
+      },
+      {
+        "name": "crisp-horizon-90",
+        "family": "duplicate delegate-close audits broke a uniqueness check",
+        "test": "test_crisp_horizon_90_children_already_in_epic_complete_it",
+        "assertions": [
+          "every child is an ancestor of the epic head",
+          "no batch for contained children",
+          "epic completes as an ordinary close",
+          "epic reaches main"
+        ]
+      },
+      {
+        "name": "vivid-quest-44",
+        "family": "cumulative repair list and an owner reserved with no expiry",
+        "test": "test_vivid_quest_44_repair_progress_from_git_and_expiring_owner",
+        "assertions": [
+          "stale owner lease expires without stop proof",
+          "one repair task for the failing candidate",
+          "repair commits read from rev-list including merged commits",
+          "batch delivers the repaired candidate"
+        ]
+      },
+      {
+        "name": "epic-verifiers",
+        "family": "parent review coupled to a verification generation",
+        "test": "test_epic_verifiers_review_verdict_keyed_by_tree",
+        "assertions": [
+          "review requested by tree SHA",
+          "approved tree completes epic with no prior generation",
+          "epic reaches main"
+        ]
+      },
+      {
+        "name": "stale-branch-owners",
+        "family": "workspace identity compared against reused slots",
+        "test": "test_stale_branch_owner_lease_is_per_session_and_expires",
+        "assertions": [
+          "a reused slot is a different holder",
+          "train waits only until expiry",
+          "the old incarnation's push is refused",
+          "child delivered to the epic"
+        ]
+      },
+      {
+        "name": "squash-delivery",
+        "family": "cutover",
+        "test": "test_squash_merged_child_is_delivered_without_a_batch",
+        "assertions": [
+          "squash commit proves delivery by whole patch",
+          "no batch frozen",
+          "main not pushed by train"
+        ]
+      },
+      {
+        "name": "multi-commit-partial-match",
+        "family": "cutover",
+        "test": "test_partial_multi_commit_patch_match_stays_pending",
+        "assertions": [
+          "one commit's patch on main is not delivery",
+          "batch delivers the whole source",
+          "source is an ancestor of main"
+        ]
+      },
+      {
+        "name": "dead-worker-lease",
+        "family": "cutover",
+        "test": "test_dead_worker_lease_expires_and_repair_is_recovered",
+        "assertions": [
+          "dead holder blocks the candidate ref only until expiry",
+          "open repair task recovered, not re-allocated",
+          "dead holder's fence is refused",
+          "repaired candidate delivered"
+        ]
+      },
+      {
+        "name": "green-on-repair-entry",
+        "family": "cutover",
+        "test": "test_green_on_repair_entry_promotes_despite_counter",
+        "assertions": [
+          "repair writer's commits read from Git",
+          "green read before counter and no-progress fact",
+          "promoted with the open repair's head",
+          "no second repair"
+        ]
+      },
+      {
+        "name": "checks-rerun",
+        "family": "cutover",
+        "test": "test_checks_rerun_latest_attempt_decides",
+        "assertions": [
+          "a failed attempt rerun green is green",
+          "a green attempt rerun red is red",
+          "rerun green promotes without repair"
+        ]
+      },
+      {
+        "name": "non-holder-and-stale-fence",
+        "family": "cutover",
+        "test": "test_non_holder_and_stale_fence_cannot_publish",
+        "assertions": [
+          "a non-holder's managed push is refused",
+          "a stale fence of the same holder is refused",
+          "the current fence publishes with expected-old",
+          "a moved remote refuses the current fence"
+        ]
+      },
+      {
+        "name": "reopen-old-trailers",
+        "family": "cutover",
+        "test": "test_old_trailer_after_reopen_does_not_prove_new_source",
+        "assertions": [
+          "the first completion delivered with its trailer",
+          "an old trailer does not prove the reopened source",
+          "a new batch delivers the reopened source"
+        ]
+      },
+      {
+        "name": "changed-tree-review",
+        "family": "cutover",
+        "test": "test_review_does_not_transfer_to_a_changed_tree",
+        "assertions": [
+          "review requested by candidate tree",
+          "an approval does not cover a changed tree",
+          "the approved tree is delivered"
+        ]
+      },
+      {
+        "name": "moving-target",
+        "family": "cutover",
+        "test": "test_moving_target_refuses_then_rebuilds",
+        "assertions": [
+          "the expected-old push refuses a moved target",
+          "the outside commit is kept",
+          "the rebuilt candidate delivers"
+        ]
+      },
+      {
+        "name": "nested-epics",
+        "family": "cutover",
+        "test": "test_nested_epics_complete_bottom_up",
+        "assertions": [
+          "the child reaches the inner epic",
+          "the inner epic completes into the outer epic",
+          "the outer epic completes into main"
+        ]
+      },
+      {
+        "name": "generated-conflict",
+        "family": "cutover",
+        "test": "test_generated_file_conflict_is_regenerated",
+        "assertions": [
+          "a generated-only conflict is regenerated",
+          "the trailer stays the last paragraph",
+          "no repair allocated"
+        ]
+      },
+      {
+        "name": "migration-conflict",
+        "family": "cutover",
+        "test": "test_migration_head_conflict_is_an_ordinary_repair",
+        "assertions": [
+          "two migration heads go to an ordinary repair",
+          "the repair writer's candidate is adopted from Git",
+          "main has one migration head"
+        ]
+      },
+      {
+        "name": "crash-restart",
+        "family": "cutover",
+        "test": "test_crash_at_each_boundary_restarts_cleanly",
+        "assertions": [
+          "the crash leaves the remote at its boundary",
+          "a restarted train waits for the dead lease, then delivers",
+          "each push happens once",
+          "every child is in main exactly once"
+        ]
+      },
+      {
+        "name": "crash-after-repair-create",
+        "family": "cutover",
+        "test": "test_crash_after_repair_create_recovers_the_task",
+        "assertions": [
+          "the crash leaves one repair task",
+          "the restart recovers it and its attempt",
+          "no duplicate repair after restart"
+        ]
+      },
+      {
+        "name": "candidate-ref-loss",
+        "family": "cutover",
+        "test": "test_lost_candidate_ref_is_rebuilt",
+        "assertions": [
+          "a lost candidate ref is rebuilt from exact sources",
+          "the rebuilt candidate has the same tree",
+          "delivered once"
+        ]
+      },
+      {
+        "name": "aborted-after-ref-loss",
+        "family": "cutover",
+        "test": "test_aborted_batch_is_not_recreated_after_ref_loss",
+        "assertions": [
+          "an aborted batch is not recreated after ref loss",
+          "no candidate is re-pushed",
+          "main is unchanged"
+        ]
+      },
+      {
+        "name": "aborted-members-not-refrozen",
+        "family": "cutover",
+        "test": "test_aborted_members_are_not_refrozen_with_a_new_child",
+        "assertions": [
+          "a new child freezes without the aborted member",
+          "the new child is delivered",
+          "the aborted member stays out of the target"
+        ]
+      },
+      {
+        "name": "escalation-never-gates",
+        "family": "control",
+        "test": "test_counter_escalates_a_red_head_but_never_gates",
+        "assertions": [
+          "a red head past the budget escalates once",
+          "an ordinary repair is still allocated",
+          "the open repair is recovered without a second escalation",
+          "the repaired green head promotes and consumes no attempt"
+        ]
+      },
+      {
+        "name": "simultaneous-visits",
+        "family": "cutover",
+        "test": "test_simultaneous_visits_publish_once",
+        "assertions": [
+          "a visit inside another's critical section is locked out",
+          "each push happens once",
+          "a free race between two trains still pushes once",
+          "every child delivered"
+        ]
+      },
+      {
+        "name": "hold-and-rejection",
+        "family": "cutover",
+        "test": "test_hold_and_rejection_outrank_green",
+        "assertions": [
+          "an explicit hold outranks green",
+          "releasing the hold delivers",
+          "a required rejection outranks green",
+          "no repair for a rejection"
+        ]
+      },
+      {
+        "name": "unavailable-ci-other-target",
+        "family": "cutover",
+        "test": "test_unavailable_ci_blocks_one_target_while_another_advances",
+        "assertions": [
+          "an unavailable provider blocks only its own target",
+          "the other target delivers in the same visit",
+          "nothing unobserved is treated as green",
+          "the blocked target delivers once checks return"
+        ]
+      },
+      {
+        "name": "slow-ci",
+        "family": "cutover",
+        "test": "test_slow_ci_waits_without_repair",
+        "assertions": [
+          "a slow check run stays pending without a repair or failure",
+          "another target advances while the slow run waits",
+          "the lease is released between visits, never held across the wait",
+          "the late success delivers once"
+        ]
+      }
+    ],
+    "historical": {
+      "crisp-horizon-90": {
+        "reconstructed": "test_crisp_horizon_90_children_already_in_epic_complete_it",
+        "capture": "gap"
+      },
+      "vivid-quest-44": {
+        "reconstructed": "test_vivid_quest_44_repair_progress_from_git_and_expiring_owner",
+        "capture": "gap"
+      },
+      "epic-verifiers": {
+        "reconstructed": "test_epic_verifiers_review_verdict_keyed_by_tree",
+        "capture": "gap"
+      },
+      "stale-branch-owners": {
+        "reconstructed": "test_stale_branch_owner_lease_is_per_session_and_expires",
+        "capture": "gap"
+      },
+      "brisk-beacon-64": {
+        "reconstructed": "test_brisk_beacon_64_green_root_head_promotes_despite_no_progress",
+        "capture": "gap"
+      },
+      "swift-delta-90": {
+        "reconstructed": "test_swift_delta_90_green_epic_head_promotes_despite_no_progress",
+        "capture": "gap"
+      }
+    },
+    "historical_gaps": [
+      "brisk-beacon-64",
+      "crisp-horizon-90",
+      "epic-verifiers",
+      "stale-branch-owners",
+      "swift-delta-90",
+      "vivid-quest-44"
+    ],
+    "removed_controls": {
+      "guarded": [
+        "integration_adopt",
+        "integration_adopt_legacy_deliveries",
+        "integration_authorize_root",
+        "integration_bind_legacy_repositories",
+        "integration_cancel_preserving",
+        "integration_clear_stale_request",
+        "integration_close_delivered_pr",
+        "integration_development_engine_transfer",
+        "integration_development_sweep",
+        "integration_engine_transfer",
+        "integration_materialize_root",
+        "integration_migrate_provenance",
+        "integration_rebind_detached_repair",
+        "integration_rebind_repair",
+        "integration_rebind_reused_identity",
+        "integration_reconcile_unmaterialized",
+        "integration_record_noop",
+        "integration_recover_candidate_member",
+        "integration_recover_parent_head",
+        "integration_recover_preserved_repair",
+        "integration_redrive_child",
+        "integration_redrive_root",
+        "integration_reevaluate_repair",
+        "integration_release_delegates",
+        "integration_release_held_gate",
+        "integration_release_owner",
+        "integration_release_stale_owners",
+        "integration_reopen_collection",
+        "integration_reserve_owner",
+        "integration_resolve_candidate_member",
+        "integration_retry_cleanup",
+        "integration_settle_delivered_batch",
+        "integration_settle_parked",
+        "integration_shadow_report",
+        "integration_waive_history"
+      ],
+      "already_retired_in_this_checkout": [
+        "integration_adopt",
+        "integration_adopt_legacy_deliveries",
+        "integration_bind_legacy_repositories",
+        "integration_cancel_preserving",
+        "integration_clear_stale_request",
+        "integration_development_engine_transfer",
+        "integration_development_sweep",
+        "integration_materialize_root",
+        "integration_migrate_provenance",
+        "integration_rebind_detached_repair",
+        "integration_rebind_repair",
+        "integration_rebind_reused_identity",
+        "integration_reconcile_unmaterialized",
+        "integration_recover_candidate_member",
+        "integration_recover_parent_head",
+        "integration_recover_preserved_repair",
+        "integration_release_delegates",
+        "integration_resolve_candidate_member",
+        "integration_retry_cleanup",
+        "integration_settle_delivered_batch",
+        "integration_settle_parked",
+        "integration_shadow_report",
+        "integration_waive_history"
+      ]
+    }
+  },
+  "shadow": {
+    "families": [
+      "child_delivery",
+      "epic_readiness",
+      "lease_eligibility",
+      "observation",
+      "repair_progress"
+    ],
+    "classifications": [
+      "agreement",
+      "disagreement",
+      "unknown"
+    ],
+    "read_only_ports": "GitTruth read ports plus SELECT observation rows",
+    "action_ports": "none",
+    "installed_only_when": "integration.git_first == shadow",
+    "subjects": "reconciler-owned subjects only"
+  },
+  "cutover": {
+    "selector": "integration.git_first: shadow | active",
+    "train_selected_when": "The train when ``integration.git_first`` is ``active``; otherwise None.",
+    "service_refuses_train_beside_runtimes": false,
+    "daemon_only_tick_principal": "service",
+    "stage_two_revisions": [
+      "a00000000072_integration_ref_leases",
+      "a00000000073_git_batch_inputs",
+      "a00000000074_integration_check_evidence_commit_cache"
+    ]
+  }
+}

@@ -93,12 +93,106 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title"],
         "optional": ["agent_id"],
     },
+    # Emitted by the cascade for a task that lacks the fields a worker needs
+    # to pick it up (``intelligence_class`` / ``profile_id``).  The
+    # ``default-assignment-routing`` playbook subscribes; the orchestrator
+    # decides nothing.  Re-emitted per task at most every 120 s.
+    "task.route_needed": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": [
+            "description",
+            "priority",
+            "task_type",
+            "intelligence_class",
+            "profile_id",
+            # Mandatory routing §6.1: the project's bound routing playbook
+            # (``assignment_playbook_id``), which the router's guard compares
+            # with its own id, and the filer's class hint.
+            "router",
+            "class_hint",
+            # The router's delivery guard reads the row at dispatch time, not
+            # the possibly stale fields from an event that sat in a queue.
+            # The engine supplies this hydrated object from ``task_id``.
+            "task",
+        ],
+        "fields": {
+            "task_id": {"type": "string", "description": "task"},
+            "project_id": {"type": "string", "description": "project"},
+            "title": {"type": "string", "description": "task title"},
+            "description": {"type": "string", "description": "task description"},
+            "priority": {"type": "integer", "description": "task priority"},
+            "task_type": {"type": "string", "description": "task type"},
+            "intelligence_class": {
+                "type": "string",
+                "description": "requested intelligence class",
+            },
+            "profile_id": {"type": "string", "description": "requested worker profile"},
+            "router": {"type": "string", "description": "project's bound routing playbook"},
+            "class_hint": {"type": "string", "description": "filer's class hint"},
+            "task": {
+                "type": "object",
+                "description": "current task row",
+                "hydrated": True,
+                "fields": {
+                    "status": {"type": "string", "description": "task status"},
+                    "route_source": {
+                        "type": "string",
+                        "description": "writer of the current route",
+                    },
+                    "intelligence_class": {
+                        "type": "string",
+                        "description": "current intelligence class",
+                    },
+                    "profile_id": {
+                        "type": "string",
+                        "description": "current worker profile",
+                    },
+                },
+            },
+        },
+    },
+    # Emitted by ``task_route_apply`` once the bound router's route is written
+    # (mandatory-routing §10): the route, the candidates it was chosen from
+    # and why, so a route is explainable from the event alone (I6).
+    "task.routed": {
+        "required": [
+            "task_id",
+            "project_id",
+            "title",
+            "intelligence_class",
+            "profile_id",
+            "provider",
+            "provider_intent",
+        ],
+        "optional": [
+            "lane",
+            "rule",
+            "reason",
+            "candidates",
+            "policy_sha256",
+            "run_id",
+            "adjusted_at_apply",
+            "preference",
+        ],
+    },
+    # An audited emergency override (mandatory-routing §7, §10, D2): the
+    # local operator or the supervisor pinned the task to a profile, and why.
+    "task.route_overridden": {
+        "required": ["task_id", "project_id", "title", "profile_id", "by", "reason"],
+        "optional": [
+            "intelligence_class",
+            "provider",
+            "previous_profile_id",
+            "previous_route_source",
+        ],
+    },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
         # ``no_code``: set by the session close path when the task left no
-        # commits behind — by construction (``read_only`` profile or
-        # ``--work-outcome no-op``) or in fact (the task branch carried no
-        # commits ahead of its base when the completion pipeline asked).
+        # commits behind — by construction (``read_only`` or
+        # ``needs_workspace: false`` profile, or ``--work-outcome no-op``)
+        # or in fact (the task branch carried no commits ahead of its base
+        # when the completion pipeline asked).
         # The default pipeline's review rules skip such tasks; emitters that
         # omit it are treated as code-bearing.
         # ``review_task``: set by every emitter when either the task's dedup
@@ -124,6 +218,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
                 "fields": {
                     "branch_name": {"type": "string", "description": "task branch"},
                     "pr_url": {"type": "string", "description": "task pull request"},
+                    "parent_task_id": {
+                        "type": "string",
+                        "description": "immediate structural parent",
+                    },
                 },
             },
         },
@@ -131,6 +229,27 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     "task.failed": {
         "required": ["task_id", "project_id", "title", "status", "context"],
         "optional": ["error", "agent_id", "agent_type"],
+        "fields": {
+            "task_id": {"type": "string", "description": "task"},
+            "project_id": {"type": "string", "description": "project"},
+            "title": {"type": "string", "description": "title"},
+            "status": {"type": "string", "description": "task status"},
+            "context": {"type": "string", "description": "failure context"},
+            "error": {"type": "string", "description": "failure detail"},
+            "agent_id": {"type": "string", "description": "agent"},
+            "agent_type": {"type": "string", "description": "agent profile"},
+            "task": {
+                "type": "object",
+                "description": "task row",
+                "hydrated": True,
+                "fields": {
+                    "parent_task_id": {
+                        "type": "string",
+                        "description": "immediate structural parent",
+                    },
+                },
+            },
+        },
     },
     "task.paused": {
         "required": ["task_id", "project_id", "title", "reason"],
@@ -145,7 +264,23 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     # invariant tests exist to catch.
     "task.stalled": {
         "required": ["task_id", "project_id", "title", "session_id"],
-        "optional": ["idle_seconds"],
+        # ``deferred_reason`` is the structured NudgeReason when the rung was
+        # spent on a composer that could not be read: the stall is real, but
+        # no text was typed, so no ``task.nudged`` follows.  ``evidence`` says
+        # what the stall rests on: ``"store_stalled"`` when the pane was still
+        # reporting activity and the stall came from the harness's own record
+        # plus the provider reporting nothing in flight (a rung, and a climb),
+        # and ``"unverified"`` on the rarer event where it is announced
+        # *without* a rung, because no progress record exists to corroborate
+        # it — nothing downstream may read that one as a climb — and
+        # ``screen_unchanged_seconds`` is the terminal observation quoted
+        # alongside it, for the human, not for a decision.
+        "optional": [
+            "idle_seconds",
+            "deferred_reason",
+            "evidence",
+            "screen_unchanged_seconds",
+        ],
     },
     "task.nudged": {
         "required": ["task_id", "project_id", "title", "session_id"],
@@ -163,6 +298,12 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title", "reason"],
         "optional": ["session_id"],
     },
+    # A worker stopped on its provider (usage limit, outage): its work was
+    # checkpointed and the task handed on; ``aq prime`` carries the note.
+    "task.handoff": {
+        "required": ["task_id", "project_id", "title", "reason", "disposition", "checkpoint"],
+        "optional": ["session_id", "provider", "harness", "branch", "head"],
+    },
     "task.closed": {
         "required": ["task_id", "project_id", "title", "outcome", "status"],
         "optional": ["work_outcome", "pr_url", "retry_count"],
@@ -175,10 +316,17 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title"],
         "optional": ["old_parent", "new_parent"],
     },
+    # Durable checklist invalidation. Subtask titles and context stay in the
+    # database; the shared event carries only the parent task identity and
+    # aggregate counts.
+    "task.subtasks_updated": {
+        "required": ["task_id", "project_id", "title", "total", "settled"],
+        "optional": [],
+    },
     # Committed command edits: refresh dashboard snapshots without re-routing.
     "task.updated": {
         "required": ["task_id", "project_id", "title"],
-        "optional": ["seq"],
+        "optional": ["seq", "status", "edited_fields"],
     },
     "task.deleted": {
         "required": ["task_id", "project_id", "title"],
@@ -194,44 +342,45 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 # Assignment-routing events
 # ---------------------------------------------------------------------------
 
-_ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {
-    "assignment.route.requested": {
-        "required": [
-            "project_id",
-            "tasks",
-            "options",
-            "options_hash",
-            "catalog_hash",
-        ],
-        "optional": [],
-        "types": {
-            "project_id": str,
-            "tasks": list,
-            "options": list,
-            "options_hash": str,
-            "catalog_hash": str,
-        },
-        "fields": {
-            "project_id": {"type": "string", "description": "project"},
-            "tasks": {
-                "type": "array",
-                "description": "tasks awaiting routes",
-                "item": {"type": "object", "description": "task routing input"},
-            },
-            "options": {
-                "type": "array",
-                "description": "available routing options",
-                "item": {"type": "object", "description": "routing option"},
-            },
-            "options_hash": {"type": "string", "description": "routing-options hash"},
-            "catalog_hash": {"type": "string", "description": "catalog hash"},
-        },
-    }
-}
+_ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {}
 
-CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset({
-    "task.completed", "spec.approved", "proposal.ready", "gate.resolved"
-})
+CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "task.completed",
+        "spec.approved",
+        "proposal.ready",
+        "gate.resolved",
+        "digest.window_ready",
+        "report.morning_due",
+    }
+)
+
+_REPORT_SCHEMAS: dict[str, EventSchema] = {
+    "digest.window_ready": {
+        "required": ["window_id", "request_id"],
+        "optional": [],
+        "types": {"window_id": str, "request_id": str},
+        "fields": {
+            "window_id": {"type": "string", "description": "reserved digest window"},
+            "request_id": {"type": "string", "description": "durable report request"},
+        },
+    },
+    # Emitted by MorningDueEmitter once per local day at or after the
+    # configured morning time; event_id is keyed by schedule and local date,
+    # so the playbook dispatch dedup makes it one run per day across restarts.
+    "report.morning_due": {
+        "required": ["local_date", "report_id"],
+        "optional": [],
+        "types": {"local_date": str, "report_id": str},
+        "fields": {
+            "local_date": {
+                "type": "string",
+                "description": "report-timezone calendar day (YYYY-MM-DD)",
+            },
+            "report_id": {"type": "string", "description": "durable morning report id"},
+        },
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Work-graph events  (docs/specs/design/work-graph.md §10.2)
@@ -424,6 +573,27 @@ _CONFIG_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Profile events  (emitted by src/profiles/capability_sync.py)
+# ---------------------------------------------------------------------------
+
+_PROFILE_SCHEMAS: dict[str, EventSchema] = {
+    # A synced profile's vault copy (the supervisor by default) gained the
+    # shipped ``## Capabilities`` grants it lacked.  ``added`` maps each
+    # capability namespace to the appended names; ``trigger`` is ``startup``,
+    # ``reload`` or ``doctor``.
+    "profile.capabilities_synced": {
+        "required": ["profile_id", "added", "trigger"],
+        "optional": ["backup_path"],
+        "types": {
+            "profile_id": str,
+            "added": dict,
+            "trigger": str,
+            "backup_path": (str, type(None)),
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Notification events  (notify.*)
 #
 # All notify.* events share the NotifyEvent base fields (event_type,
@@ -526,6 +696,10 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
             "stream_done",
         ],
     },
+    "notify.task_comment": {
+        "required": [*_NOTIFY_BASE_FIELDS, "task_id", "comment"],
+        "optional": [*_NOTIFY_BASE_OPTIONAL],
+    },
     "notify.task_thread_close": {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "task_id", "final_status", "final_message"],
@@ -600,6 +774,21 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "message", "embed_data"],
     },
+    # -- Provider availability (provider-failover D19): one per change of
+    # *half* (launchable <-> unavailable); the dashboard toast and banner.
+    "notify.provider_state": {
+        "required": [*_NOTIFY_BASE_FIELDS, "provider", "from_state", "to_state", "generation"],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "vendor",
+            "reason_code",
+            "reason",
+            "since",
+            "until",
+            "remediation",
+            "message",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -637,6 +826,166 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
     "message.replied": {
         "required": ["message_id", "reply_id", "project_id", "body"],
         "optional": ["via", "thread_id"],
+    },
+    # A bounded collaboration thread was created and its invites queued.
+    # Replays of the same idempotency key do not re-emit.
+    "collaboration.created": {
+        "required": ["thread_id", "project_id", "task_ids"],
+        "optional": ["created_by_id", "deadline_at"],
+        "types": {"thread_id": str, "project_id": str, "task_ids": list},
+    },
+}
+
+
+# Durable human-escalation state hints.  The ``.v1`` suffix and required
+# integer ``version`` travel together intentionally: consumers reconcile the
+# authoritative command/query state and never treat replay as permission to
+# repeat an external send or recovery action.
+_ESCALATION_SCHEMAS: dict[str, EventSchema] = {
+    "escalation.created.v1": {
+        "required": [
+            "version",
+            "escalation_id",
+            "project_id",
+            "source_kind",
+            "source_identity",
+            "incident_key",
+            "state",
+            "revision",
+        ],
+        "optional": ["task_id"],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "source_kind": str,
+            "source_identity": str,
+            "incident_key": str,
+            "state": str,
+            "revision": int,
+        },
+    },
+    "escalation.reply_received.v1": {
+        "required": [
+            "version",
+            "escalation_id",
+            "project_id",
+            "reply_id",
+            "state",
+            "revision",
+            "terminal",
+            "supervisor_enqueued",
+        ],
+        "optional": ["task_id"],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "reply_id": str,
+            "state": str,
+            "revision": int,
+            "terminal": bool,
+            "supervisor_enqueued": bool,
+        },
+    },
+    "escalation.updated.v1": {
+        "required": ["version", "escalation_id", "project_id", "state", "revision"],
+        "optional": [
+            "task_id",
+            "terminal_outcome",
+            "action_id",
+            "action_outcome",
+        ],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "state": str,
+            "revision": int,
+            "terminal_outcome": (str, type(None)),
+            "action_id": str,
+            "action_outcome": str,
+        },
+    },
+    "escalation.delivery_status.v1": {
+        "required": [
+            "version",
+            "escalation_id",
+            "project_id",
+            "delivery_id",
+            "status",
+            "attempt_count",
+            "generation",
+        ],
+        "optional": ["task_id"],
+        "types": {
+            "version": int,
+            "escalation_id": str,
+            "project_id": str,
+            "task_id": (str, type(None)),
+            "delivery_id": str,
+            "status": str,
+            "attempt_count": int,
+            "generation": int,
+        },
+    },
+}
+
+# Explicit selection lifecycle; no source excerpts or provider credentials.
+_TEST_SELECTION_SCHEMAS: dict[str, EventSchema] = {
+    "test_selection.recorded.v1": {
+        "required": ["project_id", "selection_id", "mode", "task_id", "full_required",
+                     "jev_status", "final_count", "fallback_count"],
+        "optional": [],
+        "types": {"project_id": str, "selection_id": str, "mode": str,
+                  "task_id": (str, type(None)), "full_required": bool,
+                  "jev_status": str, "final_count": int, "fallback_count": int},
+    },
+    "test_selection.promoted.v1": {
+        "required": ["project_id", "promotion_id", "model"], "optional": [],
+        "types": {"project_id": str, "promotion_id": str, "model": str},
+    },
+    "test_selection.revoked.v1": {
+        "required": ["promotion_id", "reason"], "optional": [],
+        "types": {"promotion_id": str, "reason": str},
+    },
+}
+
+# Document-review lifecycle.  The database is authoritative; these payloads
+# are compact invalidation/audit hints for the dashboard and playbooks.
+_REVIEW_SCHEMAS: dict[str, EventSchema] = {
+    "review.submitted": {
+        "required": ["project_id", "review_id"],
+        "optional": ["title", "kind", "revision", "author_task_id", "vault_path", "seq", "decider"],
+    },
+    "review.revised": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "author_task_id", "changes_note", "vault_path", "seq",
+            "decider",
+        ],
+    },
+    "review.decided": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "decision", "decided_by", "author_task_id",
+            "note", "unblocked_task_ids", "seq", "decider",
+        ],
+    },
+    "review.withdrawn": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "author_task_id", "reason", "withdrawn_by",
+            "flagged_task_ids", "seq", "decider",
+            "withdrawn_via", "withdrawn_at", "gate_id", "gate_status",
+        ],
+    },
+    "review.commented": {
+        "required": ["project_id", "review_id"],
+        "optional": ["title", "kind", "revision", "author_task_id", "comment_id", "seq", "decider"],
     },
 }
 
@@ -679,6 +1028,28 @@ _WORKTREE_SCHEMAS: dict[str, EventSchema] = {
     "worktree.reaped": {
         "required": ["project_id", "workspace_id", "slot", "path", "reason"],
         "optional": [],
+    },
+    # A slot's leftover .aq/claim.json whose holder provably let go was
+    # retired at claim preparation or by ``workspace_retire_claim``.
+    "worktree.stale_claim_retired": {
+        "required": ["project_id", "workspace_id", "path", "holder_task_id", "reason", "actor"],
+        "optional": ["holder_claim_epoch", "holder_session_id", "claimant_task_id"],
+    },
+    # A slot's sentinel still naming a terminal task was returned to the free
+    # form by ``workspace_clear_sentinel``.
+    "worktree.sentinel_cleared": {
+        "required": ["project_id", "workspace_id", "path", "holder_task_id", "reason"],
+        "optional": ["branch"],
+    },
+    # Slot reconciler (src.orchestrator.slot_restore): a disabled in-cap slot
+    # came back into service, or was held out because it carries changes.
+    "worktree.restored": {
+        "required": ["project_id", "workspace_id", "slot", "path", "action"],
+        "optional": ["previous_reason"],
+    },
+    "worktree.quarantined": {
+        "required": ["project_id", "workspace_id", "slot", "path", "reason"],
+        "optional": ["dirty_paths"],
     },
 }
 
@@ -781,6 +1152,18 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "optional": ["session_id"],
     },
     # -- launch / operator surface (literal emits) --------------------------
+    "session.registered": {
+        "required": ["session_id", "name", "task_id", "project_id"],
+        "optional": ["provider", "harness", "work_dir"],
+    },
+    "session.launch_failed": {
+        "required": ["session_id", "name", "task_id", "project_id"],
+        "optional": ["provider", "harness", "work_dir"],
+    },
+    "session.pruned": {
+        "required": ["session_id", "project_id"],
+        "optional": [],
+    },
     "session.started": {
         "required": ["session_id", "name", "task_id", "project_id"],
         "optional": ["provider", "harness", "work_dir"],
@@ -812,9 +1195,28 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id"],
         "optional": ["task_id", "project_id"],
     },
+    # A drain-acked pool worker stopped while still bound to a task no close
+    # can change: a retired integration delegate, or a task whose close
+    # already committed and settled (session reconciler).
+    "session.retired_delegate_stopped": {
+        "required": ["session_id", "name", "task_id"],
+        "optional": ["project_id", "retirement"],
+    },
+    "session.settled_claim_stopped": {
+        "required": ["session_id", "name", "task_id"],
+        "optional": ["project_id", "settlement"],
+    },
     "session.claim_timeout": {
         "required": ["session_id"],
         "optional": ["task_id"],
+    },
+    # A session that had nothing left to do -- a recorded stop intent
+    # (``aq task close``'s release, a drain, ``aq session kill``) or a spent
+    # claim budget -- kept its harness process alive past the idle-stop grace,
+    # and the reconciler stopped it the way ``aq session kill`` does (2026-10-03).
+    "session.stop_intent_stopped": {
+        "required": ["session_id", "name", "lifecycle"],
+        "optional": ["task_id", "project_id", "idle_seconds"],
     },
     "session.sleeping": {
         "required": ["session_id", "name", "reason"],
@@ -842,24 +1244,86 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     # subsequent ticks so a healthy session with a slow-arriving transcript
     # does not spam the bus.
     "agent.question": {
-        "required": ["id", "session_id", "session_name", "instance_token", "task_id",
-                     "project_id", "agent_id", "turn_id", "question", "requires_human",
-                     "state", "created_at", "updated_at"],
-        "optional": ["answer", "answered_by", "discord_channel_id", "discord_message_id",
-                     "claim_epoch", "source_ts", "supervisor_routed_at", "notification_next_at",
-                     "notification_attempts", "delivery_token", "delivery_lease_until", "delivered_at", "reason"],
-        "types": {"id": str, "session_id": str, "instance_token": str, "task_id": str,
-                  "question": str, "state": str, "requires_human": bool},
+        "required": [
+            "id",
+            "session_id",
+            "session_name",
+            "instance_token",
+            "task_id",
+            "project_id",
+            "agent_id",
+            "turn_id",
+            "question",
+            "requires_human",
+            "state",
+            "created_at",
+            "updated_at",
+        ],
+        "optional": [
+            "answer",
+            "answered_by",
+            "discord_channel_id",
+            "discord_message_id",
+            "claim_epoch",
+            "source_ts",
+            "supervisor_routed_at",
+            "notification_next_at",
+            "notification_attempts",
+            "delivery_token",
+            "delivery_lease_until",
+            "delivered_at",
+            "reason",
+        ],
+        "types": {
+            "id": str,
+            "session_id": str,
+            "instance_token": str,
+            "task_id": str,
+            "question": str,
+            "state": str,
+            "requires_human": bool,
+        },
     },
     "agent.question.updated": {
-        "required": ["id", "session_id", "session_name", "instance_token", "task_id",
-                     "project_id", "agent_id", "turn_id", "question", "requires_human",
-                     "state", "created_at", "updated_at"],
-        "optional": ["answer", "answered_by", "discord_channel_id", "discord_message_id",
-                     "claim_epoch", "source_ts", "supervisor_routed_at", "notification_next_at",
-                     "notification_attempts", "delivery_token", "delivery_lease_until", "delivered_at", "reason"],
-        "types": {"id": str, "session_id": str, "instance_token": str, "task_id": str,
-                  "question": str, "state": str, "requires_human": bool},
+        "required": [
+            "id",
+            "session_id",
+            "session_name",
+            "instance_token",
+            "task_id",
+            "project_id",
+            "agent_id",
+            "turn_id",
+            "question",
+            "requires_human",
+            "state",
+            "created_at",
+            "updated_at",
+        ],
+        "optional": [
+            "answer",
+            "answered_by",
+            "discord_channel_id",
+            "discord_message_id",
+            "claim_epoch",
+            "source_ts",
+            "supervisor_routed_at",
+            "notification_next_at",
+            "notification_attempts",
+            "delivery_token",
+            "delivery_lease_until",
+            "delivered_at",
+            "reason",
+        ],
+        "types": {
+            "id": str,
+            "session_id": str,
+            "instance_token": str,
+            "task_id": str,
+            "question": str,
+            "state": str,
+            "requires_human": bool,
+        },
     },
     "session.transcript_missing": {
         "required": ["session_id"],
@@ -919,13 +1383,39 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 # Spec + proposal events (Phase 6 — spec ingestion §8)
 # ---------------------------------------------------------------------------
 
-_SPEC_SCHEMAS: dict[str, EventSchema] = {
-    "spec.approved": {
-        "required": ["project_id", "spec_path"],
+_BATCH_SCHEMAS: dict[str, EventSchema] = {
+    event_type: {
+        "required": ["project_id", "batch_id", "structure_revision", "structure_digest",
+                     "reviewer_task_id"],
         "optional": [],
+        "types": {"project_id": str, "batch_id": str, "structure_revision": int,
+                  "structure_digest": str, "reviewer_task_id": (str, type(None))},
         "fields": {
             "project_id": {"type": "string", "description": "project"},
-            "spec_path": {"type": "string", "description": "specification path"},
+            "batch_id": {"type": "string", "description": "held ingestion batch"},
+            "structure_revision": {"type": "integer", "description": "batch structure revision"},
+            "structure_digest": {"type": "string", "description": "batch structure digest"},
+            "reviewer_task_id": {"type": "string", "description": "assigned reviewer or null"},
+        },
+    }
+    for event_type in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released")
+}
+
+_SPEC_SCHEMAS: dict[str, EventSchema] = {
+    "spec.approved": {
+        "required": ["project_id", "decision_id", "packet_sha256", "review_id", "revision",
+                     "spec_kind"],
+        "optional": ["spec_path", "operation_key", "seq"],
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "decision_id": {"type": "string", "description": "immutable approval decision"},
+            "packet_sha256": {"type": "string", "description": "approved packet hash"},
+            "review_id": {"type": "string", "description": "review or null for standalone"},
+            "revision": {"type": "integer", "description": "review revision or null"},
+            "spec_kind": {"type": "string", "description": "design or implementation"},
+            "spec_path": {"type": "string", "description": "display mirror only"},
+            "operation_key": {"type": "string", "description": "durable dispatch identity"},
+            "seq": {"type": "integer", "description": "persisted event sequence"},
         },
     },
     "proposal.ready": {
@@ -943,13 +1433,135 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Project lifecycle
+#
+# ``project.created`` is emitted once per new project (``src/projects/events.py``):
+# by ``ProjectOnboardingService`` on a request's first success -- a replayed
+# request returns the stored result and emits nothing -- and by
+# ``_cmd_create_project``.  Onboarding registers the primary workspace in the
+# same step, so its event carries the workspace fields; ``create_project``
+# registers none and omits them.  ``workspace_in_vault`` is a path fact, not a
+# policy: whether the workspace is the AQ vault or lies beneath it.
+# ---------------------------------------------------------------------------
+
+_PROJECT_SCHEMAS: dict[str, EventSchema] = {
+    "project.created": {
+        "required": ["project_id", "source"],
+        "optional": [
+            "name",
+            "source_type",
+            "workspace_id",
+            "workspace_path",
+            "workspace_in_vault",
+        ],
+        "types": {
+            "project_id": str,
+            "source": str,
+            "name": str,
+            "source_type": str,
+            "workspace_id": str,
+            "workspace_path": str,
+            "workspace_in_vault": bool,
+        },
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "source": {
+                "type": "string",
+                "description": "creation path (onboarding or command)",
+            },
+            "name": {"type": "string", "description": "project name"},
+            "source_type": {
+                "type": "string",
+                "description": "onboarding source (link, init or clone)",
+            },
+            "workspace_id": {"type": "string", "description": "primary workspace"},
+            "workspace_path": {"type": "string", "description": "primary workspace path"},
+            "workspace_in_vault": {
+                "type": "boolean",
+                "description": "flag set when the primary workspace lies inside the AQ vault",
+            },
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Swarm claims (swarm-work-model §10) — admission events a blocked
 # ``task_claim`` long-poll wakes on, plus the scheduler-tick heartbeat.
 # ---------------------------------------------------------------------------
 
+_PROVIDER_SCHEMAS: dict[str, EventSchema] = {
+    # provider-failover D7: once per change of *effective* state.  Evidence
+    # that does not change the state emits nothing -- evidence is not news.
+    "provider.state_changed": {
+        "required": ["provider", "from_state", "to_state", "generation"],
+        "optional": [
+            "vendor",
+            "reason_code",
+            "reason",
+            "since",
+            "until",
+            "actor",
+            "override",
+        ],
+    },
+    # provider-failover D19: one per task moved, forced or undone.
+    "task.rerouted": {
+        "required": ["task_id", "project_id", "title", "reason_code"],
+        "optional": [
+            "from_profile_id",
+            "to_profile_id",
+            "from_provider",
+            "to_provider",
+            "batch_id",
+            "actor",
+        ],
+    },
+    # provider-failover D19: once per sweep that moved or newly held anything.
+    # ``batch_id`` is derived from ``(provider, generation)``, so every trickle
+    # top-up during one outage appends to the same batch.
+    "provider.reroute_batch": {
+        "required": ["batch_id", "provider", "moved"],
+        "optional": ["generation", "held", "targets", "projects"],
+    },
+    # provider-failover D24 S7: once per sweep whose capacity spill pass moved
+    # work (``batch_id`` ``spill-<UTC yyyymmddThhmm>``).  ``routes`` lists
+    # ``{from_profile_id, to_profile_id, count}``; ``held`` counts the pass's
+    # holds by kind.  Never a supervisor message: a sweep runs every 5 min.
+    "pool.spilled": {
+        "required": ["batch_id", "moved"],
+        "optional": ["routes", "projects", "held"],
+    },
+    # provider-worker-allocation-controls §Audit: once per applied allocation,
+    # whatever its outcome.  ``status`` is ``applied``, ``rolled_back`` or
+    # ``partial``; ``profiles`` carries each changed profile's before and after
+    # rows and what happened to it; ``request_id`` is also on every underlying
+    # ``pool.*`` event.  ``provider_allocation_status`` reports the newest one
+    # per provider.
+    "provider.allocation_changed": {
+        "required": ["provider", "request_id", "actor", "status"],
+        "optional": [
+            "vendor",
+            "preview_token",
+            "request",
+            "profiles",
+            "ceiling",
+            "preference",
+            "session_actions",
+            "pinned",
+            "manual_agents",
+            "warnings",
+            "error",
+        ],
+    },
+}
+
 _SWARM_SCHEMAS: dict[str, EventSchema] = {
     "snapshot.refreshed": {
         "required": ["tick"],
+        "optional": [],
+    },
+    "project.paused": {
+        "required": ["project_id"],
         "optional": [],
     },
     "project.resumed": {
@@ -962,7 +1574,40 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.scaled": {
         "required": ["project_id", "profile_id", "kind", "count"],
+        # ``placement_reason`` — ``warm_floor`` / ``deficit`` / ``spread`` —
+        # answers "why *there*?" now that sizing is fleet-wide and a separate
+        # placement step chooses the project (global-worker-pools §6.3).
+        # Optional rather than required: a drain reports no reason, and the
+        # sizer alone never had one.
+        "optional": ["placement_reason"],
+    },
+    "pool.scaler_stalled": {
+        "required": ["profile_id", "desired", "live", "ready", "ticks", "recovery"],
         "optional": [],
+    },
+    # Sizing authorised a start and no project could take it — the condition
+    # that was invisible before placement became explicit (§6.3).  ``reasons``
+    # maps project id to the predicate that excluded it: ``quarantined``,
+    # ``no_workspace``, ``at_cap``.  Rate-limited by ``_report_pool_starvation``
+    # to appearance and reason-change, never one per 5s tick.
+    "pool.placement_starved": {
+        "required": ["profile_id", "wanted", "reasons"],
+        "optional": [],
+    },
+    # One per pool profile on the first reconcile tick of a daemon lifetime:
+    # ``min_active``/``max_active`` are fleet-wide bounds now rather than
+    # per-project ones multiplied by the active-project count, and on a
+    # multi-project install that is a large intended reduction (§4).  Carries
+    # both ceilings so ``aq system get-recent-events`` answers "why did my
+    # fleet shrink at 03:14?".
+    "pool.bounds_rescoped": {
+        "required": [
+            "profile_id",
+            "eligible_projects",
+            "effective_max_active",
+            "previous_effective_max_active",
+        ],
+        "optional": ["effective_min_active", "previous_effective_min_active"],
     },
     # -- worker pool operator/dashboard updates -----------------------------
     "pool.session_started": {
@@ -975,11 +1620,11 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.prepare_failed": {
         "required": ["project_id", "profile_id", "session_id", "task_id", "reason"],
-        "optional": [],
+        "optional": ["error_type", "stage", "defect", "target_ref"],
     },
     "pool.session_drained": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],
-        "optional": [],
+        "optional": ["request_id"],
     },
     "pool.session_quarantined": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],
@@ -987,14 +1632,26 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.bounds_changed": {
         "required": [
-            "project_id", "profile_id", "min_active", "max_active", "project_cap",
+            "project_id",
+            "profile_id",
+            "min_active",
+            "max_active",
+            "project_cap",
             "effective_max_active",
         ],
-        "optional": [],
+        "optional": ["request_id"],
     },
     "pool.lifecycle_changed": {
         "required": ["project_id", "profile_id", "lifecycle"],
-        "optional": [],
+        "optional": ["request_id"],
+    },
+    "pool.enabled_changed": {
+        "required": ["project_id", "profile_id", "enabled"],
+        "optional": ["request_id"],
+    },
+    "pool.renamed": {
+        "required": ["profile_id", "old_name", "name", "backup_path"],
+        "optional": ["seq"],
     },
 }
 
@@ -1062,28 +1719,450 @@ _METRICS_SCHEMAS: dict[str, EventSchema] = {
             "throughput",
             "merges_per_hour",
             "sampler",
+            "perf",
         ],
     },
 }
 
 
 # ---------------------------------------------------------------------------
+# Hierarchical delivery and root integration trains
+# ---------------------------------------------------------------------------
+
+_INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
+    event_type: {
+        "required": ["project_id", "operation_id"],
+        "optional": [],
+        "types": {"project_id": str, "operation_id": str},
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "operation_id": {"type": "string", "description": "integration operation"},
+        },
+    }
+    for event_type in (
+        "task.child_added",
+        "task.parent_checkpointed",
+        "delivery.ready",
+        "delivery.applied",
+        "task.integration_ready",
+        "task.integration_verified",
+        "integration.sweep_due",
+        "integration.sealed",
+        "integration.ci_completed",
+        "integration.candidate_green",
+        "integration.candidate_red",
+        "integration.repair_exhausted",
+        "integration.repair_deadline_due",
+        "integration.human_blocked",
+        "integration.promoted",
+        "integration.resolution_push_observed",
+        "integration.cleanup_pending",
+        "integration.root_delivered",
+        "integration.batch_promoted",
+        "integration.cleanup_requested",
+        "integration.branch_materialization_pending",
+        "task.integration_configuration_blocked",
+        "integration.repair_delegate_closed",
+    )
+}
+
+# New sealed events identify both the lifecycle batch and its distinct repair
+# operation. Keep batch_id optional at validation so durable pre-Task-8b events
+# remain readable during replay/upgrades.
+_INTEGRATION_SCHEMAS["integration.readiness_changed"] = {
+    "required": ["project_id", "repository_id", "reason"],
+    "optional": ["head_sha"],
+    "types": {"project_id": str},
+    "fields": {"project_id": {"type": "string", "description": "project"}},
+}
+# A verified ref write is an observation wakeup, independent of the legacy
+# promotion/receipt lifecycle and its frozen operation routes.
+_PUBLICATION_FIELDS = {
+    "project_id": (str, "string", "project"),
+    "batch_id": (str, "string", "integration batch"),
+    "revision": (int, "integer", "candidate revision"),
+    "repository_id": (str, "string", "published repository"),
+    "target_ref": (str, "string", "published ref"),
+    "head_sha": (str, "string", "verified published head"),
+    "candidate_sha": (str, "string", "tested candidate head"),
+    "publication_verified": (bool, "boolean", "ref write verified"),
+}
+_INTEGRATION_SCHEMAS["integration.publication_verified"] = {
+    "required": list(_PUBLICATION_FIELDS), "optional": [],
+    "types": {name: spec[0] for name, spec in _PUBLICATION_FIELDS.items()},
+    "fields": {name: {"type": spec[1], "description": spec[2]}
+               for name, spec in _PUBLICATION_FIELDS.items()},
+}
+_INTEGRATION_SCHEMAS["integration.sealed"] = {
+    "required": ["project_id", "operation_id"],
+    "optional": ["batch_id"],
+    "types": {"project_id": str, "operation_id": str, "batch_id": str},
+    "fields": {
+        "project_id": {"type": "string", "description": "project"},
+        "operation_id": {"type": "string", "description": "integration operation"},
+        "batch_id": {"type": "string", "description": "integration batch"},
+    },
+}
+
+_FENCE_EVENT_FIELD: EventFieldSpec = {
+    "type": "object",
+    "description": "repository-qualified ownership fence",
+    "fields": {
+        "target": {
+            "type": "object",
+            "description": "fenced repository branch",
+            "fields": {
+                "repository_id": {"type": "string", "description": "repository"},
+                "branch": {"type": "string", "description": "branch"},
+            },
+        },
+        "owner_id": {"type": "string", "description": "fence owner"},
+        "token": {"type": "integer", "description": "fence token"},
+    },
+}
+
+# Additional fields are optional at the registry boundary unless named below:
+# several lifecycle facts predate these typed projections and legitimately
+# carry only operation identity.  The field inventory still gives reviewed V2
+# artifacts strict types for every command input they read.
+_INTEGRATION_PAYLOAD_FIELDS: dict[
+    str, dict[str, tuple[type | tuple[type, ...], EventFieldSpec]]
+] = {
+    "integration.readiness_changed": {
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "head_sha": (str, {"type": "string", "description": "observed exact head"}),
+        "reason": (str, {"type": "string", "description": "readiness invalidation"}),
+    },
+    "task.child_added": {
+        "parent_id": (str, {"type": "string", "description": "immediate parent task"}),
+        "children": (
+            list,
+            {
+                "type": "array",
+                "description": "child filing requests",
+                "item": {"type": "object", "description": "child filing request"},
+            },
+        ),
+        "expected_generation": (
+            int,
+            {"type": "integer", "description": "expected parent generation"},
+        ),
+    },
+    "task.parent_checkpointed": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "head_sha": (str, {"type": "string", "description": "checkpoint head"}),
+        "generation": (int, {"type": "integer", "description": "parent generation"}),
+    },
+    "delivery.ready": {
+        "operation_key": (str, {"type": "string", "description": "delivery operation"}),
+        "source_task_id": (str, {"type": "string", "description": "source child task"}),
+        "source_head": (str, {"type": "string", "description": "reviewed source head"}),
+        "source_base": (str, {"type": "string", "description": "reviewed source base"}),
+        "expected_target": (str, {"type": "string", "description": "expected parent head"}),
+        "fence": (dict, _FENCE_EVENT_FIELD),
+    },
+    "delivery.applied": {
+        "promotion_intent_id": (
+            str,
+            {"type": "string", "description": "immutable promotion intent"},
+        ),
+        "receipt_id": (str, {"type": "string", "description": "delivery receipt"}),
+        "source_task_id": (str, {"type": "string", "description": "source child task"}),
+        "target_task_id": (str, {"type": "string", "description": "immediate parent task"}),
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "target_branch": (str, {"type": "string", "description": "parent branch"}),
+    },
+    "task.integration_ready": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "episode_id": (str, {"type": "string", "description": "collection episode"}),
+        "generation": (int, {"type": "integer", "description": "parent generation"}),
+        "head_sha": (str, {"type": "string", "description": "collected parent head"}),
+        "verifier_task_id": (
+            (str, type(None)),
+            {"type": "string", "description": "aggregate verifier task"},
+        ),
+        "target": (
+            dict,
+            {
+                "type": "object",
+                "description": "parent integration branch",
+                "fields": {
+                    "repository_id": {"type": "string", "description": "repository"},
+                    "branch": {"type": "string", "description": "branch"},
+                },
+            },
+        ),
+        "expected_token": (
+            int,
+            {"type": "integer", "description": "current ownership fence token"},
+        ),
+        "next_owner_id": (
+            str,
+            {"type": "string", "description": "aggregate verifier owner"},
+        ),
+        "next_role": (
+            str,
+            {"type": "string", "description": "aggregate verifier role"},
+        ),
+    },
+    "task.integration_verified": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "generation": (int, {"type": "integer", "description": "verified generation"}),
+        "head_sha": (str, {"type": "string", "description": "verified parent head"}),
+        "verification_id": (
+            str,
+            {"type": "string", "description": "aggregate verification"},
+        ),
+    },
+    "integration.repair_exhausted": {
+        "stage": (int, {"type": "integer", "description": "exhausted repair stage"}),
+    },
+    "integration.repair_deadline_due": {
+        "stage": (int, {"type": "integer", "description": "due repair stage"}),
+    },
+    "integration.ci_completed": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "generation": (int, {"type": "integer", "description": "parent generation"}),
+        "head_sha": (str, {"type": "string", "description": "checked head"}),
+        "evidence_id": (str, {"type": "string", "description": "check evidence"}),
+        "evidence_ids": (
+            list,
+            {
+                "type": "array",
+                "description": "aggregate check evidence",
+                "item": {"type": "string", "description": "check evidence"},
+            },
+        ),
+        "conclusion": (str, {"type": "string", "description": "check conclusion"}),
+        "target_kind": (str, {"type": "string", "description": "integration target kind"}),
+    },
+    "integration.candidate_green": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "head_sha": (str, {"type": "string", "description": "candidate head"}),
+    },
+    "integration.candidate_red": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "head_sha": (str, {"type": "string", "description": "candidate head"}),
+    },
+    "integration.resolution_push_observed": {
+        "promotion_intent_id": (
+            str,
+            {"type": "string", "description": "immutable promotion intent"},
+        ),
+    },
+    "integration.cleanup_pending": {
+        "promotion_intent_id": (
+            str,
+            {"type": "string", "description": "immutable promotion intent"},
+        ),
+    },
+    "integration.root_delivered": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "member_ordinal": (
+            int,
+            {"type": "integer", "description": "sealed member ordinal"},
+        ),
+        "receipt_id": (str, {"type": "string", "description": "delivery receipt"}),
+    },
+    "integration.batch_promoted": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "intent_id": (str, {"type": "string", "description": "root promotion intent"}),
+        "head_sha": (str, {"type": "string", "description": "authenticated main head"}),
+    },
+    "integration.cleanup_requested": {
+        "batch_id": (str, {"type": "string", "description": "integration batch"}),
+        "revision": (int, {"type": "integer", "description": "candidate revision"}),
+        "intent_id": (str, {"type": "string", "description": "root promotion intent"}),
+        "head_sha": (str, {"type": "string", "description": "authenticated main head"}),
+    },
+    "task.integration_configuration_blocked": {
+        "task_id": (str, {"type": "string", "description": "parent task"}),
+        "reason": (str, {"type": "string", "description": "configuration failure"}),
+    },
+    "integration.repair_delegate_closed": {
+        "stage": (int, {"type": "integer", "description": "repair stage"}),
+        "task_id": (str, {"type": "string", "description": "repair delegate task"}),
+        "session_id": (str, {"type": "string", "description": "repair session"}),
+        "instance_token": (str, {"type": "string", "description": "repair session instance"}),
+        "workspace_id": (str, {"type": "string", "description": "retained workspace"}),
+        "fence_token": (int, {"type": "integer", "description": "ownership fence token"}),
+        "batch_id": (str, {"type": "string", "description": "root batch, when applicable"}),
+        "revision": (int, {"type": "integer", "description": "adopted candidate revision"}),
+        "head_sha": (str, {"type": "string", "description": "adopted candidate head"}),
+    },
+    "integration.branch_materialization_pending": {
+        "origin_id": (str, {"type": "string", "description": "branch origin"}),
+        "task_id": (str, {"type": "string", "description": "task"}),
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "branch": (str, {"type": "string", "description": "reserved task branch"}),
+        "parent_ref": (str, {"type": "string", "description": "immediate parent ref"}),
+        "base_sha": (str, {"type": "string", "description": "branch base"}),
+    },
+}
+
+_INTEGRATION_REQUIRED_PAYLOAD_FIELDS = {
+    "integration.candidate_green": {"batch_id", "revision", "head_sha"},
+    "integration.candidate_red": {"batch_id", "revision", "head_sha"},
+    "integration.resolution_push_observed": {"promotion_intent_id"},
+    "integration.root_delivered": {
+        "batch_id",
+        "revision",
+        "member_ordinal",
+        "receipt_id",
+    },
+    "integration.batch_promoted": {"batch_id", "revision", "intent_id", "head_sha"},
+    "integration.cleanup_requested": {"batch_id", "revision", "intent_id", "head_sha"},
+}
+for _event_type, _payload_fields in _INTEGRATION_PAYLOAD_FIELDS.items():
+    _schema = _INTEGRATION_SCHEMAS[_event_type]
+    if _event_type.startswith("task."):
+        for _name, _description in (
+            ("task_id", "task"),
+            ("title", "title"),
+        ):
+            if _name not in _schema["required"]:
+                _schema["required"].append(_name)
+            _schema["types"][_name] = str
+            _schema["fields"][_name] = {
+                "type": "string",
+                "description": _description,
+            }
+    _required = _INTEGRATION_REQUIRED_PAYLOAD_FIELDS.get(_event_type, set())
+    for _name, (_python_type, _field_spec) in _payload_fields.items():
+        _destination = "required" if _name in _required else "optional"
+        if _name not in _schema["required"] and _name not in _schema["optional"]:
+            _schema[_destination].append(_name)
+        _schema["types"][_name] = _python_type
+        _schema["fields"][_name] = _field_spec
+
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
+_DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
+    "dashboard_state.changed.v1": {
+        "required": [
+            "version",
+            "scope",
+            "owner_id",
+            "namespace",
+            "subject",
+            "revision",
+            "change",
+            "updated_at",
+        ],
+        "optional": ["seq"],
+        "types": {
+            "version": int,
+            "scope": str,
+            "owner_id": str,
+            "namespace": str,
+            "subject": (str, type(None)),
+            "revision": int,
+            "change": str,
+            "updated_at": float,
+            "seq": int,
+        },
+    }
+}
+
+# Verified waits and continuation events are declared before runtime activation.
+_WAIT_EVENT_NAMES = (
+    "wait.registered", "wait.satisfied", "wait.cancelled", "wait.source_unavailable", "wait.escalated",
+    "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
+)
+_CONTINUATION_EVENT_NAMES = (
+    "continuation.suspended", "continuation.queued", "continuation.launched",
+    "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
+)
+_WAIT_SCHEMAS: dict[str, EventSchema] = {
+    name: {
+        "required": ["wait_id", "project_id"],
+        "optional": ["task_id", "owner_kind", "owner_id", "session_id", "claim_epoch",
+                     "generation", "condition_kind", "condition", "source_key",
+                     "source_generation", "source_revision", "evidence_ref", "verified_at",
+                     "claimed", "decision", "decision_reason", "decision_inputs", "outcome",
+                     "result_ref", "escalation_id", "continuation_id", "escalate_at",
+                     "ceiling_at", "reason", "supervisor_session_id", "message_id",
+                     "registrations", "occurred_at"],
+        "types": {"wait_id": str, "project_id": str, "generation": int,
+                  "source_generation": int, "condition": dict, "decision_inputs": dict},
+    }
+    for name in _WAIT_EVENT_NAMES
+}
+_CONTINUATION_SCHEMAS: dict[str, EventSchema] = {
+    name: {
+        "required": ["continuation_id", "project_id", "task_id", "generation"],
+        "optional": ["wait_id", "session_id", "claim_epoch", "state", "reason",
+                     "outcome", "result_ref", "head_sha", "registrations", "occurred_at"],
+        "types": {"continuation_id": str, "project_id": str, "task_id": str,
+                  "generation": int},
+    }
+    for name in _CONTINUATION_EVENT_NAMES
+}
+# Loop detection accepts a registration before checkpoint creates a continuation.
+# A later suspended/queued event identifies the actual continuation generation.
+_CONTINUATION_SCHEMAS["continuation.loop_detected"] = {
+    "required": ["wait_id", "project_id", "task_id", "registrations"],
+    "optional": ["continuation_id", "generation", "reason", "occurred_at"],
+    "types": {"wait_id": str, "project_id": str, "task_id": str, "registrations": list},
+}
+
 EVENT_SCHEMAS: dict[str, EventSchema] = {
+    "integration.completed_container_checkpoint_recovered": {
+        "required": ["id", "operator_id", "reason", "task_id", "project_id", "repository_id",
+                     "branch", "head_sha", "completion_id", "origin_sha256", "snapshot_sha256",
+                     "generation", "version", "old_head_sha", "tree_sha", "remote_head_sha",
+                     "before", "after", "before_snapshot_sha256", "after_snapshot_sha256",
+                     "owner", "origin_id", "children", "observed_at", "delivery"],
+        "optional": [],
+        "types": {"id": str, "operator_id": str, "reason": str, "before": dict, "after": dict,
+                  "owner": dict, "children": list, "observed_at": (float, int), "delivery": bool},
+    },
+    "ask.input_received": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
+    "ask.discussion_replied": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
+    "conversation.reply_queued.v1": {
+        "required": ["conversation_id", "input_id", "reply_message_id", "delivery_dedup_key", "created"],
+        "optional": [],
+        "types": {"conversation_id": str, "input_id": str, "reply_message_id": str,
+                  "delivery_dedup_key": str, "created": bool},
+    },
+    "conversation.input_received.v1": {
+        "required": ["conversation_id", "input_id", "transport", "verified_actor", "created", "source"],
+        "optional": [],
+        "types": {"conversation_id": str, "input_id": str, "transport": str,
+                  "verified_actor": str, "created": bool, "source": str},
+    },
     "agent.created": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},
     **_TASK_SCHEMAS,
+    **_WAIT_SCHEMAS,
+    **_CONTINUATION_SCHEMAS,
+    **_REPORT_SCHEMAS,
     **_ASSIGNMENT_SCHEMAS,
     **_WORK_GRAPH_SCHEMAS,
     **_NOTE_SCHEMAS,
     **_FILE_SCHEMAS,
     **_PLUGIN_SCHEMAS,
     **_CONFIG_SCHEMAS,
+    **_PROFILE_SCHEMAS,
     **_NOTIFY_SCHEMAS,
     **_CHAT_SCHEMAS,
+    **_ESCALATION_SCHEMAS,
+    **_REVIEW_SCHEMAS,
+    **_TEST_SELECTION_SCHEMAS,
     **_GIT_SCHEMAS,
     **_WORKTREE_SCHEMAS,
     **_MERGE_SCHEMAS,
@@ -1094,10 +2173,15 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
+    **_BATCH_SCHEMAS,
+    **_PROJECT_SCHEMAS,
     **_SWARM_SCHEMAS,
+    **_PROVIDER_SCHEMAS,
     **_COMMAND_SCHEMAS,
     **_FORMULA_SCHEMAS,
     **_METRICS_SCHEMAS,
+    **_INTEGRATION_SCHEMAS,
+    **_DASHBOARD_STATE_SCHEMAS,
 }
 """Master registry of all event schemas.
 
@@ -1105,6 +2189,19 @@ Keys are event type strings (e.g., ``"task.completed"``).  Values are dicts
 with ``"required"`` and ``"optional"`` field lists.  Used by the validation
 layer (Phase 0.2.2) to check payloads at emit time.
 """
+
+
+for _promotion_event in ("promotion.source_settled", "promotion.request_due", "promotion.hotfix_completed",
+                         "promotion.intent_due", "promotion.delivered"):
+    EVENT_SCHEMAS[_promotion_event] = {
+        "required": ["project_id", "step_id"],
+        "optional": ["batch_id", "source_sha", "from_task", "notes_reviewed", "event_id"],
+        "types": {"project_id": str, "step_id": str, "batch_id": str, "source_sha": str,
+                  "from_task": str, "notes_reviewed": bool},
+        "fields": {key: {"type": "boolean" if key == "notes_reviewed" else "string",
+                         "description": "promotion " + key}
+                   for key in ("project_id", "step_id", "batch_id", "source_sha", "from_task", "notes_reviewed")},
+    }
 
 
 def get_schema(event_type: str) -> EventSchema | None:

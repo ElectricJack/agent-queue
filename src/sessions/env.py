@@ -21,15 +21,18 @@ A pool launch (§11.2) adds its own ``extra_env`` markers instead:
 ``AQ_SESSION_KIND=pool``, ``AQ_AGENT_ID``, ``AQ_PROFILE_ID``, and
 ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` so commits made by a long-lived pool
 worker attribute to its profile rather than the operator's own git identity.
-See :func:`src.sessions.spec.SessionSpecBuilder.build_pool_spec`.
+See :func:`src.sessions.spec.SessionSpecBuilder.build_pool_spec`.  Task and
+pool launches both also carry :data:`src.sessions.spec.WORKER_TOOL_ENV`
+(``GRAFT_NO_SEED``, ``GRAFT_NO_REFRESH``, ``DO_NOT_TRACK``), so graft never
+copies its index into a worker slot.
 
 Scrubbing is **not** implemented here.  :func:`src.env_scrub.scrub_env` owns
 the policy (trust-and-ops R6); this module supplies the ``explicit`` map it
 merges last and passes the daemon config through so the
 ``security.env_scrub_enabled`` kill switch and ``security.env_allowlist``
-are actually honoured at the launch site.  ``CLAUDECODE`` /
-``CLAUDE_CODE_ENTRYPOINT`` stripping comes free from ``STRIP_ALWAYS`` there
-— this module does not repeat it.
+are actually honoured at the launch site. Inherited ``CLAUDE*`` controls are
+stripped there regardless of the scrub kill switch; deliberate launch
+settings (such as the worker compact window) are supplied explicitly.
 """
 
 from __future__ import annotations
@@ -45,8 +48,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ADOPTION_MARKER",
     "AQ_MARKER_KEYS",
+    "DAEMON_ENV_STRIP_KEYS",
     "DB_ISOLATION_KEYS",
-    "SCRATCH_DB_RELPATH",
+    "SCRATCH_DB_SENTINEL",
     "STARTUP_PROMPT_DELIVERED",
     "build_session_env",
     "session_db_isolation",
@@ -77,11 +81,15 @@ AQ_MARKER_KEYS: tuple[str, ...] = (
 )
 
 
-#: Where a session's scratch database lives, relative to its work dir.
-#: ``.aq/`` is already the session's private corner of the worktree (it holds
-#: ``claim.json``) and the repo gitignores it, so nothing here can be
-#: committed by accident.
-SCRATCH_DB_RELPATH = os.path.join(".aq", "scratch.db")
+#: What a session's database-tooling env points at instead of production.
+#:
+#: This used to be a per-slot SQLite file, ``.aq/scratch.db``, which was never
+#: created: a worker that ran a direct-DB command opened an *empty* database
+#: and got a confidently wrong answer ("no plugins installed").  With SQLite
+#: gone there is no such decoy to point at, and the fail-silent behaviour was
+#: not worth reproducing — so the value is a sentinel that the CLI refuses
+#: with an explanation.  Strictly safer than what it replaces.
+SCRATCH_DB_SENTINEL = "aq-worker-no-direct-db://"
 
 #: The database-isolation block every session carries, on top of the nine
 #: identity markers.  ``AQ_DB_SCOPE`` is the guard
@@ -92,6 +100,38 @@ DB_ISOLATION_KEYS: tuple[str, ...] = (
     "AQ_DATABASE_URL",
     "AGENT_QUEUE_DB",
 )
+
+#: Session-owned variables which must not be inherited by a daemon launched
+#: from an enclosing session.  The daemon needs its operator configuration,
+#: not a worker's database fence, credentials, claim, or resource limits.
+#: ``AQ_TASK_ID`` and ``AQ_API_URL`` are included with the identity markers:
+#: although a daemon can determine its API address independently, inheriting
+#: either value makes its process environment falsely look task-scoped.
+DAEMON_ENV_STRIP_KEYS: tuple[str, ...] = tuple(
+    sorted(
+        set(
+            AQ_MARKER_KEYS
+            + DB_ISOLATION_KEYS
+            + (
+                "AQ_SESSION_KIND",
+                "AQ_SESSION_NAME",
+                "AQ_PROFILE_ID",
+                "AQ_AGENT_ID",
+                STARTUP_PROMPT_DELIVERED,
+                "AQ_CLAIM_EPOCH",
+                "AQ_CPU_SHARE",
+                "AQ_CPU_CORES",
+                "AQ_TEST_SLOTS",
+                "AQ_TEST_WORKERS",
+            )
+        )
+    )
+)
+
+# Integration App credentials are daemon-only.  A worker-controlled harness
+# or launch extension cannot opt them back into a child environment even
+# though other explicitly configured harness credentials remain supported.
+_DAEMON_ONLY_INTEGRATION_PREFIX = "AQ_INTEGRATION_GITHUB_APP_"
 
 
 def session_db_isolation(work_dir: str) -> dict[str, str]:
@@ -107,18 +147,18 @@ def session_db_isolation(work_dir: str) -> dict[str, str]:
       incident, where an unmerged branch's revision landed in production's
       ``alembic_version`` and the daemon then refused to boot.
     * ``AQ_DATABASE_URL`` / ``AGENT_QUEUE_DB`` point the direct-DB CLI paths
-      at a per-slot scratch SQLite file instead of ``config.yaml``'s URL, so
-      the ordinary case never even reaches the guard.
+      at :data:`SCRATCH_DB_SENTINEL` instead of ``config.yaml``'s URL, so the
+      ordinary case never even reaches the guard — and, unlike the empty
+      SQLite file this replaces, says so instead of answering from nothing.
 
     Set as ``explicit`` env, so an operator who pins one of these in a
     harness file or via ``extra_env`` still wins.
     """
-    scratch = os.path.join(work_dir, SCRATCH_DB_RELPATH) if work_dir else ""
-    isolation = {"AQ_DB_SCOPE": "worker"}
-    if scratch:
-        isolation["AQ_DATABASE_URL"] = scratch
-        isolation["AGENT_QUEUE_DB"] = scratch
-    return isolation
+    return {
+        "AQ_DB_SCOPE": "worker",
+        "AQ_DATABASE_URL": SCRATCH_DB_SENTINEL,
+        "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
+    }
 
 
 def session_markers(
@@ -190,6 +230,9 @@ def build_session_env(
     """
     explicit: dict[str, str] = {}
     explicit.update(session_db_isolation(work_dir))
+    from src.build_cache import cache_environment
+
+    explicit.update(cache_environment(config, project_id))
     if harness_env:
         harness_explicit = {str(k): str(v) for k, v in harness_env.items()}
         # A harness file cannot restore a marker inherited from its enclosing
@@ -222,6 +265,10 @@ def build_session_env(
         explicit[STARTUP_PROMPT_DELIVERED] = "1"
     if extra_env:
         explicit.update({str(k): str(v) for k, v in extra_env.items()})
+
+    for key in tuple(explicit):
+        if key.startswith(_DAEMON_ONLY_INTEGRATION_PREFIX):
+            explicit.pop(key, None)
 
     # A daemon can itself be running inside an AQ session (notably in tests
     # and when a supervisor launches a named child).  Never inherit that

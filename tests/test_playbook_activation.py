@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from src.database import Database
 from src.database.tables import playbook_activations
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
@@ -16,21 +15,12 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 #: SQLite does not have.  The Postgres arm is what pins that; it skips when
 #: ``POSTGRES_TEST_DSN`` is unset (the common local-dev case).
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
-@pytest.fixture(params=["sqlite", "postgres"])
-async def db(request, tmp_path):
-    if request.param == "postgres":
-        if not POSTGRES_TEST_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
 
-        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(str(tmp_path / "playbook-activation.db"))
-        await database.initialize()
+
+@pytest.fixture
+async def db(reuse_database):
+    database = await reuse_database("playbook-activation.db")
     yield database
-    await database.close()
 
 
 def _artifact(digest_char: str = "a"):
@@ -227,12 +217,16 @@ async def test_artifact_upsert_refreshes_mutable_metadata(db):
 
     async with db._engine.connect() as conn:
         row = (
-            await conn.execute(
-                select(playbook_artifacts).where(
-                    playbook_artifacts.c.artifact_sha256 == artifact.artifact_sha256
+            (
+                await conn.execute(
+                    select(playbook_artifacts).where(
+                        playbook_artifacts.c.artifact_sha256 == artifact.artifact_sha256
+                    )
                 )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert row["profile_fingerprint"] == "profile-new"
     assert row["path"] == "/artifacts/new.json"
     assert row["size_bytes"] == 456
@@ -272,15 +266,20 @@ async def _store_versions(db, tmp_path, count: int, playbook_id: str = "task-rev
         ref = _versioned_artifact(index, playbook_id)
         path = artifacts_dir / f"{ref.digest}.json"
         path.write_text("{}")
-        await db.upsert_playbook_artifact(
-            ref, scope="system", path=str(path), size_bytes=2
-        )
+        await db.upsert_playbook_artifact(ref, scope="system", path=str(path), size_bytes=2)
         refs.append(ref)
     return refs
 
 
-async def _insert_run(db, *, run_id: str, artifact_sha256: str, lifecycle="running",
-                      completed_at=None, parent_run_id=None):
+async def _insert_run(
+    db,
+    *,
+    run_id: str,
+    artifact_sha256: str,
+    lifecycle="running",
+    completed_at=None,
+    parent_run_id=None,
+):
     import time as _time
 
     from sqlalchemy import insert as sa_insert
@@ -363,15 +362,13 @@ async def test_retention_keeps_every_version_while_min_versions_covers_them(db, 
     from src.database.tables import playbook_artifacts
 
     await _store_versions(db, tmp_path, 4)
-    counts = await _sweeper(db, tmp_path, v2_artifact_min_versions=4).sweep(
-        _time.time() + _A_YEAR
-    )
+    counts = await _sweeper(db, tmp_path, v2_artifact_min_versions=4).sweep(_time.time() + _A_YEAR)
 
     assert counts["artifact_rows"] == 0
     async with db._engine.connect() as conn:
         remaining = (
-            await conn.execute(select(playbook_artifacts.c.artifact_sha256))
-        ).scalars().all()
+            (await conn.execute(select(playbook_artifacts.c.artifact_sha256))).scalars().all()
+        )
     assert len(remaining) == 4
 
 
@@ -385,21 +382,20 @@ async def test_retention_collects_terminal_runs_but_never_live_or_pinning_ones(d
     refs = await _store_versions(db, tmp_path, 1)
     sha = refs[0].artifact_sha256
     long_ago = _time.time() - 10 * _A_YEAR
-    await _insert_run(db, run_id="run-done", artifact_sha256=sha,
-                      lifecycle="completed", completed_at=long_ago)
+    await _insert_run(
+        db, run_id="run-done", artifact_sha256=sha, lifecycle="completed", completed_at=long_ago
+    )
     await _insert_run(db, run_id="run-live", artifact_sha256=sha)
-    await _insert_run(db, run_id="run-parent", artifact_sha256=sha,
-                      lifecycle="completed", completed_at=long_ago)
-    await _insert_run(db, run_id="run-child", artifact_sha256=sha,
-                      parent_run_id="run-parent")
+    await _insert_run(
+        db, run_id="run-parent", artifact_sha256=sha, lifecycle="completed", completed_at=long_ago
+    )
+    await _insert_run(db, run_id="run-child", artifact_sha256=sha, parent_run_id="run-parent")
 
     counts = await _sweeper(db, tmp_path).sweep(_time.time() + _A_YEAR)
 
     assert counts["runs"] == 1
     async with db._engine.connect() as conn:
-        remaining = set(
-            (await conn.execute(select(playbook_v2_runs.c.run_id))).scalars().all()
-        )
+        remaining = set((await conn.execute(select(playbook_v2_runs.c.run_id))).scalars().all())
     assert remaining == {"run-live", "run-parent", "run-child"}
 
 
@@ -428,9 +424,7 @@ async def test_sweep_marks_an_activation_unavailable_when_its_file_is_gone(db, t
     assert rows[0]["health"] == "unavailable"
     assert rows[0]["activated_by"] == "operator"
     # Never upgraded back: that needs validation and contract fingerprints.
-    assert (await _sweeper(db, tmp_path).sweep(_time.time() + _A_YEAR))[
-        "health_downgraded"
-    ] == 0
+    assert (await _sweeper(db, tmp_path).sweep(_time.time() + _A_YEAR))["health_downgraded"] == 0
 
 
 @pytest.mark.asyncio
@@ -460,9 +454,7 @@ async def test_artifact_integrity_doctor_check_reports_missing_and_mutated_files
         source_digest="sha256:" + "c" * 64,
         compiler_build="test-build",
     )
-    await db.upsert_playbook_artifact(
-        ref, scope="system", path=str(path), size_bytes=len(body)
-    )
+    await db.upsert_playbook_artifact(ref, scope="system", path=str(path), size_bytes=len(body))
     await db.set_playbook_activation(
         playbook_id="task-review",
         scope="system",
@@ -474,9 +466,7 @@ async def test_artifact_integrity_doctor_check_reports_missing_and_mutated_files
         reasons="[]",
     )
 
-    ctx = DoctorContext(
-        config=SimpleNamespace(playbooks=PlaybooksConfig(enabled=True)), db=db
-    )
+    ctx = DoctorContext(config=SimpleNamespace(playbooks=PlaybooksConfig(enabled=True)), db=db)
     assert (await _check_artifact_integrity(ctx)).severity is Severity.OK
 
     path.write_bytes(b'{"id":"tampered"}')
@@ -924,11 +914,10 @@ async def _activate_the_shipped_pipeline(db, tmp_path):
 async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, tmp_path):
     """`solid-harbor.54`, end to end on the artifact the fleet runs.
 
-    `default-pipeline` has no AI step: `reviewer`, `final-reviewer` and
-    `spec-ingest` reach it only as literal `profile_id` arguments to
-    `ensure_task`.  While `compiled_against.profiles` was empty, widening any
-    of them left this activation `ready` forever, because health can only
-    compare what the artifact recorded.
+    `default-pipeline` has no AI step: `ensure_spec_ingest` creates its
+    server-owned `spec-ingest` role. An empty `compiled_against.profiles`
+    would leave activation `ready` after widening that role, because health
+    can only compare what the artifact recorded.
     """
     from src.playbooks.activation import ActivationHealth, load_activation_health
     from src.playbooks.validation import RegistryContractLookup
@@ -946,7 +935,7 @@ async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, t
 
     widened = _OverriddenProfiles(
         {
-            "reviewer": CapabilityPolicy.from_namespaces(
+            "spec-ingest": CapabilityPolicy.from_namespaces(
                 aq_commands=frozenset({"task_close", "pr_merge"})
             )
         }
@@ -957,8 +946,8 @@ async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, t
 
     assert [record.health for record in stale] == [ActivationHealth.STALE_CONTRACT]
     reasons = {reason.subject: reason.code for reason in stale[0].reasons}
-    assert reasons["reviewer"] == "profile_capabilities_changed"
-    assert set(reasons) & {"final-reviewer", "spec-ingest"} == set(), (
+    assert reasons["spec-ingest"] == "profile_capabilities_changed"
+    assert set(reasons) & {"final-reviewer", "reviewer"} == set(), (
         "only the profile that moved may be named"
     )
 
@@ -991,18 +980,14 @@ async def test_read_path_reports_unavailable_when_the_artifact_file_is_gone(db, 
     ref = await _activate_profiled_artifact(db, tmp_path)
     (tmp_path / "artifacts" / f"{ref.digest}.json").unlink()
 
-    records = await load_activation_health(
-        db, contracts=StubContracts(), profiles=StubProfiles()
-    )
+    records = await load_activation_health(db, contracts=StubContracts(), profiles=StubProfiles())
 
     assert [record.health for record in records] == [ActivationHealth.UNAVAILABLE]
     assert records[0].reasons[0].code == "artifact_missing"
 
 
 @pytest.mark.asyncio
-async def test_read_path_command_and_doctors_report_a_mutated_artifact_sha_mismatch(
-    db, tmp_path
-):
+async def test_read_path_command_and_doctors_report_a_mutated_artifact_sha_mismatch(db, tmp_path):
     """Health must reject valid replacement bytes just as ArtifactStore.load does.
 
     The ``db`` fixture runs this regression against SQLite and PostgreSQL.  In
@@ -1116,9 +1101,7 @@ async def test_read_path_never_reports_ready_for_a_duplicate_key_artifact(db, tm
     definition = _definition({"worker": policies["worker"].fingerprint()})
     # The canonical text is key-sorted, so prefixing the root object is the
     # smallest way to give it a second ``schema_version`` without moving bytes.
-    text = canonical_bytes(definition).decode("utf-8").replace(
-        "{", '{"schema_version":2,', 1
-    )
+    text = canonical_bytes(definition).decode("utf-8").replace("{", '{"schema_version":2,', 1)
     with pytest.raises(DuplicateJsonKey):
         load_definition_json(text)
 
@@ -1129,8 +1112,15 @@ async def test_read_path_never_reports_ready_for_a_duplicate_key_artifact(db, tm
     records = await load_activation_health(
         db, contracts=StubContracts(), profiles=StubProfiles(), enabled_only=True
     )
-    assert [record.health for record in records] == [ActivationHealth.UNAVAILABLE]
-    assert [reason.code for reason in records[0].reasons] == ["artifact_missing"]
+    assert [record.health for record in records] == [ActivationHealth.INVALID]
+    assert [reason.code for reason in records[0].reasons] == ["artifact_invalid"]
+
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_activation_invalid
+
+    doctor = await _check_activation_invalid(_stale_ctx(db))
+    assert doctor.severity is Severity.WARN
+    assert doctor.data["invalid"][0]["playbook_id"] == "twin"
 
 
 # -- doctor: playbooks.activation_stale --------------------------------------
@@ -1271,6 +1261,30 @@ async def test_activation_health_response_validates_against_the_wire_contract(db
     assert response.activations[0].pending_event_count == 0
 
 
+@pytest.mark.asyncio
+async def test_activation_health_surfaces_authored_source_drift(db, tmp_path, monkeypatch):
+    """A changed source is visible without changing the deployed activation."""
+    from types import SimpleNamespace
+
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    await _activate_profiled_artifact(db, tmp_path)
+    handler = _v2_handler(db, (StubContracts(), StubProfiles(), None))
+    source = SimpleNamespace(
+        vault_path="system/playbooks/twin.md",
+        raw="---\nid: twin\nscope: system\ntriggers: [task.created]\n---\n\n# Edited\n",
+    )
+    monkeypatch.setattr(handler, "_v2_find_source", lambda _playbook_id: (source, None))
+
+    result = await handler._cmd_playbook_activation_health({})
+
+    activation = result["activations"][0]
+    assert activation["source_path"] == source.vault_path
+    assert activation["source_sha256"].startswith("sha256:")
+    assert activation["active_source_sha256"].startswith("sha256:")
+    assert activation["source_drift"] is True
+
+
 # ---------------------------------------------------------------------------
 # The collect/delete TOCTOU (child plan §12.1): a hash re-adopted by a
 # concurrent compile between the row delete and the file removal, on both
@@ -1310,9 +1324,7 @@ async def _backdate_artifacts(db, seconds: float) -> None:
     from src.database.tables import playbook_artifacts
 
     async with db._engine.begin() as conn:
-        await conn.execute(
-            sa_update(playbook_artifacts).values(created_at=_time.time() - seconds)
-        )
+        await conn.execute(sa_update(playbook_artifacts).values(created_at=_time.time() - seconds))
 
 
 @pytest.mark.asyncio
@@ -1336,9 +1348,7 @@ async def test_retention_keeps_the_file_of_an_artifact_re_adopted_mid_sweep(db, 
 
     async def _collect_then_readopt(*args, **kwargs):
         collected = await original(*args, **kwargs)
-        await db.upsert_playbook_artifact(
-            readopted, scope="system", path=str(path), size_bytes=2
-        )
+        await db.upsert_playbook_artifact(readopted, scope="system", path=str(path), size_bytes=2)
         return collected
 
     db.collect_playbook_artifacts = _collect_then_readopt
@@ -1423,9 +1433,7 @@ async def test_every_live_artifact_row_has_its_file_whenever_the_row_lands(
     sweeper = _sweeper(db, tmp_path, v2_artifact_retention_days=1)
 
     async def _write_the_row():
-        await db.upsert_playbook_artifact(
-            readopted, scope="system", path=str(path), size_bytes=2
-        )
+        await db.upsert_playbook_artifact(readopted, scope="system", path=str(path), size_bytes=2)
 
     def _after(name, target):
         """Run the racing row write once ``target`` has returned.
@@ -1527,10 +1535,15 @@ async def test_artifacts_command_honours_its_gates_and_arguments(db, tmp_path):
     lookups = (StubContracts(), StubProfiles(), None)
     handler = _v2_handler(db, lookups)
 
-    assert await handler._cmd_playbook_artifacts({}) == {"error": "playbook_id is required"}
+    assert await handler._cmd_playbook_artifacts({}) == {
+        "success": False,
+        "error": "playbook_id is required",
+    }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": 0}) == {
+        "success": False,
         "error": "limit must be >= 1"
     }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": "many"}) == {
+        "success": False,
         "error": "limit must be an integer"
     }

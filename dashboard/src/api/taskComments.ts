@@ -1,19 +1,23 @@
 import { useEffect, useState } from "react";
-import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { taskComment, taskComments } from "./client";
+import { queryOptions, skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { taskComment, taskCommentDelete, taskCommentEdit, taskComments } from "./client";
 
 export const COMMENT_PAGE_SIZE = 50;
 export const COMMENT_MAX_LENGTH = 16_000;
 export const commentMutationKey = (taskId: string) => ["taskComment", taskId];
 const draftKey = (taskId: string) => ["taskCommentDraft", taskId];
 
+export const taskCommentsQuery = (taskId: string, offset: number) => queryOptions({
+  // Existing task.updated invalidation refreshes every loaded comment page.
+  queryKey: ["task", taskId, "comments", offset],
+  queryFn: async () => (await taskComments({
+    body: { task_id: taskId, limit: COMMENT_PAGE_SIZE, offset }, throwOnError: true,
+  })).data,
+});
+
 export function useTaskComments(taskId: string, offset: number) {
   return useQuery({
-    // Existing task.updated invalidation refreshes every loaded comment page.
-    queryKey: ["task", taskId, "comments", offset],
-    queryFn: async () => (await taskComments({
-      body: { task_id: taskId, limit: COMMENT_PAGE_SIZE, offset }, throwOnError: true,
-    })).data,
+    ...taskCommentsQuery(taskId, offset),
     enabled: !!taskId,
     refetchInterval: 60_000,
   });
@@ -51,6 +55,32 @@ export function useAddTaskComment(taskId: string) {
       client.setQueryData(draftKey(taskId), (draft: string | undefined) => draft === body ? "" : draft);
       void client.invalidateQueries({ queryKey: ["task", taskId] });
       void client.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+}
+
+export function useEditTaskComment(taskId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationKey: commentMutationKey(taskId),
+    mutationFn: async ({ commentId, body }: { commentId: string; body: string }) => (await taskCommentEdit({
+      body: { task_id: taskId, comment_id: commentId, body }, throwOnError: true,
+    })).data,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["task", taskId] });
+    },
+  });
+}
+
+export function useDeleteTaskComment(taskId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationKey: commentMutationKey(taskId),
+    mutationFn: async (commentId: string) => (await taskCommentDelete({
+      body: { task_id: taskId, comment_id: commentId }, throwOnError: true,
+    })).data,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["task", taskId] });
     },
   });
 }

@@ -11,23 +11,24 @@ import pytest
 
 from src.api.websocket import WebSocketManager
 from src.commands.handler import CommandHandler
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.database import Database
 from src.event_bus import EventBus
 from src.models import Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
 async def setup(tmp_path):
-    db = Database(str(tmp_path / "graph.db"))
+    db = Database(lease_dsn("graph.db"))
     await db.initialize()
     await db.create_project(Project(id="p1", name="One"))
     await db.create_project(Project(id="p2", name="Two"))
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "graph.db"),
+        database=DatabaseConfig(url=lease_dsn("graph.db")),
     )
     orch = Orchestrator(config)
     orch.db = db
@@ -58,7 +59,7 @@ async def task(db, task_id="t", project_id="p1", status=TaskStatus.READY):
 def frames(queue, kind):
     out = []
     while not queue.empty():
-        frame = queue.get_nowait()
+        frame, _wire = queue.get_nowait()
         if frame["_event_type"] == kind:
             out.append(frame)
     return out
@@ -107,7 +108,14 @@ async def test_deletion_keeps_project_context_after_row_is_gone(setup, cascade):
     if cascade:
         await task(db, "child")
         await db.add_dependency("child", "t", "parent-child")
-    assert (await handler._cmd_delete_task({"task_id": "t", "cascade": cascade}))["deleted"] == "t"
+    preview = await handler._cmd_delete_task({"task_id": "t", "cascade": cascade})
+    assert preview["disposition"] == "preview"
+    assert await db.get_task("t") is not None
+    assert queue.empty()
+    result = await handler._cmd_delete_task(
+        {"task_id": "t", "cascade": cascade, "confirmed": True}
+    )
+    assert result["deleted"] == "t"
     assert await db.get_task("t") is None
     await assert_change(db, queue, "task.deleted")
 
@@ -127,7 +135,7 @@ async def test_ensure_creation_refreshes_graph_without_refiring_creation_pipelin
     args = {"project_id": "p1", "title": "Triage", "dedup_key": "triage-key"}
     first = await handler._cmd_ensure_task(args)
     assert first["created"] is True
-    sent = list(queue._queue)
+    sent = [frame for frame, _wire in queue._queue]
     assert not any(frame["_event_type"] == "task.created" for frame in sent)
     await assert_change(db, queue, "task.updated", task_id=first["task_id"])
     second = await handler._cmd_ensure_task(args)

@@ -39,19 +39,39 @@ vi.mock("@xyflow/react", () => ({
 const state = vi.hoisted(() => ({
   semanticGraph: {} as Record<string, unknown>,
   activationHealth: {} as Record<string, unknown>,
+  sourceMarkdown: "# review-flow source",
+  sourceData: null as { markdown: string; source_hash: string; path: string } | null,
+  updateSource: vi.fn(),
+  deletePlaybook: vi.fn(),
+  playbooks: [] as Array<Record<string, unknown>>,
 }));
+
+function sourceData() {
+  if (!state.sourceData || state.sourceData.markdown !== state.sourceMarkdown) {
+    state.sourceData = {
+      markdown: state.sourceMarkdown,
+      source_hash: "abc123def456",
+      path: "/vault/playbooks/review-flow.md",
+    };
+  }
+  return state.sourceData;
+}
 vi.mock("../../api/hooks", () => ({
   usePlaybooks: () => ({
-    data: [{ id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: ["task.created"], running_count: 0 }],
+    data: state.playbooks,
   }),
+  // Mirror react-query: the same query data object identity across renders,
+  // so the editor's reset-on-new-source effect does not fire on every render.
   usePlaybookSource: () => ({
-    data: { markdown: "# review-flow source", source_hash: "abc123def456", path: "/vault/playbooks/review-flow.md" },
+    data: sourceData(),
     isLoading: false,
     refetch: vi.fn(),
   }),
+  usePlaybookCommands: () => ({ data: { commands: [] } }),
   usePlaybookRuns: () => ({ data: [], isLoading: false }),
-  useUpdatePlaybookSource: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdatePlaybookSource: () => ({ mutateAsync: state.updateSource, isPending: false }),
   usePlaybookV2Graph: () => ({ ...state.semanticGraph, refetch: vi.fn() }),
+  useSavePlaybookGraphLayout: () => ({ mutate: vi.fn() }),
   usePlaybookActivationHealth: () => state.activationHealth,
   usePlaybookArtifacts: () => ({ data: { artifacts: [] } }),
   usePlaybookArtifactDiff: () => ({ data: undefined }),
@@ -59,24 +79,46 @@ vi.mock("../../api/hooks", () => ({
   useSetPlaybookActivation: () => ({ mutate: vi.fn() }),
   usePlaybookPendingEventAction: () => ({ mutate: vi.fn() }),
   usePlaybookRunOverlay: () => ({ data: undefined }),
+  useDeletePlaybook: () => ({ mutateAsync: state.deletePlaybook, isPending: false }),
 }));
 
-function page() {
+function page(search = "") {
   return (
-    <MemoryRouter initialEntries={["/settings/playbooks/review-flow"]}>
+    <MemoryRouter initialEntries={[`/settings/playbooks/review-flow${search}`]}>
       <Routes>
         <Route path="/settings/playbooks/:playbookId" element={<PlaybookDetail />} />
+        <Route path="/settings/playbooks" element={<p>Playbook list</p>} />
       </Routes>
     </MemoryRouter>
   );
 }
 
+/** The installed entry the delete dialog reads its scope and hash from. */
+const installed = {
+  playbook_id: "review-flow",
+  scope: "system",
+  scope_identifier: "",
+  enabled: false,
+  active_artifact_sha256: "d".repeat(64),
+};
+
 beforeEach(() => {
+  state.playbooks = [{ id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: ["task.created"], running_count: 0 }];
   state.semanticGraph = { data: semanticGraph, isPending: false, isError: false, error: null };
   state.activationHealth = {
     data: { activations: [semanticGraph.activation] },
     isPending: false,
   };
+  state.sourceMarkdown = "# review-flow source";
+  state.sourceData = null;
+  state.updateSource = vi.fn().mockResolvedValue({
+    compiled: true,
+    version: 4,
+    node_count: 5,
+    source_hash: "def456abc123",
+  });
+  state.deletePlaybook.mockReset();
+  state.deletePlaybook.mockResolvedValue({ success: true, deleted: true });
 });
 afterEach(cleanup);
 
@@ -100,6 +142,18 @@ describe("PlaybookDetail tabs", () => {
     expect(screen.queryByRole("region", { name: "Playbook graph" })).not.toBeInTheDocument();
   });
 
+  it("opens the tab the URL names so a link lands on the graph with no extra clicks", () => {
+    render(page("?tab=graph"));
+    expect(screen.getByRole("region", { name: "Playbook semantic graph" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("falls back to Source for a tab this page does not have", () => {
+    render(page("?tab=not-a-tab"));
+    expect(screen.getByRole("heading", { name: "review-flow source" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Playbook semantic graph" })).not.toBeInTheDocument();
+  });
+
   it("no longer renders the playbook-summary JSON block anywhere", async () => {
     const user = userEvent.setup();
     render(page());
@@ -119,9 +173,191 @@ describe("PlaybookDetail tabs", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Source" }));
-    expect(screen.getByDisplayValue("# review-flow source")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "review-flow source" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
     expect(screen.getByText("No runs recorded for this playbook.")).toBeInTheDocument();
+  });
+});
+
+describe("PlaybookDetail source view/edit cycle", () => {
+  const MD = [
+    "# Heading",
+    "",
+    "- first item",
+    "- second item",
+    "",
+    "[docs](https://example.com/docs)",
+    "",
+    "```yaml",
+    "when: task.created",
+    "```",
+    "",
+  ].join("\n");
+
+  it("renders the source as markdown by default, with no textarea", () => {
+    state.sourceMarkdown = MD;
+    render(page());
+
+    expect(screen.getByRole("heading", { name: "Heading" })).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "first item",
+      "second item",
+    ]);
+    expect(screen.getByRole("link", { name: "docs" })).toHaveAttribute(
+      "href",
+      "https://example.com/docs",
+    );
+    expect(screen.getByText("when: task.created").closest("pre")).not.toBeNull();
+
+    expect(screen.queryByRole("textbox", { name: "Playbook markdown source" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save & Compile" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+  });
+
+  it("opens the raw markdown only after Edit is clicked", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = MD;
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    expect(box).toHaveValue(MD);
+    expect(screen.queryByRole("heading", { name: "Heading" })).not.toBeInTheDocument();
+  });
+
+  it("saves the edit and returns to the rendered updated content", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = "# Before";
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    await user.clear(box);
+    await user.type(box, "# After");
+    await user.click(screen.getByRole("button", { name: "Save & Compile" }));
+
+    expect(state.updateSource).toHaveBeenCalledWith({
+      playbook_id: "review-flow",
+      markdown: "# After",
+      expected_source_hash: "abc123def456",
+    });
+    expect(screen.getByRole("heading", { name: "After" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Playbook markdown source" })).not.toBeInTheDocument();
+  });
+
+  it("cancels back to the saved content without persisting the edit", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = "# Before";
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    await user.clear(box);
+    await user.type(box, "# Scratch");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(state.updateSource).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Before" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toHaveValue("# Before");
+  });
+
+  it("keeps the source text intact through a view/edit round trip", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = MD;
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toHaveValue(MD);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toHaveValue(MD);
+  });
+
+  it("stays in the editor and surfaces the conflict when the vault moved", async () => {
+    const user = userEvent.setup();
+    state.sourceMarkdown = "# Before";
+    state.updateSource = vi.fn().mockResolvedValue({ compiled: false, error: "conflict" });
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const box = screen.getByRole("textbox", { name: "Playbook markdown source" });
+    await user.clear(box);
+    await user.type(box, "# Before edit");
+    await user.click(screen.getByRole("button", { name: "Save & Compile" }));
+
+    expect(screen.getByRole("textbox", { name: "Playbook markdown source" })).toBeInTheDocument();
+    expect(screen.getByText(/Vault changed underneath this editor/)).toBeInTheDocument();
+  });
+});
+
+describe("PlaybookDetail delete", () => {
+  it("deletes the playbook and leaves the page it can no longer show", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Delete playbook" }));
+
+    expect(state.deletePlaybook).toHaveBeenCalledWith({
+      playbook_id: "review-flow",
+      scope: "system",
+      scope_identifier: "",
+      artifact_sha256: "d".repeat(64),
+    });
+    expect(await screen.findByText("Playbook list")).toBeInTheDocument();
+  });
+
+  it("stays on the page and shows the refusal when the daemon says no", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    state.deletePlaybook.mockRejectedValue(new Error("API 422: playbook is enabled or artifact changed; deletion refused"));
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Delete playbook" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("deletion refused");
+    expect(screen.queryByText("Playbook list")).not.toBeInTheDocument();
+  });
+
+  it("cancels without deleting", async () => {
+    state.activationHealth = { data: { activations: [installed] }, isPending: false };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(state.deletePlaybook).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("refuses an ambiguous duplicate ID instead of deleting the first scope", async () => {
+    state.playbooks = [
+      { id: "review-flow", scope: "system", version: 3, node_count: 5, triggers: [], running_count: 0 },
+      { id: "review-flow", scope: "project", scope_identifier: "alpha", version: 3, node_count: 5, triggers: [], running_count: 0 },
+    ];
+    state.activationHealth = {
+      data: {
+        activations: [
+          installed,
+          { ...installed, scope: "project", scope_identifier: "alpha", active_artifact_sha256: "e".repeat(64) },
+        ],
+      },
+      isPending: false,
+    };
+    const user = userEvent.setup();
+    render(page());
+
+    await user.click(screen.getByRole("button", { name: "Delete playbook review-flow" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("installed in more than one scope");
+    expect(screen.getByRole("button", { name: "Delete playbook" })).toBeDisabled();
+    expect(state.deletePlaybook).not.toHaveBeenCalled();
   });
 });

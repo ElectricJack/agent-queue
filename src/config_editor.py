@@ -79,7 +79,61 @@ def _round_trip_yaml():
     yaml_rt = YAML(typ="rt")
     yaml_rt.preserve_quotes = True
     yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    # ruamel wraps at 80 columns by default, which folds a long value — a
+    # database DSN, a URL — onto a continuation line.  That is valid YAML and
+    # round-trips, but it rewrites lines the writer never touched and is easy
+    # for a human editing the file afterwards to break.
+    yaml_rt.width = 4096
     return yaml_rt
+
+
+# ruamel's round-trip emitter follows YAML 1.2, in which ``off`` is a plain
+# string, so it writes the Python string "off" bare.  Every reader here is
+# PyYAML, which follows YAML 1.1 and resolves bare ``off``/``on``/``yes``/
+# ``no`` (and sexagesimals like ``1:30``, octals like ``012``) as non-strings.
+# Values in that gap have to be quoted on write or they change type on the
+# next read.  The check asks PyYAML's own resolver rather than carrying a word
+# list, so it stays exactly as wide as the reader it is protecting.
+_PYYAML_RESOLVER = yaml.resolver.Resolver()
+
+
+def _reads_back_as_non_string(value: str) -> bool:
+    """True when PyYAML would resolve *value*, written bare, as a non-string."""
+    try:
+        tag = _PYYAML_RESOLVER.resolve(yaml.ScalarNode, value, (True, False))
+    except Exception:
+        # Unresolvable is the conservative case: quote it.
+        return True
+    return tag != "tag:yaml.org,2002:str"
+
+
+def _quote_yaml11_scalars(value: Any) -> Any:
+    """Force quoting on every string a PyYAML reader would not read back as one.
+
+    Applied to data on its way into the round-trip writer.  Quoting is always
+    safe for a string, so the check only has to be conservative in one
+    direction.
+    """
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
+
+    if isinstance(value, ScalarString):
+        # An explicit style is already attached; leave the caller's choice alone.
+        return value
+    if isinstance(value, str):
+        return SingleQuotedScalarString(value) if _reads_back_as_non_string(value) else value
+    if isinstance(value, CommentedMap | CommentedSeq):
+        # These carry comment attachments keyed by position, so fix the scalars
+        # in place rather than rebuilding the container.
+        items = value.items() if isinstance(value, CommentedMap) else enumerate(value)
+        for key, item in list(items):
+            value[key] = _quote_yaml11_scalars(item)
+        return value
+    if isinstance(value, dict):
+        return {_quote_yaml11_scalars(k): _quote_yaml11_scalars(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_quote_yaml11_scalars(item) for item in value]
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -229,11 +283,27 @@ def _dataclass_to_schema(cls: type) -> dict[str, Any]:
             continue
         tp = hints.get(f.name, f.type)
         prop = _type_to_schema(tp)
+        prop.update(f.metadata.get("json_schema", {}))
         default = _field_default(f)
         if default is not dataclasses.MISSING:
             prop["default"] = default
         properties[f.name] = prop
-    return {"type": "object", "properties": properties}
+    return {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+
+
+def _schema_default(value: Any) -> Any:
+    """Normalize nested dataclass maps as well as section dataclasses."""
+    if dataclasses.is_dataclass(value):
+        return dataclasses.asdict(value)
+    if isinstance(value, dict):
+        return {key: _schema_default(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_schema_default(item) for item in value]
+    return value
 
 
 def _field_default(f: dataclasses.Field) -> Any:
@@ -244,9 +314,7 @@ def _field_default(f: dataclasses.Field) -> Any:
             value = f.default_factory()  # type: ignore[misc]
         except Exception:
             return dataclasses.MISSING
-        if dataclasses.is_dataclass(value):
-            return dataclasses.asdict(value)
-        return value
+        return _schema_default(value)
     return dataclasses.MISSING
 
 
@@ -258,6 +326,11 @@ def build_config_schema() -> dict[str, Any]:
     render the correct badge without a second lookup.
     """
     schema = _dataclass_to_schema(AppConfig)
+    # These factories expand the current user's home directory.  A committed
+    # schema must describe the same fields on every machine, so do not bake
+    # the generator's home path into its default values.
+    for name in ("data_dir", "workspace_dir"):
+        schema["properties"][name].pop("default", None)
     classification = classify_sections()
     reload_by_section: dict[str, str] = {}
     for s in classification["hot_reloadable"]:
@@ -305,6 +378,11 @@ def write_section(path: str, section: str, new_data: Any) -> None:
 
     If ``new_data`` is ``None`` the section is deleted.
 
+    Strings that a YAML 1.1 reader would resolve as something else (``off``,
+    ``yes``, ``n``, ``1:30``, ...) are quoted, so the section reads back with
+    the types the caller wrote.  Untouched sections keep whatever the file
+    already said.
+
     The caller is responsible for validation; ``write_section`` is the dumb
     persistence layer.
     """
@@ -316,7 +394,41 @@ def write_section(path: str, section: str, new_data: Any) -> None:
         if section in doc:
             del doc[section]
     else:
-        doc[section] = new_data
+        doc[section] = _quote_yaml11_scalars(new_data)
+
+    with open(path, "w", encoding="utf-8") as f:
+        yaml_rt.dump(doc, f)
+
+
+def update_section_keys(
+    path: str,
+    section: str,
+    *,
+    set_values: dict[str, Any],
+    remove: tuple[str, ...] | list[str] = (),
+) -> None:
+    """Set and remove individual keys of the mapping ``section``, in place.
+
+    Unlike :func:`write_section`, which replaces the whole section, the keys
+    left alone keep their comments, order and quoting; a new key is appended.
+    The section is created when absent.  Values get the same YAML 1.1 quoting
+    as :func:`write_section`.  The caller is responsible for validation.
+    """
+    from ruamel.yaml.comments import CommentedMap
+
+    yaml_rt = _round_trip_yaml()
+    with open(path, encoding="utf-8") as f:
+        doc = yaml_rt.load(f) or CommentedMap()
+
+    body = doc.get(section)
+    if body is None:
+        body = doc[section] = CommentedMap()
+    elif not isinstance(body, dict):
+        raise ValueError(f"[{section}] is not a mapping")
+    for key in remove:
+        body.pop(key, None)
+    for key, value in set_values.items():
+        body[key] = _quote_yaml11_scalars(value)
 
     with open(path, "w", encoding="utf-8") as f:
         yaml_rt.dump(doc, f)
@@ -327,8 +439,9 @@ def write_full_config(path: str, new_data: dict[str, Any]) -> None:
 
     Used by ``aq system config edit`` after the user closes their editor.
     Comments inside replaced sections are NOT preserved (the user
-    presumably saw them while editing).
+    presumably saw them while editing).  Strings are quoted on the same terms
+    as :func:`write_section`.
     """
     yaml_rt = _round_trip_yaml()
     with open(path, "w", encoding="utf-8") as f:
-        yaml_rt.dump(new_data, f)
+        yaml_rt.dump(_quote_yaml11_scalars(new_data), f)

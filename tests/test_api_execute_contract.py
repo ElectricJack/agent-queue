@@ -10,6 +10,8 @@ never loses actionable fields the contract promises it.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,6 +19,12 @@ from fastapi.testclient import TestClient
 from src.api import dependencies as deps
 from src.api.codegen import _make_input_model, _make_route_handler
 from src.api.execute import router as execute_router
+from src.api.auth import SessionTokenStore
+from src.api.middleware import TokenAuthMiddleware
+from src.commands.principal import ExecutionPrincipal, principal_context
+from src.models import AgentProfile, Project, SessionRecord
+
+pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 
 
 GRAPH_ERROR = {
@@ -34,6 +42,14 @@ CONFLICT = {
     "current_revision": 7,
 }
 
+ONBOARDING_ERROR = {
+    "success": False,
+    "error": "Destination already exists",
+    "error_code": "destination_conflict",
+    "phase": "preflight",
+    "field_errors": [{"field": "relativePath", "message": "Choose another directory"}],
+}
+
 
 @pytest.fixture
 async def surfaces(command_handler_factory, monkeypatch):
@@ -49,8 +65,13 @@ async def surfaces(command_handler_factory, monkeypatch):
         records.append(("edit_intelligence_class", dict(args)))
         return dict(CONFLICT)
 
+    async def _cmd_onboard_project(args):
+        records.append(("onboard_project", dict(args)))
+        return dict(ONBOARDING_ERROR)
+
     ch._cmd_create_task_graph = _cmd_create_task_graph
     ch._cmd_edit_intelligence_class = _cmd_edit_intelligence_class
+    ch._cmd_onboard_project = _cmd_onboard_project
 
     monkeypatch.setattr(deps, "_command_handler", ch)
     monkeypatch.setattr(deps, "_orchestrator", ch.orchestrator)
@@ -73,6 +94,22 @@ async def surfaces(command_handler_factory, monkeypatch):
                 "properties": {
                     "class_id": {"type": "string"},
                     "revision": {"type": "integer"},
+                },
+            },
+        ),
+        (
+            "onboard_project",
+            "/api/project/onboard",
+            {
+                "type": "object",
+                "required": ["request_id", "source_mode", "root_id", "relative_path", "project_name", "project_id"],
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "source_mode": {"type": "string"},
+                    "root_id": {"type": "string"},
+                    "relative_path": {"type": "string"},
+                    "project_name": {"type": "string"},
+                    "project_id": {"type": "string"},
                 },
             },
         ),
@@ -118,6 +155,22 @@ def test_generic_and_typed_routes_preserve_error_details_and_status_contracts(su
         "current_revision": 7,
     }
 
+    # Onboarding is the exception to the generic typed-route error envelope:
+    # its wizard needs code/phase/field details to preserve values and retry.
+    r = client.post(
+        "/api/project/onboard",
+        json={
+            "request_id": "request-1",
+            "source_mode": "init",
+            "root_id": "dev",
+            "relative_path": "widgets",
+            "project_name": "Widgets",
+            "project_id": "widgets",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert r.json() == ONBOARDING_ERROR
+
     # Generic surface: same conflict stays a 200 ok:false envelope with the
     # full payload under details — no field loss for CLI consumers.
     r = client.post(
@@ -135,6 +188,7 @@ def test_generic_and_typed_routes_preserve_error_details_and_status_contracts(su
         "create_task_graph",
         "create_task_graph",
         "edit_intelligence_class",
+        "onboard_project",
         "edit_intelligence_class",
     ]
 
@@ -149,3 +203,90 @@ def test_generic_and_typed_routes_preserve_error_details_and_status_contracts(su
     assert body["ok"] is False
     assert "not available over the API" in body["error"]
     assert records == []
+
+
+async def test_supervisor_intake_cannot_be_called_through_generic_http(surfaces):
+    client, records = surfaces
+    response = client.post(
+        "/api/execute", json={"command": "supervisor_inbox_post", "args": {"provenance": "test"}}
+    )
+    assert response.status_code == 403
+    assert records == []
+
+
+def test_generic_http_strips_all_private_arguments_before_dispatch(surfaces):
+    client, records = surfaces
+    response = client.post("/api/execute", json={
+        "command": "create_task_graph", "args": {
+            "graph": {}, "_created_by_kind": "integration_repair",
+            "_created_by_id": "spoofed", "_future_private_field": "spoofed",
+            "_scope": {"kind": "service"},
+        },
+    })
+    assert response.status_code == 200
+    assert records == [("create_task_graph", {"graph": {}})]
+
+
+@pytest.fixture
+async def filing_api(command_handler_factory, monkeypatch):
+    ch = await command_handler_factory()
+    await ch.db.create_project(Project(id="p", name="Project"))
+    await ch.db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", harness="codex", harness_tools=[],
+        aq_commands=["create_task", "ensure_task"], plugin_tools=[],
+    ))
+    await ch.db.create_session(SessionRecord(
+        id="supervisor-session", project_id="p", profile_id="supervisor",
+        harness="codex", provider="fake", name="supervisor-session", lifecycle="named",
+        state="running", work_dir="/tmp", instance_token="test-instance", epoch="e1",
+        started_at=time.time(),
+    ))
+    store = SessionTokenStore(ch.db)
+    token = await store.mint(
+        session_id="supervisor-session", session_instance_token="test-instance",
+        task_id=None, project_id="p", elevated=True,
+    )
+    monkeypatch.setattr(deps, "_command_handler", ch)
+    monkeypatch.setattr(deps, "_orchestrator", ch.orchestrator)
+    monkeypatch.setattr(deps, "_token_store", store)
+    monkeypatch.setattr(deps, "_require_session_token", False)
+    app = FastAPI()
+    app.include_router(execute_router)
+    app.add_middleware(TokenAuthMiddleware)
+    with TestClient(app) as client:
+        yield client, ch, {"Authorization": f"Bearer {token}"}
+    await ch.db.close()
+
+
+@pytest.mark.parametrize("command", ["create_task", "ensure_task"])
+@pytest.mark.parametrize("caller", ["supervisor", "local"])
+async def test_http_filing_cannot_stamp_a_private_origin(filing_api, command, caller):
+    client, ch, headers = filing_api
+    response = client.post("/api/execute", headers=headers if caller == "supervisor" else {},
+                           json={"command": command, "args": {
+                               "project_id": "p", "title": "Untrusted filing", "dedup_key": "test",
+                               "_created_by_kind": "integration_repair", "_created_by_id": "spoofed",
+                               "_route_constraints": {"exclude_providers": ["codex"]},
+                               "_after_create_on": "spoofed hook",
+                           }})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"], body
+    task = await ch.db.get_task(body["result"]["task_id"])
+    expected = ("session", "supervisor-session") if caller == "supervisor" else (None, None)
+    assert (task.created_by_kind, task.created_by_id) == expected
+    assert not (task.route or {}).get("constraints")
+
+
+@pytest.mark.parametrize("command", ["create_task", "ensure_task"])
+@pytest.mark.parametrize("origin", ["source_ci_repair", "system"])
+async def test_internal_service_filing_preserves_private_origin(filing_api, command, origin):
+    _client, ch, _headers = filing_api
+    with principal_context(ExecutionPrincipal.service("internal-filing")):
+        result = await ch.execute(command, {
+            "project_id": "p", "title": "Internal filing", "dedup_key": "internal",
+            "_created_by_kind": origin, "_created_by_id": "internal-identity",
+        })
+    assert result["success"], result
+    task = await ch.db.get_task(result["task_id"])
+    assert (task.created_by_kind, task.created_by_id) == (origin, "internal-identity")

@@ -31,6 +31,7 @@ from src.plugins.loader import (
     setup_prompts,
 )
 from src.plugins.registry import PluginRegistry
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +792,7 @@ class TestPluginDatabaseQueries:
     async def test_plugin_crud(self, tmp_path: Path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
 
         try:
@@ -835,7 +836,7 @@ class TestPluginDatabaseQueries:
     async def test_plugin_data_crud(self, tmp_path: Path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
 
         try:
@@ -882,7 +883,7 @@ class TestPluginDatabaseQueries:
     async def test_list_plugins_with_filter(self, tmp_path: Path):
         from src.database import Database
 
-        db = Database(str(tmp_path / "test.db"))
+        db = Database(lease_dsn("test.db"))
         await db.initialize()
 
         try:

@@ -1,4 +1,16 @@
+> **Superseded 2026-09-06.** The coordinator, the route table and the fixed
+> `assignment-routing` lowering described here were replaced by an authored
+> pipeline playbook over `task_route_options` / `task_route`; see
+> `2026-09-06-assignment-routing-as-playbook.md`. Item 6 below no longer holds:
+> the playbook now names the profile too, from the option rows it is given.
+
 # Playbook-owned intelligence routing
+
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
 
 Date: 2026-08-31
 

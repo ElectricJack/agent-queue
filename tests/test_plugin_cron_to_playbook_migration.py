@@ -297,21 +297,27 @@ class TestVaultInstallation:
     def test_all_default_playbooks_installed(self, tmp_path):
         """Only the minimal default playbook set is auto-installed.
 
-        Everything else now lives under ``docs/example_playbooks/``
-        as opt-in reference material.
+        Retired sources are absent; their reviewed recordings remain available
+        separately for audit and explicit import.
         """
         result = ensure_default_playbooks(str(tmp_path))
 
         expected = {
             "default-assignment-routing.md",
             "default-pipeline.md",
-            "memory-consolidation.md",
+            "morning-report.md",
+            "provider-failover.md",
+            "provider-usage-probe.md",
+            "supervisor-failure-triage.md",
         }
         installed = set(result["created"])
         assert expected == installed, (
             f"Missing playbooks: {expected - installed}, "
             f"Extra playbooks: {installed - expected}"
         )
+        playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+        assert not (playbooks_dir / "stuck-task-watch.md").exists()
+        assert not (playbooks_dir / "stuck-task-watch-reminder.md").exists()
 
 
 # ===================================================================

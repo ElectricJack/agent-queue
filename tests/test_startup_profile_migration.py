@@ -16,10 +16,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import AgentProfile
 from src.orchestrator import Orchestrator
 from src.vault import vault_has_profile_markdown
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,7 @@ class TestStartupProfileAutoMigration:
     async def orch(self, tmp_path):
         """Create and initialize an Orchestrator with a fresh DB."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
@@ -297,7 +298,7 @@ class TestStartupProfileAutoMigration:
     async def test_full_initialize_creates_vault_profiles(self, tmp_path):
         """End-to-end: initialize() with pre-existing DB profiles creates vault markdown."""
         config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )

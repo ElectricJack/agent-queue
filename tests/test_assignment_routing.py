@@ -1,122 +1,231 @@
+"""Assignment routing after the playbook cutover: the task row is the route.
+
+Spec: docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md.
+The orchestrator reads ``tasks.intelligence_class`` and emits
+``task.route_needed`` for work its router still owes a route; the
+``default-assignment-routing`` playbook does the deciding through
+``task_route_plan`` and ``task_route_apply`` (tests/test_routing_router.py).
+"""
 from __future__ import annotations
 
-from dataclasses import replace
-from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.assignment_routing import (
-    EffectiveAssignmentRoute,
-    assignment_input_hash,
-    options_hash,
-    resolve_effective_route,
-)
-from src.models import AssignmentOption, Task, TaskAssignmentRoute
-from src.orchestrator.assignment_routing import task_assignment_options
+import pytest
+
+from src.assignment_routing import EffectiveAssignmentRoute, explicit_route, explicit_routes
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
+from src.database import Database
+from src.intelligence_classes import IntelligenceClass
+from src.models import Agent, AgentProfile, Project, ProjectStatus, Task, TaskStatus
+from src.orchestrator import Orchestrator
+from src.orchestrator.route_needed import ROUTE_NEEDED_INTERVAL_SECONDS
+from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
+from tests.db_fixtures import lease_dsn
+
+CLASSES = {
+    "standard-medium": IntelligenceClass("standard-medium", "Standard", "", {
+        "anthropic": {"model": "claude-sonnet-5"},
+        "codex": {"model": "gpt-5.6-sol"},
+    }),
+    "deep-low": IntelligenceClass("deep-low", "Deep", "", {
+        "anthropic": {"model": "claude-fable-5"},
+        "codex": {"model": "gpt-5.6-sol"},
+    }),
+    "fast-low": IntelligenceClass("fast-low", "Fast", "", {
+        "anthropic": {"model": "claude-haiku-4-5"},
+    }),
+}
 
 
 def _task(**changes) -> Task:
     values = {
-        "id": "task-1",
-        "project_id": "project-1",
-        "title": "Fix flaky checkout",
-        "description": "Find and repair the checkout race.",
-        "priority": 20,
-        "updated_at": 100.0,
+        "id": "task-1", "project_id": "p", "title": "Fix flaky checkout",
+        "description": "Find and repair the checkout race.", "priority": 20,
     }
     values.update(changes)
     return Task(**values)
 
 
-def _saved(task: Task, *, catalog_hash: str = "catalog-v1") -> TaskAssignmentRoute:
-    return TaskAssignmentRoute(
-        task_id=task.id,
-        project_id=task.project_id,
-        input_hash=assignment_input_hash(task),
-        task_updated_at=task.updated_at,
-        options_hash=catalog_hash,
-        intelligence_class="standard-medium",
-        provider="openai",
-        playbook_id="default-assignment-routing",
-        playbook_version=3,
-        playbook_run_id="run-1",
-        reason="Needs ordinary code reasoning.",
-        decided_at=110.0,
-    )
+# -- explicit routes ---------------------------------------------------------
 
 
-def test_explicit_class_wins_over_saved_route() -> None:
-    task = _task(intelligence_class="deep-high")
-
-    route = resolve_effective_route(task, _saved(task), "catalog-v2")
-
-    assert route == EffectiveAssignmentRoute(
-        task_id=task.id,
-        intelligence_class="deep-high",
-        provider=None,
-        source="explicit",
-    )
+def test_explicit_route_is_the_task_class_or_nothing() -> None:
+    assert explicit_route(_task()) is None
+    assert explicit_route(_task(intelligence_class="  ")) is None
+    route = explicit_route(_task(intelligence_class="deep-low"))
+    assert route == EffectiveAssignmentRoute("task-1", "deep-low", None, "explicit")
+    routes = explicit_routes([_task(), _task(id="t2", intelligence_class="fast-low")])
+    assert set(routes) == {"t2"}
 
 
-def test_saved_route_requires_matching_input_and_options() -> None:
-    task = _task()
-    saved = _saved(task)
-
-    assert resolve_effective_route(task, saved, "catalog-v1") is not None
-    assert resolve_effective_route(task, replace(saved, input_hash="old"), "catalog-v1") is None
-    assert resolve_effective_route(task, saved, "catalog-v2") is None
-    assert resolve_effective_route(task, replace(saved, project_id="other"), "catalog-v1") is None
+# -- a real handler -----------------------------------------------------------
 
 
-def test_saved_route_survives_a_revision_bump_that_changes_no_routed_input() -> None:
-    """READY→ASSIGNED bumps ``updated_at``; the decision must outlive it."""
-    task = _task()
-    saved = _saved(task)
-
-    assigned = replace(task, updated_at=task.updated_at + 1)
-
-    route = resolve_effective_route(assigned, saved, "catalog-v1")
-
-    assert route is not None
-    assert route.intelligence_class == "standard-medium"
-    assert route.provider == "openai"
-    assert route.source == "playbook"
-
-
-def test_assignment_hashes_are_canonical_and_include_material_changes() -> None:
-    task = _task()
-    option_a = AssignmentOption("standard-medium", "openai", 2, 1, 1, "available")
-    option_b = AssignmentOption("fast-low", "anthropic", 1, 1, 0, "unknown")
-
-    assert options_hash([option_a, option_b]) == options_hash([option_b, option_a])
-    assert options_hash([option_a]) == options_hash([
-        replace(option_a, idle_count=0, busy_count=2)
-    ])
-    assert assignment_input_hash(task) != assignment_input_hash(replace(task, priority=21))
-    assert assignment_input_hash(task) == assignment_input_hash(replace(task, retry_count=2))
-
-
-def test_pinned_profile_narrows_catalog_to_its_harness_provider() -> None:
-    task = _task(profile_id="standard-high-claude")
-    profiles = [
-        SimpleNamespace(
-            id="standard-high-claude",
-            default_class="standard-high",
-            harness="claude",
-        )
+def _profiles():
+    return [
+        AgentProfile(id="standard-medium-claude", name="", lifecycle="pool",
+                     harness="claude", default_class="standard-medium", max_active=4),
+        AgentProfile(id="deep-low-codex", name="", lifecycle="pool",
+                     harness="codex", default_class="deep-low", max_active=2),
+        AgentProfile(id="deep-low-claude", name="", lifecycle="pool",
+                     harness="claude", default_class="deep-low", max_active=2),
+        AgentProfile(id="worker-generic", name="", lifecycle="task", harness="claude"),
+        AgentProfile(id="pool-no-class", name="", lifecycle="pool", harness="claude"),
+        AgentProfile(id="reviewer", name="", harness="claude", default_class="deep-low"),
+        AgentProfile(id="project:old:thing", name="", harness="claude", default_class="deep-low"),
     ]
-    options = [
-        AssignmentOption("standard-high", "anthropic", 2, 1, 1, "available"),
-        AssignmentOption("standard-high", "openai", 2, 1, 1, "available"),
-    ]
-    harness_registry = SimpleNamespace(
-        get=lambda harness_id, project_id=None: SimpleNamespace(
-            id=harness_id,
-            command=harness_id,
-            provider="anthropic",
-        )
+
+
+@pytest.fixture
+async def orch(tmp_path):
+    db = Database(lease_dsn("routing.db"))
+    await db.initialize()
+    for profile in _profiles():
+        if ":" in profile.id:
+            continue
+        await db.create_profile(profile)
+    await db.create_project(Project(id="p", name="Project"))
+    cfg = AppConfig(
+        discord=DiscordConfig(bot_token="test", guild_id="1"),
+        workspace_dir=str(tmp_path / "work"), data_dir=str(tmp_path / "data"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
     )
+    cfg.sessions.enabled = True
+    cfg.sessions.provider = "fake"
+    cfg.swarm.enabled = True
+    orchestrator = Orchestrator(cfg)
+    orchestrator.db = db
+    orchestrator.git = MagicMock()
+    orchestrator.bus.emit = AsyncMock()
+    for harness in ("claude", "codex"):
+        orchestrator.harness_registry.upsert(Harness(
+            id=harness, name=harness, command=harness, model_flag="--model",
+        ))
+    orchestrator.session_spec_builder._intelligence_classes = dict(CLASSES)
+    orchestrator.intelligence_classes.replace(dict(CLASSES))
+    yield orchestrator
+    await db.close()
 
-    constrained = task_assignment_options(task, options, profiles, harness_registry)
 
-    assert [(option.intelligence_class, option.provider) for option in constrained] == [
-        ("standard-high", "anthropic")
-    ]
+@pytest.fixture
+def handler(orch):
+    from src.commands.handler import CommandHandler
+
+    return CommandHandler(orch, orch.config)
+
+
+async def _create(db, task_id: str, **kw) -> Task:
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
+    await db.create_task(Task(
+        id=task_id, project_id="p", title=task_id, description="d",
+        status=TaskStatus.READY, **kw,
+    ))
+    return await db.get_task(task_id)
+
+
+async def test_an_override_writes_class_profile_and_reason(handler, orch):
+    await _create(orch.db, "t")
+    res = await handler._cmd_task_route_override({
+        "task_id": "t", "profile_id": "deep-low-claude",
+        "intelligence_class": "deep-low", "reason": "hard problem, pinned by hand",
+    })
+    assert res["success"], res
+    task = await orch.db.get_task("t")
+    assert (task.intelligence_class, task.profile_id) == ("deep-low", "deep-low-claude")
+    explained = await handler._cmd_explain_task({"task_id": "t"})
+    assert "hard problem, pinned by hand" in explained["assignment_route"]["reason"]
+    assert explained["assignment_route"]["source"] == "override"
+    # the pool that runs the class now sees the demand
+    assert await orch.db.count_ready_by_profile("p") == {"deep-low-claude": 1}
+
+
+# -- the cascade's only routing job: emit task.route_needed ------------------
+
+
+@pytest.mark.parametrize("project_status", [ProjectStatus.PAUSED, ProjectStatus.ARCHIVED])
+@pytest.mark.parametrize("task_status", [TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED])
+async def test_route_needed_skips_inactive_projects_before_loading_tasks(
+    orch, project_status, task_status,
+):
+    await orch.db.create_project(Project(id="inactive", name="Inactive", status=project_status))
+    await orch.db.create_task(_task(id="inactive-task", project_id="inactive", status=task_status))
+    await _create(orch.db, "active-task")
+    row_to_task = orch.db._row_to_task
+
+    def load_active_row(row):
+        assert row["project_id"] == "p", "inactive backlog must not be materialized"
+        return row_to_task(row)
+
+    with patch.object(orch.db, "_row_to_task", side_effect=load_active_row) as load:
+        assert await orch._emit_route_needed_events() == 1
+        assert load.call_count == 1
+    emitted = orch.bus.emit.call_args.args[1]
+    assert emitted["task_id"] == "active-task"
+    assert "inactive-task" not in orch._route_needed_emitted
+
+    # Reactivation makes the held work eligible without waiting for a throttle.
+    await orch.db.update_project("inactive", status=ProjectStatus.ACTIVE)
+    assert await orch._emit_route_needed_events() == 1
+    assert orch.bus.emit.call_args.args[1]["task_id"] == "inactive-task"
+
+
+async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch):
+    await _create(orch.db, "no-class")
+    await _create(orch.db, "class-only", intelligence_class="deep-low")
+    await _create(orch.db, "routed", intelligence_class="deep-low", profile_id="deep-low-claude")
+    await orch.db.create_agent(Agent(id="agent-x", name="x", profile_id="worker-generic"))
+    await _create(orch.db, "taken", assigned_agent_id="agent-x")
+    events = []
+    orch.bus.emit = AsyncMock(side_effect=lambda et, data=None: events.append((et, data)))
+
+    assert await orch._emit_route_needed_events() == 2
+    by_task = {d["task_id"]: d for et, d in events if et == "task.route_needed"}
+    assert set(by_task) == {"no-class", "class-only"}
+    assert by_task["class-only"]["intelligence_class"] == "deep-low"
+    assert by_task["no-class"]["intelligence_class"] is None
+    assert by_task["no-class"]["priority"] == 20 or "priority" in by_task["no-class"]
+
+    # nothing re-emits inside the interval
+    assert await orch._emit_route_needed_events() == 0
+    for task_id in ("no-class", "class-only"):
+        orch._route_needed_emitted[task_id] -= ROUTE_NEEDED_INTERVAL_SECONDS + 1
+    assert await orch._emit_route_needed_events() == 2
+
+    # once routed, the task drops out and its throttle entry is forgotten
+    await orch.db.update_task_routing(
+        "no-class", profile_id="deep-low-claude",
+        route_source="legacy", intelligence_class="deep-low",
+        preferred_workspace_id=None,
+    )
+    orch._route_needed_emitted["class-only"] -= ROUTE_NEEDED_INTERVAL_SECONDS + 1
+    assert await orch._emit_route_needed_events() == 1
+    assert "no-class" not in orch._route_needed_emitted
+
+
+async def test_a_filing_hold_survives_manual_completion_and_reopening(handler, orch):
+    """S15's operator-owned source must never enter routing between CLI calls."""
+    result = await handler._cmd_create_task({
+        "project_id": "p", "title": "operator adoption", "labels": ["hold:e2e-adoption"],
+    })
+    task_id = result["created"]
+    assert await orch._emit_route_needed_events() == 0
+    for status in (TaskStatus.COMPLETED, TaskStatus.READY):
+        await orch.db.transition_task(task_id, status, context="adoption fixture")
+        assert await orch._emit_route_needed_events() == 0
+        assert (await orch.db.get_task(task_id)).route_source == "unrouted"
+    await handler._cmd_pause_task({"task_id": task_id})
+    assert await orch._emit_route_needed_events() == 0
+    await handler._cmd_resume_task({"task_id": task_id})
+    assert await orch._emit_route_needed_events() == 0
+
+    # The hold, rather than a disabled router or inactive project, is the fence.
+    await handler._cmd_task_set({"task_id": task_id, "labels_remove": ["hold:e2e-adoption"]})
+    assert await orch._emit_route_needed_events() == 1
+    assert orch.bus.emit.call_args.args[1]["task_id"] == task_id
+
+
+async def test_cycle_uses_the_task_row_as_the_route(orch):
+    task = await _create(orch.db, "t", intelligence_class="deep-low")
+    routes = await orch.assignment_routing.routes_for([task, await _create(orch.db, "bare")])
+    assert set(routes) == {"t"} and routes["t"].source == "explicit"

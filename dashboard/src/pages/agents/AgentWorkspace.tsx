@@ -1,15 +1,57 @@
-import { PlusIcon, UsersIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { useSearchParams } from "react-router-dom";
 import { useAgentFlock } from "../../api/agents";
 import { selectionAddress, useAgentSelection } from "./useAgentSelection";
 import AgentWindow from "./AgentWindow";
 import AddAgent from "./AddAgent";
+import AddPool from "./AddPool";
+import CreateChoice from "./CreateChoice";
 import PoolWindow from "./PoolWindow";
+import PoolDirectory, { PoolDirectoryHint } from "./PoolDirectory";
+import ProvidersView from "./ProvidersView";
+import SessionDirectory from "./SessionDirectory";
 import { usePoolFlock } from "./pools";
+
+/** The directory's two views; ``?view=providers`` addresses the second, so a link can share it. */
+type DirectoryView = "pools" | "providers";
+
+const DIRECTORY_VIEWS: { id: DirectoryView; label: string }[] = [
+  { id: "pools", label: "Pools" },
+  { id: "providers", label: "Providers" },
+];
+
+/**
+ * Pools | Providers, beside each other over the empty workspace.
+ *
+ * The Providers view is mounted only while chosen: it polls its own read and
+ * the pool directory stays the default landing view for the rail's links.
+ */
+function DirectoryTabs({ view, onChange }: { view: DirectoryView; onChange: (view: DirectoryView) => void }) {
+  return (
+    <div role="tablist" aria-label="Agents directory" className="flex shrink-0 gap-1">
+      {DIRECTORY_VIEWS.map((item) => (
+        <button key={item.id} type="button" role="tab" aria-selected={view === item.id} onClick={() => onChange(item.id)}
+          className={"rounded px-2.5 py-1 text-xs " + (view === item.id
+            ? "bg-indigo-500/20 text-indigo-200" : "text-gray-400 hover:bg-gray-800")}>
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export default function AgentWorkspace() {
   const { data: agents = [], isLoading, error, refetch } = useAgentFlock();
-  const { selectedIds, selections, select, close, setInstance, resetToken, adding, setAdding } = useAgentSelection();
+  const { selectedIds, selections, select, close, setInstance, resetToken, focusSelection, adding, setAdding } = useAgentSelection();
   const { entries: pools } = usePoolFlock();
+  const [params, setParams] = useSearchParams();
+  const view: DirectoryView = params.get("view") === "providers" ? "providers" : "pools";
+  const setView = (next: DirectoryView) => {
+    const search = new URLSearchParams(params);
+    if (next === "providers") search.set("view", next);
+    else search.delete("view");
+    setParams(search);
+  };
   const columns = selectedIds.length > 1 ? "lg:grid-cols-2" : "grid-cols-1";
   const rows = selectedIds.length > 2 ? "lg:grid-rows-2" : "lg:grid-rows-1";
 
@@ -20,15 +62,23 @@ export default function AgentWorkspace() {
       <header className="flex shrink-0 items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold text-gray-100">Agent flock</h1>
-          <p className="mt-0.5 text-xs text-gray-500">Global workers shared across projects. Shift-click agents to tile up to four views.</p>
+          <p className="mt-0.5 text-xs text-gray-500">Every session across projects and global scope. Shift-click agents to tile up to four views.</p>
         </div>
-        <button type="button" aria-expanded={adding} onClick={() => setAdding(!adding)}
+        <button type="button" aria-label="Create agent or pool" aria-expanded={adding !== null}
+          onClick={() => setAdding(adding ? null : "choice")}
           className="flex shrink-0 items-center gap-1.5 rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 hover:bg-gray-800">
-          <PlusIcon className="h-3.5 w-3.5" />Add agent
+          <PlusIcon className="h-3.5 w-3.5" />Create
         </button>
       </header>
       )}
-      {adding && <AddAgent onCancel={() => setAdding(false)} onCreated={(id) => select(id)} />}
+      {adding === "choice" && <CreateChoice onChoose={setAdding} onCancel={() => setAdding(null)} />}
+      {adding === "agent" && (
+        <AddAgent onCancel={() => setAdding(null)} onCreated={(id) => select(id)}
+          onSwitchToPool={() => setAdding("pool")} />
+      )}
+      {adding === "pool" && (
+        <AddPool onCancel={() => setAdding(null)} onCreated={(poolKey) => select(poolKey)} />
+      )}
       {error && (
         <div role="alert" className="rounded border border-red-900 bg-red-950/30 p-3 text-sm text-red-300">
           Could not load the agent flock: {error.message}{" "}
@@ -36,13 +86,18 @@ export default function AgentWorkspace() {
         </div>
       )}
       {selectedIds.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-gray-800 p-8 text-center">
-          <UsersIcon className="h-10 w-10 text-gray-700" />
-          <p className="text-sm text-gray-400">Select an agent from the flock to open its live terminal and settings.</p>
-          <p className="text-xs text-gray-600">Closing a view never stops the agent.</p>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+          <SessionDirectory />
+          <DirectoryTabs view={view} onChange={setView} />
+          {view === "providers" ? <ProvidersView /> : (
+            <>
+              <PoolDirectory entries={pools} />
+              <PoolDirectoryHint />
+            </>
+          )}
         </div>
       ) : (
-        <div className={"grid min-h-0 flex-1 auto-rows-[minmax(20rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
+        <div className={"grid min-h-0 flex-1 auto-rows-[minmax(24rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
           {selections.map((selection) => {
             const id = selection.key;
             if (selection.kind === "pool") {
@@ -51,13 +106,15 @@ export default function AgentWorkspace() {
                 return (
                   <PoolWindow key={entry.key} entry={entry} instanceId={selection.instanceId}
                     onInstanceChange={(instanceId) => setInstance(id, instanceId)}
-                    onClose={() => close(id)} resetToken={resetToken} />
+                    onClose={() => close(id)}
+                    focusRequest={focusSelection?.key === selectionAddress(id) ? focusSelection.request : null} />
                 );
               }
             }
             const agent = selection.kind === "agent" ? agents.find((item) => item.id === selection.agentId) : undefined;
             return agent ? (
-              <AgentWindow key={id} agent={agent} onClose={() => close(id)} resetToken={resetToken} />
+              <AgentWindow key={id} agent={agent} onClose={() => close(id)} resetToken={resetToken}
+                focusRequest={focusSelection?.key === id ? focusSelection.request : null} />
             ) : (
               <section key={id} aria-label={id + " agent window"}
                 className="flex min-h-80 flex-col rounded-xl border border-gray-800 p-4 lg:min-h-0">
