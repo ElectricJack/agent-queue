@@ -808,6 +808,14 @@
           "additionalProperties": false,
           "default": null,
           "properties": {
+            "actions_permission": {
+              "default": "read",
+              "enum": [
+                "read",
+                "write"
+              ],
+              "type": "string"
+            },
             "app_id": {
               "minimum": 1,
               "type": "integer"
@@ -2733,6 +2741,11 @@
           "runtime_bytes": 1073741824,
           "runtime_manifest": "",
           "runtime_root": "",
+          "search_path": [
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin"
+          ],
           "state_root": "",
           "stderr_bytes": 1048576,
           "stdout_bytes": 1048576,
@@ -2917,6 +2930,11 @@
             "runtime_bytes": 1073741824,
             "runtime_manifest": "",
             "runtime_root": "",
+            "search_path": [
+              "/usr/local/bin",
+              "/usr/bin",
+              "/bin"
+            ],
             "state_root": "",
             "stderr_bytes": 1048576,
             "stdout_bytes": 1048576,
@@ -2969,6 +2987,17 @@
             "runtime_root": {
               "default": "",
               "type": "string"
+            },
+            "search_path": {
+              "default": [
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "state_root": {
               "default": "",
@@ -3323,11 +3352,21 @@
     "supervisor": {
       "additionalProperties": false,
       "default": {
+        "context_ceiling_tokens": 160000,
         "global_": {
           "idle_timeout_seconds": 2700
-        }
+        },
+        "max_session_age_seconds": 86400,
+        "max_turn_retries": 2,
+        "question_timeout_seconds": 900,
+        "retry_backoff_seconds": 60,
+        "turn_timeout_seconds": 900
       },
       "properties": {
+        "context_ceiling_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
         "global_": {
           "additionalProperties": false,
           "default": {
@@ -3340,6 +3379,26 @@
             }
           },
           "type": "object"
+        },
+        "max_session_age_seconds": {
+          "default": 86400,
+          "type": "integer"
+        },
+        "max_turn_retries": {
+          "default": 2,
+          "type": "integer"
+        },
+        "question_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
+        },
+        "retry_backoff_seconds": {
+          "default": 60,
+          "type": "integer"
+        },
+        "turn_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
         }
       },
       "type": "object",
@@ -3538,6 +3597,338 @@
       "type": "boolean",
       "x-reload": "restart"
     },
+    "wait_policy": {
+      "additionalProperties": false,
+      "default": {
+        "branch_admission_deadline_seconds": 1800,
+        "hibernate_margin": 2.0,
+        "hibernation_enabled": true,
+        "in_place_ceiling_seconds": 1800,
+        "kinds": {
+          "batch": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 2700
+          },
+          "ci_check": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1200
+          },
+          "ci_run": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1500
+          },
+          "dependency": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "human": {
+            "escalate_after_seconds": null,
+            "expected_duration_seconds": null
+          },
+          "job": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 900
+          },
+          "message": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "playbook_condition": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "pull_request": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "resource": {
+            "escalate_after_seconds": 1800,
+            "expected_duration_seconds": null
+          },
+          "task": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "timer": {
+            "escalate_after_seconds": 300,
+            "expected_duration_seconds": null
+          }
+        },
+        "loop_window_registrations": 3,
+        "loop_window_seconds": 3600,
+        "metrics": {
+          "cohort": null,
+          "pre_rollout_tokens_per_turn": null,
+          "pre_rollout_turn_rate": null,
+          "window": null
+        },
+        "min_samples": 5,
+        "projects": {},
+        "resume_cost_minutes": 10.0,
+        "resume_launch_attempts": 2,
+        "resume_stall_seconds": 300,
+        "scheduler_waits_enabled": true,
+        "transition_budget_seconds": 120,
+        "v1_bodies": "refuse",
+        "v2_enabled": true
+      },
+      "properties": {
+        "branch_admission_deadline_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "hibernate_margin": {
+          "default": 2.0,
+          "type": "number"
+        },
+        "hibernation_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "in_place_ceiling_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "kinds": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "escalate_after_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expected_duration_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {
+            "batch": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 2700
+            },
+            "ci_check": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1200
+            },
+            "ci_run": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1500
+            },
+            "dependency": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "human": {
+              "escalate_after_seconds": null,
+              "expected_duration_seconds": null
+            },
+            "job": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 900
+            },
+            "message": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "playbook_condition": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "pull_request": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "resource": {
+              "escalate_after_seconds": 1800,
+              "expected_duration_seconds": null
+            },
+            "task": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "timer": {
+              "escalate_after_seconds": 300,
+              "expected_duration_seconds": null
+            }
+          },
+          "type": "object"
+        },
+        "loop_window_registrations": {
+          "default": 3,
+          "type": "integer"
+        },
+        "loop_window_seconds": {
+          "default": 3600,
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": false,
+          "default": {
+            "cohort": null,
+            "pre_rollout_tokens_per_turn": null,
+            "pre_rollout_turn_rate": null,
+            "window": null
+          },
+          "properties": {
+            "cohort": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pre_rollout_tokens_per_turn": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "pre_rollout_turn_rate": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "window": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "min_samples": {
+          "default": 5,
+          "type": "integer"
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "hibernate_margin": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "hibernation_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "in_place_ceiling_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kinds": {
+                "additionalProperties": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "escalate_after_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "expected_duration_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "resume_cost_minutes": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "resume_stall_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "scheduler_waits_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "v2_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "resume_cost_minutes": {
+          "default": 10.0,
+          "type": "number"
+        },
+        "resume_launch_attempts": {
+          "default": 2,
+          "type": "integer"
+        },
+        "resume_stall_seconds": {
+          "default": 300,
+          "type": "integer"
+        },
+        "scheduler_waits_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "transition_budget_seconds": {
+          "default": 120,
+          "type": "integer"
+        },
+        "v1_bodies": {
+          "default": "refuse",
+          "type": "string"
+        },
+        "v2_enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "work_graph": {
       "additionalProperties": false,
       "default": {
@@ -3581,6 +3972,56 @@
     "workspace_dir": {
       "type": "string",
       "x-reload": "restart"
+    },
+    "workspaces": {
+      "additionalProperties": false,
+      "default": {
+        "build_cache": null,
+        "projects": {}
+      },
+      "properties": {
+        "build_cache": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "dir": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "ccache",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "ccache",
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "worktrees": {
       "additionalProperties": false,
@@ -3679,7 +4120,9 @@
       "surface",
       "swarm",
       "test_selection",
-      "work_graph"
+      "wait_policy",
+      "work_graph",
+      "workspaces"
     ],
     "other": [],
     "restart_required": [

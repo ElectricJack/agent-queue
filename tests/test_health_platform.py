@@ -62,7 +62,10 @@ class FakeAdapter(MessagingAdapter):
 
 def _make_orchestrator(**overrides):
     """Create a minimal mock orchestrator for health check tests."""
+    from src.config import AppConfig
+
     orch = MagicMock()
+    orch.config = AppConfig()
     orch._paused = overrides.get("paused", False)
     orch._running_tasks = overrides.get("running_tasks", {})
     orch._notify = overrides.get("notify", None)
@@ -255,6 +258,53 @@ async def test_background_health_refresh_observes_repaired_playbook():
 # ---------------------------------------------------------------------------
 # HealthCheckServer ready endpoint
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_private_key_health_probes_use_live_key_ring(monkeypatch, enabled):
+    import base64
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api import dependencies as deps
+    from src.api.health import router
+    from src.main import _health_checks
+    from src.playbooks.private_values import PrivateValueService
+
+    orch = _make_orchestrator()
+    orch.config.playbooks.enabled = enabled
+    orch.required_playbook_status = {"ok": True}
+    # The config environment is now valid, but the service was loaded before
+    # provisioning. Probes must not report recovery until that service reloads.
+    monkeypatch.setenv("AQ_HEALTH_TEST_PRIVATE_KEY", base64.b64encode(b"x" * 32).decode())
+    orch.config.playbooks.private_value_active_key_id = "k1"
+    orch.config.playbooks.private_value_key_env = {"k1": "AQ_HEALTH_TEST_PRIVATE_KEY"}
+    orch.db.playbook_private_values = MagicMock(return_value=PrivateValueService(object()))
+
+    async def provider():
+        return await _health_checks(orch, FakeAdapter())
+
+    monkeypatch.setattr(deps, "_health_provider", provider)
+    monkeypatch.setattr(deps, "_health_monitor", None)
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        for path in ("/health", "/ready"):
+            response = await client.get(path)
+            assert response.status_code == (503 if enabled else 200)
+            status = response.json()["checks"]["playbook_private_value_key"]
+            assert status["ok"] is (not enabled)
+            if enabled:
+                assert status["error"] == "private_storage_key_unavailable"
+                assert "Restart" in status["remediation"]
+        orch.db.playbook_private_values.return_value = PrivateValueService.from_config(
+            object(), orch.config.playbooks
+        )
+        for path in ("/health", "/ready"):
+            response = await client.get(path)
+            assert response.status_code == 200
+            assert base64.b64encode(b"x" * 32).decode() not in response.text
 
 
 class TestReadyEndpointMessaging:

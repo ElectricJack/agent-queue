@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
+from src.state_machine import InvalidTransition
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
@@ -45,6 +46,7 @@ from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
+from src.commands.wait_v2_commands import WaitV2CommandsMixin
 from src.commands.cron_commands import CronCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
@@ -52,6 +54,7 @@ from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.git_identity_commands import GitIdentityCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
+from src.commands.project_relocation_commands import ProjectRelocationCommandsMixin
 from src.commands.policy_commands import PolicyCommandsMixin
 from src.commands.operator_commands import OperatorCommandsMixin
 from src.commands.operator_authority import bind_operator_dispatch, operator_grant_var
@@ -367,6 +370,7 @@ class CommandHandler(
     SystemCommandsMixin,
     GitIdentityCommandsMixin,
     ProjectCommandsMixin,
+    ProjectRelocationCommandsMixin,
     PolicyCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
@@ -411,6 +415,7 @@ class CommandHandler(
     TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
+    WaitV2CommandsMixin,
     CronCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
@@ -1095,6 +1100,9 @@ class CommandHandler(
                 # plugin path previously ran with no capability check at all.
                 # It composes with, and does not replace, check_request_scope:
                 # a command must pass both.
+                wait_refusal = await self._wait_mutation_fence(name, principal, mutating=mutating)
+                if wait_refusal:
+                    return wait_refusal
                 decision = authorize_command(
                     name,
                     principal,
@@ -1243,6 +1251,10 @@ class CommandHandler(
                 _emit_error = f"Unknown command: {name}"
                 return {"success": False, "error_code": "unknown_command",
                         "error": f"Unknown command: {name}"}
+            except InvalidTransition as e:
+                _emit_ok = False
+                _emit_error = str(e)
+                return {"success": False, "code": e.code, "error": str(e)}
             except Exception as e:
                 logger.error(
                     "Command %s failed: args=%s err=%s",
@@ -1299,6 +1311,7 @@ class CommandHandler(
                     log = logger.warning if total_ms >= 1000 else logger.debug
                     log(
                         "command timing name=%s ok=%s duration_ms=%.1f "
-                        "dispatch_ms=%.1f event_ms=%.1f",
+                        "dispatch_ms=%.1f event_ms=%.1f error=%s",
                         name, _emit_ok, total_ms, dispatch_ms, total_ms - dispatch_ms,
+                        None if _emit_ok or private_call else _emit_error,
                     )
