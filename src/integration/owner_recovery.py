@@ -18,7 +18,8 @@ never from the task row or its status:
 2. **The branch is safe.**  After ``git fetch origin`` in the repository's
    base checkout, every worktree holding the branch (or the row's own
    checkout, detached) is inspected.  One a live session works in refuses
-   with ``checkout_in_use``. On a ``worker`` row only work proved against the
+   with ``checkout_in_use``; a running pool session with no task and no claim
+   in flight is idle there, not working. On a ``worker`` row only work proved against the
    recorded task origin, claim time and matching slot sentinel is eligible for
    preservation; integration rows rely on their fenced writer binding. A missing
    local task ref never borrows a detached slot's HEAD. Uncommitted work is
@@ -43,7 +44,9 @@ emit ``integration.owner_recovery_refused``; a refusal repeating the latest
 recorded reason within :data:`REFUSAL_THROTTLE_SECONDS` is not recorded again,
 and the task hears about each refusal reason once.  A dry run pushes,
 detaches and records nothing and lists what it would do in
-``evidence["planned"]``.
+``evidence["planned"]``.  ``no_push`` releases without publishing: nothing is
+proved, snapshotted or pushed, every unpublished source stays where it is
+(listed in ``evidence["unpublished"]``) and the row's checkout is retained.
 
 There is no force: a row the check refuses stays refused, with its reason.
 
@@ -91,6 +94,7 @@ from src.integration.finished_owners import (
     _stopped_writer,
     stop_confirmer_for,
 )
+from src.integration.row_query import select_row
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -312,9 +316,13 @@ class OwnerRecovery:
     # -- public ---------------------------------------------------------------
 
     async def recover(
-        self, owner_row_id: str, *, principal: str, dry_run: bool = False
+        self, owner_row_id: str, *, principal: str, dry_run: bool = False, no_push: bool = False,
     ) -> RecoveryOutcome:
-        """Run the check on one owner row and release it when it passes."""
+        """Run the check on one owner row and release it when it passes.
+
+        *no_push* releases without publishing: every unpublished source is
+        left where it is and listed in ``evidence["unpublished"]``.
+        """
         row = await self._load(owner_row_id)
         if row is None:
             return RecoveryOutcome(
@@ -343,7 +351,9 @@ class OwnerRecovery:
             session = await self._prove_writer_gone(row, evidence)
             # Preservation commits carry the owning project's identity.
             with commit_identity(await self._row_identity(row)):
-                plan = await self._secure_branch(row, evidence, dry_run=dry_run)
+                plan = await self._secure_branch(
+                    row, evidence, dry_run=dry_run, no_push=no_push,
+                )
             outcome = PRESERVED_AND_RELEASED if plan.preserved else RELEASED
             if dry_run:
                 return RecoveryOutcome(row["id"], outcome, None, evidence, True)
@@ -356,7 +366,8 @@ class OwnerRecovery:
             return result
 
     async def recover_many(
-        self, owner_row_ids: list[str], *, principal: str, dry_run: bool = False
+        self, owner_row_ids: list[str], *, principal: str, dry_run: bool = False,
+        no_push: bool = False,
     ) -> list[RecoveryOutcome]:
         """:meth:`recover` each row in turn.
 
@@ -367,7 +378,9 @@ class OwnerRecovery:
         for owner_row_id in owner_row_ids:
             try:
                 results.append(
-                    await self.recover(owner_row_id, principal=principal, dry_run=dry_run)
+                    await self.recover(
+                        owner_row_id, principal=principal, dry_run=dry_run, no_push=no_push,
+                    )
                 )
             except Exception:
                 logger.warning("Owner recovery of %s failed", owner_row_id, exc_info=True)
@@ -388,9 +401,7 @@ class OwnerRecovery:
             return {"outcome": "not_found", "reason": "task does not exist"}
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, task.project_id)
-            current = (await conn.execute(select(tasks).where(
-                tasks.c.id == task.id,
-            ).with_for_update())).mappings().one_or_none()
+            current = await select_row(conn, tasks, tasks.c.id == task.id, lock=True)
             if current is None or current["project_id"] != task.project_id:
                 return {"outcome": "not_eligible", "reason": "task changed"}
             origin = (await conn.execute(select(task_branch_origins).where(
@@ -542,16 +553,11 @@ class OwnerRecovery:
 
     async def _load(self, owner_row_id: str) -> dict[str, Any] | None:
         async with self.db.immediate() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_branch_owners)
-                        .where(integration_branch_owners.c.id == owner_row_id)
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            row = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.id == owner_row_id,
+                lock=True,
             )
         return dict(row) if row is not None else None
 
@@ -593,7 +599,8 @@ class OwnerRecovery:
     # -- step 3: the branch is safe -------------------------------------------
 
     async def _secure_branch(
-        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool
+        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool,
+        no_push: bool = False,
     ) -> _Plan:
         branch = row["ref"].removeprefix("refs/heads/")
         checkout, default_branch, row_path, repository_url = await self._checkout_for(row)
@@ -670,7 +677,8 @@ class OwnerRecovery:
                         evidence["worktree"] = path
                         raise _Refusal(
                             CHECKOUT_IN_USE,
-                            f"{branch} is checked out at {path}, where a live session works",
+                            f"{branch} is checked out at {path}, where live session "
+                            f"{live_dirs[os.path.realpath(path)]} works",
                         )
                     # The row's old slot, detached and reused by a successor:
                     # the branch is not there, and the work is not the writer's.
@@ -727,6 +735,25 @@ class OwnerRecovery:
             ):
                 preserve.append(("commit", None, local_sha))
 
+            if preserve and no_push:
+                # The caller declined publication, so no source needs proving:
+                # nothing is snapshotted or pushed, and the row's checkout is
+                # retained so allocation cannot reset what stays behind.
+                evidence["unpublished"] = []
+                for kind, path, sha in preserve:
+                    # A dirty checkout's sha is its HEAD; the changes stay on disk.
+                    item = {"source": _source_label(kind, path, branch), "sha": sha}
+                    evidence["unpublished"].append(item)
+                    planned.append({"action": "skip_preserve", "reason": "no_push", **item})
+                    if path is not None and row_path is not None and _same_path(path, row_path):
+                        if not retain_checkout:
+                            planned.append({
+                                "action": "retain_checkout", "worktree": path,
+                                "reason": "no_push", "disable_workspace": True,
+                            })
+                        retain_checkout = True
+                preserve = []
+
             # Prove every source before taking a snapshot, pushing or detaching.
             # Slot reuse must never lend another task's HEAD to this branch.
             if preserve and row["owner_role"] in ORIGIN_PROVEN_ROLES:
@@ -747,13 +774,7 @@ class OwnerRecovery:
                         {
                             "action": "push",
                             "ref": (f"{RECOVERY_PREFIX}{row['id']}/{sha}" if diverged else branch),
-                            "source": (
-                                f"snapshot of {path}"
-                                if kind == "snapshot"
-                                else f"HEAD of {path}"
-                                if path
-                                else f"local branch {branch}"
-                            ),
+                            "source": _source_label(kind, path, branch),
                             "sha": None if kind == "snapshot" else sha,
                         }
                     )
@@ -845,12 +866,8 @@ class OwnerRecovery:
                 task_branch_origins.c.repository_id == row["repository_id"],
                 task_branch_origins.c.retired_at.is_(None),
             ))).mappings().one_or_none()
-            session = (await conn.execute(select(sessions).where(
-                sessions.c.id == row["session_id"],
-            ))).mappings().one_or_none() if row["session_id"] else None
-            workspace = (await conn.execute(select(workspaces).where(
-                workspaces.c.id == row["workspace_id"],
-            ))).mappings().one_or_none() if row["workspace_id"] else None
+            session = await select_row(conn, sessions, sessions.c.id == row['session_id']) if row["session_id"] else None
+            workspace = await select_row(conn, workspaces, workspaces.c.id == row['workspace_id']) if row["workspace_id"] else None
             attempt_at = await conn.scalar(select(task_session_attempts.c.started_at).where(
                 task_session_attempts.c.task_id == row["owner_id"],
                 task_session_attempts.c.session_id == row["session_id"],
@@ -959,12 +976,29 @@ class OwnerRecovery:
         checkout = next((path for path in candidates if os.path.isdir(path)), None)
         return checkout, default_branch, row_path, repository.url
 
-    async def _live_work_dirs(self) -> set[str]:
+    async def _live_work_dirs(self) -> dict[str, str]:
+        """``{real work_dir: session id}`` of attached sessions that may use a checkout.
+
+        A running pool session with no task and no claim in flight does no
+        work in its slot.  A successor launched into a stopped writer's slot
+        sits there idle (it cannot claim into a workspace that task still
+        locks), so counting it would refuse the very recovery that frees the
+        slot.  A claim it starts later sets ``claim_phase`` before touching
+        git.  A stopped row that may still be resumed keeps fencing.
+        """
+        idle_pool = and_(
+            sessions.c.lifecycle == "pool",
+            sessions.c.state != "stopped",
+            sessions.c.task_id.is_(None),
+            sessions.c.claim_phase.is_(None),
+        )
         async with self.db._engine.connect() as conn:
-            dirs = (
-                await conn.execute(select(sessions.c.work_dir).where(session_attached_clause()))
-            ).scalars()
-            return {os.path.realpath(d) for d in dirs if d}
+            rows = await conn.execute(
+                select(sessions.c.work_dir, sessions.c.id)
+                .where(session_attached_clause(), not_(idle_pool))
+                .order_by(sessions.c.id)
+            )
+            return {os.path.realpath(d): session_id for d, session_id in rows if d}
 
     def _mutex(self, checkout: str):
         if self.git_mutex is None:
@@ -1161,11 +1195,7 @@ class OwnerRecovery:
         self, conn, row: dict[str, Any], session: dict[str, Any], now: float, evidence
     ):
         """Release the gone writer's claim, after the owner row stopped protecting it."""
-        current = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session["id"])))
-            .mappings()
-            .one_or_none()
-        )
+        current = await select_row(conn, sessions, sessions.c.id == session['id'])
         if current is None or current["claim_phase"] is None:
             return None
         if current["task_id"] not in (None, row["owner_id"]):
@@ -1199,7 +1229,10 @@ class OwnerRecovery:
         # stopped writer's claim (``terminate_pool_session``), and it only
         # skipped it because this owner row protected the claim -- teardown
         # of a stopped session is never retried, so nothing else would.
-        in_flight = status in _IN_FLIGHT_STATUSES
+        # A task already READY (a released recovery hold) takes the same
+        # path: the release clears this exact claim's assignment, which the
+        # frontier would otherwise read as held by the gone writer.
+        in_flight = status in _IN_FLIGHT_STATUSES or status is TaskStatus.READY
         result = await self.db.release_claim(
             current["id"],
             task_status=TaskStatus.READY if in_flight else status,
@@ -1391,11 +1424,25 @@ async def _project_for(conn, row: dict[str, Any]) -> str | None:
     return integrating[0] if len(integrating) == 1 else None
 
 
+def _source_label(kind: str, path: str | None, branch: str) -> str:
+    if kind == "snapshot":
+        return f"snapshot of {path}"
+    return f"HEAD of {path}" if path else f"local branch {branch}"
+
+
 def _same_path(a: str, b: str) -> bool:
     return os.path.realpath(a) == os.path.realpath(b)
 
 
 def _release_comment(row: dict[str, Any], result: RecoveryOutcome, principal: str) -> str:
+    unpublished = result.evidence.get("unpublished")
+    if unpublished:
+        sources = ", ".join(f"{item['source']} (`{item['sha']}`)" for item in unpublished)
+        return (
+            f"Integration owner `{row['id']}` of `{row['ref']}` was released by owner recovery "
+            f"({principal}) without publishing (no push): {result.outcome}. Its writer is "
+            f"gone; unpublished work was left in place: {sources}."
+        )
     body = (
         f"Integration owner `{row['id']}` of `{row['ref']}` was released by owner recovery "
         f"({principal}): {result.outcome}. Its writer is gone and the branch is safe on origin"

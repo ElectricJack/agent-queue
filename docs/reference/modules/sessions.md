@@ -1,10 +1,9 @@
 # Module catalog — sessions
 
-Worker sessions, harnesses, terminals and claims: the 31 production modules
-that turn a routed task into a coding-agent CLI running in a terminal, and keep
+The production modules below turn a routed task into a coding-agent CLI running in a terminal, and keep
 the daemon's picture of it honest.
 
-Prose for everything here lives on four pages:
+Start with these guides and references:
 
 * [Sessions](../../concepts/sessions.md) — the concepts and the lifecycle.
 * [Harness reference](../harnesses.md) — harness files, dialogs, transcripts.
@@ -20,11 +19,23 @@ Prose for everything here lives on four pages:
 | [`src/sessions/provider.py`](../../../src/sessions/provider.py) | The `SessionProvider` ABC plus `SessionSpec`, `SessionHandle`, `Cap`, `DialogRule` and the typed failures every backend raises. | [concepts/sessions.md](../../concepts/sessions.md) | Callers gate on `Cap`, never on `provider.name`. `tests/test_session_provider_conformance.py`, `tests/test_session_executable.py` |
 | [`src/sessions/spec.py`](../../../src/sessions/spec.py) | Composes profile + harness + task into one immutable launch description; the only place session names and argv are derived. | [reference/harnesses.md](../harnesses.md) | Providers stay free of harness knowledge because everything harness-specific happens here. `tests/test_session_spec.py`, `tests/test_session_tool_allowlist.py` |
 | [`src/sessions/env.py`](../../../src/sessions/env.py) | Builds the child environment: the nine `AQ_*` identity markers, the database-isolation block, harness env and extras. | [reference/terminals-and-claims.md](../terminals-and-claims.md) | `AQ_TASK_ID` is omitted, never empty, for a session with no task. `tests/test_session_runtime_units.py` |
-| [`src/sessions/reconciler.py`](../../../src/sessions/reconciler.py) | The cascade step that owns session lifecycle: observe, drain-ack, exits, orphans, stall ladder, named convergence, backstop. | [concepts/sessions.md](../../concepts/sessions.md) | The module's governing rule is "unknown is not dead". `tests/test_session_reconciler.py`, `tests/test_pool_reconciler.py` |
+| [`src/sessions/reconciler.py`](../../../src/sessions/reconciler.py) | The cascade step that owns session lifecycle: observe, drain-ack, exits, orphans, stall ladder, named convergence, backstop. | [concepts/sessions.md](../../concepts/sessions.md) | The full thirteen-step sequence includes flock audit, claim refusals and disabled-project supervisors. The governing rule is "unknown is not dead". `tests/test_session_reconciler.py`, `tests/test_pool_reconciler.py` |
 | [`src/sessions/obsolete.py`](../../../src/sessions/obsolete.py) | Retires obsolete task sessions and safely releases branch owners after checking live integration subjects. | [concepts/sessions.md](../../concepts/sessions.md) | Historical batch rows remain unchanged. `tests/test_lifecycle_cleanup.py`. |
-| [`src/sessions/exit_classifier.py`](../../../src/sessions/exit_classifier.py) | Turns a dead process with an open task into one of four typed verdicts. | [concepts/sessions.md](../../concepts/sessions.md) | Rate-limit detection reads pane text — a hint, used only to choose between two safe outcomes. `tests/test_session_reconciler.py` |
+| [`src/sessions/exit_classifier.py`](../../../src/sessions/exit_classifier.py) | Turns a dead process with an open task into one of five typed verdicts. | [concepts/sessions.md](../../concepts/sessions.md) | Rate-limit detection reads pane text — a hint, used only to choose between two safe outcomes. `tests/test_session_reconciler.py` |
 | [`src/sessions/usage_limit_screen.py`](../../../src/sessions/usage_limit_screen.py) | Recognises a live CLI parked on its provider's usage-limit screen from a pane capture, so the stall ladder can take it out as a `RATE_LIMIT` exit instead of nudging it. | [concepts/sessions.md](../../concepts/sessions.md) | Deliberately strict, the opposite of the exit classifier's patterns: the CLI's own `⎿`/`■` gutter at the margin, then one of the CLIs' blocking wordings. `tests/test_usage_limit_screen.py`, `tests/test_session_reconciler.py` |
 | [`src/sessions/input_prompts.py`](../../../src/sessions/input_prompts.py) | Detects an unclaimed pool session parked on a harness-declared interactive prompt, for doctor and pool-status visibility. | [guides/worker-pools.md](../../guides/worker-pools.md) | Observation-only and fenced by the claim-loop inactivity threshold; it never sends input. `tests/test_pool_doctor.py`, `tests/test_swarm_surface.py` |
+
+## Recovery and continuation
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [`src/sessions/launch.py`](../../../src/sessions/launch.py) | Commits flock registration before the provider may spawn. | [Flock sessions](../../guides/flock-sessions.md) | Failed launches retain stopped-row evidence. |
+| [`src/sessions/flock_audit.py`](../../../src/sessions/flock_audit.py) | Compares registered sessions, provider observations and process markers. | [Flock sessions](../../guides/flock-sessions.md) | Failed probes do not prove absence. |
+| [`src/sessions/worker_recovery.py`](../../../src/sessions/worker_recovery.py) | Tracks per-cause guarded worker failures. | [Sessions](../../concepts/sessions.md#exit-verdicts) | A second same-cause failure blocks instead of relaunching indefinitely. |
+| [`src/sessions/supervisor_health.py`](../../../src/sessions/supervisor_health.py) | Retries failed supervisor turns and rotates stale conversations from bounded transcript evidence. | [System spec](../../specs/systems/sessions-and-harnesses.md#25-the-session-reconciler) | Pending request pointers and retry budgets survive a fresh replacement. |
+| [`src/sessions/context.py`](../../../src/sessions/context.py) | Measures fresh Claude/Codex input context and derives worker compaction settings. | [Worker context](../../specs/worker-context.md) | OpenCode liveness and quota percentages are not context metrics. |
+| [`src/prime/`](../../../src/prime/) and [`src/handoffs.py`](../../../src/handoffs.py) | Assemble bounded briefs and structured continuation notes. | [Prime and hooks](../cli/prime.md) | An empty automatic handoff preserves the existing useful note. |
+| [`src/waits/`](../../../src/waits/) and [`src/wait_runtime/`](../../../src/wait_runtime/) | Verify conditions, choose suspension and dispatch fresh continuation sessions. | [Agent waits](../../guides/agent-waits.md) | V2 defaults on; the collaboration long-poll still writes legacy `agent_waits`. |
 
 ## Providers
 
