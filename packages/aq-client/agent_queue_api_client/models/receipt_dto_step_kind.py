@@ -7,6 +7,7 @@ class ReceiptDTOStepKind(str, Enum):
     DECISION = "decision"
     FOREACH = "foreach"
     LLM = "llm"
+    SCRIPT = "script"
     TERMINAL = "terminal"
     WAIT = "wait"
 
