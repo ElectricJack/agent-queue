@@ -744,8 +744,10 @@ async def test_repair_start_allows_git_import_beyond_publication_bound(
         return "b" * 40
 
     async def reset_slot(*args, **kwargs):
-        # The extended import allowance must not leak into ordinary mutation.
-        assert bounds[-1] is None
+        # Reset has its own queue allowance, separate from the repair import.
+        assert bounds[-1] == lock_module.slot_preparation_timeout_seconds(
+            handler.config.worktrees, PROJECT_ID,
+        )
         return env.target.branch
 
     handler.orchestrator._hierarchy_repair_start.side_effect = import_objects
@@ -839,6 +841,71 @@ async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp
     assert result["result"] == "claimed", result
     slots.prefetch_slot_for_task.assert_awaited_once()
     slots.reset_slot_for_task.assert_awaited_once()
+
+
+async def test_slot_repository_queue_can_outlast_publication_bound(
+    handler, db, tmp_path, monkeypatch,
+):
+    from src.integration import lock as lock_module
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    # The per-project override is also the queue allowance for preparation.
+    handler.config.worktrees.slot_reset_git_timeouts[PROJECT_ID] = 60
+    repository_lock = asyncio.Lock()
+    await repository_lock.acquire()
+    waiting = asyncio.Event()
+    exclusion = lock_module.BranchLock.exclusion
+    authority = None
+    resets = []
+
+    @asynccontextmanager
+    async def observed_exclusion(lock, fence, **kwargs):
+        nonlocal authority
+        async with exclusion(lock, fence, **kwargs) as row:
+            authority = (lock, fence, row, kwargs.get("timeout_seconds"))
+            try:
+                yield row
+            finally:
+                authority = None
+
+    monkeypatch.setattr(lock_module.BranchLock, "exclusion", observed_exclusion)
+
+    async def reset(*args, **kwargs):
+        # Model reset_slot_for_task's repository_lock phase under the real
+        # activation transaction and lease exclusion, including the queue.
+        assert authority is not None
+        lock, fence, row, budget = authority
+        assert budget == 60 + lock_module.CRITICAL_SECTION_SECONDS
+        expiry = row["expires_at"]
+        waiting.set()
+        async with repository_lock:
+            lock.require_current(row, fence)
+            assert row["expires_at"] == expiry
+            resets.append(fence)
+        return env.target.branch
+
+    slots = handler.orchestrator._worktree_slots()
+    slots.reset_slot_for_task.side_effect = reset
+    preparation = asyncio.create_task(settled_claim(env.handler, {"next": True}, timeout=90))
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=30)
+        # Real contention exceeds the unchanged publication bound. A short
+        # patched SQL deadline could otherwise fail before reaching the mutex.
+        await asyncio.sleep(lock_module.CRITICAL_SECTION_SECONDS + 5)
+        repository_lock.release()
+        result = await preparation
+    finally:
+        if repository_lock.locked():
+            repository_lock.release()
+        if not preparation.done():
+            preparation.cancel()
+            await asyncio.gather(preparation, return_exceptions=True)
+
+    assert result["result"] == "claimed", result
+    assert len(resets) == 1
+    assert authority is None
+    assert await db.get_task_meta(env.task_id, "slot_reset_failure") is None
+    assert (env.wd / ".aq" / "claim.json").exists()
 
 
 async def test_repeated_slot_fence_timeout_reaches_recovery_incident(handler, db, tmp_path):
