@@ -13,11 +13,15 @@ import { absoluteTime } from "./activityFormat";
 import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { InlinePriority, InlineStatus, RowActions } from "./TaskRowActions";
 import { useTaskSelection } from "./useTaskSelection";
+import { EpicActivitySummary } from "../../components/TaskDisplayStatus";
 
-export default function CommandCenterTasks() {
+export default function CommandCenterTasks({ selection }: {
+  selection?: ReturnType<typeof useTaskSelection>;
+}) {
   const { projectId, filters, setStatus, clearFilters } = useTaskWorkspace();
   const { rows: filtered, statusCounts, isLoading, error, inWindow, activity, activityById, held, heldById, names } = useTaskListRows();
-  const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
+  const paneSelection = useTaskSelection();
+  const { selectedTaskId, selectTask, clearTask } = selection ?? paneSelection;
   const columns = (projectId ? 5 : 6) + (inWindow ? 2 : 0);
   // Below 768 px the rows are touch cards (mobile dashboard §3 gap 6): the
   // table needs 620 px. Inline editing and row menus stay on the desktop
@@ -83,10 +87,13 @@ export default function CommandCenterTasks() {
       }}>
       {!isLoading && !error && <div role="group" aria-label="Filter by task status"
         title="Counts match your search, time range and provider filters. Waiting input is a task status, not a count of approvals."
-        className="mb-4 grid grid-cols-4 gap-1.5 md:gap-3">
+        className="mb-4 grid grid-cols-3 gap-1.5 md:grid-cols-5 md:gap-3">
         {([
           ["IN_PROGRESS", "text-blue-300"], ["BLOCKED", "text-orange-300"],
-          ["WAITING_INPUT", "text-cyan-300"], ["FAILED", "text-red-300"],
+          ["WAITING_INPUT", "text-cyan-300"], ["WAITING", "text-cyan-300"],
+          ["HIBERNATED", "text-gray-300"], ["RESUME_PENDING", "text-indigo-300"], ["FAILED", "text-red-300"],
+          ["READY", "text-green-300"],
+          ["WAITING_ON_DELIVERY", "text-amber-300"], ["WITHHELD", "text-slate-300"],
         ] as const).map(([status, tone]) => <button key={status} type="button" data-primary-control
           aria-pressed={filters.status === status}
           aria-label={`${taskStatusLabel(status)}: ${statusCounts[status] ?? 0} ${statusCounts[status] === 1 ? "task" : "tasks"}`}
@@ -193,6 +200,7 @@ export default function CommandCenterTasks() {
                     <CopyTaskIdButton taskId={task.id} />
                   </span>
                   {hold && <HoldNote hold={hold} />}
+                  <EpicActivitySummary task={task} />
                 </td>
                 {!projectId && <td className="max-w-40 truncate px-3 py-3 text-xs text-gray-400" title={task.project_id}>{names.get(task.project_id ?? "") || task.project_id}</td>}
                 <td className="px-3 py-3"><InlineStatus task={task} /></td>

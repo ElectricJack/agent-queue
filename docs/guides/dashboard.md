@@ -107,6 +107,31 @@ aq doctor --check dashboard.remote_link
 
 The daemon re-resolves the link at most every five minutes (thirty seconds after a failure), and at once when `dashboard.server` is edited; `public_url` needs no restart. A post that has already been sent keeps the link it was rendered with.
 
+#### Which page a post links
+
+The origin is only half of it. The path comes from
+[src/dashboard_paths.py](../../src/dashboard_paths.py), which holds the whole
+scheme: a task links `/focus/tasks/:id`, an incident links
+`/focus/escalations/:id`, a review `/focus/reviews/:id`, the digest the
+needs-you inbox `/focus/inbox`. Focus routes are phone-first and redirect to a
+desktop page where one exists. A link is how the reader *acts* on a post, so no
+post links a `/settings/` page: that asks a phone to configure the machine that
+sent it.
+
+Two rules hold across every producer, and
+`tests/test_dashboard_links.py` pins them:
+
+* **at most one link per post**, always the last line, bare and wrapped in
+  `<…>` so Discord renders no preview card. The two rows that carry none are
+  the collapsed escalation root and the replies inside an incident's thread,
+  where the page is already linked above them;
+* **the link is never cut.** If the envelope does not fit the post's budget, the
+  text gives way first, because a link truncated mid-path points somewhere
+  else.
+
+Without an origin the last line is the resolver's notice naming the
+configuration gap, never a guess.
+
 #### Supported remote setup: an authenticated tailnet proxy you run
 
 Keep the dashboard server on `127.0.0.1` and put an HTTPS reverse proxy that you operate in front of it, reachable only over your tailnet:
@@ -133,34 +158,40 @@ AQ never runs `tailscale serve`, never widens a bind and never changes network p
 
 Open `/focus`, or **Focus view** in the rail. It is the same app laid out for a small screen, at every width ([FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx)):
 
-- **Live sessions**: each card opens that agent's terminal. The phone never attaches and never sends a resize, because an attach resizes the agent's real tmux window for everyone.
-  - It opens **Watch only** on every visit, so a stray tap types nothing.
-  - `A−`/`A+` change the text size (12–20 px) on your screen only. **Full screen** fills the phone (rotate for more columns; Back leaves it).
-  - If the connection drops, the last screen stays, dimmed, with **Retry** ([WatchTerminal.tsx](../../dashboard/src/components/WatchTerminal.tsx)).
-- **Typing from a phone**: tap **Type**. An input bar and a key strip appear under the screen.
-  - Tap the screen or the bar, type a line, and press the keyboard's Send key or **Send**. The line goes to the agent, then Enter. Shift+Enter adds a line, and a pasted block keeps its lines and goes as one paste.
-  - The key strip has the keys a phone lacks: **Esc**, **Tab**, **Ctrl-C**, **↑**, **↓**, **Enter**, and **1**/**2**/**3** for numbered permission and choice prompts. Tapping a key keeps the keyboard up.
-  - While the keyboard is open, the terminal fills the space above it and stays on the agent's prompt.
-  - **Watch only** closes the connection again.
-  - Typing uses an input-only terminal socket with the same credential, origin and loopback rules as a desktop terminal. It never attaches, so the agent's window keeps its size ([terminals reference](../reference/terminals-and-claims.md#typing-from-a-phone)).
+- **Live sessions**: each card opens the same terminal component as **Host shell**
+  ([InteractiveTerminal.tsx](../../dashboard/src/components/InteractiveTerminal.tsx)).
+  It has the same colors, fixed 12 px font, Type focus control and details menu
+  on phones and desktops. There is no watch/type mode or extra phone toolbar.
+  Columns and rows follow the terminal area, rotation and the on-screen keyboard;
+  the agent's tmux window follows them. A compact attach restores the earlier
+  window size when the phone leaves ([terminals reference](../reference/terminals-and-claims.md#from-a-phone)).
+  Drag down to reach earlier output; a flick continues with momentum. Drag up
+  to return to current output. Dropped connections retry automatically.
+- **Typing from a phone**: tap the terminal or Type. xterm's own textarea takes
+  keyboard input and paste, just as on the host shell. Enter and Ctrl+C are in
+  the terminal's details menu. The visible grid shrinks above the keyboard.
+  A refused attach reports its error and disables input. An ended session links
+  to its transcript.
 - **Providers**: the quota cards with their age; a stale reading says so ([ProviderUsage.tsx](../../dashboard/src/pages/metrics/ProviderUsage.tsx)).
 - **Tasks**: the Tasks tab's list and filters as cards, 50 per page. A task opens as a full page; Back returns to the same page and scroll ([FocusTaskList.tsx](../../dashboard/src/pages/focus/FocusTaskList.tsx)).
 
-Posted task and morning-report links open these pages ([src/dashboard_paths.py](../../src/dashboard_paths.py)); **Full** at the top opens the full dashboard page ([FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx)). Below 768 px the rest of the dashboard is one column: the menu opens the rail as a drawer ([TopBar.tsx](../../dashboard/src/shell/TopBar.tsx)), panes and the activity list fill the screen, and the agents and session pages show the same phone terminal, watch only until **Type** ([AgentTerminal.tsx](../../dashboard/src/pages/agents/AgentTerminal.tsx), [SessionDetail.tsx](../../dashboard/src/pages/SessionDetail.tsx)). A phone in landscape 768 px or wider gets the desktop pages, which attach; use the focus view to watch or type. Reaching the dashboard from a phone is the same question as from any other machine ([above](#reaching-it-from-another-machine)). Nothing the phone opens is saved to your roaming preferences.
+Posted task and morning-report links open these pages ([src/dashboard_paths.py](../../src/dashboard_paths.py)); **Full** at the top opens the full dashboard page ([FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx)). Below 768 px the rest of the dashboard is one column: the menu opens the rail as a drawer ([TopBar.tsx](../../dashboard/src/shell/TopBar.tsx)), panes and the activity list fill the screen, and the agents and session pages show the same shared terminal ([AgentTerminal.tsx](../../dashboard/src/pages/agents/AgentTerminal.tsx), [SessionDetail.tsx](../../dashboard/src/pages/SessionDetail.tsx)). Every viewport uses the host shell's terminal component, including focus view. Reaching the dashboard from a phone is the same question as from any other machine ([above](#reaching-it-from-another-machine)). Nothing the phone opens is saved to your roaming preferences.
 
 #### Checking a release on a real phone
 
 On iPhone Safari and Android Chrome, after an update that touched the dashboard. First note an agent's window size on the AQ host: `tmux display -p -t <session> '#{window_width}x#{window_height}'`.
 
+Before the checklist: the browser is served a **built** SPA from `src/dashboard_assets/dist/`, never the dashboard source, so a dashboard source update also needs the build/staging step in `aq update` (or `aq install --restart-from dashboard.build`). `aq doctor --check dashboard.server.bundle` checks the bundle's manifest and base path; its OK result alone does not prove it matches the updated sources. Check the served assets after rebuilding.
+
 1. `/focus` loads with no sideways scroll; sessions, providers and tasks show.
-2. Open a live session, `A+` twice, Full screen, rotate and rotate back, press Back: full screen closes, the page stays.
-3. The tmux window size is unchanged.
-4. Airplane mode for ten seconds: the screen stays, marked stale; back online, **Retry** returns to *Live*.
-5. Tasks page 2, scroll, open a task, Back: same page, same scroll; a long title wraps and nothing runs off the screen.
-6. From the menu in portrait open **Agents** and an agent: it opens watch only, and the tmux window size is still unchanged.
-7. If posts carry links (`aq dashboard link`), a task link opens the focus task page.
-8. Open a live session and tap **Type**. Tap the screen: the keyboard opens under the input bar, and the agent's prompt stays in view above it. Send a short line (the agent receives it and Enter), tap **Esc**, and at a permission prompt tap **1**. The keyboard stays up between taps.
-9. Paste two lines and send them: the agent receives one paste. Tap **Watch only**: the input bar goes away. The tmux window size is still unchanged.
+2. Open a live session, then open **Host shell** on the same phone. They are the same terminal, so the two screens are the same colours, the same font and the same column count; the terminal controls match as well; page headers can leave different amounts of space for the grid. The text fills the width without sideways scrolling, and on the host the window size now matches the phone.
+3. Drag down: earlier output scrolls into view, a flick keeps going, and the page itself does not move. Keep going back past the first screen into older history. Drag up to return.
+4. Rotate and rotate back: the columns and rows follow each rotation, the font stays the host shell's size, and the page stays.
+5. Tap the screen or Type: the keyboard opens and all terminal rows fit above it, including on a full session page or docked pane. Type a short line and Enter; the agent receives both. Check Enter and Ctrl+C in the details menu. Paste two lines; xterm forwards the paste.
+6. Airplane mode for ten seconds, then back online: the terminal reconnects by itself (or tap **Reconnect now**) and the history is there again, once.
+7. Leave the session page. On the host the window is back to the size you noted.
+8. Tasks page 2, scroll, open a task, Back: same page, same scroll; a long title wraps and nothing runs off the screen.
+9. If posts carry links (`aq dashboard link`), a task link opens the focus task page.
 
 ## A realistic tour
 
@@ -169,6 +200,14 @@ Assume the daemon and dashboard server are running (`aq start`), the dashboard i
 1. Open **Command Center** in the left rail. AQ redirects this to the remembered project (or its first project), then opens **Graph**. Select a task node to read its task details in the contextual surface. Use the **Tasks** tab when you need search, state, or ownership filters rather than relationship geometry.
 2. In **Projects**, choose `demo`; its row gives you **Graph** and **Tasks**. The same project route also has **Overview**, **Sessions**, **Workspaces**, **Playbooks**, and **Config** deep links. Project state is loaded from the daemon, so a refresh is safe when another operator changes it.
 3. Open **Agent flock** from the rail. Select a worker to see its terminal and session information. Shift-click up to four agents to tile their windows. Pools show their global/project allocation rather than pretending each pool belongs only to the selected project.
+
+   Running project supervisors also appear here, labelled by project, with their harness,
+   model, state, idle time and last activity. Their auth badge shows the latest observed
+   API authentication outcome for 15 minutes: red for HTTP 401/403, green after a successful
+   call, and unknown when no recent observation exists. Select a supervisor to open its
+   terminal, then use **Messages** to send through the same relay as `aq chat <project>`.
+   The pane includes supervisor mail from other surfaces, labels queued/delivered messages
+   as unread until the session reads them, and shows linked replies and delivery diagnostics.
 4. From a task, open **Task files** / **Worktree preview** to inspect file content and a diff associated with that task. Treat it as an inspection surface: make and commit repository changes in the worker's worktree, not in the browser.
 5. Open **Settings** for **Playbooks**, **Profiles**, **Intelligence classes**, **Project roots**, **Messaging**, and **Config**. These are curation surfaces: changing one writes daemon-managed configuration, vault content, or database records, so use the validation/error feedback before retrying.
 6. Open **Metrics** for live and historical fleet measurements. A temporarily disconnected browser does not erase those durable samples; it reconnects and refetches. The live provider-usage display can label unavailable data rather than inventing a value.
@@ -193,15 +232,68 @@ flowchart LR
 | **Command Center** — `/projects/:projectId/graph`, `/tasks` | Visual task relationships or a filtered work list. Graph layout is server-produced; task selection opens detail. | [Graph.tsx](../../dashboard/src/pages/command-center/Graph.tsx), [Tasks.tsx](../../dashboard/src/pages/command-center/Tasks.tsx) |
 | **Projects** in the left rail | Choose, organize, or add a project. Project-specific deep links retain their project scope. | [LeftRail.tsx](../../dashboard/src/shell/LeftRail.tsx), [ProjectTree.tsx](../../dashboard/src/shell/ProjectTree.tsx) |
 | **Agent flock** — `/agents` | Inspect worker terminals, global agents, and worker pools; tile selected views. | [AgentWorkspace.tsx](../../dashboard/src/pages/agents/AgentWorkspace.tsx) |
-| **Focus view** — `/focus` | A phone-first page: live sessions (watch only until **Type**), provider quota and the task list; task, session and report pages under `/focus/`. See [from a phone](#from-a-phone). | [FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx), [FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx) |
+| **Focus view** — `/focus` | A phone-first page: live sessions in the phone terminal, provider quota and the task list; task, session and report pages under `/focus/`. See [from a phone](#from-a-phone). | [FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx), [FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx) |
 | **Task files** — `/tasks/:taskId/files` | Preview a task's worktree files and changes. | [TaskFiles.tsx](../../dashboard/src/pages/TaskFiles.tsx), [TaskFilesPanel.tsx](../../dashboard/src/components/TaskFilesPanel.tsx) |
 | **Playbooks** — `/settings/playbooks` | Inspect and curate the active V2 playbook definitions; open a playbook detail or graph view when linked from the list. | [Playbooks.tsx](../../dashboard/src/pages/system/Playbooks.tsx), [PlaybookDetail.tsx](../../dashboard/src/pages/PlaybookDetail.tsx) |
+| **Host shell** — `/host-shell` | An interactive login shell on the AQ machine for remote management, not an agent. Off unless enabled; see [host shell](#host-shell). | [HostShell.tsx](../../dashboard/src/pages/host-shell/HostShell.tsx) |
 | **Metrics** — `/metrics` | Read fleet rate, capacity, and provider-usage charts. Each provider's card starts with its availability: a state pill, the reason, since when, the expected recovery, any operator override, the held and re-routed counts, and *Disable for…* / *Recheck* / *Clear override*. | [Metrics.tsx](../../dashboard/src/pages/metrics/Metrics.tsx), [ProviderAvailabilityHeader.tsx](../../dashboard/src/pages/metrics/ProviderAvailabilityHeader.tsx) |
 | **Provider banner** — every page | Shown while any provider is unavailable (out of usage, logged out, failing or disabled), with what the outage moved and held and a link to that provider's card. | [ProviderAvailabilityBanner.tsx](../../dashboard/src/shell/ProviderAvailabilityBanner.tsx) |
 | **Settings** — `/settings/*` | Configure profiles, intelligence classes, project roots, messaging, and system config. | [SettingsLayout.tsx](../../dashboard/src/pages/settings/SettingsLayout.tsx), [SettingsSidebar.tsx](../../dashboard/src/components/nav/SettingsSidebar.tsx) |
 | **Activity drawer** and contextual panes | See recent dashboard events/gates or task-, session-, file-, and playbook-specific tools without leaving the current route. | [ActivityDrawer.tsx](../../dashboard/src/shell/ActivityDrawer.tsx), [panes/registry.ts](../../dashboard/src/panes/registry.ts) |
 
 In Settings → Intelligence Classes, **Delete** confirms the class by name. The daemon refuses deletion while an active agent, an agent-type profile, or a non-terminal task references it and reports each blocker with repointing guidance. Successful deletion renames the vault file to `.md.retired` and updates the live registry. Global administrators can use `aq system delete-intelligence-class --class-id <id>` for the same operation; `--expected-revision` rejects a stale selection.
+
+## Host shell
+
+**Host shell** in the left rail opens a plain login shell (`$SHELL -l` in `$HOME`) on
+the machine running AQ. It is not an agent: no task, no `sessions` row. Each shell is a
+tmux session `aq-host-shell-<n>` on the daemon's tmux socket, so it survives page reloads
+and is reattached from the page's tabs; **Close shell** kills it. The terminal is the
+same `/ws/terminal/` stream agent terminals use.
+
+It is remote code execution by design, so it is **off by default**:
+
+```yaml
+dashboard:
+  host_shell:
+    enabled: true
+    max_shells: 4        # 1-32
+    allow_remote: false  # also admit dashboards opened from another machine
+```
+
+The flags are read per request; no restart is needed.
+
+- **Who may use it.** The local operator: a loopback peer with no bearer token, on a
+  loopback Host or through the dashboard server's operator verdict (a loopback browser,
+  or a tailnet browser on an `api_auth.trusted_dashboard_origins` origin). With
+  `allow_remote: true`, also any browser the dashboard server proxied from another
+  machine, such as a LAN browser on a trusted origin, which the server stamps as a
+  non-operator viewer. The dashboard server's Host and Origin gates still apply, and a
+  peer that reaches the daemon port directly is never a dashboard viewer.
+- **Never a bearer token.** Any bearer token is refused whatever `allow_remote` says, so
+  workers and the supervisor can never open, attach to or type into a host shell, and
+  the dashboard server refuses a bearer token from a non-loopback peer outright. A
+  DNS-rebound Host is refused, and a daemon with `api_auth.require_session_token: true`
+  refuses host shells too.
+- **Audit.** Every open and close is logged (`aq.audit.host_shell`) and recorded as a
+  `host_shell.opened` / `host_shell.closed` event. Accepted terminal sockets also record
+  `host_shell.attached` / `host_shell.detached`; input-only sockets record
+  `host_shell.input_connected` / `host_shell.input_disconnected`. Each log line and event
+  has a timestamp and the caller's identity:
+  `local-operator (…)`, `local-operator via dashboard (peer …)` or
+  `remote-dashboard-viewer (peer …)`, the peer being the browser's real address as the
+  dashboard server saw it. Disconnects include backend errors and shutdowns. Terminal
+  input is never audit-logged.
+- **Environment.** The shell starts from `env -i` with only `HOME`, `USER`, `LOGNAME`,
+  `PATH`, locale and `TZ`, so no `AQ_*` agent or session token, DSN or daemon secret
+  reaches it; tmux global variables are also removed for the session's later windows.
+- **Not counted anywhere.** The `aq-host-shell-` prefix is outside the `s-`/`n-`/`p-`
+  prefixes session adoption, the reaper, the stall sweep, pool counts and the agent and
+  session lists read, so a host shell never shows up in them.
+
+API: `GET /api/host-shell` (list), `POST /api/host-shell` (open),
+`POST /api/host-shell/{name}/close` ([src/api/host_shell.py](../../src/api/host_shell.py),
+[src/sessions/host_shell.py](../../src/sessions/host_shell.py)).
 
 ## State ownership and live updates
 
@@ -260,9 +352,9 @@ The dashboard package's `predev`, `prebuild`, and `pretypecheck` hooks regenerat
 ### Page and component families
 
 * `pages/command-center/` renders project graph/list workspaces, including the server-backed layout-v2 canvas and live graph refresh.
-* `pages/agents/` renders the global flock, workers, terminals, and pool configuration. `components/InteractiveTerminal.tsx` and `api/useTerminalInput.ts` are its input boundary.
+* `pages/agents/` renders the global flock, workers, terminals, and pool configuration. `components/InteractiveTerminal.tsx` is the same shared terminal used by Host shell and every agent terminal route.
 * `pages/project/` provides project overview/configuration/workspace/onboarding surfaces; `pages/settings/` and `pages/system/` are settings curation routes and legacy-compatible page implementations.
-* `pages/focus/` is the phone-first focus view (`/focus`): its own shell, the home page, and the task, session and report pages. It reuses the Tasks tab's rows and the phone terminal (`components/WatchTerminal.tsx`). That terminal never attaches: it watches the pane and, only after **Type**, sends input through the input-only terminal socket.
+* `pages/focus/` is the phone-first focus view (`/focus`): its own shell, home page, and task, session and report pages. It reuses the Tasks tab's rows and `components/InteractiveTerminal.tsx`, including the host shell's attach socket, palette, options, fit logic, input handling and touch scrolling.
 * `pages/metrics/` turns durable metric queries plus a raw event feed into chart data; `pages/playbook-graph-v2/` renders the semantic playbook graph and run overlays.
 * `components/` contains shared task, modal, markdown, terminal, profile, navigation, and workspace controls. `shell/` is global navigation, keyboard shortcuts, palette, activity drawer, and right surface.
 * `panes/` registers contextual, lazy-compatible views; every pane has a manifest and arguments/state owned by the pane store. `ws/` owns the shared event and terminal sockets, not individual pages.

@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json
+from src.jobs.editor_pin import pin_editor, prune_pins, validate_attempt_id
 from src.jobs.identity import processes, verified
 from src.jobs.policy import (
     NODE_PRESETS,
@@ -60,11 +61,23 @@ class JobService:
         input_ref=None,
         trusted_band=2,
         wait_identity=None,
+        wait_registration=None,
         queue_seconds=None,
         run_seconds=None,
         adapter_request_hash=None,
+        attempt_id=None,
+        script=None,
     ):
+        if owner_kind == "playbook":
+            from src.jobs.playbook import submit
+
+            return await submit(self, script)
         cfg = self.settings
+        if wait_identity is not None:
+            from src.waits.policy import enabled
+
+            if enabled(self.config, project_id):
+                raise JobError("jobs.verified_wait_required")
         if not cfg.enabled:
             raise JobError("jobs.disabled")
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
@@ -77,6 +90,12 @@ class JobService:
             accepted = presets(self.root).get(preset)
         if not accepted or owner_kind not in {"task", "integration"}:
             raise JobError("jobs.preset_denied")
+        attempt_id = validate_attempt_id(attempt_id)
+        if attempt_id is not None and preset != "matter_render":
+            # An attempt pins an editor build; a preset that launches no editor
+            # has no attempt to pin, and silently ignoring the flag would let a
+            # caller believe it had one.
+            raise JobError("jobs.attempt_invalid")
         if input_mode not in {"live", "snapshot"}:
             raise JobError("jobs.cwd_invalid")
         ws = await self.db.get_workspace(workspace_id)
@@ -103,20 +122,29 @@ class JobService:
                 raise JobError("jobs.preset_denied")
             bundle, capture_expected = await asyncio.to_thread(capture_inputs, args, cwd)
             adapter_hash = await asyncio.to_thread(file_hash, cfg.matter_capture_script)
-            editor_hash = await asyncio.to_thread(file_hash, cfg.matter_editor)
-            capture_expected["editor_sha256"] = editor_hash
-            argv = [*accepted.argv, str(cwd), cfg.matter_editor, bundle]
+            # The attempt's pinned copy, never the shared build: a rebuild of
+            # that build between two captures of one attempt would otherwise
+            # give the attempt two render profiles and no comparable score.
+            editor_pin = await asyncio.to_thread(
+                pin_editor, cfg.matter_editor, self.config.data_dir, attempt_id
+            )
+            capture_expected["editor_sha256"] = editor_pin["sha256"]
+            argv = [*accepted.argv, str(cwd), editor_pin["path"], bundle]
         else:
             argv = validate_args(
                 accepted, args, cwd, self.config.resources.test_worker_cap(), xdist=xdist
             )
         job_class = accepted.job_class
+        test_scope = None
+        weight = accepted.weight
         if accepted.pytest:
             from src.cli.test_runner import _is_full_suite
 
-            if await asyncio.to_thread(_is_full_suite, tuple(args), cwd=cwd):
-                job_class = "exclusive"
-        if accepted.weight > self.config.resources.test_slots:
+            full_suite = await asyncio.to_thread(_is_full_suite, tuple(args), cwd=cwd)
+            test_scope = "full" if full_suite else "focused"
+            if full_suite:
+                weight = max(1, self.config.resources.test_slots - cfg.full_suite_reserved_slots)
+        if weight > self.config.resources.test_slots:
             raise JobError("jobs.weight_invalid")
         if accepted.pytest and not any(
             a in {"-m", "--markexpr"} or a.startswith("--markexpr=") for a in args
@@ -141,10 +169,11 @@ class JobService:
             "args": args,
             "input_mode": input_mode,
             "input_ref": input_ref,
-            "wait": wait_identity is not None,
+            "wait": wait_identity is not None or wait_registration is not None,
             "queue_seconds": queue_seconds,
             "run_seconds": run_seconds,
             "adapter_request_hash": adapter_request_hash,
+            "attempt_id": attempt_id,
         }
         if preset == "matter_render":
             canonical["capture_expected"] = capture_expected
@@ -163,6 +192,11 @@ class JobService:
             "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
             **session_env_caps(self.config),
         }
+        from src.build_cache import resolved_cache_settings
+
+        cache = await resolved_cache_settings(self.db, self.config, project_id)
+        if cache:
+            env["CCACHE_DIR" if cache.kind == "ccache" else "SCCACHE_DIR"] = cache.dir
         if preset in NODE_PRESETS:
             # npm/pnpm launchers and package scripts commonly use /usr/bin/env node.
             # Keep that server-resolved runtime on PATH inside the detached job.
@@ -201,12 +235,15 @@ class JobService:
             "capacity": self.config.resources.test_slots,
             "lock_dir": str(Path(self.config.data_dir) / "locks/test-slots"),
             "pytest": accepted.pytest,
+            "test_scope": test_scope,
             "nice": self.config.resources.session_nice,
             "head_bytes": cfg.head_bytes,
             "tail_bytes": cfg.tail_bytes,
             "adapter_request_hash": adapter_request_hash,
             "tool_versions": {"python": sys.version, "executable": sys.executable},
         }
+        if cache:
+            contract["build_cache"] = {"kind": cache.kind, "dir": cache.dir}
         if preset == "matter_render":
             import hashlib
 
@@ -221,6 +258,7 @@ class JobService:
                 artifact_bytes=cfg.matter_artifact_bytes,
                 capture_expected=capture_expected,
                 adapter_sha256=adapter_hash,
+                editor_pin=editor_pin,
             )
             env.pop("AQ_TEST_RUN_ID", None)
             if cfg.matter_python.lower().endswith(".exe"):
@@ -231,7 +269,9 @@ class JobService:
         if (queue_seconds is not None or run_seconds is not None) and owner_kind != "integration":
             raise JobError("jobs.preset_denied")
         default_queue = (
-            cfg.exclusive_queue_seconds if job_class == "exclusive" else cfg.shared_queue_seconds
+            cfg.exclusive_queue_seconds
+            if job_class == "exclusive" or test_scope == "full"
+            else cfg.shared_queue_seconds
         )
         queue_budget = min(default_queue, queue_seconds) if queue_seconds is not None else default_queue
         run_budget = min(cfg.run_seconds, run_seconds) if run_seconds is not None else cfg.run_seconds
@@ -257,7 +297,7 @@ class JobService:
             "input_mode": input_mode,
             "input_ref": input_ref,
             "job_class": job_class,
-            "weight": accepted.weight,
+            "weight": weight,
             "priority_band": trusted_band,
             "submitted_at": now,
             "queue_deadline": now + queue_budget,
@@ -272,12 +312,17 @@ class JobService:
             log_budget=cfg.log_budget_bytes,
             reservation=cfg.head_bytes + cfg.tail_bytes,
             wait_identity=wait_identity,
+            wait_registration=wait_registration,
         )
 
     async def cancel(self, job: dict):
         if job["state"] in TERMINAL:
             return job
         if job["state"] == "queued":
+            if job["owner_kind"] == "playbook":
+                from src.jobs.playbook import settle_unlaunched
+
+                return await settle_unlaunched(self, job, "cancelled")
             result = build_result(job, {"cancelled": True})
             return await self.db.transition_job(
                 job["id"],
@@ -314,6 +359,13 @@ class JobService:
                     if owner_finished:
                         await self.cancel(job)
                         job = await self.db.get_job(job["id"])
+                if job["owner_kind"] == "playbook":
+                    run = await self.db.load_run(job["playbook_run_id"])
+                    if not run or run.lifecycle.value in {
+                        "cancelled", "cancelling", "completed", "failed", "timed_out", "blocked"
+                    }:
+                        await self.cancel(job)
+                        job = await self.db.get_job(job["id"])
                 if job["state"] != "queued":
                     await self.reconcile(job)
                 if owner_finished:
@@ -324,6 +376,11 @@ class JobService:
                 rows = await self.db.list_jobs(active=True, limit=1000)
                 for job in rows:
                     if job["state"] == "queued" and job["queue_deadline"] <= time.time():
+                        if job["owner_kind"] == "playbook":
+                            from src.jobs.playbook import settle_unlaunched
+
+                            await settle_unlaunched(self, job, "admission_timed_out")
+                            continue
                         result = build_result(job, {"infra_reason": "queue_timeout"})
                         await self.db.transition_job(
                             job["id"],
@@ -351,6 +408,26 @@ class JobService:
             )
 
     async def launch(self, job):
+        if job["owner_kind"] == "playbook":
+            run = await self.db.load_run(job["playbook_run_id"])
+            if not run or run.lifecycle.value in {"cancelled", "cancelling", "completed", "failed",
+                                                   "timed_out", "blocked"}:
+                await self.cancel(job)
+                return
+            if run.lifecycle.value != "running":
+                # E3 suspends the engine before ordinary process admission.
+                # Only this job's durable script wait authorizes a paused run;
+                # an ambiguity/operator pause must never permit another launch.
+                from src.playbooks.receipts import attempt_key
+
+                wait = run.wait
+                if (run.lifecycle.value != "paused" or run.error_code or wait is None
+                        or wait.event_type != "job.completed"
+                        or wait.step_id != job["playbook_step_id"]
+                        or wait.iteration_path != job["iteration_path"]
+                        or run.attempts.get(attempt_key(wait.step_id, wait.iteration,
+                                                       wait.iteration_path)) != job["attempt"]):
+                    return
         changed = await self.db.transition_job(
             job["id"], job["state_version"], "starting", launch_at=time.time()
         )
@@ -359,6 +436,11 @@ class JobService:
         directory = await asyncio.to_thread(job_directory, Path(self.config.data_dir), job["id"])
         await asyncio.to_thread(atomic_json, directory / "request.json", changed)
         try:
+            payload = None
+            if job["owner_kind"] == "playbook":
+                from src.jobs.playbook import launch_payload
+
+                payload = await launch_payload(self, changed)
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
@@ -366,7 +448,7 @@ class JobService:
                 str(directory),
                 cwd=str(self.root),
                 env=job["contract"]["env"],
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE if payload else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
@@ -374,11 +456,19 @@ class JobService:
             reap = asyncio.create_task(proc.wait())
             self._children.add(reap)
             reap.add_done_callback(self._children.discard)
-        except OSError:
+            if payload:
+                proc.stdin.write(payload)
+                await proc.stdin.drain()
+                proc.stdin.close()
+        except (OSError, ValueError, RuntimeError):
             # No spawn retry, even if the caller cannot distinguish pre/post exec.
             await self.reconcile(changed)
 
     async def reconcile(self, job):
+        if job["owner_kind"] == "playbook":
+            from src.jobs.playbook import reconcile
+
+            return await reconcile(self, job)
         nonce = job["runner_nonce"]
         try:
             directory = await asyncio.to_thread(
@@ -552,6 +642,12 @@ class JobService:
     async def sweep(self, *, reserve=False):
         """Bounded retention: terminal logs first, results independently at 90d."""
         cfg, now = self.settings, time.time()
+        # Pinned editor builds are retention too: a build an attempt pinned long
+        # enough ago is gone, and the store is otherwise one copy per rebuild.
+        try:
+            await asyncio.to_thread(prune_pins, self.config.data_dir)
+        except OSError:
+            pass
         rows = await self.db.retained_terminal_jobs(
             limit=100, result_cutoff=now - cfg.result_days * 86400
         )
@@ -559,7 +655,10 @@ class JobService:
         for job in rows:
             old = now - job["ended_at"]
             eviction = reserve and reserved + cfg.head_bytes + cfg.tail_bytes > cfg.log_budget_bytes
-            if job["output_retention"] != "expired" and (old > cfg.log_days * 86400 or eviction):
+            # Script streams and their bounded binding are one protected result;
+            # keep the reservation and pin until result retention retires them.
+            if (job["owner_kind"] != "playbook" and job["output_retention"] != "expired"
+                    and (old > cfg.log_days * 86400 or eviction)):
                 directory = await asyncio.to_thread(
                     job_directory, Path(self.config.data_dir), job["id"]
                 )
@@ -568,19 +667,28 @@ class JobService:
                 await self.db.expire_job_output(job["id"])
                 reserved -= job["output_reservation_bytes"]
             if old > cfg.result_days * 86400:
+                if job["owner_kind"] == "playbook":
+                    from src.jobs.playbook import retire
+
+                    await retire(self, job)
                 import shutil
 
                 snapshot_ws = None
                 remove_snapshot = False
                 if job["owner_kind"] == "integration" and job["input_mode"] == "snapshot":
                     snapshot = Path(job["contract"]["cwd"])
-                    root = Path(self.config.data_dir) / "job-snapshots"
+                    from src.projects.storage_binding import bound_path, read_binding
+
+                    root = bound_path(await read_binding(self.db, job["project_id"]),
+                                      Path(self.config.data_dir) / "job-snapshots")
                     ws = await self.db.get_workspace(job["workspace_id"])
                     # Only internally provisioned, disabled snapshots may be removed.
                     if (
                         ws and ws.kind_id == "job-snapshot" and not ws.enabled
                         and snapshot.parent == root
                         and job["workspace_id"] == "job-snapshot-" + snapshot.name
+                        and not (root / ".owners" / (snapshot.name + ".json")).exists()
+                        and not (root / ".owners" / (snapshot.name + ".json")).is_symlink()
                     ):
                         snapshot_ws = ws
                         from sqlalchemy import select

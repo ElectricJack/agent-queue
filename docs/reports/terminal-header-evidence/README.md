@@ -1,14 +1,23 @@
 # Compact terminal pane headers
 
 The agent, supervisor, pool, standalone session, and phone terminal now use one
-header row. It contains a truncated name, compact status, typing control, details
+header row. It contains a truncated name, compact status, the pane's
+terminal/settings switch where the row has room for it, typing control, details
 button, and the applicable full-screen/close controls. Desktop rows are 37 px;
 phone/touch rows are 49 px, including 44 px control targets. Terminal text remains
 12 px by default, with the existing 12–20 px phone font adjustment.
 
 Details expose the complete task/profile/model/session information, pool supply,
-instance picker, settings tabs, supervisor restart choice, terminal Enter/Ctrl+C,
-font adjustment, and reconnect information/actions. Click, touch, or keyboard
+instance picker, supervisor restart choice, terminal Enter/Ctrl+C,
+font adjustment, and reconnect information/actions. The agent and pool windows'
+terminal and settings buttons left this disclosure for their header row
+(2026-10-03): they choose what the pane body shows, so they stay reachable while
+the disclosure is closed. They remain icon-only `role="tab"` buttons carrying the
+`Terminal`/`Settings` accessible names, so the row's height is unchanged. A
+compact row has no room for them — at 320 px a pool pane already spends its
+whole width on the instance picker, the transport control, details and close —
+so below 640 px they stay in the disclosure, which is where they were, and the
+row keeps its one-row geometry. Click, touch, or keyboard
 activation opens the disclosure. Escape closes it and restores trigger focus;
 clicking outside lets the terminal take focus. Disclosure does not remount xterm
 or change its transport. Watch mode still starts without an input socket; its
@@ -69,8 +78,10 @@ node dashboard/layout-checks/capture-terminal-headers.mjs after
 1440×900, and 720×450 at 200% zoom), plus the 1100×700 three-pane layout. It
 asserts one row per pane, increased terminal height, unclipped named controls,
 no horizontal overflow, complete details, keyboard activation/Escape, touch
-activation, viewport-contained disclosures, unchanged viewer count, and terminal
-focus/Ctrl+M without input. Existing layout checks cover font changes, stale
+activation, viewport-contained disclosures, unchanged viewer count, terminal
+focus/Ctrl+M without input, and that the view switch is in the header exactly
+where that viewport has room for it and in the disclosure exactly where it does
+not. Existing layout checks cover font changes, stale
 screens/retry, full screen/rotation/Back/focus traps, and phone input frames.
 
 Component checks cover disclosure keyboard navigation and action activation,
