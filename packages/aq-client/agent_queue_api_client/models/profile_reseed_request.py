@@ -16,11 +16,15 @@ class ProfileReseedRequest:
     """
     Attributes:
         profile_id (str): System profile ID to reseed
-        backup (bool | None | Unset): Keep a .bak-<epoch> copy of the replaced file (default true)
+        backup (bool | None | Unset): Full reseed only: keep a .bak-<epoch> copy of the replaced file (default true)
+        grants_only (bool | None | Unset): Additive repair instead of a full overwrite: merge only the missing ##
+            Capabilities grant names into the vault copy, keeping every other edit (default false). Refuses if the vault
+            copy has no ## Capabilities section.
     """
 
     profile_id: str
     backup: bool | None | Unset = UNSET
+    grants_only: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,6 +36,12 @@ class ProfileReseedRequest:
         else:
             backup = self.backup
 
+        grants_only: bool | None | Unset
+        if isinstance(self.grants_only, Unset):
+            grants_only = UNSET
+        else:
+            grants_only = self.grants_only
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -41,6 +51,8 @@ class ProfileReseedRequest:
         )
         if backup is not UNSET:
             field_dict["backup"] = backup
+        if grants_only is not UNSET:
+            field_dict["grants_only"] = grants_only
 
         return field_dict
 
@@ -58,9 +70,19 @@ class ProfileReseedRequest:
 
         backup = _parse_backup(d.pop("backup", UNSET))
 
+        def _parse_grants_only(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        grants_only = _parse_grants_only(d.pop("grants_only", UNSET))
+
         profile_reseed_request = cls(
             profile_id=profile_id,
             backup=backup,
+            grants_only=grants_only,
         )
 
         profile_reseed_request.additional_properties = d

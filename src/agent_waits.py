@@ -1,0 +1,207 @@
+"""Typed, bounded agent waits and pure deadline arbitration.
+
+Waits retain their task's seat and workspace. Producer adapters read durable
+state; a bus notification is never evidence that a condition was satisfied.
+"""
+
+from __future__ import annotations
+
+import math
+import shlex
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+DEFAULT_TIMEOUT = 7200
+MAX_TIMEOUT = 86400
+MAX_DIGEST_BYTES = 4096
+WAIT_KINDS = ("job", "task", "message", "timer")
+WAIT_STATES = ("active", "satisfied", "expired", "cancelled")
+TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED", "BLOCKED")
+
+
+def wait_next_step(row: dict[str, Any], *, consumed: bool = False) -> str:
+    """Actionable guidance shared by submission, recovery and result reads."""
+    pointer = f"aq wait show {shlex.quote(row['id'])} --consume --json"
+    if row["state"] == "active":
+        if row["owner_kind"] == "supervisor":
+            return "Subscription registered. Continue working; its result will be queued."
+        return (
+            f"End this turn. Resume from the result pointer with {pointer}. "
+            "The claim, workspace and seat remain held. Do not poll or sleep."
+        )
+    match = row["match"]
+    if row["kind"] == "job":
+        command = "show" if row["state"] == "expired" else "result"
+        inspect = f"aq job {command} {shlex.quote(match['job_id'])} --json"
+    elif row["kind"] == "task":
+        inspect = f"aq task show {shlex.quote(match['task_id'])} --json"
+    elif row["kind"] == "message":
+        message_id = (row.get("digest") or {}).get("message_id")
+        inspect = (
+            f"aq message status {shlex.quote(message_id)} --json"
+            if message_id else "the recipient and thread cursor"
+        )
+    else:
+        inspect = "the timer due instant and the current claim"
+    if row["state"] == "expired":
+        return (
+            f"Deadline expired. Inspect {inspect} once and report or handle the timeout. "
+            "The producer was not cancelled. Do not infer success, blindly re-register, "
+            "or submit replacement work."
+        )
+    if row["state"] == "cancelled":
+        return (
+            "Wait cancelled. Check your current claim before acting; cancellation does "
+            "not cancel the producer or authorize resuming a paused task."
+        )
+    if (row.get("digest") or {}).get("reason") == "source_unavailable":
+        return f"Source unavailable. Inspect {inspect} once; this result is not success."
+    guidance = f"Result available. Inspect {inspect} and handle the actual outcome."
+    if not consumed:
+        guidance += f" Use {pointer} to consume this notification; other feedback remains pending."
+    return guidance
+
+
+class AgentWaitRecord(BaseModel):
+    """Persisted wait/result shape shared by contracts and generated clients."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str
+    project_id: str
+    owner_kind: Literal["task", "supervisor"]
+    owner_id: str
+    session_id: str
+    session_instance_token: str
+    claim_epoch: int
+    kind: Literal["job", "task", "message", "timer"]
+    match: dict[str, Any]
+    state: Literal["active", "satisfied", "expired", "cancelled"]
+    version: int
+    created_at: float
+    deadline_at: float
+    resolved_at: float | None = None
+    wait_resumed_at: float | None = None
+    checked_at: float = 0
+    result_ref: str | None = None
+    digest: dict[str, Any] | None = None
+    idempotency_key: str
+    result_message_id: str | None = None
+
+
+class WaitError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class JobMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    job_id: str = Field(min_length=1, max_length=256)
+    timeout: float | None = Field(default=None, gt=0, le=86400, allow_inf_nan=False)
+
+
+class TaskMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    task_id: str = Field(min_length=1, max_length=256)
+
+
+class MessageMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    thread_id: str = Field(min_length=1, max_length=256)
+    after_seq: int = Field(ge=0, strict=True)
+
+
+class TimerMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+    due_at: float
+
+
+def typed_match(
+    kind: str, ref: str | None, after_seq: int | None, due_at: float | None
+) -> dict[str, Any]:
+    if kind == "job" and after_seq is None and due_at is None:
+        return JobMatch(job_id=ref or "").model_dump(exclude_none=True)
+    if kind == "task" and after_seq is None and due_at is None:
+        return TaskMatch(task_id=ref or "").model_dump()
+    if kind == "message" and due_at is None:
+        if after_seq is None:
+            raise WaitError(
+                "wait.invalid", "message waits require after_seq (the last seen message sequence)"
+            )
+        return MessageMatch(thread_id=ref or "", after_seq=after_seq).model_dump()
+    if kind == "timer" and ref is None and after_seq is None:
+        return TimerMatch(due_at=due_at).model_dump()
+    raise WaitError("wait.invalid", "provide only the typed fields for this wait kind")
+
+
+def deadline_for(now: float, timeout: float | None, match: dict[str, Any]) -> float:
+    seconds = DEFAULT_TIMEOUT if timeout is None else timeout
+    if isinstance(seconds, bool) or not math.isfinite(seconds) or not 0 < seconds <= MAX_TIMEOUT:
+        raise WaitError("wait.invalid", "timeout must be positive and at most 86400 seconds")
+    deadline = now + seconds
+    if match.get("due_at", now) > deadline:
+        raise WaitError("wait.invalid", "timer due_at must not exceed its deadline")
+    return deadline
+
+
+def job_wait_deadline(job: dict, now: float) -> float:
+    """Remaining queue/run budget plus grace, bounded by the wait's hard cap."""
+    base = job["started_at"] if job["started_at"] is not None else job["queue_deadline"]
+    end = base + job["run_timeout"] + 300
+    return min(now + MAX_TIMEOUT, max(now + 300, end))
+
+
+@dataclass(frozen=True)
+class ProducerObservation:
+    available: bool = True
+    completed_at: float | None = None
+    result_ref: str | None = None
+    digest: dict[str, Any] = field(default_factory=dict)
+    # Typed reason an unavailable producer resolves with; its digest adds context.
+    reason: str = "source_unavailable"
+
+
+@dataclass(frozen=True)
+class WaitResolution:
+    state: Literal["satisfied", "expired", "cancelled"]
+    result_ref: str | None
+    digest: dict[str, Any]
+
+
+def resolve_wait(
+    observation: ProducerObservation, *, deadline: float, now: float
+) -> WaitResolution | None:
+    """Completion at the deadline wins even when the daemon observes it late."""
+    if observation.completed_at is not None and observation.completed_at <= min(deadline, now):
+        return WaitResolution("satisfied", observation.result_ref, observation.digest)
+    if now >= deadline:
+        return WaitResolution("expired", observation.result_ref, {"reason": "deadline_expired"})
+    if not observation.available:
+        return WaitResolution(
+            "satisfied",
+            observation.result_ref,
+            {"reason": observation.reason, **observation.digest},
+        )
+    return None
+
+
+class AgentWaitReconciler:
+    """Restart-safe bounded scan. All writes belong to the command boundary."""
+
+    def __init__(self, handler):
+        self.handler = handler
+
+    async def tick(
+        self, *, now: float | None = None, wait_id: str | None = None
+    ) -> dict[str, Any]:
+        from src.commands.principal import ExecutionPrincipal, principal_context
+
+        from src.wait_runtime.scheduler import scheduler_tick
+
+        await scheduler_tick(self.handler)
+        with principal_context(ExecutionPrincipal.service("agent-waits")):
+            return await self.handler.execute(
+                "reconcile_agent_waits", {"now": now, "wait_id": wait_id}
+            )

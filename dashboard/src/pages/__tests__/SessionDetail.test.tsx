@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import SessionDetail from "../SessionDetail";
 import { TerminalMock, FitAddonMock, TerminalSocketMock, ResizeObserverMock } from "../../testUtils/terminal";
@@ -14,12 +14,11 @@ vi.mock("../../api/hooks", () => ({
 vi.mock("../../ws/useTranscriptStream", () => ({ useTranscriptStream: () => ({
   entries: [{ _idx: 0, type: "assistant", text: "Saved transcript" }], status: "open", clear: vi.fn(),
 }) }));
-vi.mock("../../ws/usePaneStream", () => ({ usePaneStream: () => ({ screen: null, status: "connecting" }) }));
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../testUtils/terminal")).FitAddonMock }));
 
-function page() {
-  return <MemoryRouter initialEntries={["/sessions/session-a"]}><Routes>
+function page(initial: string | { pathname: string; state: unknown } = "/sessions/session-a") {
+  return <MemoryRouter initialEntries={[initial]}><Routes>
     <Route path="/sessions/:sessionId" element={<SessionDetail />} />
   </Routes></MemoryRouter>;
 }
@@ -33,6 +32,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("Session terminal", () => {
+  it("opens and focuses a selected live session only after its terminal is ready", async () => {
+    render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
+    expect(screen.getByRole("status", { name: "Worker terminal connection" })).toBeInTheDocument();
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    const term = TerminalMock.instances[0]!;
+    expect(term.focus).not.toHaveBeenCalled();
+    act(() => TerminalSocketMock.instances[0]!.ready());
+    expect(term.textarea).toHaveFocus();
+  });
+
+  it("explains why a selected stopped session has no interactive terminal", () => {
+    state.session.state = "stopped";
+    render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
+    expect(screen.getByText(/Terminal input unavailable: session state is stopped/)).toBeInTheDocument();
+    expect(TerminalMock.instances).toHaveLength(0);
+  });
   it.each(["stopped", "sleeping", "starting", "stopping", "failed"])("hides Pane for %s sessions", (sessionState) => {
     state.session.state = sessionState;
     render(page());
@@ -51,12 +66,13 @@ describe("Session terminal", () => {
     expect(TerminalSocketMock.instances).toHaveLength(0);
   });
 
-  it.each(["running", "draining"])("uses the flock terminal for a %s session, including raw colors and input", (sessionState) => {
+  it.each(["running", "draining"])("uses the flock terminal for a %s session, including raw colors and input", async (sessionState) => {
     state.session.state = sessionState;
     render(page());
     expect(TerminalSocketMock.instances).toHaveLength(0);
     fireEvent.click(screen.getByText("Pane"));
-    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Worker terminal connection" })).toBeInTheDocument();
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     const socket = TerminalSocketMock.instances[0]!;
     const terminal = TerminalMock.instances[0]!;
     expect(socket.url).toContain("/ws/terminal/session-a");
@@ -64,6 +80,8 @@ describe("Session terminal", () => {
     const colored = new TextEncoder().encode("\x1b[38;2;255;90;0mColor\x1b[0m");
     act(() => socket.message(colored));
     expect(terminal.write).toHaveBeenCalledWith(Uint8Array.from(colored), expect.any(Function));
+    fireEvent.click(screen.getByRole("button", { name: "Details for Worker" }));
+    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Send Enter to Worker" }));
     expect(socket.inputs().map((bytes) => new TextDecoder().decode(bytes))).toEqual(["\r"]);
     fireEvent.click(screen.getByText("Transcript", { exact: true }));
@@ -71,15 +89,35 @@ describe("Session terminal", () => {
     expect(screen.getByText("Saved transcript")).toBeInTheDocument();
   });
 
-  it("closes the terminal and returns to Transcript when the session stops", () => {
+  it("closes the terminal and returns to Transcript when the session stops", async () => {
     const view = render(page());
     fireEvent.click(screen.getByText("Pane"));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     const socket = TerminalSocketMock.instances[0]!;
-    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
+    act(() => socket.open());
+    expect(screen.getByRole("status", { name: "Worker terminal connection" })).toBeInTheDocument();
     state.session.state = "stopped";
     view.rerender(page());
     expect(screen.queryByText("Pane")).not.toBeInTheDocument();
     expect(socket.closed).toBe(true);
     expect(screen.getByText("Saved transcript")).toBeInTheDocument();
+  });
+});
+
+describe("The session terminal is one window at every width", () => {
+  const original = window.matchMedia;
+  afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
+
+  it.each(["(max-width: 767.98px)", "(min-width: 768px)"])("opens the host shell page's terminal at %s", async (query) => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true, writable: true,
+      value: (asked: string) => ({ matches: asked === query, media: asked,
+        addEventListener: () => {}, removeEventListener: () => {} }),
+    });
+    render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    // One attach, from the same component the host shell page draws.
+    expect(TerminalSocketMock.instances[0]!.url).toContain("/ws/terminal/session-a");
+    expect(screen.getByRole("textbox", { name: "Worker terminal input" })).toBeInTheDocument();
   });
 });

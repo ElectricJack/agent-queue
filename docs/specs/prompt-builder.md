@@ -29,7 +29,7 @@ Every prompt is assembled from up to 5 ordered layers:
 
 2. **Project Context** — What project is this for? Pulled from the memory system:
    - Project profile (from `profile.md`)
-   - Project documentation (CLAUDE.md, README.md)
+   - Project documentation (AGENTS.md, CLAUDE.md, README.md)
    - Falls back to empty string if memory unavailable
 
 3. **Relevant Rules** — Removed. Rules were replaced by [playbooks](design/playbooks.md) and vault memory; nothing is loaded at this step.

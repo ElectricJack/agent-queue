@@ -6,10 +6,13 @@ The largest internal plugin — 19 commands covering all git operations.
 
 from __future__ import annotations
 
+import functools
 import os
+from dataclasses import dataclass
+from pathlib import Path
 
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, current_principal
 from src.plugins.base import InternalPlugin, PluginContext
-
 
 # ---------------------------------------------------------------------------
 # Tool definitions — loaded lazily to avoid a huge module-level constant.
@@ -17,6 +20,12 @@ from src.plugins.base import InternalPlugin, PluginContext
 # ---------------------------------------------------------------------------
 
 TOOL_CATEGORY = "git"
+
+_EXPECTED_REMOTE_OID_DESCRIPTION = (
+    "Exact remote branch OID expected before the push (40 hex digits); the push "
+    "may then rewrite the branch, and is refused if the remote holds anything "
+    "else. All zeros means the branch must still be absent."
+)
 
 
 def _build_tool_definitions() -> list[dict]:
@@ -69,14 +78,25 @@ def _build_tool_definitions() -> list[dict]:
         },
         {
             "name": "git_push",
-            "description": "Push a branch to the remote origin.",
+            "description": "Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch": {
                         "type": "string",
-                        "description": "Branch to push (optional, defaults to current)",
+                        "description": (
+                            "Branch to push (optional; defaults to the held task's "
+                            "branch for a worker session, else the current branch)"
+                        ),
+                    },
+                    "expected_remote_oid": {
+                        "type": "string",
+                        "description": _EXPECTED_REMOTE_OID_DESCRIPTION,
+                    },
+                    "publication_delegation_id": {
+                        "type": "string",
+                        "description": "Single-use integration-owner grant for this target branch",
                     },
                     "workspace": {
                         "type": "string",
@@ -129,7 +149,13 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "title": {"type": "string", "description": "PR title"},
                     "body": {"type": "string", "description": "PR body/description"},
-                    "branch": {"type": "string", "description": "Source branch (default: current)"},
+                    "branch": {
+                        "type": "string",
+                        "description": (
+                            "Source branch (default: the held task's branch for a "
+                            "worker session, else the current branch)"
+                        ),
+                    },
                     "base": {
                         "type": "string",
                         "description": "Target branch (default: project default)",
@@ -300,7 +326,18 @@ def _build_tool_definitions() -> list[dict]:
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch_name": {
                         "type": "string",
-                        "description": "Branch to push (optional, defaults to current)",
+                        "description": (
+                            "Branch to push (optional; defaults to the held task's "
+                            "branch for a worker session, else the current branch)"
+                        ),
+                    },
+                    "expected_remote_oid": {
+                        "type": "string",
+                        "description": _EXPECTED_REMOTE_OID_DESCRIPTION,
+                    },
+                    "publication_delegation_id": {
+                        "type": "string",
+                        "description": "Single-use integration-owner grant for this target branch",
                     },
                     "workspace": {
                         "type": "string",
@@ -473,7 +510,7 @@ def _fmt_git_action(data: dict):
     text = Text()
     text.append("✅ ", style="bold")
     text.append(f"{status}", style="bold green")
-    for key in ("branch", "message", "pr_url", "output", "pull_output"):
+    for key in ("branch", "pushed", "oid", "message", "pr_url", "output", "pull_output"):
         val = data.get(key)
         if val:
             text.append(f"\n  {key}: ", style="dim")
@@ -517,6 +554,77 @@ CLI_FORMATTERS = _build_cli_formatters
 
 
 # ---------------------------------------------------------------------------
+# Worker publication
+# ---------------------------------------------------------------------------
+
+
+def _worker_principal() -> ExecutionPrincipal | None:
+    """The calling worker session, or ``None`` for operators and supervisors."""
+    principal = current_principal()
+    if (
+        principal is not None
+        and principal.kind == PrincipalKind.SESSION
+        and not principal.elevated
+    ):
+        return principal
+    return None
+
+
+def _author_notes(notes: list[dict]) -> dict:
+    """The push reply's report of published commits under another identity, if any."""
+    if not notes:
+        return {}
+    if any("committer" in note for note in notes):
+        detail = (
+            "committers could not be held to it for this publication (a root delivery, "
+            "or a session from an earlier release)"
+        )
+    else:
+        detail = (
+            "they keep upstream/third-party authorship or an --author the worker "
+            "supplied; committers were verified"
+        )
+    return {
+        "identity_notes": notes,
+        "identity_warning": (
+            f"{len(notes)} published commit(s) carry an identity other than this "
+            f"project's Git identity: {detail}."
+        ),
+    }
+
+
+def _is_github_repository(repository_url: str) -> bool:
+    """Whether a recorded repository is one the GitHub client can address."""
+    from src.projects.github import GitHubError, parse_github_repository
+
+    if repository_url.startswith(("/", "./", "../", "file://")) or Path(repository_url).exists():
+        return False
+    try:
+        parse_github_repository(repository_url)
+    except GitHubError:
+        return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerPublication:
+    """What a worker session may publish, derived from persisted state only.
+
+    The held task's branch, to the task's authorized repository, gated by
+    the project's default branch.  Nothing here comes from the worker's
+    checkout configuration or from a client argument that was not checked
+    against the held task.
+    """
+
+    branch: str
+    repository_url: str
+    default_branch: str
+    task_id: str = ""
+    batch_repair: dict | None = None
+    claim_epoch: int = 0
+
+
+# ---------------------------------------------------------------------------
 # Plugin
 # ---------------------------------------------------------------------------
 
@@ -554,8 +662,17 @@ class GitPlugin(InternalPlugin):
             ("generate_readme", self.cmd_generate_readme),
             ("git_remote_url", self.cmd_git_remote_url),
         ]
+        # Commands that can write a commit run inside the project's resolved
+        # identity, so a worker's ``aq git commit`` and an operator's merge
+        # attribute exactly as the worker's own ``git commit`` does.
+        committing = {
+            "git_commit", "git_pull", "git_merge", "commit_changes", "merge_branch",
+            "generate_readme",
+        }
         for name, handler in cmds:
-            ctx.register_command(name, handler)
+            ctx.register_command(
+                name, self._identity_scoped(handler) if name in committing else handler
+            )
 
         for tool_def in _build_tool_definitions():
             ctx.register_tool(dict(tool_def), category="git")
@@ -565,9 +682,305 @@ class GitPlugin(InternalPlugin):
 
     # --- Helpers ---
 
+    def _identity_scoped(self, handler):
+        """Run *handler* with the commit identity its project resolves to."""
+        from src.git.identity import resolve_git_identity
+        from src.git.manager import commit_identity
+
+        @functools.wraps(handler)
+        async def scoped(args: dict) -> dict:
+            principal = _worker_principal()
+            project_id = (
+                principal.project_id if principal is not None
+                else args.get("project_id") or self._ctx.active_project_id
+            )
+            project = await self._db._db.get_project(project_id) if project_id else None
+            config = self._ctx.get_service("config")
+            with commit_identity(resolve_git_identity(config, project).identity):
+                return await handler(args)
+
+        return scoped
+
     async def _resolve(self, args: dict):
         """Resolve repo path with active project fallback."""
+        principal = _worker_principal()
+        if principal is not None:
+            # The authenticated session owns the checkout.  Do not let a
+            # missing command argument select the project's base workspace,
+            # nor an explicit one select another checkout.
+            if not principal.session_id or not principal.project_id:
+                return None, None, {"error": "No active session worktree for this project"}
+            if args.get("session_id") not in (None, principal.session_id):
+                return None, None, {"error": "session_id does not match the active session"}
+            if args.get("project_id") not in (None, principal.project_id):
+                return None, None, {"error": "project_id does not match the active session"}
+            if args.get("workspace") is not None:
+                return None, None, {"error": "workspace is not this session's worktree"}
+            args["session_id"] = principal.session_id
+            args["project_id"] = principal.project_id
         return await self._ws.resolve_repo_path(args, self._ctx.active_project_id)
+
+    async def _worker_publication(
+        self,
+        principal: ExecutionPrincipal,
+        checkout_path: str,
+        project,
+        requested_branch: str | None,
+        *,
+        allow_batch_repair: bool = False,
+    ) -> _WorkerPublication:
+        """Authorize a worker's push or PR before any credential is selected.
+
+        The HTTP scope check already confines a worker token to its task
+        branch; this repeats the decision at the command so an in-process
+        caller carrying a session principal is held to the same rule.
+        """
+        from src.api.auth import RequestScope
+        from src.api.scope import held_task_for_session
+        from src.git.manager import GitError
+
+        task = await held_task_for_session(
+            self._db._db,
+            RequestScope(
+                kind="session",
+                session_id=principal.session_id,
+                task_id=principal.task_id,
+                project_id=principal.project_id,
+            ),
+        )
+        if task is None:
+            raise GitError("No active task branch for this session")
+        own_branches = {f"aq/{task.id}"}
+        if task.branch_name:
+            own_branches.add(task.branch_name)
+        assignment = None
+        if allow_batch_repair:
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            assignment = await BatchRepairAssignments(self._db._db).get(task)
+            if assignment and self._ctx.get_service("config").integration_git_first != "active":
+                raise GitError("batch repair publication requires Git-first active mode")
+        branch = (requested_branch or (assignment["branch"] if assignment else task.branch_name)
+                  or f"aq/{task.id}")
+        if branch not in own_branches and (assignment is None or branch != assignment["branch"]):
+            raise GitError(f"branch '{branch}' is not this session's task branch")
+        return _WorkerPublication(
+            branch=branch,
+            repository_url=await self._task_repository_url(task, project, checkout_path),
+            default_branch=(project.repo_default_branch if project else None) or "main",
+            task_id=task.id,
+            batch_repair=assignment if assignment and branch == assignment["branch"] else None,
+            claim_epoch=task.claim_epoch,
+        )
+
+    async def _task_repository_url(self, task, project, checkout_path: str) -> str:
+        """The task's authorized repository, as the daemon's own delivery resolves it.
+
+        Mirrors ``src/orchestrator/git_ops.py``: the task's repository row
+        (which must belong to the task's project), else the project's
+        repository.  A task with neither may publish only to a local origin
+        path — never to a network remote named by the checkout alone.
+        """
+        from src.git.manager import GitError
+
+        if task.repo_id:
+            repo = await self._db._db.get_repo(task.repo_id)
+            if repo is None or repo.project_id != task.project_id:
+                raise GitError("task repository is not authorized for this project")
+            repository_url = repo.url
+        else:
+            repository_url = project.repo_url if project else ""
+        if not repository_url:
+            local_origin = await self._git.aget_remote_url(checkout_path)
+            if local_origin and Path(local_origin).exists():
+                repository_url = local_origin
+        if not repository_url:
+            raise GitError("task has no authorized repository")
+        return repository_url
+
+    async def _push(
+        self,
+        checkout_path: str,
+        project,
+        args: dict,
+        requested_branch: str | None,
+    ) -> tuple[str, str | None, list[dict]]:
+        """Resolve authorization inside the fence shared with repository binding."""
+        from src.git.manager import GitError
+
+        if project is None:
+            return await self._push_authorized(checkout_path, project, args, requested_branch)
+        async with self._db._db.project_repository_publication(project.id):
+            current = await self._db._db.get_project(project.id)
+            if current is None:
+                raise GitError("publication project no longer exists")
+            return await self._push_authorized(checkout_path, current, args, requested_branch)
+
+    async def _push_authorized(
+        self,
+        checkout_path: str,
+        project,
+        args: dict,
+        requested_branch: str | None,
+    ) -> tuple[str, str | None, list[dict]]:
+        """Publish one branch and return ``(branch, pushed OID, author notes)``.
+
+        An operator or supervisor pushes the named (or current) branch of the
+        selected workspace.  A worker session publishes only its held task's
+        branch, through the validated delivery gate, to its task's authorized
+        repository; ``expected_remote_oid`` is the explicit lease for its
+        squash/rewrite workflow in both cases.
+        """
+        from src.git.manager import GitError
+
+        git = self._git
+        expected_remote_oid = args.get("expected_remote_oid")
+        principal = _worker_principal()
+        delegation_id = args.get("publication_delegation_id")
+        if delegation_id is not None:
+            if principal is None:
+                raise GitError("publication delegation requires its bound worker session")
+            return await self._push_delegated(
+                principal, checkout_path, project, args, requested_branch,
+            )
+        if principal is None:
+            branch = requested_branch or await git.aget_current_branch(checkout_path)
+            if not branch:
+                raise GitError("Could not determine current branch")
+            oid = await git.apush_branch(
+                checkout_path,
+                branch,
+                expected_remote_oid=expected_remote_oid,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id") or (project.id if project else None),
+            )
+            return branch, oid, []
+
+        publication = await self._worker_publication(
+            principal, checkout_path, project, requested_branch, allow_batch_repair=True,
+        )
+        if publication.batch_repair is not None:
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            policy = await self._publish_policy(
+                principal, project, publication.task_id, checkout_path=checkout_path,
+                repository_url=publication.batch_repair["repository_url"],
+            )
+            oid = await BatchRepairAssignments(self._db._db).publish(
+                publication.task_id, publication.batch_repair, git=git,
+                checkout=checkout_path, policy=policy, expected_oid=expected_remote_oid,
+                event_bus=self._ctx._bus, principal=principal, claim_epoch=publication.claim_epoch,
+            )
+            return publication.branch, oid, list(policy.notes)
+        # The same reserved-path gate the daemon applies to task delivery,
+        # measured from the default branch this checkout last fetched.
+        base_ref: str | None = f"refs/remotes/origin/{publication.default_branch}"
+        base_exists = await git.aref_exists(checkout_path, base_ref)
+        if base_exists is None:
+            raise GitError("could not inspect the delivery base")
+        if not base_exists:
+            base_ref = None
+        policy = await self._publish_policy(
+            principal, project, publication.task_id,
+            checkout_path=checkout_path, repository_url=publication.repository_url,
+        )
+        from src.integration.repair import OrdinaryRepairService
+
+        inherited = await self._source_ci_inherited_oids(publication.task_id)
+        async with OrdinaryRepairService(self._db._db).publication(
+            publication.task_id, branch=publication.branch,
+        ):
+            oid = await git.apush_validated_delivery(
+                checkout_path,
+                base_ref,
+                publication.branch,
+                publication.branch,
+                expected_remote_oid=expected_remote_oid,
+                repository_url=publication.repository_url,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+                identity_policy=policy,
+                inherited_oids=inherited,
+            )
+        if oid is not None:
+            from src.integration.hierarchy import record_worker_publication
+
+            await record_worker_publication(
+                self._db._db, publication.task_id, publication.branch, oid,
+            )
+        return publication.branch, oid, list(policy.notes)
+
+    async def _push_delegated(self, principal, checkout_path, project, args, branch):
+        from src.git.manager import GitError
+        from src.integration.publication_delegations import (
+            DELEGATION_ERRORS, PublicationDelegations,
+        )
+
+        service = PublicationDelegations(
+            self._db._db,
+            active=lambda: self._ctx.get_service("config").integration_git_first == "active",
+        )
+        try:
+            # Repeat dispatch authorization for native/in-process plugin callers.
+            grant = await service.validate(
+                args["publication_delegation_id"], principal, branch, args.get("expected_remote_oid"),
+            )
+            publication = await self._worker_publication(principal, checkout_path, project, None)
+            policy = await self._publish_policy(
+                principal, project, publication.task_id, checkout_path=checkout_path,
+                repository_url=grant["repository_url"],
+            )
+            from src.integration.repair import OrdinaryRepairService
+
+            inherited = await self._source_ci_inherited_oids(publication.task_id)
+            async with OrdinaryRepairService(self._db._db).publication(
+                publication.task_id, branch=branch,
+            ):
+                oid = await service.publish(
+                    args["publication_delegation_id"], principal, branch,
+                    expected_oid=args.get("expected_remote_oid"), git=self._git,
+                    checkout_path=checkout_path, policy=policy,
+                    inherited_oids=inherited,
+                    event_bus=self._ctx._bus,
+                )
+        except DELEGATION_ERRORS as exc:
+            raise GitError(str(exc)) from exc
+        return branch, oid, list(policy.notes)
+
+    async def _source_ci_inherited_oids(self, task_id: str) -> list[str]:
+        """Source-CI source heads an authorized repair task may merge above.
+
+        The repair contract for a red source-CI observation is to merge the
+        exact source head above it, preserving it as an ancestor
+        (``src.integration.source_ci.repair_description``).  The source head
+        is committed as the source task's worker identity — which may be a
+        different profile's identity, even pre-dating the identity feature
+        itself — and the identity gate must not judge it as a new commit.
+        Query ``integration_source_ci`` for the rows this repair task owns
+        and return their ``source_head`` OIDs.  Empty when the task holds no
+        such repair; the gate then degrades to the pre-feature behaviour.
+        """
+        if not task_id:
+            return []
+        return await self._db._db.list_source_ci_inherited_oids(task_id)
+
+    async def _publish_policy(
+        self, principal, project, task_id: str, *, checkout_path: str, repository_url: str
+    ):
+        """The identity a worker's publication of *task_id* is held to.
+
+        The project's resolved identity, plus the launch identity of every
+        session that worked the task, the pushing one included; the exact
+        source heads a daemon-filed repair told it to merge are not judged
+        (:meth:`GitManager.acheck_publish_identity`, git identity spec §5).
+        """
+        from src.git.identity import task_publish_policy
+
+        return await task_publish_policy(
+            self._ctx.get_service("config"), project, self._db._db, self._git, task_id,
+            checkout_path=checkout_path, repository_url=repository_url,
+            extra_session_id=principal.session_id,
+        )
 
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         from src.models import TaskStatus
@@ -608,9 +1021,11 @@ class GitPlugin(InternalPlugin):
         return 0
 
     @staticmethod
-    async def _git_diff_stat(git, ws_path: str, branch: str) -> str:
+    async def _git_diff_stat(
+        git, ws_path: str, branch: str, project_branch: str | None = None
+    ) -> str:
         try:
-            default_branch = await git.aget_default_branch(ws_path)
+            default_branch = project_branch or await git.aget_default_branch(ws_path)
             if branch == default_branch:
                 return ""
             merge_base = await git._arun(
@@ -664,7 +1079,10 @@ class GitPlugin(InternalPlugin):
 
                 ahead_behind = await self._git_ahead_behind(git, ws_path, branch)
                 stash_count = await self._git_stash_count(git, ws_path)
-                diff_stat = await self._git_diff_stat(git, ws_path, branch)
+                diff_stat = await self._git_diff_stat(
+                    git, ws_path, branch,
+                    project_branch=project.repo_default_branch or None,
+                )
 
                 current_task_title = None
                 if ws.locked_by_task_id:
@@ -740,6 +1158,7 @@ class GitPlugin(InternalPlugin):
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
+        message = await self._task_commit_message(message, args)
         project_id = args.get("project_id", "")
         agent_id = args.get("agent_id")
         try:
@@ -768,7 +1187,21 @@ class GitPlugin(InternalPlugin):
             return err
         branch = args.get("branch") or None
         try:
-            pulled = await self._git.apull_branch(checkout_path, branch)
+            repository_url = project.repo_url if project else None
+            principal = _worker_principal()
+            if principal is not None:
+                # The source may be main or a dependency; the destination must
+                # remain the live task's branch in its assigned worktree.
+                current_branch = await self._git.aget_current_branch(checkout_path)
+                if not current_branch:
+                    raise GitError("Worker pull requires an attached task branch")
+                publication = await self._worker_publication(
+                    principal, checkout_path, project, current_branch
+                )
+                repository_url = publication.repository_url
+            pulled = await self._git.apull_branch(
+                checkout_path, branch, repository_url=repository_url
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": args.get("project_id", ""), "pulled": pulled}
@@ -779,20 +1212,16 @@ class GitPlugin(InternalPlugin):
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
-        git = self._git
-        branch = args.get("branch") or await git.aget_current_branch(checkout_path)
-        if not branch:
-            return {"error": "Could not determine current branch"}
         try:
-            await git.apush_branch(
-                checkout_path,
-                branch,
-                event_bus=self._ctx._bus,
-                project_id=args.get("project_id"),
+            branch, oid, notes = await self._push(
+                checkout_path, project, args, args.get("branch")
             )
         except GitError as e:
             return {"error": str(e)}
-        return {"project_id": args.get("project_id", ""), "pushed": branch}
+        return {
+            "project_id": args.get("project_id", ""), "pushed": branch, "oid": oid,
+            **_author_notes(notes),
+        }
 
     async def cmd_git_create_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
@@ -821,7 +1250,10 @@ class GitPlugin(InternalPlugin):
             or "main"
         )
         try:
-            success = await self._git.amerge_branch(checkout_path, branch_name, default_branch)
+            success = await self._git.amerge_branch(
+                checkout_path, branch_name, default_branch,
+                repository_url=project.repo_url if project else None,
+            )
         except GitError as e:
             return {"error": str(e)}
         if not success:
@@ -847,11 +1279,40 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         git = self._git
-        branch = args.get("branch") or await git.aget_current_branch(checkout_path)
-        if not branch:
-            return {"error": "Could not determine current branch"}
-        base = args.get("base") or (project.repo_default_branch if project else "main") or "main"
+        principal = _worker_principal()
         try:
+            if principal is None:
+                branch = args.get("branch") or await git.aget_current_branch(checkout_path)
+                if not branch:
+                    return {"error": "Could not determine current branch"}
+                base = (
+                    args.get("base")
+                    or (project.repo_default_branch if project else "main")
+                    or "main"
+                )
+                if project is None or not project.repo_url:
+                    return {"error": "Project has no authorized GitHub repository"}
+                repository_url = project.repo_url
+            else:
+                # Everything a worker may name is checked against the held
+                # task before the repository is bound, since binding already
+                # selects the GitHub credential.
+                publication = await self._worker_publication(
+                    principal, checkout_path, project, args.get("branch")
+                )
+                branch = publication.branch
+                base = args.get("base") or publication.default_branch
+                if base != publication.default_branch:
+                    return {"error": f"base '{base}' is not the project's default branch"}
+                repository_url = publication.repository_url
+                if not _is_github_repository(repository_url):
+                    return {"error": "Project has no authorized GitHub repository"}
+                from src.commands.github_issue_commands import with_fix_closing_line
+
+                held_task = await self._db._db.get_task(principal.task_id)
+                key = held_task.dedup_key if held_task else None
+                body = with_fix_closing_line(body, key)
+            repository = await git.bind_github_repository(repository_url)
             pr_url = await git.acreate_pr(
                 checkout_path,
                 branch,
@@ -860,6 +1321,7 @@ class GitPlugin(InternalPlugin):
                 base,
                 event_bus=self._ctx._bus,
                 project_id=args.get("project_id", ""),
+                repository=repository,
             )
         except GitError as e:
             return {"error": str(e)}
@@ -1012,6 +1474,7 @@ class GitPlugin(InternalPlugin):
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
+        message = await self._task_commit_message(message, args)
         try:
             committed = await self._git.acommit_all(
                 checkout_path,
@@ -1038,28 +1501,36 @@ class GitPlugin(InternalPlugin):
             result["warning"] = warning
         return result
 
+    async def _task_commit_message(self, message: str, args: dict) -> str:
+        from src.integration.provenance import task_message
+
+        principal = _worker_principal()
+        session_id = principal.session_id if principal else args.get("session_id")
+        if session_id:
+            session = await self._db._db.get_session(session_id)
+            if session and session.task_id:
+                return task_message(message, session.task_id)
+        return message
+
     async def cmd_push_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
 
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
-        git = self._git
-        branch_name = args.get("branch_name")
-        if not branch_name:
-            branch_name = await git.aget_current_branch(checkout_path)
-            if not branch_name:
-                return {"error": "Could not determine current branch"}
         try:
-            await git.apush_branch(
-                checkout_path,
-                branch_name,
-                event_bus=self._ctx._bus,
-                project_id=args.get("project_id"),
+            branch_name, oid, notes = await self._push(
+                checkout_path, project, args, args.get("branch_name")
             )
         except GitError as e:
             return {"error": str(e)}
-        return {"project_id": args["project_id"], "branch": branch_name, "status": "pushed"}
+        return {
+            "project_id": args["project_id"],
+            "branch": branch_name,
+            "status": "pushed",
+            "oid": oid,
+            **_author_notes(notes),
+        }
 
     async def cmd_merge_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
@@ -1072,7 +1543,10 @@ class GitPlugin(InternalPlugin):
             return err
         default_branch = project.repo_default_branch if project else "main"
         try:
-            success = await self._git.amerge_branch(checkout_path, branch_name, default_branch)
+            success = await self._git.amerge_branch(
+                checkout_path, branch_name, default_branch,
+                repository_url=project.repo_url if project else None,
+            )
         except GitError as e:
             return {"error": str(e)}
         warning = await self._warn_if_in_progress(args["project_id"])
@@ -1098,6 +1572,7 @@ class GitPlugin(InternalPlugin):
         return result
 
     async def cmd_create_github_repo(self, args: dict) -> dict:
+        from src.git.github_contracts import GitHubAccessError
         from src.git.manager import GitError
 
         name = args.get("name")
@@ -1106,15 +1581,12 @@ class GitPlugin(InternalPlugin):
         private = args.get("private", True)
         org = args.get("org")
         description = args.get("description", "")
-        git = self._git
-        if not await git.acheck_gh_auth():
-            return {
-                "error": "GitHub CLI is not authenticated. Run `gh auth login` on the host to configure credentials."
-            }
         try:
-            url = await git.acreate_github_repo(
+            url = await self._git.acreate_github_repo(
                 name, private=private, org=org, description=description
             )
+        except GitHubAccessError as e:
+            return {"error": str(e), "error_code": e.category}
         except GitError as e:
             return {"error": str(e)}
         return {"created": True, "repo_url": url, "name": name}
@@ -1161,9 +1633,10 @@ class GitPlugin(InternalPlugin):
 
         git = self._git
         try:
+            message = await self._task_commit_message("Add generated README.md", args)
             committed = await git.acommit_all(
                 checkout_path,
-                "Add generated README.md",
+                message,
                 event_bus=self._ctx._bus,
                 project_id=args.get("project_id") or None,
                 agent_id=args.get("agent_id"),

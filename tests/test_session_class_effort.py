@@ -19,7 +19,7 @@ def claude():
 
 
 def build(harness, *, level="medium", lifecycle="task", task_class=None,
-          agent_class=None, fixed_model=None, mapping=None):
+          agent_class=None, fixed_model=None, mapping=None, profile_tier=None):
     classes = {
         value: IntelligenceClass(value, value, "", mapping or {
             "anthropic": {"model": "claude-opus-5", "thinking": value},
@@ -30,7 +30,8 @@ def build(harness, *, level="medium", lifecycle="task", task_class=None,
     profile = SimpleNamespace(id="supervisor" if lifecycle == "named" else "worker",
                               default_class=level, model="fallback-model",
                               _agent_intelligence_class=agent_class,
-                              _agent_model_override=fixed_model)
+                              _agent_model_override=fixed_model,
+                              codex_service_tier=profile_tier)
     builder = SessionSpecBuilder(SimpleNamespace(security=None), intelligence_classes=classes)
     kwargs = dict(profile=profile, harness=harness, work_dir="/wd", session_id="s1",
                   instance_token="i1", prompt="start")
@@ -145,12 +146,37 @@ def test_invalid_codex_reasoning_is_not_sent_to_the_cli(effort, caplog):
     assert "Unsupported Codex reasoning effort" in caplog.text
 
 
+@pytest.mark.parametrize("lifecycle", ["task", "pool", "named"])
+@pytest.mark.parametrize(("class_tier", "profile_tier", "expected"), [
+    (None, None, None),
+    ("fast", None, "fast"),
+    ("fast", "default", "default"),
+    ("default", "fast", "fast"),
+])
+def test_codex_service_tier_launch_precedence(lifecycle, class_tier, profile_tier, expected):
+    harness = Harness(id="codex", command="codex", model_flag="-m")
+    codex = {"model": "gpt-5"}
+    if class_tier is not None:
+        codex["service_tier"] = class_tier
+    spec = build(harness, lifecycle=lifecycle, mapping={"codex": codex},
+                 profile_tier=profile_tier)
+    tier_args = [arg for arg in spec.command if arg.startswith("service_tier=")]
+    assert tier_args == ([] if expected is None else [f'service_tier="{expected}"'])
+
+
+def test_codex_tier_is_not_sent_to_another_openai_harness():
+    harness = Harness(id="custom-openai", command="custom-cli", model_flag="-m")
+    spec = build(harness, mapping={"openai": {"model": "gpt-5", "service_tier": "fast"}},
+                 profile_tier="fast")
+    assert not any(arg.startswith("service_tier=") for arg in spec.command)
+
+
 @pytest.mark.parametrize(("harness_id", "command"), [
     ("custom-openai", "custom-cli"), ("codex", "custom-cli"),
 ])
 def test_openai_mapping_does_not_invent_flags_for_other_commands(harness_id, command):
     harness = Harness(id=harness_id, command=command, model_flag="-m")
-    harness = SimpleNamespace(**vars(harness), env_map=harness.env_map, provider="openai")
+    harness = SimpleNamespace(**{**vars(harness), "provider": "openai"}, env_map=harness.env_map)
     spec = build(harness, level="high")
     assert spec.command[spec.command.index("-m") + 1] == "gpt-5"
     assert "-c" not in spec.command
