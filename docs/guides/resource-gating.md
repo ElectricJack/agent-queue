@@ -140,10 +140,22 @@ so it is now enforced:
   slot** while it waits. With `--aq-no-wait` it is refused at once with exit
   75, naming the holder's task, cwd and how long it has been running.
 - **Focused runs never touch the lock**: they only compete for the
-  `test_slots` slots, so at most one of those is ever spent on the whole
-  suite.
+  `test_slots` slots. A foreground full suite uses one of those slots;
+  managed full suites use the bounded weight described below.
 - `aq test --aq-status` shows the lock's holder and waiters under the slot
   table, and marks the slot a full-suite run holds as `busy (full suite)`.
+
+Managed full suites (`aq test --aq-detach`) use that same full-suite lock,
+then bounded shared admission. With six test slots they hold four, leaving
+two for focused work across projects. Configure the reserve with the positive
+integer `resources.jobs.full_suite_reserved_slots` (default `2`); the full-suite
+weight is `max(1, test_slots - full_suite_reserved_slots)`. With two slots a
+full suite takes one; a one-slot box necessarily serializes all testing.
+Further managed full suites queue without blocking focused jobs behind them.
+`aq test --aq-status` names the task, project, job id and held slot numbers for
+each managed holder. Accepted jobs retain their original admission contract;
+an already running exclusive full suite must finish before the new policy helps.
+E2E and database cleanup still require exclusive box access.
 
 What counts as the full suite is decided from the command line, before any
 lock is taken (collecting 14,000 tests to find out would itself be the heavy
@@ -162,6 +174,40 @@ when it keeps a test that matches none of its words. The lock is
 like the slots, so a crashed holder releases it without a reaper. It stays
 held while an orphaned pytest is still running, because pytest inherits the
 descriptor.
+
+### Other projects' tests
+
+The slots are box policy, so every project's workers use `aq test`. The
+interpreter and the preconditions belong to the project whose tests are
+named — the common directory of the path arguments, else the cwd
+(`src/resources/project_tests.py`):
+
+| Project | Interpreter | `POSTGRES_TEST_DSN` |
+|---|---|---|
+| pinned in `resources.test_interpreters[<project id>]` | the pinned path; one that does not exist refuses the run (exit 4) | agent-queue only |
+| agent-queue itself (the nearest `pyproject.toml` names the `agent-queue` distribution) | `aq`'s own | required |
+| any other | `.venv/bin/python` in the project root, the repository root or — from a worker slot, a linked worktree — the main checkout; else `aq`'s own, with a warning | not required |
+
+```yaml
+resources:
+  test_interpreters:
+    quilt-trader: ~/dev/quilt-trader/.venv/bin/python
+```
+
+The project id is `--aq-project`, else the session's `AQ_PROJECT_ID`. A
+foreign venv is activated for the pytest child (`VIRTUAL_ENV`, its `bin`
+first on `PATH`), and when that interpreter has no pytest-xdist the run is
+serial — still under its slot — instead of an `-n` pytest would reject.
+`aq test` names the interpreter it chose on stderr, so `--aq-dry-run`'s
+stdout stays a command line you can paste. Detached jobs and development
+validation use the same project interpreter selected in their pinned workspace.
+
+For managed tests, request serial execution with
+`aq test --aq-detach --aq-wait tests/test_example.py -n 0`, or
+`aq job submit --preset test --wait -- tests/test_example.py -n 0`.
+The equivalent `-n0`, `--numprocesses 0` and `--numprocesses=0` spellings are
+also accepted. Serial runs still take their normal test slots. Managed jobs
+reject nonzero worker-count overrides; omit the option to use the configured cap.
 
 ### Test scope and the recorded baseline
 
@@ -196,8 +242,9 @@ weaken or skip the test because main is red. If your task changes the failing
 area, investigate its result rather than assuming the old classification still
 applies. Never run another full suite just to capture your own baseline.
 
-PostgreSQL is required for the suite. Configure a disposable server before
-running tests (the base database is used only as a maintenance connection):
+PostgreSQL is required for agent-queue's own suite. Configure a disposable
+server before running tests (the base database is used only as a maintenance
+connection):
 
 ```bash
 docker compose up -d postgres-test
@@ -206,7 +253,8 @@ aq test tests/test_config.py
 ```
 
 If `POSTGRES_TEST_DSN` is absent, `aq test` exits before taking a global test
-slot or launching pytest, with the setup commands above. Bare pytest has the
+slot or launching pytest, with the setup commands above. That preflight is
+agent-queue's alone: another project's tests are never refused for it. Bare pytest has the
 same session-level preflight, so a missing DSN is one configuration error, not
 one fixture error per collected test. This is an environment failure: no test
 assertions ran.
@@ -367,10 +415,10 @@ After admission it releases the turnstile and keeps the box and capacity
 descriptors inheritable until execution ends. Closing a wrapper's descriptors
 does not unlock a surviving child that inherited them.
 
-This first rollout preserves today's test policy: both focused and full-suite
-`aq test` runs use shared admission with weight one, and the separate full-suite
-lock still limits full suites to one alongside focused tests. It introduces
-neither managed jobs nor detached execution. The test database cleanup entry
+Foreground focused and full-suite `aq test` runs use shared admission with weight
+one. Managed full suites use the configured bounded weight; the separate
+full-suite lock limits foreground and managed full suites to one alongside
+focused tests. The test database cleanup entry
 point uses exclusive admission and reserves all observed slots, including
 those left by a larger capacity override.
 
@@ -505,6 +553,18 @@ session, nice +10, 2 global test slot(s)
 ```
 
 ## Diagnosing a saturated box
+
+For a responsive daemon with slow probes, `aq doctor --check perf.health_latency`
+reports `/health` p95 over three minutes of completed requests (at least ten
+probes; warns above two seconds). `perf.sustained_loop_lag` covers scheduling
+delays that occur before HTTP dispatch. With `metrics.perf_enabled` on, an
+independent watchdog logs the loop thread's sampled stack after a heartbeat
+is more than one second late, then at most once per 30 seconds until recovery.
+Look for `Event loop heartbeat` and `Event loop recovered` in daemon logs; no
+ptrace permissions are needed. These sampled locations can indicate synchronous
+Python, blocking I/O or host starvation. See the
+[responsiveness contract](../specs/design/event-loop-responsiveness.md) and the
+[repeatable transcript profile](../analysis/2026-10-03-transcript-loop-profile.md).
 
 ```bash
 aq doctor --check resources.load
