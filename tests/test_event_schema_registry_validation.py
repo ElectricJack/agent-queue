@@ -82,6 +82,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "project_id": "proj-1",
         "input_id": "cinput-1",
     },
+    "conversation.post_queued.v1": {
+        "conversation_id": "conv-1",
+        "reply_message_id": "msg-conv-say-1",
+        "delivery_id": "delivery-1",
+        "delivery_dedup_key": "conv-say:msg-conv-say-1",
+        "created": True,
+    },
     "conversation.reply_queued.v1": {
         "conversation_id": "conv-1",
         "input_id": "cinput-1",

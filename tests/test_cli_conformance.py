@@ -51,7 +51,10 @@ def _required_argv(command: click.Command) -> tuple[list[str], set[str]]:
     """
     supplied: set[str] = set()
     argv: list[str] = []
-    if getattr(command, "_aq_backend_command", None) == "supervisor_inbox_reply":
+    if getattr(command, "_aq_backend_command", None) in {
+        "supervisor_inbox_reply",
+        "supervisor_inbox_say",
+    }:
         # --text and --file are both click-optional, but the callback requires
         # exactly one; satisfy the alternative through the file input.
         with tempfile.NamedTemporaryFile(

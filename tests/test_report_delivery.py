@@ -291,6 +291,17 @@ async def test_lost_window_event_and_duplicate_ticks_queue_one_author_message(db
         )
     assert len(queued) == 1
     assert queued[0]["to_id"] == "supervisor-global"
+    # The live wake carries the writing policy even when the installed profile
+    # predates it (profiles are seeded write-if-absent).
+    prompt = queued[0]["body"]
+    for instruction in (
+        "INPUT ONLY", "first-person developer-style", "Since the last update:",
+        "Highlights:", "Blocked/needs you:", "Next:", "deduplicate noise",
+        "without internal IDs", "ask the exact question",
+        "aq report submit", "--brief-hash HASH", "--expected-version VERSION",
+        "--evidence-ref REF", "600 characters", "one-line no-report notice",
+    ):
+        assert instruction in prompt
     with principal_context(ExecutionPrincipal.service("reports")):
         assert (await commands._cmd_report_reconcile({}))["requested"] == 0
 
@@ -331,6 +342,11 @@ def test_optional_bundle_uses_only_durable_requests_and_no_model_steps():
     assert {r.trigger.event_type for r in definition.rules} == {"digest.window_ready", "timer.1m"}
     assert {step.type for step in definition.steps.values()} == {"command", "terminal"}
     assert definition.id not in REQUIRED_SYSTEM_PLAYBOOK_IDS + DEFAULT_SYSTEM_PLAYBOOK_IDS
+    prompt = source.read_text(encoding="utf-8")
+    assert "The brief is INPUT ONLY" in prompt
+    assert "first-person developer-style" in prompt
+    assert "deduplicate noise" in prompt
+    assert "one-line no-report notice" in prompt
 
 
 async def test_migration_creates_missing_outbox_and_preserves_existing_receipts(db):

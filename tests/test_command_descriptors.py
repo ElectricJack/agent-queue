@@ -705,6 +705,10 @@ def test_legacy_playbook_fixtures_are_unchanged():
         (ROOT / "tests/fixtures/contracts/discord-report-contract-changes.json").read_text()
     )["playbook_fixtures"]
     assert set(hourly) == {"tests/fixtures/playbooks/v2/supervisor-hourly-report/artifact.json"}
+    narrative = json.loads(
+        (ROOT / "tests/fixtures/contracts/hourly-narrative-policy-changes.json").read_text()
+    )["playbook_fixtures"]
+    assert narrative.keys() == hourly.keys()
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -768,6 +772,13 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hourly[path]["previous_sha256"] == digest
             assert hourly[path]["sha256"] != digest
             digest = hourly[path]["sha256"]
+        if path in narrative:
+            change = narrative[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
         if path in continuous:
             change = continuous[path]
             assert change["previous_sha256"] == digest
@@ -808,6 +819,22 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert change["sha256"] != digest
             digest = change["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+def test_hourly_narrative_policy_preserves_executable_graph_and_contract():
+    evidence = json.loads(
+        (ROOT / "tests/fixtures/contracts/hourly-narrative-policy-changes.json").read_text()
+    )
+    path = "tests/fixtures/playbooks/v2/supervisor-hourly-report/artifact.json"
+    change = evidence["playbook_fixtures"][path]
+    old = json.loads((ROOT / change["preserved_previous_path"]).read_bytes())
+    new = json.loads((ROOT / path).read_bytes())
+    for artifact in (old, new):
+        for metadata in ("compiled_at", "source_hash"):
+            artifact.pop(metadata)
+        for node in [*artifact["rules"], *artifact["steps"].values()]:
+            node.pop("source")
+    assert new == old
 
 
 def test_watch_reminder_additions_match_explicit_pins():
@@ -1590,6 +1617,35 @@ def test_retention_catalogue_only_adds_reviewed_command():
     )
 
 
+def _supervisor_say_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/supervisor-say-contract-changes.json").read_text()
+    )
+
+
+def _before_supervisor_say_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    evidence = _supervisor_say_changes()
+    [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
+    assert definition == evidence["explicit_entry"]
+    catalogue["explicit"].remove(definition)
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_supervisor_say_catalogue_only_adds_initiated_conversation_post():
+    evidence = _supervisor_say_changes()
+    assert evidence["command"] == "supervisor_inbox_say"
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
+    previous = json.dumps(_before_supervisor_say_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+
+
 def test_retention_original_catalogue_evidence():
     evidence = _retention_changes()
     catalogue = _before_wait_requeue_catalogue()
@@ -1611,7 +1667,7 @@ def _delivered_design_changes():
 
 def _before_delivered_design_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_supervisor_say_catalogue()
     evidence = _delivered_design_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == "task_batch_propose"]
     assert definition == evidence["definition"]
@@ -1678,7 +1734,7 @@ def _project_schedule_changes():
 
 def _before_project_schedules_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_supervisor_say_catalogue()
     return _revert_catalogue(catalogue, _project_schedule_changes())
 
 

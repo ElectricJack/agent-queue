@@ -239,10 +239,12 @@ class ReviewService:
         decider: str = "user",
         playbook: PlaybookPin | None = None,
         single_author: bool = False,
+        changes_note: str | None = None,
     ) -> dict:
         """Create a review at revision 1, its gate and its vault file.
 
         *playbook* pins the compiled artifact this revision asks approval for.
+        *changes_note* can record an amendment's approved predecessor.
         """
         kind = _kind(kind)
         title = _title(title)
@@ -311,7 +313,7 @@ class ReviewService:
                     await self.db.insert_review(
                         review=review,
                         revision=self._revision_row(
-                            review_id, 1, body, submitted_by, author_task_id, None, now,
+                            review_id, 1, body, submitted_by, author_task_id, changes_note, now,
                             playbook, spec_kind,
                         ),
                         conn=conn,
