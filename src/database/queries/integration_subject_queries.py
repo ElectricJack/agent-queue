@@ -7,22 +7,22 @@ helper runs inside the caller's transaction; the others open their own.
 Concurrency.  A visit reads a subject at ``version`` *v* and writes back with
 :meth:`~IntegrationSubjectQueriesMixin.update_integration_subject_on`, which
 succeeds only while the row is still at *v*.  Events never bump the version:
-:meth:`~IntegrationSubjectQueriesMixin.wake_integration_subjects` pulls the due
-time forward and stamps ``wake_requested_at``, and a visit's write that started
-before that stamp keeps the subject due now.  A lost event therefore costs
+an answered gate (:mod:`src.integration.gates`) pulls the due time forward and
+stamps ``wake_requested_at``, and a visit's write that started before that
+stamp keeps the subject due now.  A lost event therefore costs
 latency, never progress, and an event never invalidates a visit in flight.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import Float, and_, case, func, literal, null, or_, select, update
+from sqlalchemy import Float, and_, case, func, literal, null, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from src.database.tables import integration_subject_journal, integration_subjects, projects
+from src.database.tables import integration_subject_journal, integration_subjects
 
 #: Columns a visit may write.  Identity, the pinned policy, the version and
 #: the timestamps are maintained here, never by the caller.
@@ -138,25 +138,6 @@ class IntegrationSubjectQueriesMixin:
             )
         return dict(row) if row is not None else None
 
-    async def get_integration_subject_by_key(
-        self, *, project_id: str, kind: str, subject_key: str
-    ) -> dict[str, Any] | None:
-        async with self._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_subjects).where(
-                            integration_subjects.c.project_id == project_id,
-                            integration_subjects.c.kind == kind,
-                            integration_subjects.c.subject_key == subject_key,
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        return dict(row) if row is not None else None
-
     async def lock_integration_subject_on(
         self, conn: AsyncConnection, subject_id: str
     ) -> dict[str, Any] | None:
@@ -172,45 +153,6 @@ class IntegrationSubjectQueriesMixin:
             .first()
         )
         return dict(row) if row is not None else None
-
-    async def due_integration_subject_page(
-        self,
-        *,
-        now: float,
-        after: tuple[float, str] | None,
-        limit: int,
-        kinds: Sequence[str] | None = None,
-        engine: str | None = None,
-        integration_modes: Sequence[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Live subjects due at ``now``, oldest due first, keyset-paged by ``(due, id)``."""
-        _require_limit(limit)
-        due_at = integration_subjects.c.next_due_at
-        subject_id = integration_subjects.c.id
-        statement = (
-            select(integration_subjects)
-            .where(
-                integration_subjects.c.phase != "done",
-                due_at.is_not(None),
-                due_at <= now,
-            )
-            .order_by(due_at, subject_id)
-            .limit(limit)
-        )
-        if integration_modes is not None:
-            statement = statement.join(projects, projects.c.id == integration_subjects.c.project_id)
-            statement = statement.where(projects.c.hierarchical_integration_mode.in_(integration_modes))
-        if kinds is not None:
-            statement = statement.where(integration_subjects.c.kind.in_(list(kinds)))
-        if engine is not None:
-            statement = statement.where(integration_subjects.c.engine == engine)
-        if after is not None:
-            statement = statement.where(
-                or_(due_at > after[0], and_(due_at == after[0], subject_id > after[1]))
-            )
-        async with self._engine.connect() as conn:
-            rows = (await conn.execute(statement)).mappings().all()
-        return [dict(row) for row in rows]
 
     async def update_integration_subject_on(
         self,
@@ -258,54 +200,6 @@ class IntegrationSubjectQueriesMixin:
             .first()
         )
         return dict(row) if row is not None else None
-
-    async def wake_integration_subjects(
-        self,
-        *,
-        now: float,
-        subject_ids: Iterable[str] = (),
-        task_ids: Iterable[str] = (),
-        writer_task_ids: Iterable[str] = (),
-        batch_ids: Iterable[str] = (),
-        gate_ids: Iterable[str] = (),
-    ) -> int:
-        """Make every matching live subject due ``now``; returns how many.
-
-        This is all an event does (§3.3): the due time moves earlier, never
-        later, and the version is untouched.
-        """
-        conditions = []
-        for column, ids in (
-            (integration_subjects.c.id, subject_ids),
-            (integration_subjects.c.task_id, task_ids),
-            (integration_subjects.c.writer_task_id, writer_task_ids),
-            (integration_subjects.c.batch_id, batch_ids),
-            (integration_subjects.c.gate_id, gate_ids),
-        ):
-            wanted = sorted({value for value in ids if value})
-            if wanted:
-                conditions.append(column.in_(wanted))
-        if not conditions:
-            return 0
-        due_at = integration_subjects.c.next_due_at
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                update(integration_subjects)
-                .where(integration_subjects.c.phase != "done", or_(*conditions))
-                .values(
-                    next_due_at=case(
-                        (or_(due_at.is_(None), due_at > now), literal(now, Float)),
-                        else_=due_at,
-                    ),
-                    wake_requested_at=func.greatest(
-                        func.coalesce(
-                            integration_subjects.c.wake_requested_at, literal(now, Float)
-                        ),
-                        literal(now, Float),
-                    ),
-                )
-            )
-        return int(result.rowcount or 0)
 
     # -- journal ----------------------------------------------------------
 
