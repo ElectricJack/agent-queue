@@ -45,7 +45,6 @@ from src.database.tables import (
     tasks,
 )
 from src.models import DepType, TaskStatus
-from src.routing.sources import stamped_route_source
 from src.task_graph.models import GraphNode, TaskGraph
 from src.task_names import (
     MAX_NAMING_DEPTH,
@@ -376,7 +375,6 @@ async def build_plan(
             "retry_count": 0,
             "max_retries": 3,
             "is_plan_subtask": 0,
-            "profile_id": parent.profile if parent else None,
             "attachments": "[]",
             "skip_verification": 0,
             "is_blocked": 0,
@@ -467,13 +465,11 @@ async def build_plan(
                 "max_retries": 3,
                 "is_plan_subtask": 0,
                 "task_type": node.task_type,
-                "profile_id": node.profile,
-                # A class with no profile is the filer's hint; the router
-                # writes the route (mandatory-routing spec §5.1).  A named
-                # profile keeps its class until the filing surfaces refuse it.
-                "intelligence_class": node.intelligence_class if node.profile else None,
+                # The node's class is the filer's hint; the task is written
+                # unrouted and the router writes the route (mandatory-routing
+                # spec §5.1).
                 "class_hint": node.intelligence_class,
-                "provider_intent": node.provider_intent,
+                "provider_intent": "class_only",
                 "attachments": "[]",
                 "deliverables": json.dumps(node.deliverables),
                 "skip_verification": 0,
@@ -551,15 +547,11 @@ async def _insert_task(conn, row: dict) -> None:
     """Insert one task row.
 
     Factored out — and module-level — so the single-transaction guarantee can
-    be tested by patching this to fail partway through (§12).  A row naming a
-    profile without a route source gets the transitional stamp that
-    ``_insert_task_row`` applies (mandatory-routing spec §9.2).
+    be tested by patching this to fail partway through (§12).  A graph row
+    names no profile, so it takes the column default ``route_source =
+    'unrouted'`` (mandatory-routing spec §5.1).
     """
-    values = _strip_private(row)
-    values["route_source"] = stamped_route_source(
-        values.get("profile_id"), values.get("route_source")
-    )
-    await conn.execute(insert(tasks).values(**values))
+    await conn.execute(insert(tasks).values(**_strip_private(row)))
 
 
 def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
@@ -1072,6 +1064,9 @@ async def write_plan(
                 insert(task_gates),
                 [{"task_id": task_id, "gate_id": review_gate_id} for task_id in plan.task_ids],
             )
+        from src.object_loop.formulas import guard_formula
+
+        await guard_formula(db, conn, plan, provenance)
         # The phases are in the projection too, or the inter-phase gate is
         # never computed and phase 2 is claimable the moment it is released.
         # So is a worker's gated root container, which withholds its nodes.
@@ -1187,6 +1182,11 @@ async def create_graph(
         else None
     )
     if dry_run:
+        from src.object_loop.formulas import guard_formula
+
+        if provenance is not None and provenance.name in {"object", "variation"}:
+            async with db._engine.connect() as conn:
+                await guard_formula(db, conn, plan, provenance, dry_run=True)
         if hierarchy_service is not None or filing is not None:
             # Same route check the real run performs first, so a dry run
             # refuses what the real run would refuse instead of reporting a

@@ -17,22 +17,30 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    DateTime,
     Float,
     ForeignKey,
     ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     PrimaryKeyConstraint,
+    SmallInteger,
     Table,
     Text,
     UniqueConstraint,
     false,
+    func,
     text,
     true,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+
+from src.knowledge.extraction_schema import register_extraction_schema
+from src.asks.schema import register_ask_schema_events
+from src.records.schema import register_record_schema_events
 
 metadata = MetaData()
 
@@ -51,9 +59,22 @@ projects = Table(
     Column("discord_control_channel_id", Text, nullable=True),
     Column("repo_url", Text, nullable=True, server_default=""),
     Column("repo_default_branch", Text, nullable=True, server_default="main"),
-    Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
+    # Separate from the frozen hierarchical integration policy (D12).
+    Column("promotion_flow", JSONB(none_as_null=True), nullable=True),
+    # Read-side rebinding of immutable pre-cutover root origins, not provenance.
+    Column("default_branch_cutover", JSONB(none_as_null=True), nullable=True),
+    Column("storage_binding", JSONB(none_as_null=True), nullable=True),
     Column("preferred_provider", Text, nullable=True),
-    Column("assignment_playbook_id", Text, nullable=True),
+    Column("supervisor_enabled", Boolean, nullable=False, server_default=false()),
+    # The router binding (mandatory-routing spec §8, revision a00000000043):
+    # every project names the routing playbook that routes its tasks.  There
+    # is no project default profile; ``default_profile_id`` was dropped.
+    Column(
+        "assignment_playbook_id",
+        Text,
+        nullable=False,
+        server_default="default-assignment-routing",
+    ),
     # Project-level integration policy: 'direct' | 'pull_request' | NULL
     # (NULL = inherit config ``integration.default_mode``).
     Column("integration_mode", Text, nullable=True),
@@ -86,6 +107,11 @@ projects = Table(
     # Who decides this project's new document reviews: 'user' | 'supervisor'
     # (NULL = 'user').  Document-review spec §6.
     Column("review_delegate_to", Text, nullable=True),
+    # This project's Git commit identity override (NULL pair = inherit the
+    # installation default ``git_identity``).  Set together or not at all;
+    # ``src/git/identity.py`` resolves and validates (git-identity spec).
+    Column("git_identity_name", Text, nullable=True),
+    Column("git_identity_email", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
         "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')",
@@ -102,6 +128,10 @@ projects = Table(
     CheckConstraint(
         "review_delegate_to IS NULL OR review_delegate_to IN ('user', 'supervisor')",
         name="ck_projects_review_delegate_to",
+    ),
+    CheckConstraint(
+        "(git_identity_name IS NULL) = (git_identity_email IS NULL)",
+        name="ck_projects_git_identity_pair",
     ),
 )
 
@@ -134,6 +164,17 @@ dashboard_state_documents = Table(
     ),
 )
 
+# One atomic, durable Reviews-tab projection.  A failed GitHub refresh leaves
+# the last successful snapshot and its age visible across daemon restarts.
+pull_request_inbox_snapshot = Table(
+    "pull_request_inbox_snapshot",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("payload", JSONB, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("id = 1", name="ck_pull_request_inbox_snapshot_singleton"),
+)
+
 repos = Table(
     "repos",
     metadata,
@@ -156,6 +197,7 @@ tasks = Table(
     Column("title", Text, nullable=False),
     Column("description", Text, nullable=False),
     Column("priority", Integer, nullable=False, server_default="100"),
+    Column("effective_priority", Integer, nullable=False, server_default="100"),
     Column("status", Text, nullable=False, server_default="DEFINED"),
     Column("verification_type", Text, nullable=False, server_default="auto_test"),
     Column("retry_count", Integer, nullable=False, server_default="0"),
@@ -193,6 +235,9 @@ tasks = Table(
     # 0/1 matches the table's existing flag style (e.g. is_plan_subtask).
     # Recomputed by the query layer; never written directly.
     Column("is_blocked", Integer, nullable=False, server_default="0"),
+    # Independent admission hold, cleared only by atomic ingestion release.
+    Column("held_batch_id", Text, nullable=True),
+    Index("ix_tasks_held_batch_id", "held_batch_id"),
     Column("dedup_key", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
     # Discord thread opened for this task.  Persisted because the bot's
@@ -222,9 +267,22 @@ tasks = Table(
     # Mandatory routing (spec 2026-09-28 §3 I1, §4): who wrote the route in
     # ``profile_id`` (``src.routing.sources``), the filer's intelligence-class
     # hint, and the router's explainable record of the route it chose.
+    # ``route`` is JSONB, never plain JSON: ``json`` has no equality operator,
+    # so any DISTINCT, UNION or GROUP BY over a whole ``tasks`` row fails
+    # (outage 2026-09-28; revision a00000000040, tests/test_migration_json_columns.py).
     Column("route_source", Text, nullable=False, server_default="unrouted"),
     Column("class_hint", Text, nullable=True),
     Column("route", JSONB(none_as_null=True), nullable=True),
+    # The filer's routing preference (mandatory routing §4, "Preference"): a
+    # harness id or a profile id the router weighs before scoring, never a
+    # route.  ``prefer_mode='soft'`` (the default) takes it when it has
+    # headroom and routes normally when it does not; ``strict`` allows only
+    # that target and waits rather than falling back.  NULL means no
+    # preference and is exactly the pre-revision state of every row, so the
+    # router's behaviour is unchanged for a task that names nothing
+    # (revision a00000000076).
+    Column("prefer_target", Text, nullable=True),
+    Column("prefer_mode", Text, nullable=True),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_tasks_provider_intent",
@@ -233,13 +291,28 @@ tasks = Table(
         "route_source IN ('unrouted','router','override','role','legacy')",
         name="ck_tasks_route_source",
     ),
+    CheckConstraint(
+        "prefer_mode IS NULL OR prefer_mode IN ('soft','strict')",
+        name="ck_tasks_prefer_mode",
+    ),
+    # Mandatory routing I1: a profile always names who wrote it, and a row
+    # without one is ``unrouted`` (revision a00000000042).
+    CheckConstraint(
+        "(profile_id IS NULL) = (route_source = 'unrouted')",
+        name="ck_tasks_route_source_profile",
+    ),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+    # Missing close rows still have an operator-attestable generation. Only
+    # crossing the COMPLETED boundary rotates it; ordinary edits do not.
+    Column("legacy_completion_id", Text, nullable=False,
+           server_default=text("'legacy:' || gen_random_uuid()::text")),
     # The §10 pool work query's three access paths.  All three carry
-    # ``priority, created_at`` as their trailing key columns so
-    # ``select_ready_for_profile``'s ``ORDER BY priority, created_at LIMIT 1``
-    # is an index-ordered scan that stops at the first admissible row, rather
+    # ``effective_priority, created_at`` as their trailing key columns for
+    # the wait graph's derived priority ordering (hibernation implementation §5).
+    # The claim reader adopts this order in the admission leaf. An ordered scan
+    # stops at the first admissible row, rather
     # than a materialise-and-sort of the whole frontier: the correlated
     # predicates in ``_frontier_where`` are then evaluated once instead of
     # once per frontier row (2,500 rows -> 10 shared buffers at the §15.2
@@ -261,7 +334,7 @@ tasks = Table(
         "project_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
     ),
     Index(
@@ -270,7 +343,7 @@ tasks = Table(
         "profile_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
     ),
     # The affinity probe.  Partial because affinity is the exception: the
@@ -283,8 +356,24 @@ tasks = Table(
         "project_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
+        postgresql_where=text("affinity_agent_id IS NOT NULL"),
+    ),
+    # The wait schema installs effective-priority indexes before the wait
+    # runtime is active. Keep the current base-priority claim path ordered
+    # until its owning leaf adopts and maintains the priority projection.
+    Index(
+        "idx_tasks_base_claim_frontier",
+        "project_id", "status", "is_blocked", "priority", "created_at",
+    ),
+    Index(
+        "idx_tasks_base_claim_frontier_by_profile",
+        "project_id", "profile_id", "status", "is_blocked", "priority", "created_at",
+    ),
+    Index(
+        "idx_tasks_base_claim_frontier_by_affinity",
+        "affinity_agent_id", "project_id", "status", "is_blocked", "priority", "created_at",
         postgresql_where=text("affinity_agent_id IS NOT NULL"),
     ),
     # Group progress and tree queries walk parent_task_id.
@@ -318,6 +407,7 @@ TASK_DEP_TYPES = (
     "parent-child",
     "waits-for",
     "conditional-blocks",
+    "delivery-of",
     "discovered-from",
     "related",
     "duplicates",
@@ -325,7 +415,7 @@ TASK_DEP_TYPES = (
 )
 """Typed dependency edge kinds — see docs/specs/design/work-graph.md.
 
-Only ``blocks``/``parent-child``/``waits-for``/``conditional-blocks`` gate
+Only ``blocks``/``parent-child``/``waits-for``/``conditional-blocks``/``delivery-of`` gate
 readiness; the rest are informational.  The tuple order is the check
 constraint's order and must stay stable (it is embedded in the migration).
 """
@@ -632,6 +722,41 @@ task_metadata = Table(
     Column("value", Text, nullable=False),
 )
 
+# Exact source CI observations and their deduplicated local repair lineage.
+integration_source_ci = Table(
+    "integration_source_ci",
+    metadata,
+    Column("task_id", Text, primary_key=True),
+    Column("repository_id", Text, ForeignKey("repos.id"), primary_key=True),
+    Column("source_base", Text, primary_key=True),
+    Column("source_head", Text, primary_key=True),
+    Column("generation", Integer, primary_key=True),
+    Column("policy_generation", Integer, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("evidence", JSONB, nullable=False),
+    Column("repair_task_id", Text),
+    Column("repair_attempt", Integer, nullable=False, server_default="0"),
+    Column("repair_history", JSONB, nullable=False, server_default="[]"),
+    Column("observed_at", Float, nullable=False),
+    # Consecutive infrastructure-only observations of this exact head, and the
+    # backoff that bounds how often a re-run of that head is requested.  Reset
+    # by any observation that is not infrastructure-only.
+    Column("infra_observations", Integer, nullable=False, server_default="0"),
+    Column("infra_rerun_at", Float),
+    Column("infra_reruns", Integer, nullable=False, server_default="0"),
+    CheckConstraint("generation >= 0", name="ck_integration_source_ci_generation"),
+    CheckConstraint("repair_attempt >= 0", name="ck_integration_source_ci_attempt"),
+    CheckConstraint(
+        "infra_observations >= 0", name="ck_integration_source_ci_infra_observations"
+    ),
+    CheckConstraint("infra_reruns >= 0", name="ck_integration_source_ci_infra_reruns"),
+    CheckConstraint(
+        "state IN ('green', 'red', 'cancelled', 'pending', 'conflict')",
+        name="ck_integration_source_ci_state",
+    ),
+    Index("idx_integration_source_ci_repair", "repair_task_id"),
+)
+
 # ---------------------------------------------------------------------------
 # Gates and labels (work-graph spec §2.3 / §2.4).
 #
@@ -639,7 +764,7 @@ task_metadata = Table(
 # ---------------------------------------------------------------------------
 
 GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing", "review")
-GATE_STATUSES = ("open", "resolved", "expired")
+GATE_STATUSES = ("open", "resolved", "expired", "cancelled")
 
 gates = Table(
     "gates",
@@ -649,9 +774,11 @@ gates = Table(
     Column("gate_type", Text, nullable=False),  # one of GATE_TYPES
     Column("title", Text, nullable=False),
     Column("question", Text, nullable=False, server_default=""),
+    # Producer-owned semantics and source receipt; never supplied by a decider.
+    Column("human_request", JSONB, nullable=True),
     Column("await_id", Text, nullable=True),
     Column("timeout_at", Float, nullable=True),
-    Column("status", Text, nullable=False, server_default="open"),  # open|resolved|expired
+    Column("status", Text, nullable=False, server_default="open"),
     Column("resolved_by", Text, nullable=True),
     Column("resolution", Text, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -689,6 +816,27 @@ task_gates = Table(
     Index("idx_task_gates_gate", "gate_id"),
 )
 
+# Object-script evaluation loops.  Images and logs live in the artifact store;
+# this row contains bounded identities, reservations and the next task intent.
+# A row lock serializes every transition and sibling budget reservation.
+object_loops = Table(
+    "object_loops",
+    metadata,
+    Column("object_id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    # Soft task/gate references survive normal task archival and cleanup.
+    Column("epic_task_id", Text, nullable=False),
+    Column("finalization_task_id", Text, nullable=False),
+    Column("terminal_gate_id", Text, nullable=False),
+    Column("version", Integer, nullable=False, server_default="1"),
+    Column("state", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("version >= 1", name="ck_object_loops_version"),
+    UniqueConstraint("epic_task_id", name="uq_object_loops_epic_task_id"),
+    Index("idx_object_loops_project", "project_id"),
+)
+
 # ---------------------------------------------------------------------------
 # Document reviews (document-review spec §3.2).
 #
@@ -701,7 +849,7 @@ task_gates = Table(
 
 DOC_REVIEW_KINDS = ("spec", "plan", "other")
 DOC_REVIEW_STATES = ("in_review", "changes_requested", "rejected", "approved", "withdrawn")
-DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor")
+DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor", "supervisor")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -718,12 +866,23 @@ doc_reviews = Table(
     Column("title", Text, nullable=False),
     Column("vault_path", Text, nullable=False),  # relative to the vault root
     Column("current_revision", Integer, nullable=False, server_default="1"),
+    Column("feedback_version", Integer, nullable=False, server_default="0"),
+    Column("decision_generation", Integer, nullable=False, server_default="1"),
+    Column("pending_decision_id", Text, ForeignKey(
+        "ask_decisions.id", name="fk_doc_reviews_pending_decision",
+        ondelete="RESTRICT", use_alter=True,
+    ), nullable=True),
     Column("state", Text, nullable=False),
     Column("gate_id", Text, nullable=True),
     Column("decider", Text, nullable=False, server_default="user"),
     Column("decided_by", Text, nullable=True),
     Column("decided_at", Float, nullable=True),
     Column("decision_note", Text, nullable=True),
+    # The last withdrawal survives reopening; events retain earlier withdrawals.
+    Column("withdrawn_by", Text, nullable=True),
+    Column("withdrawn_at", Float, nullable=True),
+    Column("withdrawn_via", Text, nullable=True),
+    Column("withdrawal_reason", Text, nullable=True),
     # The last revision announced on Discord: the review outbox (spec §9).
     Column("notified_revision", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
@@ -732,6 +891,8 @@ doc_reviews = Table(
     CheckConstraint(_in("state", DOC_REVIEW_STATES), name="ck_doc_reviews_state"),
     CheckConstraint(_in("decider", DOC_REVIEW_DECIDERS), name="ck_doc_reviews_decider"),
     CheckConstraint("current_revision >= 1", name="ck_doc_reviews_revision"),
+    CheckConstraint("feedback_version >= 0", name="ck_doc_reviews_feedback_version"),
+    CheckConstraint("decision_generation >= 1", name="ck_doc_reviews_decision_generation"),
     UniqueConstraint("vault_path", name="uq_doc_reviews_vault_path"),
     Index("idx_doc_reviews_project_state", "project_id", "state"),
     Index("idx_doc_reviews_author_task", "author_task_id"),
@@ -745,6 +906,7 @@ doc_review_revisions = Table(
     # The submitted markdown with any leading frontmatter stripped.
     Column("content", Text, nullable=False),
     Column("content_sha256", Text, nullable=False),
+    Column("spec_kind", Text, nullable=True),
     Column("submitted_by", Text, nullable=False),  # principal label
     Column("submitted_task_id", Text, nullable=True),
     Column("changes_note", Text, nullable=True),
@@ -759,6 +921,36 @@ doc_review_revisions = Table(
     # approval stores in the artifact store.  NULL for every other review.
     Column("playbook", JSON, nullable=True),
     Column("playbook_artifact", Text, nullable=True),
+    CheckConstraint(
+        "spec_kind IS NULL OR spec_kind IN ('design', 'implementation')",
+        name="ck_doc_review_revisions_spec_kind",
+    ),
+)
+
+# Image evidence belongs to the submitted review revision, not the source task.
+# Rows and files are append-only; later revisions never update earlier evidence.
+doc_review_attachments = Table(
+    "doc_review_attachments",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("review_id", Text, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("path", Text, nullable=False, unique=True),
+    Column("sha256", Text, nullable=False),
+    Column("content_type", Text, nullable=False),
+    Column("size", Integer, nullable=False),
+    Column("caption", Text, nullable=False),
+    Column("view_id", Text, nullable=False),
+    Column("candidate_id", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    ForeignKeyConstraint(
+        ["review_id", "revision"],
+        ["doc_review_revisions.review_id", "doc_review_revisions.revision"],
+        name="fk_doc_review_attachments_revision",
+        ondelete="CASCADE",
+    ),
+    CheckConstraint("size > 0", name="ck_doc_review_attachments_size"),
+    Index("idx_doc_review_attachments_revision", "review_id", "revision"),
 )
 
 doc_review_comments = Table(
@@ -772,6 +964,10 @@ doc_review_comments = Table(
     Column("body", Text, nullable=False),
     Column("author", Text, nullable=False),  # principal label
     Column("resolved_in_revision", Integer, nullable=True),
+    Column("source_discussion_id", Text, ForeignKey(
+        "escalation_messages.id", name="fk_doc_review_comments_discussion", ondelete="RESTRICT",
+    ), nullable=True),
+    Column("responder_disposition", JSONB, nullable=True),
     Column("created_at", Float, nullable=False),
     # 1-based position within this review's comments, assigned at insert;
     # the creation order that survived a clock that hands out equal stamps.
@@ -832,7 +1028,7 @@ hierarchy_migration_rejects = Table(
 # ``{"tasks": [...], "edges": [...]}`` — see the plan's Interfaces block.
 # ---------------------------------------------------------------------------
 
-TASK_PROPOSAL_STATUSES = ("draft", "ready", "committed", "discarded")
+TASK_PROPOSAL_STATUSES = ("draft", "ready", "held", "committed", "discarded")
 _TASK_PROPOSAL_STATUS_CHECK = (
     "status IN (" + ", ".join(f"'{s}'" for s in TASK_PROPOSAL_STATUSES) + ")"
 )
@@ -852,6 +1048,100 @@ task_proposals = Table(
     Column("updated_at", Float, nullable=False),
     CheckConstraint(_TASK_PROPOSAL_STATUS_CHECK, name="ck_task_proposals_status"),
     Index("idx_task_proposals_project_status", "project_id", "status"),
+)
+
+# Held ingestion is keyed by the existing proposal identity. Historical task
+# references deliberately survive task archival/retirement; they are not FKs
+# to live tasks. Batch/proposal/project ownership remains database-enforced.
+ingest_batches = Table(
+    "ingest_batches",
+    metadata,
+    Column("batch_id", Text, ForeignKey("task_proposals.id"), primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("source_review_id", Text, nullable=False),
+    Column("source_revision", Integer, nullable=False),
+    Column("source_content_sha256", Text, nullable=False),
+    Column("decision_id", Text, nullable=False),
+    Column("design_review_id", Text, nullable=True),
+    Column("design_revision", Integer, nullable=True),
+    Column("design_content_sha256", Text, nullable=True),
+    Column("lineage_kind", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("structure_revision", Integer, nullable=False, server_default="1"),
+    Column("structure_digest", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="held"),
+    Column("check_results", JSONB(none_as_null=True), nullable=True),
+    Column("reviewer_task_id", Text, nullable=True),
+    Column("reviewer_session_id", Text, nullable=True),
+    Column("reviewer_claim_epoch", Integer, nullable=True),
+    Column("release_actor", Text, nullable=True),
+    Column("release_revision", Integer, nullable=True),
+    Column("release_digest", Text, nullable=True),
+    Column("released_at", Float, nullable=True),
+    Column("release_receipt", JSONB(none_as_null=True), nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "state IN ('held','reviewing','needs_scope','released','retired')",
+        name="ck_ingest_batches_state",
+    ),
+    CheckConstraint(
+        "lineage_kind IN ('resolved','none')",
+        name="ck_ingest_batches_lineage_kind",
+    ),
+    CheckConstraint(
+        "(design_review_id IS NULL AND design_revision IS NULL "
+        "AND design_content_sha256 IS NULL) OR "
+        "(design_review_id IS NOT NULL AND design_revision IS NOT NULL "
+        "AND design_content_sha256 IS NOT NULL)",
+        name="ck_ingest_batches_design_lineage",
+    ),
+    UniqueConstraint(
+        "project_id", "source_review_id", "source_revision", "source_content_sha256",
+        name="uq_ingest_batches_source",
+    ),
+)
+
+ingest_batch_members = Table(
+    "ingest_batch_members",
+    metadata,
+    Column("batch_id", Text, ForeignKey("ingest_batches.batch_id"), primary_key=True),
+    Column("task_id", Text, primary_key=True),
+    Column("member_key", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("section_anchor", Text, nullable=False),
+    Column("primary_outcome", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("retired_reason", Text, nullable=True),
+    Column("created_revision", Integer, nullable=False),
+    Column("retired_revision", Integer, nullable=True),
+    CheckConstraint(
+        "role IN ('container','leaf','operational_root')",
+        name="ck_ingest_batch_members_role",
+    ),
+    CheckConstraint("state IN ('active','retired')", name="ck_ingest_batch_members_state"),
+    UniqueConstraint("batch_id", "member_key", name="uq_ingest_batch_members_key"),
+)
+
+ingest_batch_receipts = Table(
+    "ingest_batch_receipts",
+    metadata,
+    Column("receipt_id", Text, primary_key=True),
+    Column("batch_id", Text, ForeignKey("ingest_batches.batch_id"), nullable=False),
+    Column("structure_revision", Integer, nullable=False),
+    Column("structure_digest", Text, nullable=False),
+    Column("reviewer_task_id", Text, nullable=False),
+    Column("reviewer_session_id", Text, nullable=False),
+    Column("passing", Boolean, nullable=False, server_default=false()),
+    Column("section_verdicts", JSONB(none_as_null=True), nullable=False),
+    Column("reverse_coverage_verdict", Text, nullable=False),
+    Column("walkthrough_verdict", Text, nullable=False),
+    Column("structural_findings", JSONB(none_as_null=True), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Index(
+        "uq_ingest_batch_receipts_passing", "batch_id", "structure_revision",
+        unique=True, postgresql_where=text("passing"),
+    ),
 )
 
 task_tools = Table(
@@ -917,6 +1207,7 @@ token_ledger = Table(
     # before the split existed (and runtimes that don't report it)
     # aggregate into "unpriced_tokens" in the cost rollup.
     Column("model", Text, nullable=True),
+    Column("model_source", Text, nullable=True),
     Column("input_tokens", Integer, nullable=True),
     Column("output_tokens", Integer, nullable=True),
     # Cache tokens, kept apart from the priced input/output split.  A cached
@@ -927,10 +1218,64 @@ token_ledger = Table(
     # a six-figure "unattributed" number that the metrics tab cannot explain.
     Column("cache_read_tokens", Integer, nullable=True),
     Column("cache_write_tokens", Integer, nullable=True),
+    # Stable attribution is captured at ingest, never reconstructed by a
+    # timestamp join after retries, overlapping sessions or task archival.
+    Column("session_id", Text, nullable=True),
+    Column("attempt_id", Text, nullable=True),
+    Column("call_id", Text, nullable=True),
     Column("timestamp", Float, nullable=False),
     # The metrics sampler reads a trailing window off this append-only,
     # unbounded table every few seconds to compute tokens/minute.
     Index("idx_token_ledger_timestamp", "timestamp"),
+    Index("idx_token_ledger_task_attempt", "task_id", "attempt_id"),
+    Index("uq_token_ledger_call", "session_id", "call_id", unique=True),
+    Index("idx_token_ledger_call_id", "call_id"),
+)
+
+transcript_usage_calls = Table(
+    "transcript_usage_calls",
+    metadata,
+    Column("usage_key", Text, primary_key=True),
+    # Original attribution and evidence survive task/session archival.
+    Column("first_ledger_id", Text, nullable=True),
+    Column("input_tokens", Integer, nullable=False),
+    Column("output_tokens", Integer, nullable=False),
+    Column("cache_read_tokens", Integer, nullable=False),
+    Column("cache_write_tokens", Integer, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "input_tokens >= 0 AND output_tokens >= 0 "
+        "AND cache_read_tokens >= 0 AND cache_write_tokens >= 0",
+        name="ck_transcript_usage_calls_nonnegative",
+    ),
+    Index("idx_transcript_usage_calls_updated", "updated_at", "usage_key"),
+)
+
+# Permanent exact membership fence: batches replace old per-call counter rows.
+transcript_usage_fences = Table(
+    "transcript_usage_fences",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("usage_keys", JSONB, nullable=False),
+    Column("archived_at", Float, nullable=False),
+    Column("archive_path", Text, nullable=False),
+    Index("idx_transcript_usage_fences_keys", "usage_keys", postgresql_using="gin",
+          postgresql_ops={"usage_keys": "jsonb_path_ops"}),
+)
+
+benchmark_stage_spans = Table(
+    "benchmark_stage_spans",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("session_attempt_id", Text, nullable=True),
+    Column("stage", Text, nullable=False),
+    Column("started_monotonic_ns", BigInteger, nullable=False),
+    Column("ended_monotonic_ns", BigInteger, nullable=False),
+    Column("duration_ms", Float, nullable=False),
+    Column("recorded_at", Float, nullable=False),
+    Index("idx_benchmark_stage_task", "task_id", "session_attempt_id"),
 )
 
 events = Table(
@@ -1060,6 +1405,12 @@ workspaces = Table(
     Column("locked_at", Float, nullable=True),
     Column("lock_mode", Text, nullable=True),
     Column("enabled", Boolean, nullable=False, server_default=true()),
+    # Why and when ``enabled`` last went false, as ``"<code>: <detail>"``
+    # (``src.workspace_disable``).  NULL while enabled, and on rows disabled
+    # before the column existed.  The slot reconciler reads the code to decide
+    # whether a disabled worktree slot may be restored.
+    Column("disabled_reason", Text, nullable=True),
+    Column("disabled_at", Float, nullable=True),
     # Worktree slots (worktree-execution spec §3.2).  NULL for clones,
     # links and base rows; 0..N-1 for slot worktrees.
     Column("slot_index", Integer, nullable=True),
@@ -1106,6 +1457,8 @@ workspace_kinds = Table(
     # JSON-encoded list[str] of shell commands run after a slot is created.
     # Text for SQLite/PG parity, matching the existing JSON-in-Text usage.
     Column("worktree_setup", Text, nullable=False, server_default="[]"),
+    Column("max_slots", Integer, nullable=True),
+    CheckConstraint("max_slots > 0", name="ck_workspace_kinds_max_slots"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -1265,6 +1618,14 @@ sessions = Table(
     Column("claim_phase_at", Float, nullable=True),
     Column("last_claim_epoch", Integer, nullable=True),
     Column("last_claim_result", Text, nullable=True),
+    Column("claim_failure_count", Integer, nullable=False, server_default="0"),
+    Column("claim_failure_reason", Text, nullable=True),
+    Column("claim_failure_at", Float, nullable=True),
+    # Last failed preparation observation; diagnostic, never a task binding.
+    Column("failed_preparation", JSONB, nullable=True),
+    # Session-wide refusal streak/cooldown, independent of a failed task's backoff.
+    Column("claim_refusal", JSONB, nullable=True),
+    Column("supervisor_health", JSONB, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch
@@ -1286,6 +1647,12 @@ sessions = Table(
     # This is what lets ``subagent_counts`` say "complete" instead of
     # "unknown" -- and say "unknown" honestly for the sessions that lack it.
     Column("hooks_provisioned", Boolean, nullable=False, server_default=false()),
+    # Digest of the Git identity injected into this launch's environment
+    # (``src/git/identity.py``).  A pool claim compares it with the identity
+    # the project resolves to now and retires a session launched under a
+    # different one.  Migration a00000000053 stamps pre-existing rows
+    # ``legacy`` (always stale); NULL means no identity was recorded.
+    Column("git_identity_digest", Text, nullable=True),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
@@ -1322,6 +1689,10 @@ task_session_attempts = Table(
     Column("outcome", Text, nullable=True),
     Column("session_key", Text, nullable=True),
     Index("idx_task_session_attempts_task", "task_id", "started_at"),
+    # Recovery's latest-attempt fence matches both identities and breaks
+    # timestamp ties by ID. A backward scan supplies the complete order;
+    # sorting inside this correlated lookup would sort on every claim.
+    Index("idx_task_session_attempts_recovery", "task_id", "project_id", "started_at", "id"),
     Index("idx_task_session_attempts_session", "session_id", "started_at"),
 )
 
@@ -1342,12 +1713,15 @@ messages = Table(
     Column("created_at", Float, nullable=False),
     Column("delivered_at", Float, nullable=True),
     Column("read_at", Float, nullable=True),
+    Column("last_notified_at", Float, nullable=True),
+    Column("notification_attempts", Integer, nullable=False, server_default="0"),
     Column("archive_after_inject", Integer, nullable=False, server_default="0"),
     Column("archived_at", Float, nullable=True),
     Column("reply_to_id", Text, ForeignKey("messages.id"), nullable=True),
     Column("via", Text, nullable=True),  # null | "transcript_tail"
     Column("body_kind", Text, nullable=True),
     Column("pane_open", Text, nullable=True),  # JSON blob {view, args}
+    Column("provenance", JSONB, nullable=True),
     CheckConstraint(
         "from_kind IN ('session','user','system')",
         name="ck_messages_from_kind",
@@ -1360,6 +1734,36 @@ messages = Table(
     Index("idx_messages_project_created", "project_id", "created_at"),
     Index("idx_messages_thread", "thread_id"),
     Index("idx_messages_thread_sequence", "project_id", "thread_id", "created_seq"),
+)
+
+#: The closed reasons an incident's ``outcome`` may name: ``human`` for one a
+#: person closed, and otherwise the §5.5 rule that closed it on its own.  It is
+#: a check-constrained vocabulary rather than free text so the collapsed post's
+#: "why is this gone" line and the sweep's audit trail can both be read back
+#: without parsing prose.
+ESCALATION_OUTCOMES = (
+    "human",
+    "gate_resolved",
+    "notice_delivered",
+    "supervisor_started",
+    "task_terminal",
+    "stale_expired",
+    "sweep",
+)
+
+#: Who authored a row in an incident's thread: ``inbound`` for a verified human
+#: reply, ``outbound`` for the supervisor answering in the thread, ``system``
+#: for the daemon writing its own audit note into the history.  A check-constrained
+#: vocabulary because the three are read apart in three places -- an inbound row
+#: is what moves an incident to §5.2's ``answered`` form and triggers an ack,
+#: an outbound row is the only one relayed into the channel thread
+#: (``src/escalations/plan.py``), and a ``system`` row is neither: it records why
+#: the daemon closed something without anybody speaking (spec §5.6's sweep audit
+#: trail).
+ESCALATION_MESSAGE_DIRECTIONS = (
+    "inbound",
+    "outbound",
+    "system",
 )
 
 # Transport-neutral human escalation state.  ``task_id`` and the source
@@ -1387,6 +1791,12 @@ escalations = Table(
     Column("revision", Integer, nullable=False, server_default="0"),
     Column("terminal_outcome", Text, nullable=True),
     Column("terminal_evidence", JSON, nullable=True),
+    # Which §5.5 rule closed the incident, and when its channel post was last
+    # edited into the collapsed one-line form.  Both are additive: an incident
+    # that predates the stateful-escalations phase has NULL for each and keeps
+    # the create-only post behaviour.
+    Column("outcome", Text, nullable=True),
+    Column("collapsed_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("terminal_at", Float, nullable=True),
@@ -1430,6 +1840,21 @@ escalations = Table(
         "AND terminal_at IS NOT NULL AND terminal_outcome IS NOT NULL)",
         name="ck_escalations_terminal_state",
     ),
+    CheckConstraint(
+        "outcome IS NULL OR outcome IN ("
+        + ", ".join(f"'{o}'" for o in ESCALATION_OUTCOMES)
+        + ")",
+        name="ck_escalations_outcome",
+    ),
+    # A collapsed post is a closed incident's post, so the two are the same
+    # fact.  This is what makes "already collapsed" an idempotency check rather
+    # than a guess about the channel.  It does *not* require every closed
+    # incident to be stamped: an incident closed before this phase (or one whose
+    # post never reached the channel) has NULL and reads as never collapsed.
+    CheckConstraint(
+        "collapsed_at IS NULL OR state IN ('resolved','cancelled','stale')",
+        name="ck_escalations_collapsed",
+    ),
     Index("idx_escalations_project_state", "project_id", "state", "updated_at"),
     Index("idx_escalations_task", "task_id", "created_at"),
 )
@@ -1444,9 +1869,15 @@ escalation_messages = Table(
     Column(
         "escalation_id",
         Text,
-        ForeignKey("escalations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("escalations.id", name="fk_escalation_messages_incident", ondelete="SET NULL"),
+        nullable=True,
     ),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=True),
+    Column("input_id", Text, nullable=True),  # durable input identity; transport owns migration 92
+    Column("source_version", JSONB, nullable=True),
+    Column("entry_kind", Text, nullable=False, server_default="discussion"),
+    Column("reply_to_entry_id", Text, ForeignKey("escalation_messages.id", ondelete="RESTRICT"),
+           nullable=True),
     Column("direction", Text, nullable=False),
     Column("transport", Text, nullable=False),
     Column("verified_actor", Text, nullable=False),
@@ -1462,13 +1893,18 @@ escalation_messages = Table(
         name="uq_escalation_messages_external",
     ),
     CheckConstraint(
-        "direction IN ('inbound','outbound')",
+        "direction IN (" + ",".join(f"'{d}'" for d in ESCALATION_MESSAGE_DIRECTIONS) + ")",
         name="ck_escalation_messages_direction",
     ),
     CheckConstraint(
         "length(text) BETWEEN 1 AND 16000",
         name="ck_escalation_messages_text_length",
     ),
+    CheckConstraint(
+        "entry_kind IN ('discussion','formal_comment','decision_evidence',"
+        "'system_outcome','interpretation')", name="ck_escalation_messages_entry_kind",
+    ),
+    Index("idx_escalation_messages_ask", "ask_id", "created_at", "id"),
     Index(
         "idx_escalation_messages_history",
         "escalation_id",
@@ -1490,15 +1926,25 @@ escalation_actions = Table(
     Column(
         "escalation_id",
         Text,
-        ForeignKey("escalations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("escalations.id", name="fk_escalation_actions_incident", ondelete="SET NULL"),
+        nullable=True,
     ),
     Column(
         "reply_id",
         Text,
         ForeignKey("escalation_messages.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     ),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=True),
+    Column("decision_id", Text, ForeignKey("ask_decisions.id", ondelete="RESTRICT"), nullable=True),
+    Column("operation_kind", Text, nullable=True),
+    Column("operation_key", Text, nullable=True),
+    Column("dependency_keys", JSONB, nullable=False, server_default="[]"),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("lease_generation", Integer, nullable=False, server_default="0"),
+    Column("retry_at", Float, nullable=True),
+    Column("receipt", JSONB, nullable=True),
     Column("idempotency_key", Text, nullable=False),
     Column("action_kind", Text, nullable=False),
     Column("target_id", Text, nullable=False),
@@ -1517,19 +1963,31 @@ escalation_actions = Table(
         name="uq_escalation_actions_idempotency",
     ),
     CheckConstraint(
-        "action_kind IN ('question_answer','gate_resolve','task_recover')",
+        "action_kind IN ('question_answer','gate_resolve','task_recover','ask_operation')",
         name="ck_escalation_actions_kind",
     ),
     CheckConstraint(
-        "status IN ('processing','succeeded','failed')",
+        "status IN ('pending','processing','succeeded','failed','unknown','cancelled')",
         name="ck_escalation_actions_status",
     ),
     CheckConstraint("started_revision >= 0", name="ck_escalation_actions_revision"),
     CheckConstraint(
-        "(status = 'processing' AND completed_at IS NULL AND outcome IS NULL) OR "
-        "(status <> 'processing' AND completed_at IS NOT NULL AND outcome IS NOT NULL)",
+        "(status IN ('pending','processing') AND completed_at IS NULL AND outcome IS NULL) OR "
+        "(status IN ('succeeded','failed','unknown','cancelled') "
+        "AND completed_at IS NOT NULL AND outcome IS NOT NULL)",
         name="ck_escalation_actions_completion",
     ),
+    UniqueConstraint("ask_id", "operation_key", name="uq_escalation_actions_operation"),
+    CheckConstraint(
+        "operation_kind IS NULL OR (ask_id IS NOT NULL AND operation_key IS NOT NULL)",
+        name="ck_escalation_actions_ask_operation",
+    ),
+    CheckConstraint("lease_generation >= 0", name="ck_escalation_actions_lease_generation"),
+    CheckConstraint(
+        "(lease_owner IS NULL) = (lease_expires_at IS NULL)",
+        name="ck_escalation_actions_lease",
+    ),
+    Index("idx_escalation_actions_ready", "status", "retry_at", "created_at"),
     Index("idx_escalation_actions_history", "escalation_id", "created_at", "id"),
 )
 
@@ -1593,11 +2051,14 @@ escalation_deliveries = Table(
     Index("idx_escalation_deliveries_escalation", "escalation_id", "created_at"),
 )
 
-# An operator @mention of the bot opens one conversation with the global
-# supervisor (Discord mention-routing spec §4.1).  The root message and, once
-# the thread-open delivery confirms, the external thread are each unique per
-# transport; ``thread_id`` is the internal ``messages.thread_id`` both
-# directions of the conversation share.
+# An operator message opens one conversation with the supervisor (Discord
+# mention-routing spec §4.1, chat-extension spec §2.2).  The root message and,
+# once the thread-open delivery confirms, the external thread are each unique
+# per transport; ``thread_id`` is the internal ``messages.thread_id`` both
+# directions of the conversation share.  ``kind`` says which conversation this
+# is: ``thread`` is one conversation per opened thread, ``channel`` is the one
+# conversation a channel carries for the no-mention route, so a channel can
+# never accumulate two of them while one is still live.
 supervisor_conversations = Table(
     "supervisor_conversations",
     metadata,
@@ -1611,6 +2072,7 @@ supervisor_conversations = Table(
     Column("created_by", Text, nullable=False),  # human:discord:<id>
     Column("audience", JSON, nullable=False),  # allowlist snapshot at open
     Column("state", Text, nullable=False, server_default="opening"),
+    Column("kind", Text, nullable=False, server_default="thread"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("closed_at", Float, nullable=True),
@@ -1625,10 +2087,18 @@ supervisor_conversations = Table(
         unique=True,
         postgresql_where=text("external_thread_id IS NOT NULL"),
     ),
+    Index(
+        "uq_supervisor_conversations_channel",
+        "transport",
+        "channel_id",
+        unique=True,
+        postgresql_where=text("kind = 'channel' AND state <> 'closed'"),
+    ),
     CheckConstraint(
         "state IN ('opening','open','closed','delivery_blocked')",
         name="ck_supervisor_conversations_state",
     ),
+    CheckConstraint("kind IN ('thread','channel')", name="ck_supervisor_conversations_kind"),
     Index("idx_supervisor_conversations_state", "state", "updated_at"),
 )
 
@@ -1642,9 +2112,20 @@ conversation_inputs = Table(
     Column(
         "conversation_id",
         Text,
-        ForeignKey("supervisor_conversations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("supervisor_conversations.id", name="fk_conversation_inputs_conversation",
+                   ondelete="SET NULL"),
+        nullable=True,
     ),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
+    Column("routing_state", Text, nullable=False, server_default="conversation"),
+    Column("routing_evidence", JSONB, nullable=False, server_default="{}"),
+    Column("receipt", JSONB, nullable=False, server_default="{}"),
+    Column("guild_id", Text, nullable=True),
+    Column("reference_message_id", Text, nullable=True),
+    Column("external_thread_id", Text, nullable=True),
+    Column("source_version", JSONB, nullable=True),
+    Column("retention_entry_id", Text, nullable=True),
     Column("transport", Text, nullable=False),
     Column("external_message_id", Text, nullable=False),
     Column("verified_actor", Text, nullable=False),
@@ -1666,14 +2147,21 @@ conversation_inputs = Table(
         "state IN ('accepted','answered','expired','revoked')",
         name="ck_conversation_inputs_state",
     ),
-    CheckConstraint("char_count BETWEEN 1 AND 4000", name="ck_conversation_inputs_char_count"),
+    CheckConstraint("char_count BETWEEN 1 AND 16000", name="ck_conversation_inputs_char_count"),
     CheckConstraint(
-        "source IN ('gateway','backfill','replay','test')",
+        "routing_state IN ('queued','conversation','discussion','interpretation',"
+        "'clarification','receipt','applied','quarantined')",
+        name="ck_conversation_inputs_routing_state",
+    ),
+    CheckConstraint(
+        "source IN ('gateway','backfill','replay','test','local','legacy','interaction')",
         name="ck_conversation_inputs_source",
     ),
     Index("idx_conversation_inputs_history", "conversation_id", "received_at", "id"),
     Index("idx_conversation_inputs_author_window", "author_id", "received_at"),
     Index("idx_conversation_inputs_channel_window", "channel_id", "received_at"),
+    Index("idx_conversation_inputs_ask", "ask_id", "received_at", "id"),
+    Index("idx_conversation_inputs_routing", "routing_state", "created_at", "id"),
 )
 
 # Reconnect backfill position per configured channel or bound thread.  The
@@ -1793,8 +2281,10 @@ supervisor_report_requests = Table(
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("kind", "owner_ref", name="uq_supervisor_report_requests_owner"),
+    # ``digest`` is the supervisor-authored digest window (2026-10-03 §4, P3):
+    # one author request per digest window, same lifecycle, no new columns.
     CheckConstraint(
-        "kind IN ('hourly','morning')", name="ck_supervisor_report_requests_kind"
+        "kind IN ('hourly','morning','digest')", name="ck_supervisor_report_requests_kind"
     ),
     CheckConstraint(
         "state IN ('reserved','requested','submitted','fallback','cancelled')",
@@ -1856,8 +2346,9 @@ morning_report_coverage = Table(
 morning_report_facts = Table(
     "morning_report_facts",
     metadata,
-    Column("report_id", Text, ForeignKey("morning_reports.id", ondelete="CASCADE"),
-           primary_key=True),
+    Column(
+        "report_id", Text, ForeignKey("morning_reports.id", ondelete="CASCADE"), primary_key=True
+    ),
     Column("fact_key", Text, primary_key=True),
     Column("source", Text, nullable=False),
     Column("record_id", Text, nullable=False),
@@ -1963,9 +2454,15 @@ archived_tasks = Table(
     # Mirrors tasks.provider_intent / tasks.rerouted_from (provider-failover D8, D17).
     Column("provider_intent", Text, nullable=False, server_default="class_only"),
     Column("rerouted_from", Text, nullable=True),
+    # Preserve the bound benchmark arm, requested model and policy digest
+    # after active task rows are removed.
+    Column("route", JSONB(none_as_null=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),
+    # Preserve the live task's generation even after its metadata is deleted.
+    Column("legacy_completion_id", Text, nullable=False,
+           server_default=text("'legacy:' || gen_random_uuid()::text")),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_archived_tasks_provider_intent",
@@ -2072,6 +2569,80 @@ playbook_activations = Table(
     Index("idx_playbook_activations_health", "health"),
 )
 
+playbook_private_values = Table(
+    "playbook_private_values",
+    metadata,
+    Column("value_id", Text, primary_key=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("scope_kind", Text, nullable=False),
+    Column("scope_owner", Text, nullable=False),
+    Column("format_version", Integer, nullable=False),
+    Column("content_type", Text, nullable=False),
+    Column("ciphertext", LargeBinary, nullable=False),
+    Column("key_id", Text, nullable=False),
+    Column("nonce", LargeBinary, nullable=False),
+    Column("digest", Text, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    Column("expires_at", Float),
+    CheckConstraint("owner_kind IN ('run', 'namespace', 'snapshot')",
+                    name="ck_playbook_private_values_owner_kind"),
+    CheckConstraint("scope_kind IN ('system', 'project', 'profile')",
+                    name="ck_playbook_private_values_scope_kind"),
+    CheckConstraint("byte_count >= 0", name="ck_playbook_private_values_byte_count"),
+    CheckConstraint("format_version > 0", name="ck_playbook_private_values_format_version"),
+    CheckConstraint("octet_length(nonce) = 12", name="ck_playbook_private_values_nonce"),
+    CheckConstraint("owner_id <> '' AND scope_owner <> ''", name="ck_playbook_private_values_owner"),
+    Index("idx_private_values_owner", "owner_kind", "owner_id"),
+    Index("idx_private_values_expiry", "expires_at"),
+)
+
+observation_snapshots = Table(
+    "observation_snapshots", metadata,
+    Column("snapshot_id", Text, primary_key=True),
+    Column("producer", Text, nullable=False),
+    Column("producer_version", Integer, nullable=False),
+    Column("authority_fingerprint", Text, nullable=False),
+    Column("scope_kind", Text, nullable=False),
+    Column("scope_owner", Text, nullable=False),
+    Column("run_id", Text),
+    Column("request_hash", Text, nullable=False),
+    Column("observed_at", Float, nullable=False),
+    Column("materialized_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("manifest", JSONB, nullable=False),
+    Column("coverage", JSONB, nullable=False),
+    Column("envelope", JSONB, nullable=False),
+    Column("complete", Boolean, nullable=False),
+    Column("page_count", Integer, nullable=False),
+    Column("content_digest", Text, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    CheckConstraint("producer_version > 0", name="ck_observation_snapshots_version"),
+    CheckConstraint("scope_kind IN ('system', 'project', 'profile') AND scope_owner <> ''",
+                    name="ck_observation_snapshots_scope"),
+    CheckConstraint("page_count >= 0 AND byte_count >= 0", name="ck_observation_snapshots_sizes"),
+    CheckConstraint("expires_at > materialized_at", name="ck_observation_snapshots_expiry"),
+    Index("idx_observation_snapshots_expiry", "expires_at"),
+    Index("idx_observation_snapshots_scope", "scope_kind", "scope_owner"),
+    Index("idx_observation_snapshots_run", "run_id"),
+)
+
+observation_snapshot_pages = Table(
+    "observation_snapshot_pages", metadata,
+    Column("snapshot_id", Text, ForeignKey("observation_snapshots.snapshot_id", ondelete="CASCADE"),
+           primary_key=True),
+    Column("ordinal", Integer, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("token_hash", Text, nullable=False, unique=True),
+    Column("private_reference", JSONB, nullable=False),
+    Column("content_digest", Text, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    Column("row_count", Integer, nullable=False),
+    Column("artifact", Boolean, nullable=False),
+    CheckConstraint("ordinal >= 0 AND byte_count >= 0 AND row_count >= 0",
+                    name="ck_observation_snapshot_pages_sizes"),
+)
+
 playbook_v2_runs = Table(
     "playbook_v2_runs",
     metadata,
@@ -2142,6 +2713,7 @@ playbook_step_receipts = Table(
     Column("turn_index", Integer, nullable=False, server_default="-1"),
     Column("operator_decision_id", Text, nullable=True),
     Column("iteration", Integer, nullable=False, server_default="-1"),
+    Column("iteration_path", Text, nullable=False, server_default=""),
     Column("attempt", Integer, nullable=False, server_default="1"),
     Column("idempotency_key", Text, nullable=False),
     Column("snapshot_version", Integer, nullable=False, server_default="0"),
@@ -2188,6 +2760,7 @@ playbook_step_receipts = Table(
         "run_id",
         "step_id",
         "iteration",
+        "iteration_path",
         "attempt",
         "turn_index",
         "receipt_kind",
@@ -2200,6 +2773,7 @@ playbook_step_receipts = Table(
         "run_id",
         "step_id",
         "iteration",
+        "iteration_path",
         "attempt",
         "turn_index",
     ),
@@ -2217,6 +2791,7 @@ playbook_waits = Table(
     ),
     Column("step_id", Text, nullable=False),
     Column("iteration", Integer, nullable=False, server_default="-1"),
+    Column("iteration_path", Text, nullable=False, server_default=""),
     Column("kind", Text, nullable=False),
     Column("event_type", Text, nullable=False, server_default=""),
     Column("correlation_key", Text, nullable=False, server_default=""),
@@ -2240,6 +2815,7 @@ playbook_waits = Table(
         "run_id",
         "step_id",
         "iteration",
+        "iteration_path",
         unique=True,
         postgresql_where=text("state = 'active'"),
     ),
@@ -2391,6 +2967,8 @@ agent_questions = Table(
     Column("state", Text, nullable=False),
     Column("answer", Text),
     Column("answered_by", Text),
+    Column("ask_decision_id", Text),
+    Column("submission_state", Text, nullable=False, server_default="pending"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("source_ts", Float, nullable=False),
@@ -2415,6 +2993,8 @@ agent_questions = Table(
         "state IN ('supervisor','human','answered','delivered','resolved','stale')",
         name="ck_agent_question_state",
     ),
+    CheckConstraint("submission_state IN ('pending','unknown','delivered')",
+                    name="ck_agent_question_submission_state"),
     Index("idx_agent_questions_pending", "state", "created_at"),
     Index("idx_agent_questions_session", "session_id", "instance_token"),
 )
@@ -2769,6 +3349,33 @@ task_integration_checkpoints = Table(
     ),
 )
 
+branch_retirements = Table(
+    "branch_retirements",
+    metadata,
+    # No FKs: an explicit decision and its audit outlive tasks and repositories.
+    Column("id", Text, primary_key=True),
+    Column("request_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("branch", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("requested_at", Float, nullable=False),
+    Column("state", Text, nullable=False, server_default="pending"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    Column("evidence", JSONB, nullable=False, server_default="{}"),
+    CheckConstraint(
+        "state IN ('pending', 'complete', 'conflict', 'withdrawn')",
+        name="ck_branch_retirements_state",
+    ),
+    CheckConstraint("attempts >= 0", name="ck_branch_retirements_attempts"),
+    UniqueConstraint("request_id", "repository_id", "branch"),
+    Index("ix_branch_retirements_due", "state", "next_attempt_at"),
+)
+
 task_branch_origins = Table(
     "task_branch_origins",
     metadata,
@@ -2782,6 +3389,11 @@ task_branch_origins = Table(
     Column("parent_repository_id", Text, nullable=True),
     Column("parent_ref", Text, nullable=True),
     Column("base_sha", Text, nullable=False),
+    # The filing base stays immutable. Record the refreshed parent/default
+    # heads used at worker start separately from that provenance.
+    Column("base_refresh", JSONB, nullable=True),
+    # Exact prerequisite heads used by a child, separate from its filing origin.
+    Column("stack_snapshot", JSONB, nullable=True),
     Column("creation_generation", Integer, nullable=False),
     Column("reserved", Boolean, nullable=False, server_default=false()),
     Column("materialized", Boolean, nullable=False, server_default=false()),
@@ -2828,12 +3440,73 @@ task_branch_origins = Table(
     ),
 )
 
+#: Retained predecessor audit history. Unfinished decisions are imported once
+#: into branch_retirements with their original SHA as a deletion precondition.
+branch_deletion_audit = Table(
+    "branch_deletion_audit",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=True),
+    Column("task_id", Text, nullable=True),
+    Column("branch", Text, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    # Why the branch went: obsolete_close | cancel | fail_close | supersede |
+    # abort | delete.
+    Column("reason", Text, nullable=False),
+    # Human explanation carried from the decision that abandoned the work.
+    Column("detail", Text, nullable=True),
+    # What became of the recorded ref: pending (recorded, deletion not yet
+    # confirmed) | deleted | held | failed | moved.  A ``pending`` row is the
+    # durable intent: a daemon that dies between recording and deleting leaves
+    # one behind, and the drain retries it.
+    Column("outcome", Text, nullable=False),
+    # Why a held/failed/moved row was not deleted, and the bundle holding the
+    # tip when it was not reachable from the default branch.
+    Column("detail_reason", Text, nullable=True),
+    Column("backup_path", Text, nullable=True),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=True),
+    Column("recorded_at", Float, nullable=False),
+    Column("deleted_at", Float, nullable=True),
+    CheckConstraint(
+        "reason IN ('obsolete_close', 'cancel', 'fail_close', 'supersede', 'abort', 'delete')",
+        name="ck_branch_deletion_audit_reason",
+    ),
+    CheckConstraint(
+        "outcome IN ('pending', 'deleted', 'held', 'failed', 'moved')",
+        name="ck_branch_deletion_audit_outcome",
+    ),
+    CheckConstraint(
+        "attempts >= 0",
+        name="ck_branch_deletion_audit_attempts",
+    ),
+    CheckConstraint(
+        "length(head_sha) = 40 AND head_sha = lower(head_sha)",
+        name="ck_branch_deletion_audit_head_sha",
+    ),
+    Index(
+        "ix_branch_deletion_audit_branch",
+        "project_id",
+        "branch",
+    ),
+    Index(
+        "ix_branch_deletion_audit_due",
+        "next_attempt_at",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+)
+
 integration_branch_owners = Table(
     "integration_branch_owners",
     metadata,
     Column("id", Text, primary_key=True),
     Column("repository_id", Text, nullable=False),
     Column("ref", Text, nullable=False),
+    # Git-first authority. NULL fence identifies an untouched shadow/legacy row.
+    # Legacy columns remain readable until the schema retirement stage.
+    Column("holder", Text, nullable=True),
+    Column("fence", BigInteger, nullable=True),
     Column("owner_id", Text, nullable=False),
     Column("owner_role", Text, nullable=False),
     Column("fence_token", Integer, nullable=False),
@@ -2842,10 +3515,18 @@ integration_branch_owners = Table(
     Column("workspace_id", Text, nullable=True),
     Column("confirmed_workspace_id", Text, nullable=True),
     Column("expires_at", Float, nullable=True),
+    # Publication delegation binding and audit for the holder
+    # ``publication-delegation:<id>``; cleared by the next acquisition.
+    Column("delegation", JSONB(none_as_null=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),
     CheckConstraint("fence_token >= 0", name="ck_integration_branch_owners_fence"),
+    CheckConstraint("fence IS NULL OR fence >= 0", name="ck_integration_branch_owners_lease_fence"),
+    CheckConstraint(
+        "holder IS NULL OR (fence IS NOT NULL AND expires_at IS NOT NULL)",
+        name="ck_integration_branch_owners_lease_binding",
+    ),
     CheckConstraint(
         "handoff_state IN ('reserved', 'attached', 'handoff_pending', 'released')",
         name="ck_integration_branch_owners_handoff_state",
@@ -2892,6 +3573,43 @@ integration_review_evidence = Table(
         "generation",
         "created_at",
         "id",
+    ),
+)
+
+# An operator's explicit authorization of one exact train root source.  It
+# admits a root whose kind the policy does not, without editing the policy or
+# its generation; holds, gates, rejections and source CI still bind.
+integration_root_authorizations = Table(
+    "integration_root_authorizations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("source_base", Text, nullable=False),
+    Column("source_head", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("review_kind", Text, nullable=False),
+    Column("pr_url", Text, nullable=False),
+    Column("task_type", Text, nullable=True),
+    Column("policy_generation", Integer, nullable=False),
+    Column("operator_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("generation >= 0", name="ck_integration_root_authorizations_generation"),
+    CheckConstraint(
+        "policy_generation >= 0", name="ck_integration_root_authorizations_policy_generation"
+    ),
+    CheckConstraint(
+        "review_kind IN ('leaf', 'parent')", name="ck_integration_root_authorizations_kind"
+    ),
+    UniqueConstraint(
+        "task_id",
+        "repository_id",
+        "source_base",
+        "source_head",
+        "generation",
+        name="uq_integration_root_authorizations_source",
     ),
 )
 
@@ -3132,6 +3850,12 @@ integration_batches = Table(
     Column("id", Text, primary_key=True),
     Column("project_id", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
+    # Non-null target marks the additive Git-first input/intent shape.
+    Column("target_ref", Text, nullable=True),
+    Column("intent", Text, nullable=False, server_default="open"),
+    Column("repair_attempt_count", Integer, nullable=False, server_default="0"),
+    Column("fixer_state", JSONB(none_as_null=True), nullable=True),
+    Column("fixer_queue", JSONB(none_as_null=True), nullable=True),
     Column("request_id", Text, nullable=False),
     Column("trigger", Text, nullable=True),
     Column("source_manifest_digest", Text, nullable=False),
@@ -3142,19 +3866,44 @@ integration_batches = Table(
     Column("pr_url", Text, nullable=True),
     Column("repair_stage_ordinal", Integer, nullable=True),
     Column("tested_candidate_sha", Text, nullable=True),
+    # A red candidate whose failures the target already has, or has not decided,
+    # is not repaired: these count that candidate's consecutive observations, its
+    # bounded re-request deadline and how many re-requests it asked for. The
+    # identity is the exact candidate at one repair generation, so a repaired or
+    # moved head starts from zero.
+    Column("baseline_candidate_sha", Text, nullable=True),
+    Column("baseline_generation", Integer, nullable=False, server_default="0"),
+    Column("baseline_observations", Integer, nullable=False, server_default="0"),
+    Column("baseline_reruns", Integer, nullable=False, server_default="0"),
+    Column("baseline_rerun_at", Float, nullable=True),
     Column("ci_evidence_id", Text, nullable=True),
     Column("final_main_sha", Text, nullable=True),
     Column("human_abort_reason", Text, nullable=True),
+    # Only authorized eject or daemon supersede writes this release instruction.
+    # It outlives task metadata and never changes the frozen source manifest.
+    Column("ejection_record", JSONB(none_as_null=True), nullable=True),
     Column("policy_snapshot", JSON, nullable=False),
     Column("artifact_snapshot", JSON, nullable=False),
     Column("cleanup_state", Text, nullable=False),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+    CheckConstraint("intent IN ('open', 'paused', 'aborted')",
+                    name="ck_integration_batches_intent"),
+    CheckConstraint("repair_attempt_count >= 0", name="ck_integration_batches_repair_attempts"),
+    CheckConstraint("target_ref IS NULL OR target_ref LIKE 'refs/heads/%'",
+                    name="ck_integration_batches_target_ref"),
     CheckConstraint("current_revision >= 0", name="ck_integration_batches_revision"),
     CheckConstraint(
         "repair_stage_ordinal IS NULL OR repair_stage_ordinal >= 0",
         name="ck_integration_batches_repair_stage",
     ),
+    CheckConstraint(
+        "baseline_generation >= 0", name="ck_integration_batches_baseline_generation"
+    ),
+    CheckConstraint(
+        "baseline_observations >= 0", name="ck_integration_batches_baseline_observations"
+    ),
+    CheckConstraint("baseline_reruns >= 0", name="ck_integration_batches_baseline_reruns"),
     CheckConstraint(
         "(lifecycle = 'empty' AND base_sha IS NULL AND integration_branch IS NULL) OR "
         "(lifecycle <> 'empty' AND base_sha IS NOT NULL AND integration_branch IS NOT NULL)",
@@ -3172,7 +3921,7 @@ integration_batches = Table(
         "project_id",
         unique=True,
         postgresql_where=text(
-            "lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
+            "target_ref IS NULL AND lifecycle IN ('sealing', 'sealed', 'building', 'testing', 'repairing', "
             "'human_blocked', 'promoting', 'cleanup_pending')"
         ),
     ),
@@ -3186,6 +3935,7 @@ integration_batch_members = Table(
     Column("task_id", Text, nullable=False),
     Column("pr_url", Text, nullable=True),
     Column("repository_id", Text, nullable=False),
+    Column("source_sha", Text, nullable=True),
     Column("source_base_sha", Text, nullable=False),
     Column("reviewed_head_sha", Text, nullable=False),
     Column("reviewed_tree_sha", Text, nullable=False),
@@ -3196,7 +3946,7 @@ integration_batch_members = Table(
         "review_evidence_id",
         Text,
         ForeignKey("integration_review_evidence.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     ),
     Column("review_evidence", JSON, nullable=False),
     UniqueConstraint("batch_id", "task_id", name="uq_integration_batch_members_task"),
@@ -3212,6 +3962,8 @@ integration_batch_members = Table(
         unique=True,
     ),
     CheckConstraint("ordinal >= 0", name="ck_integration_batch_members_ordinal"),
+    CheckConstraint("source_sha IS NOT NULL OR review_evidence_id IS NOT NULL",
+                    name="ck_integration_batch_members_review_or_input"),
     CheckConstraint(
         "(source_ref IS NULL AND source_ref_retention IS NULL) OR "
         "(source_ref IS NOT NULL AND source_ref LIKE 'refs/heads/%' AND "
@@ -3226,6 +3978,9 @@ integration_candidate_revisions = Table(
     Column("batch_id", Text, primary_key=True),
     Column("revision", Integer, primary_key=True),
     Column("construction_base_sha", Text, nullable=False),
+    # Membership can change only through audited repair ejection. Each old
+    # revision keeps the exact source identities its results were built from.
+    Column("source_manifest", JSONB, nullable=True),
     Column("next_member_ordinal", Integer, nullable=False, server_default="0"),
     Column("repair_parent_revision", Integer, nullable=True),
     Column("head_sha", Text, nullable=True),
@@ -3287,11 +4042,8 @@ integration_candidate_member_results = Table(
         ["integration_candidate_revisions.batch_id", "integration_candidate_revisions.revision"],
         name="fk_integration_candidate_member_results_revision",
     ),
-    ForeignKeyConstraint(
-        ["batch_id", "member_ordinal"],
-        ["integration_batch_members.batch_id", "integration_batch_members.ordinal"],
-        name="fk_integration_candidate_member_results_member",
-    ),
+    # PostgreSQL validates current construction results with a trigger; a
+    # superseded result refers to its revision's frozen source_manifest.
 )
 
 integration_candidate_publications = Table(
@@ -3345,7 +4097,7 @@ integration_candidate_resolutions = Table(
     Column("operation_id", Text, nullable=False),
     Column("operation_episode_id", Text, nullable=False),
     Column("stage_ordinal", Integer, nullable=False),
-    Column("stage_deadline_at", Float, nullable=False),
+    Column("stage_deadline_at", Float, nullable=True),
     Column("project_id", Text, nullable=False),
     Column("repair_task_id", Text, nullable=False),
     Column("repair_session_id", Text, nullable=False),
@@ -3377,7 +4129,9 @@ integration_candidate_resolutions = Table(
     CheckConstraint(
         "member_ordinal >= 0", name="ck_integration_candidate_resolutions_member_ordinal"
     ),
-    CheckConstraint("stage_ordinal IN (0, 1)", name="ck_integration_candidate_resolutions_stage"),
+    # Any retained successor stage (a00000000050); the FK below binds the
+    # exact stage row.
+    CheckConstraint("stage_ordinal >= 0", name="ck_integration_candidate_resolutions_stage"),
     CheckConstraint("fence_token >= 0", name="ck_integration_candidate_resolutions_fence"),
     CheckConstraint(
         "(handoff_owner_id IS NULL AND handoff_fence_token IS NULL) OR "
@@ -3487,9 +4241,8 @@ integration_candidate_ref_mutations = Table(
         "'repair_handoff', 'root_main')",
         name="ck_integration_candidate_ref_mutations_purpose",
     ),
-    CheckConstraint(
-        "operation_stage IN (0, 1)", name="ck_integration_candidate_ref_mutations_stage"
-    ),
+    # Any retained successor stage (a00000000050), as for resolutions.
+    CheckConstraint("operation_stage >= 0", name="ck_integration_candidate_ref_mutations_stage"),
     CheckConstraint(
         "lease_fence_token >= 0 AND branch_fence_token >= 0",
         name="ck_integration_candidate_ref_mutations_fences",
@@ -3501,7 +4254,7 @@ integration_candidate_ref_mutations = Table(
     CheckConstraint(
         "(state = 'reserved' AND remote_sha IS NULL) OR "
         "(state = 'applied' AND remote_sha = desired_sha) OR "
-        "(state = 'superseded' AND purpose = 'root_main' AND remote_sha IS NULL)",
+        "(state = 'superseded' AND remote_sha IS NULL)",
         name="ck_integration_candidate_ref_mutations_remote",
     ),
     ForeignKeyConstraint(
@@ -3746,7 +4499,7 @@ integration_repair_stages = Table(
     Column("dossier", JSON, nullable=True),
     Column("state", Text, nullable=False),
     Column("completed_at", Float, nullable=True),
-    CheckConstraint("ordinal IN (0, 1)", name="ck_integration_repair_stages_ordinal"),
+    CheckConstraint("ordinal >= 0", name="ck_integration_repair_stages_ordinal"),
     CheckConstraint("attempts >= 0", name="ck_integration_repair_stages_attempts"),
     CheckConstraint(
         "writer_kind IS NULL OR writer_kind IN ('repair_delegate', 'existing_verifier')",
@@ -3856,23 +4609,49 @@ integration_check_evidence = Table(
     Column("conclusion", Text, nullable=False),
     Column("classification", Text, nullable=False),
     Column("observed_at", Float, nullable=False),
-    UniqueConstraint(
+    # Exact-commit cache (src/integration/checks.py): one row per repository,
+    # SHA, required check and trusted producer (``producer_id``), overwritten
+    # by each refresh with the latest attempt. Legacy run-attempt rows bound to
+    # a batch or parent generation leave these null.
+    Column("repository_id", Text, nullable=True),
+    Column("sha", Text, nullable=True),
+    Column("check_name", Text, nullable=True),
+    Column("run_url", Text, nullable=True),
+    Column("due_at", Float, nullable=True),
+    # Independent of refreshable verdicts: one durable CI-owner request per exact check.
+    Column("check_reconciliation", JSONB, nullable=True),
+    Index(
+        "uq_integration_check_evidence_producer_run_attempt_checks",
         "producer_id",
         "run_id",
         "attempt",
         "required_check_version",
-        name="uq_integration_check_evidence_producer_run_attempt_checks",
+        unique=True,
+        postgresql_where=text("sha IS NULL"),
+    ),
+    Index(
+        "uq_integration_check_evidence_commit_check",
+        "repository_id",
+        "sha",
+        "check_name",
+        "producer_id",
+        unique=True,
+        postgresql_where=text("sha IS NOT NULL"),
     ),
     CheckConstraint("attempt >= 0", name="ck_integration_check_evidence_attempt"),
     CheckConstraint(
         "(batch_id IS NOT NULL AND candidate_revision IS NOT NULL AND parent_task_id IS NULL "
-        "AND parent_generation IS NULL AND parent_head_sha IS NULL) OR "
+        "AND parent_generation IS NULL AND parent_head_sha IS NULL AND sha IS NULL) OR "
         "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NOT NULL "
-        "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL)",
+        "AND parent_generation IS NOT NULL AND parent_head_sha IS NOT NULL AND sha IS NULL) OR "
+        "(batch_id IS NULL AND candidate_revision IS NULL AND parent_task_id IS NULL "
+        "AND parent_generation IS NULL AND parent_head_sha IS NULL AND repository_id IS NOT NULL "
+        "AND sha IS NOT NULL AND check_name IS NOT NULL)",
         name="ck_integration_check_evidence_subject",
     ),
     CheckConstraint(
-        "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive')",
+        "conclusion IN ('success', 'failure', 'pending', 'cancelled', 'inconclusive', "
+        "'missing', 'unavailable')",
         name="ck_integration_check_evidence_conclusion",
     ),
 )
@@ -4315,7 +5094,7 @@ integration_release_results = Table(
     Column("released_at", Float, nullable=False),
 )
 
-# Task 11 rollout controls.  Waivers/transitions/consumptions/applicability
+# Task 11 rollout controls.  Waivers/transitions/consumptions
 # are evidence, not mutable state; dual-dialect migrations install database
 # triggers that reject UPDATE and DELETE.  Only the per-project suppression
 # projection is deliberately reversible.
@@ -4429,47 +5208,6 @@ integration_history_waiver_consumptions = Table(
     ),
 )
 
-integration_legacy_gate_applicability = Table(
-    "integration_legacy_gate_applicability",
-    metadata,
-    Column("project_id", Text, nullable=False),
-    Column("gate_id", Text, nullable=False),
-    Column("waiver_id", Text, nullable=False),
-    Column("transition_id", Text, nullable=False),
-    Column("blocker_digest", Text, nullable=False),
-    Column("applicable", Boolean, nullable=False),
-    Column("created_at", Float, nullable=False),
-    PrimaryKeyConstraint("project_id", "gate_id", name="pk_integration_legacy_gate_applicability"),
-    ForeignKeyConstraint(
-        ["project_id"],
-        ["projects.id"],
-        name="fk_integration_legacy_gate_applicability_project",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["gate_id"],
-        ["gates.id"],
-        name="fk_integration_legacy_gate_applicability_gate",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["waiver_id"],
-        ["integration_history_waivers.id"],
-        name="fk_integration_legacy_gate_applicability_waiver",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["transition_id"],
-        ["integration_rollout_transitions.id"],
-        name="fk_integration_legacy_gate_applicability_transition",
-        ondelete="RESTRICT",
-    ),
-    CheckConstraint(
-        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
-        name="ck_integration_legacy_gate_applicability_blocker_digest",
-    ),
-)
-
 integration_legacy_suppression = Table(
     "integration_legacy_suppression",
     metadata,
@@ -4577,6 +5315,315 @@ integration_legacy_deliveries = Table(
 )
 
 
+# Integration subjects (rev-agile-ridge revision 2, §3.2): the one durable row
+# the level-triggered reconciler visits for a root batch, a parent episode or a
+# source.  Typed ports over these rows live in src/integration/subjects.py; the
+# vocabularies below must match its enums (tests/test_integration_subjects.py).
+INTEGRATION_SUBJECT_KINDS = ("root_batch", "parent_episode", "source")
+INTEGRATION_SUBJECT_PHASES = (
+    "admitting",
+    "building",
+    "testing",
+    "repairing",
+    "promotable",
+    "publishing",
+    "published",
+    "cleaning",
+    "done",
+)
+INTEGRATION_SUBJECT_ENGINES = ("legacy", "reconciler")
+INTEGRATION_WRITER_STATUSES = ("none", "filed", "claimed", "working", "stopped", "unknown")
+INTEGRATION_JOURNAL_KINDS = ("decision", "action", "attempt", "receipt")
+INTEGRATION_JOURNAL_MODES = ("shadow", "active")
+INTEGRATION_PRIMITIVES = (
+    "integration_observe_subject",
+    "integration_seal",
+    "git_materialize_ref",
+    "git_merge_members",
+    "git_preserve",
+    "git_publish",
+    "git_ancestry",
+    "ci_request",
+    "ci_observe",
+    "ci_attest",
+    "writer_file",
+    "writer_lease",
+    "writer_stop_proof",
+    "record_receipt",
+    "record_attempt",
+    "record_decision",
+    "wait",
+    "gate",
+    "eject",
+    "cleanup",
+)
+
+
+def _sql_in(values: tuple[str, ...]) -> str:
+    return "(" + ", ".join(f"'{value}'" for value in values) + ")"
+
+
+# One subject, one owner (``engine``), one due time.  The never-blocked check
+# is the schema half of §3.6: a live subject is either held by an explicit gate
+# or due again within its pinned ``max_wait_seconds`` of when the due time was
+# set; only a ``done`` subject has neither.  ``version`` is the optimistic
+# concurrency token of every visit; an event only pulls the due time forward
+# and stamps ``wake_requested_at`` (it never bumps the version), so a visit in
+# flight finishes and is revisited at once instead of being refused.
+integration_subjects = Table(
+    "integration_subjects",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    # Natural identity supplied by the adapter that creates the subject; with
+    # (project_id, kind) it makes creation idempotent.
+    Column("subject_key", Text, nullable=False),
+    Column("engine", Text, nullable=False, server_default="legacy"),
+    Column("phase", Text, nullable=False),
+    # The policy this subject runs under, pinned for its whole life: activating
+    # a new policy version never changes a running subject (§3.5, C7).
+    Column("policy_playbook_id", Text, nullable=False),
+    Column(
+        "policy_artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    # Source or parent task; null for a root batch.
+    Column("task_id", Text, nullable=True),
+    # The legacy ``integration_batches`` row a root subject maps onto, once sealed.
+    Column("batch_id", Text, nullable=True),
+    # Additive parent bridge: nullable for pre-cutover rows, pinned once bound.
+    Column("parent_episode_id", Text, nullable=True),
+    ForeignKeyConstraint(
+        ["task_id", "parent_episode_id"],
+        ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],
+        name="fk_integration_subjects_parent_episode",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "parent_episode_id IS NULL OR kind = 'parent_episode'",
+        name="ck_integration_subjects_parent_episode",
+    ),
+    Index(
+        "uq_integration_subjects_parent_episode",
+        "parent_episode_id",
+        unique=True,
+        postgresql_where=text("parent_episode_id IS NOT NULL"),
+    ),
+    # Exact head/generation identity of what the current phase refers to.
+    Column("target_ref", Text, nullable=True),
+    Column("head_sha", Text, nullable=True),
+    Column("base_sha", Text, nullable=True),
+    Column("generation", Integer, nullable=False, server_default="0"),
+    # Due time (§3.3 schedule): waiting, held or progressing, never unbounded.
+    Column("next_due_at", Float, nullable=True),
+    Column("due_set_at", Float, nullable=False),
+    Column("max_wait_seconds", Integer, nullable=False),
+    Column("wait_reason", Text, nullable=True),
+    Column("gate_id", Text, nullable=True),
+    Column("refusal_streak", Integer, nullable=False, server_default="0"),
+    Column("wake_requested_at", Float, nullable=True),
+    Column("last_visit_at", Float, nullable=True),
+    Column("last_journal_seq", BigInteger, nullable=True),
+    Column("closed_reason", Text, nullable=True),
+    # Writer lease (§3.2): who may push the subject's target and how far it got.
+    Column("writer_status", Text, nullable=False, server_default="none"),
+    Column("writer_task_id", Text, nullable=True),
+    Column("writer_fence_token", Integer, nullable=True),
+    Column("writer_session_id", Text, nullable=True),
+    Column("writer_claimed_at", Float, nullable=True),
+    Column("writer_last_push_at", Float, nullable=True),
+    Column("writer_stop_proof", JSONB(none_as_null=True), nullable=True),
+    # Writer budget for the current ordinal: clock and counted attempts.
+    Column("budget_ordinal", Integer, nullable=True),
+    Column("budget_class", Text, nullable=True),
+    Column("budget_started_at", Float, nullable=True),
+    Column("budget_deadline_at", Float, nullable=True),
+    Column("budget_attempts", Integer, nullable=False, server_default="0"),
+    Column("budget_attempt_limit", Integer, nullable=True),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "kind IN " + _sql_in(INTEGRATION_SUBJECT_KINDS), name="ck_integration_subjects_kind"
+    ),
+    CheckConstraint(
+        "phase IN " + _sql_in(INTEGRATION_SUBJECT_PHASES), name="ck_integration_subjects_phase"
+    ),
+    CheckConstraint(
+        "engine IN " + _sql_in(INTEGRATION_SUBJECT_ENGINES),
+        name="ck_integration_subjects_engine",
+    ),
+    CheckConstraint(
+        "writer_status IN " + _sql_in(INTEGRATION_WRITER_STATUSES),
+        name="ck_integration_subjects_writer_status",
+    ),
+    CheckConstraint(
+        "(kind = 'root_batch' AND task_id IS NULL) OR "
+        "(kind <> 'root_batch' AND task_id IS NOT NULL AND batch_id IS NULL)",
+        name="ck_integration_subjects_identity",
+    ),
+    CheckConstraint(
+        "(head_sha IS NULL OR (target_ref IS NOT NULL AND head_sha ~ '^[0-9a-f]{40}$')) "
+        "AND (base_sha IS NULL OR base_sha ~ '^[0-9a-f]{40}$')",
+        name="ck_integration_subjects_head",
+    ),
+    CheckConstraint("generation >= 0", name="ck_integration_subjects_generation"),
+    CheckConstraint("version >= 0", name="ck_integration_subjects_version"),
+    CheckConstraint("max_wait_seconds > 0", name="ck_integration_subjects_max_wait"),
+    CheckConstraint("refusal_streak >= 0", name="ck_integration_subjects_refusal_streak"),
+    CheckConstraint(
+        "(phase = 'done' AND closed_reason IS NOT NULL AND next_due_at IS NULL "
+        "AND gate_id IS NULL AND wait_reason IS NULL) OR "
+        "(phase <> 'done' AND closed_reason IS NULL AND (gate_id IS NOT NULL OR "
+        "(next_due_at IS NOT NULL AND next_due_at <= due_set_at + max_wait_seconds)))",
+        name="ck_integration_subjects_never_blocked",
+    ),
+    CheckConstraint(
+        "wait_reason IS NULL OR next_due_at IS NOT NULL",
+        name="ck_integration_subjects_wait_until",
+    ),
+    CheckConstraint(
+        "(writer_status = 'none' AND writer_task_id IS NULL AND writer_fence_token IS NULL "
+        "AND writer_session_id IS NULL) OR "
+        "(writer_status <> 'none' AND writer_task_id IS NOT NULL)",
+        name="ck_integration_subjects_writer",
+    ),
+    CheckConstraint(
+        "writer_fence_token IS NULL OR writer_fence_token >= 0",
+        name="ck_integration_subjects_writer_fence",
+    ),
+    CheckConstraint(
+        "(budget_ordinal IS NULL AND budget_class IS NULL AND budget_started_at IS NULL "
+        "AND budget_deadline_at IS NULL AND budget_attempt_limit IS NULL "
+        "AND budget_attempts = 0) OR "
+        "(budget_ordinal IS NOT NULL AND budget_ordinal >= 0 AND budget_class IS NOT NULL "
+        "AND budget_started_at IS NOT NULL "
+        "AND (budget_deadline_at IS NULL OR budget_deadline_at >= budget_started_at))",
+        name="ck_integration_subjects_budget",
+    ),
+    CheckConstraint(
+        "budget_attempts >= 0 AND (budget_attempt_limit IS NULL OR budget_attempt_limit > 0)",
+        name="ck_integration_subjects_budget_attempts",
+    ),
+    UniqueConstraint("project_id", "kind", "subject_key", name="uq_integration_subjects_key"),
+    Index(
+        "idx_integration_subjects_due",
+        "next_due_at",
+        "id",
+        postgresql_where=text("phase <> 'done' AND next_due_at IS NOT NULL"),
+    ),
+    # Two admitting root subjects would seal the same frontier twice.
+    Index(
+        "uq_integration_subjects_admitting_root",
+        "project_id",
+        "repository_id",
+        unique=True,
+        postgresql_where=text("kind = 'root_batch' AND phase = 'admitting'"),
+    ),
+    Index(
+        "uq_integration_subjects_batch",
+        "batch_id",
+        unique=True,
+        postgresql_where=text("batch_id IS NOT NULL"),
+    ),
+    Index("idx_integration_subjects_project_phase", "project_id", "phase"),
+    Index(
+        "idx_integration_subjects_task",
+        "task_id",
+        postgresql_where=text("task_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_integration_subjects_writer_task",
+        "writer_task_id",
+        postgresql_where=text("writer_task_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_integration_subjects_gate",
+        "gate_id",
+        postgresql_where=text("gate_id IS NOT NULL"),
+    ),
+    Index("idx_integration_subjects_artifact", "policy_artifact_sha256"),
+)
+
+# Append-only journal of what the reconciler observed, decided and did for a
+# subject (primitives 14-16): decisions in shadow and active mode, primitive
+# outcomes, counted attempts and receipts, each with the exact identity and the
+# pinned artifact it ran under.  ``idempotency_key`` makes every append
+# replay-safe; a trigger refuses UPDATE and DELETE.
+integration_subject_journal = Table(
+    "integration_subject_journal",
+    metadata,
+    Column("seq", BigInteger, Identity(), primary_key=True),
+    Column(
+        "subject_id",
+        Text,
+        ForeignKey("integration_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("entry_kind", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("visit_id", Text, nullable=True),
+    Column("mode", Text, nullable=False),
+    Column(
+        "policy_artifact_sha256",
+        Text,
+        ForeignKey("playbook_artifacts.artifact_sha256", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("subject_version", Integer, nullable=False),
+    Column("phase", Text, nullable=False),
+    Column("head_sha", Text, nullable=True),
+    Column("generation", Integer, nullable=False),
+    Column("rule", Text, nullable=True),
+    Column("primitive", Text, nullable=True),
+    Column("outcome", Text, nullable=True),
+    Column("facts_digest", Text, nullable=True),
+    Column("payload", JSONB, nullable=False, server_default="{}"),
+    Column("recorded_at", Float, nullable=False),
+    CheckConstraint(
+        "entry_kind IN " + _sql_in(INTEGRATION_JOURNAL_KINDS),
+        name="ck_integration_subject_journal_kind",
+    ),
+    CheckConstraint(
+        "mode IN " + _sql_in(INTEGRATION_JOURNAL_MODES),
+        name="ck_integration_subject_journal_mode",
+    ),
+    CheckConstraint(
+        "phase IN " + _sql_in(INTEGRATION_SUBJECT_PHASES),
+        name="ck_integration_subject_journal_phase",
+    ),
+    CheckConstraint(
+        "primitive IS NULL OR primitive IN " + _sql_in(INTEGRATION_PRIMITIVES),
+        name="ck_integration_subject_journal_primitive",
+    ),
+    CheckConstraint(
+        "subject_version >= 0 AND generation >= 0",
+        name="ck_integration_subject_journal_identity",
+    ),
+    CheckConstraint(
+        "head_sha IS NULL OR head_sha ~ '^[0-9a-f]{40}$'",
+        name="ck_integration_subject_journal_head",
+    ),
+    CheckConstraint(
+        "(entry_kind = 'decision' AND rule IS NOT NULL AND primitive IS NOT NULL "
+        "AND facts_digest IS NOT NULL AND outcome IS NULL) OR "
+        "(entry_kind = 'action' AND primitive IS NOT NULL AND outcome IS NOT NULL) OR "
+        "(entry_kind IN ('attempt', 'receipt') AND head_sha IS NOT NULL "
+        "AND outcome IS NOT NULL)",
+        name="ck_integration_subject_journal_entry",
+    ),
+    UniqueConstraint(
+        "subject_id", "idempotency_key", name="uq_integration_subject_journal_idempotency"
+    ),
+    Index("idx_integration_subject_journal_subject", "subject_id", "seq"),
+    Index("idx_integration_subject_journal_artifact", "policy_artifact_sha256"),
+)
+
+
 # Immutable recommendations; execution/CI evidence is appended separately.
 test_selections = Table(
     "test_selections",
@@ -4629,9 +5676,7 @@ test_selections = Table(
         "'invalid','over_budget','timeout','model_drift')",
         name="ck_test_selections_jev_status",
     ),
-    CheckConstraint(
-        "marker_policy IN ('default','all')", name="ck_test_selections_marker_policy"
-    ),
+    CheckConstraint("marker_policy IN ('default','all')", name="ck_test_selections_marker_policy"),
     Index("idx_test_selections_project_created", "project_id", "created_at"),
     Index("idx_test_selections_task_created", "task_id", "created_at"),
 )
@@ -4681,6 +5726,46 @@ test_selection_promotions = Table(
 )
 
 
+# Durable recurring prompts, including projectless named supervisors. Soft
+# owner references preserve history after session/claim turnover.
+agent_cron = Table(
+    "agent_cron",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
+    Column("session_id", Text, nullable=False),
+    Column("session_instance_token", Text, nullable=False),
+    Column("owner_task_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=False, server_default="0"),
+    Column("idempotency_key", Text, nullable=False),
+    Column("prompt", Text, nullable=False),
+    Column("recurrence", JSONB, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("created_at", Float, nullable=False),
+    Column("next_fire_at", Float, nullable=False),
+    Column("checked_at", Float, nullable=False, server_default="0"),
+    Column("stopped_at", Float, nullable=True),
+    Column("tick_count", Integer, nullable=False, server_default="0"),
+    Column("coalesced_count", Integer, nullable=False, server_default="0"),
+    Column("pending_message_id", Text, nullable=True),
+    Column("pending_until", Float, nullable=True),
+    Column("delivery_attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False, server_default="0"),
+    Column("last_delivery_at", Float, nullable=True),
+    Column("last_delivery_status", Text, nullable=True),
+    Column("last_error", Text, nullable=True),
+    CheckConstraint("state IN ('active','cancelled','expired')", name="ck_agent_cron_state"),
+    CheckConstraint(
+        "delivery_attempts >= 0 AND delivery_attempts <= 5 AND claim_epoch >= 0",
+        name="ck_agent_cron_attempts_epoch",
+    ),
+    UniqueConstraint(
+        "session_id", "session_instance_token", "idempotency_key",
+        name="uq_agent_cron_idempotency",
+    ),
+    Index("idx_agent_cron_scan", "state", "checked_at", "next_fire_at"),
+)
+
 # Durable agent-owned waits. Soft owner/source references survive archival and
 # claim turnover; delivery receipts live exclusively on the result message.
 agent_waits = Table(
@@ -4717,16 +5802,348 @@ agent_waits = Table(
         name="ck_agent_waits_deadline",
     ),
     UniqueConstraint(
-        "project_id", "owner_kind", "owner_id", "claim_epoch", "idempotency_key",
+        "project_id",
+        "owner_kind",
+        "owner_id",
+        "claim_epoch",
+        "idempotency_key",
         name="uq_agent_waits_idempotency",
     ),
     Index(
-        "uq_agent_waits_active_claim", "owner_id", "claim_epoch", unique=True,
+        "uq_agent_waits_active_claim",
+        "owner_id",
+        "claim_epoch",
+        unique=True,
         postgresql_where=text("state = 'active' AND owner_kind = 'task'"),
     ),
     Index("idx_agent_waits_scan", "state", "checked_at", "deadline_at"),
     Index("idx_agent_waits_owner", "project_id", "owner_kind", "owner_id", "created_at"),
     Index("idx_agent_waits_session", "session_id", "claim_epoch", "state"),
+)
+
+
+# Verified waits and hibernation state (implementation spec §5). These tables
+# are inert until the v2 readers and writers are enabled by the cutover.
+wait_records = Table(
+    "wait_records",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("origin", Text, nullable=False),
+    Column("session_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("condition_kind", Text, nullable=False),
+    Column("condition", JSONB, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_watermark_seq", BigInteger, nullable=False),
+    Column("verification_state", Text, nullable=False),
+    Column("evidence_ref", Text, nullable=False),
+    Column("verified_at", Float, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("escalate_at", Float, nullable=True),
+    Column("due_at", Float, nullable=True),
+    Column("ceiling_anchor_at", Float, nullable=True),
+    Column("sleep_decision", Text, nullable=True),
+    Column("decision_reason", Text, nullable=True),
+    Column("decision_inputs", JSONB, nullable=True),
+    Column("idempotency_key", Text, nullable=True),
+    Column("request_hash", Text, nullable=False),
+    Column("claimed", Text, nullable=True),
+    Column("outcome", Text, nullable=False, server_default="pending"),
+    Column("resolved_at", Float, nullable=True),
+    Column("result_ref", Text, nullable=True),
+    Column("blocking", Boolean, nullable=False, server_default=false()),
+    Column("cleared_at", Float, nullable=True),
+    Column("legacy_kind", Text, nullable=True),
+    Column("legacy_id", Text, nullable=True),
+    Column("wake_delivered_at", Float, nullable=True),
+    Column("version", Integer, nullable=False, server_default="1"),
+    CheckConstraint(
+        "owner_kind IN ('task','session','scheduler','playbook','integration')",
+        name="ck_wait_records_owner_kind",
+    ),
+    CheckConstraint(
+        "origin IN ('agent','scheduler','integration','playbook','human')",
+        name="ck_wait_records_origin",
+    ),
+    CheckConstraint(
+        "condition_kind IN ('task','dependency','job','ci_check','ci_run','pull_request',"
+        "'batch','message','human','timer','resource','playbook_condition','close_merge')",
+        name="ck_wait_records_condition_kind",
+    ),
+    CheckConstraint(
+        "verification_state IN ('verified','stale','unavailable')",
+        name="ck_wait_records_verification_state",
+    ),
+    CheckConstraint(
+        "sleep_decision IN ('in_place','hibernate')", name="ck_wait_records_sleep_decision"
+    ),
+    CheckConstraint(
+        "outcome IN ('pending','satisfied','cancelled','lifted_by_supervisor','source_unavailable')",
+        name="ck_wait_records_outcome",
+    ),
+    Index(
+        "uq_wait_records_active_owner",
+        "owner_kind",
+        "owner_id",
+        unique=True,
+        postgresql_where=text("outcome = 'pending' AND origin <> 'scheduler'"),
+    ),
+    Index(
+        "uq_wait_records_idempotency",
+        "project_id",
+        "owner_kind",
+        "owner_id",
+        "claim_epoch",
+        "idempotency_key",
+        unique=True,
+        postgresql_where=text("idempotency_key IS NOT NULL"),
+    ),
+    Index(
+        "uq_wait_records_scheduler_blocker",
+        "owner_kind",
+        "owner_id",
+        "source_key",
+        "source_generation",
+        unique=True,
+        postgresql_where=text("origin = 'scheduler'"),
+    ),
+    Index(
+        "uq_wait_records_legacy",
+        "legacy_kind",
+        "legacy_id",
+        unique=True,
+        postgresql_where=text("legacy_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_wait_records_source",
+        "source_key",
+        "source_generation",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+    Index(
+        "idx_wait_records_project_pending",
+        "project_id",
+        "created_at",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+)
+
+wait_edges = Table(
+    "wait_edges",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("waiter_key", Text, nullable=False),
+    Column("waiter_project_id", Text, nullable=False),
+    Column("blocker_key", Text, nullable=False),
+    Column("blocker_project_id", Text, nullable=False),
+    Column("relation", Text, nullable=False),
+    Column("source_revision", Text, nullable=False),
+    Column("active", Boolean, nullable=False, server_default=true()),
+    Column("created_at", Float, nullable=False),
+    Column("cleared_at", Float, nullable=True),
+    CheckConstraint("relation IN ('semantic','resource')", name="ck_wait_edges_relation"),
+    Index("idx_wait_edges_waiter", "waiter_key", postgresql_where=text("active")),
+    Index("idx_wait_edges_blocker", "blocker_key", postgresql_where=text("active")),
+)
+
+wait_source_events = Table(
+    "wait_source_events",
+    metadata,
+    Column("seq", BigInteger, Identity(), primary_key=True),
+    Column("id", Text, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_revision", Text, nullable=False),
+    Column("occurred_at", Float, nullable=False),
+    Column("committed_at", Float, nullable=False),
+    Column("outcome_ref", Text, nullable=False),
+    Column("payload_hash", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("dispatched_at", Float, nullable=True),
+    UniqueConstraint("id", name="uq_wait_source_events_id"),
+    UniqueConstraint(
+        "source_key", "source_generation", "source_revision", name="uq_wait_source_events_revision"
+    ),
+    Index(
+        "idx_wait_source_events_undispatched",
+        "seq",
+        postgresql_where=text("dispatched_at IS NULL"),
+    ),
+)
+
+wait_listener_cursors = Table(
+    "wait_listener_cursors",
+    metadata,
+    Column("listener_key", Text, primary_key=True),
+    Column("last_seq", BigInteger, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("listener_key IN ('source','timer')", name="ck_wait_listener_cursors_key"),
+)
+
+wait_deadlines = Table(
+    "wait_deadlines",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("deadline_type", Text, nullable=False),
+    Column("due_at", Float, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("fired_at", Float, nullable=True),
+    Column("cancelled_at", Float, nullable=True),
+    CheckConstraint(
+        "deadline_type IN ('due','escalation','ceiling','transition','reservation')",
+        name="ck_wait_deadlines_type",
+    ),
+    UniqueConstraint(
+        "wait_id", "deadline_type", "generation", name="uq_wait_deadlines_wait_type_gen"
+    ),
+    Index(
+        "idx_wait_deadlines_due",
+        "due_at",
+        postgresql_where=text("fired_at IS NULL AND cancelled_at IS NULL"),
+    ),
+)
+
+wait_escalations = Table(
+    "wait_escalations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("escalation_id", Text, ForeignKey("escalations.id"), nullable=False),
+    Column("raised_at", Float, nullable=False),
+    Column("original_age_seconds", Float, nullable=False),
+    Column("supervisor_session_id", Text, nullable=True),
+    Column("decision", Text, nullable=True),
+    Column("decided_at", Float, nullable=True),
+    Column("note", Text, nullable=True),
+    Column("prior_escalation_id", Text, nullable=True),
+    CheckConstraint(
+        "decision IN ('extend','wake','cancel','reroute','escalate_to_human')",
+        name="ck_wait_escalations_decision",
+    ),
+)
+
+continuations = Table(
+    "continuations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    # Retain the suspension audit after its task is deleted or archived.
+    Column("task_id", Text, nullable=False),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("suspension_generation", Integer, nullable=False),
+    Column("summary", Text, nullable=True),
+    Column("summary_sha256", Text, nullable=True),
+    Column("summary_degraded", Boolean, nullable=False, server_default=false()),
+    Column("facts", JSONB, nullable=False),
+    Column("branch", Text, nullable=False),
+    Column("saved_head", Text, nullable=True),
+    Column("prior_status", Text, nullable=False),
+    Column("held_cursor_seq", BigInteger, nullable=False),
+    Column("resume_state", Text, nullable=False),
+    Column("hold_reason", Text, nullable=True),
+    Column("launch_attempts", Integer, nullable=False, server_default="0"),
+    Column("new_session_id", Text, nullable=True),
+    Column("envelope_id", Text, nullable=True),
+    Column("created_at", Float, nullable=True),
+    Column("stopped_at", Float, nullable=True),
+    Column("resumed_at", Float, nullable=True),
+    Column("acknowledged_at", Float, nullable=True),
+    Column("version", Integer, nullable=False, server_default="1"),
+    CheckConstraint(
+        "resume_state IN ('sleeping','queued','reserved','launching','delivered',"
+        "'acknowledged','held','failed','cancelled')",
+        name="ck_continuations_resume_state",
+    ),
+    CheckConstraint("octet_length(summary) <= 8192", name="ck_continuations_summary_bytes"),
+    Index(
+        "uq_continuations_active_task",
+        "task_id",
+        unique=True,
+        postgresql_where=text("resume_state NOT IN ('acknowledged','failed','cancelled')"),
+    ),
+    UniqueConstraint("wait_id", "suspension_generation", name="uq_continuations_intent"),
+)
+
+admission_reservations = Table(
+    "admission_reservations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, nullable=True),  # retained admission audit identity
+    Column("continuation_id", Text, ForeignKey("continuations.id"), nullable=True),
+    Column("scope", JSONB, nullable=False),
+    Column("effective_priority", Integer, nullable=False),
+    Column("provenance", Text, nullable=False),
+    Column("deadline_at", Float, nullable=False),
+    Column("fifo_seq", BigInteger, Identity(), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("consumed_by_session_id", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("granted_at", Float, nullable=True),
+    Column("consumed_at", Float, nullable=True),
+    CheckConstraint(
+        "provenance IN ('branch_blocker','resume','train_repair')",
+        name="ck_admission_reservations_provenance",
+    ),
+    CheckConstraint(
+        "state IN ('pending','overdue','granted','consumed','cancelled')",
+        name="ck_admission_reservations_state",
+    ),
+    Index(
+        "uq_admission_reservations_subject",
+        text("COALESCE(task_id, continuation_id)"),
+        unique=True,
+        postgresql_where=text("state IN ('pending','overdue','granted')"),
+    ),
+)
+
+wait_measurements = Table(
+    "wait_measurements",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("condition_kind", Text, nullable=False),
+    Column("source_class", Text, nullable=False),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("waited_seconds", Float, nullable=False),
+    Column("hibernated", Boolean, nullable=False),
+    Column("evicted", Boolean, nullable=False),
+    Column("summary_tokens", Integer, nullable=True),
+    Column("resume_tokens", Integer, nullable=True),
+    Column("teardown_seconds", Float, nullable=True),
+    Column("setup_seconds", Float, nullable=True),
+    Column("rebuild_seconds", Float, nullable=True),
+    Column("cache_hit_rate", Float, nullable=True),
+    Column("workspace_path", Text, nullable=True),
+    Column("recorded_at", Float, nullable=False),
+    Index(
+        "idx_wait_measurements_bucket",
+        "project_id",
+        "condition_kind",
+        "source_class",
+        "recorded_at",
+    ),
+)
+
+wait_priority_projection = Table(
+    "wait_priority_projection",
+    metadata,
+    Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
+    Column("donor_task_id", Text, nullable=True),
+    Column("donor_path", JSONB, nullable=False),
+    Column("graph_version", BigInteger, nullable=False),
+    Column("computed_at", Float, nullable=False),
 )
 
 
@@ -4831,21 +6248,27 @@ jobs = Table(
     "jobs",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("project_id", Text, nullable=False),
+    Column("project_id", Text, nullable=True),
     Column("task_id", Text, nullable=True),
     Column("owner_kind", Text, nullable=False),
     Column("owner_id", Text, nullable=False),
     Column("submitter_session_id", Text, nullable=True),
     Column("claim_epoch", Integer, nullable=True),
     Column("integration_operation_id", Text, nullable=True),
+    Column("playbook_run_id", Text, ForeignKey("playbook_v2_runs.run_id", ondelete="RESTRICT")),
+    Column("playbook_step_id", Text),
+    Column("iteration_path", Text),
+    Column("attempt", Integer),
+    Column("artifact_digest", Text),
+    Column("input_root", Text),
     Column("idempotency_key", Text, nullable=False),
     Column("request_hash", Text, nullable=False),
     Column("preset", Text, nullable=False),
     Column("preset_version", Integer, nullable=False),
     Column("argv", JSON, nullable=False),
     Column("contract", JSON, nullable=False),
-    Column("workspace_id", Text, nullable=False),
-    Column("workspace_generation", Integer, nullable=False),
+    Column("workspace_id", Text, nullable=True),
+    Column("workspace_generation", Integer, nullable=True),
     Column("input_mode", Text, nullable=False),
     Column("input_ref", Text, nullable=True),
     Column("input_fingerprint", Text, nullable=True),
@@ -4880,7 +6303,20 @@ jobs = Table(
     UniqueConstraint(
         "project_id", "owner_kind", "owner_id", "idempotency_key", name="uq_jobs_owner_key"
     ),
-    CheckConstraint("owner_kind IN ('task','integration')", name="ck_jobs_owner_kind"),
+    CheckConstraint("owner_kind IN ('task','integration','playbook')", name="ck_jobs_owner_kind"),
+    CheckConstraint(
+        "(owner_kind = 'playbook' AND playbook_run_id IS NOT NULL "
+        "AND owner_id = playbook_run_id AND playbook_step_id IS NOT NULL "
+        "AND iteration_path IS NOT NULL AND attempt IS NOT NULL AND attempt > 0 "
+        "AND artifact_digest IS NOT NULL AND input_root IS NOT NULL "
+        "AND task_id IS NULL AND workspace_id IS NULL AND workspace_generation IS NULL) OR "
+        "(owner_kind IN ('task','integration') AND project_id IS NOT NULL "
+        "AND workspace_id IS NOT NULL AND workspace_generation IS NOT NULL "
+        "AND playbook_run_id IS NULL)", name="ck_jobs_owner_fields",
+    ),
+    Index("uq_jobs_playbook_operation", "playbook_run_id", "playbook_step_id",
+          "iteration_path", "attempt", unique=True,
+          postgresql_where=text("owner_kind = 'playbook'")),
     CheckConstraint("input_mode IN ('live','snapshot')", name="ck_jobs_input_mode"),
     CheckConstraint("job_class IN ('shared','exclusive')", name="ck_jobs_class"),
     CheckConstraint("weight > 0 AND priority_band BETWEEN 0 AND 2", name="ck_jobs_capacity"),
@@ -4890,6 +6326,14 @@ jobs = Table(
     ),
     Index("idx_jobs_state_submitted", "state", "submitted_at"),
     Index("idx_jobs_task_submitted", "task_id", "submitted_at"),
+)
+
+job_input_pins = Table(
+    "job_input_pins", metadata,
+    Column("job_id", Text, ForeignKey("jobs.id", ondelete="RESTRICT"), primary_key=True),
+    Column("input_root", Text, nullable=False),
+    Column("input_digest", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
 )
 
 job_workspace_pins = Table(
@@ -4915,8 +6359,19 @@ job_outbox = Table(
 # Shared outbox for new report/conversation lifecycles. Digest and escalation
 # identities remain in their established domain tables.
 outbound_deliveries = Table(
-    "outbound_deliveries", metadata,
+    "outbound_deliveries",
+    metadata,
     Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT")),
+    Column("binding_id", Text, ForeignKey("ask_external_bindings.id", ondelete="RESTRICT")),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT")),
+    Column("decision_generation", Integer),
+    Column("display_version", Integer),
+    Column("mode_generation", Integer),
+    Column("root_generation", Integer),
+    Column("send_kind", Text),
+    Column("write_started_at", Float),
+    Column("attempt_token", Text),
     Column("owner_kind", Text, nullable=False),
     Column("owner_id", Text, nullable=False),
     Column("dedup_key", Text, nullable=False),
@@ -4947,10 +6402,1371 @@ outbound_deliveries = Table(
         name="ck_outbound_deliveries_lease",
     ),
     CheckConstraint(
-        "state <> 'sent' OR (external_receipt_id IS NOT NULL "
-        "AND receipt_confirmed_at IS NOT NULL)",
+        "state <> 'sent' OR (external_receipt_id IS NOT NULL AND receipt_confirmed_at IS NOT NULL)",
         name="ck_outbound_deliveries_receipt",
     ),
+    CheckConstraint("send_kind IS NULL OR send_kind IN "
+                    "('root','root_edit','reply','move_notice','redirect')",
+                    name="ck_outbound_deliveries_send_kind"),
+    CheckConstraint("owner_kind <> 'ask' OR (ask_id IS NOT NULL AND binding_id IS NOT NULL "
+                    "AND project_id IS NOT NULL AND decision_generation IS NOT NULL "
+                    "AND display_version IS NOT NULL AND mode_generation IS NOT NULL "
+                    "AND root_generation IS NOT NULL AND decision_generation > 0 "
+                    "AND display_version > 0 AND mode_generation > 0 AND root_generation > 0 "
+                    "AND send_kind IS NOT NULL)", name="ck_outbound_deliveries_ask"),
+    Index("idx_outbound_deliveries_ask", "ask_id", "display_version"),
+    Index("idx_outbound_deliveries_binding", "binding_id", "state"),
+    Index("idx_outbound_deliveries_mode", "project_id", "mode_generation", "send_kind"),
     Index("idx_outbound_deliveries_due", "state", "due_at"),
     Index("idx_outbound_deliveries_owner", "owner_kind", "owner_id", "created_at"),
+)
+
+# Durable records are an independent domain. Task/project identities here are
+# intentional soft references: archive/delete must never depend on knowledge.
+# K01 of the approved work-and-knowledge-records plan (2026-10-01).
+record_installation = Table(
+    "record_installation",
+    metadata,
+    Column("singleton", SmallInteger, nullable=False),
+    Column("installation_id", UUID, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("singleton", name="pk_record_installation"),
+    UniqueConstraint("installation_id", name="uq_record_installation_id"),
+    CheckConstraint("singleton = 1", name="ck_record_installation_singleton"),
+)
+
+record_scopes = Table(
+    "record_scopes",
+    metadata,
+    Column("scope_key", Text, nullable=False),
+    Column("scope_kind", Text, nullable=False),
+    Column("project_id", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("scope_key", name="pk_record_scopes"),
+    UniqueConstraint("project_id", name="uq_record_scopes_project"),
+    CheckConstraint(
+        "(scope_kind = 'global' AND scope_key = 'global' AND project_id IS NULL) OR "
+        "(scope_kind = 'project' AND project_id IS NOT NULL AND project_id <> '' "
+        "AND scope_key = 'project:' || project_id)",
+        name="ck_record_scopes_identity",
+    ),
+)
+
+records = Table(
+    "records",
+    metadata,
+    Column("record_id", UUID, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("task_id", Text),
+    Column("knowledge_alias", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("created_by", Text, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("record_id", name="pk_records"),
+    ForeignKeyConstraint(
+        ["scope_key"], ["record_scopes.scope_key"], name="fk_records_scope", ondelete="RESTRICT"
+    ),
+    UniqueConstraint("record_id", "kind", name="uq_records_kind"),
+    UniqueConstraint("task_id", name="uq_records_task"),
+    UniqueConstraint("knowledge_alias", name="uq_records_alias"),
+    CheckConstraint(
+        "(kind = 'task' AND task_id IS NOT NULL AND task_id <> '' "
+        "AND knowledge_alias IS NULL) OR (kind = 'knowledge' AND task_id IS NULL "
+        "AND knowledge_alias IS NOT NULL AND knowledge_alias ~ '^kn-[0-9a-f]{32}$')",
+        name="ck_records_domain",
+    ),
+)
+
+knowledge_records = Table(
+    "knowledge_records",
+    metadata,
+    Column("record_id", UUID, nullable=False),
+    Column("kind", Text, nullable=False, server_default="knowledge"),
+    Column("current_revision_id", UUID, nullable=False),
+    Column("current_sequence", BigInteger, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("record_id", name="pk_knowledge_records"),
+    CheckConstraint("kind = 'knowledge'", name="ck_knowledge_records_kind"),
+    CheckConstraint("current_sequence > 0", name="ck_knowledge_records_sequence"),
+    ForeignKeyConstraint(
+        ["record_id", "kind"],
+        ["records.record_id", "records.kind"],
+        name="fk_knowledge_records_kind",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["record_id", "current_revision_id", "current_sequence"],
+        [
+            "knowledge_revisions.record_id",
+            "knowledge_revisions.revision_id",
+            "knowledge_revisions.sequence",
+        ],
+        name="fk_knowledge_records_head",
+        deferrable=True,
+        initially="DEFERRED",
+        use_alter=True,
+    ),
+)
+
+knowledge_revisions = Table(
+    "knowledge_revisions",
+    metadata,
+    Column("revision_id", UUID, nullable=False),
+    Column("record_id", UUID, nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("parent_revision_id", UUID),
+    Column("actor_id", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("change_kind", Text, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("hash_version", SmallInteger, nullable=False),
+    PrimaryKeyConstraint("revision_id", name="pk_knowledge_revisions"),
+    ForeignKeyConstraint(
+        ["record_id"],
+        ["knowledge_records.record_id"],
+        name="fk_knowledge_revisions_record",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["record_id", "parent_revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_revisions_parent",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    UniqueConstraint("record_id", "sequence", name="uq_knowledge_revisions_sequence"),
+    UniqueConstraint("record_id", "revision_id", "sequence", name="uq_knowledge_revisions_head"),
+    UniqueConstraint("record_id", "revision_id", name="uq_knowledge_revisions_record_revision"),
+    CheckConstraint("sequence > 0", name="ck_knowledge_revisions_sequence"),
+    CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_knowledge_revisions_hash"),
+    CheckConstraint("hash_version = 1", name="ck_knowledge_revisions_hash_version"),
+    CheckConstraint(
+        "(sequence = 1) = (parent_revision_id IS NULL)", name="ck_knowledge_revisions_parent"
+    ),
+)
+
+knowledge_revision_payloads = Table(
+    "knowledge_revision_payloads",
+    metadata,
+    Column("revision_id", UUID, nullable=False),
+    Column("snapshot", JSONB(none_as_null=True)),
+    Column("redacted_at", DateTime(timezone=True)),
+    Column("redaction_id", UUID),
+    PrimaryKeyConstraint("revision_id", name="pk_knowledge_revision_payloads"),
+    ForeignKeyConstraint(
+        ["revision_id"],
+        ["knowledge_revisions.revision_id"],
+        name="fk_knowledge_revision_payloads_revision",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "(snapshot IS NOT NULL AND redacted_at IS NULL AND redaction_id IS NULL) OR "
+        "(snapshot IS NULL AND redacted_at IS NOT NULL AND redaction_id IS NOT NULL)",
+        name="ck_knowledge_revision_payloads_state",
+    ),
+    CheckConstraint(
+        "snapshot IS NULL OR knowledge_snapshot_valid_v1(snapshot)",
+        name="ck_knowledge_revision_payloads_snapshot_v1",
+    ),
+)
+
+# Named boundary checks make corrupt direct SQL actionable independently of the
+# richer versioned element/consistency validator.
+for _rule, _expression in {
+    "object": "jsonb_typeof(snapshot) = 'object'",
+    "title": "jsonb_typeof(snapshot->'title') = 'string' AND "
+    "length(snapshot->>'title') BETWEEN 1 AND 240",
+    "body": "jsonb_typeof(snapshot->'body') = 'string' AND "
+    "octet_length(snapshot->>'body') <= 262144",
+    "category": "snapshot->>'category' IN "
+    "('fact','decision','policy','procedure','incident','reference','note')",
+    "lifecycle": "snapshot->>'lifecycle' IN ('active','retired')",
+    "verification": "snapshot->>'verification' IN ('unverified','verified','disputed')",
+    "tags": "jsonb_typeof(snapshot->'tags') = 'array'",
+    "sources": "jsonb_typeof(snapshot->'sources') = 'array'",
+    "links": "jsonb_typeof(snapshot->'outgoing_links') = 'array'",
+    "metadata": "jsonb_typeof(snapshot->'metadata') = 'object'",
+}.items():
+    knowledge_revision_payloads.append_constraint(
+        CheckConstraint(
+            f"snapshot IS NULL OR ({_expression}) IS TRUE",
+            name=f"ck_knowledge_revision_payloads_{_rule}",
+        )
+    )
+
+
+knowledge_search = Table(
+    "knowledge_search",
+    metadata,
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("summary", Text),
+    Column("category", Text, nullable=False),
+    Column("lifecycle", Text, nullable=False),
+    Column("verification", Text, nullable=False),
+    Column("valid_until", DateTime(timezone=True)),
+    Column("recheck_at", DateTime(timezone=True)),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("search_vector", TSVECTOR, nullable=False),
+    PrimaryKeyConstraint("record_id", name="pk_knowledge_search"),
+    ForeignKeyConstraint(
+        ["record_id"],
+        ["knowledge_records.record_id"],
+        name="fk_knowledge_search_record",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_search_revision",
+    ),
+    ForeignKeyConstraint(
+        ["scope_key"],
+        ["record_scopes.scope_key"],
+        name="fk_knowledge_search_scope",
+        ondelete="RESTRICT",
+    ),
+)
+Index("ix_knowledge_search_vector", knowledge_search.c.search_vector, postgresql_using="gin")
+Index(
+    "ix_knowledge_search_scope_state",
+    knowledge_search.c.scope_key,
+    knowledge_search.c.lifecycle,
+    knowledge_search.c.verification,
+    knowledge_search.c.updated_at,
+    knowledge_search.c.record_id,
+)
+Index(
+    "ix_knowledge_search_scope_category",
+    knowledge_search.c.scope_key,
+    knowledge_search.c.category,
+    knowledge_search.c.record_id,
+)
+
+record_link_heads = Table(
+    "record_link_heads",
+    metadata,
+    Column("link_id", UUID, nullable=False),
+    Column("source_record_id", UUID, nullable=False),
+    Column("owner_scope_key", Text, nullable=False),
+    Column("current_version", BigInteger, nullable=False),
+    PrimaryKeyConstraint("link_id", name="pk_record_link_heads"),
+    ForeignKeyConstraint(
+        ["source_record_id"],
+        ["records.record_id"],
+        name="fk_record_link_heads_source",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["owner_scope_key"],
+        ["record_scopes.scope_key"],
+        name="fk_record_link_heads_scope",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["link_id", "current_version"],
+        ["record_link_versions.link_id", "record_link_versions.version"],
+        name="fk_record_link_heads_version",
+        deferrable=True,
+        initially="DEFERRED",
+        use_alter=True,
+    ),
+    UniqueConstraint("source_record_id", "link_id", name="uq_record_link_heads_source"),
+    CheckConstraint("current_version > 0", name="ck_record_link_heads_version"),
+)
+
+record_link_versions = Table(
+    "record_link_versions",
+    metadata,
+    Column("link_id", UUID, nullable=False),
+    Column("version", BigInteger, nullable=False),
+    Column("target_record_id", UUID, nullable=False),
+    Column("target_revision_id", UUID),
+    Column("link_type", Text, nullable=False),
+    Column("removed", Boolean, nullable=False, server_default=false()),
+    Column("actor_id", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("metadata", JSONB, nullable=False),
+    Column("source_revision_id", UUID),
+    PrimaryKeyConstraint("link_id", "version", name="pk_record_link_versions"),
+    ForeignKeyConstraint(
+        ["link_id"],
+        ["record_link_heads.link_id"],
+        name="fk_record_link_versions_head",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["target_record_id"],
+        ["records.record_id"],
+        name="fk_record_link_versions_target",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["target_record_id", "target_revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_record_link_versions_pin",
+    ),
+    ForeignKeyConstraint(
+        ["source_revision_id"],
+        ["knowledge_revisions.revision_id"],
+        name="fk_record_link_versions_source_revision",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    CheckConstraint("version > 0", name="ck_record_link_versions_version"),
+    CheckConstraint(
+        "link_type IN ('references','motivated_by','produces','supports','contradicts','supersedes')",
+        name="ck_record_link_versions_type",
+    ),
+    CheckConstraint("record_metadata_valid_v1(metadata)", name="ck_record_link_versions_metadata"),
+)
+
+task_record_link_state = Table(
+    "task_record_link_state",
+    metadata,
+    Column("record_id", UUID, nullable=False),
+    Column("link_sequence", BigInteger, nullable=False),
+    Column("link_token", UUID, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("record_id", name="pk_task_record_link_state"),
+    ForeignKeyConstraint(
+        ["record_id"],
+        ["records.record_id"],
+        name="fk_task_record_link_state_record",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint("link_sequence >= 0", name="ck_task_record_link_state_sequence"),
+)
+
+record_source_artifacts = Table(
+    "record_source_artifacts",
+    metadata,
+    Column("artifact_id", UUID, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("byte_size", BigInteger, nullable=False),
+    Column("media_type", Text, nullable=False),
+    Column("storage_key", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("redacted_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("artifact_id", name="pk_record_source_artifacts"),
+    ForeignKeyConstraint(
+        ["scope_key"],
+        ["record_scopes.scope_key"],
+        name="fk_record_source_artifacts_scope",
+        ondelete="RESTRICT",
+    ),
+    UniqueConstraint("scope_key", "content_sha256", name="uq_record_source_artifacts_hash"),
+    CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_source_artifacts_hash"),
+    CheckConstraint("byte_size >= 0", name="ck_record_source_artifacts_size"),
+)
+
+record_requests = Table(
+    "record_requests",
+    metadata,
+    Column("scope_key", Text, nullable=False),
+    Column("actor_key", Text, nullable=False),
+    Column("operation", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("request_sha256", Text, nullable=False),
+    Column("result", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint(
+        "scope_key", "actor_key", "operation", "idempotency_key", name="pk_record_requests"
+    ),
+    ForeignKeyConstraint(
+        ["scope_key"],
+        ["record_scopes.scope_key"],
+        name="fk_record_requests_scope",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint("length(idempotency_key) BETWEEN 1 AND 128", name="ck_record_requests_key"),
+    CheckConstraint("request_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_requests_hash"),
+    CheckConstraint("jsonb_typeof(result) = 'object'", name="ck_record_requests_result"),
+)
+
+record_outbox = Table(
+    "record_outbox",
+    metadata,
+    Column("event_id", UUID, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("aggregate_record_id", UUID),
+    Column("revision_id", UUID),
+    Column("event_type", Text, nullable=False),
+    Column("destination", Text, nullable=False),
+    Column("dedup_key", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("available_at", DateTime(timezone=True), nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("lease_token", UUID),
+    Column("lease_until", DateTime(timezone=True)),
+    Column("delivered_at", DateTime(timezone=True)),
+    Column("last_error_code", Text),
+    PrimaryKeyConstraint("event_id", name="pk_record_outbox"),
+    ForeignKeyConstraint(
+        ["scope_key"],
+        ["record_scopes.scope_key"],
+        name="fk_record_outbox_scope",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["aggregate_record_id"],
+        ["records.record_id"],
+        name="fk_record_outbox_record",
+        ondelete="RESTRICT",
+    ),
+    ForeignKeyConstraint(
+        ["aggregate_record_id", "revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_record_outbox_revision",
+    ),
+    UniqueConstraint("dedup_key", name="uq_record_outbox_dedup"),
+    CheckConstraint("attempts >= 0", name="ck_record_outbox_attempts"),
+    CheckConstraint(
+        "revision_id IS NULL OR aggregate_record_id IS NOT NULL",
+        name="ck_record_outbox_revision_owner",
+    ),
+    CheckConstraint("(lease_token IS NULL) = (lease_until IS NULL)", name="ck_record_outbox_lease"),
+    CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_record_outbox_payload"),
+)
+Index(
+    "ix_record_outbox_pending",
+    record_outbox.c.available_at,
+    record_outbox.c.event_id,
+    postgresql_where=record_outbox.c.delivered_at.is_(None),
+)
+
+record_consumer_receipts = Table(
+    "record_consumer_receipts",
+    metadata,
+    Column("consumer", Text, nullable=False),
+    Column("event_id", UUID, nullable=False),
+    Column("processed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("result_digest", Text, nullable=False),
+    PrimaryKeyConstraint("consumer", "event_id", name="pk_record_consumer_receipts"),
+    ForeignKeyConstraint(
+        ["event_id"],
+        ["record_outbox.event_id"],
+        name="fk_record_consumer_receipts_event",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint("result_digest ~ '^[0-9a-f]{64}$'", name="ck_record_consumer_receipts_digest"),
+)
+
+record_export_state = Table(
+    "record_export_state",
+    metadata,
+    Column("record_id", UUID, nullable=False),
+    Column("destination", Text, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("export_sha256", Text, nullable=False),
+    Column("exported_at", DateTime(timezone=True), nullable=False),
+    Column("diverged_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("record_id", "destination", name="pk_record_export_state"),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id", "sequence"],
+        [
+            "knowledge_revisions.record_id",
+            "knowledge_revisions.revision_id",
+            "knowledge_revisions.sequence",
+        ],
+        name="fk_record_export_state_revision",
+    ),
+    CheckConstraint("sequence > 0", name="ck_record_export_state_sequence"),
+    CheckConstraint("export_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_export_state_hash"),
+)
+
+record_backfill_state = Table(
+    "record_backfill_state",
+    metadata,
+    Column("source", Text, nullable=False),
+    Column("cursor", Text),
+    Column("scanned", BigInteger, nullable=False, server_default="0"),
+    Column("inserted", BigInteger, nullable=False, server_default="0"),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("source", name="pk_record_backfill_state"),
+    CheckConstraint(
+        "source IN ('tasks', 'archived_tasks')", name="ck_record_backfill_state_source"
+    ),
+    CheckConstraint(
+        "scanned >= 0 AND inserted >= 0 AND inserted <= scanned",
+        name="ck_record_backfill_state_counts",
+    ),
+)
+
+# K12 derived provider index receipts. A rebuildable checkpoint for one
+# provider's optional semantic index of an exact revision: never
+# authoritative, never a substitute for the revision it describes, and
+# retained after erasure so the acknowledgment stays auditable.
+record_index_state = Table(
+    "record_index_state",
+    metadata,
+    Column("provider_id", Text, nullable=False),
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("chunk_manifest_sha256", Text, nullable=False),
+    Column("indexed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("redacted_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("provider_id", "record_id", name="pk_record_index_state"),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id", "sequence"],
+        [
+            "knowledge_revisions.record_id",
+            "knowledge_revisions.revision_id",
+            "knowledge_revisions.sequence",
+        ],
+        name="fk_record_index_state_revision",
+    ),
+    CheckConstraint("sequence > 0", name="ck_record_index_state_sequence"),
+    CheckConstraint(
+        "provider_id ~ '^[a-z][a-z0-9_-]{0,63}$'", name="ck_record_index_state_provider"
+    ),
+    CheckConstraint(
+        "chunk_manifest_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_index_state_manifest"
+    ),
+)
+
+# create_all is used by the squashed baseline as well as disposable fixtures.
+# SQL functions must precede checks; deferred guards follow table creation.
+# K05 protection records. Authoritative state stays in PostgreSQL, not exports.
+knowledge_proposals = Table(
+    "knowledge_proposals",
+    metadata,
+    Column("proposal_id", UUID, nullable=False),
+    Column("record_id", UUID),
+    Column(
+        "scope_key",
+        Text,
+        ForeignKey("record_scopes.scope_key", name="fk_knowledge_proposals_scope"),
+        nullable=False,
+    ),
+    Column("base_revision_id", UUID),
+    Column("proposed_snapshot", JSONB(none_as_null=True)),
+    Column("source_descriptors", JSONB, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="pending"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("decided_at", DateTime(timezone=True)),
+    Column("decided_by", Text),
+    Column("resulting_record_id", UUID),
+    Column("resulting_revision_id", UUID),
+    Column("redacted_at", DateTime(timezone=True)),
+    ForeignKeyConstraint(
+        ["record_id", "base_revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_proposals_base",
+    ),
+    ForeignKeyConstraint(
+        ["resulting_record_id", "resulting_revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_proposals_result",
+    ),
+    CheckConstraint(
+        "(record_id IS NULL) = (base_revision_id IS NULL)", name="ck_knowledge_proposals_base"
+    ),
+    CheckConstraint(
+        "state IN ('pending','accepted','rejected','stale')", name="ck_knowledge_proposals_state"
+    ),
+    CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_knowledge_proposals_hash"),
+    CheckConstraint(
+        "(proposed_snapshot IS NULL) = (redacted_at IS NOT NULL)",
+        name="ck_knowledge_proposals_redacted",
+    ),
+    CheckConstraint(
+        "proposed_snapshot IS NULL OR (knowledge_snapshot_valid_v1(proposed_snapshot) "
+        "AND proposed_snapshot->>'verification' = 'unverified' "
+        "AND NOT proposed_snapshot ? 'authority')",
+        name="ck_knowledge_proposals_snapshot",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(source_descriptors) = 'array'", name="ck_knowledge_proposals_sources"
+    ),
+    CheckConstraint(
+        "(state = 'pending') = (decided_at IS NULL AND decided_by IS NULL)",
+        name="ck_knowledge_proposals_decision",
+    ),
+    CheckConstraint(
+        "(state = 'accepted') = (resulting_record_id IS NOT NULL "
+        "AND resulting_revision_id IS NOT NULL)",
+        name="ck_knowledge_proposals_result",
+    ),
+    PrimaryKeyConstraint("proposal_id", name="pk_knowledge_proposals"),
+)
+
+knowledge_authority_grants = Table(
+    "knowledge_authority_grants",
+    metadata,
+    Column("grant_id", UUID, nullable=False),
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column(
+        "scope_key",
+        Text,
+        ForeignKey("record_scopes.scope_key", name="fk_knowledge_authority_grants_scope"),
+        nullable=False,
+    ),
+    Column("authority_kind", Text, nullable=False, server_default="policy"),
+    Column("review_id", Text),
+    Column("review_revision", Integer),
+    Column("review_sha256", Text),
+    Column("actor_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("revoked_at", DateTime(timezone=True)),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_authority_revision",
+    ),
+    CheckConstraint("authority_kind = 'policy'", name="ck_knowledge_authority_kind"),
+    CheckConstraint(
+        "(review_id IS NULL AND review_revision IS NULL AND review_sha256 IS NULL) "
+        "OR (review_id IS NOT NULL AND review_revision > 0 "
+        "AND review_sha256 ~ '^[0-9a-f]{64}$')",
+        name="ck_knowledge_authority_review",
+    ),
+    PrimaryKeyConstraint("grant_id", name="pk_knowledge_authority_grants"),
+)
+Index(
+    "uq_knowledge_authority_active",
+    knowledge_authority_grants.c.record_id,
+    unique=True,
+    postgresql_where=knowledge_authority_grants.c.revoked_at.is_(None),
+)
+
+knowledge_global_shares = Table(
+    "knowledge_global_shares",
+    metadata,
+    Column("grant_id", UUID, nullable=False),
+    Column(
+        "record_id",
+        UUID,
+        ForeignKey("knowledge_records.record_id", name="fk_knowledge_global_shares_record"),
+        nullable=False,
+    ),
+    Column("project_id", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("revoked_at", DateTime(timezone=True)),
+    PrimaryKeyConstraint("grant_id", name="pk_knowledge_global_shares"),
+)
+Index(
+    "uq_knowledge_global_shares_active",
+    knowledge_global_shares.c.record_id,
+    knowledge_global_shares.c.project_id,
+    unique=True,
+    postgresql_where=knowledge_global_shares.c.revoked_at.is_(None),
+)
+
+knowledge_redactions = Table(
+    "knowledge_redactions",
+    metadata,
+    Column("redaction_id", UUID, nullable=False),
+    Column(
+        "record_id",
+        UUID,
+        ForeignKey("knowledge_records.record_id", name="fk_knowledge_redactions_record"),
+        nullable=False,
+    ),
+    Column("revision_id", UUID),
+    Column("actor_id", Text, nullable=False),
+    Column("reason_code", Text, nullable=False),
+    Column("requested_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    Column("cleanup_state", JSONB, nullable=False),
+    ForeignKeyConstraint(
+        ["record_id", "revision_id"],
+        ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+        name="fk_knowledge_redactions_revision",
+    ),
+    CheckConstraint(
+        "reason_code IN ('sensitive','privacy','operator_erasure')",
+        name="ck_knowledge_redactions_reason",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(cleanup_state) = 'object'", name="ck_knowledge_redactions_cleanup"
+    ),
+    PrimaryKeyConstraint("redaction_id", name="pk_knowledge_redactions"),
+)
+
+knowledge_redaction_targets = Table(
+    "knowledge_redaction_targets",
+    metadata,
+    Column(
+        "revision_id",
+        UUID,
+        ForeignKey(
+            "knowledge_revisions.revision_id", name="fk_knowledge_redaction_targets_revision"
+        ),
+        nullable=False,
+    ),
+    Column(
+        "redaction_id",
+        UUID,
+        ForeignKey(
+            "knowledge_redactions.redaction_id", name="fk_knowledge_redaction_targets_redaction"
+        ),
+        nullable=False,
+    ),
+    Column("content_sha256", Text, nullable=False),
+    CheckConstraint(
+        "content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_knowledge_redaction_targets_hash"
+    ),
+    PrimaryKeyConstraint("revision_id", name="pk_knowledge_redaction_targets"),
+)
+
+record_import_runs = Table(
+    "record_import_runs",
+    metadata,
+    Column("run_id", UUID, nullable=False),
+    Column("source_installation_id", Text, nullable=False),
+    Column("snapshot_id", Text, nullable=False),
+    Column("manifest_sha256", Text, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("cursor", JSONB),
+    Column("report", JSONB),
+    PrimaryKeyConstraint("run_id", name="pk_record_import_runs"),
+    ForeignKeyConstraint(
+        ["scope_key"],
+        ["record_scopes.scope_key"],
+        name="fk_record_import_runs_scope",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "manifest_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_import_runs_hash"
+    ),
+    CheckConstraint(
+        "state IN ('prepared','applying','succeeded','failed','cancelled')",
+        name="ck_record_import_runs_state",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(cursor) = 'object'", name="ck_record_import_runs_cursor"
+    ),
+    CheckConstraint(
+        "jsonb_typeof(report) = 'object'", name="ck_record_import_runs_report"
+    ),
+)
+
+record_legacy_mappings = Table(
+    "record_legacy_mappings",
+    metadata,
+    Column("source_installation_id", Text, nullable=False),
+    Column("source_kind", Text, nullable=False),
+    Column("source_scope", Text, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("record_id", UUID),
+    Column("latest_source_sha256", Text),
+    Column("latest_revision_id", UUID),
+    Column("ownership", Text, nullable=False),
+    Column("decision_reason", Text),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint(
+        "source_installation_id",
+        "source_kind",
+        "source_scope",
+        "source_key",
+        name="pk_record_legacy_mappings",
+    ),
+    CheckConstraint(
+        "ownership IN ('legacy','managed','excluded','quarantined')",
+        name="ck_record_legacy_mappings_ownership",
+    ),
+    CheckConstraint(
+        "latest_source_sha256 IS NULL OR latest_source_sha256 ~ '^[0-9a-f]{64}$'",
+        name="ck_record_legacy_mappings_hash",
+    ),
+)
+
+record_import_items = Table(
+    "record_import_items",
+    metadata,
+    Column("run_id", UUID, nullable=False),
+    Column("item_key", Text, nullable=False),
+    Column("source_sha256", Text, nullable=False),
+    Column("disposition", Text, nullable=False),
+    Column("record_id", UUID),
+    Column("revision_id", UUID),
+    Column("error_code", Text),
+    PrimaryKeyConstraint("run_id", "item_key", name="pk_record_import_items"),
+    ForeignKeyConstraint(
+        ["run_id"],
+        ["record_import_runs.run_id"],
+        name="fk_record_import_items_run",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint(
+        "source_sha256 ~ '^[0-9a-f]{64}$'", name="ck_record_import_items_hash"
+    ),
+    CheckConstraint(
+        "disposition IN ('candidate','quarantined','excluded','unavailable')",
+        name="ck_record_import_items_disposition",
+    ),
+    CheckConstraint(
+        "revision_id IS NULL OR record_id IS NOT NULL",
+        name="ck_record_import_items_owner",
+    ),
+)
+
+# Prepared evidence and observed delivery are separate from execution state.
+knowledge_context_bundles = Table(
+    "knowledge_context_bundles", metadata,
+    Column("bundle_id", UUID, primary_key=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("session_instance", Text, nullable=False),
+    Column("claim_epoch", BigInteger),
+    Column("principal_fingerprint", Text, nullable=False),
+    Column("request_fingerprint", Text, nullable=False),
+    Column("scope_keys", JSONB, nullable=False),
+    Column("budget", JSONB, nullable=False),
+    Column("selection", JSONB, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("prepared_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("redacted_at", DateTime(timezone=True)),
+    CheckConstraint("owner_kind IN ('task_attempt','supervisor_session')",
+                    name="ck_knowledge_context_bundles_owner_kind"),
+    CheckConstraint("(owner_kind = 'task_attempt' AND claim_epoch IS NOT NULL "
+                    "AND claim_epoch >= 0) OR (owner_kind = 'supervisor_session' "
+                    "AND claim_epoch IS NULL)", name="ck_knowledge_context_bundles_claim"),
+    CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'",
+                    name="ck_knowledge_context_bundles_hash"),
+    CheckConstraint("jsonb_typeof(scope_keys) = 'array' AND jsonb_typeof(budget) = 'object' "
+                    "AND jsonb_typeof(selection) = 'object'",
+                    name="ck_knowledge_context_bundles_json"),
+    CheckConstraint("expires_at >= prepared_at", name="ck_knowledge_context_bundles_expiry"),
+    Index("idx_knowledge_context_bundles_request", "request_fingerprint", "expires_at"),
+)
+
+knowledge_context_deliveries = Table(
+    "knowledge_context_deliveries", metadata,
+    Column("delivery_id", UUID, primary_key=True),
+    Column("bundle_id", UUID, ForeignKey("knowledge_context_bundles.bundle_id",
+                                       ondelete="RESTRICT"), nullable=False),
+    Column("transport", Text, nullable=False),
+    Column("transport_key", Text, nullable=False, unique=True),
+    Column("state", Text, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    Column("rendered_sha256", Text, nullable=False),
+    CheckConstraint("state IN ('prepared','delivered','failed','unknown')",
+                    name="ck_knowledge_context_deliveries_state"),
+    CheckConstraint("rendered_sha256 ~ '^[0-9a-f]{64}$'",
+                    name="ck_knowledge_context_deliveries_hash"),
+)
+
+knowledge_citations = Table(
+    "knowledge_citations", metadata,
+    Column("citation_id", UUID, primary_key=True),
+    Column("record_id", UUID, nullable=False),
+    Column("revision_id", UUID, nullable=False),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("session_instance", Text, nullable=False),
+    Column("task_id", Text),
+    Column("attempt_id", Text),
+    Column("supervisor_session_id", Text),
+    Column("claim_epoch", BigInteger),
+    Column("kind", Text, nullable=False),
+    Column("bundle_id", UUID, ForeignKey("knowledge_context_bundles.bundle_id",
+                                       ondelete="RESTRICT")),
+    Column("actor_id", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("idempotency_key", Text, nullable=False),
+    ForeignKeyConstraint(["record_id", "revision_id"],
+                         ["knowledge_revisions.record_id", "knowledge_revisions.revision_id"],
+                         name="fk_knowledge_citations_revision", ondelete="RESTRICT"),
+    CheckConstraint("kind IN ('injected','attached','explicit_read')",
+                    name="ck_knowledge_citations_kind"),
+    CheckConstraint("(owner_kind = 'task_attempt' AND task_id IS NOT NULL "
+                    "AND attempt_id IS NOT NULL AND owner_id = attempt_id "
+                    "AND claim_epoch IS NOT NULL AND claim_epoch >= 0 "
+                    "AND supervisor_session_id IS NULL) OR "
+                    "(owner_kind = 'supervisor_session' AND supervisor_session_id IS NOT NULL "
+                    "AND owner_id = supervisor_session_id AND task_id IS NULL "
+                    "AND attempt_id IS NULL AND claim_epoch IS NULL)",
+                    name="ck_knowledge_citations_execution_owner"),
+    CheckConstraint("length(idempotency_key) BETWEEN 1 AND 128",
+                    name="ck_knowledge_citations_key"),
+    UniqueConstraint("owner_kind", "owner_id", "session_instance", "kind", "idempotency_key",
+                     name="uq_knowledge_citations_owner_key"),
+)
+
+record_compatibility_usage = Table(
+    "record_compatibility_usage",
+    metadata,
+    # Aggregate attempts only: retain no source paths, titles, bodies or actor IDs.
+    Column("scope_key", Text, nullable=False),
+    Column("operation", Text, nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("calls", BigInteger, nullable=False),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("scope_key", "operation", "outcome", name="pk_record_compatibility_usage"),
+    CheckConstraint(
+        "scope_key = 'global' OR scope_key ~ '^project:.+$'",
+        name="ck_record_compatibility_usage_scope",
+    ),
+    CheckConstraint(
+        "operation IN ('read','list','write','append','delete','promote')",
+        name="ck_record_compatibility_usage_operation",
+    ),
+    CheckConstraint(
+        "outcome IN ('canonical_read','refused_write','guarded_write')",
+        name="ck_record_compatibility_usage_outcome",
+    ),
+    CheckConstraint("calls > 0", name="ck_record_compatibility_usage_calls"),
+)
+
+register_record_schema_events(metadata)
+
+register_extraction_schema(metadata)
+
+# Human instructions survive supervisor sessions and message consumption.
+operator_decisions = Table(
+    "operator_decisions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("object_kind", Text, nullable=False),
+    Column("object_id", Text, nullable=False),
+    Column("effect", Text, nullable=False),
+    Column("operator", Text, nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("source_ref", Text, nullable=False),
+    Column("recorded_by", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("releases", Text, ForeignKey("operator_decisions.id"), nullable=True),
+    CheckConstraint("object_kind IN ('task', 'batch', 'operation')",
+                    name="ck_operator_decisions_object_kind"),
+    CheckConstraint("effect IN ('note', 'hold', 'release')",
+                    name="ck_operator_decisions_effect"),
+    CheckConstraint("(effect = 'release') = (releases IS NOT NULL)",
+                    name="ck_operator_decisions_release"),
+    UniqueConstraint("project_id", "idempotency_key", name="uq_operator_decisions_request"),
+    UniqueConstraint("releases", name="uq_operator_decisions_release"),
+    Index("ix_operator_decisions_object", "project_id", "object_kind", "object_id"),
+)
+
+# Durable namespaces deliberately have no FK to mutable playbook/source rows.
+playbook_state_namespaces = Table(
+    "playbook_state_namespaces", metadata,
+    Column("namespace_id", Text, primary_key=True),
+    Column("scope_kind", Text, nullable=False),
+    Column("scope_owner", Text, nullable=False),
+    Column("playbook_id", Text, nullable=False),
+    Column("state_schema_version", Integer, nullable=False),
+    Column("revision", BigInteger, nullable=False, server_default="0"),
+    Column("key_count", Integer, nullable=False, server_default="0"),
+    Column("value_bytes", BigInteger, nullable=False, server_default="0"),
+    Column("journal_bytes", BigInteger, nullable=False, server_default="0"),
+    Column("replay_floor", Float),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("scope_kind", "scope_owner", "playbook_id", "state_schema_version",
+                     name="uq_playbook_state_namespace_identity"),
+    CheckConstraint("state_schema_version > 0", name="ck_playbook_state_namespace_version"),
+    CheckConstraint("scope_kind IN ('system', 'project', 'profile') AND scope_owner <> '' "
+                    "AND (scope_kind <> 'system' OR scope_owner = 'system') AND playbook_id <> ''",
+                    name="ck_playbook_state_namespace_scope"),
+    CheckConstraint("revision >= 0 AND key_count >= 0 AND value_bytes >= 0 AND journal_bytes >= 0",
+                    name="ck_playbook_state_namespace_accounting"),
+)
+
+playbook_state_entries = Table(
+    "playbook_state_entries", metadata,
+    Column("namespace_id", Text, ForeignKey("playbook_state_namespaces.namespace_id"),
+           primary_key=True),
+    Column("record_space", Text, primary_key=True),
+    Column("key", Text, primary_key=True),
+    Column("value_reference", JSONB),
+    Column("value_bytes", BigInteger, nullable=False, server_default="0"),
+    Column("revision", BigInteger, nullable=False),
+    Column("tombstone", Boolean, nullable=False, server_default=false()),
+    Column("expires_at", Float),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("episode", BigInteger, nullable=False, server_default="0"),
+    Column("active", Boolean, nullable=False, server_default=false()),
+    Column("source_partition", JSONB),
+    Column("first_seen", Float),
+    Column("last_seen", Float),
+    Column("last_notified", Float),
+    Column("last_observation_id", Text),
+    Column("last_observed_at", Float),
+    Column("message_id", Text),
+    Column("replay_floor", Float),
+    CheckConstraint("record_space IN ('kv', 'notification') AND key <> ''",
+                    name="ck_playbook_state_entry_identity"),
+    CheckConstraint("revision > 0 AND value_bytes >= 0 AND episode >= 0",
+                    name="ck_playbook_state_entry_counters"),
+    CheckConstraint("record_space <> 'notification' OR expires_at IS NULL",
+                    name="ck_playbook_state_notification_no_expiry"),
+    CheckConstraint("NOT tombstone OR NOT active", name="ck_playbook_state_tombstone_inactive"),
+)
+
+playbook_state_operations = Table(
+    "playbook_state_operations", metadata,
+    Column("namespace_id", Text, ForeignKey("playbook_state_namespaces.namespace_id"),
+           primary_key=True),
+    Column("operation_key", Text, primary_key=True),
+    Column("request_digest", Text, nullable=False),
+    Column("result_reference", JSONB, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    Column("revision", BigInteger, nullable=False),
+    Column("message_id", Text),
+    Column("committed_at", Float, nullable=False),
+    CheckConstraint("operation_key <> '' AND byte_count >= 0 AND revision > 0",
+                    name="ck_playbook_state_operation_identity"),
+)
+
+# Human communication ledgers (implementation specification, 2026-10-11 §3.1).
+# Source task/session ids remain soft references. Audit owners never cascade.
+human_asks = Table(
+    "human_asks", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False),
+    Column("source_kind", Text, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_identity", JSONB, nullable=False),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("generation_fingerprint", Text, nullable=False),
+    Column("feedback_version", Integer, nullable=False, server_default="0"),
+    Column("decision_generation", Integer, nullable=False, server_default="1"),
+    Column("display_version", Integer, nullable=False, server_default="1"),
+    Column("context", JSONB, nullable=False),
+    Column("audience", JSONB, nullable=False),
+    Column("logical_owner", Text, nullable=False),
+    Column("decider", JSONB, nullable=False),
+    Column("next_actor", Text, nullable=False, server_default="human"),
+    Column("decision_state", Text, nullable=False, server_default="pending"),
+    Column("application_state", Text, nullable=False, server_default="not_started"),
+    Column("context_state", Text, nullable=False, server_default="complete"),
+    Column("severity", Text, nullable=False, server_default="medium"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "context_state <> 'complete' OR coalesce(("
+        "length(context->>'title') BETWEEN 1 AND 200 AND "
+        "length(context->>'why') BETWEEN 1 AND 2000 AND "
+        "length(context->>'waiting_effect') BETWEEN 1 AND 2000 AND "
+        "jsonb_typeof(context->'choices') = 'array' AND "
+        "jsonb_array_length(context->'choices') BETWEEN 1 AND 20), false)",
+        name="ck_human_asks_complete_context",
+    ),
+    UniqueConstraint("project_id", "source_kind", "source_key", name="uq_human_asks_source"),
+    UniqueConstraint("project_id", "id", name="uq_human_asks_project_id"),
+    CheckConstraint("decision_generation >= 1 AND display_version >= 1 AND feedback_version >= 0",
+                    name="ck_human_asks_versions"),
+    CheckConstraint("length(source_kind) BETWEEN 1 AND 128 AND length(source_key) BETWEEN 1 AND 512",
+                    name="ck_human_asks_identity"),
+    CheckConstraint("length(logical_owner) BETWEEN 1 AND 512", name="ck_human_asks_owner"),
+    CheckConstraint("next_actor IN ('human','agent','none')", name="ck_human_asks_next_actor"),
+    CheckConstraint("context_state IN ('complete','context_needed','quarantined')",
+                    name="ck_human_asks_context_state"),
+    CheckConstraint("decision_state IN ('pending','approved','changes_requested','declined',"
+                    "'withdrawn','superseded','answered')", name="ck_human_asks_decision_state"),
+    CheckConstraint("application_state IN ('not_started','applying','applied','failed','unknown')",
+                    name="ck_human_asks_application_state"),
+    CheckConstraint("severity IN ('critical','high','medium','low')", name="ck_human_asks_severity"),
+    CheckConstraint("jsonb_typeof(context) = 'object' AND octet_length(context::text) <= 65536",
+                    name="ck_human_asks_context"),
+    Index("idx_human_asks_pending", "project_id", "next_actor", "decision_state", "created_at", "id"),
+)
+
+ask_source_aliases = Table(
+    "ask_source_aliases", metadata,
+    Column("project_id", Text, primary_key=True),
+    Column("legacy_kind", Text, primary_key=True),
+    Column("legacy_id", Text, primary_key=True),
+    Column("ask_id", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_reference", JSONB, nullable=False),
+    Column("provenance", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    ForeignKeyConstraint(["project_id", "ask_id"], ["human_asks.project_id", "human_asks.id"],
+                         name="fk_ask_source_aliases_ask", ondelete="RESTRICT"),
+    CheckConstraint("source_generation >= 1", name="ck_ask_source_aliases_generation"),
+    Index("idx_ask_source_aliases_ask", "ask_id"),
+)
+
+ask_decision_previews = Table(
+    "ask_decision_previews", metadata,
+    Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("decision_generation", Integer, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("input_id", Text, nullable=True),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("feedback_version", Integer, nullable=False),
+    Column("packet", JSONB, nullable=False),
+    Column("packet_sha256", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("consumed_at", Float, nullable=True),
+    CheckConstraint("expires_at > created_at AND expires_at <= created_at + 600",
+                    name="ck_ask_decision_previews_expiry"),
+    CheckConstraint("decision_generation >= 1 AND feedback_version >= 0",
+                    name="ck_ask_decision_previews_versions"),
+    Index("idx_ask_decision_previews_expiry", "expires_at"),
+)
+
+approved_document_snapshots = Table(
+    "approved_document_snapshots", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False),
+    Column("source_path", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("body", LargeBinary, nullable=False),
+    Column("body_sha256", Text, nullable=False),
+    Column("spec_kind", Text, nullable=False),
+    Column("approval_provenance", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("spec_kind IN ('design','implementation')",
+                    name="ck_approved_document_snapshots_spec_kind"),
+    CheckConstraint("length(title) BETWEEN 1 AND 200 AND octet_length(body) <= 262144",
+                    name="ck_approved_document_snapshots_content"),
+)
+
+ask_decisions = Table(
+    "ask_decisions", metadata,
+    Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("decision_generation", Integer, nullable=False),
+    Column("option_key", Text, nullable=False),
+    Column("adapter", Text, nullable=False),
+    Column("adapter_version", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("actor", JSONB, nullable=False),
+    Column("evidence_entry_id", Text, ForeignKey("escalation_messages.id", ondelete="RESTRICT"),
+           nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("request_sha256", Text, nullable=False),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("review_id", Text, nullable=True),
+    Column("review_revision", Integer, nullable=True),
+    Column("content_sha256", Text, nullable=True),
+    Column("attachment_manifest_sha256", Text, nullable=True),
+    Column("snapshot_id", Text, ForeignKey("approved_document_snapshots.id", ondelete="RESTRICT"),
+           nullable=True),
+    Column("feedback_version", Integer, nullable=False),
+    Column("overall_note", Text, nullable=False, server_default=""),
+    Column("accepted_dispositions", JSONB, nullable=False, server_default="[]"),
+    Column("packet", JSONB, nullable=False),
+    Column("packet_sha256", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    ForeignKeyConstraint(["review_id", "review_revision"],
+                         ["doc_review_revisions.review_id", "doc_review_revisions.revision"],
+                         name="fk_ask_decisions_revision", ondelete="RESTRICT"),
+    UniqueConstraint("ask_id", "decision_generation", name="uq_ask_decisions_generation"),
+    UniqueConstraint("ask_id", "actor_id", "idempotency_key", name="uq_ask_decisions_request"),
+    CheckConstraint("decision_generation >= 1 AND feedback_version >= 0",
+                    name="ck_ask_decisions_versions"),
+    CheckConstraint("length(overall_note) <= 16000 AND length(idempotency_key) BETWEEN 1 AND 512",
+                    name="ck_ask_decisions_text"),
+    CheckConstraint("(review_id IS NULL) = (review_revision IS NULL) AND "
+                    "(review_id IS NULL OR snapshot_id IS NULL)", name="ck_ask_decisions_document"),
+    Index("idx_ask_decisions_history", "ask_id", "created_at", "id"),
+)
+
+review_feedback_obligations = Table(
+    "review_feedback_obligations", metadata,
+    Column("id", Text, primary_key=True),
+    Column("decision_id", Text, ForeignKey("ask_decisions.id", ondelete="RESTRICT"), nullable=False),
+    Column("feedback_key", Text, nullable=False),
+    Column("comment_id", Text, ForeignKey("doc_review_comments.id", ondelete="RESTRICT"),
+           nullable=True),
+    Column("original_text", Text, nullable=False),
+    Column("original_anchor", JSONB, nullable=False),
+    Column("original_author", Text, nullable=False),
+    Column("original_revision", Integer, nullable=True),
+    Column("disposition", Text, nullable=False),
+    Column("accepted_by", JSONB, nullable=False),
+    Column("logical_owner", Text, nullable=False),
+    Column("required_before_release", Boolean, nullable=False, server_default=false()),
+    Column("operation_id", Text, ForeignKey("escalation_actions.id", ondelete="RESTRICT"),
+           nullable=True),
+    Column("task_id", Text, nullable=True),
+    Column("acceptance_text", Text, nullable=False),
+    Column("progress", Text, nullable=False, server_default="pending"),
+    Column("completion_evidence", JSONB, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("decision_id", "feedback_key", name="uq_review_feedback_obligations_item"),
+    CheckConstraint("disposition IN ('follow_up','fold_in','applied','no_change','withdrawn')",
+                    name="ck_review_feedback_obligations_disposition"),
+    CheckConstraint("progress IN ('pending','filed','in_progress','completed','failed')",
+                    name="ck_review_feedback_obligations_progress"),
+    CheckConstraint("progress <> 'completed' OR completion_evidence IS NOT NULL",
+                    name="ck_review_feedback_obligations_evidence"),
+    CheckConstraint("length(original_text) BETWEEN 1 AND 16000 AND "
+                    "length(acceptance_text) BETWEEN 1 AND 16000",
+                    name="ck_review_feedback_obligations_text"),
+    Index("idx_review_feedback_obligations_owner", "logical_owner", "progress"),
+)
+
+ask_reconciliation_cases = Table(
+    "ask_reconciliation_cases", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False),
+    Column("conflict_key", Text, nullable=False),
+    Column("source_evidence", JSONB, nullable=False),
+    Column("affected_aliases", JSONB, nullable=False, server_default="[]"),
+    Column("affected_deliveries", JSONB, nullable=False, server_default="[]"),
+    Column("logical_owner", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="open"),
+    Column("repair_receipt", JSONB, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("project_id", "conflict_key", name="uq_ask_reconciliation_cases_conflict"),
+    CheckConstraint("status IN ('open','resolved')", name="ck_ask_reconciliation_cases_status"),
+    CheckConstraint("status <> 'resolved' OR repair_receipt IS NOT NULL",
+                    name="ck_ask_reconciliation_cases_receipt"),
+    Index("idx_ask_reconciliation_cases_owner", "project_id", "logical_owner", "status"),
+)
+
+
+human_communication_modes = Table(
+    "human_communication_modes", metadata,
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), primary_key=True),
+    Column("destination", Text, primary_key=True),
+    Column("generation", Integer, nullable=False, server_default="1"),
+    Column("mode", Text, nullable=False, server_default="legacy"),
+    Column("migrated", Boolean, nullable=False, server_default=false()),
+    Column("config_fingerprint", Text, nullable=False),
+    Column("compatibility_deadline", Float),
+    Column("inventory", JSONB, nullable=False, server_default="{}"),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("generation > 0", name="ck_human_modes_generation"),
+    CheckConstraint("mode IN ('legacy','shadow','dashboard','transferring','channel',"
+                    "'delivery_disabled')", name="ck_human_modes_mode"),
+    CheckConstraint("NOT migrated OR mode <> 'legacy'", name="ck_human_modes_no_revival"),
+)
+
+ask_external_bindings = Table(
+    "ask_external_bindings", metadata,
+    Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("destination", Text, nullable=False),
+    Column("transport", Text, nullable=False, server_default="discord"),
+    Column("guild_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("mode_generation", Integer, nullable=False),
+    Column("root_generation", Integer, nullable=False, server_default="1"),
+    Column("external_root_id", Text),
+    Column("legacy_thread_id", Text),
+    Column("alternate_roots", JSONB, nullable=False, server_default="[]"),
+    Column("receipt", JSONB),
+    Column("desired_display_version", Integer, nullable=False, server_default="1"),
+    Column("applied_display_version", Integer, nullable=False, server_default="0"),
+    Column("root_state", Text, nullable=False, server_default="pending"),
+    Column("active", Boolean, nullable=False, server_default=true()),
+    # A durable external-write fence, independent of the expiring claim lease.
+    Column("inflight_id", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    ForeignKeyConstraint(["project_id", "ask_id"], ["human_asks.project_id", "human_asks.id"],
+                         name="fk_ask_binding_project", ondelete="RESTRICT"),
+    CheckConstraint("root_generation > 0 AND mode_generation > 0 "
+                    "AND desired_display_version > 0 AND applied_display_version >= 0",
+                    name="ck_ask_binding_versions"),
+    CheckConstraint("root_state IN ('pending','confirmed','unknown','missing','retired')",
+                    name="ck_ask_binding_state"),
+    CheckConstraint("root_state <> 'confirmed' OR (external_root_id IS NOT NULL "
+                    "AND receipt IS NOT NULL)", name="ck_ask_binding_receipt"),
+    Index("uq_ask_binding_active", "ask_id", "destination", unique=True,
+          postgresql_where=text("active")),
+    UniqueConstraint("transport", "channel_id", "external_root_id", name="uq_ask_binding_root"),
+    Index("idx_ask_binding_mode", "project_id", "destination", "mode_generation"),
+)
+
+ask_action_tokens = Table(
+    "ask_action_tokens", metadata,
+    Column("token", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("binding_id", Text, ForeignKey("ask_external_bindings.id", ondelete="RESTRICT"),
+           nullable=False),
+    Column("decision_generation", Integer, nullable=False),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("feedback_version", Integer, nullable=False),
+    Column("display_version", Integer, nullable=False),
+    Column("mode_generation", Integer, nullable=False),
+    Column("root_generation", Integer, nullable=False),
+    Column("root_message_id", Text, nullable=False),
+    Column("option_key", Text, nullable=False),
+    Column("audience", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("revoked_at", Float),
+    CheckConstraint("length(token) BETWEEN 20 AND 80 AND expires_at > created_at",
+                    name="ck_ask_action_token"),
+    Index("idx_ask_action_token_binding", "binding_id", "display_version"),
+    Index("idx_ask_action_token_expiry", "expires_at"),
+)
+
+
+# Fresh metadata must enforce the same append-only audit boundary as Alembic.
+
+register_ask_schema_events(metadata)
+
+# Migration progress is independent of source/timer listener leases. Per-object
+# receipts survive partial passes; identity '*' is the guarded phase completion.
+wait_bridge_progress = Table(
+    'wait_bridge_progress', metadata,
+    Column('project_id', Text, ForeignKey('projects.id'), primary_key=True),
+    Column('phase', Text, primary_key=True),
+    Column('identity', Text, primary_key=True),
+    Column('state', Text, nullable=False),
+    Column('evidence', JSONB, nullable=False),
+    Column('updated_at', Float, nullable=False),
+    CheckConstraint("phase IN ('project','agent-waits','audit','sessionless')",
+                    name='ck_wait_bridge_progress_phase'),
+    CheckConstraint("state IN ('pending','complete','held')",
+                    name='ck_wait_bridge_progress_state'),
+)
+
+# A close proposal retains source/candidate identity, never asserts delivery.
+integration_close_attempts = Table(
+    "integration_close_attempts", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("session_id", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_task_id", Text, nullable=False),
+    Column("target_ref", Text, nullable=False),
+    Column("source_oid", Text, nullable=False),
+    Column("base_oid", Text),
+    Column("candidate_oid", Text),
+    Column("candidate_path", Text),
+    Column("candidate_ref", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("policy_digest", Text),
+    Column("evidence", JSONB, nullable=False),
+    Column("close_args", JSONB, nullable=False),
+    Column("budget_wait_id", Text),
+    Column("last_failure", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("task_id", "session_id", "claim_epoch", "source_oid", "target_ref",
+                     name="uq_integration_close_generation"),
+    CheckConstraint("state IN ('preparing','needs_author','checking','publish_uncertain',"
+                    "'finished','deferred','cancelled')", name="ck_integration_close_state"),
+    CheckConstraint("version >= 0 AND attempts >= 0", name="ck_integration_close_counters"),
 )
