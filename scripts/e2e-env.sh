@@ -166,6 +166,14 @@ printf '%s\n' \
     > "$E2E_MARKER"
 mkdir -p "$AQ_E2E_HOME/workspaces"
 mkdir -p "$E2E_ONBOARDING_ROOT"
+# This fixture deliberately performs first installation before adding its own
+# vault files. Normal daemon startup never seeds a nonempty operator vault.
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$AQ_E2E_HOME" <<'PY'
+import sys
+from src.playbooks.required import install_initial_playbooks
+
+install_initial_playbooks(sys.argv[1])
+PY
 mkdir -p "$E2E_VAULT/agent-types"
 mkdir -p "$E2E_VAULT/formulas"
 mkdir -p "$E2E_BIN"
@@ -541,6 +549,20 @@ fi
 # path by default.
 PLAYBOOKS_ENABLED="${AQ_E2E_PLAYBOOKS_ENABLED:-true}"
 
+# Protected playbook values (command results saved with save_result_as, LLM
+# transcripts) need an encryption key in the daemon's environment; without
+# one, S18's shipped triage step refuses with private_storage_key_unavailable.
+# The daemon loads .env beside its config, as an operator install does.  The
+# key is disposable but kept for this world's lifetime, so a non-reset rerun
+# can still decrypt values the database already holds.
+E2E_ENV_FILE="$AQ_E2E_HOME/.env"
+if ! grep -q '^AQ_E2E_PLAYBOOK_PRIVATE_KEY=' "$E2E_ENV_FILE" 2>/dev/null; then
+    ( umask 077
+      printf 'AQ_E2E_PLAYBOOK_PRIVATE_KEY=%s\n' "$(python3 -c \
+          'import base64, os; print(base64.b64encode(os.urandom(32)).decode())')" \
+          >> "$E2E_ENV_FILE" )
+fi
+
 # Both fake providers start healthy; S16 rewrites this file mid-run.
 printf '{"prova": "ok", "provb": "ok"}\n' > "$E2E_FAKE_SCRIPT"
 
@@ -650,6 +672,9 @@ state_machine:
 # database-only sink; messaging_platform:none prevents external delivery.
 playbooks:
   enabled: $PLAYBOOKS_ENABLED
+  private_value_active_key_id: e2e
+  private_value_key_env:
+    e2e: AQ_E2E_PLAYBOOK_PRIVATE_KEY
 
 messages:
   enabled: true
@@ -680,12 +705,16 @@ api_auth:
   require_session_token: false
 YAML
 
-# A caller-owned YAML fragment, appended verbatim.  scripts/e2e-app-train.sh
-# uses it for the `integration:` block that turns on GitHub App credential
-# mode; nothing above writes that key, so the fragment cannot repeat one.
+# A caller-owned fragment may provide the integration block (the App kit does).
+# Otherwise Tier 1 exercises the active train; shadow has no publisher now.
 if [ -n "${AQ_E2E_EXTRA_CONFIG:-}" ]; then
     echo "==> appending $AQ_E2E_EXTRA_CONFIG to the config"
     cat "$AQ_E2E_EXTRA_CONFIG" >> "$E2E_CONFIG"
+else
+    cat >> "$E2E_CONFIG" <<'YAML'
+integration:
+  git_first: active
+YAML
 fi
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,11 @@
 # Git-first integration cutover: transfer, upgrade, restart, canary
 
+> Historical cutover procedure: C1 and the 2026-10-12 consumer retirement removed
+> the subject publishers and Development transfer command. The steps below document
+> that earlier rollout; use the [current train runbook](git-first-train-runbook.md)
+> and [consumer audit](../reports/2026-10-12-legacy-consumer-retirement.md) for the
+> retained runtime and safety boundaries.
+
 Operator procedure for selecting `integration.git_first: active`, the
 five-table protocol that replaces the old subject runtime as the delivery path
 for a project. The design is `projects/agent-queue/specs/2026-10-04-git-first-integration-train.md`
@@ -20,7 +26,7 @@ mode beside `reconciler_shadow` / `reconciler_active`.
 | `git_first` | What runs |
 |---|---|
 | `shadow` (default) | the old subject protocol stays authoritative; one read-only comparison of git-first facts against fetched git is logged per visit. It has no writer, no action port and no policy effect. |
-| `active` | `IntegrationTrain` takes the whole per-project loop. The root, parent and development subject runtimes are not built at all, the integration outbox is not dispatched, and no green continuation is emitted. |
+| `active` | `IntegrationTrain` takes the whole per-project loop. The root, parent and development subject runtimes are not built at all. Only promotion policy events are dispatched from the integration outbox; legacy events and green continuations remain stopped. |
 
 The selector refuses `IntegrationService` a train beside any subject runtime, so
 the two engines can never run concurrently.
@@ -108,26 +114,40 @@ out of every batch. Record the ones git proves are already on the default branch
 For each such task it locates exact candidate sources (reported completion commits,
 origin branch tip, old batch members and delivery receipts, the pull request
 head), and writes an `integration_legacy_deliveries` row only when a candidate is
-an ancestor of the tip (`development_delivery`) or merging it changes nothing
-(`content_equivalent`). It never writes provenance, moves a ref or edits a task;
+an ancestor of the tip (`development_delivery`) or merging it changes only
+generated artifacts (`content_equivalent`). The latter ignores differences and
+conflicts only in paths marked `merge=aq-generated` by the pinned target's Git
+attributes; other differences or conflicts remain unproven.
+It never writes provenance, moves a ref or edits a task;
 anything unproven is listed and left alone for an explicit decision. A reopened
 task's new completion is not covered by the old row.
 
 A child of a still-open epic whose exact source is already on the epic branch
 gets retained provenance instead (`epic_branch_provenance`), because the epic's
-readiness reads provenance, not rows. An old **completed** epic whose branch never
-reached the default branch and must not now (it conflicts, or its work arrived
-another way) needs an explicit decision, never a bulk one:
+readiness reads provenance, not rows. For the rest — a completion git can no
+longer prove and that must not now be delivered — an explicit, reasoned decision
+is the only answer, and it is per task:
 
 ```bash
-.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --abandon-epic EPIC_ID
-.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --abandon-epic EPIC_ID \
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" \
+    --abandon-task TASK_ID --abandon-task ANOTHER_TASK_ID
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" \
+    --abandon-task TASK_ID --abandon-task ANOTHER_TASK_ID \
     --apply --reason "superseded by later work on main"
 ```
 
-That records `abandoned` rows for the epic and its undelivered descendants, so
-the train neither blocks on them nor merges the stale branch. Nothing is deleted;
+`--abandon-task` names any one completed task, leaf or container, and records
+`abandoned` rows for it and, when it is a container, for its undelivered
+descendants, so the train neither blocks on them nor merges a stale branch.
+Both flags are repeatable and both are refused when git already proves the work
+(the ordinary backfill then records that proof instead), when the task is not
+`COMPLETED`, or when `--apply` has no nonblank `--reason`. A container with no
+branch of its own is decided the same way; `--abandon-epic` is the same decision
+by name for a container, and refuses a task with no children. Nothing is deleted;
 removing the rows restores the previous state.
+
+Re-run the ordinary backfill afterwards: it lists whatever still cannot be
+accounted for, and every such task needs its own decision here.
 
 ## 4. Select `active` and restart
 
@@ -209,8 +229,9 @@ is `tests/test_integration_train_sources.py::test_collected_two_child_epic_gets_
 
 ## 6. Confirm old-event isolation
 
-Under `active` the scheduler, the outbox and the green continuations are stopped
-for owned projects, and pending legacy events stay pending. After the restart:
+Under `active` the scheduler, legacy outbox dispatch and the green continuations
+are stopped for owned projects. Promotion policy events continue to dispatch;
+pending legacy events stay pending. After the restart:
 
 ```sql
 SELECT event_type, count(*), sum(attempts) FROM integration_outbox GROUP BY 1;

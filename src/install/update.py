@@ -71,6 +71,9 @@ from .dashboard import (
     source_fingerprint,
     stamp_path,
 )
+from .deploy import (
+    DeployRefused, DeploySelection, DeploySelector, read_record, save_record, write_record,
+)
 from .onboarding import HttpProbe, _read_config, api_base_url, http_status
 from .redaction import redact
 
@@ -134,10 +137,14 @@ class UpdatePlan:
     shallow: bool
     changed: tuple[str, ...] = ()
     subjects: tuple[str, ...] = ()
+    selection: DeploySelection | None = None
+    previous_record: dict | None = None
+    rollback: bool = False
+    needs_activation: bool = False
 
     @property
     def up_to_date(self) -> bool:
-        return self.current == self.target
+        return self.current == self.target and not self.needs_activation
 
     @property
     def migrations(self) -> bool:
@@ -166,6 +173,7 @@ class UpdateReport:
     steps: list[tuple[str, bool, str]] = field(default_factory=list)
     backup: Path | None = None
     remediation: str = ""
+    recovery_required: bool = False
 
     @property
     def exit_code(self) -> int:
@@ -186,6 +194,12 @@ def plan_update(
     *,
     execute: CommandRunner = run_command,
     environ: Mapping[str, str] | None = None,
+    state_dir: Path | None = None,
+    ref: str | None = None,
+    tag_glob: str | None = None,
+    promotion_target: str = "main",
+    allow_rollback: bool = False,
+    track_branch: str | None = None,
 ) -> UpdatePlan:
     """Decide whether and how *checkout* can be updated; raise UpdateRefused if not."""
     env = os.environ if environ is None else environ
@@ -195,6 +209,23 @@ def plan_update(
             "Run `aq update` as the operator, from your own terminal. Workers never restart "
             "or migrate the daemon they work for.",
         )
+
+    try:
+        record = read_record(state_dir) if state_dir is not None else None
+        if track_branch and (ref or tag_glob or record):
+            raise UpdateRefused(
+                "branch tracking conflicts with a tag selector or deploy.json",
+                "Disable tracking or restore the installation branch and remove its tag record.",
+            )
+        if ref or tag_glob or record:
+            return _plan_deploy(
+                checkout, execute=execute, ref=ref, tag_glob=tag_glob,
+                promotion_target=promotion_target, record=record, allow_rollback=allow_rollback,
+            )
+    except DeployRefused as error:
+        raise UpdateRefused(
+            str(error), "Fix the deploy selector or release tag, then rerun aq update."
+        ) from error
 
     branch = _git(execute, checkout, "symbolic-ref", "--short", "-q", "HEAD")
     if not branch.ok or not branch.out.strip():
@@ -211,6 +242,16 @@ def plan_update(
             "`aq update`.",
         )
     upstream_name = upstream.out.strip()
+    if track_branch:
+        valid = _git(execute, checkout, "check-ref-format", f"refs/heads/{track_branch}")
+        if (
+            not valid.ok or branch.out.strip() != track_branch
+            or upstream_name.partition("/")[2] != track_branch
+        ):
+            raise UpdateRefused(
+                f"installation branch/upstream does not match deploy.track_branch={track_branch!r}",
+                "Check out the configured branch and set its matching remote upstream as operator.",
+            )
 
     dirty = _git(execute, checkout, "status", "--porcelain", "--untracked-files=no")
     if not dirty.ok:
@@ -234,6 +275,12 @@ def plan_update(
             "Check the network and your access to the repository, then rerun `aq update`.",
         )
 
+    if track_branch and (
+        _git(execute, checkout, "rev-parse", "--is-shallow-repository").out == "true"
+    ):
+        expanded = _git(execute, checkout, "fetch", "--quiet", "--unshallow", remote)
+        if not expanded.ok:
+            raise UpdateRefused("could not prove fast-forward ancestry", expanded.message())
     head = _git(execute, checkout, "rev-parse", "HEAD").out.strip()
     target = _git(execute, checkout, "rev-parse", "@{u}").out.strip()
     shallow = _git(execute, checkout, "rev-parse", "--is-shallow-repository").out.strip() == "true"
@@ -245,6 +292,8 @@ def plan_update(
         target=target,
         shallow=shallow,
     )
+    if track_branch:
+        validate_target_migrations(checkout, target, execute=execute)
     if plan.up_to_date:
         return plan
 
@@ -270,6 +319,120 @@ def plan_update(
         subjects=tuple(line for line in subjects.out.splitlines() if line.strip())
         if subjects.ok
         else (),
+    )
+
+
+def validate_target_migrations(
+    checkout: Path, target: str, *, execute: CommandRunner = run_command
+) -> None:
+    """Inspect the pinned target's graph without importing or executing its migrations."""
+    from src.database.additive_migrations import MigrationTree
+
+    paths = _git(execute, checkout, "ls-tree", "-r", "--name-only", target, "migrations/versions")
+    sources = {}
+    try:
+        if not paths.ok:
+            raise ValueError(paths.message())
+        for path in paths.out.splitlines():
+            if not path.endswith(".py") or Path(path).name == "__init__.py":
+                continue
+            source = _git(execute, checkout, "show", f"{target}:{path}")
+            if not source.ok:
+                raise ValueError(source.message())
+            sources[path] = source.stdout
+        MigrationTree(sources)
+    except (ValueError, SyntaxError) as error:
+        raise UpdateRefused(
+            f"target Alembic preflight failed: {error}",
+            "Repair the tracked branch's migration graph before deploying it.",
+        ) from error
+
+
+def _plan_deploy(
+    checkout: Path, *, execute: CommandRunner, ref: str | None, tag_glob: str | None,
+    promotion_target: str, record: dict | None, allow_rollback: bool,
+) -> UpdatePlan:
+    selector = DeploySelector(checkout, execute=execute, target=promotion_target)
+    dirty = selector.git("status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        raise UpdateRefused(
+            f"{checkout} has local changes to tracked files",
+            "Commit, stash or discard them before updating.",
+        )
+    current = selector.git("rev-parse", "HEAD")
+    branch_result = _git(execute, checkout, "symbolic-ref", "--short", "-q", "HEAD")
+    branch = branch_result.out
+    if record is not None:
+        if current != record["commit"]:
+            raise UpdateRefused(
+                "checkout has local commits or moved away from deploy.json",
+                "Restore the recorded deployment before updating; local commits are never discarded.",
+            )
+        if not ref and not tag_glob:
+            ref = record["selector"]
+    elif not branch:
+        raise UpdateRefused(
+            "detached HEAD has no deploy.json record",
+            "Restore the installation's branch before its first tag deployment.",
+        )
+    else:
+        upstream = selector.git("rev-parse", "--abbrev-ref", "@{u}")
+        selector.git("fetch", "--quiet", upstream.split("/", 1)[0])
+        if not _git(execute, checkout, "merge-base", "--is-ancestor", current, "@{u}").ok:
+            # Depth-one installs need history to distinguish missing ancestry
+            # from a locally committed patch.
+            if selector.git("rev-parse", "--is-shallow-repository") == "true":
+                selector.git("fetch", "--quiet", "--unshallow", upstream.split("/", 1)[0])
+            if not _git(execute, checkout, "merge-base", "--is-ancestor", current, "@{u}").ok:
+                raise UpdateRefused(
+                    f"{branch} has local commits its upstream does not",
+                    "Push or remove those commits before deploying a release.",
+                )
+    selection = selector.resolve(ref=ref, tag_glob=tag_glob)
+    forward = _git(execute, checkout, "merge-base", "--is-ancestor", current, selection.commit).ok
+    backward = _git(execute, checkout, "merge-base", "--is-ancestor", selection.commit, current).ok
+    rollback = not forward and backward
+    if not forward and not backward:
+        raise UpdateRefused(
+            "deploy_not_related: selected commit is sideways from the installed code",
+            "Select a release on the installed history.",
+        )
+    if rollback and not allow_rollback:
+        raise UpdateRefused(
+            "selected release is older than the installed code",
+            "Rerun with --allow-rollback to roll back code while keeping the database.",
+        )
+    from dataclasses import replace
+    from .deploy import validate_boundary
+
+    boundaries = {}
+    for boundary in (record or {}).get("breaking_migrations", []):
+        validate_boundary(boundary)
+        boundaries[boundary["tag_oid"]] = boundary
+    for boundary in selector.migration_boundaries(
+        head=current if rollback else selection.commit,
+    ):
+        boundaries[boundary["tag_oid"]] = boundary
+    if rollback:
+        for boundary in boundaries.values():
+            if not _git(execute, checkout, "merge-base", "--is-ancestor",
+                        boundary["commit"], selection.commit).ok:
+                raise UpdateRefused(
+                    f"rollback_crosses_breaking_migration: {boundary['tag']} was admitted "
+                    f"with a breaking migration override by {boundary['admission']['override']['github_login']}",
+                    "--allow-rollback cannot cross this boundary. Select code at or after "
+                    "the breaking release; database recovery is a separate operator decision.",
+                )
+    selection = replace(selection, breaking_migrations=tuple(boundaries.values()))
+    changed = selector.git("diff", "--name-only", current, selection.commit)
+    subjects = selector.git("log", "--format=%h %s", f"{current}..{selection.commit}")
+    return UpdatePlan(
+        checkout=checkout, branch=branch, upstream=selection.selector, current=current,
+        target=selection.commit, shallow=False, changed=tuple(changed.splitlines()),
+        subjects=tuple(subjects.splitlines()), selection=selection, previous_record=record,
+        rollback=rollback, needs_activation=(
+            bool(branch) or record is None or record.get("selector") != selection.selector
+        ),
     )
 
 
@@ -423,6 +586,16 @@ def apply_update(
     with os.fdopen(descriptor, "w") as handle:
         handle.write(f"{os.getpid()}\n")
     try:
+        if plan.selection or plan.branch:
+            if _git(host.execute, plan.checkout, "rev-parse", "HEAD").out != plan.current:
+                raise UpdateRefused("checkout changed after preflight", "Rerun aq update.")
+            if plan.branch:
+                branch = _git(host.execute, plan.checkout, "symbolic-ref", "--short", "-q", "HEAD")
+                if not branch.ok or branch.out != plan.branch:
+                    raise UpdateRefused("installation branch changed after preflight", "Rerun aq update.")
+            dirty = _git(host.execute, plan.checkout, "status", "--porcelain", "--untracked-files=no")
+            if not dirty.ok or dirty.out:
+                raise UpdateRefused("checkout has local changes after preflight", "Rerun aq update.")
         return _apply_locked(plan, host, report, step, backup=backup)
     finally:
         lock.unlink(missing_ok=True)
@@ -532,13 +705,17 @@ def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool)
     handed_off = False
     try:
         # -- 3. move the code forward -------------------------------------
-        if plan.shallow:
+        if plan.selection:
+            moved = _git(host.execute, checkout, "checkout", "--quiet", "--detach", plan.target)
+        elif plan.shallow:
             moved = _git(host.execute, checkout, "reset", "--hard", "--quiet", plan.target)
         else:
             moved = _git(host.execute, checkout, "merge", "--ff-only", "--quiet", plan.target)
         if not moved.ok:
             raise _StepFailed("Update the code", moved.message())
         step("Update the code", True, f"{plan.current[:9]} -> {plan.target[:9]}")
+        if plan.selection:
+            write_record(host.state_dir, plan.selection, plan.current, rollback=plan.rollback)
 
         # -- 4-6. dependencies, dashboard, daemon: the new code's job ------
         handed_off = True
@@ -714,8 +891,16 @@ def _start_daemon(
     it is started, but not failing it is not what restores that state.
     """
     started = host.execute([host.aq, "start", "--no-dashboard"], timeout=DAEMON_TIMEOUT)
-    if not started.ok or not healthy():
-        raise _StepFailed("Start the daemon", started.message() or "it did not answer /health")
+    if not started.ok:
+        raise _StepFailed("Start the daemon", started.message())
+    # /health=503 proves a process is alive, not that the deployment works.
+    # Give the initial health snapshot time to settle before declaring success.
+    for _ in range(30):
+        if host.probe(f"{base}/health") == 200 and host.probe(f"{base}/ready") == 200:
+            break
+        host.sleep(1.0)
+    else:
+        raise _StepFailed("Start the daemon", "daemon did not pass /health and /ready")
     try:
         return _check_dashboard_server(host, checkout)
     except _StepFailed:
@@ -765,6 +950,20 @@ def _check_dashboard_server(host: Host, checkout: Path) -> str | None:
     return dashboard.url
 
 
+def verify_operator_recovery(host: Host, checkout: Path) -> None:
+    """Verify the operator has restored the current installation before releasing its hold."""
+    base, _ = _daemon_address(host)
+    if host.probe(f"{base}/health") != 200 or host.probe(f"{base}/ready") != 200:
+        raise UpdateRefused(
+            "migration recovery is not healthy and ready",
+            "Follow the recorded backup/daemon.log remediation, then retry recovery verification.",
+        )
+    try:
+        _check_dashboard_server(host, checkout)
+    except _StepFailed as error:
+        raise UpdateRefused("migration recovery dashboard verification failed", error.message) from error
+
+
 def _recover(
     plan, host: Host, report, step, failure, was_running, started_new, base, healthy,
     *, dashboard_was_running: bool = False,
@@ -775,6 +974,7 @@ def _recover(
         # The new daemon may already have migrated the database; the old code
         # cannot be trusted against it.  Stop, and say exactly where things are.
         report.outcome = OUTCOME_FAILED
+        report.recovery_required = True
         backup = f" A backup from before the update is at {report.backup}." if report.backup else ""
         report.remediation = (
             f"The update's database migrations may already have run, so AQ was not rolled "
@@ -829,6 +1029,12 @@ def _recover(
         return report
     step("Roll back the code", True, f"back at {plan.current[:9]}")
     try:
+        if plan.selection:
+            if plan.branch:
+                restored = _git(host.execute, checkout, "checkout", "--quiet", plan.branch)
+                if not restored.ok:
+                    raise _StepFailed("Restore the previous branch", restored.message())
+            save_record(host.state_dir, plan.previous_record)
         if plan.dependencies:
             _install_dependencies(host, checkout)
         _rebuild_dashboard(host, checkout, step)
@@ -862,6 +1068,18 @@ def _recover(
     return report
 
 
+def migration_boundary_descriptions(plan: UpdatePlan) -> list[str]:
+    if not plan.selection:
+        return []
+    return [
+        f"Breaking migration boundary {boundary['tag']} "
+        f"({boundary['commit'][:9]}): operator "
+        f"{boundary['admission']['override']['github_login']}; "
+        "--allow-rollback across this release is disabled"
+        for boundary in plan.selection.breaking_migrations
+    ]
+
+
 def describe(
     plan: UpdatePlan, *, backup: bool, daemon_running: bool, dashboard_server_running: bool = False
 ) -> list[str]:
@@ -870,11 +1088,18 @@ def describe(
         f"{len(plan.subjects) or 'new'} commit(s) from {plan.upstream} "
         f"({plan.current[:9]} -> {plan.target[:9]})"
     ]
+    if plan.selection:
+        installed = (plan.previous_record or {}).get("selector", plan.current[:9])
+        lines.insert(
+            0, f"Installed {installed}; selected {plan.selection.selector} "
+            f"({'rollback' if plan.rollback else plan.selection.kind})",
+        )
     if plan.migrations:
         lines.append(
             "Includes database migrations: "
             + ("the database is backed up first" if backup else "NO backup (--no-backup)")
         )
+    lines.extend(migration_boundary_descriptions(plan))
     if plan.dependencies:
         lines.append("Reinstalls Python dependencies")
     if plan.dashboard_inputs:
