@@ -80,6 +80,7 @@ import {
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
   poolRename,
+  poolDelete,
   poolScale,
   poolSetEnabled,
   playbookActivate,
@@ -160,6 +161,7 @@ import type {
   CancelPlaybookRunResponse,
   PoolStatusResponse,
   PoolRenameRequest,
+  PoolDeleteRequest,
   PoolStatusRow,
   PoolProjectStatus,
   PoolScaleRequest,
@@ -181,6 +183,10 @@ import {
 } from "./chat";
 
 // --- Re-exports — call sites should import shared types from here ---
+// Graph and historical activity projections also feed task components and
+// may carry a status introduced by a newer daemon. Keep their fallback reader.
+export type Task = Omit<TaskResponse, "status"> & { status?: string };
+
 export type {
   AgentSummary,
   AgentSummary as Agent,
@@ -202,7 +208,6 @@ export type {
   ProjectResponse as Project,
   ProjectSummary,
   ShowEffectiveProfileResponse,
-  TaskResponse as Task,
   TaskDetail,
   TaskCompletionDetail,
   WorkspaceSummary as Workspace,
@@ -362,6 +367,26 @@ export function usePoolRename() {
       void queryClient.invalidateQueries({ queryKey: ["profile", input.profile_id] });
       void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
       void queryClient.invalidateQueries({ queryKey: ["providers", "allocation"] });
+    },
+  });
+}
+
+export function usePoolDelete() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolDeleteRequest) => {
+      const { data } = await poolDelete({ body: input, throwOnError: true });
+      if (!data.success) throw new Error(data.error || "Could not delete this pool");
+      return data;
+    },
+    onSuccess: async (_result, input) => {
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.filter((row) => row.profile_id !== input.profile_id),
+      );
+      for (const key of ["pools", "profiles", "profile", "effective-profile", "sessions", "tasks", "agents", "providers"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
     },
   });
 }
@@ -869,11 +894,25 @@ export function useDeleteTask() {
   });
 }
 
+export function useDeleteTaskPreview(input: DeleteTaskRequest) {
+  return useQuery({
+    queryKey: ["task-delete-preview", input.task_id, input.recursive, input.branches],
+    queryFn: async () => (await deleteTask({
+      body: { ...input, confirmed: false }, throwOnError: true,
+    })).data,
+    staleTime: 0,
+  });
+}
+
 export function useArchiveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string; reason?: string; abandon_undelivered?: boolean }) =>
-      (await archiveTask({ body: input, throwOnError: true })).data,
+    mutationFn: async (input: {
+      task_id: string;
+      reason?: string;
+      abandon_undelivered?: boolean;
+      disposition?: "deliver" | "obsolete" | "retire";
+    }) => (await archiveTask({ body: input, throwOnError: true })).data,
     ...cb,
   });
 }
@@ -881,7 +920,7 @@ export function useArchiveTask() {
 export function useRemoveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string; confirmed: boolean; reason: string }) =>
+    mutationFn: async (input: DeleteTaskRequest) =>
       (await removeTask({ body: input, throwOnError: true })).data,
     ...cb,
   });
@@ -1586,6 +1625,17 @@ export function useSystemConfig() {
     queryFn: async () => {
       const { data } = await getConfig({ body: {}, throwOnError: true });
       return data as GetConfigResponse;
+    },
+  });
+}
+
+export function useDeploymentHistory() {
+  return useQuery({
+    queryKey: ["deployment-history"],
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const { data } = await getConfig({ body: { section: "deploy" }, throwOnError: true });
+      return (data as GetConfigResponse).deployment_history;
     },
   });
 }
