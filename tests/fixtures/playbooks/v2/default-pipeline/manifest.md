@@ -1,21 +1,17 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:36f25f93328d04b1fe2fc07b630d4481c0e2bd5bcc573ac26b57011b784f6bdf
-source_sha256: sha256:889c839015d2b2f91aa22d46fd8c49a1782d6e66a4e055dbeaad43ffb053aa95
-contract_fingerprint: sha256:64868157d0d987401d13d954e0bd3edc0c01fc427c626b2947d760a57cc855fe
-questions_resolved: 3
+artifact_sha256: sha256:0064f7e4b84733ae2d190fa6a420d48a8de100b13b5c406a0e770db5f893cafb
+source_sha256: sha256:b761ab57cc68323dbe0d62b9ef55e05ad16b655a1aa09bfe737e9bda4733ce02
+contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
+questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - add_dependency
-  - ensure_task
+  - ensure_spec_ingest
   - gate_create
-  - get_downstream_tasks
   - task_batch_commit
   harness_tools: []
   plugin_tools: []
 profiles_referenced:
-- final-reviewer
-- reviewer
 - spec-ingest
 ---
 
@@ -25,3 +21,21 @@ This manifest binds the immutable artifact to its source digest, command-contrac
 fingerprint, referenced profiles, and declared capabilities. Import and activation
 perform structural, scope, contract, profile, and event validation mechanically.
 Policy approvals, when desired, belong in a custom playbook rather than AQ core.
+
+Recorded 2026-09-11 for policy-simplification task agile-glacier.2 from the
+supervisor-corrected live source. The commit rule dispatches only for a `human`
+gate resolved `approve` or `approved` that names a proposal, and hands the gate
+and project to `task_batch_commit`, which re-checks the exact decision. Every
+`not_approved`, `rejected` or `runtime_error` outcome reaches a `failed`
+terminal. Spec ingest is a role task; its `standard-high` input is a class hint,
+and the role profile supplies its execution class. Supersedes the
+integration-only artifact `sha256:7881d3089a34…`.
+
+Updated 2026-10-13 for `calm-falcon-54`: the executable spec-ingest task
+description carries the spec supersession checklist. Authors account for every
+approved predecessor goal as kept, changed or dropped; reviewers flag every
+drop and require Jack's explicit sign-off for the goal and replacement revision.
+Missing accounting or unsigned drops are reported to the supervisor before
+affected implementation work is committed. This adds agent instructions,
+not a new command-level semantic approval gate; the three rules and their
+success/refusal transitions are unchanged.

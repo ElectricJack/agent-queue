@@ -1,5 +1,12 @@
 # Playbook V1 → V2 cutover runbook
 
+<!-- aq:historical -->
+> **Retired guide.** The procedure below no longer matches AQ and is kept only
+> so existing links resolve. The V1 runtime it drains was deleted in the
+> 2026-09-04 cutover; [Playbooks V2](../concepts/playbooks.md) is the current
+> page. Start at [the documentation home](../README.md); see [historical
+> material](../history/README.md).
+
 Operator guide for the commands that move a fleet off the V1 playbook runtime.
 
 > **Scope.** This covers the **drain** (Package 7 commit 1) and the **rollback
@@ -16,7 +23,7 @@ reviewed. Do not replace those vault files merely to make inventory green.
 
 | Playbook | Scope | Staged evidence | Approval / deployment state |
 |---|---|---|---|
-| `pr-merge-sweep` | `project:agent-queue` | `tests/fixtures/playbooks/v2/pr-merge-sweep/` | Pending a human operator's review. Its live V1 source remains at `projects/agent-queue/playbooks/pr-merge-sweep.md` until V1 admission is closed; import inactive artifact first, then replace the source and activate V2 in the same controlled switch. |
+| `pr-merge-sweep` | `project:agent-queue` | — (retired) | **Retired 2026-09-11** by the [software-factory policy](../concepts/factory-policy.md): its shipped source and staged bundle were removed because it merged clean PRs without required validation beside the configured publisher. Do not import or activate it; retire any installed activation through the guarded activation controls. |
 
 An artifact in this table with a pending review is not a readiness exception.
 It cannot be activated, and it must remain visible to the operator rather than
@@ -83,7 +90,6 @@ PLAYBOOK_REVIEW_STAGING=/configured/vault/root/reviewed-playbooks
 install -d "$PLAYBOOK_REVIEW_STAGING"
 cp -R tests/fixtures/playbooks/v2/default-pipeline "$PLAYBOOK_REVIEW_STAGING/"
 cp -R tests/fixtures/playbooks/v2/default-assignment-routing "$PLAYBOOK_REVIEW_STAGING/"
-cp -R tests/fixtures/playbooks/v2/memory-consolidation "$PLAYBOOK_REVIEW_STAGING/"
 cp -R tests/fixtures/playbooks/v2/coding-reflection "$PLAYBOOK_REVIEW_STAGING/"
 ```
 
@@ -94,7 +100,6 @@ import each bundle through the supported operator command:
 ```bash
 aq playbook v2-import --path reviewed-playbooks/default-pipeline --json
 aq playbook v2-import --path reviewed-playbooks/default-assignment-routing --json
-aq playbook v2-import --path reviewed-playbooks/memory-consolidation --json
 aq playbook v2-import --path reviewed-playbooks/coding-reflection --json
 ```
 
@@ -112,7 +117,6 @@ returned import hash is present with `is_active: false`.
 ```bash
 aq playbook artifacts --playbook-id default-pipeline --json
 aq playbook artifacts --playbook-id default-assignment-routing --json
-aq playbook artifacts --playbook-id memory-consolidation --json
 aq playbook artifacts --playbook-id coding-reflection --json
 ```
 

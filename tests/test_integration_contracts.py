@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -11,20 +10,17 @@ from pydantic import ValidationError
 from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
-    DESIGN_INTEGRATION_COMMANDS,
+    IntegrationRecordRootNoopArgs,
+    IntegrationRepairTargetArgs,
+    IntegrationRerequestCheckArgs,
+    IntegrationReevaluateRepairArgs,
+    IntegrationReverifyEpicArgs,
+    IntegrationRestoreTaskOriginArgs,
     register_integration_contracts,
 )
-from src.commands.contracts.models import EffectSubject
+from src.commands.contracts.models import EffectSubject, OutcomeClass
 from src.commands.contracts.registry import ContractRegistry
-from src.commands.handler import CommandHandler
-from src.database.tables import (
-    integration_batches,
-    integration_cleanup_items,
-    project_integration_schedules,
-)
 from src.event_schemas import EVENT_SCHEMAS, validate_event
-from src.integration.controls import IntegrationControlService
-from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.explanation import can_render
 
 
@@ -52,6 +48,130 @@ DESIGN_EVENTS = {
     "task.integration_configuration_blocked",
     "integration.repair_delegate_closed",
 }
+
+
+@pytest.mark.parametrize("missing", ["expected_candidate_sha", "reason"])
+def test_check_rerequest_apply_requires_exact_head_and_reason(missing):
+    args = dict(batch_id="batch", check_name="unit", dry_run=False,
+                expected_candidate_sha="a" * 40, reason="Phantom check")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationRerequestCheckArgs(**args)
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    assert registry.require("integration_rerequest_check") is not None
+
+
+@pytest.mark.parametrize("missing", ["expected_candidate_sha", "expected_target_sha", "reason"])
+def test_target_repair_contract_requires_exact_apply_evidence(missing):
+    args = dict(batch_id="batch", dry_run=False, expected_candidate_sha="a" * 40,
+                expected_target_sha="b" * 40, reason="repair sealed target")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationRepairTargetArgs(**args)
+    assert IntegrationRepairTargetArgs(batch_id="batch").dry_run is True
+
+
+@pytest.mark.parametrize("missing", [
+    "origin_id", "expected_remote_oid", "expected_fence_token", "reason",
+])
+def test_origin_restore_contract_requires_exact_apply_fences(missing):
+    args = dict(task_id="task", dry_run=False, origin_id="origin",
+                expected_remote_oid="a" * 40, expected_fence_token=3, reason="repair")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationRestoreTaskOriginArgs(**args)
+    assert IntegrationRestoreTaskOriginArgs(task_id="task").dry_run is True
+
+
+async def test_origin_restore_adapter_retains_the_reviewable_preview():
+    evidence = {"origin_id": "origin", "before_sha": "a" * 40, "after_sha": "b" * 40,
+                "fence_token": 3, "backup_ref": "aq/origin-restore/origin/old"}
+
+    class Handler:
+        async def execute(self, name, payload):
+            assert name == "integration_restore_task_origin"
+            assert payload["dry_run"] is True
+            return {"success": True, "outcome": "preview", "evidence": evidence}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    set_handler_provider(Handler)
+    try:
+        result = await registry.require("integration_restore_task_origin").invoke(
+            IntegrationRestoreTaskOriginArgs(task_id="task"), None,
+        )
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == "preview"
+    assert result.value.evidence == evidence
+
+
+@pytest.mark.parametrize("payload", [
+    {"dry_run": False},
+    {"dry_run": False, "expected_head_sha": "a" * 40},
+    {"dry_run": False, "reason": "no code"},
+    {"dry_run": False, "expected_head_sha": "bad", "reason": "no code"},
+    {"dry_run": False, "expected_head_sha": "a" * 40, "reason": "  "},
+])
+def test_root_noop_contract_requires_exact_apply_evidence(payload):
+    with pytest.raises(ValidationError):
+        IntegrationRecordRootNoopArgs(task_id="root", **payload)
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"expected_head_sha": "a" * 40},
+    {"reason": "retry aggregate"},
+    {"expected_head_sha": "bad", "reason": "retry aggregate"},
+    {"expected_head_sha": "a" * 40, "reason": "  "},
+])
+def test_epic_reverification_contract_requires_exact_apply_evidence(payload):
+    with pytest.raises(ValidationError):
+        IntegrationReverifyEpicArgs(task_id="epic", dry_run=False, **payload)
+    assert IntegrationReverifyEpicArgs(task_id="epic").dry_run is True
+
+
+@pytest.mark.parametrize("missing", [
+    "expected_head_sha", "expected_generation", "expected_stage", "expected_fence_token",
+    "expected_snapshot_digest", "reason",
+])
+def test_noop_recovery_apply_contract_requires_exact_reviewed_preview(missing):
+    args = dict(operation_id="op", dry_run=False, expected_head_sha="a" * 40,
+                expected_generation=2, expected_stage=1, expected_fence_token=3,
+                expected_snapshot_digest="b" * 64, reason="Reviewed green no-op")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationReevaluateRepairArgs(**args)
+    assert IntegrationReevaluateRepairArgs(operation_id="op").dry_run is True
+
+
+async def test_noop_recovery_adapter_preserves_snapshot_and_claim_release_plan():
+    class Handler:
+        async def execute(self, name, payload):
+            assert name == "integration_reevaluate_repair"
+            assert payload["dry_run"] is True
+            return {"outcome": "would_reevaluate", "operation_id": "op", "stage": 2,
+                    "snapshot_digest": "b" * 64, "apply_command": "aq integration reevaluate-repair op --apply",
+                    "planned_steps": ["release_stale_parent_claim_to_paused_collection",
+                                      "project_fresh_aggregate_verifier"]}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    set_handler_provider(Handler)
+    try:
+        result = await registry.require("integration_reevaluate_repair").invoke(
+            IntegrationReevaluateRepairArgs(operation_id="op"), None,
+        )
+    finally:
+        set_handler_provider(None)
+    assert result.value.snapshot_digest == "b" * 64
+    assert result.value.planned_steps[0] == "release_stale_parent_claim_to_paused_collection"
+    assert result.value.apply_command.endswith("--apply")
+
+
+
+
 
 
 def test_all_design_events_require_project_and_operation_identity():
@@ -183,6 +303,9 @@ def test_hierarchy_event_payloads_expose_exact_typed_command_inputs():
             "instance_token": str,
             "workspace_id": str,
             "fence_token": int,
+            "batch_id": str,
+            "revision": int,
+            "head_sha": str,
         },
     }
     for event_type, payload_fields in expected.items():
@@ -234,77 +357,14 @@ def test_builtin_registration_invokes_integration_registration(monkeypatch):
     assert called == 1
 
 
-def test_unimplemented_integration_operations_are_not_registered():
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    implemented = {
-        "integration_schedule_due",
-        "integration_seal",
-        "integration_transfer_owner",
-        "integration_file_children",
-        "integration_checkpoint_parent",
-        "integration_delivery_readiness",
-        "integration_parent_verify",
-        "integration_complete_parent",
-        "integration_mutate_hierarchy",
-        "delivery_promote",
-        "delivery_receipts",
-        "integration_reconcile_promotion",
-        "integration_resolve_conflict",
-        "integration_push_conflict_resolution",
-        "integration_promote_main",
-        "integration_build_candidate",
-        "integration_ci_evidence",
-        "integration_release",
-        "integration_cleanup",
-        "integration_repair_start",
-        "integration_repair_dispatch",
-        "integration_record_repair",
-        "integration_repair_timeout",
-        "integration_status",
-        "integration_flush",
-        "integration_enable",
-        "integration_waive_history",
-        "integration_resume",
-        "integration_abort",
-        "integration_retry_cleanup",
-    }
-    assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
-    assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
 
 
-def test_schedule_contract_is_typed_and_retry_safe():
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    schedule = registry.require("integration_schedule_due").contract.execution
-
-    assert {outcome.name for outcome in schedule.outcomes} == {
-        "due",
-        "not_due",
-        "coalesced",
-        "disabled",
-    }
-    assert schedule.idempotency.mode == "natural"
-    assert schedule.retry_safe is True
-    assert schedule.args_model(project_id="p", now=1.0, trigger="manual").trigger == "manual"
-    with pytest.raises(Exception):
-        schedule.args_model(project_id="p", now=1.0, trigger="caller-defined")
 
 
-@pytest.mark.parametrize("interval_seconds", [True, "60"])
-def test_enable_contract_rejects_coercible_non_integer_intervals(interval_seconds):
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    args_model = registry.require("integration_enable").contract.execution.args_model
 
-    with pytest.raises(ValidationError):
-        args_model(
-            project_id="p",
-            mode="train",
-            expected_generation=0,
-            reason="strict cadence",
-            interval_seconds=interval_seconds,
-        )
+
+
+
 
 
 def test_repair_contracts_expose_exact_typed_public_protocol():
@@ -333,6 +393,9 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
     }
     assert {row.name for row in record.outcomes} == {
         "continue",
+        # A parent's first red arrives with no stage; opening one is its own
+        # outcome because playbook transitions key on the outcome alone.
+        "started",
         "escalate",
         "human_required",
         "budget_exhausted",
@@ -359,8 +422,10 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
         start.args_model(
             operation_id="op", starting_sha="A" * 40, trigger_id="trigger"
         )
+    assert dispatch.args_model(operation_id="op", stage=2).stage == 2
+    assert dispatch.args_model(operation_id="op", stage=27).stage == 27
     with pytest.raises(Exception):
-        dispatch.args_model(operation_id="op", stage=2)
+        dispatch.args_model(operation_id="op", stage=-1)
     for action in {
         "repair",
         "infrastructure_retry",
@@ -403,178 +468,256 @@ def test_parent_completion_contracts_expose_prescribed_outcomes():
     assert {row.name for row in registry.require("integration_parent_verify").contract.execution.outcomes} == {
         "verified", "stale_generation", "stale_head", "invalid_evidence"
     }
-    assert {row.name for row in registry.require("integration_complete_parent").contract.execution.outcomes} == {
-        "completed", "waiting", "stale_verification", "invariant_error"
+    noop = registry.require("integration_record_noop").contract.execution
+    assert {row.name for row in noop.outcomes} == {
+        "recorded", "stale_head", "invalid", "delivery_target_fixed"
     }
-
-
-def test_promotion_contracts_declare_retry_and_domain_identity():
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-
-    promote = registry.require("delivery_promote").contract.execution
-    assert promote.idempotency.mode == "keyed"
-    assert promote.idempotency.key_field == "operation_key"
-    assert promote.retry_safe is True
-    assert {outcome.name for outcome in promote.outcomes} == {
-        "promoted",
-        "already_promoted",
-        "conflict",
-        "source_moved",
-        "target_moved",
-    }
-    reconcile = registry.require("integration_reconcile_promotion").contract.execution
-    assert reconcile.idempotency.mode == "keyed"
-    assert reconcile.idempotency.key_field == "intent_id"
-    assert reconcile.retry_safe is True
-    resolve = registry.require("integration_resolve_conflict").contract.execution
-    assert resolve.idempotency.key_field == "intent_id"
-    assert resolve.retry_safe is True
-    assert {outcome.name for outcome in resolve.outcomes} == {
-        "reserved",
-        "already_reserved",
-        "stale",
+    assert noop.capability == "integration_record_noop"
+    completion = registry.require("integration_complete_parent").contract.execution
+    assert {row.name for row in completion.outcomes} == {
+        "completed",
+        "already_completed",
+        "waiting",
+        "failed",
+        "stale_verification",
         "invariant_error",
     }
-    push = registry.require("integration_push_conflict_resolution").contract.execution
-    assert push.idempotency.key_field == "intent_id"
-    assert push.retry_safe is True
-    assert {outcome.name for outcome in push.outcomes} == {
-        "pushed",
-        "already_applied",
-        "target_moved",
-        "stale",
-    }
-    assert set(push.args_model.model_fields) == {"intent_id", "fence"}
-    root = registry.require("integration_promote_main").contract.execution
-    assert root.idempotency.mode == "natural"
-    assert set(root.args_model.model_fields) == {"batch_id", "revision"}
-    assert {outcome.name for outcome in root.outcomes} == {
-        "promoted", "already_promoted", "base_moved", "ci_missing",
-        "non_fast_forward", "wait", "reconciliation_blocked", "stale",
-        "configuration_blocked",
-    }
+    assert {
+        row.name for row in completion.outcomes if row.classification is OutcomeClass.SUCCESS
+    } == {"completed", "already_completed"}
 
 
+
+
+
+
+@pytest.mark.parametrize(
+    ("outcome", "success"),
+    [
+        ("completed", True),
+        # The crash-retry replay path and an ordinary failed child are states a
+        # playbook must be able to route, not adapter wiring bugs.
+        ("already_completed", True),
+        ("waiting", False),
+        ("failed", False),
+        ("stale_verification", False),
+        ("invariant_error", False),
+    ],
+)
 @pytest.mark.asyncio
-async def test_root_promotion_command_is_registered_and_strictly_typed():
-    handler = object.__new__(CommandHandler)
-    handler.orchestrator = SimpleNamespace(plugin_registry=None)
-    handler.config = SimpleNamespace(
-        playbooks=SimpleNamespace(enabled=True),
-        memory=SimpleNamespace(enabled=True),
-        security=SimpleNamespace(capability_enforcement="off"),
-    )
-    result = await handler.execute("integration_promote_main", {})
-    assert result["outcome"] == "runtime_error"
+async def test_complete_parent_adapter_passes_every_reachable_outcome_through(outcome, success):
+    raw = {
+        "success": success,
+        "outcome": outcome,
+        "task_id": "parent",
+        "generation": 3,
+        "head_sha": "a" * 40,
+        "operation_id": "operation-1",
+        # The readiness projection carries fields the completion value model does
+        # not declare; the adapter must drop them rather than reject the result.
+        "blockers": [{"task_id": "child", "reason": "failed_child"}],
+    }
 
+    class StubHandler:
+        async def execute(self, command, payload):
+            assert command == "integration_complete_parent"
+            return raw
 
-@pytest.mark.asyncio
-async def test_operational_adapters_preserve_real_outcomes_blockers_and_status_details(
-    command_handler_factory,
-):
-    handler = await command_handler_factory()
-    await handler.db.create_project(Project(id="p", name="project"))
-    await handler.db.create_project(Project(id="idle", name="idle project"))
-    await handler.db.create_repo(
-        RepoConfig(
-            id="repo",
-            project_id="p",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/acme/widgets.git",
-            default_branch="main",
-        )
-    )
-    async with handler.db.immediate() as conn:
-        await conn.execute(
-            project_integration_schedules.insert().values(
-                project_id="p",
-                enabled=False,
-                interval_seconds=300,
-                next_due_at=400.0,
-                updated_at=100.0,
-            )
-        )
-        await conn.execute(
-            integration_batches.insert().values(
-                id="cleanup-batch",
-                project_id="p",
-                repository_id="repo",
-                request_id="cleanup-request",
-                trigger="manual",
-                source_manifest_digest="sha256:" + "d" * 64,
-                base_sha="a" * 40,
-                lifecycle="promoted",
-                integration_branch="refs/heads/aq/integration/cleanup",
-                final_main_sha="b" * 40,
-                policy_snapshot={},
-                artifact_snapshot={},
-                cleanup_state="conflict",
-                created_at=100.0,
-                updated_at=100.0,
-            )
-        )
-        await conn.execute(
-            integration_cleanup_items.insert().values(
-                batch_id="cleanup-batch",
-                kind="remote_ref",
-                identity="ambiguous",
-                domain_key="cleanup:ambiguous",
-                project_id="p",
-                repository_id="repo",
-                repository_numeric_id=303,
-                repository_full_name="acme/widgets",
-                revision=0,
-                target_ref="refs/heads/aq/integration/ambiguous",
-                expected_sha="b" * 40,
-                state="retryable",
-                attempts=1,
-                next_attempt_at=999.0,
-                irreversible_nonce="posted",
-                irreversible_prewrite_at=99.0,
-                created_at=90.0,
-                updated_at=99.0,
-            )
-        )
-    handler.orchestrator.integration_control_service = IntegrationControlService(
-        handler.db, clock=lambda: 100.0
-    )
     registry = ContractRegistry()
     register_integration_contracts(registry)
-    set_handler_provider(lambda: handler)
+    registration = registry.require("integration_complete_parent")
+    args = registration.contract.execution.args_model(
+        task_id="parent", generation=3, head_sha="a" * 40
+    )
+    set_handler_provider(StubHandler)
     try:
-        status_registration = registry.require("integration_status")
-        status = await status_registration.invoke(
-            status_registration.contract.execution.args_model(project_id="p"), None
-        )
-        enable_registration = registry.require("integration_enable")
-        disabled = await enable_registration.invoke(
-            enable_registration.contract.execution.args_model(
-                project_id="idle",
-                mode="disabled",
-                expected_generation=0,
-                reason="remain disabled",
-            ),
-            None,
-        )
-        retry_registration = registry.require("integration_retry_cleanup")
-        ambiguous = await retry_registration.invoke(
-            retry_registration.contract.execution.args_model(batch_id="cleanup-batch"),
-            None,
-        )
+        result = await registration.invoke(args, None)
     finally:
         set_handler_provider(None)
 
-    assert status.outcome == "status"
-    assert status.value.schedule["next_due_at"] == 400.0
-    assert status.value.cleanup_pending[0]["identity"] == "ambiguous"
-    assert disabled.outcome == "disabled"
-    assert ambiguous.outcome == "ambiguous"
-    assert ambiguous.value.blockers == (
-        {
-            "code": "cleanup_irreversible",
-            "detail": "cleanup item has an unresolved irreversible write marker",
-            "ref": "cleanup:ambiguous",
-        },
+    assert result.outcome == outcome
+    assert result.value.model_dump() == {
+        "task_id": "parent",
+        "generation": 3,
+        "head_sha": "a" * 40,
+        "operation_id": "operation-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_complete_parent_adapter_routes_a_missing_trusted_binding_as_waiting():
+    """A wait for trusted CI evidence reaches reviewed playbooks as ``waiting``.
+
+    The reviewed bundles pin this contract's fingerprint, so the engine's
+    finer refusal is aliased onto the declared ``waiting`` outcome and the
+    exact reason survives in the summary.
+    """
+
+    class StubHandler:
+        async def execute(self, command, payload):
+            assert command == "integration_complete_parent"
+            return {
+                "success": False,
+                "outcome": "awaiting_trusted_verification",
+                "task_id": "parent",
+                "generation": 5,
+                "head_sha": "a" * 40,
+                "reason": "verification_not_recorded",
+            }
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_complete_parent")
+    args = registration.contract.execution.args_model(
+        task_id="parent", generation=5, head_sha="a" * 40
     )
-    await handler.db.close()
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+
+    assert result.outcome == "waiting"
+    assert result.summary == "verification_not_recorded"
+    # The frozen contract, and therefore its fingerprint, is unchanged.
+    execution = registration.contract.execution
+    assert "awaiting_trusted_verification" not in {row.name for row in execution.outcomes}
+
+
+
+
+
+
+def test_every_hierarchy_adapter_call_site_passes_exactly_five_positional_arguments():
+    """Ratchet for the arity bug that made `integration_recover_candidate_member` unusable.
+
+    `_hierarchy_adapter(command, args, ctx, value_model, outcomes)` is called from
+    ~35 thin adapters.  A stray extra argument only fails when the command is
+    actually invoked, which registration-only tests never do, so check the call
+    sites statically as well.
+    """
+    import ast
+    import inspect
+
+    from src.commands.contracts import integration as integration_contracts
+
+    tree = ast.parse(inspect.getsource(integration_contracts))
+    call_sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_hierarchy_adapter"
+    ]
+
+    assert call_sites, "no _hierarchy_adapter call sites found"
+    signature = inspect.signature(integration_contracts._hierarchy_adapter)
+    bad: list[tuple[int, str]] = []
+    for node in call_sites:
+        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+            keyword.arg is None for keyword in node.keywords
+        ):
+            continue  # unpacked call — arity is not decidable statically
+        try:
+            signature.bind(
+                *([object()] * len(node.args)),
+                **{keyword.arg: object() for keyword in node.keywords},
+            )
+        except TypeError as exc:
+            bad.append((node.lineno, str(exc)))
+    assert bad == []
+
+
+
+
+@pytest.mark.parametrize("name,payload,answer", [
+    ("integration_record_root_noop", {"task_id": "root"},
+     {"outcome": "preview", "task_id": "root", "completion_id": "root-noop-generation"}),
+    ("integration_record_root_noop", {"task_id": "root", "dry_run": False,
+                                     "expected_head_sha": "a" * 40, "reason": "no code"},
+     {"outcome": "recorded", "task_id": "root", "head_sha": "a" * 40, "dry_run": False}),
+    ("integration_pause_batch", {"batch_id": "batch"},
+     {"outcome": "preview", "batch_id": "batch", "intent": "open", "dry_run": True}),
+    ("integration_resume_batch", {"batch_id": "batch"},
+     {"outcome": "preview", "batch_id": "batch", "intent": "paused", "dry_run": True}),
+    ("integration_repair_target", {"batch_id": "batch"},
+     {"outcome": "preview", "batch_id": "batch", "candidate_sha": "a" * 40,
+      "target_sha": "b" * 40, "evidence": {"baseline": {"pre_existing_checks": ["unit"]}}}),
+    ("integration_repair_target", {"batch_id": "batch", "dry_run": False,
+                                  "expected_candidate_sha": "a" * 40,
+                                  "expected_target_sha": "b" * 40, "reason": "repair sealed target"},
+     {"outcome": "repairing", "batch_id": "batch", "task_id": "repair",
+      "evidence": {"repair": {"outcome": "exists", "attempt": 1}}}),
+    ("integration_eject", {"batch_id": "batch", "task_id": "c"},
+     {"outcome": "preview", "replacement_batch_id": "new", "members": ["a", "b"]}),
+    ("integration_seal_now", {"project_id": "p"},
+     {"outcome": "preview", "project_id": "p", "members": ["a"]}),
+    ("integration_seal_now", {"project_id": "p", "dry_run": False},
+     {"outcome": "no_ready_work", "project_id": "p", "blockers": []}),
+    ("integration_seal_now", {"project_id": "p", "dry_run": False},
+     {"outcome": "existing_batch", "project_id": "p", "batch_id": "existing"}),
+])
+@pytest.mark.parametrize("preview", [False, True])
+async def test_train_control_contracts_preserve_preview_identity_and_result(name, payload, answer, preview):
+    class Handler:
+        async def execute(self, command, args):
+            expected = True if preview else payload.get("dry_run", True)
+            assert command == name and args["dry_run"] is expected
+            return answer
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require(name)
+    set_handler_provider(Handler)
+    try:
+        args = registration.contract.execution.args_model.model_validate(payload)
+        adapter = registration.preview if preview else registration.invoke
+        result = await adapter(args, None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == answer["outcome"]
+    assert registration.contract.execution.supports_preview
+    assert result.classification(registration.contract).value == "success"
+    for key, value in answer.items():
+        if key != "outcome":
+            actual = getattr(result.value, key)
+            assert actual == (tuple(value) if isinstance(value, list) else value)
+
+
+@pytest.mark.parametrize("outcome", ["unknown_batch", "not_a_member", "refused"])
+async def test_train_eject_contract_preserves_named_refusals(outcome):
+    class Handler:
+        async def execute(self, command, args):
+            assert command == "integration_eject" and args["dry_run"] is True
+            return {"success": False, "outcome": outcome, "error": "control refused"}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_eject")
+    set_handler_provider(Handler)
+    try:
+        args = registration.contract.execution.args_model.model_validate({
+            "batch_id": "batch", "task_id": "not-a-member"})
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == outcome
+    assert result.classification(registration.contract).value != "success"
+
+
+def test_retired_publishers_are_absent_from_command_registry():
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    for name in ("integration_schedule_due", "integration_seal", "delivery_promote",
+                 "integration_reconcile_promotion", "integration_resolve_conflict",
+                 "integration_promote_main", "integration_build_candidate",
+                 "integration_push_conflict_resolution", "integration_resolve_candidate_member",
+                 "integration_recover_candidate_member", "integration_rebind_repair",
+                 "integration_recover_parent_head", "integration_recover_preserved_repair",
+                 "integration_rebind_detached_repair", "integration_recover_unwritten_resolution",
+                 "integration_development_engine_transfer"):
+        assert registry.get(name) is None
+    for name in ("integration_seal_now", "integration_abort_batch", "integration_eject",
+                 "integration_settle_batch", "integration_release_withheld_source",
+                 "integration_status", "integration_promotion_publish"):
+        assert registry.get(name) is not None

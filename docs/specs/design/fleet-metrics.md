@@ -1,5 +1,13 @@
 # Fleet metrics
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** implemented (task `wise-grove-39`)
 **Surfaces:** `metrics_samples` table · `MetricsSampler` · `metrics.tick` bus event ·
 `GET /api/metrics/series` · dashboard `/metrics`
@@ -218,11 +226,20 @@ would make the chart lie about the range its axis is labelled with.
 
 Route `/metrics`, linked from the left rail. `dashboard/src/pages/metrics/`.
 
-History is fetched once per range change (5 m / 1 h / 24 h / 7 d); everything
-after that is appended client-side from `metrics.tick`, so a one-second cadence
-never costs a request. On a coarse range the live tail is thinned to the served
-step, and the appended point is the latest instantaneous sample until the next
-history load replaces it with the server's roll-up.
+The 1 h range first fetches stored minute averages for a labelled overview,
+then requests second-level history after that overview paints. An empty
+overview waits for the detailed response rather than presenting an empty chart
+as ready. While refinement is pending or fails, the page states that it is
+showing minute history; successful refinement restores the second-level series
+and sustained-lag diagnostics. Both reads cover the full selected hour and have
+separate query keys. Other ranges (5 m / 24 h / 7 d) fetch history once.
+
+Everything after that is appended client-side from `metrics.tick`, so a
+one-second cadence never costs a request. The hour retains every live second,
+including ticks received during refinement; a new history response supersedes
+only the overlap it actually covers. On other coarse ranges the live tail is
+thinned to the served step, and the appended point is the latest instantaneous
+sample until the next history load replaces it with the server's roll-up.
 
 Metrics ticks are excluded from the `EventStreamProvider` activity buffer —
 at one a second they would evict its 500-entry window every eight minutes —

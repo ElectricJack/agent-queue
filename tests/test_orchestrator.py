@@ -1,11 +1,16 @@
 import asyncio
+import copy
+import logging
 import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from src.orchestrator import Orchestrator
+from src.commands.handler import CommandHandler
+from src.integration.hierarchy import HierarchyIntegration
 from src.models import (
     AgentProfile,
+    TaskType,
     DepType,
     Project,
     Task,
@@ -21,9 +26,23 @@ from src.runtimes.base import Runtime
 from src.config import DatabaseConfig, AppConfig, AutoTaskConfig, GitHubAppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
-from src.git.manager import GitManager
-from tests.assignment_routing_helpers import install_already_routed
+from src.scheduler import AssignAction, SchedulerState
+from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
+from tests.assignment_routing_helpers import install_already_routed, route_source_for
 from tests.db_fixtures import lease_dsn
+
+
+@pytest.fixture(autouse=True)
+def _restore_contract_handler_provider():
+    """``set_command_handler`` installs the process-global contract handler
+    provider; an initialized orchestrator must not leak its live plugin
+    commands (``aq-files.*``) into later tests on the same worker."""
+    from src.commands.contracts import builtin
+
+    previous = builtin._handler_provider
+    yield
+    if builtin._handler_provider is not previous:
+        builtin.set_handler_provider(previous)
 
 
 class MockAdapter(Runtime):
@@ -62,6 +81,73 @@ class MockAdapterFactory:
         return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)
 
 
+async def test_startup_backfills_legacy_playbook_sources_including_inactive_artifacts(tmp_path):
+    from pathlib import Path
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import PlaybookDefinition, source_digest
+    from tests.playbook_v2_helpers import twin
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("source-backfill.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.playbooks.enabled = True
+    source = "# Legacy inactive policy\n"
+    path = Path(config.vault_root) / "system/playbooks/legacy-inactive.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+    definition = PlaybookDefinition.model_validate(twin()).model_copy(
+        update={"source_hash": source_digest(source)}
+    )
+    store = ArtifactStore(config.compiled_root)
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile", compiler_build="test",
+    )
+    assert not store.source_path_for(ref.artifact_sha256).exists()
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    orch.set_command_handler(CommandHandler(orch, config))
+    try:
+        await orch.initialize()
+        assert store.load_source(ref.artifact_sha256) == source
+    finally:
+        await orch.shutdown()
+
+
+@pytest.mark.parametrize("empty_vault", [False, True], ids=["absent", "empty"])
+async def test_first_install_activates_policy_after_loading_profiles(tmp_path, empty_vault):
+    from pathlib import Path
+    from src.playbooks.required import (
+        DEFAULT_SYSTEM_PLAYBOOK_IDS, INSTALL_RECEIPT, REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    )
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("fresh-policy.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.playbooks.enabled = True
+    if empty_vault:
+        Path(config.vault_root).mkdir(parents=True)
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    orch.set_command_handler(CommandHandler(orch, config))
+    try:
+        await orch.initialize()
+        assert orch.required_playbook_status["ok"], orch.required_playbook_status
+        rows = await orch.db.list_playbook_activations()
+        assert {row["playbook_id"] for row in rows} == set(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS + DEFAULT_SYSTEM_PLAYBOOK_IDS
+        )
+        assert all(row["enabled"] for row in rows)
+        assert '"activation_pending": false' in (
+            Path(config.data_dir) / INSTALL_RECEIPT
+        ).read_text()
+    finally:
+        await orch.shutdown()
+
+
 async def _drain_running_tasks(orch: Orchestrator) -> None:
     """Wait for all background tasks launched by the orchestrator to complete.
 
@@ -75,83 +161,732 @@ async def _drain_running_tasks(orch: Orchestrator) -> None:
         orch._running_tasks.clear()
 
 
+class TestSchedulerBlockerLogging:
+    @staticmethod
+    def state(task_count):
+        return SchedulerState(
+            projects=[Project(id="p", name="project")],
+            tasks=[
+                Task(
+                    id=f"task-{i}", project_id="p", title="task", description="",
+                    status=TaskStatus.READY,
+                )
+                for i in range(task_count)
+            ],
+            agents=[],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+
+    async def test_scheduler_blocker_small_changes_keep_task_details(self, orch, caplog):
+        state = self.state(2)
+        state.tasks[1].status = TaskStatus.DEFINED
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+
+        orch._log_scheduler_blockers(state, [], {})
+        reason = "no available workspace on project 'p'"
+        assert caplog.messages == [f"scheduler blocked task=task-0 reason={reason}"]
+        caplog.clear()
+        orch._log_scheduler_blockers(state, [], {})
+        assert caplog.messages == []
+
+        orch._log_scheduler_blockers(state, [], {"p": 1})
+        reason = "no idle global worker available"
+        assert caplog.messages == [f"scheduler blocked task=task-0 reason={reason}"]
+        caplog.clear()
+        action = AssignAction(agent_id="worker", task_id="task-0", project_id="p")
+        orch._log_scheduler_blockers(state, [action], {"p": 1})
+        assert caplog.messages == [f"scheduler unblocked task=task-0 (prev={reason})"]
+        assert orch._scheduler_blocker_reasons == {}
+
+    async def test_scheduler_blocker_cache_is_local_to_each_orchestrator(self, orch, caplog):
+        state = self.state(1)
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+        orch._log_scheduler_blockers(state, [], {})
+        expected = list(caplog.messages)
+        caplog.clear()
+
+        other = Orchestrator(orch.config)
+        try:
+            other._log_scheduler_blockers(state, [], {})
+            assert caplog.messages == expected
+            caplog.clear()
+            other._log_scheduler_blockers(self.state(0), [], {})
+            caplog.clear()
+            orch._log_scheduler_blockers(state, [], {})
+            assert caplog.messages == []
+        finally:
+            await other.db.close()
+
+    @pytest.mark.parametrize("distinct_reasons", [False, True])
+    async def test_scheduler_blocker_bulk_changes_are_bounded(
+        self, orch, caplog, monkeypatch, distinct_reasons
+    ):
+        state = self.state(10_000)
+        phase = "startup"
+        if distinct_reasons:
+            monkeypatch.setattr(
+                orch, "_describe_task_blocker",
+                lambda task, *_: f"{phase}: capacity for {task.id}",
+            )
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+
+        for workspace_counts in ({}, {"p": 1}):
+            phase = "capacity changed" if workspace_counts else "startup"
+            caplog.clear()
+            orch._log_scheduler_blockers(state, [], workspace_counts)
+            assert len(caplog.records) == 21
+            assert all("scheduler blocked task=" in line for line in caplog.messages[:20])
+            assert "omitted_blocked=9980 omitted_unblocked=0" in caplog.messages[-1]
+            omitted_reason = orch._scheduler_blocker_reasons["task-20"]
+            assert caplog.records[-1].args[2] == [
+                (f"task-{i}", orch._scheduler_blocker_reasons[f"task-{i}"])
+                for i in range(20, 23)
+            ]
+            assert len(orch._scheduler_blocker_reasons) == 10_000
+
+            caplog.clear()
+            orch._log_scheduler_blockers(state, [], workspace_counts)
+            assert caplog.messages == []
+
+        # Leaving READY clears every cached task, including omitted changes.
+        for task in state.tasks:
+            task.status = TaskStatus.IN_PROGRESS
+        orch._log_scheduler_blockers(state, [], {"p": 1})
+        assert len(caplog.records) == 21
+        assert all("scheduler unblocked task=" in line for line in caplog.messages[:20])
+        assert "omitted_blocked=0 omitted_unblocked=9980" in caplog.messages[-1]
+        assert caplog.records[-1].args[3] == [
+            (f"task-{i}", f"{phase}: capacity for task-{i}" if distinct_reasons else omitted_reason)
+            for i in range(20, 23)
+        ]
+        assert orch._scheduler_blocker_reasons == {}
+        caplog.clear()
+        orch._log_scheduler_blockers(state, [], {"p": 1})
+        assert caplog.messages == []
+
+    @pytest.mark.parametrize("new_count", [10, 30])
+    async def test_scheduler_blocker_mixed_changes_share_budget(self, orch, caplog, new_count):
+        state = self.state(30 + new_count)
+        state.tasks = state.tasks[:30]
+        orch._log_scheduler_blockers(state, [], {})
+        previous_reason = orch._scheduler_blocker_reasons["task-0"]
+        state.tasks = self.state(30 + new_count).tasks[30:]
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+        caplog.clear()
+
+        orch._log_scheduler_blockers(state, [], {})
+        assert len(caplog.records) == 21
+        detailed_blocked = min(new_count, 20)
+        detailed_unblocked = 20 - detailed_blocked
+        assert sum("scheduler blocked task=" in line for line in caplog.messages) == detailed_blocked
+        assert sum("scheduler unblocked task=" in line for line in caplog.messages) == detailed_unblocked
+        assert (
+            f"omitted_blocked={new_count - detailed_blocked} "
+            f"omitted_unblocked={30 - detailed_unblocked}"
+        ) in caplog.messages[-1]
+        assert caplog.records[-1].args[2] == (
+            [(f"task-{i}", previous_reason) for i in range(50, 53)] if new_count > 20 else []
+        )
+        assert caplog.records[-1].args[3] == [
+            (f"task-{i}", previous_reason)
+            for i in range(detailed_unblocked, detailed_unblocked + 3)
+        ]
+        assert set(orch._scheduler_blocker_reasons) == {
+            f"task-{i}" for i in range(30, 30 + new_count)
+        }
+        caplog.clear()
+        orch._log_scheduler_blockers(state, [], {})
+        assert caplog.messages == []
+
+
+async def test_message_pointer_arrives_while_scheduler_git_work_is_blocked(orch, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stalled_git(_now):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(orch, "_drain_branch_materializations", stalled_git)
+    monkeypatch.setattr(orch.session_lens, "activity", AsyncMock(return_value="idle"))
+    notified = asyncio.Event()
+
+    async def submit_nudge(**_kwargs):
+        notified.set()
+        return True
+
+    nudge = AsyncMock(side_effect=submit_nudge)
+    monkeypatch.setattr(orch.session_lens, "nudge", nudge)
+    orch.config.messages.delivery_interval = 0.1
+    scheduler = asyncio.create_task(orch.run_one_cycle())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        msg = await orch.db.create_message(
+            project_id=None, from_kind="user", from_id="cli", to_kind="session",
+            to_id="global-session-uuid", body="Verify the queued request",
+        )
+        await orch.bus.emit("message.sent", {
+            "message_id": msg.id, "project_id": None, "from_kind": "user",
+            "to_kind": "session", "to_id": msg.to_id,
+        })
+        await asyncio.wait_for(notified.wait(), timeout=15)
+        stored = await orch.db.get_message(msg.id)
+        assert not scheduler.done()
+        assert stored.via == "nudge" and stored.read_at is None
+        assert stored.delivered_at is None and stored.notification_attempts == 1
+        assert stored.last_notified_at is not None
+        nudge.assert_awaited_once_with(
+            kind="session", target_id=msg.to_id, project_id=None,
+            text=f"Handle `aq message status {msg.id} --json` (running it marks the message read).",
+        )
+    finally:
+        scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
+
+
 async def test_orchestrator_owns_single_integration_service_loop(orch):
     service = orch.integration_service
     # No GitHub App config must not leave the entire integration transport unwired.
-    assert callable(orch.integration_app_client_factory)
-    assert callable(orch.integration_repository_binding_resolver)
+    assert callable(orch.github_client_factory)
+    assert callable(orch.github_repository_binding_resolver)
+    assert orch.github_auth is orch.github_access.auth
+    assert orch.github_runner is orch.github_access.runner
+    assert orch.git.github_access is orch.github_access
     assert service is not None
     assert service._task is not None
     assert service._task.get_name() == "integration-reconciliation-service"
-    assert orch.integration_scheduler is not None
+    assert orch.integration_scheduler is None
     assert orch.integration_outbox is not None
     assert orch.integration_attestation_service is not None
-    assert orch.integration_control_service is not None
-    assert service._drain_handler.__self__ is orch.integration_control_service
-    assert orch.integration_control_service.external_preflight is not None
-    assert (
-        service._candidate_ci_handler.__self__
-        is orch.integration_attestation_service
+    assert not hasattr(orch, "integration_control_service")
+    assert orch.branch_materialization_service is not None
+    assert orch.branch_materialization_service.legacy_container_collection is False
+    assert service._subject_runtime is None
+    assert service._parent_subject_runtime is None
+    assert service._development_subject_runtime is None
+    assert service._outbox is orch.integration_outbox
+    assert "delegate cleanup" in service._maintenance
+    assert orch.integration_train is None and service._train is None
+    assert orch.integration_attestation_resolver.__self__ is orch.integration_attestation_service
+
+
+async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path, monkeypatch):
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("train.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
     )
-    assert (
-        orch.integration_attestation_resolver.__self__
-        is orch.integration_attestation_service
-    )
+    config.worktrees.enabled = False
+    config.integration.git_first = "active"
+    import sys
+    for name in ("scheduler", "promotion", "main_promotion", "root_runtime", "parent_runtime",
+                 "reconciler", "root_adapters", "candidates", "subjects", "parent_engine",
+                 "settling", "stale_schedule", "development_runtime", "development_adapter"):
+        monkeypatch.setitem(sys.modules, f"src.integration.{name}", None)
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    from src.commands.handler import CommandHandler
+
+    orch.set_command_handler(CommandHandler(orch, config))  # as src/main.py does
+    await orch.initialize()
+    try:
+        service = orch.integration_service
+        assert service._train.train is orch.integration_train is not None
+        # The service ticks through CommandHandler as the daemon, never directly.
+        assert await service._train.tick(1.0) == {
+            "success": True, "started": [], "running": [], "skipped": [], "deferred": [],
+        }
+        assert service._subject_runtime is None
+        assert orch.integration_scheduler is None
+        assert orch.promotion_service is None
+        assert orch.root_promotion_service is None
+        assert orch.integration_outbox._before_dispatch is None
+        assert orch.parent_subject_runtime is None
+        assert orch.development_subject_runtime is None
+        # No parent runtime means no legacy collection episode either
+        # (grand-lantern-78, 2026-10-07).
+        assert orch.branch_materialization_service.legacy_container_collection is False
+        assert service._task is not None
+    finally:
+        await _drain_running_tasks(orch)
+        await orch.shutdown()
     original_runtime = orch.playbook_manager
     runtime = MagicMock()
     runtime.accept_integration_event = AsyncMock(return_value=True)
     orch.playbook_manager = runtime
     try:
         assert await orch.integration_outbox._accept_event(
-            "integration.sweep_due", {"project_id": "p"}, "event-1"
+            "integration.root_delivered", {"project_id": "p"}, "event-1"
         )
+        # The adapter asks the runtime for explicit no-consumer evidence; a
+        # bare False from it stays retryable.
         runtime.accept_integration_event.assert_awaited_once_with(
-            "integration.sweep_due", {"project_id": "p"}, "event-1"
+            "integration.root_delivered", {"project_id": "p"}, "event-1", prove_no_consumer=True
         )
+        # A disabled runtime is never evidence that nothing subscribes.
+        orch.playbook_manager = None
+        assert await orch.integration_outbox._accept_event(
+            "integration.root_delivered", {"project_id": "p"}, "event-1"
+        ) is False
     finally:
         orch.playbook_manager = original_runtime
 
 
+def _orchestrator_policy(project_id: str, **extra) -> dict:
+    artifact = {
+        "playbook_id": "hierarchical-delivery",
+        "artifact_sha256": "sha256:" + "a" * 64,
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:" + "b" * 64,
+        "source_digest": "sha256:" + "c" * 64,
+        "compiler_build": "test",
+        "version": 1,
+    }
+    boundary = {
+        "required_checks": {"version": "v1", "names": ["unit"], "producer_id": "forge"},
+        "repair": {"debug_intelligence_class": "high"},
+        "route": {
+            "playbook_id": "hierarchical-delivery",
+            "scope": "project",
+            "scope_identifier": project_id,
+            "artifact": artifact,
+        },
+    }
+    return {
+        "parent": boundary,
+        "root": boundary,
+        "branchless_parent": "verifier",
+        "on_failed_child": "block",
+        **extra,
+    }
+
+
+async def test_orchestrator_outbox_bounds_retries_by_validated_project_policy(orch):
+    resolve = orch.integration_outbox._project_max_wait
+    assert resolve is not None
+    await orch.db.create_project(Project(id="bounded", name="bounded"))
+    await orch.db.update_project(
+        "bounded",
+        hierarchical_integration_policy=_orchestrator_policy("bounded", max_wait_seconds=90),
+    )
+    await orch.db.create_project(Project(id="default-bound", name="default bound"))
+    await orch.db.update_project(
+        "default-bound", hierarchical_integration_policy=_orchestrator_policy("default-bound"),
+    )
+    await orch.db.create_project(Project(id="development", name="development"))
+    await orch.db.update_project(
+        "development",
+        hierarchical_integration_policy={"validation": "none", "commands": []},
+    )
+    await orch.db.create_project(Project(id="unconfigured", name="unconfigured"))
+
+    assert await resolve("bounded") == 90.0
+    assert await resolve("default-bound") == 3600.0
+    assert await resolve("development") == 3600.0
+    assert await resolve("unconfigured") == 3600.0
+    assert await resolve("missing-project") == 3600.0
+
+
+async def test_orchestrator_outbox_sinks_unsubscribed_events_with_runtime_evidence(
+    orch, tmp_path
+):
+    import time
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from src.config import PlaybooksConfig
+    from src.database.tables import integration_outbox
+    from src.integration.outbox import RETRY_EXHAUSTED_PREFIX, enqueue_integration_event
+    from src.playbooks.runtime import V2PlaybookRuntime
+
+    await orch.db.create_project(Project(id="sink", name="sink"))
+    await orch.db.update_project(
+        "sink", hierarchical_integration_policy=_orchestrator_policy("sink", max_wait_seconds=90),
+    )
+    now = time.time()
+    async with orch.db.immediate() as conn:
+        for event_id, event_type in (
+            ("sink-event", "integration.human_blocked"),
+            ("unknown-event", "integration.custom_notification"),
+        ):
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=event_id,
+                project_id="sink",
+                event_type=event_type,
+                payload={"operation_id": "operation-1"},
+                available_at=now,
+            )
+        # Old enough that the project's 90 s bound, not the default hour, ends it.
+        await conn.execute(
+            integration_outbox.update()
+            .where(integration_outbox.c.id == "unknown-event")
+            .values(created_at=now - 120)
+        )
+    runtime = V2PlaybookRuntime(
+        config=SimpleNamespace(
+            compiled_root=str(tmp_path / "compiled"),
+            playbooks=PlaybooksConfig(enabled=True),
+            security=SimpleNamespace(capability_enforcement="enforce"),
+        ),
+        db=orch.db,
+        handler=SimpleNamespace(),
+        llm=None,
+        bus=None,
+    )
+    await runtime.refresh()
+    original_runtime = orch.playbook_manager
+    orch.playbook_manager = runtime
+    try:
+        assert await orch.integration_outbox.dispatch_due(now) == 0
+    finally:
+        orch.playbook_manager = original_runtime
+        await runtime.shutdown()
+
+    async with orch.db._engine.connect() as conn:
+        rows = {
+            row["id"]: row
+            for row in (await conn.execute(select(integration_outbox))).mappings()
+        }
+    sunk, unknown = rows["sink-event"], rows["unknown-event"]
+    assert sunk["delivered_at"] is not None
+    assert sunk["last_error"].startswith("unsubscribed: ")
+    assert sunk["destination_manifest"] is None
+    # An unknown type is never sunk: it stops as an explicit failed delivery.
+    assert unknown["delivered_at"] is None
+    assert unknown["last_error"].startswith(RETRY_EXHAUSTED_PREFIX + "max_wait=90s")
+    assert "NoIntegrationEventConsumer: no ready playbook" in unknown["last_error"]
+
+
+async def test_runtime_cycle_materializes_origins_without_legacy_container_episode(orch, tmp_path):
+    """The daemon cycle, not a direct service call, owns origin reconciliation."""
+    from sqlalchemy import insert
+
+    from src.database.tables import playbook_artifacts
+    from src.integration.models import (
+        ArtifactSnapshot,
+        HierarchicalIntegrationPolicy,
+        IntegrationBoundaryPolicy,
+        PlaybookRoute,
+        RepairPolicy,
+        RequiredCheckSet,
+    )
+
+    project_id = "materialization"
+    artifact = ArtifactSnapshot(
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "a" * 64,
+        schema_generation=2,
+        contract_fingerprint="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        compiler_build="test",
+        version=1,
+    )
+    boundary = IntegrationBoundaryPolicy(
+        required_checks=RequiredCheckSet(
+            version="test", names=("unit",), producer_id="forge-observer"
+        ),
+        repair=RepairPolicy(debug_intelligence_class="high"),
+        route=PlaybookRoute(
+            playbook_id="hierarchical-delivery",
+            scope="project",
+            scope_identifier=project_id,
+            artifact=artifact,
+        ),
+    )
+    policy = HierarchicalIntegrationPolicy(
+        parent=boundary,
+        root=boundary,
+        branchless_parent="verifier",
+        on_failed_child="block",
+    )
+    await orch.db.create_project(Project(id=project_id, name="materialization"))
+    await orch.db.create_repo(
+        RepoConfig(
+            id="materialization-repo",
+            project_id=project_id,
+            source_type=RepoSourceType.LINK,
+            source_path=str(tmp_path),
+        )
+    )
+    await orch.db.update_project(
+        project_id,
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id="materialization-repo",
+        hierarchical_integration_policy=policy.model_dump(mode="json"),
+    )
+    async with orch.db.immediate() as conn:
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                **artifact.model_dump(),
+                scope="project",
+                scope_identifier=project_id,
+                profile_fingerprint="",
+                path="/tmp/materialization-artifact",
+                size_bytes=1,
+                validation="{}",
+                created_at=1.0,
+            )
+        )
+    await orch.db.create_task(
+        Task(
+            id="materialization-epic",
+            project_id=project_id,
+            repo_id="materialization-repo",
+            title="materialization epic",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    hierarchy = HierarchyIntegration(
+        orch.db,
+        default_head_resolver=lambda _repo, _branch: "a" * 40,
+        branch_materializer=lambda _repo, _branch, base_sha: base_sha,
+    )
+    await hierarchy.file_children("materialization-epic", [{"title": "child"}], 0)
+
+    # The production CommandHandler factory returns a daemon-owned instance
+    # when available.  This supplies a deterministic no-network instance
+    # while still exercising the factory through run_one_cycle().
+    orch.hierarchy_integration = hierarchy
+    orch.set_command_handler(CommandHandler(orch, orch.config))
+    await orch.run_one_cycle()
+
+    checkpoint = await orch.db.get_integration_checkpoint("materialization-epic")
+    assert checkpoint["episode_id"] is None
+    assert (await orch.db.get_task("materialization-epic")).status is TaskStatus.IN_PROGRESS
+    origin = await orch.db.get_task_branch_origin_for_promotion(
+        "materialization-epic", "materialization-repo"
+    )
+    assert origin["materialized"] is True
+
+
+async def test_branch_materialization_drain_is_not_reentrant():
+    """The daemon cycle and IntegrationService.tick share one drain.
+
+    Both drive ``drain_due`` (step 3a of ``run_one_cycle`` and the
+    reconciliation loop).  A pass that is already pushing must not be joined by
+    a second one walking the same page of reservations; the later caller skips
+    and lets the next tick retry.
+    """
+    from src.integration.branch_materialization import BranchMaterializationService
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    service = BranchMaterializationService(
+        MagicMock(), hierarchy_service_factory=lambda: None
+    )
+
+    async def pending_origins(*, limit=10, after=None):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return []
+
+    service.pending_origins = pending_origins
+
+    first = asyncio.create_task(service.drain_due(now=1.0))
+    await entered.wait()
+    assert await service.drain_due(now=1.0) == []
+    release.set()
+    assert await first == []
+    assert calls == 1
+
+
 @pytest.mark.parametrize("use_app", [False, True])
-async def test_configured_orchestrator_installs_repository_bound_candidate_transport(
+async def test_configured_orchestrator_installs_shared_repository_client(
     tmp_path, monkeypatch, use_app
 ):
-    from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding
-    from src.git.github_cli import GitHubCLIClient
+    from src.git.github import GitHubClient
+    from src.git.github_contracts import GitHubCredentialMode, GitHubRepositoryBinding
 
     config = AppConfig(
         database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
-    config.integration.github_app = GitHubAppConfig(
-        client_id="Iv1.test",
-        app_id=101,
-        installation_id=202,
-        private_key_path="/daemon/key.pem",
-    ) if use_app else None
-    binding = GitHubRepositoryBinding(303, "acme/widgets")
-    bound_client = MagicMock(repository=binding)
-    bind_repository = AsyncMock(return_value=bound_client)
-    monkeypatch.setattr(
-        GitHubAppClient if use_app else GitHubCLIClient, "bind_repository", bind_repository
+    config.integration.github_app = (
+        GitHubAppConfig(
+            client_id="Iv1.test",
+            app_id=101,
+            installation_id=202,
+            private_key_path="/daemon/key.pem",
+        )
+        if use_app
+        else None
     )
+    binding = GitHubRepositoryBinding(303, "acme/widgets")
     orchestrator = Orchestrator(config, runtimes=MockAdapterFactory())
+    bind_repository = AsyncMock(return_value=binding)
+    monkeypatch.setattr(orchestrator.github_access, "bind_repository", bind_repository)
     await orchestrator.initialize()
     try:
-        repository = RepoConfig(
-            id="repo",
-            project_id="p",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/acme/widgets.git",
+        references = (
+            "https://github.com/acme/widgets.git",
+            "https://github.com/acme/widgets",
+            "https://github.com/acme/widgets.git/",
+            "https://github.com/acme/widgets/",
+            "HTTPS://GitHub.com/acme/widgets",
+            "https://www.github.com/acme/widgets",
+            "https://github.com:443/acme/widgets.git",
+            "git@github.com:acme/widgets.git",
+            "ssh://git@github.com/acme/widgets",
+            "ssh://git@github.com:22/acme/widgets.git",
+            "acme/widgets",
+            "github.com/acme/widgets",
         )
-        resolved = await orchestrator.integration_repository_binding_resolver(repository)
+        client = None
+        for reference in references:
+            repository = RepoConfig(
+                id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=reference,
+            )
+            resolved = await orchestrator.github_repository_binding_resolver(repository)
+            resolved_client = orchestrator.github_client_factory(binding)
 
-        assert resolved == binding
-        assert orchestrator.integration_app_client_factory(binding) is bound_client
-        bind_repository.assert_awaited_once()
+            assert resolved == binding, reference
+            assert isinstance(resolved_client, GitHubClient)
+            assert resolved_client.repository == binding
+            assert resolved_client.access is orchestrator.github_access
+            if client is not None:
+                assert resolved_client is client
+            client = resolved_client
+            assert orchestrator.github_access.credential_identity.mode is (
+                GitHubCredentialMode.APP if use_app else GitHubCredentialMode.EXISTING_LOGIN
+            )
+        assert bind_repository.await_count == len(references)
+        assert all(call.args == ("acme/widgets",) for call in bind_repository.await_args_list)
+
+        # Rejected input must not select credentials or construct another client.
+        for reference in (
+            "https://gitlab.com/acme/widgets.git",
+            "git@other.example:acme/widgets.git",
+            str(tmp_path / "local.git"),
+            "http://github.com/acme/widgets.git",
+            "https://user:password@github.com/acme/widgets.git",
+            "https://github.com:8443/acme/widgets.git",
+            "ssh://root@github.com/acme/widgets.git",
+            "https://github.com/acme/widgets.git?token=secret",
+            "https://github.com/acme/widgets.git#fragment",
+            "https://github.com/acme/widgets/tree/main.git",
+            "https://github.com/acme/../widgets.git",
+            "https://github.com/acme/widgets%2fother.git",
+        ):
+            repository.url = reference
+            assert await orchestrator.github_repository_binding_resolver(repository) is None
+        assert bind_repository.await_count == len(references)
+        assert orchestrator.github_client_factory(binding) is client
+
+        # A validated URL still requires successful binding with the selected
+        # authority; provider failures must propagate without ambient fallback.
+        from src.git.github_contracts import GitHubAccessError
+
+        bind_repository.side_effect = GitHubAccessError("credentials", "binding denied")
+        repository.url = "git@github.com:acme/widgets.git"
+        with pytest.raises(GitHubAccessError, match="binding denied"):
+            await orchestrator.github_repository_binding_resolver(repository)
+        assert orchestrator.github_client_factory(binding) is client
     finally:
         await orchestrator.shutdown()
+
+
+async def test_config_reload_does_not_swap_live_github_credential_provider(orch):
+    from src.git.github_contracts import GitHubCredentialMode
+
+    orchestrator = orch
+    config = orchestrator.config
+    original_access = orchestrator.github_access
+    changed = copy.deepcopy(config)
+    changed.integration.github_app = GitHubAppConfig(
+        client_id="Iv1.changed",
+        app_id=501,
+        installation_id=502,
+        private_key_path="/daemon/changed.pem",
+    )
+
+    await orchestrator._on_config_reloaded(
+        {
+            "config": changed,
+            "previous_config": config,
+            "changed_sections": ["integration"],
+        }
+    )
+
+    assert orchestrator.config is changed
+    assert orchestrator.github_access is original_access
+    assert orchestrator.github_auth is original_access.auth
+    assert orchestrator.github_runner is original_access.runner
+    assert orchestrator.git.github_access is original_access
+    assert original_access.credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN
+
+
+async def test_daemon_start_and_cycle_schedule_interrupted_playbook_runs(tmp_path):
+    from dataclasses import replace
+    import time
+
+    from src.config import PlaybooksConfig
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.runtime import V2PlaybookRuntime
+    from src.playbooks.services import build_v2_engine
+    from tests.test_child_task_reconciler import seed_artifact
+    from tests.test_v2_restart_resume import drain_recovery, fresh_engine, orphan_snapshot
+    from tests.test_v2_engine import ok
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("daemon_restart_playbooks")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+        playbooks=PlaybooksConfig(enabled=True),
+    )
+    daemon = Orchestrator(config, runtimes=MockAdapterFactory())
+    # Seed exactly what the previous daemon left behind, before initialize.
+    await daemon.db.initialize()
+    engine, adapter, ref = fresh_engine("two-rules-one-event.artifact.json", runs=daemon.db)
+    # Production clocks advance past the process boundary on every receipt.
+    store = ArtifactStore(config.compiled_root)
+    store.put(
+        engine.services.artifact_store.load(ref.artifact_sha256),
+        source_digest=ref.source_digest,
+        contract_fingerprint=ref.contract_fingerprint,
+        profile_fingerprint="test",
+        compiler_build=ref.compiler_build,
+    )
+    engine.services = replace(engine.services, clock=time.time, artifact_store=store)
+    await seed_artifact(daemon.db, ref)
+    await daemon.db.create_run(orphan_snapshot(ref, run_id="startup-orphan"))
+    handler = CommandHandler(daemon, config)
+    handler._v2_playbook_engine = engine
+    daemon.set_command_handler(handler)
+    adapter.queue.append(ok("startup-review"))
+    try:
+        await daemon.initialize()
+        runtime = daemon.playbook_manager
+        assert isinstance(runtime, V2PlaybookRuntime)
+        assert runtime._engine is build_v2_engine(config=config, db=daemon.db, handler=handler)
+        assert runtime.restart_reconciler.process_started_at == daemon._process_started_at
+        await drain_recovery(runtime.restart_reconciler)
+        assert (await daemon.db.load_run("startup-orphan")).lifecycle.value == "completed"
+
+        # Startup scanned one bounded page; later pages/retries use the real
+        # cycle, without an event, operator resume, or a synthesized cause.
+        await daemon.db.create_run(orphan_snapshot(ref, run_id="cycle-orphan"))
+        adapter.queue.append(ok("cycle-review"))
+        await daemon.run_one_cycle()
+        await drain_recovery(runtime.restart_reconciler)
+        assert (await daemon.db.load_run("cycle-orphan")).lifecycle.value == "completed"
+        assert len(adapter.calls) == 2
+
+        config.playbooks.enabled = False
+        await daemon.db.create_run(orphan_snapshot(ref, run_id="disabled-orphan"))
+        await daemon.run_one_cycle()
+        assert (await daemon.db.load_run("disabled-orphan")).lifecycle.value == "running"
+        assert len(adapter.calls) == 2
+    finally:
+        await daemon.shutdown()
 
 
 @pytest.fixture
@@ -198,6 +933,218 @@ async def _run_cycle_and_wait(orch):
     """Run one scheduling cycle and wait for all background task executions."""
     await orch.run_one_cycle()
     await orch.wait_for_running_tasks()
+
+
+@pytest.mark.parametrize(
+    "failing_step",
+    [
+        "_resume_paused_tasks",
+        "_check_defined_tasks",
+        "_sweep_container_completion",
+        "_check_stuck_defined_tasks",
+        "_check_failed_blocked_tasks",
+        "_schedule",
+        "_sweep_operational_event_retention",
+        "_sweep_test_selection_retention",
+        "_maintain_conversations",
+        "_auto_archive_tasks",
+        "_reconcile_playbook_child_tasks",
+        "_check_paused_playbook_timeouts",
+        "_sweep_playbook_v2_retention",
+        "_reap_worktree_slots",
+        "_deliver_messages",
+        "_revoke_expired_tokens",
+    ],
+)
+async def test_failing_cycle_step_does_not_stop_pools_or_sessions(
+    orch, monkeypatch, failing_step
+):
+    """Each bare step can fail repeatedly without stalling pool/session convergence."""
+    # The known JSON DISTINCT failure in monitoring would otherwise mask later steps.
+    monkeypatch.setattr(orch, "_check_stuck_defined_tasks", AsyncMock())
+    monkeypatch.setattr(orch, "_check_failed_blocked_tasks", AsyncMock())
+    failure = AsyncMock(side_effect=RuntimeError(f"{failing_step} failed"))
+    monkeypatch.setattr(orch, failing_step, failure)
+    pools = AsyncMock()
+    sessions = AsyncMock()
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+    await orch.run_one_cycle()
+
+    assert failure.await_count == 2
+    assert pools.await_count == 2
+    assert sessions.await_count == 2
+
+
+async def test_failing_pool_reconciliation_does_not_stop_sessions(orch, monkeypatch, caplog):
+    pools = AsyncMock(side_effect=RuntimeError("pool failed"))
+    sessions = AsyncMock()
+    monkeypatch.setattr(orch, "_check_stuck_defined_tasks", AsyncMock())
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+
+    pools.assert_awaited_once_with(hierarchy_modes={})
+    sessions.assert_awaited_once_with()
+    assert caplog.text.count("Scheduler cycle error") == 1
+
+
+async def test_failed_cycle_logs_at_most_one_error_per_reconciler(orch, monkeypatch, caplog):
+    monkeypatch.setattr(
+        orch, "_resume_paused_tasks", AsyncMock(side_effect=RuntimeError("promotion failed"))
+    )
+    pools = AsyncMock(side_effect=RuntimeError("pool failed"))
+    sessions = AsyncMock(side_effect=RuntimeError("session failed"))
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+
+    pools.assert_awaited_once_with(hierarchy_modes=None)
+    sessions.assert_awaited_once_with()
+    assert caplog.text.count("Scheduler cycle error") == 1
+    assert caplog.text.count("Pool reconciliation error") == 1
+    assert caplog.text.count("Session reconciliation error") == 1
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("child_completed", [True, False])
+async def test_session_cycle_playbook_sweeps_use_the_installed_handler(
+    orch, monkeypatch, enabled, child_completed
+):
+    """Real waits settle through the cycle's child and deadline sweeps."""
+    import time
+
+    from src.playbooks.run_state import RunLifecycle
+    from tests.test_child_task_reconciler import (
+        CHILD,
+        delegate_transitions,
+        suspended_on_child,
+    )
+
+    await orch.db.create_project(Project(id="p", name="Project"))
+    reconciler, run_id, adapter = await suspended_on_child(orch.db, timeout_seconds=60)
+    handler = CommandHandler(orch, orch.config)
+    monkeypatch.setattr(handler, "_v2_engine", lambda: reconciler._engine)
+    orch.set_command_handler(handler)
+    assert not hasattr(orch, "command_handler")
+    orch.config.playbooks.enabled = enabled
+    # This helper's clock is in 1970. Defer unrelated retention so it does
+    # not collect the resumed run before we inspect its durable outcome.
+    orch._last_playbook_retention_sweep = time.time()
+    # The durable wait is overdue in both cases. A settled child must take
+    # precedence over the deadline when both sweeps run in the same tick.
+    if child_completed:
+        await orch.db.transition_task(CHILD, TaskStatus.COMPLETED, context="test", force=True)
+
+    await orch.run_one_cycle()
+
+    stored = await orch.db.load_run(run_id)
+    if not enabled:
+        assert stored.lifecycle is RunLifecycle.PAUSED
+        assert stored.wait is not None
+        assert len(await orch.db.list_active(run_id)) == 1
+        assert delegate_transitions(await orch.db.list_receipts(run_id)) == []
+    else:
+        expected = RunLifecycle.COMPLETED if child_completed else RunLifecycle.FAILED
+        assert stored.lifecycle is expected
+        assert stored.wait is None
+        assert await orch.db.list_active(run_id) == []
+        edge = "completed" if child_completed else "timed_out"
+        assert delegate_transitions(await orch.db.list_receipts(run_id)) == [f"r::delegate::{edge}"]
+        receipt_count = len(await orch.db.list_receipts(run_id))
+        await orch.run_one_cycle()
+        assert len(await orch.db.list_receipts(run_id)) == receipt_count
+    assert adapter.names.count("create_task") == 1
+
+
+async def test_session_cycle_playbook_sweep_failures_do_not_stop_housekeeping(
+    orch, monkeypatch, caplog
+):
+    handler = CommandHandler(orch, orch.config)
+    child_sweep = AsyncMock(side_effect=RuntimeError("child scan unavailable"))
+    timeout_sweep = AsyncMock(side_effect=RuntimeError("deadline scan unavailable"))
+    monkeypatch.setattr(handler, "reconcile_playbook_child_tasks", child_sweep)
+    monkeypatch.setattr(handler, "check_paused_playbook_timeouts", timeout_sweep)
+    retention = AsyncMock()
+    monkeypatch.setattr(orch, "_sweep_playbook_v2_retention", retention)
+    orch.set_command_handler(handler)
+    orch.config.playbooks.enabled = True
+
+    await orch.run_one_cycle()
+
+    child_sweep.assert_awaited_once_with()
+    timeout_sweep.assert_awaited_once_with()
+    retention.assert_awaited_once_with()
+    assert "Playbook child-task reconciliation failed: child scan unavailable" in caplog.text
+    assert "Paused playbook timeout sweep failed: deadline scan unavailable" in caplog.text
+    assert "Scheduler cycle error" not in caplog.text
+
+
+async def test_failing_monitoring_checks_do_not_stop_pools_or_sessions(
+    orch, monkeypatch, caplog
+):
+    """A monitoring alert that raises must not cost the fleet its workers.
+
+    fair-grove-86: ``_check_stuck_defined_tasks`` raised on every cycle for
+    53 minutes, and because it ran bare inside the cycle, nothing after it
+    ran either -- no pool starts anywhere, and drained sessions were never
+    torn down.  Alerts are observation; scheduling must not depend on them.
+    """
+    stuck = AsyncMock(side_effect=RuntimeError("stuck scan unavailable"))
+    failed = AsyncMock(side_effect=RuntimeError("failed scan unavailable"))
+    monkeypatch.setattr(orch, "_check_stuck_defined_tasks", stuck)
+    monkeypatch.setattr(orch, "_check_failed_blocked_tasks", failed)
+    pools = AsyncMock()
+    sessions = AsyncMock()
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+
+    stuck.assert_awaited_once_with()
+    failed.assert_awaited_once_with()
+    pools.assert_awaited_once_with(hierarchy_modes={})
+    sessions.assert_awaited_once_with()
+    assert "Stuck DEFINED task check failed" in caplog.text
+    assert "FAILED/BLOCKED task report failed" in caplog.text
+    assert "Scheduler cycle error" not in caplog.text
+
+
+async def test_scheduler_cycles_continue_while_workspace_scan_is_pending(orch, tmp_path):
+    from src.workspace_spec_watcher import WorkspaceSpecWatcher
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def scan():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return []
+
+    watcher = WorkspaceSpecWatcher(
+        db=orch.db, bus=orch.bus, git=orch.git,
+        vault_projects_dir=str(tmp_path / "references"), poll_interval_seconds=0,
+    )
+    watcher._check_once = scan
+    orch.workspace_spec_watcher = watcher
+    try:
+        async with asyncio.timeout(15):
+            await orch.run_one_cycle()
+            await entered.wait()
+            await orch.run_one_cycle()
+            await orch.run_one_cycle()
+        assert calls == 1
+        assert not watcher._check_task.done()
+    finally:
+        release.set()
+        await watcher.stop()
 
 
 _SESSION_CLASSES = {
@@ -267,7 +1214,7 @@ async def _create_session_project(orch, *, project_id: str = "p-1") -> None:
             default_class="standard-medium",
         )
     )
-    await orch.db.create_project(Project(id=project_id, name="alpha", default_profile_id="claude"))
+    await orch.db.create_project(Project(id=project_id, name="alpha"))
     path = os.path.join(orch.config.workspace_dir, project_id)
     os.makedirs(path, exist_ok=True)
     await orch.db.create_workspace(
@@ -279,6 +1226,60 @@ async def _create_session_project(orch, *, project_id: str = "p-1") -> None:
             kind_id="project-repo",
         )
     )
+
+
+@pytest.mark.parametrize("resolution", ["satisfied", "expired"])
+async def test_session_cycle_resolves_durable_waits_on_the_installed_handler(
+    session_orch, resolution, caplog
+):
+    """The daemon's global wait scan runs on the handler ``set_command_handler`` stores.
+
+    It once read an attribute the Orchestrator never had: every cycle logged an
+    AttributeError, and a task wait stayed active after its producer completed
+    and after its deadline passed, so the waiting worker never woke.
+    """
+    import time
+
+    from sqlalchemy import insert
+    from src.database.tables import agent_waits
+
+    orch = session_orch
+    orch.set_command_handler(CommandHandler(orch, orch.config))
+    await _create_session_project(orch)
+    await orch.db.create_task(
+        Task(id="producer", project_id="p-1", title="Producer", description="")
+    )
+    now = time.time()
+    async with orch.db.immediate() as conn:
+        await conn.execute(
+            insert(agent_waits).values(
+                id="w1",
+                project_id="p-1",
+                owner_kind="supervisor",
+                owner_id="supervisor-p-1",
+                session_id="supervisor-session",
+                session_instance_token="instance",
+                claim_epoch=0,
+                kind="task",
+                match={"task_id": "producer"},
+                state="active",
+                version=1,
+                created_at=now - 60,
+                deadline_at=now + 3600 if resolution == "satisfied" else now - 1,
+                idempotency_key="k1",
+            )
+        )
+    if resolution == "satisfied":
+        await orch.db.transition_task("producer", TaskStatus.COMPLETED)
+
+    await orch._reconcile_sessions()
+
+    assert "AgentWaitReconciler tick failed" not in caplog.text
+    wait = await orch.db.get_agent_wait("w1")
+    assert wait["state"] == resolution
+    assert wait["result_ref"] == "task:producer"
+    message = await orch.db.get_message(wait["result_message_id"])
+    assert message.body_kind == "wait_result"
 
 
 async def test_conditional_completion_cascades_contingency_to_noop_and_emits_event(
@@ -450,6 +1451,7 @@ class TestOrchestratorLifecycle:
                 title="Test",
                 description="Do it",
                 status=TaskStatus.DEFINED,
+                profile_id="claude", route_source="legacy",
             )
         )
 
@@ -473,6 +1475,7 @@ class TestOrchestratorLifecycle:
                 title="First",
                 description="Do first",
                 status=TaskStatus.DEFINED,
+                profile_id="claude", route_source="legacy",
             )
         )
         await orch.db.create_task(
@@ -482,6 +1485,7 @@ class TestOrchestratorLifecycle:
                 title="Second",
                 description="Do second",
                 status=TaskStatus.DEFINED,
+                profile_id="claude", route_source="legacy",
             )
         )
         await orch.db.add_dependency("t-2", depends_on="t-1")
@@ -566,6 +1570,39 @@ class TestRecoverStaleState:
         assert task.status == TaskStatus.READY
         assert task.assigned_agent_id is None
 
+    @pytest.mark.parametrize("task_type", [TaskType.PROMOTION, TaskType.BACKMERGE])
+    async def test_daemon_authored_intent_is_left_in_progress(self, orch, task_type):
+        """A promotion intent has no agent; StepAdmission needs it IN_PROGRESS
+        with no profile, so a restart must not hand it to the router."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(
+            Task(
+                id="promote-1",
+                project_id="p-1",
+                title="Promote staging",
+                description="Daemon-authored step intent.",
+                status=TaskStatus.IN_PROGRESS,
+                task_type=task_type,
+            )
+        )
+
+        await orch._recover_stale_state()
+
+        assert (await orch.db.get_task("promote-1")).status == TaskStatus.IN_PROGRESS
+
+    async def test_router_never_sees_daemon_authored_intents(self, orch):
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        for task_id, task_type in (("promote-1", TaskType.PROMOTION),
+                                   ("backmerge-1", TaskType.BACKMERGE),
+                                   ("work-1", TaskType.FEATURE)):
+            await orch.db.create_task(Task(id=task_id, project_id="p-1", title=task_id,
+                                           description="d", status=TaskStatus.READY,
+                                           task_type=task_type))
+
+        candidates = {task.id for task in await orch._route_needed_candidates()}
+
+        assert candidates == {"work-1"}
+
     async def test_container_task_still_auto_completes(self, orch):
         """Event-driven settlement (spec §7) keys off the container flag, so
         the parent left IN_PROGRESS by recovery is not stranded — it settles
@@ -613,7 +1650,12 @@ class TestContainerRelease:
     recovery preserves — so settlement can close it.
     """
 
-    async def _container_with_child(self, orch, *, container_status, child_status):
+    async def _container_with_child(
+        self, orch, *, container_status, child_status, profile_id=None
+    ):
+        # *profile_id* routes both rows (a legacy route, claimable while the
+        # project's router is not ready): only routed work is dispatched.
+        route = {"profile_id": profile_id, "route_source": route_source_for(profile_id)}
         await orch.db.create_task(
             Task(
                 id="c-1",
@@ -621,6 +1663,7 @@ class TestContainerRelease:
                 title="Medium findings",
                 description="settle when the children finish",
                 status=container_status,
+                **route,
             )
         )
         await orch.db.create_task(
@@ -630,6 +1673,7 @@ class TestContainerRelease:
                 title="Fix one finding",
                 description="a real deliverable",
                 status=child_status,
+                **route,
             )
         )
         # ``set_parent`` (any path) is what writes the container flag.
@@ -653,13 +1697,42 @@ class TestContainerRelease:
         await orch._check_defined_tasks()
         assert (await orch.db.get_task("c-1.1")).status == TaskStatus.READY
 
+    async def test_removing_the_last_blocker_releases_container_and_children(self, orch):
+        """No manual status edit once the container's last blocker goes (clear-orbit)."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(
+            Task(
+                id="plan",
+                project_id="p-1",
+                title="Plan and file the epic",
+                description="the filer",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        await self._container_with_child(
+            orch, container_status=TaskStatus.DEFINED, child_status=TaskStatus.DEFINED
+        )
+        await orch.db.add_dependency("c-1", "plan", DepType.BLOCKS.value)
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("c-1")).status == TaskStatus.DEFINED
+
+        await orch.db.remove_dependency("c-1", "plan")
+        await orch._check_defined_tasks()
+
+        container = await orch.db.get_task("c-1")
+        assert container.status == TaskStatus.IN_PROGRESS
+        assert container.assigned_agent_id is None
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("c-1.1")).status == TaskStatus.READY
+
     async def test_container_with_open_children_is_never_in_routed_ready(self, session_orch):
         orch = session_orch
         await _create_session_project(orch)
         # Already READY when it became a container: the shape ``set_parent``
         # produces when children are attached after promotion.
         await self._container_with_child(
-            orch, container_status=TaskStatus.READY, child_status=TaskStatus.READY
+            orch, container_status=TaskStatus.READY, child_status=TaskStatus.READY,
+            profile_id="claude",
         )
 
         seen: list[list[str]] = []
@@ -726,18 +1799,58 @@ class TestAgentReconcilerWiring:
     See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
     """
 
-    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(
+    @pytest.mark.parametrize("initial_status", [TaskStatus.READY, TaskStatus.DEFINED])
+    async def test_held_task_never_dispatches_until_all_holds_are_removed(
+        self, session_orch, initial_status
+    ):
+        orch = session_orch
+        await _create_session_project(orch)
+        await orch.db.create_task(Task(
+            id="adoption-fixture", project_id="p-1", title="Operator adoption", description="",
+            status=initial_status, profile_id="claude", route_source="legacy",
+            branch_name="fixture-feature",
+        ))
+        for label in ("hold:adoption", "hold:operator", "fixture"):
+            await orch.db.add_task_label("adoption-fixture", label)
+
+        for label in (None, "hold:adoption"):
+            if label:
+                await orch.db.remove_task_label("adoption-fixture", label)
+            await _run_cycle_and_wait(orch)
+            task = await orch.db.get_task("adoption-fixture")
+            assert task.status == TaskStatus.READY
+            assert task.branch_name == "fixture-feature"
+            assert task.assigned_agent_id is None
+            assert await orch.db.get_session_for_task(task.id) is None
+            assert all(agent.role == "supervisor" for agent in await orch.db.list_agents())
+            assert [t.id for t in await orch.db.list_active_tasks()] == [task.id]
+
+        await orch.db.remove_task_label("adoption-fixture", "hold:operator")
+        await _run_cycle_and_wait(orch)
+        task = await orch.db.get_task("adoption-fixture")
+        assert task.status == TaskStatus.IN_PROGRESS
+        session = await orch.db.get_session_for_task(task.id)
+        assert session is not None
+
+        # A hold controls new dispatch; in-flight work still counts toward
+        # concurrency and remains visible in the scheduler's snapshot.
+        await orch.db.add_task_label(task.id, "hold:operator")
+        await orch._schedule()
+        assert task.id in {t.id for t in orch._last_scheduler_state.tasks}
+        assert (await orch.db.get_session_for_task(task.id)).id == session.id
+
+    async def test_ready_task_dispatches_with_only_workspace_and_a_route(
         self, session_orch
     ):
-        """The original quick-ember bug: project with workspace +
-        default_profile_id + READY task should dispatch within one cycle —
-        no manual agent creation. Tests the full reconciler → scheduler →
-        executor chain, now terminating in a session launch rather than in
-        the removed runtime adapter.
+        """The original quick-ember bug: project with workspace + a routed
+        READY task should dispatch within one cycle — no manual agent
+        creation. Tests the full reconciler → scheduler → executor chain, now
+        terminating in a session launch rather than in the removed runtime
+        adapter.  The route names the profile: a project default no longer
+        routes anything (mandatory routing §8).
         """
         orch = session_orch
         await _create_session_project(orch)
-        # READY task with no profile_id (falls back to project default).
         await orch.db.create_task(
             Task(
                 id="regression-task",
@@ -745,6 +1858,7 @@ class TestAgentReconcilerWiring:
                 title="Test reconciler dispatch",
                 description="Should auto-dispatch via the reconciler.",
                 status=TaskStatus.READY,
+                profile_id="claude", route_source="legacy",
             )
         )
 
@@ -842,14 +1956,16 @@ class TestPlanApprovalBlocking:
         )
         await orch.db.create_task(parent)
 
-        # Create chained subtasks with blocking dep on parent
+        # Chained subtasks under the container.  ``parent-child`` is the edge
+        # the ``is_blocked`` projection releases once the container leaves
+        # DEFINED; the legacy plan-subtask special case for a ``blocks`` edge
+        # to an IN_PROGRESS parent was retired with the legacy scan.
         sub1 = Task(
             id="t-sub-1",
             project_id="p-1",
             title="Sub 1",
             description="First subtask",
             status=TaskStatus.DEFINED,
-            parent_task_id="t-plan",
             is_plan_subtask=True,
         )
         sub2 = Task(
@@ -858,12 +1974,12 @@ class TestPlanApprovalBlocking:
             title="Sub 2",
             description="Second subtask",
             status=TaskStatus.DEFINED,
-            parent_task_id="t-plan",
             is_plan_subtask=True,
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
-        await orch.db.add_dependency("t-sub-1", depends_on="t-plan")
+        await orch.db.add_dependency("t-sub-1", "t-plan", "parent-child")
+        await orch.db.add_dependency("t-sub-2", "t-plan", "parent-child")
         await orch.db.add_dependency("t-sub-2", depends_on="t-sub-1")
 
         # Release the container: transition parent to IN_PROGRESS
@@ -1133,6 +2249,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+        mock_git.afetch_origin = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
@@ -1146,10 +2263,11 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.avalidate_checkout.assert_called()
         # Should fetch origin, checkout default, and hard-reset
         calls = [str(c) for c in mock_git._arun.call_args_list]
-        fetch_called = any("fetch" in c and "origin" in c for c in calls)
         checkout_called = any("checkout" in c and "develop" in c for c in calls)
         reset_called = any("reset" in c and "origin/develop" in c for c in calls)
-        assert fetch_called, f"Expected fetch origin call, got: {calls}"
+        mock_git.afetch_origin.assert_awaited_once_with(
+            workspace, repository_url="https://github.com/org/myrepo.git"
+        )
         assert checkout_called, f"Expected checkout develop call, got: {calls}"
         assert reset_called, f"Expected reset --hard origin/develop call, got: {calls}"
 
@@ -1171,6 +2289,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.aprepare_for_task = AsyncMock()
         mock_git.aswitch_to_branch = AsyncMock()
+        mock_git.afetch_origin = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
@@ -1199,6 +2318,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+        mock_git.afetch_origin = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
@@ -1256,6 +2376,10 @@ class TestPhaseVerifyNormalTask:
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.arev_parse = AsyncMock(return_value="a" * 40)
+        mock_git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+        )
         mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
@@ -1579,10 +2703,12 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # Auto-push rev-list returns "3" (ahead), then the final behind and
-        # ahead checks return "0".  The mock push cannot update the refs, so
-        # these three values model the complete successful verification.
-        orch.git._arun = AsyncMock(side_effect=["3", "0", "0"])
+        # The remote first differs from HEAD, then carries the exact pushed
+        # OID. The local origin/main tracking ref need not change.
+        orch.git.als_remote_ref = AsyncMock(side_effect=[
+            RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40),
+            RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40),
+        ])
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1590,11 +2716,7 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
         orch.git.apush_validated_delivery.assert_awaited_once()
-        assert [call.args[0] for call in orch.git._arun.await_args_list] == [
-            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
-            ["rev-list", "HEAD..refs/remotes/origin/main", "--count"],
-            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
-        ]
+        assert orch.git.als_remote_ref.await_count == 2
         # The auto-push goes through the delivery guard, which inspects the
         # tip against origin/<default> before pushing that exact OID.
         assert orch.git.apush_validated_delivery.await_args.args[1:] == (
@@ -1619,9 +2741,9 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # Auto-push rev-list returns "3" (ahead) — triggers push
-        # Push fails, so scenario behind check gets "0", ahead check gets "3"
-        orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40)
+        )
         orch.git.apush_validated_delivery = AsyncMock(side_effect=Exception("push failed"))
 
         ws = await orch.db.get_workspace("ws-1")
@@ -1629,6 +2751,8 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+        assert ctx.verification_issues
+        assert ctx.verification_infrastructure_failure
 
 
 class TestPhaseVerifyApprovalTask:
@@ -1645,7 +2769,9 @@ class TestPhaseVerifyApprovalTask:
         o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
-        await o.db.create_project(Project(id="p-1", name="alpha"))
+        await o.db.create_project(
+            Project(id="p-1", name="alpha", repo_url="https://github.com/org/repo.git")
+        )
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
         await o.db.create_workspace(
@@ -1669,6 +2795,10 @@ class TestPhaseVerifyApprovalTask:
         # Default: the task branch carries work, so the PR gate applies.
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.arev_parse = AsyncMock(return_value="a" * 40)
+        mock_git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+        )
         mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
@@ -2089,9 +3219,13 @@ class TestVerificationReopen:
         await orch.db.create_task(task)
 
         failures = [("You left uncommitted changes.", True)]
-        result = await orch._reopen_with_verification_feedback(task, failures)
+        identity = {"completion_id": "c-1", "session_id": None, "claim_epoch": 0}
+        result = await orch._reopen_with_verification_feedback(
+            task, failures, accepted_close=identity
+        )
 
         assert result is True
+        assert await orch.db.get_task_meta("t-1", "accepted_close") == identity
 
         # Task should be READY
         updated = await orch.db.get_task("t-1")
@@ -2134,9 +3268,13 @@ class TestVerificationReopen:
         )
 
         failures = [("Still has uncommitted changes.", True)]
-        result = await orch._reopen_with_verification_feedback(task, failures)
+        result = await orch._reopen_with_verification_feedback(
+            task, failures,
+            accepted_close={"completion_id": "c-2", "session_id": None, "claim_epoch": 0},
+        )
 
         assert result is False
+        assert await orch.db.get_task_meta("t-2", "accepted_close") is None
 
         # Task should NOT have been transitioned to READY
         updated = await orch.db.get_task("t-2")
@@ -2488,7 +3626,7 @@ class TestTerminalBlockedIsNotRecovered:
             status=TaskStatus.IN_PROGRESS,
             parent_task_id="t-epic",
             assigned_agent_id="a-hard",
-            profile_id="claude",
+            profile_id="claude", route_source="legacy",
         )
         await orch.db.create_task(child)
         await orch.db.add_dependency("t-epic.1", "t-epic", DepType.PARENT_CHILD.value)
@@ -2504,9 +3642,7 @@ class TestTerminalBlockedIsNotRecovered:
         assert refreshed.is_blocked is False
         return refreshed
 
-    @pytest.mark.parametrize("authoritative", [False, True])
-    async def test_hard_failed_child_stays_blocked_across_cycles(self, orch, authoritative):
-        orch.config.work_graph.blocked_state_authoritative = authoritative
+    async def test_hard_failed_child_stays_blocked_across_cycles(self, orch):
         await self._hard_close_child_of_released_container(orch)
 
         for _ in range(3):
@@ -2531,7 +3667,6 @@ class TestTerminalBlockedIsNotRecovered:
         """The recovery rule keeps working for a BLOCKED task with a real graph reason."""
         from src.models import DepType
 
-        orch.config.work_graph.blocked_state_authoritative = True
         await _create_project_with_workspace(orch.db)
         await orch.db.create_task(
             Task(id="t-dep", project_id="p-1", title="Dep", description="d", status=TaskStatus.READY)
@@ -2559,11 +3694,9 @@ class TestTerminalBlockedIsNotRecovered:
 class TestMergeConflictBlockedIsNotRecovered:
     """A merge-conflict BLOCKED child must not re-enter the ready frontier."""
 
-    @pytest.mark.parametrize("authoritative", [False, True])
-    async def test_merge_conflict_child_stays_blocked_across_cycles(self, orch, authoritative):
+    async def test_merge_conflict_child_stays_blocked_across_cycles(self, orch):
         from src.models import DepType
 
-        orch.config.work_graph.blocked_state_authoritative = authoritative
         await _create_project_with_workspace(orch.db)
         await orch.db.create_task(
             Task(
@@ -2595,3 +3728,126 @@ class TestMergeConflictBlockedIsNotRecovered:
         await orch._check_defined_tasks()
 
         assert (await orch.db.get_task("t-epic.1")).status == TaskStatus.BLOCKED
+
+
+class TestGlobalBudgetReload:
+    """``global_token_budget_daily`` must survive a hot config reload.
+
+    The reload hook used to assign ``self.budget._global_budget``, a name
+    ``BudgetManager`` never reads, so an edit to the fleet-wide cap only took
+    effect on a daemon restart.
+    """
+
+    @staticmethod
+    def _reload_payload(orch, budget: int | None) -> dict:
+        # The watcher emits a *freshly loaded* AppConfig, not the object the
+        # orchestrator already holds, so copy rather than mutate in place --
+        # otherwise anything still reading ``self.config`` would see the new
+        # value for free and the test would prove nothing.
+        config = copy.deepcopy(orch.config)
+        config.global_token_budget_daily = budget
+        return {"config": config, "changed_sections": ["scheduling"]}
+
+    async def test_reload_updates_the_budget_manager(self, orch):
+        orch.budget.global_budget = 100_000
+
+        await orch._on_config_reloaded(self._reload_payload(orch, 250_000))
+
+        assert orch.budget.global_budget == 250_000
+
+    async def test_reload_can_clear_the_budget(self, orch):
+        """Removing the key means "no cap", not "keep the old cap"."""
+        orch.budget.global_budget = 100_000
+
+        await orch._on_config_reloaded(self._reload_payload(orch, None))
+
+        assert orch.budget.global_budget is None
+        assert orch.budget.is_global_budget_exhausted(10**9) is False
+
+    async def test_a_misspelled_budget_attribute_raises(self, orch):
+        """``__slots__`` keeps the original typo from silently reappearing."""
+        with pytest.raises(AttributeError):
+            orch.budget._global_budget = 1
+
+    async def test_reloaded_budget_reaches_the_scheduler(self, orch):
+        await _create_project_with_workspace(orch.db)
+
+        await orch._on_config_reloaded(self._reload_payload(orch, 777_000))
+        await orch._schedule()
+
+        assert orch._last_scheduler_state.global_budget == 777_000
+
+        await orch._on_config_reloaded(self._reload_payload(orch, None))
+        await orch._schedule()
+
+        assert orch._last_scheduler_state.global_budget is None
+
+
+async def test_branch_tracking_dispatches_in_background_once_per_interval(monkeypatch):
+    from types import SimpleNamespace
+
+    orch = object.__new__(Orchestrator)
+    orch.config = AppConfig()
+    orch._tracked_deploy_check = None
+    orch._tracked_deploy_last_check = 0
+    handler = SimpleNamespace(execute=AsyncMock(return_value={"success": True}))
+    orch._command_handler = handler
+    monkeypatch.setattr("src.orchestrator.core.time.monotonic", lambda: 500)
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is None  # default is opt-out
+    orch.config.deploy.track_branch = "dev"
+    orch._schedule_tracked_deploy_check()
+    task = orch._tracked_deploy_check
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task
+    await task
+    handler.execute.assert_awaited_once_with("update_and_restart", {
+        "automatic": True, "reason": "Installation tracks dev",
+    })
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task  # cadence also gates completed checks
+    orch.config.deploy.track_branch = None
+    monkeypatch.setattr("src.orchestrator.core.time.monotonic", lambda: 1000)
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task
+
+
+async def test_disabled_train_dispatches_worker_without_integration_owner(session_orch, tmp_path):
+    from types import SimpleNamespace
+
+    from sqlalchemy import func, select
+
+    from src.database.tables import integration_branch_owners
+    from tests.test_integration_train_policy import activate
+
+    orch = session_orch
+    await _create_session_project(orch, project_id="p")
+    await orch.db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/example/project.git", default_branch="main",
+    ))
+    await orch.db.update_project(
+        "p", hierarchical_integration_mode="train", integration_repository_id="r",
+    )
+    await activate(SimpleNamespace(db=orch.db), tmp_path, enabled=False)
+    await orch.db.create_task(Task(
+        id="off-worker", project_id="p", repo_id="r", title="Ordinary source work",
+        description="Train disabled; still run the worker", status=TaskStatus.DEFINED,
+        profile_id="claude", route_source="legacy",
+    ))
+    orch._hierarchy_origin_and_fence = AsyncMock(
+        side_effect=AssertionError("disabled train must not reserve a new integration owner"),
+    )
+
+    await _run_cycle_and_wait(orch)
+
+    task = await orch.db.get_task("off-worker")
+    session = await orch.db.get_session_for_task(task.id)
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert session is not None and session.state == "running"
+    workspace = await orch.db.get_workspace("ws-p")
+    assert workspace.locked_by_task_id == task.id
+    assert workspace.locked_by_agent_id == task.assigned_agent_id
+    orch._hierarchy_origin_and_fence.assert_not_awaited()
+    async with orch.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(integration_branch_owners)) == 0

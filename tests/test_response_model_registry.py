@@ -22,7 +22,6 @@ _UNSTRUCTURED_EXEMPT: set[str] = {
     # Leaving them exempt keeps the guard useful for new additions (any new
     # categorized command without a model still fails) without demanding a
     # cleanup pass that isn't part of this lane.
-    "ask_human",
     "create_task_graph",
     "db_preflight_hierarchy",
     "doctor",
@@ -101,7 +100,7 @@ _REQUIRED_FIELDS_BY_COMMAND: dict[str, set[str]] = {
     "gate_create": {"project_id", "gate_type", "title"},
     "gate_list": set(),
     "gate_show": {"gate_id"},
-    "gate_resolve": {"gate_id", "resolved_by"},
+    "gate_resolve": {"gate_id"},
     # session operator surface — identifier args are optional at the schema
     # layer because ``_resolve_session`` accepts any of session_id/id/name/
     # task_id; the presence of the property is what matters for silent-drop.

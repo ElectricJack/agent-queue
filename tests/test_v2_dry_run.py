@@ -16,8 +16,10 @@ from src.playbooks.executors import executor_for
 from src.playbooks.executors.base import EngineServices, ExecutionMode
 from src.playbooks.definition import ToolUsePolicy
 from src.profiles.capabilities import CapabilityPolicy
+from tests._private_values_helper import ReadyPrivateValues
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
+    EnsureTaskResult,
     LIST_TASKS,
     ListTasksResult,
     ScriptedAdapter,
@@ -41,7 +43,10 @@ def build(
     store.put(artifact)
     registry, adapter = registry_with(ENSURE_TASK, LIST_TASKS, adapter=adapter)
     engine = PlaybookEngine(
-        services=EngineServices(contracts=registry, clock=lambda: 1_000.0, artifact_store=store),
+        services=EngineServices(
+            contracts=registry, clock=lambda: 1_000.0, artifact_store=store,
+            private_values=ReadyPrivateValues(),
+        ),
         # A dry run must not reach this repository.  Keeping a real recording
         # double here catches accidental wiring without mocking traversal.
         runs=RecordingRunRepository(),
@@ -80,7 +85,7 @@ class DryRunAi:
     def __init__(self) -> None:
         self.complete_calls = 0
 
-    def resolve(self, _spec: Any) -> Any:
+    def resolve_current(self, _spec: Any) -> Any:
         return SimpleNamespace(model="dry-run-model")
 
     def _provider_for(self, _resolved: Any) -> Any:
@@ -305,3 +310,32 @@ async def test_live_and_dry_run_select_identical_resolved_edges() -> None:
         if node.target is not None
     ]
     assert dry_edges == live_edges
+
+
+@pytest.mark.asyncio
+async def test_foreach_dry_run_resolves_each_item_and_rebinds_body_result() -> None:
+    results = [
+        CommandResult(outcome="listed", value=ListTasksResult(
+            tasks=[{"id": "first"}, {"id": "second"}], count=2,
+        ), summary="listed"),
+        *[CommandResult(outcome="created", value=EnsureTaskResult(task_id=key, created=True),
+                        summary="created") for key in ("gate-first", "gate-second")],
+    ]
+    adapter = ScriptedAdapter(results=results, preview=results)
+    engine, _, ref = build("sequential-loop.artifact.json", adapter=adapter)
+    preview_contract = ENSURE_TASK.model_copy(update={
+        "execution": ENSURE_TASK.execution.model_copy(update={"supports_preview": True}),
+    })
+    registry, _ = registry_with(preview_contract, LIST_TASKS, adapter=adapter)
+    engine.services = replace(engine.services, contracts=registry)
+    live = await engine.run_rule(ref, "sweep", event("spec-approved"), TRUSTED_LOCAL)
+    dry = await engine.dry_run(ref, event("spec-approved"), TRUSTED_LOCAL)
+    assert live.outcome == "completed"
+    assert dry.paths[0].completed and not dry.truncated
+    assert [args.title for name, args, _ in adapter.preview_calls if name == "ensure_task"] == [
+        "Gate: first", "Gate: second",
+    ]
+    assert [(name, args.model_dump(exclude={"dedup_key"}))
+            for name, args, _ in adapter.calls] == [
+        (name, args.model_dump(exclude={"dedup_key"})) for name, args, _ in adapter.preview_calls
+    ]
