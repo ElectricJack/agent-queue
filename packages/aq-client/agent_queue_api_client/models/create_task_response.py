@@ -29,6 +29,8 @@ class CreateTaskResponse:
         intelligence_class (None | str | Unset):
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
+        prefer_target (None | str | Unset):
+        prefer_mode (None | str | Unset):
         provider_intent (None | str | Unset):
         preferred_workspace_id (None | str | Unset):
         attachments (list[str] | None | Unset):
@@ -53,6 +55,8 @@ class CreateTaskResponse:
     intelligence_class: None | str | Unset = UNSET
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
+    prefer_target: None | str | Unset = UNSET
+    prefer_mode: None | str | Unset = UNSET
     provider_intent: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[str] | None | Unset = UNSET
@@ -115,6 +119,18 @@ class CreateTaskResponse:
             class_hint = UNSET
         else:
             class_hint = self.class_hint
+
+        prefer_target: None | str | Unset
+        if isinstance(self.prefer_target, Unset):
+            prefer_target = UNSET
+        else:
+            prefer_target = self.prefer_target
+
+        prefer_mode: None | str | Unset
+        if isinstance(self.prefer_mode, Unset):
+            prefer_mode = UNSET
+        else:
+            prefer_mode = self.prefer_mode
 
         provider_intent: None | str | Unset
         if isinstance(self.provider_intent, Unset):
@@ -211,6 +227,10 @@ class CreateTaskResponse:
             field_dict["route_source"] = route_source
         if class_hint is not UNSET:
             field_dict["class_hint"] = class_hint
+        if prefer_target is not UNSET:
+            field_dict["prefer_target"] = prefer_target
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
         if provider_intent is not UNSET:
             field_dict["provider_intent"] = provider_intent
         if preferred_workspace_id is not UNSET:
@@ -311,6 +331,24 @@ class CreateTaskResponse:
             return cast(None | str | Unset, data)
 
         class_hint = _parse_class_hint(d.pop("class_hint", UNSET))
+
+        def _parse_prefer_target(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_target = _parse_prefer_target(d.pop("prefer_target", UNSET))
+
+        def _parse_prefer_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_mode = _parse_prefer_mode(d.pop("prefer_mode", UNSET))
 
         def _parse_provider_intent(data: object) -> None | str | Unset:
             if data is None:
@@ -432,6 +470,8 @@ class CreateTaskResponse:
             intelligence_class=intelligence_class,
             route_source=route_source,
             class_hint=class_hint,
+            prefer_target=prefer_target,
+            prefer_mode=prefer_mode,
             provider_intent=provider_intent,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,

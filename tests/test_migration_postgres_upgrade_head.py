@@ -71,6 +71,71 @@ async def _pg_conn(dsn: str):
     return await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
 
 
+async def test_promotion_flow_upgrade_preserves_projects_and_uses_nullable_jsonb():
+    """Exercise an old install as well as the live-metadata baseline path."""
+    dsn = await create_scratch_database("promotionflow81")
+    before = _alembic_pg(dsn, "upgrade", "a00000000080")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # The squashed baseline uses today's metadata. Reproduce revision
+        # 080 as actually deployed, with no promotion_flow column.
+        await conn.execute("ALTER TABLE projects DROP COLUMN promotion_flow")
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('keep','Keep',0)")
+    finally:
+        await conn.close()
+
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        column = await conn.fetchrow(
+            "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_name='projects' AND column_name='promotion_flow'"
+        )
+        assert dict(column) == {"data_type": "jsonb", "is_nullable": "YES", "column_default": None}
+        assert await conn.fetchval("SELECT promotion_flow FROM projects WHERE id='keep'") is None
+        await conn.execute("UPDATE projects SET promotion_flow='[]'::jsonb WHERE id='keep'")
+        assert await conn.fetchval("SELECT promotion_flow FROM projects WHERE id='keep'") == "[]"
+        assert await conn.fetchval("SELECT name FROM projects WHERE id='keep'") == "Keep"
+    finally:
+        await conn.close()
+
+
+async def test_agent_cron_upgrade_adds_global_schedule_storage_without_losing_projects():
+    dsn = await create_scratch_database("agentcron85")
+    before = _alembic_pg(dsn, "upgrade", "a00000000085")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # Live-metadata baseline already has the table. Reproduce the old install.
+        await conn.execute("DROP TABLE agent_cron")
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('keep','Keep',0)")
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT name FROM projects WHERE id='keep'") == "Keep"
+        assert await conn.fetchval(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name='agent_cron' AND column_name='recurrence'"
+        ) == "jsonb"
+        await conn.execute(
+            "INSERT INTO agent_cron (id, session_id, session_instance_token, idempotency_key, "
+            "prompt, recurrence, created_at, next_fire_at) "
+            "VALUES ('cron', 'global', 'instance', 'patrol', 'Prompt', '{}', 0, 900)"
+        )
+        row = await conn.fetchrow("SELECT * FROM agent_cron WHERE id='cron'")
+        assert row["project_id"] is None
+        assert row["state"] == "active" and row["delivery_attempts"] == row["tick_count"] == 0
+    finally:
+        await conn.close()
+    again = _alembic_pg(dsn, "upgrade", "head")
+    assert again.returncode == 0, again.stderr
+
+
 async def test_upgrade_head_applies_the_baseline_on_postgres():
     """Empty database -> head, on real PostgreSQL, with no manual repair."""
     if not POSTGRES_DSN:
@@ -99,6 +164,56 @@ async def test_upgrade_head_applies_the_baseline_on_postgres():
         await _assert_integration_guards(conn)
     finally:
         await conn.close()
+
+
+async def test_recovery_attempt_index_upgrade_preserves_history_and_replays():
+    """An existing install gains both ordering keys without rewriting attempts."""
+    import importlib
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    revision = importlib.import_module("migrations.versions.a00000000101_recovery_attempt_order")
+    dsn = await create_scratch_database("recoveryindex101")
+    before = _alembic_pg(dsn, "upgrade", revision.down_revision)
+    assert before.returncode == 0, before.stderr
+    engine = create_async_engine(_async_dsn(dsn))
+    try:
+        async with engine.begin() as conn:
+            # The live-metadata baseline already includes the index. Simulate
+            # an older installation and retain a real history row through DDL.
+            await conn.execute(sa.text("DROP INDEX idx_task_session_attempts_recovery"))
+            await conn.execute(sa.text(
+                "INSERT INTO task_session_attempts "
+                "(id,session_id,task_id,project_id,profile_id,name,lifecycle,harness,provider,"
+                "state,work_dir,started_at,session_started_at) VALUES "
+                "('keep','session','task','project','worker','worker','task','codex','fake',"
+                "'stopped','/unused',100,100)"
+            ))
+
+            def verify(bind):
+                with Operations.context(MigrationContext.configure(bind)):
+                    for _ in range(2):
+                        revision.upgrade()
+                        revision.upgrade()
+                        index = next(i for i in sa.inspect(bind).get_indexes(revision.TABLE)
+                                     if i["name"] == revision.INDEX)
+                        assert index["column_names"] == ["task_id", "project_id", "started_at", "id"]
+                        assert bind.execute(sa.text(
+                            "SELECT id, started_at FROM task_session_attempts"
+                        )).one() == ("keep", 100)
+                        revision.downgrade()
+                        revision.downgrade()
+                        assert revision.INDEX not in {
+                            i["name"] for i in sa.inspect(bind).get_indexes(revision.TABLE)
+                        }
+                    revision.upgrade()
+
+            await conn.run_sync(verify)
+    finally:
+        await engine.dispose()
 
 
 async def test_continuous_repair_upgrade_from_two_stage_schema():
@@ -143,7 +258,7 @@ async def _stage_check_definitions(conn) -> dict[str, str]:
     return {row["conname"]: row["definition"] for row in rows}
 
 
-async def _insert_stage_rows(conn, stage: int, suffix: str) -> None:
+async def _insert_stage_rows(conn, stage: int, suffix: str, *, deadline=1.0) -> None:
     """One resolution (for member *stage*) and one mutation at *stage*.
 
     Only CHECK constraints are under test: ``session_replication_role =
@@ -161,10 +276,10 @@ async def _insert_stage_rows(conn, stage: int, suffix: str) -> None:
             "repository_id, branch, target_branch, target_kind, fence_owner_id, fence_token, "
             "partial_head_sha, source_base_sha, source_head_sha, resolved_head_sha, "
             "resolved_tree_sha, repair_commit_shas, state, created_at, updated_at) VALUES "
-            "($1, 'batch', 0, $2, 'op', 'batch', $2, 1.0, 'p', 'repair', 'session', 'token', "
+            "($1, 'batch', 0, $2, 'op', 'batch', $2, $4, 'p', 'repair', 'session', 'token', "
             "'workspace', '/w', 'repo', 'refs/heads/b', 'refs/heads/t', 'qualified', "
             "'repair', 1, $3, $3, $3, $3, $3, '[]', 'reserved', 1.0, 1.0)",
-            f"resolution-{suffix}", stage, oid,
+            f"resolution-{suffix}", stage, oid, deadline,
         )
         await conn.execute(
             "INSERT INTO integration_candidate_ref_mutations (id, batch_id, revision, purpose, "
@@ -949,3 +1064,304 @@ async def test_upgrade_repairs_guards_on_original_squashed_database():
         assert await conn.fetchval("SELECT name FROM projects WHERE id='keep'") == "Keep"
     finally:
         await conn.close()
+
+
+async def test_ref_lease_upgrade_preserves_legacy_shadow_owner_and_constraints():
+    """Stage 2 adds fields on an old install without rewriting live ownership."""
+    dsn = await create_scratch_database("reflease72")
+    before = _alembic_pg(dsn, "upgrade", "a00000000071")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # The baseline uses live metadata; reproduce the actual prior shape.
+        await conn.execute(
+            "ALTER TABLE integration_branch_owners DROP CONSTRAINT ck_integration_branch_owners_lease_binding"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_branch_owners DROP CONSTRAINT ck_integration_branch_owners_lease_fence"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_branch_owners DROP COLUMN holder, DROP COLUMN fence"
+        )
+        await conn.execute(
+            "INSERT INTO integration_branch_owners "
+            "(id, repository_id, ref, owner_id, owner_role, fence_token, handoff_state, "
+            "session_id, workspace_id, confirmed_workspace_id, expires_at, created_at, updated_at) "
+            "VALUES ('legacy', 'r', 'aq/epic', 'worker', 'repair', 41, 'handoff_pending', "
+            "'session', 'workspace', 'confirmed', NULL, 1, 2)"
+        )
+        original = dict(
+            await conn.fetchrow("SELECT * FROM integration_branch_owners WHERE id='legacy'")
+        )
+        constraints = set(
+            await conn.fetch(
+                "SELECT conname FROM pg_constraint WHERE conrelid='integration_branch_owners'::regclass"
+            )
+        )
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        row = dict(await conn.fetchrow("SELECT * FROM integration_branch_owners WHERE id='legacy'"))
+        assert row.pop("holder") is None
+        assert row.pop("fence") is None
+        assert row == original
+        installed = set(
+            await conn.fetch(
+                "SELECT conname FROM pg_constraint WHERE conrelid='integration_branch_owners'::regclass"
+            )
+        )
+        assert constraints <= installed
+    finally:
+        await conn.close()
+    # Fresh baseline already contains the new columns/constraints: upgrade is
+    # inspect-guarded and idempotent for that path too (the parity test above).
+
+
+async def test_held_ingestion_upgrade_from_deployed_shape_is_idempotent():
+    """Exercise actual additive DDL, not only the live-metadata baseline."""
+    from importlib import import_module
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    dsn = await create_scratch_database("heldingest100")
+    before = _alembic_pg(dsn, "upgrade", "a00000000099")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        for table in ("ingest_batch_receipts", "ingest_batch_members", "ingest_batches"):
+            await conn.execute(f"DROP TABLE {table}")
+        await conn.execute("ALTER TABLE tasks DROP COLUMN held_batch_id")
+        await conn.execute("ALTER TABLE task_proposals DROP CONSTRAINT ck_task_proposals_status")
+        await conn.execute(
+            "ALTER TABLE task_proposals ADD CONSTRAINT ck_task_proposals_status "
+            "CHECK (status IN ('draft','ready','committed','discarded'))"
+        )
+        await conn.execute("ALTER TABLE task_dependencies DROP CONSTRAINT ck_task_deps_dep_type")
+        await conn.execute(
+            "ALTER TABLE task_dependencies ADD CONSTRAINT ck_task_deps_dep_type "
+            "CHECK (dep_type IN ('blocks','parent-child','waits-for','conditional-blocks',"
+            "'discovered-from','related','duplicates','supersedes'))"
+        )
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('keep','Keep',0)")
+        await conn.execute(
+            "INSERT INTO tasks (id, project_id, title, description, created_at, updated_at) "
+            "VALUES ('t','keep','Keep','Required',0,0)"
+        )
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    # Run the migration body again even though Alembic's stamp is already at
+    # head: checkfirst/inspection must protect an already-created baseline.
+    migration = import_module("migrations.versions.a00000000100_ingest_held_batches")
+    engine = create_async_engine(_async_dsn(dsn))
+    try:
+        async with engine.begin() as connection:
+            def repeat(sync_conn):
+                with Operations.context(MigrationContext.configure(sync_conn)):
+                    migration.upgrade()
+            await connection.run_sync(repeat)
+    finally:
+        await engine.dispose()
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT description FROM tasks WHERE id='t'") == "Required"
+        assert await conn.fetchval("SELECT held_batch_id FROM tasks WHERE id='t'") is None
+        assert await conn.fetchval("SELECT to_regclass('ix_tasks_held_batch_id')")
+        await _insert_held_batch(conn)
+        assert await conn.fetchval(
+            "SELECT structure_revision FROM ingest_batches WHERE batch_id='batch'"
+        ) == 1
+        assert await conn.fetchval("SELECT state FROM ingest_batches") == "held"
+        for column in ("check_results", "release_receipt"):
+            assert await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name='ingest_batches' AND column_name=$1", column
+            ) == "jsonb"
+        with pytest.raises(Exception, match="ck_ingest_batches_design_lineage"):
+            await conn.execute("UPDATE ingest_batches SET design_review_id='partial'")
+        await conn.execute(
+            "UPDATE ingest_batches SET design_review_id='design', design_revision=2, "
+            "design_content_sha256=repeat('d',64), lineage_kind='resolved'"
+        )
+        with pytest.raises(Exception, match="ck_ingest_batches_state"):
+            await conn.execute("UPDATE ingest_batches SET state='unknown'")
+        await conn.execute(
+            "INSERT INTO ingest_batch_members (batch_id,task_id,member_key,role,"
+            "section_anchor,primary_outcome,created_revision) "
+            "VALUES ('batch','t','code_leaf','leaf','Schema','Persist holds',1)"
+        )
+        with pytest.raises(Exception, match="uq_ingest_batch_members_key"):
+            await conn.execute(
+                "INSERT INTO ingest_batch_members (batch_id,task_id,member_key,role,"
+                "section_anchor,primary_outcome,created_revision) "
+                "VALUES ('batch','other','code_leaf','leaf','Schema','Persist holds',1)"
+            )
+        for receipt_id, passing in (("fail1", False), ("fail2", False), ("pass1", True)):
+            await _insert_batch_receipt(conn, receipt_id, passing)
+        with pytest.raises(Exception, match="uq_ingest_batch_receipts_passing"):
+            await _insert_batch_receipt(conn, "pass2", True)
+        await conn.execute("UPDATE tasks SET held_batch_id='batch' WHERE id='t'")
+        await conn.execute(
+            "INSERT INTO tasks (id,project_id,title,description,created_at,updated_at) "
+            "VALUES ('op','keep','Observe','Observe delivery',0,0)"
+        )
+        await conn.execute(
+            "INSERT INTO task_dependencies (task_id,depends_on_task_id,dep_type) "
+            "VALUES ('op','t','delivery-of')"
+        )
+        # Retired membership/receipts survive removal of a live task row.
+        await conn.execute("DELETE FROM task_dependencies WHERE task_id='op'")
+        await conn.execute("UPDATE ingest_batch_members SET state='retired', "
+                           "retired_reason='duplicate',retired_revision=2")
+        await conn.execute("DELETE FROM tasks WHERE id='t'")
+        assert await conn.fetchval("SELECT task_id FROM ingest_batch_members") == "t"
+        assert await conn.fetchval("SELECT count(*) FROM ingest_batch_receipts") == 3
+    finally:
+        await conn.close()
+
+
+async def _insert_held_batch(conn):
+    await conn.execute(
+        "INSERT INTO task_proposals (id,project_id,source,payload,status,created_at,updated_at) "
+        "VALUES ('batch','keep','spec:source','{}','held',0,0)"
+    )
+    await conn.execute(
+        "INSERT INTO ingest_batches (batch_id,project_id,source_review_id,source_revision,"
+        "source_content_sha256,decision_id,lineage_kind,idempotency_key,structure_digest,"
+        "created_at,updated_at) "
+        "VALUES ('batch','keep','review',1,repeat('a',64),'decision','none','key',"
+        "repeat('b',64),0,0)"
+    )
+
+
+async def _insert_batch_receipt(conn, receipt_id, passing):
+    await conn.execute(
+        "INSERT INTO ingest_batch_receipts (receipt_id,batch_id,structure_revision,"
+        "structure_digest,reviewer_task_id,reviewer_session_id,passing,section_verdicts,"
+        "reverse_coverage_verdict,walkthrough_verdict,structural_findings,created_at) "
+        "VALUES ($1,'batch',1,repeat('b',64),'reviewer','session',$2,"
+        "'{\"Schema\":{\"verdict\":\"faithful\"}}'::jsonb,'faithful','faithful','[]'::jsonb,0)",
+        receipt_id, passing,
+    )
+
+
+@pytest.mark.parametrize("state", ["held", "reviewing", "needs_scope"])
+async def test_held_ingestion_downgrade_refuses_pending_batches_atomically(state):
+    dsn = await create_scratch_database("helddowngrade100")
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        await conn.execute("INSERT INTO projects (id,name,created_at) VALUES ('keep','Keep',0)")
+        await _insert_held_batch(conn)
+        await conn.execute("UPDATE ingest_batches SET state=$1", state)
+    finally:
+        await conn.close()
+    refused = _alembic_pg(dsn, "downgrade", "a00000000099")
+    assert refused.returncode != 0
+    assert "release or explicitly retire them before downgrading" in refused.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT state FROM ingest_batches") == state
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000100"
+        assert await conn.fetchval("SELECT to_regclass('ingest_batch_receipts')")
+        await conn.execute("UPDATE ingest_batches SET state='retired'")
+        await conn.execute("UPDATE task_proposals SET status='discarded'")
+    finally:
+        await conn.close()
+    allowed = _alembic_pg(dsn, "downgrade", "a00000000099")
+    assert allowed.returncode == 0, allowed.stderr
+
+
+async def test_unlimited_repair_deadline_upgrade_preserves_reservations_and_replays():
+    dsn = await create_scratch_database("repairdeadline121")
+    before = _alembic_pg(dsn, "upgrade", "a00000000120")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # The squashed baseline uses live metadata. Reproduce the deployed shape.
+        await conn.execute(
+            "ALTER TABLE integration_candidate_resolutions "
+            "ALTER COLUMN stage_deadline_at SET NOT NULL"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_subjects DROP CONSTRAINT ck_integration_subjects_budget"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_subjects ADD CONSTRAINT ck_integration_subjects_budget "
+            "CHECK (budget_ordinal IS NULL OR budget_deadline_at IS NOT NULL)"
+        )
+        await _insert_stage_rows(conn, 0, "finite", deadline=123.0)
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert "budget_deadline_at IS NOT NULL" not in await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname='ck_integration_subjects_budget'"
+        )
+        assert await conn.fetchval(
+            "SELECT stage_deadline_at FROM integration_candidate_resolutions "
+            "WHERE id='resolution-finite'"
+        ) == 123.0
+        await _insert_stage_rows(conn, 1, "unlimited", deadline=None)
+        assert await conn.fetchval(
+            "SELECT stage_deadline_at FROM integration_candidate_resolutions "
+            "WHERE id='resolution-unlimited'"
+        ) is None
+    finally:
+        await conn.close()
+    # Replay the guarded DDL against an already-upgraded schema with real NULLs.
+    stamped = _alembic_pg(dsn, "stamp", "a00000000120")
+    assert stamped.returncode == 0, stamped.stderr
+    again = _alembic_pg(dsn, "upgrade", "head")
+    assert again.returncode == 0, again.stderr
+    refused = _alembic_pg(dsn, "downgrade", "a00000000120")
+    assert refused.returncode != 0
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT count(*) FROM integration_candidate_resolutions") == 2
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000121"
+    finally:
+        await conn.close()
+
+
+async def test_transcript_fences_upgrade_from_deployed_repair_revision():
+    """An install already stamped 121 must still run the later fence migration."""
+    dsn = await create_scratch_database("transcriptfences122")
+    before = _alembic_pg(dsn, "upgrade", "a00000000121")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # Reproduce deployed 121 rather than the live-metadata baseline shape.
+        await conn.execute("DROP TABLE transcript_usage_fences")
+        await conn.execute("DROP INDEX IF EXISTS idx_transcript_usage_calls_updated")
+        await _insert_stage_rows(conn, 0, "unlimited", deadline=None)
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000122"
+        assert await conn.fetchval("SELECT to_regclass('transcript_usage_fences')")
+        assert await conn.fetchval("SELECT to_regclass('idx_transcript_usage_calls_updated')")
+        assert await conn.fetchval("SELECT to_regclass('idx_transcript_usage_fences_keys')")
+        row = await conn.fetchrow(
+            "SELECT stage_deadline_at FROM integration_candidate_resolutions "
+            "WHERE id='resolution-unlimited'"
+        )
+        assert row is not None and row["stage_deadline_at"] is None
+    finally:
+        await conn.close()
+    again = _alembic_pg(dsn, "upgrade", "head")
+    assert again.returncode == 0, again.stderr

@@ -182,6 +182,8 @@ export interface KnowledgeViewedRevision extends KnowledgeRevisionRef {
 }
 
 export interface KnowledgeDetailView {
+  /** Authorized snapshot for submitting a complete protected correction. */
+  proposalSnapshot?: Record<string, unknown>;
   kind: "knowledge";
   recordId: string;
   alias: string;

@@ -171,16 +171,19 @@ def format_task_table(
             type_icon = TASK_TYPE_ICONS.get(task.task_type, "")
 
         pri_text = Text(str(task.priority), style=priority_style(task.priority))
+        readiness = _as_mapping(getattr(task, "claim_readiness", None))
 
         row = [task.id]
         if show_project:
             row.append(task.project_id)
         row.extend(
             [
-                _status_text(task.status),
+                _status_text(readiness.get("label", task.status)),
                 pri_text,
                 type_icon,
-                _truncate(task.title, 50),
+                Text(_truncate(task.title, 50) + (
+                    "\n" + readiness["reason"] if readiness.get("reason") else ""
+                )),
                 task.assigned_agent_id or "—",
             ]
         )
@@ -211,17 +214,20 @@ def _route_fields(task: Any) -> list[tuple[str, str]]:
     """Who routed the task and why (mandatory routing §10).
 
     ``Route`` is the source and the target; the router's lane, rule and
-    reason, or an override's author and reason, follow when recorded.
+    reason, or an override's author and reason, follow when recorded.  The
+    filer's preference is shown even before a route exists, because until the
+    router runs it is the only statement of what was asked for.
     """
     source = getattr(task, "route_source", None)
+    prefer = _preference_fields(task)
     if not isinstance(source, str) or not source:
-        return []
+        return prefer
     profile = getattr(task, "profile_id", None)
     klass = getattr(task, "intelligence_class", None)
     target = ""
     if isinstance(profile, str) and profile:
         target = f" -> {profile}" + (f" ({klass})" if isinstance(klass, str) and klass else "")
-    fields = [("Route", f"{source}{target}")]
+    fields = prefer + [("Route", f"{source}{target}")]
     route = _as_mapping(getattr(task, "route", None))
     override = _as_mapping(route.get("override"))
     if source == "override" and override:
@@ -235,6 +241,26 @@ def _route_fields(task: Any) -> list[tuple[str, str]]:
     if route.get("reason"):
         fields.append(("Route reason", str(route["reason"])))
     return fields
+
+
+def _preference_fields(task: Any) -> list[tuple[str, str]]:
+    """The preference the router weighs, and how it turned out (§4).
+
+    The stored pair is what was asked for; ``route.preference`` is the router's
+    verdict -- whether it decided the route, and why not when it did not.
+    """
+    target = getattr(task, "prefer_target", None)
+    route = _as_mapping(getattr(task, "route", None))
+    decided = _as_mapping(route.get("preference"))
+    if not isinstance(target, str) or not target:
+        return []
+    mode = getattr(task, "prefer_mode", None) or decided.get("mode") or "soft"
+    row = f"{target} ({mode})"
+    if decided and not decided.get("honoured", True):
+        row += f" not honoured: {decided.get('fallback_reason') or 'unknown'}"
+    elif decided:
+        row += " honoured"
+    return [("Routing preference", row)]
 
 
 def format_task_detail(
@@ -253,6 +279,9 @@ def format_task_detail(
 
     # Header line
     lines.append(Text(f"{status_icon} {status}", style=status_style))
+    readiness = _as_mapping(getattr(task, "claim_readiness", None))
+    if readiness and not readiness.get("claimable"):
+        lines.append(Text(f"{readiness['label']}: {readiness.get('reason', '')}", style="yellow"))
     lines.append("")
 
     # Core fields
@@ -382,6 +411,26 @@ def format_task_detail(
 # ---------------------------------------------------------------------------
 
 
+def format_flock(result: dict):
+    """The execution roster is exhaustive; worker definitions follow it."""
+    from rich.console import Group
+    from src.cli.adapters import agent_proxy
+
+    table = Table(title="Flock sessions", expand=True)
+    for column in ("Session", "Role", "Scope", "Provider / model / class", "Task", "State",
+                   "Uptime", "Activity"):
+        table.add_column(column)
+    for row in result.get("sessions", []):
+        table.add_row(
+            row["session_id"], row["role"], row["scope"],
+            " / ".join(row.get(key) or "unknown" for key in
+                       ("provider", "model", "intelligence_class")),
+            row.get("task_id") or "—", row["state"],
+            f"{int(row['uptime_seconds'])}s", _relative_time(row.get("last_activity")),
+        )
+    return Group(table, format_agent_table([agent_proxy(row) for row in result.get("agents", [])]))
+
+
 def format_agent_table(agents: list[Any]) -> Table:
     """Format a list of agents as a Rich table."""
     table = Table(
@@ -473,7 +522,8 @@ def format_status_overview(
 
     # Task summary
     total = sum(task_counts.values())
-    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING"}
+    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING",
+                       "WAITING", "HIBERNATED", "RESUME_PENDING"}
     active = sum(v for k, v in task_counts.items() if k in active_statuses)
     completed = task_counts.get("COMPLETED", 0)
     failed = task_counts.get("FAILED", 0)
@@ -533,6 +583,65 @@ def _review_text(value: Any, key: str, default: str = "—") -> str:
     return default if result is None or result == "" else str(result)
 
 
+def format_ask_list(data: Any) -> Group:
+    label = {"waiting": "Waiting on AQ", "history": "History"}.get(data.get("view"), "Needs you")
+    table = Table(title=f"{label}: {data['count']} · {data['source_health']}")
+    for label in ("Request", "Question", "Project", "Severity", "Version", "Status"):
+        table.add_column(label)
+    for ask in data["items"]:
+        table.add_row(*[Text(str(value)) for value in (
+            ask["id"], ask["context"].get("title", ""), ask.get("project_id", ""), ask.get("severity", ""),
+            ask["decision_generation"],
+            "Held while paused" if ask.get("held_while_paused") else ask.get("decision_state", ""),
+        )])
+    return Group(table, Text(f"Snapshot: {data['snapshot_at']}"),
+                 Text(f"Next cursor: {data['next_cursor']}" if data.get("next_cursor") else ""))
+
+
+def format_ask_detail(data: Any) -> Group:
+    ask = data["ask"]
+    context = ask["context"]
+    lines = [Text(context.get("title", ask["id"]), style="bold"),
+             Text(context.get("why", "")), Text(context.get("waiting_effect", "")),
+             Text(f"Version: {data['expected']}"),
+             Text(f"Application: {ask.get('application_state', 'unknown')}")]
+    for action in data["actions"]:
+        if action.get("option_key"):
+            lines.append(Text(f"{action['label']}: {action['effect']}"))
+        if action.get("disabled_reason"):
+            lines.append(Text(action["disabled_reason"], style="yellow"))
+    if data.get("decision"):
+        lines.append(Text(f"Decision receipt: {data['decision']['id']}"))
+    import json
+    for name in ("document", "inputs", "history", "obligations", "operations"):
+        if data.get(name):
+            lines.extend([Text(name.title(), style="bold"),
+                          Text(json.dumps(data[name], ensure_ascii=False, indent=2))])
+    for name in ("requested_by", "blocked_work", "links"):
+        if context.get(name):
+            lines.append(Text(f"{name}: {json.dumps(context[name], ensure_ascii=False)}"))
+    lines.append(Text(f"Prepare: aq ask prepare --ask-id {ask['id']} --expected '<version JSON>' "
+                      "--option-key <choice>"))
+    return Group(*lines)
+
+
+def format_ask_preview(data: Any) -> Group:
+    import json
+
+    preview = data["preview"]
+    return Group(Text("Prepared decision — review all effects and feedback", style="bold"),
+                 Text(f"Preview: {preview['id']} · expires {preview.get('expires_at', 'unknown')}"),
+                 Text(json.dumps(preview["packet"], ensure_ascii=False, indent=2)),
+                 Text(f"Packet SHA-256: {preview['packet_sha256']}"))
+
+
+def format_ask_receipt(data: Any) -> Group:
+    import json
+
+    return Group(Text("Request receipt", style="bold"),
+                 Text(json.dumps(data, ensure_ascii=False, indent=2)))
+
+
 def format_review_detail(data: Any) -> Group:
     """Render a review's selected revision and, when requested, its comments."""
     review = _review_value(data, "review", {})
@@ -555,12 +664,30 @@ def format_review_detail(data: Any) -> Group:
     )
     response_route = _review_value(data, "response_route", {})
     header.add_row("Response", _review_text(response_route, "summary"), "", "")
+    gate = _review_value(data, "gate")
+    if gate:
+        header.add_row("Gate", _review_text(gate, "id"), "Gate state", _review_text(gate, "status"))
+    waiters = _review_value(data, "dependent_task_ids", []) or []
+    if waiters:
+        header.add_row("Dependents", ", ".join(waiters), "", "")
+    if _review_value(review, "withdrawn_by"):
+        header.add_row("Withdrawn by", _review_text(review, "withdrawn_by"),
+                       "Surface", _review_text(review, "withdrawn_via", "unknown"))
+        withdrawn_at = _review_value(review, "withdrawn_at")
+        stamp = (datetime.fromtimestamp(withdrawn_at).astimezone().isoformat(timespec="seconds")
+                 if withdrawn_at is not None else "—")
+        header.add_row("Withdrawn at", stamp, "Reason", Text(_review_text(review, "withdrawal_reason")))
 
     content = _review_text(revision, "content", "")
     renderables: list[Any] = [
         Panel(header, title="[bold bright_white]Document review[/]", border_style="bright_blue"),
         Markdown(content),
     ]
+    if _review_value(review, "state") == "withdrawn":
+        renderables.insert(1, Text(
+            "Dependent work still requires approval. Reopen with: aq review reopen "
+            f"--review-id {_review_text(review, 'id')} --revision {current_revision}"
+        ))
     dispatches = _review_value(data, "dispatches", []) or []
     if dispatches:
         activity = Table(title="Adversarial review dispatches", border_style="bright_black")
@@ -1302,8 +1429,13 @@ def format_prompt_list(data: dict) -> Table:
     return table
 
 
-def format_workspace_list(data: dict) -> Table:
-    """Format list_workspaces response as a table."""
+def format_workspace_list(data: dict) -> Table | Group:
+    """Format list_workspaces response as a table.
+
+    The Owner column shows the owner classification the daemon could prove
+    and the Checkout column the bounded probe result; a footer names a
+    partial readback, which is never evidence that a workspace is free.
+    """
     workspaces = data.get("workspaces", [])
     table = Table(
         title="Workspaces",
@@ -1316,18 +1448,49 @@ def format_workspace_list(data: dict) -> Table:
     table.add_column("Path", style="dim", ratio=1)
     table.add_column("Type", style="dim")
     table.add_column("Lock", style="dim")
+    table.add_column("Owner", style="dim")
+    table.add_column("Checkout", style="dim")
     for ws in workspaces:
         lock = ""
         if ws.get("locked_by_task_id"):
             lock = f"🔒 {ws['locked_by_task_id']}"
+        elif ws.get("locked_by_agent_id"):
+            lock = f"🔒 agent {ws['locked_by_agent_id']}"
+        owner = ws.get("owner") or {}
+        owner_text = owner.get("classification", "")
+        session = owner.get("session") or {}
+        if session.get("id"):
+            owner_text = f"{owner_text} ({session['id']})"
+        if owner.get("fence") == "mismatch":
+            owner_text += " fence≠"
+        checkout = ws.get("git_status") or ""
+        if checkout == "ok":
+            checkout = (ws.get("branch") or "") + (" *" if ws.get("dirty") else "")
         table.add_row(
             ws.get("id", ""),
             ws.get("name", "—"),
             ws.get("workspace_path", ""),
             ws.get("source_type", ""),
             lock,
+            owner_text,
+            checkout,
         )
-    return table
+    diagnostics = data.get("diagnostics")
+    if not diagnostics or diagnostics.get("complete", True):
+        return table
+    parts = [f"owner facts: {diagnostics.get('owner_facts', 'unknown')}"]
+    counts = diagnostics.get("git_status_counts") or {}
+    unfinished = {k: v for k, v in counts.items() if k in ("timeout", "not_started", "error")}
+    if unfinished:
+        parts.append(", ".join(f"{v} {k}" for k, v in sorted(unfinished.items())))
+    footer = Text()
+    footer.append(
+        f"  Partial readback ({'; '.join(parts)}) within "
+        f"{diagnostics.get('deadline_seconds', '?')}s. ",
+        style="yellow",
+    )
+    footer.append(diagnostics.get("authority", ""), style="dim")
+    return Group(table, footer)
 
 
 def format_active_tasks_all(data: dict) -> Group:
@@ -1540,7 +1703,9 @@ def format_pool_table(pools: list[dict]):
 
     for row in pools:
         table.add_row(
-            row.get("profile_id", ""),
+            Text(row.get("name") or row.get("profile_id", ""))
+            if not row.get("name") or row["name"] == row.get("profile_id")
+            else Text(f"{row['name']}\n{row.get('profile_id', '')}"),
             row.get("service_tier") or "—",
             str(row.get("min_active", 0)),
             "∞" if row.get("max_active") is None else str(row.get("max_active")),

@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.database.legacy_sqlite_import import _DEFERRED_COLS, _EXCLUDED_TABLES, _ORDERED_TABLES
+from src.database.legacy_sqlite_import import (
+    _DEFERRED_COLS,
+    _EXCLUDED_TABLES,
+    _ORDERED_TABLES,
+    _POSTGRES_DEFAULT_COLUMNS,
+    _POSTGRES_ONLY_COLUMNS,
+)
 from src.database.tables import metadata
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
@@ -96,11 +102,63 @@ _DURABLE_ROWS = {
         "external_receipt_id": "receipt", "receipt_confirmed_at": 151.0,
         "created_at": 150.0, "updated_at": 151.0,
     },
+    "supervisor_conversations": {
+        "id": "conversation", "transport": "discord", "guild_id": "guild",
+        "channel_id": "channel", "external_root_message_id": "root",
+        "thread_id": "conversation:conversation", "created_by": "human:discord:user",
+        "audience": {"principals": ["human:discord:user"]}, "state": "open",
+        "created_at": 0.0, "updated_at": 0.0,
+    },
+    "conversation_inputs": {
+        "id": "input", "conversation_id": "conversation", "transport": "discord",
+        "external_message_id": "input-message", "verified_actor": "human:discord:user",
+        "author_id": "user", "channel_id": "channel", "text": "Preserve this reply",
+        "text_sha256": "reply-hash", "char_count": 19, "received_at": 1.0, "created_at": 1.0,
+    },
 }
 
 # The legacy import still ships, but creating and copying a source schema is
 # migration work, not part of the default developer/CI run.
 pytestmark = pytest.mark.migration
+
+
+def _legacy_source_metadata():
+    """Copy the importable schema without the human ask revisions' additions."""
+    from sqlalchemy import MetaData
+
+    from migrations.versions.a00000000096_human_ask_decisions import ADDITIONS
+
+    source_metadata = MetaData()
+    for table in _ORDERED_TABLES:
+        table.to_metadata(source_metadata)
+    new_checks = {
+        "ck_doc_reviews_feedback_version", "ck_doc_reviews_decision_generation",
+        "ck_escalation_messages_entry_kind", "ck_escalation_actions_ask_operation",
+        "ck_escalation_actions_lease_generation", "ck_escalation_actions_lease",
+        "ck_conversation_inputs_routing_state",
+        "ck_outbound_deliveries_send_kind", "ck_outbound_deliveries_ask",
+    }
+    absent_columns = {
+        name: {column.name for column in additions} for name, additions in ADDITIONS.items()
+    }
+    absent_columns["tasks"] = _POSTGRES_ONLY_COLUMNS["tasks"]
+    absent_columns["conversation_inputs"] = (
+        _POSTGRES_ONLY_COLUMNS["conversation_inputs"]
+        | _POSTGRES_DEFAULT_COLUMNS["conversation_inputs"]
+    )
+    absent_columns["outbound_deliveries"] = _POSTGRES_ONLY_COLUMNS["outbound_deliveries"]
+    for name, absent in absent_columns.items():
+        table = source_metadata.tables[name]
+        for constraint in list(table.constraints):
+            if constraint.name in new_checks or absent.intersection(constraint.columns.keys()):
+                table.constraints.remove(constraint)
+                table.foreign_keys.difference_update(getattr(constraint, "elements", ()))
+        table.indexes = {
+            index for index in table.indexes if not absent.intersection(index.columns.keys())
+        }
+        for column in absent:
+            table._columns.remove(table.c[column])
+    return source_metadata
 
 
 def test_ordered_tables_covers_every_table() -> None:
@@ -130,6 +188,16 @@ def test_ordered_tables_has_no_duplicates() -> None:
     assert len(names) == len(set(names)), "duplicate entries in _ORDERED_TABLES"
 
 
+def test_legacy_source_metadata_is_closed_over_foreign_keys() -> None:
+    """The legacy schema must resolve FKs without PostgreSQL-only domains."""
+    source_metadata = _legacy_source_metadata()
+
+    for table in source_metadata.tables.values():
+        for fk in table.foreign_keys:
+            assert fk.column.table.metadata is source_metadata
+            assert fk.column.table.name not in _EXCLUDED_TABLES
+
+
 def test_insertion_order_is_fk_safe() -> None:
     """Each table's FK targets are inserted earlier, or the column is deferred."""
     position = {t.name: i for i, t in enumerate(_ORDERED_TABLES)}
@@ -140,7 +208,7 @@ def test_insertion_order_is_fk_safe() -> None:
     for table in _ORDERED_TABLES:
         deferred = _DEFERRED_COLS.get(table.name, frozenset())
         for fk in table.foreign_keys:
-            if fk.parent.name in deferred:
+            if fk.parent.name in deferred | _POSTGRES_ONLY_COLUMNS.get(table.name, frozenset()):
                 continue
             target = fk.column.table.name
             if position[target] >= position[table.name]:
@@ -174,17 +242,22 @@ async def _empty_pg_adapter():
     """The worker's Postgres database, truncated to the empty state the
     migration requires of its target.  Caller closes it."""
     from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+    from src.records.schema import install_record_guards_v1
 
     adapter = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
     await adapter.initialize()
     await adapter.reset_for_tests()
+    # Reset removes the seed too; restore the immutable installation identity
+    # a freshly migrated operator target retains before any legacy import.
+    async with adapter._engine.begin() as conn:
+        await conn.run_sync(install_record_guards_v1)
     return adapter
 
 
-async def _seeded_source(tmp_path) -> str:
+async def _seeded_source(tmp_path, *, with_legacy_identities: bool = False) -> str:
     """A synthetic legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
-    from sqlalchemy import JSON, MetaData, insert, text
+    from sqlalchemy import JSON, insert, text
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -192,10 +265,7 @@ async def _seeded_source(tmp_path) -> str:
 
     # The legacy source predates PostgreSQL-only tables and timestamp defaults.
     # Keep production metadata intact while recreating its importable columns.
-    source_metadata = MetaData()
-    for table in metadata.tables.values():
-        if table.name not in _EXCLUDED_TABLES:
-            table.to_metadata(source_metadata)
+    source_metadata = _legacy_source_metadata()
     source_metadata.tables["task_context"].c.created_at.server_default = None
     # PostgreSQL columns such as tasks.route (revision 40) became JSONB;
     # legacy SQLite stored JSON, and SQLAlchemy 2.0 cannot render JSONB on
@@ -208,10 +278,16 @@ async def _seeded_source(tmp_path) -> str:
     # legacy sources lack it and the importer must leave the new column NULL.
     archived = source_metadata.tables["archived_tasks"]
     archived._columns.remove(archived.c.route)
+    # Revision 62's lifecycle identities and UUID defaults are PostgreSQL-only.
+    for name in ("tasks", "archived_tasks"):
+        table = source_metadata.tables[name]
+        table._columns.remove(table.c.legacy_completion_id)
     ledger = source_metadata.tables["token_ledger"]
     ledger.indexes = {
         index for index in ledger.indexes
-        if index.name not in {"idx_token_ledger_task_attempt", "uq_token_ledger_call"}
+        if index.name not in {
+            "idx_token_ledger_task_attempt", "uq_token_ledger_call", "idx_token_ledger_call_id",
+        }
     }
     for name in ("session_id", "attempt_id", "call_id", "model_source"):
         ledger._columns.remove(ledger.c[name])
@@ -262,6 +338,36 @@ async def _seeded_source(tmp_path) -> str:
         )
         for table_name, row in _DURABLE_ROWS.items():
             await conn.execute(insert(source_metadata.tables[table_name]), row)
+        for table_name, row in {
+            "doc_reviews": {
+                "id": "review", "project_id": "x", "kind": "spec", "title": "Legacy review",
+                "vault_path": "specs/legacy.md", "state": "in_review", "created_at": 0,
+                "updated_at": 0,
+            },
+            "doc_review_comments": {
+                "id": "comment", "review_id": "review", "revision": 1, "heading_path": [],
+                "body": "Keep this feedback", "author": "user", "created_seq": 1,
+                "created_at": 0,
+            },
+            "escalations": {
+                "id": "incident", "project_id": "x", "source_kind": "task",
+                "source_identity": "p", "incident_key": "incident", "supervisor_owner": "owner",
+                "summary": "Legacy incident", "investigation": "Evidence",
+                "decision_requested": "Answer", "severity": "medium", "created_at": 0,
+                "updated_at": 0,
+            },
+            "escalation_messages": {
+                "id": "reply", "escalation_id": "incident", "direction": "inbound",
+                "transport": "discord", "verified_actor": "user", "text": "Answer",
+                "received_at": 0, "created_at": 0,
+            },
+            "escalation_actions": {
+                "id": "action", "escalation_id": "incident", "reply_id": "reply",
+                "idempotency_key": "answer", "action_kind": "question_answer", "target_id": "p",
+                "executor": "owner", "started_revision": 0, "created_at": 0,
+            },
+        }.items():
+            await conn.execute(insert(source_metadata.tables[table_name]), row)
         # playbook_activations -> playbook_artifacts is a plain (non-deferred)
         # FK, so the copy only works if both tables are in _ORDERED_TABLES and
         # the artifact is inserted first.
@@ -287,12 +393,21 @@ async def _seeded_source(tmp_path) -> str:
                     f"VALUES ({i}, 'run', 't{i}', 'edge', 'cycle', '', 0)"
                 )
             )
+        if with_legacy_identities:
+            # Exercise importing an existing identity as well as an old schema
+            # with no identity column. Neither source needs a PostgreSQL default.
+            for name in ("tasks", "archived_tasks"):
+                await conn.execute(text(f"ALTER TABLE {name} ADD COLUMN legacy_completion_id TEXT"))
+                await conn.execute(text(f"UPDATE {name} SET legacy_completion_id = 'legacy:' || id"))
     await source.dispose()
     return path
 
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(tmp_path) -> None:
+@pytest.mark.parametrize("with_legacy_identities", [False, True])
+async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
+    tmp_path, with_legacy_identities,
+) -> None:
     """Rows land, and the NULLed-on-insert deferred columns are restored.
 
     ``tasks.parent_task_id`` (self-FK) and ``agents.current_task_id``
@@ -302,17 +417,28 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
     from sqlalchemy import select, text
 
     from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
-    from src.database.tables import supervisor_report_requests
+    from src.database.tables import record_installation, supervisor_report_requests
+    from src.records.schema import RECORD_TABLE_NAMES
 
-    path = await _seeded_source(tmp_path)
+    path = await _seeded_source(tmp_path, with_legacy_identities=with_legacy_identities)
     target = await _empty_pg_adapter()
     try:
+        async with target._engine.connect() as conn:
+            installation_id = await conn.scalar(select(record_installation.c.installation_id))
+            assert installation_id is not None
         counts = await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
         assert set(counts) == {table.name for table in _ORDERED_TABLES}
         assert counts["tasks"] == 2 and counts["agents"] == 1
         assert counts["epic_dependencies"] == 1
         assert counts["supervisor_report_requests"] == 1
         async with target._engine.connect() as conn:
+            assert await conn.scalar(select(record_installation.c.installation_id)) == installation_id
+            assert (await conn.execute(select(
+                metadata.tables["tasks"].c.held_batch_id,
+            ))).scalars().all() == [None, None]
+            for table_name in RECORD_TABLE_NAMES:
+                if table_name != "record_installation":
+                    assert not (await conn.execute(select(metadata.tables[table_name]))).first()
             ledger = (await conn.execute(select(metadata.tables["token_ledger"]))).mappings().one()
             assert ledger["tokens_used"] == 12
             assert all(ledger[name] is None for name in (
@@ -322,6 +448,13 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
                 await conn.execute(select(metadata.tables["archived_tasks"]))
             ).mappings().one()
             assert archived["id"] == "legacy-archive" and archived["route"] is None
+            identities = set((await conn.execute(select(
+                metadata.tables["tasks"].c.legacy_completion_id,
+            ))).scalars()) | {archived["legacy_completion_id"]}
+            assert len(identities) == 3
+            assert all(identity.startswith("legacy:") for identity in identities)
+            if with_legacy_identities:
+                assert identities == {"legacy:p", "legacy:c", "legacy:legacy-archive"}
             for table_name, expected in _DURABLE_ROWS.items():
                 assert counts[table_name] == 1
                 actual = (
@@ -335,6 +468,37 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
                 await conn.execute(select(supervisor_report_requests))
             ).mappings().one()
             assert dict(report) == _REPORT_REQUEST_ROW
+            for table_name, expected in {
+                "doc_reviews": {
+                    "feedback_version": 0, "decision_generation": 1, "pending_decision_id": None,
+                },
+                "doc_review_comments": {
+                    "body": "Keep this feedback", "source_discussion_id": None,
+                    "responder_disposition": None,
+                },
+                "escalation_messages": {
+                    "text": "Answer", "entry_kind": "discussion", "ask_id": None,
+                    "input_id": None, "source_version": None, "reply_to_entry_id": None,
+                },
+                "escalation_actions": {
+                    "reply_id": "reply", "ask_id": None, "decision_id": None,
+                    "operation_kind": None, "operation_key": None, "dependency_keys": [],
+                    "lease_owner": None, "lease_expires_at": None, "lease_generation": 0,
+                    "retry_at": None, "receipt": None,
+                },
+                "conversation_inputs": {
+                    "conversation_id": "conversation", "text": "Preserve this reply",
+                    "ask_id": None, "project_id": None, "routing_state": "conversation",
+                    "routing_evidence": {}, "receipt": {}, "guild_id": None,
+                    "reference_message_id": None, "external_thread_id": None,
+                    "source_version": None, "retention_entry_id": None,
+                },
+            }.items():
+                assert counts[table_name] == 1
+                actual = (
+                    await conn.execute(select(metadata.tables[table_name]))
+                ).mappings().one()
+                assert {key: actual[key] for key in expected} == expected, table_name
             assert (
                 await conn.execute(text("SELECT parent_task_id FROM tasks WHERE id='c'"))
             ).scalar() == "p"
@@ -394,8 +558,9 @@ async def test_migrate_sqlite_to_postgres_resets_postgres_sequences(tmp_path) ->
 
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+@pytest.mark.parametrize("existing_table", ["projects", "record_scopes"])
 async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copying(
-    tmp_path,
+    tmp_path, existing_table,
 ) -> None:
     from sqlalchemy import text
 
@@ -405,14 +570,23 @@ async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copyin
     target = await _empty_pg_adapter()
     try:
         async with target._engine.begin() as conn:
-            await conn.execute(
-                text("INSERT INTO projects (id, name, created_at) VALUES ('existing','e',0)")
-            )
+            if existing_table == "projects":
+                await conn.execute(
+                    text("INSERT INTO projects (id, name, created_at) VALUES ('existing','e',0)")
+                )
+            else:
+                await conn.execute(text(
+                    "INSERT INTO record_scopes (scope_key, scope_kind) VALUES ('global','global')"
+                ))
         with pytest.raises(RuntimeError, match="already contains data"):
             await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
         async with target._engine.connect() as conn:
             rows = (await conn.execute(text("SELECT id FROM projects"))).scalars().all()
-            assert rows == ["existing"]  # nothing was copied
+            assert rows == (["existing"] if existing_table == "projects" else [])
+            if existing_table == "record_scopes":
+                assert (
+                    await conn.execute(text("SELECT scope_key FROM record_scopes"))
+                ).scalars().all() == ["global"]
             assert (
                 await conn.execute(text("SELECT COUNT(*) FROM tasks"))
             ).scalar() == 0

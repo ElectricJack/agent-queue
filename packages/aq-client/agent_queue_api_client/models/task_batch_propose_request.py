@@ -17,27 +17,75 @@ class TaskBatchProposeRequest:
     Attributes:
         source (str): Where the proposal came from (e.g. a spec path or playbook id). Recorded as provenance on every
             task the commit creates.
-        tasks (list[Any]): The tasks to create. Must be non-empty.
         project_id (None | str | Unset): Project to propose into (defaults to the active one).
+        dry_run (bool | None | Unset): Validate and return the diff without storing a proposal.
+        edits (list[Any] | None | Unset): Existing task edits and controls. Live control changes are refused.
+        remove_edges (list[Any] | None | Unset): Typed edges to remove: from, to, dep_type (default blocks).
+        comments (list[Any] | None | Unset): Append comments to existing ids or tempIds. Author comes from the caller.
+        tasks (list[Any] | None | Unset): Tasks to create with temporary ids; optional for edit-only change sets.
         edges (list[Any] | None | Unset): Dependency edges between the batch's tasks.
     """
 
     source: str
-    tasks: list[Any]
     project_id: None | str | Unset = UNSET
+    dry_run: bool | None | Unset = UNSET
+    edits: list[Any] | None | Unset = UNSET
+    remove_edges: list[Any] | None | Unset = UNSET
+    comments: list[Any] | None | Unset = UNSET
+    tasks: list[Any] | None | Unset = UNSET
     edges: list[Any] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         source = self.source
 
-        tasks = self.tasks
-
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
             project_id = UNSET
         else:
             project_id = self.project_id
+
+        dry_run: bool | None | Unset
+        if isinstance(self.dry_run, Unset):
+            dry_run = UNSET
+        else:
+            dry_run = self.dry_run
+
+        edits: list[Any] | None | Unset
+        if isinstance(self.edits, Unset):
+            edits = UNSET
+        elif isinstance(self.edits, list):
+            edits = self.edits
+
+        else:
+            edits = self.edits
+
+        remove_edges: list[Any] | None | Unset
+        if isinstance(self.remove_edges, Unset):
+            remove_edges = UNSET
+        elif isinstance(self.remove_edges, list):
+            remove_edges = self.remove_edges
+
+        else:
+            remove_edges = self.remove_edges
+
+        comments: list[Any] | None | Unset
+        if isinstance(self.comments, Unset):
+            comments = UNSET
+        elif isinstance(self.comments, list):
+            comments = self.comments
+
+        else:
+            comments = self.comments
+
+        tasks: list[Any] | None | Unset
+        if isinstance(self.tasks, Unset):
+            tasks = UNSET
+        elif isinstance(self.tasks, list):
+            tasks = self.tasks
+
+        else:
+            tasks = self.tasks
 
         edges: list[Any] | None | Unset
         if isinstance(self.edges, Unset):
@@ -53,11 +101,20 @@ class TaskBatchProposeRequest:
         field_dict.update(
             {
                 "source": source,
-                "tasks": tasks,
             }
         )
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if dry_run is not UNSET:
+            field_dict["dry_run"] = dry_run
+        if edits is not UNSET:
+            field_dict["edits"] = edits
+        if remove_edges is not UNSET:
+            field_dict["remove_edges"] = remove_edges
+        if comments is not UNSET:
+            field_dict["comments"] = comments
+        if tasks is not UNSET:
+            field_dict["tasks"] = tasks
         if edges is not UNSET:
             field_dict["edges"] = edges
 
@@ -68,8 +125,6 @@ class TaskBatchProposeRequest:
         d = dict(src_dict)
         source = d.pop("source")
 
-        tasks = cast(list[Any], d.pop("tasks"))
-
         def _parse_project_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -78,6 +133,83 @@ class TaskBatchProposeRequest:
             return cast(None | str | Unset, data)
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        def _parse_dry_run(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        dry_run = _parse_dry_run(d.pop("dry_run", UNSET))
+
+        def _parse_edits(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                edits_type_0 = cast(list[Any], data)
+
+                return edits_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        edits = _parse_edits(d.pop("edits", UNSET))
+
+        def _parse_remove_edges(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                remove_edges_type_0 = cast(list[Any], data)
+
+                return remove_edges_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        remove_edges = _parse_remove_edges(d.pop("remove_edges", UNSET))
+
+        def _parse_comments(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                comments_type_0 = cast(list[Any], data)
+
+                return comments_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        comments = _parse_comments(d.pop("comments", UNSET))
+
+        def _parse_tasks(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                tasks_type_0 = cast(list[Any], data)
+
+                return tasks_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        tasks = _parse_tasks(d.pop("tasks", UNSET))
 
         def _parse_edges(data: object) -> list[Any] | None | Unset:
             if data is None:
@@ -98,8 +230,12 @@ class TaskBatchProposeRequest:
 
         task_batch_propose_request = cls(
             source=source,
-            tasks=tasks,
             project_id=project_id,
+            dry_run=dry_run,
+            edits=edits,
+            remove_edges=remove_edges,
+            comments=comments,
+            tasks=tasks,
             edges=edges,
         )
 
