@@ -9,8 +9,11 @@ from sqlalchemy import and_, exists, func, insert, literal, or_, select, update
 
 from src.database.tables import (
     agents,
+    integration_batch_members,
     integration_source_ci,
     sessions,
+    task_branch_origins,
+    task_dependencies,
     task_session_attempts,
     tasks,
 )
@@ -27,7 +30,7 @@ DEFAULT_STALE_AFTER = 480.0
 #: Task statuses a live attempt's task must be in for its worker to dock on
 #: the task graph.  A finished or not-yet-started task never carries a
 #: marker even if a stray session row still points at it.
-LIVE_WORKER_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS")
+LIVE_WORKER_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS", "WAITING")
 
 
 def open_attempts(session_id):
@@ -378,13 +381,74 @@ class TaskSessionQueryMixin:
         return [(row[0], row[1], row[2]) for row in rows]
 
     async def list_authorized_source_heads(self, task_id: str) -> list[str]:
-        """Exact source heads the daemon filed *task_id* to merge (source CI repair).
+        """Exact published history inherited by a prepared stack or repair.
 
         Read from the daemon's own record, never from worker-writable refs:
         the publishing check excludes their already-published history
         (git identity spec §5).
         """
-        return await self.list_source_ci_inherited_oids(task_id)
+        from src.integration.repair import OrdinaryRepairService
+
+        heads = await self.list_source_ci_inherited_oids(task_id)
+        # Preparation validated these immutable completion sources in Git. A
+        # cleaned or moved task branch cannot turn inherited commits into new
+        # authorship. The origin is daemon-owned and fenced to this repository.
+        async with self._engine.connect() as conn:
+            origin = await conn.scalar(select(task_branch_origins.c.stack_snapshot).join(
+                tasks, tasks.c.id == task_branch_origins.c.task_id,
+            ).where(
+                tasks.c.id == task_id,
+                task_branch_origins.c.retired_at.is_(None),
+                task_branch_origins.c.repository_id == tasks.c.repo_id,
+                task_branch_origins.c.branch_name == tasks.c.branch_name,
+            ))
+            repository_id = await conn.scalar(select(tasks.c.repo_id).where(tasks.c.id == task_id))
+        if origin:
+            heads.extend(proof["checkpoint_sha"] for proof in origin["prerequisites"].values()
+                         if proof.get("retained") and proof.get("repository_id") == repository_id)
+        original = await OrdinaryRepairService(self).input(task_id)
+        if original is not None:
+            heads.append(original["starting_sha"])
+            # All frozen members are published inputs the batch repair owns,
+            # including sources after its first conflicting merge. Their
+            # existing commit identities must not be judged as new repair work.
+            async with self._engine.connect() as conn:
+                heads.extend((await conn.execute(select(
+                    integration_batch_members.c.source_sha,
+                ).where(
+                    integration_batch_members.c.batch_id == original["batch_id"],
+                    integration_batch_members.c.repository_id == original["repository_id"],
+                ).order_by(integration_batch_members.c.ordinal))).scalars())
+        return list(dict.fromkeys(heads))
+
+    async def list_publish_prerequisite_branches(self, task_id: str) -> list[str]:
+        """Direct stacked prerequisites in the held task's project/repository.
+
+        These persisted branch names locate potential published history;
+        they are not proof of publication. The identity policy observes exact
+        remote heads in the authorized repository before excluding any OID.
+        Prose, metadata, and non-``blocks`` associations confer no authority.
+        """
+        prerequisite = tasks.alias("publish_prerequisite")
+        statement = (
+            select(prerequisite.c.branch_name)
+            .select_from(
+                tasks.join(task_dependencies, task_dependencies.c.task_id == tasks.c.id)
+                .join(prerequisite, prerequisite.c.id == task_dependencies.c.depends_on_task_id)
+            )
+            .where(
+                tasks.c.id == task_id,
+                task_dependencies.c.dep_type == "blocks",
+                prerequisite.c.project_id == tasks.c.project_id,
+                prerequisite.c.repo_id.is_not_distinct_from(tasks.c.repo_id),
+                prerequisite.c.branch_name.is_not(None),
+                prerequisite.c.branch_name != "",
+            )
+            .distinct()
+            .order_by(prerequisite.c.branch_name)
+        )
+        async with self._engine.connect() as conn:
+            return list((await conn.execute(statement)).scalars())
 
     async def list_source_ci_inherited_oids(
         self, task_id: str, *, repository_id: str | None = None

@@ -15,13 +15,16 @@ import asyncio
 import json
 import random
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
 from sqlalchemy import Text, and_, case, cast, exists, func, literal, or_, select, update
 
-from src.database.tables import agent_profiles, agents, playbook_v2_runs, sessions, tasks
+from src.database.tables import (
+    agent_profiles, agents, playbook_v2_runs, sessions, task_metadata,
+    task_session_attempts, tasks,
+)
 from src.models import Task, TaskStatus
 from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROUTER, UNROUTED
 
@@ -51,6 +54,19 @@ ROUTING_LOCK_KEY = 1
 #: How long an apply waits for the routing lock before giving up.
 ROUTING_LOCK_BUDGET_SECONDS = 30.0
 
+# Explicit work verdicts only. Session loss, launch/close errors and provider
+# outages are deliberately absent: they say nothing about the worker's ability.
+# Review feedback reworks a passing attempt, so ``reopen_with_feedback`` re-plans
+# the route without journaling a failure.
+ROUTING_FAILURE_CONTEXTS = frozenset({
+    "retry", "max_retries", "session_close_hard_failure", "verification_reopen",
+    "verification_failed",
+})
+ROUTING_RETRY_CONTEXTS = ROUTING_FAILURE_CONTEXTS | {
+    "restart_task", "supervisor_recovery", "reopen_with_feedback",
+}
+ROUTING_FAILURES_KEY = "routing_failed_attempts"
+
 
 class RoutingBusyError(RuntimeError):
     """The routing lock stayed held for the whole wait budget."""
@@ -64,7 +80,126 @@ def _active_session():
     )
 
 
+def _eligible_backlog_predicate(ready_project_ids: Collection[str]):
+    """The routed backlog the planner's load admits: the claim frontier's.
+
+    The same acceptance rules as the pool claim frontier (shared, not
+    duplicated) plus the project-aware route filter: a READY task that a pool
+    worker could actually claim.  An ASSIGNED row is load through its live
+    session (``count_busy_sessions_by_profile``), never the backlog, and a
+    task that fails any frontier rule — dependency, hold, origin, container —
+    is blocked, not runnable: counting it here is what made one unclaimable
+    verifier fill a one-slot pool.
+    """
+    from src.database.queries.blocked_state import apply_label_filters
+    from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in
+
+    return and_(
+        tasks.c.status == TaskStatus.READY.value,
+        *(_frontier_predicates().values()),
+        route_claimable_in(ready_project_ids),
+        apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
+    )
+
+
+def _routed_backlog_statement(ready_project_ids: Collection[str]):
+    eligible = _eligible_backlog_predicate(ready_project_ids)
+    return (
+        select(
+            tasks.c.profile_id,
+            func.count().label("total"),
+            func.count().filter(eligible).label("eligible"),
+        )
+        .where(
+            tasks.c.status.in_(ROUTED_BACKLOG_STATUSES),
+            tasks.c.profile_id.is_not(None),
+            ~_active_session(),
+        )
+        .group_by(tasks.c.profile_id)
+    )
+
+
 class RoutingQueryMixin:
+    async def record_routing_retry_on(
+        self, conn, task_id: str, *, context: str, previous_status: TaskStatus,
+        new_status: TaskStatus,
+    ) -> bool:
+        """Journal a work failure and invalidate a retry route in its transaction.
+
+        Called only after the transition's claim/status guards matched. A
+        router-owned route is re-planned on retry; role routes and audited
+        overrides retain their authority. Infrastructure incidents create no
+        work-failure evidence, even when an operator subsequently restarts them.
+        """
+        if context not in ROUTING_RETRY_CONTEXTS:
+            return False
+        row = (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().one()
+        if row["route_source"] not in {ROUTER, LEGACY}:
+            return False
+        substantive = (
+            context in ROUTING_FAILURE_CONTEXTS
+            # A COMPLETED task passed; reopening it is rework, not a failure.
+            and previous_status in {
+                TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.FAILED,
+                TaskStatus.BLOCKED,
+            }
+        )
+        if substantive and context in {"retry", "max_retries"}:
+            failure_class = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "failure_class",
+            ))).scalar_one_or_none()
+            substantive = failure_class != json.dumps("transient")
+        if substantive:
+            attempt = (await conn.execute(
+                select(task_session_attempts)
+                .where(
+                    task_session_attempts.c.task_id == task_id,
+                    task_session_attempts.c.started_at >= row["created_at"],
+                )
+                .order_by(task_session_attempts.c.started_at.desc(), task_session_attempts.c.id.desc())
+                .limit(1)
+            )).mappings().first()
+            raw = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == ROUTING_FAILURES_KEY,
+            ))).scalar_one_or_none()
+            failures = json.loads(raw) if raw else []
+            identity = attempt["id"] if attempt else f"claim:{row['claim_epoch']}"
+            if not any(failure["attempt_id"] == identity for failure in failures):
+                failures.append({
+                    "attempt_id": identity,
+                    "session_id": attempt["session_id"] if attempt else None,
+                    "claim_epoch": row["claim_epoch"],
+                    "intelligence_class": (
+                        attempt["intelligence_class"] if attempt else row["intelligence_class"]
+                    ),
+                    "profile_id": attempt["profile_id"] if attempt else row["profile_id"],
+                    "reason": context,
+                    "previous_status": previous_status.value, "status": new_status.value,
+                    "failed_at": row["updated_at"],
+                })
+                await self._upsert_meta(task_id, ROUTING_FAILURES_KEY, failures, conn=conn)
+        if new_status != TaskStatus.READY:
+            return False
+        # Preserve constraints and provenance, but remove the previous class:
+        # it is a routing result, not the filer's class_hint.
+        route = {
+            key: value for key, value in (row["route"] or {}).items()
+            if key in {"constraints", "legacy"}
+        }
+        if row["route_source"] == LEGACY:
+            route.setdefault("legacy", {
+                "profile_id": row["profile_id"],
+                "intelligence_class": row["intelligence_class"],
+                "provider_intent": row["provider_intent"],
+            })
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            profile_id=None, intelligence_class=None, provider_intent="class_only",
+            route_source=UNROUTED, route=route or None,
+        ))
+        return True
+
     async def routing_supply(self, *, now: float, stall_seconds: float, conn=None) -> dict:
         """Grouped worker observations, without task titles, terminals or session tokens.
 
@@ -135,29 +270,38 @@ class RoutingQueryMixin:
         async with self._engine.connect() as connection:
             return await read(connection)
 
-    async def count_routed_backlog_by_profile(self, *, conn=None) -> dict[str, int]:
-        """Fleet-wide routed backlog: READY and ASSIGNED tasks per profile not yet started.
+    async def count_routed_backlog_by_profile(
+        self, *, ready_project_ids: Collection[str] = frozenset(), conn=None
+    ) -> dict[str, dict[str, int]]:
+        """Fleet-wide routed backlog, split eligible vs blocked, per profile.
 
-        Unlike ``count_ready_by_profile``, which counts one project's READY
-        frontier, this spans every project: pools are global, so the load on
-        a profile is too.  A task with a live session is load through
-        ``count_busy_sessions_by_profile`` instead, never twice.
+        Returns ``{profile_id: {"eligible": n, "blocked": m}}``.
+
+        *eligible* is the routed READY backlog the planner's load admits:
+        the claim frontier's acceptance rules (dependency, plan-subtask,
+        origin, container, siblings, retired-delegate) plus the project-
+        aware route filter and the ``hold:*`` label filter.  *blocked* is
+        the rest of the READY/ASSIGNED rows — work that is routed but not
+        currently claimable.
+
+        Unlike ``count_busy_sessions_by_profile`` (live sessions), an
+        ASSIGNED row counts as *blocked* here: it is load through its live
+        session, never the runnable backlog.  Counting every row as load is
+        what made one unclaimable verifier fill a one-slot pool.
         """
-        statement = (
-            select(tasks.c.profile_id, func.count())
-            .where(
-                tasks.c.status.in_(ROUTED_BACKLOG_STATUSES),
-                tasks.c.profile_id.is_not(None),
-                ~_active_session(),
-            )
-            .group_by(tasks.c.profile_id)
-        )
+        statement = _routed_backlog_statement(ready_project_ids)
         if conn is not None:
             rows = (await conn.execute(statement)).fetchall()
         else:
             async with self._engine.connect() as connection:
                 rows = (await connection.execute(statement)).fetchall()
-        return {str(profile_id): int(count) for profile_id, count in rows}
+        return {
+            str(profile_id): {
+                "eligible": int(eligible or 0),
+                "blocked": int(total or 0) - int(eligible or 0),
+            }
+            for profile_id, total, eligible in rows
+        }
 
     async def count_busy_sessions_by_profile(self, *, conn=None) -> dict[str, int]:
         """Live sessions holding a task, per profile, fleet-wide.
@@ -245,9 +389,14 @@ class RoutingQueryMixin:
         return [dict(row) for row in rows]
 
     async def get_task_on(self, conn, task_id: str) -> Task | None:
-        """Read one task row on *conn* (inside the caller's transaction)."""
+        """Lock and read the task whose route this transaction will write.
+
+        The fleet advisory lock serializes applies, but route resets do not
+        take it. Keep a reset's new preference from being overwritten by an
+        apply that already read the previous routing inputs.
+        """
         row = (
-            await conn.execute(select(tasks).where(tasks.c.id == task_id))
+            await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update())
         ).mappings().fetchone()
         return self._row_to_task(row) if row is not None else None
 

@@ -4,12 +4,14 @@ Commands 23–24 of the test-coverage plan: the representative *mutating*
 boundary evidence that the definition-level scope matrix in
 ``tests/test_command_scope_matrix.py`` deliberately does not attempt.  Both
 tests dispatch through the real ``execute()`` with a trusted ``_scope``
-envelope and a real SQLite database.
+envelope and a real PostgreSQL database.
 """
 
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from src.models import (
     Agent,
@@ -124,11 +126,11 @@ async def test_execute_blocks_pool_session_reading_foreign_task_and_worker_filin
 
 
 # ---------------------------------------------------------------------------
-# 24: cascade delete refuses a live descendant session, atomically
+# 24: confirmed cascade stops live descendants; single scope keeps children
 # ---------------------------------------------------------------------------
 
 
-async def test_delete_task_cascade_refuses_live_descendant_session_without_partial_delete(
+async def test_confirmed_delete_task_cascade_stops_live_descendant_session(
     command_handler_factory,
 ):
     handler = await command_handler_factory()
@@ -143,27 +145,34 @@ async def test_delete_task_cascade_refuses_live_descendant_session_without_parti
     # A live session holding the *child* — the grandchild case the guard exists for.
     await db.create_session(_session("s-live", project_id="p1", task_id="child", lifecycle="task"))
 
-    result = await handler.execute("delete_task", {"task_id": "parent", "cascade": True})
-
-    assert result["success"] is False
-    assert result["code"] == "hierarchy.live_descendants"
-    assert "live descendant" in result["error"]
-    assert result["sessions"] == [{"session_id": "s-live", "task_id": "child"}]
-
-    # Nothing was deleted — the refusal is all-or-nothing.
+    provider = SimpleNamespace(stop=AsyncMock())
+    handler.orchestrator.session_providers = SimpleNamespace(create=lambda *_: provider)
+    args = {"task_id": "parent", "cascade": True}
+    preview = await handler.execute("delete_task", args)
+    assert preview["disposition"] == "preview"
+    assert preview["task_ids"] == ["parent", "child"]
+    assert preview["sessions"] == [
+        {"session_id": "s-live", "task_id": "child", "state": "running"}
+    ]
+    provider.stop.assert_not_awaited()
     assert await db.get_task("parent") is not None
     assert await db.get_task("child") is not None
     assert (await db.get_task("child")).parent_task_id == "parent"
 
-    # Once the session is no longer live, the same cascade succeeds.
-    await db.update_session("s-live", state="stopped")
-    ok = await handler.execute("delete_task", {"task_id": "parent", "cascade": True})
+    ok = await handler.execute("delete_task", {**args, "confirmed": True})
+    assert ok["success"], ok
     assert ok["deleted"] == "parent"
+    provider.stop.assert_awaited_once()
+    handle = provider.stop.await_args.args[0]
+    assert (handle.name, handle.instance_token) == ("n-s-live", "tok-s-live")
+    assert provider.stop.await_args.kwargs == {"grace": 2.0}
+    assert (await db.get_session("s-live")).state == "stopped"
+    assert (await db.get_session("s-live")).task_id is None
     assert await db.get_task("parent") is None
     assert await db.get_task("child") is None
 
 
-async def test_delete_task_without_cascade_refuses_a_task_that_still_has_children(
+async def test_confirmed_delete_task_without_cascade_reparents_surviving_children(
     command_handler_factory,
 ):
     handler = await command_handler_factory()
@@ -177,10 +186,20 @@ async def test_delete_task_without_cascade_refuses_a_task_that_still_has_childre
 
     result = await handler.execute("delete_task", {"task_id": "parent"})
 
-    assert result.get("code", "").startswith("hierarchy.")
+    assert result["disposition"] == "preview"
+    assert result["reparented_tasks"] == ["child"]
     assert await db.get_task("parent") is not None
     assert await db.get_task("child") is not None
 
+    deleted = await handler.execute("delete_task", {"task_id": "parent", "confirmed": True})
+    assert deleted["success"], deleted
+    assert deleted["deleted"] == "parent"
+    assert deleted["reparented_tasks"] == ["child"]
+    assert await db.get_task("parent") is None
+    assert (await db.get_task("child")).parent_task_id is None
+    assert await db.get_typed_dependencies("child") == []
+
     assert await handler.execute("delete_task", {"task_id": "ghost"}) == {
+        "success": False,
         "error": "Task 'ghost' not found"
     }

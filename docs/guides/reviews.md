@@ -48,12 +48,103 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
 - `changes_requested` — a decision with feedback; the daemon files one new
   revision task carrying that feedback (§ What happens when you reject).
 - `approved` — the gate is resolved and dependent tasks become routable.
-- `withdrawn` — the review is closed with no decision; the gate is kept open
-  so nothing downstream is released, and the authoring task is put back to a
-  state where it can resubmit.
+  For kind `spec` or `plan`, approval also sets the vault status to `approved`
+  and dispatches `spec.approved`, starting one deep-high spec-ingest task per
+  immutable approval decision (`spec-ingest:decision:<id>`). Replays reuse its
+  task receipt after completion, closure as obsolete, or archive, and committed
+  graph receipts prevent duplicate work. The vault path is a mirror link;
+  existing text that mentions a path does not confer ingestion authority.
+  Other documents do not ingest.
+- `withdrawn` — the review's gate is cancelled in the same transaction. Its
+  dependent tasks remain held for approval and are flagged for attention;
+  their IDs appear in the response and review detail and are sent to the
+  project supervisor. The dashboard asks for confirmation before withdrawing.
+  The review records the withdrawal actor, surface, timestamp and reason.
+- `aq review reopen --review-id <id> --revision N` reopens a withdrawn review
+  as revision N+1, copying its last submitted content and any playbook pin.
+  It reopens the same gate and keeps all dependent links. Approval is still
+  required to release work. Withdrawal audit fields survive reopening.
+  Use `aq review submit --review-id <id> --file <draft.md>` afterward to revise
+  the text. An approved review cannot be reopened. The dashboard offers the
+  same action on the withdrawn review's detail page. Only the author task,
+  project supervisor or local operator may reopen it; the displayed revision
+  must still be current. Earlier withdrawal events retain the full history.
 
 Every transition checks the review's state and the revision it was issued
 for, so two decisions racing on different revisions cannot both succeed.
+
+## Design and implementation documents
+
+Use `spec_kind: design | implementation` in the submitted YAML frontmatter;
+this is separate from review kind `spec | plan | other`. The classification
+is stored on each revision and survives vault status rewrites and recovery.
+A body-only revision retains its previous classification. Invalid values
+are refused. Legacy documents may omit it; the ingestion agent checks their
+content before deciding whether they are ready for implementation.
+
+A design spec approves goals and architecture. Its ingest creates one epic
+containing one deep-high design task to write an implementation spec grounded
+in the current repository: files, functions, tests, rollout and chosen defaults.
+That task submits the implementation document to Jack's review queue, with
+`spec_kind: implementation`; approval starts ingestion again. Design approval
+creates no implementation work.
+
+An implementation spec creates phase/deliverable epics with self-contained
+children, maximizing safe parallelism by file/module ownership. Dependencies
+connect children only; structural parent-child edges connect children to epics.
+Spec ingestion validates and commits the whole graph atomically without a
+human proposal gate. Ordinary task-batch proposals retain their approval gate.
+Ingest authority only creates work; existing-task updates go to the supervisor
+as an ordinary, human-approved change set.
+
+Start from the [spec template](../templates/spec.md). On an existing install,
+the operator must reconcile the shipped spec-ingest Role and commit grant;
+profile seeding does not overwrite local copies. Preserve the installed
+harness when updating it.
+
+## Spec supersession checklist
+
+Before submitting or reviewing a design or implementation spec:
+
+1. Find approved specs it replaces or overlaps, including its approved design
+   and related specs without an explicit `Supersedes` link. Identify the
+   approved revision and approval evidence for each. If none apply, record
+   the search and that conclusion. If a required predecessor is inaccessible,
+   ask the supervisor for its approved text; do not assume its goals away.
+2. Use the [spec template's goal table](../templates/spec.md#approved-specs-and-goal-accounting).
+   Account for **every goal of every predecessor**, including goals outside
+   the overlap: `kept` with a replacement or retained-spec section, `changed`
+   with the old/new behavior and rationale, or `dropped` with a rationale and
+   Jack's sign-off. Check the actual replacement against each row. A removed
+   outcome counts as dropped even inside a changed goal or a deferred scope.
+3. Require Jack's explicit sign-off for each dropped goal, with a decision
+   reference, date and the replacement revision it covers. A general approval,
+   silence, author assertion or delegated supervisor approval is insufficient.
+   Authors may submit with sign-off pending, but the decider must request
+   changes or leave the review open until Jack decides; do not file affected
+   implementation work on the assumption that a drop is approved.
+4. Reviewers flag **every dropped goal** in the review and verdict, naming its
+   predecessor, rationale and sign-off status. Missing predecessors or goal
+   rows, unsupported `kept`/`changed` claims and unsigned drops are `[blocking]`
+   findings. Signed-off drops remain visible in the review as an acknowledged
+   scope change. Anchor findings to the goal table or the conflicting text.
+5. Repeat the comparison on revisions. A changed drop or replacement revision
+   needs sign-off that covers the new proposal. Deferring a finding or marking
+   a comment resolved cannot substitute for Jack's decision.
+
+For example, a replacement of the 2026-10-02 integration-train plan must account
+for its goal that train policy lives in per-project playbooks. If the new
+design puts those decisions in Python, it must flag that lost outcome as
+`dropped` and obtain Jack's sign-off. Calling the replacement git-first or
+simpler supplies no approval evidence.
+
+This is authoring and review policy, not automatic semantic enforcement by the
+review command. The shipped playbook carries it into spec-ingest task context;
+the spec-ingest role passes it to authors and checks it before deriving work.
+Shipped profiles and skills are write-if-absent: on an existing installation,
+the operator must reconcile the spec-ingest Role, reviewer Rules and installed
+aq-reviews skill with the shipped versions while preserving local edits.
+Grant-only profile reseeding does not update this prose.
 
 ## The commands in one table
 
@@ -68,13 +159,24 @@ for, so two decisions racing on different revisions cannot both succeed.
 | `aq review decide --review-id <id> --revision N --decision request_changes --note "…" [--responder-class <class>]` | yes | Reject the revision and file a new revision task with the note as feedback. The revision task is routed by the project's router; `--responder-class` is its class hint. A responder profile is refused (`routing.choice_forbidden`). |
 | `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading-path "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
 | `aq review dispatch --review-id <id> [--count N] [--class <class>] [--revision N] [--no-comments] [--focus "…"] [--force]` | yes | Send one fixed revision (the current one by default) to `--count` adversarial reviewer tasks (default 1). Each is filed unrouted with the `--class` hint (default `deep-high`) and the constraint `exclude_providers: [<provider the author revision ran on>]`, so the project's router picks each reviewer's profile on another family. A dispatch never names a profile; `--to` is refused (`routing.choice_forbidden`). The default `--with-comments` includes prior comments; `--no-comments` gives a clean read. A second dispatch of the same revision needs `--force`. |
-| `aq review withdraw --review-id <id> --reason "…"` | yes (`local_operator_only`) | Close the review with no decision. The gate stays open and the tasks waiting on it are flagged `needs_attention=review_withdrawn`. The reason (it may be empty) is recorded as the review's `decision_note`, with `decided_by`. When anyone but the author withdraws it, the author task gets a comment with the reason, which also wakes its live session. The dashboard's Reviews page does the same thing from the **Close** button on each open review, with an optional reason. |
+| `aq review withdraw --review-id <id> --reason "…"` | yes | Cancel the review gate, flag dependent tasks for attention and notify the supervisor. Actor, surface, time and reason are recorded. Other callers also notify the author task. The dashboard requires confirmation. |
+| `aq review reopen --review-id <id> --revision N` | yes | Copy the current withdrawn revision into N+1 and reopen the same approval gate. Also available to the author task and project supervisor. |
 | `aq review delegate --review-id <id> --to supervisor\|user` | yes (`local_operator_only`) | Change `decider` on one review. `supervisor` lets the live named supervisor session approve it. |
 | `aq review import-edits --review-id <id>` | yes (`local_operator_only`) | Turn your out-of-band Obsidian edit into revision N+1. Refuses if the current revision is already decided. |
 
 For workers and the supervisor, plus the `aq task create … --after-review
 <id>` and `aq task edit … --after-review <id>` the daemon uses to gate work,
 see [§ The worker's side](#the-workers-side).
+
+## Download a document
+
+Open a document in **Reviews**, select its revision, and choose **Download
+Markdown** in the revision toolbar. This saves the selected revision's raw
+Markdown as UTF-8, including frontmatter and original line breaks. It works
+for specs, plans and other review documents, including historical and closed
+reviews. Showing a diff does not change the downloaded content. The filename
+uses the review title (or its ID) and revision number with a `.md` extension.
+The action is unavailable while the selected content is loading.
 
 ## Screenshot evidence
 
@@ -249,6 +351,20 @@ From the worker's point of view the workflow is short:
    `aq review show --review-id <id> --comments`, then resubmit with
    `aq review submit --review-id <id> --file <draft> --changes "…"
    [--resolves <comment-id> …]`, and close it.
+   The daemon resolves an omitted `--review-id` from the held revision task's
+   assignment, so the ordinary submit command also updates that review.
+   Naming another review is refused with `not_your_task`; a revision worker
+   cannot open a parallel review.
+   Revise a local draft; do not edit the vault mirror or its frontmatter
+   directly. A passing close is refused with `reviews.revision_unpublished`
+   until this task has submitted a newer revision of its assigned review.
+   Editing a file, submitting an unrelated review, or another task's
+   publication does not satisfy this gate. It cannot be waived with
+   `--deliverable-unmet`; a failing close remains available. Prime states
+   the assigned review and revision even when the description is truncated.
+   Record the new revision number and content hash in the close summary;
+   publication does not approve the review and does not require waiting for
+   its decision. See [the completion contract](../specs/design/review-revision-completion.md).
 
 This is wired into every shipped worker profile's `## Rules` section as
 *Documents go to review, not the repo*, and the shipped supervisor profile
@@ -527,7 +643,7 @@ most likely to meet:
 | `not_your_task` | The reviewer (worker or supervisor) tried to act on a review in a project they do not hold. | Re-run from the session that holds the task, or have the authoring task resubmit. |
 | `not_in_review` | A decision was attempted while the review was not in a state that accepts it (or the `--decision` value was not `approve` / `request_changes`). | `aq review show --review-id <id>` to see the actual state, then `withdraw` or wait. |
 | `stale_revision` | `--revision` does not match the review's current revision. | `aq review show --review-id <id>` to read the latest, then decide or comment with that revision. |
-| `review_closed` | A `submit --review-id` was called after the review had been approved or withdrawn. | Submit a new review (a fresh `--task-id`). |
+| `review_closed` | A `submit --review-id` was called after the review had been approved or withdrawn. | Reopen a withdrawn review with `aq review reopen --review-id <id> --revision N`, then revise it. An approved review requires a new review. |
 | `empty` | The file was empty after decoding. | Fill in the draft and retry. |
 | `not_utf8` | The file was not valid UTF-8 text. | Convert the source file and retry. |
 | `bad_title` / `bad_kind` | `--title` was missing or too short, or `--kind` was not one of `spec`, `plan`, `other`. | Re-run with a sensible title and a known kind. |
@@ -558,9 +674,10 @@ and the vault:
   review: the check reports it and `--fix` repairs the safe direction
   (resolving the gate on an approved review, or flagging the unresolved
   case for you to unwind).
-- A task waiting on the gate of a withdrawn review: the check reports it;
-  either resubmit the review (new `--review-id`) or `aq task edit
-  --after-review ""` on the task to release it from the gate.
+- A legacy open gate on a withdrawn review: the check reports its waiters;
+  reopen the same review with `aq review reopen --review-id <id> --revision N`
+  to preserve its dependent links and submit it for approval again. If the
+  dependent work is obsolete, the operator or supervisor decides its fate.
 
 ## Discord, and what reviews are not
 

@@ -48,6 +48,7 @@ __all__ = [
     "publish_policy",
     "resolve_git_identity",
     "same_identity",
+    "task_publish_policy",
     "validate_git_email",
     "validate_git_name",
 ]
@@ -288,8 +289,8 @@ class PublishPolicy:
     identity AQ can name; then mismatches are reported, not refused.  The
     publication records its findings in ``notes``.  ``authorized_heads``
     are exact published OIDs the daemon told the task to merge (a source CI
-    repair's source head): their history is already published, so it is
-    never judged.
+    repair's source head, or an observed remote head of a declared stacked
+    prerequisite): their history is already published, so it is never judged.
     """
 
     identity: GitIdentity
@@ -325,6 +326,44 @@ def publish_policy(
         resolved.identity, resolved.source, frozenset(allowed), enforce,
         frozenset(head.lower() for head in authorized_heads if head),
     )
+
+
+async def task_publish_policy(
+    config: Any,
+    project: Any,
+    db: Any,
+    git: Any,
+    task_id: str,
+    *,
+    checkout_path: str | None = None,
+    repository_url: str | None = None,
+    extra_session_id: str | None = None,
+) -> PublishPolicy:
+    """One publication policy shared by worker pushes and completion pushes.
+
+    Only direct same-project/repository prerequisites select remote branches.
+    Observe their exact heads through the authorized repository, never through
+    checkout tracking refs or an unverified completion/worker-supplied SHA.
+    Only those heads' ancestry is inherited; new commits retain the task's
+    own identity rules. Without an authorized repository no remote history
+    is added to the policy.
+    """
+    from src.git.manager import GitError, RemoteRefState
+
+    launches = await db.list_task_launch_identities(task_id, extra_session_id=extra_session_id)
+    heads = await db.list_authorized_source_heads(task_id)
+    branches = await db.list_publish_prerequisite_branches(task_id)
+    if branches and checkout_path and repository_url:
+        observed = await git.als_remote_refs(
+            checkout_path, branches, repository_url=repository_url
+        )
+        for branch in branches:
+            result = observed.get(branch)
+            if result is None or result.state is RemoteRefState.ERROR:
+                raise GitError(f"could not verify published prerequisite branch '{branch}'")
+            if result.state is RemoteRefState.PRESENT and result.oid:
+                heads.append(result.oid)
+    return publish_policy(resolve_git_identity(config, project), launches, heads)
 
 
 def resolve_git_identity(config: Any, project: Any = None) -> ResolvedGitIdentity:

@@ -75,7 +75,7 @@ aq system config schema
 | data_dir, workspace_dir, project_roots | AQ data, workspaces, and allowed onboarding roots. | Paths default under the user's home directory; project_roots is empty. |
 | database, database_path | PostgreSQL pool settings and a legacy alias. | database.url is required; database_path is compatibility-only. |
 | env, profile, validate_events | Overlay selection and event payload validation. | env defaults to production; profiles are optional. |
-| messaging_platform, discord | No messaging or the one Discord destination, digest, and escalation controls. | Platform defaults to discord; Discord connection values are installation policy. |
+| messaging_platform, discord | No messaging or the one Discord destination, digest, and escalation controls. | Platform defaults to discord; Discord connection values are installation policy. The retired `discord.channels` and `discord.per_project_channels` blocks are migration input only; `aq doctor --check discord.config --fix` drops them and writes `channel_id`, `guild_id`, `authorized_users` and `project_id`, filling only the values it can derive. |
 | agents_config, agent_profiles, scheduling | Agent defaults, legacy in-config profiles, and task cadence. | Vault profiles are the current editable source; in-config profiles remain for compatibility. `pause_retry` was retired (it was never read) and is ignored with a warning. |
 | llm, providers, pricing, llm_logging | Direct LLM calls, provider probes, price tables, and LLM logging. | Provider configuration is local policy; no key is shipped. |
 | llm.fallback | An optional second direct-path credential, used only while provider availability holds the reserved `llm` key unavailable. | `null` (no fallback: direct-path calls fail fast during an outage). Restart-required like the rest of `llm`. See [`llm.fallback`](#llmfallback). |
@@ -113,7 +113,7 @@ authenticated by the broker.
 
 For App mode, install the App on the repositories AQ will use, make its private
 key readable only by the daemon OS user, and set the existing configuration
-fields (there is no new setting or database migration):
+fields:
 
 ~~~yaml
 integration:
@@ -123,6 +123,15 @@ integration:
     installation_id: 67890
     private_key_path: /home/aq/.agent-queue/github-app.pem
 ~~~
+
+`integration.github_app.actions_permission` defaults to `read`. To enable the
+train's bounded rerun of a stuck Actions job, an operator must grant Actions
+**read and write** to the App, approve that permission for the installation,
+then set `actions_permission: write` in this block and restart the daemon.
+AQ requests and strictly validates that configured level; it never upgrades a
+read configuration automatically. A denied rerun stays pending, records
+`permission_blocked` with remediation, and consumes its one request bound.
+Other App permissions and repository selection remain unchanged.
 
 Replace the example IDs and key path with your installation's values; keep
 secrets out of the YAML and version control. App mode supports AQ operations
@@ -134,7 +143,7 @@ flow can validate an explicit URL but still refuses an App-backed clone; see
 
 The daemon constructs its GitHub credential provider from the effective
 configuration at startup. Changing the mode, App identity, installation or
-private-key reference requires a **daemon restart**; `aq system reload-config`
+private-key reference or Actions permission requires a **daemon restart**; `aq system reload-config`
 does not switch live requests to the new credentials. Ordinary installation
 token refresh happens in memory without a restart. GitHub health reports CLI
 availability and credential mode separately from access to a specific
@@ -342,7 +351,10 @@ answers `421 misdirected_host` (unknown `Host`) or `403 origin_not_allowed`
 `dashboard.server.running`, `dashboard.server.bundle`, `dashboard.server.port`,
 `dashboard.server.exposure` (a warning while `host` is not loopback) and
 `dashboard.remote_link` (the origin Discord links name, whether the edge accepts
-it, and a warning when Discord posts carry the "unavailable" notice)
+it, and a warning when Discord posts carry the "unavailable" notice) and
+`dashboard.public_url` (`public_url` is set, is HTTPS or a tailnet address, is
+listening, and `GET /focus` returns the dashboard shell; plain HTTP warns with the
+Tailscale Serve steps)
 ([src/doctor/dashboard_server_checks.py](../../src/doctor/dashboard_server_checks.py)).
 `aq dashboard link` prints the same report from the YAML, without the daemon.
 
@@ -423,3 +435,46 @@ the writer itself deliberately leaves validation to its caller. See
 * aq test tests/test_config.py tests/test_config_profiles.py tests/test_config_watcher.py
   and aq test tests/test_config_editor.py tests/test_config_roundtrip.py exercise the
   focused behavior.
+
+## Warm integration checkouts and compiler caches
+
+Train candidate jobs and task-free batch fixers use reusable linked worktrees under
+`data_dir/job-snapshots` and `data_dir/batch-fixers`. They share the configured
+repository's primary clone object store. Reuse switches to the exact candidate
+commit and runs `reset --hard`; it never runs `clean -fdx`. Ignored build output
+survives. A checkout with dirty or untracked files, unpublished commits, active
+writers, job pins or unknown ownership remains retained. Candidate batches must
+be terminal before another batch adopts their checkout. Fixers additionally
+require a stopped session and a confirmed stopped provider process. Interrupted
+preparation and legacy snapshots are not silently adopted.
+
+Optionally configure a compiler cache on native Linux storage beside the clone:
+
+```yaml
+workspaces:
+  build_cache:
+    kind: ccache                 # or sccache
+    dir: /srv/aq/cache/compiler
+  projects:
+    matter-engine:
+      kind: sccache
+      dir: /srv/aq/cache/matter
+    cache-disabled-project: null
+```
+
+Project entries override the installation default; explicit `null` disables it.
+The selected directory reaches candidate/local job contracts and session
+launches (including fixers) as `CCACHE_DIR` or `SCCACHE_DIR`. These settings apply
+to new jobs and sessions after a config reload. Cache configuration is local to
+an installation and excluded from portable configuration bundles. Without a
+setting AQ adds no cache variables or compiler-cache probes. The build command
+must already invoke the selected compiler cache; setting its directory does not
+rewrite compiler commands. Cache binaries must be available on the job's PATH.
+
+Build presets record elapsed command seconds and workspace attribution in the
+job result. Optional bounded cache probes record hit/miss counter deltas and a
+hit rate when available. The counters have `shared_cache` scope: concurrent jobs
+can contribute, so the rate is not exclusive to one process. Missing tools,
+missing statistics, reset counters and intervals with no requests leave the rate
+unknown. Job waits copy available build seconds, cache hit rate and workspace
+path into common wait measurements. These observations do not gate publication.

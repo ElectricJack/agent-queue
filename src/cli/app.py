@@ -19,9 +19,9 @@ into their respective CLI groups (e.g., ``aq git``, ``aq memory``, etc.).
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -32,6 +32,11 @@ from .global_options import AQGroup as GlobalOptionsAQGroup
 from .styles import AQ_THEME
 
 logger = logging.getLogger(__name__)
+
+# Command modules import this canonical name while registering. Reuse the
+# running module so ``python -m src.cli.app`` builds the tree only once.
+if __name__ == "__main__" and sys.modules[__name__].__dict__ is globals():
+    sys.modules["src.cli.app"] = sys.modules[__name__]
 
 
 def _installed_version() -> str:
@@ -55,6 +60,8 @@ console = Console(theme=AQ_THEME)
 
 def _run(coro):
     """Run an async coroutine synchronously."""
+    import asyncio
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -436,6 +443,7 @@ from . import update as _update_cli  # noqa: E402, F401
 from . import logs  # noqa: E402, F401
 from . import tasks  # noqa: E402, F401
 from . import projects  # noqa: E402, F401
+from . import policy  # noqa: E402, F401
 from . import plugins  # noqa: E402, F401
 from . import vault  # noqa: E402, F401
 from . import agent_surface  # noqa: E402, F401
@@ -449,12 +457,16 @@ from . import questions as _questions_cli  # noqa: E402, F401
 from . import reviews as _reviews_cli  # noqa: E402, F401
 from . import reports as _reports_cli  # noqa: E402, F401
 from . import jobs as _jobs_cli  # noqa: E402, F401
+from . import artifacts as _artifacts_cli  # noqa: E402, F401
 from . import waits as _waits_cli  # noqa: E402, F401
+from . import cron as _cron_cli  # noqa: E402, F401
 from . import collaboration as _collaboration_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 from . import test_runner as _test_runner_cli  # noqa: E402, F401
 from . import integration as _integration_cli  # noqa: E402, F401
+from . import promote as _promote_cli  # noqa: E402, F401
+from . import promote_rulesets as _promote_rulesets_cli  # noqa: E402, F401
 # Before register_auto_commands(): the generated dashboard_state_* commands
 # merge into this hand-written group instead of creating their own.
 from . import dashboard as _dashboard_cli  # noqa: E402, F401
@@ -490,6 +502,8 @@ def _load_plugin_config_from_db(plugin_id: str) -> dict | None:
     reader exposes no mutation methods, and the outer timeout bounds both
     connecting and querying an unavailable PostgreSQL server.
     """
+    import asyncio
+
     from .client import PluginConfigReader
 
     async def _fetch():
@@ -588,6 +602,24 @@ def _tag_plugin_cli_tree(command: click.Command, plugin_name: str) -> None:
             _tag_plugin_cli_tree(child, plugin_name)
 
 
+#: ``aq.plugins`` entry points whose top-level name core owns on purpose, keyed
+#: to the distributions allowed to declare them.  Core generates ``aq memory``
+#: from the memory_* schemas the external aq-memory plugin implements at
+#: runtime (``inventory.EXTERNAL_PLUGIN_COMMANDS``), so that plugin mounts no
+#: CLI group and an installed copy is not a conflict.  The CLI never imports
+#: it to find out: it is a legacy memory writer.  Any other distribution that
+#: claims one of these names is still reported.
+_CORE_SURFACED_PLUGIN_ENTRY_POINTS: dict[str, frozenset[str]] = {
+    "memory": frozenset({"aq-memory"}),
+}
+
+
+def _entry_point_distribution(ep) -> str | None:
+    """Return the normalized name of the distribution that declared *ep*."""
+    name = getattr(getattr(ep, "dist", None), "name", None)
+    return re.sub(r"[-_.]+", "-", name).lower() if name else None
+
+
 def _load_plugin_cli_groups(
     cli_group: click.Group | None = None,
     *,
@@ -610,10 +642,21 @@ def _load_plugin_cli_groups(
             entry_point_provider = entry_points
 
         for ep in entry_point_provider(group="aq.plugins"):
+            dist_name = _entry_point_distribution(ep)
+            if dist_name in _CORE_SURFACED_PLUGIN_ENTRY_POINTS.get(ep.name, ()):
+                logger.debug(
+                    "Plugin entry point '%s' from '%s' is surfaced by the core command; "
+                    "not mounted",
+                    ep.name,
+                    dist_name,
+                )
+                continue
             if ep.name in cli_group.commands:
                 logger.warning(
-                    "Plugin CLI entry point '%s' conflicts with an existing command; skipped",
+                    "Plugin CLI entry point '%s' from %s conflicts with an existing command; "
+                    "skipped",
                     ep.name,
+                    f"distribution '{dist_name}'" if dist_name else "an unknown distribution",
                 )
                 continue
             try:
@@ -666,12 +709,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # ``python -m src.cli.app`` executes this file as ``__main__`` and then
-    # imports it AGAIN as ``src.cli.app`` when the submodules above run
-    # ``from .app import cli`` — so every hand-crafted command (inbox, reply,
-    # message, schema, prime, handoff, …) registers on the *other* module's
-    # ``cli`` group and silently vanishes from this one.  Delegate to the
-    # canonical module so both entry points see the same command set.
+    # Direct module execution reuses the alias above. runpy callers that keep
+    # their own __main__ module still need the canonical command tree.
     from src.cli.app import main as _canonical_main
 
     _canonical_main()

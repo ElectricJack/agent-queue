@@ -9,6 +9,7 @@ rule and the publishing check.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import time
@@ -18,8 +19,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
+from sqlalchemy import insert, text
 
-from src.config import AppConfig, GitIdentityConfig, load_config
+from src.commands.handler import CommandHandler
+from src.commands.principal import (
+    DENY_ALL,
+    ExecutionPrincipal,
+    PrincipalKind,
+    principal_context,
+)
+from src.config import AppConfig, DatabaseConfig, DiscordConfig, GitIdentityConfig, load_config
+from src.database import Database
+from src.database.tables import integration_source_ci
 from src.git.identity import (
     FALLBACK_IDENTITY,
     LEDGER_IDENTITY,
@@ -32,6 +43,19 @@ from src.git.identity import (
     validate_git_name,
 )
 from src.git.manager import GitManager, commit_identity
+from src.models import (
+    Agent,
+    AgentProfile,
+    AgentState,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskStatus,
+    Workspace,
+)
+from tests.db_fixtures import lease_dsn
 
 JACK = GitIdentity("Jack Example", "jack@example.com")
 ACME = GitIdentity("Acme Bot", "bot@acme.test")
@@ -326,32 +350,6 @@ def test_task_spec_identity_beats_extra_env():
 
 # --- database-backed surfaces --------------------------------------------------
 
-from sqlalchemy import insert, text
-
-from src.commands.handler import CommandHandler
-from src.commands.principal import (
-    DENY_ALL,
-    ExecutionPrincipal,
-    PrincipalKind,
-    principal_context,
-)
-from src.config import DatabaseConfig, DiscordConfig
-from src.database import Database
-from src.database.tables import integration_source_ci
-from src.models import (
-    Agent,
-    AgentProfile,
-    AgentState,
-    Project,
-    RepoConfig,
-    RepoSourceType,
-    SessionRecord,
-    Task,
-    TaskStatus,
-    Workspace,
-)
-from tests.db_fixtures import lease_dsn
-
 _AGENT = ExecutionPrincipal(
     kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="s-agent", project_id="p"
 )
@@ -467,12 +465,15 @@ async def test_installation_default_set_show_and_clear(db, tmp_path):
 # --- pool refresh: a new claim never inherits a stale identity -----------------
 
 
-@pytest.fixture
-async def claim_env(db, tmp_path):
+@pytest.fixture(params=[0.5, 0.0], ids=["warm", "deferred"])
+async def claim_env(db, tmp_path, request, monkeypatch):
     from src.intelligence_classes import IntelligenceClass
     from src.orchestrator import Orchestrator
     from tests.assignment_routing_helpers import route_source_for
 
+    monkeypatch.setattr(
+        "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", request.param
+    )
     await db.create_project(Project(id="p", name="p"))
     await db.create_profile(
         AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
@@ -536,7 +537,15 @@ async def claim_env(db, tmp_path):
             "kind": "session", "session_id": sid, "task_id": None, "project_id": "p",
             "elevated": False,
         }
-        return await handler._cmd_task_claim({"next": True})
+        result = await handler._cmd_task_claim({"next": True})
+        if result["result"] == "claim_in_progress":
+            # Identity assertions concern the settled claim, independent of
+            # whether preparation outlives the no-wait response allowance.
+            key = (sid, result["task_id"], result["claim_epoch"])
+            preparation = orch.claim_preparations[key]
+            await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+            result = await handler._cmd_task_claim({"next": True})
+        return result
 
     return SimpleNamespace(config=config, db=db, task=task, session=session, claim=claim)
 
@@ -654,7 +663,7 @@ async def push_env(db, tmp_path, internal_plugins_handler, monkeypatch):
         return git._apush_oid.await_count > 0
 
     return SimpleNamespace(work=work, git=git, session=session, commit=commit, push=push,
-                           upstream=upstream, db=db, pushed=pushed)
+                           upstream=upstream, db=db, config=config, pushed=pushed)
 
 
 async def test_commits_as_the_project_identity_publish(push_env):
@@ -806,6 +815,181 @@ async def test_an_unauthorized_published_head_is_still_judged(push_env):
     await env.session(JACK.digest)
     head = await _source_head(env)  # published, but no daemon record names it
     _git(env.work, "merge", "-q", "--no-ff", "-m", "merge source", head, env=JACK.env())
+    result = await env.push()
+    assert "refusing to publish: 1 new commit(s)" in result["error"], result
+    assert not env.pushed()
+
+
+async def _declare_prerequisite(env, branch="aq/source", *, project_id="p", repo_id=None,
+                                dep_type="blocks"):
+    await env.db.create_task(Task(
+        id="prerequisite", project_id=project_id, title="pilot", description="pilot",
+        status=TaskStatus.COMPLETED, branch_name=branch, repo_id=repo_id,
+    ))
+    await env.db.add_dependency("t1", "prerequisite", dep_type)
+
+
+@pytest.mark.parametrize("identity", [JACK, FALLBACK_IDENTITY])
+async def test_a_published_stacked_prerequisite_is_not_judged(push_env, identity):
+    env = push_env
+    if identity == FALLBACK_IDENTITY:
+        env.config.git_identity = GitIdentityConfig()
+    await env.session(identity.digest)
+    head = await _source_head(env)
+    await _declare_prerequisite(env)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=identity.env())
+    env.commit("redesign", identity.env())
+    result = await env.push()
+    assert result.get("oid") == _git(env.work, "rev-parse", "HEAD"), result
+    assert env.pushed()
+    assert _ident(env.work, head) == "Claude <noreply@anthropic.com>|Claude <noreply@anthropic.com>"
+
+
+@pytest.mark.parametrize("foreign_commit", [False, True])
+async def test_a_retained_stack_source_survives_branch_cleanup(push_env, foreign_commit):
+    from src.database.tables import task_branch_origins
+
+    env = push_env
+    await env.session(JACK.digest)
+    await env.db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.LINK, source_path=str(env.work),
+    ))
+    await env.db.update_task("t1", repo_id="r")
+    head = await _source_head(env)
+    await _declare_prerequisite(env, repo_id="r")
+    base = _git(env.work, "rev-parse", "origin/main")
+    async with env.db._engine.begin() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="prepared", task_id="t1", repository_id="r", branch_name="aq/t1",
+            parent_ref="main", base_sha=base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+            stack_snapshot={"prerequisites": {"prerequisite": {
+                "retained": True, "repository_id": "r", "checkpoint_sha": head,
+            }}},
+        ))
+    _git(env.work, "push", "origin", ":aq/source")
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge retained source", head, env=JACK.env())
+    env.commit("new-work", CLAUDE if foreign_commit else JACK.env())
+    result = await env.push()
+    if foreign_commit:
+        assert "refusing to publish: 1 new commit(s)" in result["error"], result
+        assert not env.pushed()
+    else:
+        assert result.get("oid") == _git(env.work, "rev-parse", "HEAD"), result
+        assert env.pushed()
+
+
+async def test_a_prerequisite_tracking_ref_cannot_hide_a_new_foreign_commit(push_env):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _declare_prerequisite(env)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=JACK.env())
+    env.commit("forged", CLAUDE)
+    _git(env.work, "update-ref", "refs/remotes/origin/aq/source", "HEAD")
+    result = await env.push()
+    assert "refusing to publish: 1 new commit(s)" in result["error"], result
+    assert not env.pushed()
+
+
+async def test_an_unavailable_prerequisite_observation_refuses_publication(push_env):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _declare_prerequisite(env)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=JACK.env())
+    env.git.als_remote_refs = AsyncMock(return_value={
+        "aq/source": RemoteRefResult(RemoteRefState.ERROR, error="offline"),
+    })
+    result = await env.push()
+    assert "could not verify published prerequisite branch 'aq/source'" in result["error"]
+    env.git.als_remote_refs.assert_awaited_once_with(
+        str(env.work), ["aq/source"], repository_url=_git(env.work, "remote", "get-url", "origin")
+    )
+    assert not env.pushed()
+
+
+async def test_a_substituted_origin_cannot_authorize_prerequisite_history(push_env, tmp_path):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _declare_prerequisite(env)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=JACK.env())
+    replacement = tmp_path / "replacement.git"
+    _git(tmp_path, "init", "-q", "--bare", str(replacement))
+    _git(env.work, "remote", "set-url", "origin", str(replacement))
+    result = await env.push()
+    assert "could not verify published prerequisite" in result["error"], result
+    assert not env.pushed()
+
+
+async def test_completion_publication_uses_the_same_prerequisite_proof(push_env):
+    from src.git.manager import GitError
+    from src.orchestrator.git_ops import GitOpsMixin
+
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _declare_prerequisite(env)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=JACK.env())
+    env.commit("redesign", JACK.env())
+    task = await env.db.get_task("t1")
+    orchestrator = SimpleNamespace(db=env.db, git=env.git, config=env.config)
+    policy = await GitOpsMixin._publish_policy(orchestrator, task, str(env.work))
+    assert policy.enforce and policy.authorized_heads == {head}
+    await env.git.apush_validated_delivery(
+        str(env.work), "origin/main", "HEAD", "aq/t1", identity_policy=policy
+    )
+    env.git._apush_oid.reset_mock()
+    env.commit("forged", CLAUDE)
+    with pytest.raises(GitError, match="refusing to publish: 1 new commit"):
+        await env.git.apush_validated_delivery(
+            str(env.work), "origin/main", "HEAD", "aq/t1", identity_policy=policy
+        )
+    assert not env.pushed()
+
+
+async def test_an_unpublished_prerequisite_is_still_judged(push_env):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _declare_prerequisite(env)
+    origin = _git(env.work, "remote", "get-url", "origin")
+    _git(origin, "update-ref", "-d", "refs/heads/aq/source")
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=JACK.env())
+    result = await env.push()
+    assert "refusing to publish: 1 new commit(s)" in result["error"], result
+    assert not env.pushed()
+
+
+@pytest.mark.parametrize("dep_type", ["related", "discovered-from", "waits-for",
+                                     "conditional-blocks"])
+async def test_other_dependency_kinds_do_not_authorize_stacked_history(push_env, dep_type):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _declare_prerequisite(env, dep_type=dep_type)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=JACK.env())
+    result = await env.push()
+    assert "refusing to publish: 1 new commit(s)" in result["error"], result
+    assert not env.pushed()
+
+
+@pytest.mark.parametrize("different", ["project", "repository"])
+async def test_prerequisites_outside_the_task_repository_are_still_judged(push_env, different):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    if different == "project":
+        await env.db.create_project(Project(id="other", name="other"))
+        await _declare_prerequisite(env, project_id="other")
+    else:
+        await env.db.create_repo(RepoConfig(id="other", project_id="p",
+                                            source_type=RepoSourceType.LINK))
+        await _declare_prerequisite(env, repo_id="other")
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge pilot", head, env=JACK.env())
     result = await env.push()
     assert "refusing to publish: 1 new commit(s)" in result["error"], result
     assert not env.pushed()

@@ -166,6 +166,13 @@ are those reachable from the tip and from none of these:
 - the delivery base;
 - this branch's last published head (`refs/remotes/origin/<branch>`);
 - the caller's lease OID;
+- the exact remote heads of this task's direct `blocks` prerequisites in the
+  same project and repository. The daemon selects branch names from persisted
+  task/dependency rows and observes them in the task's authorized repository;
+  local tracking refs, task descriptions, and worker-supplied SHAs are not
+  proof. A missing branch authorizes nothing; an unavailable observation
+  refuses publication. A stack named only in prose needs the supervisor to
+  record its prerequisite before it can use this exclusion;
 - every exact source head the daemon filed this task to merge: the
   `source_head` of each `integration_source_ci` row whose `repair_task_id` is
   the task (source CI repair, "merge the exact source head … preserving it
