@@ -37,9 +37,12 @@ refs, loose unreachable objects, packed unreachable objects and recovery backups
 it never prunes Git objects by age or clears an incident. Under the same exclusion,
 maintenance removes regular `objects/pack/tmp_pack_*` files at least one hour old,
 even below the repack threshold; recent files, symlinks and directories remain.
-A successful repack removes stale `gc.log`. Integrity fingerprints still invalidate
-after pack replacement, and
-the existing full-body checks remain required; maintenance is no integrity proof.
+A successful repack removes stale `gc.log`. Maintenance alone proves nothing about
+integrity. A repack of an exactly verified store keeps that clean result, with
+its original age, only after a connectivity check of the repacked store passes
+under the same exclusion. Every other repack invalidates the fingerprint, and the
+store then needs the existing full-body check
+([retained object integrity](retained-object-integrity.md#background-full-verification)).
 
 `aq integration store-maintenance --project-id <p>` previews existing stores,
 pack and loose-object counts/bytes, stale temporary-pack counts and cooldown/recovery
