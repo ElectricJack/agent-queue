@@ -53,6 +53,9 @@ evidence from the frozen producer and check set, each pushed from its recorded
 expected-old base; the red head never reached `main`; delivery receipts bind
 the exact reviewed heads. Held (`hold:` label), rejected and ejected sources keep
 their branch, open PR, review and labels, and gain no delivery receipt.
+Policy ejections audit `service:root-reconciler` and the exact committed subject
+version, rule and artifact (`sharp-forge-57`); the never-claimed writer scenario
+checks these identities against the decision journal.
 
 ## Fixes the scenarios required
 
@@ -93,8 +96,6 @@ Each fix below is load-bearing: reverting any one makes a scenario stall
 - The shared `CIAdapters._matches` compares the candidate head with
   `Subject.head` (the publication ref). It is not in this base and was already
   reported by `vivid-willow.5`; the scenarios use the root CI fallback.
-- Ejection runs under the reconciler's default principal, so its audit event
-  names `human:local-operator`, not the policy decision (`sharp-forge-57`).
 - A claimed writer whose candidate ref already moved beyond its stage start
   (the builder's partial publication) reads `working` before it pushes. Only
   attempt counting could be affected, and CI is never observed in that phase
@@ -108,3 +109,22 @@ cutover runbook cite (`--evidence root-scenarios:<pushed commit>`). The
 shadow week, its decision comparison and the explicit approval remain
 production gates. The operator commands, restart and rollback are unchanged
 from the [root adapters handoff](2026-10-02-root-integration-adapters.md#operator-cutover-and-rollback).
+
+## Accepted repair publication recovery (sound-rapids-63)
+
+When main moves after an accepted CI repair, preserve both histories and publish
+that rebuilt candidate before observing hosted CI. A completed preserved repair
+must reach publication even if its original writer budget has elapsed; do not
+file another repair merely to test a commit that exists only in the retained
+store. Unfinished construction continues to honor the existing repair deadline.
+
+The observer treats a candidate whose known remote ref does not name its SHA as
+unpublished (`none`), allowing the pinned policy to request publication again.
+It must not query hosted checks or reuse cached green/red evidence for that
+unpublished candidate. Unknown remote reads remain unknown and cannot authorize
+a push. Publication still uses the existing fenced, expected-old ref journal.
+
+An accepted or rebuilt generation must be mirrored before evaluating a moved
+base against it. The real Git/PostgreSQL regression covers main moving before
+and after that mirror, an elapsed original repair budget, interrupted publication,
+exact-head green CI, and automatic promotion without a second repair writer.

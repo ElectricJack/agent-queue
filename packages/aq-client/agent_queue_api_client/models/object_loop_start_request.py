@@ -29,6 +29,7 @@ class ObjectLoopStartRequest:
         object_id (str):
         attempt_id (str):
         incumbent_sha256 (str):
+        incumbent_capture_sha256 (str):
         reference_sha256 (str):
         rig_sha256 (str):
         scorer_sha256 (str):
@@ -44,6 +45,8 @@ class ObjectLoopStartRequest:
         noise_band (float):
         variants (list[Any]):
         incumbent_artifact (None | ObjectLoopStartRequestIncumbentArtifactType0 | Unset):
+        reference_kind (str | Unset):  Default: 'calibrated'.
+        max_rounds (int | Unset):  Default: 8.
         max_repair_rounds (int | Unset):  Default: 2.
         max_plateau_rounds (int | Unset):  Default: 3.
     """
@@ -53,6 +56,7 @@ class ObjectLoopStartRequest:
     object_id: str
     attempt_id: str
     incumbent_sha256: str
+    incumbent_capture_sha256: str
     reference_sha256: str
     rig_sha256: str
     scorer_sha256: str
@@ -68,6 +72,8 @@ class ObjectLoopStartRequest:
     noise_band: float
     variants: list[Any]
     incumbent_artifact: None | ObjectLoopStartRequestIncumbentArtifactType0 | Unset = UNSET
+    reference_kind: str | Unset = "calibrated"
+    max_rounds: int | Unset = 8
     max_repair_rounds: int | Unset = 2
     max_plateau_rounds: int | Unset = 3
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -86,6 +92,8 @@ class ObjectLoopStartRequest:
         attempt_id = self.attempt_id
 
         incumbent_sha256 = self.incumbent_sha256
+
+        incumbent_capture_sha256 = self.incumbent_capture_sha256
 
         reference_sha256 = self.reference_sha256
 
@@ -123,6 +131,10 @@ class ObjectLoopStartRequest:
         else:
             incumbent_artifact = self.incumbent_artifact
 
+        reference_kind = self.reference_kind
+
+        max_rounds = self.max_rounds
+
         max_repair_rounds = self.max_repair_rounds
 
         max_plateau_rounds = self.max_plateau_rounds
@@ -136,6 +148,7 @@ class ObjectLoopStartRequest:
                 "object_id": object_id,
                 "attempt_id": attempt_id,
                 "incumbent_sha256": incumbent_sha256,
+                "incumbent_capture_sha256": incumbent_capture_sha256,
                 "reference_sha256": reference_sha256,
                 "rig_sha256": rig_sha256,
                 "scorer_sha256": scorer_sha256,
@@ -154,6 +167,10 @@ class ObjectLoopStartRequest:
         )
         if incumbent_artifact is not UNSET:
             field_dict["incumbent_artifact"] = incumbent_artifact
+        if reference_kind is not UNSET:
+            field_dict["reference_kind"] = reference_kind
+        if max_rounds is not UNSET:
+            field_dict["max_rounds"] = max_rounds
         if max_repair_rounds is not UNSET:
             field_dict["max_repair_rounds"] = max_repair_rounds
         if max_plateau_rounds is not UNSET:
@@ -180,6 +197,8 @@ class ObjectLoopStartRequest:
         attempt_id = d.pop("attempt_id")
 
         incumbent_sha256 = d.pop("incumbent_sha256")
+
+        incumbent_capture_sha256 = d.pop("incumbent_capture_sha256")
 
         reference_sha256 = d.pop("reference_sha256")
 
@@ -226,6 +245,10 @@ class ObjectLoopStartRequest:
 
         incumbent_artifact = _parse_incumbent_artifact(d.pop("incumbent_artifact", UNSET))
 
+        reference_kind = d.pop("reference_kind", UNSET)
+
+        max_rounds = d.pop("max_rounds", UNSET)
+
         max_repair_rounds = d.pop("max_repair_rounds", UNSET)
 
         max_plateau_rounds = d.pop("max_plateau_rounds", UNSET)
@@ -236,6 +259,7 @@ class ObjectLoopStartRequest:
             object_id=object_id,
             attempt_id=attempt_id,
             incumbent_sha256=incumbent_sha256,
+            incumbent_capture_sha256=incumbent_capture_sha256,
             reference_sha256=reference_sha256,
             rig_sha256=rig_sha256,
             scorer_sha256=scorer_sha256,
@@ -251,6 +275,8 @@ class ObjectLoopStartRequest:
             noise_band=noise_band,
             variants=variants,
             incumbent_artifact=incumbent_artifact,
+            reference_kind=reference_kind,
+            max_rounds=max_rounds,
             max_repair_rounds=max_repair_rounds,
             max_plateau_rounds=max_plateau_rounds,
         )

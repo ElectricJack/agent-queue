@@ -5,7 +5,6 @@ from __future__ import annotations
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.scope import AGENT_COMMAND_SET, OPERATOR_INTEGRATION_CONTROLS, check_command_scope
 
-
 SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
 
 
@@ -15,6 +14,10 @@ SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id
 #: the capability gate.
 EXPECTED_AGENT_COMMANDS = {
     "prime",
+    # Wrappers verify a live operator claim; raw setup controls remain excluded.
+    "operator_execute",
+    "operator_preflight",
+    "dry_run_playbook",
     "get_schema",
     "task_show",
     "task_set",
@@ -36,6 +39,14 @@ EXPECTED_AGENT_COMMANDS = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
+    # Recurring prompts derive their session owner and fence worker claims.
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
     # Collaboration: the held task joins, reads and closes; never creates.
     "collaboration_accept",
     "collaboration_get",
@@ -48,6 +59,31 @@ EXPECTED_AGENT_COMMANDS = {
     "message_status",
     "memory_save",
     "memory_search",
+    "read_file",
+    # Knowledge records (K03): worker-safe reads and writes; retire/restore are
+    # supervisor-only and remain out of the agent set.
+    "knowledge_create",
+    # Atomic task creation and K05 proposals retain the same project scope.
+    "knowledge_create_task",
+    "knowledge_propose",
+    "knowledge_proposal_show",
+    "knowledge_list",
+    "knowledge_show",
+    # K08: citations and observed delivery bind to the caller's own execution.
+    "knowledge_cite",
+    "knowledge_context_deliver",
+    "knowledge_update",
+    "knowledge_history",
+    "knowledge_diff",
+    # K04: a project-pinned authorized read that returns bytes; the operator's
+    # record_repair stays out of the agent set.
+    "knowledge_export",
+    "record_show",
+    "record_search",
+    "record_capabilities",
+    "link_create",
+    "link_list",
+    "link_remove",
     "task_claim",
     "job_submit",
     "job_get",
@@ -72,12 +108,22 @@ EXPECTED_AGENT_COMMANDS = {
     # Mandatory routing §7: a worker re-routes a task it filed.
     "task_route",
     "integration_status",
-    "integration_resolve_candidate_member",
+    "integration_batch_fix",
+    "integration_continue_close",
+    # Promotion validation and cached history reads are pinned to the worker's project.
+    "promote_schema",
+    "promote_validate",
+    "promote_rulesets",
+    "promote_status",
+    "promote_list",
     "review_submit",
     "review_show",
     "review_list",
     "review_withdraw",
+    "review_reopen",
     "review_comment",
+    # Workers record completion evidence for feedback on their held task.
+    "review_feedback_complete",
     "review_attachment_add",
     "review_attachment_list",
     "report_get",
@@ -86,6 +132,12 @@ EXPECTED_AGENT_COMMANDS = {
     "report_brief",
     "report_submit",
     "github_issue_close_rejected",
+    # Object workers retain their own captures and read checkpoints/evidence.
+    # The handlers derive object and artifact authority from live task ownership
+    # and persisted provenance, preventing cross-project evidence reads.
+    "job_retain",
+    "object_checkpoint_read",
+    "artifact_verify",
 }
 
 
@@ -129,8 +181,14 @@ class TestCheckCommandScope:
         assert "local operator or supervisor" in check_command_scope(
             "edit_project", {"integration_repository_id": "repo"}, SESSION
         )
-        for command in ("review_delegate", "review_import_edits"):
+        for command in ("review_delegate", "review_import_edits", "promote_approve"):
             assert "local operator" in check_command_scope(command, {}, elevated)
+            assert "local operator" in check_command_scope(command, {}, SESSION)
+
+    def test_git_first_train_controls_are_operator_controls(self):
+        assert {"integration_pause_batch", "integration_resume_batch", "integration_eject",
+                "integration_seal_now", "integration_record_root_noop",
+                "integration_repair_target"} <= OPERATOR_INTEGRATION_CONTROLS
 
     def test_review_decision_commands_remain_outside_worker_scope(self):
         """Only a held dispatch task can comment; no worker may decide."""
@@ -151,12 +209,48 @@ class TestCheckCommandScope:
             "message_status", {"message_id": "msg-1", "project_id": "p2"}, SESSION
         )
 
+    def test_knowledge_export_is_a_same_project_agent_read(self):
+        """K04 export returns authorized bytes to a worker in its own project only.
+
+        The record service is the independent authorization gate; this gate
+        pins the project, and the supervisor/operator record mutations stay out.
+        """
+        args = {"identity": "record:x"}
+        assert check_command_scope("knowledge_export", args, SESSION) is None
+        assert args["project_id"] == "p1"
+        assert "project_id mismatch" in check_command_scope(
+            "knowledge_export", {"identity": "record:x", "project_id": "p2"}, SESSION
+        )
+        unassigned = RequestScope(kind="session", session_id="s1")
+        assert "no assigned project" in check_command_scope(
+            "knowledge_export", {"identity": "record:x"}, unassigned
+        )
+        for command in ("knowledge_retire", "knowledge_restore", "record_repair"):
+            assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
+
     def test_integration_status_is_same_project_agent_read(self):
         args = {"project_id": "p1"}
         assert check_command_scope("integration_status", args, SESSION) is None
         assert "project_id mismatch" in check_command_scope(
             "integration_status", {"project_id": "p2"}, SESSION
         )
+
+    def test_promotion_history_reads_are_project_scoped_and_mutations_stay_refused(self):
+        for command in ("promote_status", "promote_list"):
+            args = {}
+            assert check_command_scope(command, args, SESSION) is None
+            assert args["project_id"] == "p1"
+            assert "project_id mismatch" in check_command_scope(
+                command, {"project_id": "p2"}, SESSION
+            )
+            assert "no assigned project" in check_command_scope(
+                command, {}, RequestScope(kind="session", session_id="idle")
+            )
+        assert check_command_scope("promote_approve", {}, SESSION) == (
+            "out of scope: review control requires local operator"
+        )
+        for command in ("promote_request", "promote_cancel"):
+            assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
 
     def test_task_id_mismatch_blocked(self):
         msg = check_command_scope("task_show", {"task_id": "other"}, SESSION)
@@ -291,6 +385,14 @@ class TestCheckCommandScope:
     def test_agent_command_set_contents(self):
         assert set(AGENT_COMMAND_SET) == EXPECTED_AGENT_COMMANDS
 
+    def test_batch_fixer_is_session_scoped_without_a_task(self):
+        fixer = RequestScope(kind="session", session_id="fixer", project_id="p1")
+        args = {"action": "push"}
+        assert check_command_scope("integration_batch_fix", args, fixer) is None
+        assert args["session_id"] == "fixer" and args["project_id"] == "p1"
+        for foreign in ({"session_id": "other"}, {"project_id": "p2"}):
+            assert "mismatch" in check_command_scope("integration_batch_fix", foreign, fixer)
+
     def test_reparent_task_names_a_task_other_than_the_held_one(self):
         """The moved task is a worker filing, never the held task itself.
 
@@ -395,15 +497,17 @@ def test_supervisor_inbox_post_is_internal_for_every_nonlocal_scope():
     assert check_command_scope("supervisor_inbox_post", {}, LOCAL_SCOPE) is None
 
 
-def test_supervisor_inbox_reply_requires_local_or_global_elevated_scope():
+def test_supervisor_inbox_reply_allows_supervisors_subject_to_stored_recipient_check():
     assert check_command_scope("supervisor_inbox_reply", {}, LOCAL_SCOPE) is None
     assert check_command_scope("supervisor_inbox_reply", {}, RequestScope(
         kind="session", session_id="sup", elevated=True
     )) is None
-    for scope in (SESSION, RequestScope(kind="session", elevated=True, project_id="p1"),
-                  RequestScope(kind="session", project_id=None)):
+    assert check_command_scope("supervisor_inbox_reply", {}, RequestScope(
+        kind="session", session_id="sup", elevated=True, project_id="p1"
+    )) is None
+    for scope in (SESSION, RequestScope(kind="session", project_id=None)):
         assert check_command_scope("supervisor_inbox_reply", {}, scope) == (
-            "out of scope: conversation replies require local operator or global supervisor"
+            "out of scope: conversation replies require local operator or supervisor"
         )
 
 
@@ -430,3 +534,29 @@ def test_test_selection_promotion_is_local_only():
     assert check_command_scope("test_selection_list", {}, SESSION) == (
         "out of scope: test_selection_list"
     )
+
+
+def test_scoped_global_report_keeps_project_fence_and_never_admits_inbox():
+    supervisor = RequestScope(
+        kind="session", session_id="own-uuid", project_id="p1", elevated=True,
+    )
+    target = {"to_kind": "session", "to_id": "supervisor-global"}
+    args = dict(target)
+    # Handler verification of the named launch/capability is still required.
+    assert check_command_scope("message_send", args, supervisor) is None
+    assert args["project_id"] == "p1"
+    assert "project_id mismatch" in check_command_scope(
+        "message_send", {**target, "project_id": "p2"}, supervisor,
+    )
+    for command, args in (
+        ("message_send", target),
+        ("message_send", {**target, "system_only": True}),
+        ("message_inbox", target),
+    ):
+        assert "global admin" in check_command_scope(command, dict(args), SESSION)
+    for command, args in (
+        ("message_send", {**target, "system_only": True}),
+        ("message_inbox", target),
+        ("message_list", {"system_only": True}),
+    ):
+        assert "global admin" in check_command_scope(command, dict(args), supervisor)
