@@ -14,6 +14,7 @@ import shutil
 import signal
 import socket
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -108,6 +109,73 @@ def test_missing_runtime_and_overlapping_mounts_fail_closed(tmp_path, runtime):
         with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime,
                                        output_roots=runtime.read_only):
             pytest.fail("overlapping mounts admitted")
+
+
+def test_sysroot_mappings_require_declared_sources_and_cannot_shadow_inputs(tmp_path, runtime):
+    sysroot = runtime.read_only[0] / "sysroot"
+    libraries = sysroot / "lib64"
+    libraries.mkdir(parents=True)
+    mapping = isolated.ReadOnlyMapping(libraries, Path("/lib64"))
+    declared = replace(runtime, sysroot=sysroot, read_only_mappings=(mapping,))
+    declared.validate()
+    outside = tmp_path / "undeclared"
+    outside.mkdir()
+    escaped = sysroot / "escaped"
+    escaped.symlink_to(outside, target_is_directory=True)
+    invalid = [
+        replace(declared, sysroot=None),
+        replace(declared, sysroot=outside),
+        replace(declared, read_only_mappings=(replace(mapping, source=outside),)),
+        replace(declared, read_only_mappings=(replace(mapping, source=escaped),)),
+        replace(declared, read_only_mappings=(mapping, mapping)),
+        replace(declared, read_only=(*declared.read_only, Path("/lib64"))),
+    ]
+    for target in ("/", "/etc", "/proc", "/dev", "/tmp", "/home", str(tmp_path)):
+        invalid.append(replace(declared, read_only_mappings=(
+            replace(mapping, target=Path(target)),)))
+    for candidate in invalid:
+        with pytest.raises(isolated.IsolationError):
+            candidate.validate()
+    # The mapping API has no writable mode.
+    with pytest.raises(TypeError):
+        isolated.ReadOnlyMapping(libraries, Path("/lib64"), readonly=False)
+
+
+async def test_locked_sysroot_executes_native_tools_without_host_libraries(tmp_path):
+    native_value = os.environ.get("AQ_BAZEL_NATIVE_RUNTIME")
+    python_value = os.environ.get("AQ_BAZEL_PYTHON_RUNTIME")
+    if not native_value or not python_value:
+        pytest.skip("supply explicit locked native and Python runtime roots for ABI acceptance")
+    native, python_root = Path(native_value), Path(python_value)
+    sysroot = native / "x86_64-conda-linux-gnu/sysroot"
+    python = python_root / "bin/python3"
+    declared = isolated.Runtime(
+        python, (native, python_root), (native / "bin", python_root / "bin"),
+        library_dirs=(native / "lib",), shell=native / "bin/bash", sysroot=sysroot,
+        read_only_mappings=tuple(
+            isolated.ReadOnlyMapping(sysroot / directory, Path("/") / directory)
+            for directory in ("lib", "lib64", "usr/lib", "usr/lib64")
+        ),
+    )
+    script = '''
+import os, pathlib, subprocess
+assert os.confstr("CS_GNU_LIBC_VERSION") == "glibc 2.28"
+assert not pathlib.Path("/lib/x86_64-linux-gnu/libc.so.6").exists()
+assert not pathlib.Path("/usr/lib/x86_64-linux-gnu/libc.so.6").exists()
+try:
+    pathlib.Path("/lib64/aq-write-probe").write_text("must fail")
+except OSError:
+    pass
+else:
+    raise AssertionError("sysroot mapping was writable")
+for command in ("git", "tmux", "postgres"):
+    subprocess.run([command, "--version" if command != "tmux" else "-V"], check=True)
+print("Pinned glibc 2.28, native tools, read-only ABI mappings, no host libc: PASS")
+'''
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=declared) as environment:
+        assert await isolated.run_isolated(
+            environment, [str(python), "-I", "-c", script], cwd=environment.root,
+        ) == 0
 
 
 async def test_invalid_command_platform_and_budget_never_spawn(tmp_path, runtime, monkeypatch):
@@ -669,6 +737,21 @@ sys.exit(status)
         assert len({row['dsn'] for row in results}) == 4
         assert len({row['home'] for row in results}) == 4
         assert all(row['status'] == 0 for row in results)
+
+
+def test_runtime_manifest_retains_native_abi_and_script_helpers(runtime):
+    from dataclasses import replace
+
+    sysroot = runtime.read_only[0] / "sysroot"
+    (sysroot / "lib64").mkdir(parents=True)
+    runtime = replace(
+        runtime, shell=runtime.python, env_executable=runtime.python,
+        library_dirs=(sysroot / "lib64",), sysroot=sysroot,
+        read_only_mappings=(isolated.ReadOnlyMapping(sysroot / "lib64", Path("/lib64")),),
+    )
+    restored = isolated.Runtime.from_manifest(json.loads(json.dumps(runtime.to_manifest())))
+    assert restored == runtime
+    restored.validate()
 
 
 def test_e2e_fixture_loads_h3_manifest_without_runtime_or_dsn_fallback(tmp_path, runtime, monkeypatch):

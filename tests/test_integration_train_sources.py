@@ -750,6 +750,9 @@ async def test_reopen_retires_source_ci_repairs_atomically(world, status, reopen
     before = git(world.origin.url, "rev-parse", "main")
     if reopen == "feedback":
         handler = TaskCommandsMixin()
+        handler.orchestrator = SimpleNamespace(
+            aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+        )
         handler.db, handler._current_scope = db, {}
         assert (await handler._cmd_reopen_with_feedback({
             "task_id": "source", "feedback": "reject this head",
@@ -2967,6 +2970,9 @@ async def test_abort_first_member_conflict_at_target_releases_member(world):
     assert git(origin.url, "rev-parse", candidate_ref(batch.id)) == target
 
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db, handler._current_scope = db, {}
     refusal = await handler._cmd_reopen_with_feedback({
         "task_id": "rework", "feedback": "resolve conflict",
@@ -3046,6 +3052,9 @@ async def test_aborted_batch_visit_releases_reopen_but_other_batch_stays_sealed(
         await conn.execute(update(integration_batches).where(integration_batches.c.id == "abort")
             .values(lifecycle=lifecycle))
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db, handler._current_scope = db, {}
     refusal = await handler._cmd_reopen_with_feedback({
         "task_id": "rework", "feedback": "fix regression",
@@ -4224,7 +4233,8 @@ async def test_train_recovers_empty_loose_object_and_delivers_sealed_batch(world
         async def fetch(store, *, repository_url, all_heads=False, lock_held=False,
                         refetch=False):
             await transport._afetch_origin_with_auth_to_url(
-                store, source_url=Path(repository_url).as_uri(), token=None, refetch=refetch)
+                store, source_url=Path(repository_url).as_uri(), token=None,
+                refetch=refetch, lock_held=lock_held)
         transport.afetch_origin = fetch
 
     delivered = await train.visit(MAIN)
@@ -8867,7 +8877,9 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
     await reconciler.tick(case.now[0])
     async with db._engine.connect() as conn:
-        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
+        assert await train_cleanup_hold(
+            conn, repository_id="r", ref=case.target.target_ref,
+        ) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])

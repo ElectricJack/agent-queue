@@ -83,6 +83,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.event_bus import EventBus
 from src.git.github import GitHubAccess, GitHubClient
 from src.git.manager import GitManager
+from src.git.repository_lock import RepositoryLock
 from src.jobs.policy import JobError
 from src.llm_logger import LLMLogger
 from src.messaging.types import (
@@ -719,10 +720,10 @@ class Orchestrator(
         self._slot_starved_pauses: dict[str, str] = {}
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
-        """Get or create an asyncio.Lock for shared git operations on a workspace."""
+        """Get the shared repository mutex, honoring claim acquisition bounds."""
         workspace_path = os.path.normcase(os.path.realpath(workspace_path))
         if workspace_path not in self._git_mutexes:
-            self._git_mutexes[workspace_path] = asyncio.Lock()
+            self._git_mutexes[workspace_path] = RepositoryLock()
         return self._git_mutexes[workspace_path]
 
     def _resolve_git_lock(self, cwd: str) -> asyncio.Lock | None:
@@ -2474,6 +2475,9 @@ class Orchestrator(
             return await settle_orphaned_parent_operations(
                 self.db, now, legacy_engine_gone=True,
             )
+
+        async def maintain_retained_stores(now):
+            return await self._command_handler.retained_store_maintenance_tick(now)
         self.parent_subject_runtime = None
         self.development_subject_runtime = None
         self.integration_service = IntegrationService(
@@ -2498,6 +2502,7 @@ class Orchestrator(
                 "delivered PR cleanup": PullRequestReconciler(
                     self.db, self.git, commands=lambda: self._command_handler,
                 ).tick,
+                "retained store maintenance": maintain_retained_stores,
             },
             source_timeout_seconds=self.config.integration.service_source_timeout_seconds,
             item_timeout_seconds=self.config.integration.service_item_timeout_seconds,

@@ -10,7 +10,10 @@ from sqlalchemy import and_, insert, select, update
 
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.database.tables import events, task_dependencies, task_integration_checkpoints, tasks
+from src.database.tables import (
+    events, integration_batches, projects, repos, task_dependencies,
+    task_integration_checkpoints, tasks,
+)
 from src.models import DepType, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
@@ -44,6 +47,61 @@ async def family(db, n=2):
 
 
 class TestSettlement:
+    @pytest.mark.parametrize("status", [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.PAUSED])
+    @pytest.mark.parametrize("branch", ["aq/p", "refs/heads/aq/p"])
+    async def test_incoming_child_batch_delays_settlement_until_promotion(self, db, status, branch):
+        kids = await family(db, n=1)
+        async with db.immediate() as conn:
+            await conn.execute(insert(repos).values(
+                id="repo", project_id=PROJECT_ID, source_type="link", default_branch="main",
+                url="https://example/repo.git", checkout_base_path="/checkout"))
+            await conn.execute(update(projects).where(projects.c.id == PROJECT_ID).values(
+                hierarchical_integration_mode="train", integration_repository_id="repo"))
+            # Missing task repo_id uses the project's designated repository.
+            await conn.execute(update(tasks).where(tasks.c.id == "p").values(
+                status=status.value, branch_name=branch))
+            await conn.execute(insert(integration_batches).values(
+                id="child-batch", project_id=PROJECT_ID, repository_id="repo",
+                target_ref="refs/heads/aq/p", intent="open", lifecycle="testing",
+                request_id="child-batch", source_manifest_digest="digest", base_sha="a" * 40,
+                integration_branch="aq/batches/child-batch", policy_snapshot={},
+                artifact_snapshot={}, cleanup_state="pending", created_at=1, updated_at=1))
+
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)
+        assert (await db.get_task("p")).status == status
+        assert "p" not in await db.settle_candidates()
+        assert "p" not in await db.stale_container_candidates()
+        async with db.immediate() as conn:
+            assert not (await db.settle_containers({"p"}, conn=conn)).settled
+            await conn.execute(update(integration_batches).values(lifecycle="promoted"))
+            result = await db.settle_containers({"p"}, conn=conn)
+        assert result.settled == ["p"]
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+
+    @pytest.mark.parametrize("change", [
+        {"project_id": "other"}, {"repository_id": "other"},
+        {"target_ref": "refs/heads/aq/other"}, {"intent": "aborted"},
+        {"lifecycle": "promoted"},
+    ])
+    async def test_unrelated_or_released_batch_does_not_delay_settlement(self, db, change):
+        kids = await family(db, n=1)
+        async with db.immediate() as conn:
+            await conn.execute(insert(repos).values(
+                id="repo", project_id=PROJECT_ID, source_type="link", default_branch="main",
+                url="https://example/repo.git", checkout_base_path="/checkout"))
+            await conn.execute(update(tasks).where(tasks.c.id == "p").values(
+                branch_name="aq/p", repo_id="repo"))
+            await conn.execute(insert(integration_batches).values(**{
+                "id": "unrelated", "project_id": PROJECT_ID, "repository_id": "repo",
+                "target_ref": "refs/heads/aq/p", "intent": "open", "lifecycle": "testing",
+                "request_id": "unrelated", "source_manifest_digest": "digest",
+                "base_sha": "a" * 40, "integration_branch": "aq/batches/unrelated",
+                "policy_snapshot": {}, "artifact_snapshot": {}, "cleanup_state": "pending",
+                "created_at": 1, "updated_at": 1, **change,
+            }))
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+
     async def test_last_child_completion_completes_container_in_same_call(self, db):
         kids = await family(db)
         await db.transition_task(kids[0], TaskStatus.COMPLETED)

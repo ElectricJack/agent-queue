@@ -45,6 +45,10 @@ class PromotionGitHub(HostedGitHub):
         }
         self.reviews = [self.review(1, source)]
         self.admins = {"operator"}
+        self.dispatches = []
+        self.dispatch_state = None
+        self.dispatch_branch = self.pull["head"]["ref"]
+        self.dispatch_workflow = ".github/workflows/tests.yml"
 
     @staticmethod
     def review(number, sha, *, login="operator", state="APPROVED", kind="User"):
@@ -52,6 +56,12 @@ class PromotionGitHub(HostedGitHub):
                 "user": {"login": login, "type": kind}}
 
     async def request_json(self, method, path, **kwargs):
+        if method == "POST" and path.endswith("/dispatches"):
+            assert path.endswith("/actions/workflows/tests.yml/dispatches")
+            assert kwargs["expected_statuses"] == {204}
+            assert kwargs["json_body"] == {"ref": self.pull["head"]["ref"]}
+            self.dispatches.append(kwargs["json_body"])
+            return {}
         if method == "GET" and path.endswith("/pulls/42"):
             return copy.deepcopy(self.pull)
         if method == "GET" and "/collaborators/" in path:
@@ -70,7 +80,19 @@ class PromotionGitHub(HostedGitHub):
         name = parse_qs(urlparse(path).query).get("check_name", [None])[0]
         if key == "check_runs" and name and name != "unit":
             return [r for r in self.records if r["name"] == name]
-        return await super().paged_items(path, key=key)
+        rows = await super().paged_items(path, key=key)
+        sha = self.pull["head"]["sha"]
+        if self.dispatch_state is not None and sha in path:
+            check, run, _ = self._rows(sha)
+            done = {"status": "in_progress" if self.dispatch_state == "pending" else "completed",
+                    "conclusion": None if self.dispatch_state == "pending" else self.dispatch_state}
+            if key == "check_runs":
+                rows.append({**check, **done, "id": 1011, "check_suite": {"id": 1021}})
+            elif key == "workflow_runs":
+                rows.append({**run, **done, "id": 1031, "check_suite_id": 1021,
+                             "event": "workflow_dispatch", "head_branch": self.dispatch_branch,
+                             "path": self.dispatch_workflow})
+        return rows
 
 
 @pytest.fixture
@@ -902,6 +924,7 @@ async def test_settlement_requires_git_truth_even_with_source_and_tag_present(pr
 
 
 @pytest.mark.parametrize("current_names", [["unit"], ["unit", "lint"]])
+@pytest.mark.parametrize("promotion", [{"ci": "reuse_source"}, {"ci": "rerun"}], indirect=True)
 async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(
     promotion, current_names,
 ):
@@ -950,7 +973,37 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(
         }},
     }, e.snapshot)
     checks = await lane.checks.for_candidate(e.batch, e.source)
-    assert (await checks.refresh(await lane.checks.head(e.batch, e.source))).green
+    head = await lane.checks.head(e.batch, e.source)
+    if e.meta["step"]["ci"] == "rerun":
+        from src.integration.checks import ExactChecks, HostedChecks
+        from src.integration.ci_producers import HostedCIProducer
+
+        source_trust = manifest.model_copy(update={
+            "required_checks": frozen_required_checks(e.meta),
+        })
+        source_checks = ExactChecks(e.db, HostedChecks(HostedCIProducer(client, source_trust)))
+        assert (await source_checks.refresh(head)).green
+        assert not (await checks.read(head)).green
+        assert len(client.dispatches) == 1
+        # A source push already passed, but no promotion dispatch has finished.
+        assert not (await checks.refresh(head)).green
+        for state in ("pending", "failure"):
+            client.dispatch_state = state
+            assert not (await checks.refresh(head)).green
+        client.dispatch_state = "success"
+        client.dispatch_branch = "aq/promote/another/1.2.3"
+        assert not (await checks.refresh(head)).green
+        client.dispatch_branch = client.pull["head"]["ref"]
+        client.dispatch_workflow = ".github/workflows/another.yml"
+        assert not (await checks.refresh(head)).green
+        client.dispatch_workflow = ".github/workflows/tests.yml"
+        # Rebuilding the lane (a restart) neither redispatches nor uses source cache.
+        lane = await lanes._promotion_lane(target, e.repo, e.repo.binding, e.ops, {}, e.snapshot)
+        checks = await lane.checks.for_candidate(e.batch, e.source)
+        assert len(client.dispatches) == 1
+    else:
+        assert client.dispatches == []
+    assert (await checks.refresh(head)).green
     e.service = lane.service
     observed = await visit(e)
     assert observed.state == "delivered", observed
@@ -959,6 +1012,38 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(
     assert record["name"] == e.meta["step"]["gate"]["attestation"]
     proof = json.loads(record["output"]["text"])
     assert proof["step"] == "release" and proof["source_sha"] == e.source
+
+
+@pytest.mark.parametrize("promotion", [{"ci": "rerun"}], indirect=True)
+async def test_ambiguous_dispatch_is_not_repeated_after_restart(promotion):
+    from src.integration.promotion_steps import request_promotion_ci
+
+    e = promotion
+    client = SimpleNamespace(request_json=AsyncMock(side_effect=OSError("lost response")))
+    trust = SimpleNamespace(full_name="test/repo")
+    with pytest.raises(OSError, match="lost response"):
+        await request_promotion_ci(e.admission, e.batch, e.meta, client, trust)
+    await request_promotion_ci(e.admission, e.batch, e.meta, client, trust)
+    assert client.request_json.await_count == 1
+    async with e.db._engine.connect() as conn:
+        receipt = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == e.member.task_id,
+            task_metadata.c.key == "promotion_ci_dispatch"))
+    assert json.loads(receipt)["sha"] == e.source
+
+
+@pytest.mark.parametrize("promotion", [{"ci": "rerun"}], indirect=True)
+async def test_dispatch_ref_must_still_name_the_frozen_source(promotion):
+    from src.integration.promotion_steps import request_promotion_ci
+
+    e = promotion
+    git(e.repo.store, "push", "--force", "origin",
+        e.base + ":" + promotion_ref(e.meta["step"], e.meta))
+    client = SimpleNamespace(request_json=AsyncMock())
+    with pytest.raises(PromotionIntentInvalid, match="dispatch ref differs"):
+        await request_promotion_ci(e.admission, e.batch, e.meta, client,
+                                   SimpleNamespace(full_name="test/repo"))
+    client.request_json.assert_not_awaited()
 
 
 async def test_daemon_lane_reuses_subject_trust_until_its_key_or_ttl_changes():
@@ -1042,6 +1127,7 @@ def local_step_lanes(e, monkeypatch):
     return lanes
 
 
+@pytest.mark.parametrize("promotion", [{"ci": "rerun"}], indirect=True)
 async def test_local_ci_step_gate_runs_the_manifest_selected_checks(promotion, monkeypatch):
     from src.integration.checks import LocalChecks, RequestedChecks
     from src.integration.models import IntegrationCIPolicy
@@ -1062,6 +1148,7 @@ async def test_local_ci_step_gate_runs_the_manifest_selected_checks(promotion, m
     assert git(e.repo.store, "rev-parse", RETAINED_CANDIDATE_PREFIX + e.batch.id) == e.source
 
 
+@pytest.mark.parametrize("promotion", [{"ci": "rerun"}], indirect=True)
 async def test_local_ci_step_without_a_command_for_a_selected_check_is_refused(
     promotion, monkeypatch,
 ):

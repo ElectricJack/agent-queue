@@ -54,6 +54,22 @@ def legacy_batch_row():
     return integration_batches.c.target_ref.is_(None)
 
 
+def open_target_batches(project_id, repository_id, target_ref):
+    """Git-first batches still owning a target, including paused/failed visits.
+
+    Match the train's open-batch definition: only promotion or abort releases
+    the target. A member need not be the task whose branch is being written.
+    SQL expressions are accepted for correlated hierarchy reads.
+    """
+    return select(integration_batches).where(
+        integration_batches.c.project_id == project_id,
+        integration_batches.c.repository_id == repository_id,
+        integration_batches.c.target_ref == target_ref,
+        integration_batches.c.intent != "aborted",
+        integration_batches.c.lifecycle != "promoted",
+    ).correlate_except(integration_batches)
+
+
 def _root_delivery_receipt_conditions(repository_id: str, default_branch):
     """The receipt rules shared by eligibility and dependency satisfaction."""
     return (
