@@ -1,9 +1,18 @@
 # CLI command inventory
 
+> **Looking for prose?** This page explains the generated artifact and its
+> acceptance statuses. The written reference for the same surface is
+> [the CLI reference](cli/README.md) — start with
+> [Commands](cli/commands.md) for what each group does,
+> [Command contracts](cli/contracts.md) for what a playbook may call, and
+> [Agent-facing tools](cli/agent-tools.md) for the tool presentation of it.
+
 The maintained machine-readable inventory is
 [`cli-command-inventory.json`](cli-command-inventory.json). It is generated from the live
-Click command tree, so its totals follow the current source rather than pinning the 318-command
-audit baseline.
+Click command tree. Schema version 2 stores command records without aggregate
+counts, so unrelated additions do not rewrite shared count lines. Derive totals
+with `src.cli.inventory.inventory_counts(inventory)`; the generator also reports
+the current leaf count.
 
 Regenerate and verify it with:
 
@@ -16,7 +25,20 @@ aq test tests/test_cli_inventory.py tests/test_cli_conformance.py
 Each leaf records whether it is handwritten, schema-generated, or supplied by an installed
 CLI extension; whether its provider is core, an in-tree plugin, or an external plugin; its
 backend command; supported aliases and deprecations; a compact parameter contract; and its
-evidence level:
+evidence level. It also records one conservative final-audit status:
+
+- `working`: focused behavioral evidence exists; stateful operations receive this label only
+  when the disposable-daemon suite exercises the command through the public CLI.
+- `broken`: a deterministic acceptance check currently fails.
+- `obsolete`: retained only as a tested compatibility/deprecation surface.
+- `unsupported`: deliberately unavailable, with a disposition.
+- `untested`: registered or mock-dispatched, but without sufficient behavioral evidence.
+
+The artifact's `historical_commands` ledger preserves removed spellings and operations from the
+2026-09-08 audit. Those rows are not counted as current Click leaves, but their explicit
+`obsolete` or `unsupported` disposition prevents removal from looking like an inventory gap.
+
+The lower-level evidence values remain useful for diagnosing how a leaf was discovered:
 
 - `registration`: the live Click tree proves the leaf is registered.
 - `dispatch`: the generated-command conformance suite supplies required values, omits optional

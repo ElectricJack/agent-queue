@@ -27,6 +27,7 @@ from src.workflow_pipeline_view import (
     build_stages,
     build_task_card,
 )
+from tests.assignment_routing_helpers import route_source_for
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +90,7 @@ def _make_task(
         description=description,
         status=status,
         assigned_agent_id=assigned_agent_id,
-        profile_id=profile_id,
+        profile_id=profile_id, route_source=route_source_for(profile_id),
         affinity_agent_id=affinity_agent_id,
         affinity_reason=affinity_reason,
         workflow_id=workflow_id,

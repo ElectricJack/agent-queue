@@ -1,0 +1,37 @@
+{
+  "shared_definitions": {
+    "src/playbooks/proposal.py::SemanticBody.integration_policy": {
+      "baseline_span": [
+        70,
+        70
+      ],
+      "landing_span": [
+        70,
+        70
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/proposal.py::import from src.playbooks.semantic_diff import DefinitionDiff, diff_definitions": {
+      "baseline_span": [
+        33,
+        33
+      ],
+      "landing_span": [
+        33,
+        33
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/playbooks/proposal.py::propose": {
+      "baseline_span": [
+        308,
+        401
+      ],
+      "landing_span": [
+        308,
+        401
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

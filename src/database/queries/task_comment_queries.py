@@ -11,6 +11,10 @@ from src.database.tables import archived_tasks, sessions, task_comments, tasks
 
 MAX_COMMENT_BODY = 16000
 
+#: A comment is ordinary history unless its author says otherwise. Only
+#: ``progress`` is explicit recorded progress; see ``task_comments.kind``.
+COMMENT_KINDS = ("note", "progress")
+
 
 class TaskFindingsConflict(Exception):
     """The task, description, or authorizing claim changed before the write."""
@@ -91,7 +95,9 @@ class TaskCommentQueriesMixin:
         *,
         author_kind: str,
         author_id: str,
+        kind: str = "note",
         fence: dict | None = None,
+        conn=None,
     ) -> dict:
         """Append a server-authored comment; the caller derives identity from scope."""
         if not isinstance(body, str) or not body.strip() or len(body) > MAX_COMMENT_BODY:
@@ -100,22 +106,52 @@ class TaskCommentQueriesMixin:
             )
         if author_kind not in {"user", "agent", "supervisor"} or not author_id:
             raise ValueError("invalid comment author")
+        if kind not in COMMENT_KINDS:
+            raise ValueError(f"kind must be one of {', '.join(COMMENT_KINDS)}")
         comment = {
             "id": "comment-" + uuid.uuid4().hex,
             "task_id": task_id,
             "body": body,
             "author_kind": author_kind,
             "author_id": author_id,
+            "kind": kind,
             "created_at": time.time(),
         }
-        async with self._engine.begin() as conn:
+        async def write(conn):
             # This UPDATE locks the task, fences a reclaimed claim, and shares
             # the insert transaction so deletion cannot strand a comment.
             await self._write_task_findings(conn, task_id, {}, fence=fence)
-            project_id = (await conn.execute(
-                select(tasks.c.project_id).where(tasks.c.id == task_id)
-            )).scalar_one()
+            task = (await conn.execute(
+                select(tasks.c.project_id, tasks.c.claim_epoch).where(tasks.c.id == task_id)
+            )).mappings().one()
+            project_id = task["project_id"]
             await conn.execute(insert(task_comments).values(**comment, project_id=project_id))
+            if author_kind == "user":
+                from src.waits.sources import record_source_event
+                from src.database.tables import wait_records
+
+                source_key = f"human:task_comment:{task_id}"
+                generations = set((await conn.execute(select(
+                    wait_records.c.source_generation,
+                ).where(wait_records.c.source_key == source_key,
+                        wait_records.c.project_id == project_id,
+                        wait_records.c.outcome == "pending"))).scalars())
+                # A hibernated owner's claim epoch advances at park. Retain its
+                # registered source identity while also recording the current one.
+                generations.add(task["claim_epoch"] or 0)
+                for generation in sorted(generations):
+                    await record_source_event(
+                        conn, source_key=source_key, generation=generation,
+                        revision=comment["id"], outcome_ref=f"comment:{comment['id']}",
+                        occurred_at=comment["created_at"],
+                        payload={"task_id": task_id, "comment_id": comment["id"],
+                                 "project_id": project_id, "author_kind": author_kind},
+                    )
+        if conn is not None:
+            await write(conn)
+        else:
+            async with self._engine.begin() as owned:
+                await write(owned)
         return comment
 
     async def _locked_comment(self, conn, comment_id: str, task_id: str, project_id: str):
