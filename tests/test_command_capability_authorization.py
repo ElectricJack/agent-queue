@@ -295,6 +295,24 @@ class TestDispatchEnforcement:
 
         assert result.get("error_code") == "capability_denied"
 
+    async def test_project_supervisor_pool_status_still_requires_profile_grant(
+        self, enforcing_handler, monkeypatch,
+    ):
+        await _seed_session(
+            enforcing_handler,
+            AgentProfile(
+                id="sup", name="sup", harness_tools=["Bash"],
+                aq_commands=["list_tasks"], plugin_tools=[],
+            ),
+        )
+
+        async def must_not_run(args):
+            pytest.fail("pool status ran without its capability grant")
+
+        monkeypatch.setattr(enforcing_handler, "_cmd_pool_status", must_not_run)
+        result = await enforcing_handler.execute("pool_status", {"_scope": _scope(elevated=True)})
+        assert result["error_code"] == "capability_denied"
+
 
 class TestEnforcementModes:
     async def test_audit_allows_a_legacy_derived_policy_with_a_shadow_warning(
