@@ -94,6 +94,7 @@ from src.integration.finished_owners import (
     _stopped_writer,
     stop_confirmer_for,
 )
+from src.integration.row_query import select_row
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -400,9 +401,7 @@ class OwnerRecovery:
             return {"outcome": "not_found", "reason": "task does not exist"}
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, task.project_id)
-            current = (await conn.execute(select(tasks).where(
-                tasks.c.id == task.id,
-            ).with_for_update())).mappings().one_or_none()
+            current = await select_row(conn, tasks, tasks.c.id == task.id, lock=True)
             if current is None or current["project_id"] != task.project_id:
                 return {"outcome": "not_eligible", "reason": "task changed"}
             origin = (await conn.execute(select(task_branch_origins).where(
@@ -554,16 +553,11 @@ class OwnerRecovery:
 
     async def _load(self, owner_row_id: str) -> dict[str, Any] | None:
         async with self.db.immediate() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_branch_owners)
-                        .where(integration_branch_owners.c.id == owner_row_id)
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            row = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.id == owner_row_id,
+                lock=True,
             )
         return dict(row) if row is not None else None
 
@@ -872,12 +866,8 @@ class OwnerRecovery:
                 task_branch_origins.c.repository_id == row["repository_id"],
                 task_branch_origins.c.retired_at.is_(None),
             ))).mappings().one_or_none()
-            session = (await conn.execute(select(sessions).where(
-                sessions.c.id == row["session_id"],
-            ))).mappings().one_or_none() if row["session_id"] else None
-            workspace = (await conn.execute(select(workspaces).where(
-                workspaces.c.id == row["workspace_id"],
-            ))).mappings().one_or_none() if row["workspace_id"] else None
+            session = await select_row(conn, sessions, sessions.c.id == row['session_id']) if row["session_id"] else None
+            workspace = await select_row(conn, workspaces, workspaces.c.id == row['workspace_id']) if row["workspace_id"] else None
             attempt_at = await conn.scalar(select(task_session_attempts.c.started_at).where(
                 task_session_attempts.c.task_id == row["owner_id"],
                 task_session_attempts.c.session_id == row["session_id"],
@@ -1205,11 +1195,7 @@ class OwnerRecovery:
         self, conn, row: dict[str, Any], session: dict[str, Any], now: float, evidence
     ):
         """Release the gone writer's claim, after the owner row stopped protecting it."""
-        current = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session["id"])))
-            .mappings()
-            .one_or_none()
-        )
+        current = await select_row(conn, sessions, sessions.c.id == session['id'])
         if current is None or current["claim_phase"] is None:
             return None
         if current["task_id"] not in (None, row["owner_id"]):

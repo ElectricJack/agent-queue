@@ -8,9 +8,11 @@ with [Configuration, the vault, and prompt context](../concepts/configuration-an
 
 Given ~/.agent-queue/config.yaml, [src/config.py](../../src/config.py) loads settings
 in this order. Later mappings deep-merge over earlier mappings; nested mappings merge
-recursively and a scalar or list at the same key replaces the earlier value.
+recursively and a scalar or list at the same key replaces the earlier value. An explicit
+overlay `null` removes that key, allowing the typed default to apply.
 
-1. Read .env next to the base YAML, without replacing already-set process variables.
+1. Read `.env` next to the base YAML. Its values replace already-set process variables;
+   differing values produce a warning naming the variable and file, without logging secrets.
 2. Read config.yaml.
 3. Select env from AGENT_QUEUE_ENV, otherwise the base env key, otherwise production;
    if present, merge config.&lt;env&gt;.yaml.
@@ -76,20 +78,37 @@ aq system config schema
 | database, database_path | PostgreSQL pool settings and a legacy alias. | database.url is required; database_path is compatibility-only. |
 | env, profile, validate_events | Overlay selection and event payload validation. | env defaults to production; profiles are optional. |
 | messaging_platform, discord | No messaging or the one Discord destination, digest, and escalation controls. | Platform defaults to discord; Discord connection values are installation policy. The retired `discord.channels` and `discord.per_project_channels` blocks are migration input only; `aq doctor --check discord.config --fix` drops them and writes `channel_id`, `guild_id`, `authorized_users` and `project_id`, filling only the values it can derive. |
-| agents_config, agent_profiles, scheduling | Agent defaults, legacy in-config profiles, and task cadence. | Vault profiles are the current editable source; in-config profiles remain for compatibility. `pause_retry` was retired (it was never read) and is ignored with a warning. |
+| agents (typed attribute `agents_config`), agent_profiles, scheduling | Agent defaults, legacy in-config profiles, and task cadence. | Vault profiles are the current editable source; in-config profiles remain for compatibility. `pause_retry` was retired (it was never read) and is ignored with a warning. |
 | llm, providers, pricing, llm_logging | Direct LLM calls, provider probes, price tables, and LLM logging. | Provider configuration is local policy; no key is shipped. |
 | llm.fallback | An optional second direct-path credential, used only while provider availability holds the reserved `llm` key unavailable. | `null` (no fallback: direct-path calls fail fast during an outage). Restart-required like the rest of `llm`. See [`llm.fallback`](#llmfallback). |
 | provider_failover | Provider availability and failover: when a harness login counts as exhausted, logged out or failing, how it recovers, operator override expiry, and the failover policy and limits the re-route sweep reads. | `mode: enforce`. Hot-reloadable. Every key is in [`provider_failover` keys](#provider_failover-keys); `aq provider status` shows the state. |
 | routing | Mandatory task routing: `default_router`, the routing playbook a new project is bound to (`projects.assignment_playbook_id`) when it is created or onboarded. | `default_router: default-assignment-routing`. Hot-reloadable; an edit binds the next new project and leaves existing bindings alone. |
 | docs | Base URL used to link contracted playbook commands to their reference pages. | Defaults to this repository's `main/docs/` tree; private mirrors can override it. |
 | supervisor, supervisor_agent, sessions, worktrees, streams | Session execution, supervisor delivery, worktree behavior, and stream handling. | Some flags gate service construction and require restart. |
-| memory, memory_extractor, inbox | Optional memory extension behavior, extraction, and inbox polling. | Memory data is preserved if disabled; plugin availability is separate. |
+| memory, memory_extractor, inbox | Legacy memory settings, extraction, and inbox polling. | The daemon skips the legacy `aq-memory`/`memory` plugins regardless of `memory.enabled`; facts/override indexing is inactive. |
+| knowledge | Database knowledge records and authorized context/export policy. | Vault Markdown exports are not the record authority. |
+| reports | Morning report scheduling and delivery. | Restart required; enablement and playbook activation are separate. |
+| wait_policy | Verified waits, hibernation, escalation and per-project overrides. | Hot-reloadable; see [wait policy](#wait-policy). |
+| workspaces | Reusable integration worktrees and compiler caches. | Hot-reloadable; host paths remain local during portable export. |
+| host_shell, git_identity, deploy | Host command policy, Git identity and deployment configuration. | Hot-reloadable; use the schema for fields and bounds. |
 | playbooks, mcp_server, events, messages | Playbook runtime, embedded command surface, event handling, and delivery. | Each section has its own enablement/validation fields. |
 | health_check, monitoring, logging, archive, auto_task | Health endpoint, task monitoring, logs, archival, and automatic task policy. | Operational settings; use the schema for bounds. |
 | security, api_auth, surface, state_machine, work_graph, integration | Security/auth, agent ergonomics, task-state enforcement, graph behavior, and delivery integration. | Current settings; not evidence that historical designs are active. |
 | swarm, resources, metrics, graph_layout | Pull pools, per-session limits/test slots, fleet metrics, and graph layout. | Resources defaults gate shared machine capacity. |
 | dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, or 8083 when `mcp_server.port` is 8082; never the daemon's), and the origin Discord links name: `public_url`, `tailscale_path`. | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart. See [dashboard server settings](#dashboard-server-settings). |
 | global_token_budget_daily, max_daily_playbook_tokens, max_concurrent_playbook_runs, rate_limits | Installation-wide token and playbook limits. | Limits are optional except playbook concurrency's default. |
+
+The YAML agent-default section is currently `agents`. The schema, tuner and portable
+export use the typed name `agents_config`, which `load_config` currently ignores.
+For an effective override use `agents.stuck_timeout_seconds`, for example:
+
+```bash
+aq system config set agents.stuck_timeout_seconds=1800
+```
+
+The command currently classifies that YAML spelling as restart-required, even though
+the watcher classifies the typed attribute as hot. Force reload to apply it, or
+restart. This mismatch is a code gap; check behavior after applying tuning.
 
 ## GitHub credentials
 
@@ -388,11 +407,14 @@ validation and the current configuration stays in use.
 
 ## Reload and restart
 
-ConfigWatcher polls the configuration file, validates a changed version, compares
+ConfigWatcher polls the base configuration file’s mtime, validates a changed version, compares
 top-level sections, applies the hot sections to its current config object, and emits
 config.reloaded. It emits config.restart_needed for every other changed section and
 does not partially apply them. An invalid edited file is rejected and the current
 configuration stays in use.
+
+Overlay and `.env` edits alone do not trigger that watcher. Force a reload after
+changing them.
 
 Run this after an operator edits YAML to see the actual classification and result:
 
@@ -402,7 +424,7 @@ aq system reload-config
 
 | Changes applied without daemon restart | Changes that require restart |
 |---|---|
-| agents_config, agent_profiles, archive, auto_task, dashboard_server, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pricing, project_roots, provider_failover, providers, rate_limits, resources, routing, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
+| agent_profiles, agents_config, archive, auto_task, dashboard_server, deploy, docs, git_identity, global_token_budget_daily, graph_layout, host_shell, knowledge, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pricing, project_roots, provider_failover, providers, rate_limits, resources, routing, scheduling, state_machine, surface, swarm, test_selection, wait_policy, work_graph, workspaces | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, reports, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
 
 The `integration` restart classification includes `integration.github_app`.
 Changing a process environment token or App key reference also requires a
@@ -414,6 +436,54 @@ round-trip writer preserves comments, order, and quote style outside the changed
 the writer itself deliberately leaves validation to its caller. See
 [src/config_editor.py](../../src/config_editor.py).
 
+`get [SECTION]` returns redacted base YAML, not the effective merged configuration.
+`${VAR}` references remain visible; literal credentials become `__aq_redacted__`.
+Writes restore that placeholder from the original section and refuse unresolved
+placeholders. List entries match by position, so avoid reordering a redacted list.
+
+```bash
+aq system config get logging
+aq system config set logging.level=DEBUG --dry-run
+aq system config set logging.level=DEBUG
+aq system config edit
+aq system config schema
+```
+
+`edit` opens a redacted serialization of the whole configuration in `$EDITOR`,
+then submits each changed section separately. It does not preserve comments inside
+replaced sections or provide a transaction across sections. `update_config` validates
+through a temporary sibling file before writing; that preflight does not reproduce
+the base file's environment-overlay filename or an explicitly selected profile.
+Its `.bak` is temporary, restored on a write exception and then removed. A live-reload
+failure does not restore the previous file. Keep a separate backup when needed.
+
+## Wait policy
+
+`wait_policy` is hot-reloadable. `v2_enabled`, `hibernation_enabled` and
+`scheduler_waits_enabled` all default to `true`; `v1_bodies` defaults to `refuse`
+and also accepts `translate`. Explicit false flags gate new admission while
+persisted waits and continuations drain. See the
+[cutover runbook](../guides/hibernation-cutover-runbook.md) before changing rollout flags.
+
+| Setting | Default |
+|---|---|
+| `in_place_ceiling_seconds` | 1800 |
+| `hibernate_margin` | 2.0 |
+| `resume_cost_minutes` | 10 |
+| `min_samples` | 5 |
+| `loop_window_registrations` / `loop_window_seconds` | 3 / 3600 |
+| `branch_admission_deadline_seconds` | 1800 |
+| `transition_budget_seconds` | 120 |
+| `resume_launch_attempts` / `resume_stall_seconds` | 2 / 300 |
+
+`kinds.<kind>` overrides escalation and expected duration. `human` cannot be
+overridden and has no escalation policy. `projects.<id>` can override rollout
+flags, ceiling, resume cost, resume stall, margin and kind policies; absent or null
+fields inherit global values. `metrics` holds an optional historical cohort for
+counterfactual token-cost reporting. Unknown fields at any depth are errors. See
+[the detailed policy fields](../specs/config.md#416-wait_policy-section) and the
+[generated schema](configuration-schema.json) for bounds and kind defaults.
+
 ## Recovery reference
 
 | Problem | Read-only diagnosis | Recovery |
@@ -421,7 +491,7 @@ the writer itself deliberately leaves validation to its caller. See
 | Unknown field/default/bound | aq system config schema | Correct YAML to the returned schema. |
 | A ${NAME} is unresolved | aq system config get shows raw YAML without exposing the resolved value | Set it in the process environment or adjacent .env, then reload/restart as classified. |
 | Edited value did not take effect | aq system reload-config | Restart if the response lists the changed section under restart_required. |
-| YAML edit lost a comment or placeholder | Inspect raw config with aq system config get | Use the round-trip config editor/command rather than a serializer that resolves environment references. |
+| YAML edit lost a comment or placeholder | Inspect raw config with aq system config get | Use `${VAR}` references and retain a separate backup; replacing a section can discard its internal comments. |
 | Database validation fails | Read the error; it names the invalid field | Supply a PostgreSQL DSN. Do not run a worker-side Alembic command to compensate. |
 
 ## Source and focused tests

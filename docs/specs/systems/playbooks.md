@@ -9,25 +9,18 @@ tags: [system-spec, playbooks, policy, triggers, runs, agent-cron, object-loop]
 review `rev-bright-rapids`, in review on 2026-10-20). The inventory folds two smaller
 mechanisms into this system: **agent cron** (durable recurring prompts to a session) and
 the **object loop** (bounded evaluation rounds for an external renderer).
-**Written:** 2026-10-20, against `main` at `22cffd1b7`, for task `eager-vault-55.8`.
-**What this page is:** a map of the system as the code stands, written for an engineer
-new to Agent Queue. It describes; it does not decide. The "Planned work" section is a
-snapshot of the open tasks and in-flight specs on the date above and goes stale as they
-land.
+**Written:** 2026-10-20 for task `eager-vault-55.8`.
+**Audited:** 2026-10-22 against `origin/dev` at `52d2efe4c` for `solid-glacier-69`.
+**What this page is:** a map of current checked-in behavior for an engineer new to
+Agent Queue. It describes shipped resources, not the operator's installed policy or
+historical task status. Start with [Playbooks V2](../../concepts/playbooks.md).
 
-Where this page summarises something another document explains in depth, it links
-there instead of repeating it. The everyday reader's page is
-[docs/concepts/playbooks.md](../../concepts/playbooks.md); read it first if you have not.
-Several of its install counts are out of date (section 6).
-
-> **The whole system is behind a switch that is off by default.** `PlaybooksConfig.enabled`
-> defaults to `False` (`src/config.py`, labelled "Paused by default during the framework
-> overhaul … Temporary"). With it off the daemon starts no playbook runtime, timer service,
-> required-playbook reconciler or resume handler (`src/orchestrator/core.py` ~2156), the
-> V2 authoring commands refuse, and the playbook doctor checks are skipped. Everything
-> below describes a daemon with `playbooks.enabled: true`, which is how this operator's
-> `~/.agent-queue/config.yaml` runs it. Agent cron and the object loop's commands do not
-> depend on the switch, but the object loop's policy does.
+> **Configuration:** `playbooks.enabled` defaults to `false` in code; installation
+> tuning sets it to `true`. While disabled, the daemon starts no playbook runtime,
+> timer service, required-policy reconciler or human-review resume handler, and V2
+> authoring commands refuse. Agent cron and object-loop commands are independent of
+> this switch; executing object-loop policy still requires it. The following
+> describes an enabled runtime.
 
 ---
 
@@ -55,8 +48,8 @@ does anything its reviewed artifact did not declare.
 Three things make this different from "a script the daemon runs":
 
 - **Reviewed bytes.** What runs is a compiled artifact pinned by SHA-256, not the
-  Markdown. Activation names the hash; changing the source does nothing until someone
-  activates a new one.
+  Markdown. Activation names the hash; normal source edits do not replace it. The
+  legacy pipeline `update-source` exception is recorded in section 6.
 - **Bounded authority.** An artifact can only call the commands it declares
   (`granted_aq_commands`), each through the same `CommandHandler` the CLI uses, and each
   LLM or agent step runs under a profile no wider than its caller.
@@ -75,15 +68,19 @@ Three things make this different from "a script the daemon runs":
 | Activation and health | `src/playbooks/activation.py`, `routing.py` (routing activation snapshot) |
 | Engine: dispatch, step walk, resume, cancel | `src/playbooks/engine.py` (`PlaybookEngine`, `WaitScheduler`, `ChildTaskReconciler`) |
 | Run lifecycle and limits | `src/playbooks/run_state.py`, `waits.py`, `receipts.py`, `expressions.py`, `retention.py`, `run_overlay.py`, `explanation.py` |
-| Step executors | `src/playbooks/executors/` (`command.py`, `llm.py`, `agent_task.py`, `wait.py`, `foreach.py`, `decision.py`, `terminal.py`; table in `__init__.py`; shared types in `base.py`) |
+| Step executors | `src/playbooks/executors/` (`command.py`, `llm.py`, `agent_task.py`, `script.py`, `wait.py`, `foreach.py`, `decision.py`, `terminal.py`; table in `__init__.py`; shared types in `base.py`) |
 | Daemon wiring | `src/playbooks/runtime.py` (`V2PlaybookRuntime`, the orchestrator's `playbook_manager`), `services.py` (`build_v2_engine`, `DatabaseActivationSource`) |
 | Restart recovery and resume | `src/playbooks/recovery.py` (`RestartReconciler`), `resume_handler.py`, `src/workflow_stage_resume_handler.py` |
 | Shipped install, required set, receipt | `src/playbooks/required.py` |
+| Compatibility and authority | `src/playbooks/features.py`, `authority.py`, `private_values.py` |
+| Local state and notification episodes | `src/playbooks/state.py`, `state_notify.py`, `state_preview.py` |
+| Script pinning and execution policy | `src/playbooks/script_inputs.py`, `script_policy.py`, `src/jobs/script_runner.py` |
+| Integration decision data | `src/playbooks/integration_policy.py`, `train_policy.py` |
 | Call-site context | `src/playbooks/invocation.py` (`PlaybookInvocation` ContextVar) |
 | Dashboard graph view | `src/playbooks/graph_projection.py`, `src/workflow_pipeline_view.py` |
 | Timers | `src/timer_service.py` (`timer.*` and `cron.*` events) |
 | Commands | `src/commands/playbook_v2_commands.py`, `playbook_commands.py`; contracts in `src/commands/contracts/` |
-| CLI | `src/cli/playbook.py` (only `import` is hand-written; the other 29 verbs are generated) |
+| CLI | `src/cli/playbook.py` (`import` is a hand-written wrapper; the other verbs come from the command registry) |
 | Doctor | `src/doctor/playbook_v2_checks.py` |
 | Shipped content | `src/prompts/default_playbooks/`, `integration_playbooks/`, `project_playbooks/`, `reviewed_playbooks/` (authoring copy `tests/fixtures/playbooks/v2/`) |
 | Bundle rebuild | `scripts/rebuild-reviewed-playbook-artifacts.py` |
@@ -91,10 +88,9 @@ Three things make this different from "a script the daemon runs":
 | Object loop | `src/object_loop/`, `src/commands/object_loop_commands.py`, `src/commands/contracts/object_loop.py`, formulas `src/prompts/formulas/object.md` and `variation.md` |
 | Schema | `src/database/tables.py` (`playbook_artifacts`, `playbook_activations`, `playbook_v2_runs`, `playbook_step_receipts`, `playbook_waits`, `playbook_pending_events`, `agent_cron`, `object_loops`) |
 
-`src/playbooks/` is 39 modules and about 19,000 lines; `engine.py` alone is about 3,900.
-The [module reference](../../reference/modules/playbooks.md) lists them; the
-[playbook commands reference](../../reference/playbook-commands/README.md) is generated,
-one page per command a playbook may call.
+The [module reference](../../reference/modules/playbooks.md) maps implementation
+files. The [playbook commands reference](../../reference/playbook-commands/README.md)
+is generated from the same command contracts used by validation and execution.
 
 ## 3. How it works today
 
@@ -133,7 +129,7 @@ and points at an artifact runs.
 its whole life. A run has a mode (`live`, `dry_run`, `shadow`); the mode chooses which
 executors run, never a different graph.
 
-**Step kinds** (seven):
+**Step kinds** (eight):
 
 | Kind | What it does |
 |---|---|
@@ -142,7 +138,8 @@ executors run, never a different graph.
 | `agent_task` | Creates a child task for an agent; may wait for it to finish. |
 | `decision` | Pure branch on data: first true case, else the default. |
 | `wait` | Suspends the run until an event, a human decision, a child task or a timer. |
-| `foreach` | Iterates a pinned collection (no nesting today) with a halt / collect / continue failure policy. |
+| `foreach` | Iterates a pinned collection with a halt / collect / continue failure policy; durable nesting is limited to four levels. |
+| `script` | Runs a source-declared, server-pinned program as a durable managed job with bounded, protected output. |
 | `terminal` | Ends the run with an outcome. |
 
 The [concepts page](../../concepts/playbooks.md) explains the vocabulary with the
@@ -158,6 +155,10 @@ routing playbook as a worked example.
 | `playbook_step_receipts` | One receipt per step boundary (unique per boundary), redacted default-deny. |
 | `playbook_waits` | Open waits with their match spec and deadline. |
 | `playbook_pending_events` | An inbox of events that arrived for a wait, or for an artifact that was unavailable when the event came in. |
+| `playbook_private_values` | Encrypted command bindings, state and protected execution data; public projections carry handles. |
+| `observation_snapshots`, `observation_snapshot_pages` | Immutable diagnostic observations with finite page tokens and a 30-minute TTL. |
+| `playbook_state_namespaces`, `playbook_state_entries`, `playbook_state_operations` | Versioned playbook-local state, deletions and notification episodes; see [state](../../guides/playbook-state.md). |
+| `jobs` | Durable script admission, execution and settlement, including protected output. |
 | `agent_cron` | Agent cron schedules (section 3.3.7). |
 | `object_loops` | Object-loop state (section 3.3.8). |
 
@@ -188,8 +189,8 @@ holds the first-install receipt `playbook-installation.json` and the timer state
    needs a proposal.
 3. **Import a bundle.** `aq playbook import --path reviewed-playbooks/<id>` is
    operator-only and refuses a bundle outside the vault root. It checks the artifact is
-   canonical and matches its hash, validates the manifest and revalidates. It never
-   activates.
+   canonical and matches its hash, validates the manifest and revalidates. Import
+   alone does not activate; the wrapper accepts an explicit `--activate`.
 4. **Activate.** `aq playbook activate --playbook-id <id> --artifact-sha256 …` (or
    `import --activate`). The command checks the caller may write that scope, computes the
    diff's activation blockers, re-runs validation, and writes `health=ready`.
@@ -255,12 +256,14 @@ The `PlaybookInvocation` ContextVar carries the run, step and granted commands i
 handler; routing uses it to accept `task_route_apply` only from the project's bound
 router.
 
-**Authorization.** Before execution the engine calls `authorize_command` for the step's
-command. A refusal becomes the outcome `unauthorized`, which an edge may route. Runs
-dispatched from events use a SERVICE principal, which the resolver treats as trusted; the
-effective limit is therefore the artifact's `granted_aq_commands`, which activation
-reviewed. `security.capability_enforcement` defaults to `audit`, which records rather than
-blocks most violations.
+**Authorization.** Command steps pass through contract authorization. For artifacts
+with `trusted_execution`, `authority.py` records the initiating caller and binds
+effects to that caller intersected with artifact grants and scope. Recovery by an
+operator does not substitute operator authority for the recorded caller. Trusted
+local/service starts are bounded by the artifact itself; session starts can only
+narrow their current and recorded grants. `security.capability_enforcement` defaults
+to `audit`; command-specific ownership, scope and human-decision checks still apply.
+Feature support and catalogue discovery do not grant execution authority.
 
 **LLM steps** run under a PLAYBOOK principal narrowed to the step's profile; a profile
 wider than the caller is `unauthorized` and a missing one `unavailable`. Tool-free steps
@@ -279,6 +282,20 @@ suspends until the child settles.
 transaction, which closes the race where the awaited event arrives just as the wait
 begins. Human waits take their deadline from the step or run timeout; there is no
 built-in default.
+
+**Script steps** pin source inputs and optional runtime digests on proposal, then
+submit durable jobs. They run ordinary host processes: no OS sandbox or network
+isolation. Script admission defaults on, but managed jobs default off and protected
+storage keys are required. Queue/wall/output limits, cancellation and ambiguous
+launch recovery are described in the [script guide](../../guides/playbook-script-runner.md).
+Dry-run and shadow launch nothing.
+
+**Reusable observations and state** let policy inspect finite immutable snapshots,
+combine collection expressions and write revision-checked state. Notification episodes
+survive restarts and recompilation, avoiding repeated alerts for unchanged findings.
+The optional stuck-task watch is built from these primitives, without watch-specific
+Python. See [building blocks](../../guides/playbook-building-blocks.md),
+[observations](../../guides/observation-snapshots.md) and [state](../../guides/playbook-state.md).
 
 #### 3.3.4 Resuming and recovering
 
@@ -307,10 +324,10 @@ The repository ships policy in three places. Only the reviewed bundles are insta
 
 | Directory | Contents |
 |---|---|
-| `src/prompts/reviewed_playbooks/` | 15 reviewed bundles, byte-identical to `tests/fixtures/playbooks/v2/`. |
-| `src/prompts/default_playbooks/` | 7 system sources (the bundles' `source.md` copies). |
-| `src/prompts/integration_playbooks/` | 4 integration sources, all `enabled: false`. |
-| `src/prompts/project_playbooks/` | agent-queue (4 sources) and matter-engine-cpp (1). |
+| `src/prompts/reviewed_playbooks/` | 17 reviewed bundles, mirrored under `tests/fixtures/playbooks/v2/`. |
+| `src/prompts/default_playbooks/` | System policy sources; their reviewed bundle copies are the installable bytes. |
+| `src/prompts/integration_playbooks/` | Integration policy sources, including the optional fast-smooth train policy. |
+| `src/prompts/project_playbooks/` | Project policies for agent-queue and matter-engine-cpp. |
 
 No Python under `src/` reads `integration_playbooks/` or `project_playbooks/`; they are
 used by the rebuild script, tests and docs.
@@ -320,13 +337,13 @@ used by the rebuild script, tests and docs.
 | List | Ids | Meaning |
 |---|---|---|
 | `REQUIRED_SYSTEM_PLAYBOOK_IDS` | default-assignment-routing, provider-usage-probe, provider-failover | Gate `/health` and `/ready`; the only ids doctor repairs. |
-| `DEFAULT_SYSTEM_PLAYBOOK_IDS` | supervisor-failure-triage, default-pipeline, stuck-task-watch | Activated once, on first install only. |
-| `INITIAL_SYSTEM_PLAYBOOK_IDS` | the six above plus morning-report | Copied into an empty vault (morning-report stays inactive). |
+| `DEFAULT_SYSTEM_PLAYBOOK_IDS` | supervisor-failure-triage, default-pipeline | Activated once, on first install only. |
+| `INITIAL_SYSTEM_PLAYBOOK_IDS` | the five activated ids above plus morning-report | Copied into an empty vault (morning-report stays inactive). |
 
 **First install.** `install_initial_playbooks`, called from `ensure_vault_layout`
 (`src/vault.py`) and the installer (`src/install/prerequisites.py`), acts only when there
 is no receipt and the vault is absent or empty. It writes the receipt first, in
-exclusive-create mode, with `activation_pending: true`, then copies the seven bundles
+exclusive-create mode, with `activation_pending: true`, then copies the six bundles
 and sources. A non-empty vault gets a receipt with `activation_pending: false` and
 nothing else. At daemon start, `RequiredPlaybookReconciler.reconcile()` consumes the
 receipt (flipping it before writing anything, so a crash cannot activate twice), imports
@@ -345,11 +362,13 @@ carries default-pipeline and supervisor-failure-triage at project scope and the 
 binding. Applying it writes `policy/pending-playbooks/<id>/`, submits each playbook for
 review and never activates ([policy profiles design](../design/policy-profiles.md)).
 
-**Rebuilding bundles.** `scripts/rebuild-reviewed-playbook-artifacts.py` rebuilds
-fixtures from hand-written deterministic body builders (no LLM), rewrites the manifest
-digests and checks with `--check`. Nothing in CI or the daemon runs it; its output is
-copied by hand to `src/prompts/reviewed_playbooks/` (AGENTS.md, "Reviewed playbook
-bundles").
+**Rebuilding bundles.** `python scripts/rebuild-reviewed-playbook-artifacts.py <id>`
+uses deterministic semantic-body builders, validates against current contracts and
+updates the authoring fixture, its manifest digests, recorded inputs under
+`tests/fixtures/generated_sources/playbooks/<id>/` and the shipped copy.
+`scripts/generate-recorded-artifacts.py` projects those approved recorded inputs
+unchanged. Review the generated diff; `--check` detects drift. Neither operation
+installs into a live vault or changes an activation.
 
 The shipped catalogue, as of this snapshot:
 
@@ -360,11 +379,12 @@ The shipped catalogue, as of this snapshot:
 | provider-failover | system | `provider.state_changed`, `timer.5m` | `provider_reroute`, `provider_availability_notify` | required |
 | supervisor-failure-triage | system | `task.failed` | `task_failure_triage_notify` (one incident per failure generation) | default |
 | default-pipeline | system | `spec.approved`, `proposal.ready`, `gate.resolved` | spec ingestion (3.3.6) | default |
-| stuck-task-watch | system | `timer.10m` | `get_stuck_tasks`, `message_send` to the global supervisor | default |
+| stuck-task-watch, stuck-task-watch-reminder | system | `timer.15m` | Immutable observations, collection expressions, revision-checked state and notify-once (reminder variant repeats after 24 hours) | manual |
 | morning-report | system | `report.morning_due` | `morning_report_tick` | installed, inactive |
 | ci-main-sentinel | project:agent-queue | `timer.15m` | CI baseline watch and repair adoption | manual |
 | github-issue-triage | project:agent-queue | `cron.02:00`, `review.decided` | nightly issue investigation, fix or close ([guide](../../guides/github-issue-triage.md)) | manual |
 | object-loop | project:matter-engine-cpp | `formula.cooked`, task and review events, `timer.5m` | object loop (3.3.8) | manual |
+| fast-smooth-train | system (resolved per integration route) | `integration.readiness_changed` | Reviewed train action/check data over daemon merge, repair and publication primitives | manual |
 | promotion-continuous, promotion-request | system | `promotion.*` | promotion policy | manual |
 | supervisor-digest, supervisor-hourly-report | system | `timer.1m`, `digest.window_ready` | digest and hourly report | manual (bundle only) |
 | blocked-task-escalation | system | `task.failed` (`status=BLOCKED`) | retired; kept for audit | never |
@@ -377,15 +397,18 @@ The `default-pipeline` playbook is the bridge between an approved spec and a tas
    `src/asks/ingestion.py dispatch()`, which records a durable dispatch operation and
    emits `spec.approved`.
 2. Rule `spec-ingest-on-approve` calls `ensure_spec_ingest`, deduplicated by
-   `spec-ingest:decision:<id>`, which creates one `spec-ingest` role task.
-3. Rule `proposal-ready-gate`: on `proposal.ready`, `gate_create` makes a human gate
-   awaiting the proposal.
+   `spec-ingest:decision:<id>`, which creates one `spec-ingest` role task and pins
+   the approved decision and packet receipt.
+3. Approved-spec ingestion commits its server-stamped batch directly after
+   validation. Ordinary proposals emit `proposal.ready`; rule `proposal-ready-gate`
+   then creates a human gate and freezes that proposal revision.
 4. Rule `commit-on-gate-resolve`: on an approved human `gate.resolved`,
    `task_batch_commit` commits the proposal.
 5. The playbook does not retry. Every orchestrator cycle runs `spec_ingest_reconcile`,
    which re-drives any dispatch still pending.
 
-Held ingestion (the task-graph spec, section 3.3.4) is changing steps 3–4; see 7.1.
+The checked-in source has these three rules. Historical held-ingestion proposals
+do not describe additional rules in the shipped bundle.
 
 #### 3.3.7 Agent cron
 
@@ -417,9 +440,9 @@ checkpoints, and a finalizer task closes the loop. State is one `object_loops` r
 object. The [object loop guide](../../guides/object-loop.md) and
 [design](../design/object-script-loop.md) cover the details.
 
-- **Formulas.** `object` and `variation` (`src/prompts/formulas/`) create the loop and
-  each variation; their guards run inside the graph transaction under an advisory lock
-  per object (`src/object_loop/formulas.py`).
+- **Formulas.** `object` and `variation` (`src/prompts/formulas/`) create the loop epic and
+  final-suite task; the reconciler creates bounded candidate/scorer waves. Formula
+  guards run inside the graph transaction under an advisory lock per object (`src/object_loop/formulas.py`).
 - **Commands.** `object_loop_start`, `object_loop_reconcile`, `object_score_record`,
   `object_checkpoint_read`, `object_loop_inputs`, plus `artifact_verify` for workers.
 - **Guards.** Budgets in usd, calls, bakes and active seconds (unknown spend is charged
@@ -442,7 +465,7 @@ other system decides; playbooks only call its commands or consume its events.
 | **routing-and-profiles** | Owns profiles, intelligence classes and the route. The required `default-assignment-routing` playbook *is* the router's policy (`task_route_plan`/`task_route_apply`); `src/routing/` is the mechanism. LLM and agent steps run under profiles, which validation fingerprints. |
 | **sessions-and-harnesses** | Owns agent sessions. Playbook LLM steps are not sessions (in-process or headless CLI); agent cron delivers prompts to sessions. |
 | **projects-workspaces-git** | Owns projects. Project creation offers the default policy and writes pending playbooks; project scope is how a playbook is limited to one project. |
-| **integration-and-delivery** | Owns trains, promotion and delivery. Promotion policy and (planned) train policy are playbooks over its primitives; `INTEGRATION_LIFECYCLE_PLAYBOOK_IDS` re-points those activations to the route the integration layer chooses. `ci-main-sentinel` watches the main CI baseline. |
+| **integration-and-delivery** | Owns trains, promotion and delivery. Promotion and train policy are playbooks over its primitives; `INTEGRATION_LIFECYCLE_PLAYBOOK_IDS` re-points those activations to the route the integration layer chooses. `ci-main-sentinel` watches the main CI baseline. |
 | **messaging-and-human-asks** | Playbooks send messages (`message_send`), open human gates and waits; spec approval through an ask emits `spec.approved`. Agent cron prompts are messages. |
 | **supervisors-and-policy** | Supervisors receive what playbooks notice (failure triage, stuck tasks, object-loop refusals) and activate optional policy such as github-issue-triage. The supervisor patrol is an agent cron schedule. |
 | **reviews-and-knowledge** | A playbook can be reviewed with its artifact hash pinned; `review.decided` and `human.review.completed` resume or trigger runs; spec approval starts ingestion. |
@@ -450,7 +473,7 @@ other system decides; playbooks only call its commands or consume its events.
 | **configuration-and-vault** | Supplies `playbooks.*`, `security.capability_enforcement` and paths; the vault holds sources and installed bundles, written only if absent. |
 | **api-and-clients** | Exposes playbook commands, the graph view and run inspection; the playbook commands reference is generated. |
 | **dashboard** | Renders the playbook graph and run overlays from `graph_projection.py` and the pipeline view; it never runs policy. |
-| **test-service-and-jobs** | No direct link today; the building-blocks refactor (7.1) adds durable script jobs. |
+| **test-service-and-jobs** | Script steps submit durable managed jobs and resume from their recorded settlement; protected output is retrieved through owner-checked job logs. |
 | **operations-and-recovery** | Doctor checks (`playbooks.required`, `reviewed_bundles`, `activation_stale`, `orphaned_runs`, …) and operator resolution of paused runs; `stuck-task-watch` and `supervisor-failure-triage` feed recovery. |
 | **plugins-mcp-and-tools** | MCP tools are another front door to the same playbook commands; LLM steps call tools only through command contracts. |
 
@@ -460,8 +483,8 @@ other system decides; playbooks only call its commands or consume its events.
    is a playbook calling commands. Compiling a playbook is pure; the semantic body comes
    from an author.
 2. **What runs is a reviewed hash.** A run is pinned to an artifact's SHA-256 for its
-   whole life; activation names the hash; a source edit changes nothing until a new hash
-   is activated.
+   whole life; activation names the hash. Use deliberate import/activation rather than
+   the pipeline `update-source` compatibility exception (section 6).
 3. **Every state change goes through `CommandHandler`.** A command step calls the same
    command as the CLI, through a typed contract with a declared outcome set and timeout.
 4. **Authority is declared and only narrows.** An artifact can call only its
@@ -480,171 +503,78 @@ other system decides; playbooks only call its commands or consume its events.
 9. **V2 only.** The V1 compiler, runner, manager and tables are gone;
    `tests/test_v1_removal.py` is the ratchet.
 
-## 6. Known gaps
+## 6. Known gaps and audit findings
 
-**Defaults and switches**
+These are implementation limits or mismatches observed at the audited revision;
+this documentation audit does not change runtime behavior.
 
-- **The system is off by default** (see the note at the top). `src/playbooks/routing.py`
-  treats a *missing* `playbooks` config as enabled, which disagrees with the default.
-- **Capability enforcement is audit by default.** `security.capability_enforcement`
-  defaults to `audit` (`src/config.py`), and event-dispatched runs use a trusted SERVICE
-  principal, so the real limit is the artifact's grants and the activation that
-  reviewed them.
+- **Source update bypasses normal activation.** For pipeline source,
+  `playbook_commands.py` stores the compiled artifact and sets the existing activation
+  hash/health directly. It does not call the activation-diff blocker path. Prose edits
+  require a separate proposal and do not enqueue a compile task.
+- **V2 lifecycle event schemas are missing.** `engine.py` emits
+  `playbook.v2.run.started`, `playbook.v2.step.completed` and
+  `playbook.v2.run.finished`, but `event_schemas.py` registers the older
+  `playbook.run.*` names. A rule cannot validate a trigger on those emitted V2 names.
+- **Legacy command descriptions disagree with handlers.** `resume_playbook` accepts
+  a declared human option, not conversation text; `show_playbook_graph` delegates to
+  structured graph projection, not ASCII/Mermaid rendering; `playbook_health` delegates
+  to activation health, not run statistics. Their generated parameter/help descriptions
+  still expose the old behavior. Handwritten command notes describe the current paths;
+  fixing generated descriptions requires a source-contract change and regeneration.
+- **Object-loop replay evidence predates its artifact.** The retained traces pin
+  `e9a2e756…`; the current bundle pins `f83489a7…`. They must not be treated as
+  acceptance of current bytes. The worker refusal in `object_loop_commands.py` also
+  names nonexistent `aq object_loop inputs`; the real command is
+  `aq task object-loop-inputs --project-id <project>`.
+- **No dispatch cooldown, scope shadowing or concurrency cap.** Each event scans ready
+  activations; a system and project activation both run. Dedupe covers one delivery id,
+  not repeated emits of the same fact. Legacy engine comments still promise a removed
+  `PlaybookManager` cooldown/cap; `max_concurrent_playbook_runs` does not cap V2 dispatch.
+- **Timer comments are stale.** `timer_service.py` persists interval state and does not
+  fire on boot, contrary to its module docstring.
+- **Legacy compatibility is not a recovery guarantee.** `OrphanWorkflowRecovery` is
+  not constructed by the orchestrator and references removed V1 queries. V2 runs use
+  `RestartReconciler`; surviving legacy workflow rows need inspection.
+- **Historical policy remains in the tree.** Three legacy bundles
+  (`supervisor-digest`, `supervisor-hourly-report`, `blocked-task-escalation`) have no
+  current source-builder entry. Retired integration ids remain as compatibility fences.
+  Engine suppression of old default-pipeline rules and the retired `pr-merge-sweep`
+  special case remain policy in mechanism. No automatic reflection playbook ships.
 
-**Behaviour that contradicts the docs**
+Installed-bundle drift is deliberate operator state, not a startup repair bug. Only
+explicit doctor fixes or imports refresh it. Optional frontmatter `enabled: true`
+does not install or activate a bundle; for example GitHub triage remains opt-in and
+its commands are bound to the agent-queue repository.
 
-- **`update-source` sets an activation `ready` directly** (`playbook_commands.py`
-  ~670–679), bypassing health evaluation and the activate blockers; the concepts page
-  says it is not a shortcut around deliberate activation.
-- **No cooldown or concurrency cap.** `engine.py` (~520) says `PlaybookManager` applies
-  role shadowing, cooldown and a concurrency cap; that class no longer exists and V2
-  dispatch applies none of them.
-- **Timer docstring.** `src/timer_service.py` says interval timers fire on startup and
-  are not persisted; the code persists to `timer_state.json` and does not fire on boot.
+## 7. Recent changes and historical proposals
 
-**Events and scale**
+The six-week history through 2026-10-22 includes these landed changes:
 
-- **Run events cannot chain.** The engine emits `playbook.v2.run.started`,
-  `playbook.v2.step.completed` and `playbook.v2.run.finished`, none of which is in
-  `src/event_schemas.py`; the registered `playbook.run.completed` / `failed` are never
-  emitted. One playbook cannot trigger on another's completion.
-- **Every event scans every activation** and loads each ready artifact, with no trigger
-  prefilter.
-- **Double runs across scopes.** A playbook active at system and project scope runs
-  twice for one event; dispatch does not shadow.
-- **Dedupe is per delivery.** The bus mints a random `event_id` per emit, so emitting
-  the same fact twice starts two runs.
+- V1 retirement and deliberate receipt-based installation (`3b6fb9578`, `1c0400b35`).
+- Tool-free headless LLM execution, mandatory routing and agent cron; sleeping an
+  instance now cancels its cron schedules (`49a6e9c1f`; later sleep cancellation).
+- Reusable building blocks: generated command discovery, encrypted private values,
+  collection expressions, nested loops, immutable observations, durable state and
+  notification episodes, plus script steps backed by durable jobs. The F2 landing
+  and F3 acceptance/handoff are present (`1be42a5e7`, `43b83dbdb`).
+- Ordinary-process script execution with default storage roots and opt-in runtime
+  digest manifests (`53d161b35`); private-value key provisioning (`36b3f6603`).
+- Train policy controls (`1591e818f`) and release of pending dispatch claims on runtime
+  shutdown (`ee36726bc`).
 
-**Policy in code**
+See [authoring and rollout](../../guides/playbook-building-blocks.md) for current
+feature gates, limits, key setup and rollback. These features are no longer pending
+refactor work, and the watch still does not join the initial installation set.
+The old 2026-10-20 task-state snapshot has been removed: task states and vault review
+statuses are not a durable description of shipped behavior.
 
-- `engine.py` (~586–593) suppresses three default-pipeline review rules by name, and
-  `services.py` (~272–275) special-cases `pr-merge-sweep`. Both are policy living in the
-  mechanism.
-
-**Shipped content**
-
-- **Bundles without sources:** supervisor-digest, supervisor-hourly-report and
-  blocked-task-escalation (sources deleted in `1c0400b35`; not in the rebuild script's
-  list). `src/main.py` gates hourly-report readiness on a playbook that is never
-  installed by default.
-- **Sources without bundles:** root-train and parent-integration (both copies).
-  `INTEGRATION_LIFECYCLE_PLAYBOOK_IDS` still names the retired `hierarchical-delivery`
-  and `root-integration-train`, kept to fence surviving activations.
-- **Upgrades leave stale vault copies.** Nothing refreshes a drifted bundle at startup,
-  and the doctor check covers only bundles already installed.
-- **The rebuild is manual.** No CI step or daemon runs the rebuild script; its output is
-  copied by hand.
-- **github-issue-triage** says `enabled: true` in frontmatter but ships inactive, and
-  hard-codes the project and repository in `github_issue_commands.py`.
-- **object-loop traces are stale.** `traces.json` pins artifact `e9a2e756…` while the
-  bundle's `artifact.sha256` is `e1630040…` (re-stamped in `122f3333b` without
-  re-recording). The guide names commands that do not exist (`aq playbook v2-import`,
-  `aq object_loop inputs`).
-
-**Dead and half-built code**
-
-- `src/orphan_workflow_recovery.py` (~690 lines) is never constructed (only a `hasattr`
-  guard in `core.py`) and calls V1 queries that no longer exist.
-- `engine.py` (~1036) notes "Projection tasks are not yet created by the V2 engine".
-- `src/playbooks/profiles.py` has no importer in `src/`; `resume_handler.py` has unused
-  aliases; `pipeline_lowering.py` is only on the `update-source` and shadow-compile
-  paths; `ensure_default_agent_type_playbooks` reads a directory that does not exist;
-  the V1 `src/playbook_schema.json` survives for one test.
-- Stale comments: `PlaybookManager` in `timer_service.py` and `routing.py`;
-  `acknowledge_diff` in the `playbook_activate` docstring; `stop_task` called
-  "uncontracted" in `executors/agent_task.py`; `task.failed` called the reflection
-  playbook's trigger in `orchestrator/execution.py` and `sessions/reconciler.py`.
-
-**Designs that were never built**
-
-- **Sandboxed playbooks** ([design](../design/sandboxed-playbooks.md)): no playbook-level
-  `profile_id`; V2 scopes capability per step instead.
-- **Reflection** ([spec](../reflection.md)): superseded; no reflection playbook ships,
-  and the vault template is V1-shaped.
-- **Mandatory triage** ([design](../../superpowers/specs/2026-08-31-mandatory-triage-playbook-design.md)):
-  superseded by required routing and `src/routing/`.
-
-**Stale docs**
-
-- [Concepts](../../concepts/playbooks.md) says first install brings "exactly six"
-  playbooks and omits stuck-task-watch (it is seven, six activated), and implies only
-  ci-main-sentinel ships a project bundle (github-issue-triage and object-loop do too).
-- [Module reference](../../reference/modules/playbooks.md) says only routing is required
-  (three are).
-- `profile.md` lists V1 modules (`compiler`, `runner`, `manager`, …) that are gone.
-- [Trust and ops](../design/trust-and-ops.md) says startup refreshes drifted bundles.
-- [Default tuning](../../guides/default-tuning.md) and the
-  [blocked-task escalation design](../../superpowers/specs/2026-09-06-blocked-task-escalation-design.md)
-  call blocked-task-escalation shipped and enabled.
-- Retired ids (`hierarchical-delivery`, `root-integration-train`, `coding-reflection`,
-  `pr-merge-sweep`, `task-outcome`, `code-quality-gate`) still appear in generated command
-  pages, runbooks and the [V1 design](../design/playbooks.md).
-- The rebuild script's docstring speaks of "two of the four shipped playbooks" (it lists
-  12), and the AGENTS.md step "update the manifest.md digests" is now done by the script.
-
-## 7. Planned work
-
-Snapshot taken 2026-10-20 by a read-only query of the open `agent-queue` tasks and the
-vault specs. Vault specs are not in this repository; their review id and state are
-quoted as they stood that day.
-
-**The headline:** the reusable-building-blocks refactor is complete in the task graph
-but not on the development branch. Its implementation epic `bright-grove-21` (leaves
-A1–F2) completed 2026-10-19, and `agile-stone-80` (merge F2 and land) completed
-2026-10-20 with CI green at `cbe588a70` (PR #1689), but its integration checkpoint is
-still `working` and the branch is not an ancestor of `22cffd1b7`. Most open playbook
-work waits for that landing. On the refactor branch only:
-
-- generated command descriptors, so every `CommandHandler` command becomes callable from
-  a playbook except `run_command`, `shutdown`, `restart_daemon` and `update_and_restart`;
-- encrypted private values, filter/map/len/diff expressions, durable nested `foreach`;
-- `doctor_run` and immutable observation snapshots with paging;
-- durable playbook-local state with notify-once;
-- a `script` step backed by durable jobs (`src/jobs/`);
-- migrations `a00000000103`–`108`;
-- a rewritten `stuck-task-watch` (pure reviewed Markdown) plus a new
-  `stuck-task-watch-reminder` bundle, with every shipped bundle's digests changed;
-- guides `playbook-building-blocks`, `playbook-script-runner`, `playbook-state`,
-  `observation-snapshots`.
-
-### 7.1 Open tasks that change playbooks
-
-| Task | State | What it changes |
-|---|---|---|
-| `wise-orbit-24` — refactor F3: acceptance, migration and rollback rehearsal, activation handoff | BLOCKED (on the landing, recorded only in its text) | End-to-end acceptance on this box, a migration and rollback rehearsal, and deliberate install and activation, including private-value key setup so generated invocation works. Real-host isolation acceptance was dropped. |
-| `agile-vault-38` — playbook scripts refused by default | fixed on its branch | Scripts failed with `script_storage_or_runtime_unconfigured` unless four `scripts.*` roots were set. The roots now default under `~/.agent-queue/scripts/`, host executables run without a manifest, digest pinning is opt-in through `runtime_manifest`, and the module is `src/jobs/script_runner.py`. Script steps still need `resources.jobs.enabled`, which defaults off. |
-| `clear-impact-72` — evaluate rewriting shipped playbooks onto the new building blocks | IN_PROGRESS; `.1`–`.11` READY, each blocked on `agile-stone-80` | One evaluation per bundle: ci-main-sentinel, default-assignment-routing, default-pipeline, github-issue-triage, morning-report, object-loop, promotion-continuous, promotion-request, provider-failover, provider-usage-probe, supervisor-failure-triage, using stuck-task-watch as the reference. A yes writes a vault plan `plans/2026-10-20-playbook-rewrite-<id>.md` and files one task; a no records why. None edits a playbook. The three source-less bundles are not covered. |
-| `nimble-lantern-37.2` — held ingestion L5.2 | READY | default-pipeline gains `fidelity-review-on-held` and `release-on-receipt`; the spec-ingest text changes; the `task_batch_commit` grant leaves the spec-ingest profile; the bundle is rebuilt. Ships with L1.2. `nimble-lantern-37.3` (DEFINED) documents it. |
-| `stark-willow-95.17` — fast smooth integration S4 | DEFINED | Aligns shipped factory policy, prime, templates, skills and reviewed bundles with the new integration contract; deprecates `cadence_seconds` and `settling_cap_seconds`; adds a ratchet; rebuilds the reviewed policy artifacts. |
-| `bold-zenith-11.22` — hibernation cutover | READY | Refuses v1 wait bodies (`wait.upgrade_required`), which touches playbook wait steps; doctor checks and a runbook. |
-| `sharp-cascade-53.2`, `calm-orbit-69.3` | PAUSED / DEFINED | Held-ingestion recovery and CLI; indirect. |
-| `eager-vault-55` — system map part 2 | IN_PROGRESS | This page and its 17 siblings. |
-
-### 7.2 In-flight specs
-
-| Spec | State on 2026-10-20 | What it changes |
-|---|---|---|
-| Playbooks can do anything: reusable building blocks (vault, `specs/2026-10-12-playbooks-can-do-anything-reusable-building-blocks.md`) | approved, `rev-steady-ridge` revision 1 | The design behind the refactor above. Acceptance: the stuck-task watch as pure reviewed Markdown with no watch-specific Python. Not permission to activate. |
-| Its implementation spec (vault, `specs/2026-10-12-implementation-playbooks-reusable-building-blocks.md`) | approved, `rev-smart-flare` revision 1 | Leaves A1–F3 and the limits: snapshots 30 min, 500 rows / 192 KiB a page, quotas refused rather than evicted; expressions depth 10; nested loops depth 4; state 256 KiB a value, 10k keys. Rollout starts disabled, and the watch never joins the default install. Its sandbox sections (bubblewrap, cgroups) are stale; see the next row. |
-| No-sandbox decision (vault, `specs/2026-10-14-playbook-scripts-no-sandbox-decision.md`) | decision notes, no review | Drops namespace, cgroup and network isolation, the launcher and the doctor gate. Keeps script/argv/shell steps with data inputs, timeouts, output caps, JSON binding, and a switch that defaults on. |
-| Deliberate playbook installation and project policy (vault, `specs/2026-10-11-deliberate-playbook-installation-and-project-policy.md`) | approved, `rev-fresh-journey` revision 1 | Implemented (`3b6fb9578`, `1c0400b35`): section 3.3.5. |
-| Shared rules, subgraphs and view (vault, `plans/2026-10-11-playbook-graph-shared-rules-subgraphs-and-view.md`) | draft, no review, no task | object-loop compiles to five copies of a 21-step sweep (105 steps, 295 edges). Phases: multi-trigger rules; subgraph inline frames (risky); failure edges as a hover glyph; per-container layout. Suggested order 1, 4, 3, 2. Not built anywhere. |
-| Fast smooth integration, rev3 playbook policy (vault, `specs/2026-10-13-fast-smooth-integration-rev3-playbook-policy.md`, folded into `specs/2026-10-12-fast-smooth-integration.md`) | decision notes; the spec's review `rev-fair-lantern` is approved at revision 2 while its text is revision 3 | Train policy becomes a per-project playbook over daemon primitives, and the playbook is the on/off switch; required checks become playbook data; "green wins"; every wait has a due time. Carried out by `stark-willow-95`. |
-| Spec ingestion held batches (vault, `2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md`) | approved, `rev-agile-beacon` revision 1 | Source of `nimble-lantern-37` and the default-pipeline change above. |
-| Agent Queue system inventory (vault, `2026-10-20-agent-queue-system-inventory.md`) | in review, `rev-bright-rapids` revision 1 | The frame for this page. |
-
-Implemented recently and listed here for orientation: mandatory task routing (vault
-`2026-09-28-mandatory-task-routing.md`, `rev-vivid-impact`, built in `56f919ffb`); the
-risk-aware routing revision and its activation handoff (`2026-10-09`, `rev-azure-flare`
-and `rev-wise-impact`; repo
-[risk-aware routing](../../superpowers/specs/2026-10-09-risk-aware-routing/README.md));
-integration policy tables
-([repo spec](../../superpowers/specs/2026-10-02-integration-policy-tables.md),
-`0bed9c77d`); the morning report (`2026-09-24`, built in `612060e0e`; its `-2` revision
-`rev-azure-current` was withdrawn); the project-defaults playbook (`2026-09-27`,
-`rev-crisp-nexus` revision 2 and `rev-eager-grove` revision 1, built as the vault's
-`system/playbooks/project-defaults.md`; the companion design's `rev-wise-nexus` was
-withdrawn although its frontmatter still says `in_review`).
+The [V1 playbook design](../design/playbooks.md),
+[sandboxed-playbook design](../design/sandboxed-playbooks.md),
+[reflection spec](../reflection.md) and dated held-ingestion/shared-subgraph proposals
+are historical records. The checked-in graph still has one trigger per rule and no
+shared subgraph frames; `object-loop` therefore contains five rule-local sweeps.
+Do not infer implementation or permission to activate from a proposal's approval.
 
 ## 8. Further reading
 
