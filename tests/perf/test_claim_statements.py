@@ -46,6 +46,7 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.dialects import postgresql
 
+from src.claim_file import remove_claim_file_if_matches
 from src.models import (
     Agent,
     AgentProfile,
@@ -60,6 +61,7 @@ from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 from tests.db_fixtures import lease_dsn
 from src.config import DatabaseConfig
+from src.database.tables import task_session_attempts, tasks
 
 pytestmark = pytest.mark.perf
 
@@ -72,6 +74,19 @@ NOW = time.time()
 #: these, so a pre-read added without updating this constant would otherwise
 #: be charged to the transaction.
 _OUTER_PRE_READS = 3
+
+
+@pytest.fixture(autouse=True)
+def _await_whole_preparation(monkeypatch):
+    """Count every claim's statements to completion, never a wall-clock cut.
+
+    ``_cmd_task_claim`` answers ``claim_in_progress`` once preparation
+    outlives ``_PREPARATION_RESPONSE_SECONDS`` (0.5s), leaving the rest of
+    it running outside the statement and transaction counters. Every claim
+    in this module asserts ``claimed`` and measures statements, transactions
+    or a floor-relative latency, so a loaded runner must not decide the result.
+    """
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60.0)
 
 
 def _over(n: int, budget: int, statements) -> str:
@@ -119,6 +134,9 @@ async def build_handler(any_db, tmp_path):
     orch._run_completion_pipeline = AsyncMock(return_value=(None, True))
     orch.bus.emit = AsyncMock()
     orch.register_settlement_listener()
+    # The cycle refreshes router readiness before any claim reads it
+    # (mandatory routing §9.1); measure the steady state, not the first read.
+    await orch.router_readiness.refresh()
     return CommandHandler(orch, cfg)
 
 
@@ -230,77 +248,13 @@ class _ExplainingConn:
 
 class TestClaimStatementBudgets:
     async def test_claim_happy_path_statement_budget(self, any_db, tmp_path):
-        """Whole ``task_claim`` happy path (slot reset stubbed).
+        """Whole task_claim stays within 20 statements, including diagnostics.
 
-        **Measured on PostgreSQL: 20.**  The trace, statement by statement:
-
-        *Outer admission loop (3).*  1 the session+profile join (one read
-        for both — spec §15); 2 ``touch_session_activity``, the durable
-        proof that an idle worker's claim loop is alive when a long poll
-        leaves the harness silent for its whole wait window; 3 the project
-        read that ``_admission_reason`` judges.  ``max_event_id`` is
-        skipped because ``wait == 0``.  All three share one pooled
-        connection — see ``CLAIM_TRANSACTIONS``.
-
-        *The claim transaction (10, statements 4-13).*  Asserted separately
-        by ``test_claim_transaction_statement_budget`` below, which
-        subtracts exactly the three outer pre-reads above.
-
-        *Preparation and activation (7, statements 14-20).*  14
-        ``claim_preparation_is_current`` — one join re-proving the task and
-        session fences before any filesystem work; 15
-        ``_prepare_and_activate``'s project re-read, which decides whether
-        the claim takes the hierarchical-integration branch path from the
-        project's *current* ``hierarchical_integration_mode`` (the outer
-        loop's read may be a full ``--wait`` old by then), taken on 13's
-        connection; 15-16 ``activate_claim``'s two ``FOR UPDATE`` locks,
-        taken session-then-task in the same order as claim and release so
-        activation cannot deadlock against them, the task one also reading
-        ``branch_name``; 18 the activation CAS (``UPDATE sessions …
-        RETURNING``, so the caller needs no re-read); 19 the stale-metadata
-        delete: the ``needs_attention`` warning an earlier prepare/release
-        left — the *only* clear on the ``preparing`` retry path, which
-        re-activates a task already IN_PROGRESS and so never reaches
-        ``_apply_transition``'s copy at statement 9 — together with the
-        pause checkpoint and prepare-backoff ladder, which go stale at
-        exactly this boundary (``activate_claim``'s
-        ``clear_preparation_metadata``); 20 ``tasks.branch_name``,
-        publishing the branch the slot reset just created past every
-        activation guard and under the task row lock already held (skipped
-        when the row already names that branch — a resume, or a hierarchy
-        claim whose branch is pinned at filing).
-
-        What went, historically: the separate ``get_profile`` read;
-        ``max_event_id``; ``take_claim_slot``'s re-read (now
-        ``UPDATE … RETURNING``); the epoch-bump CAS, the transition pre-read
-        and the post-write task re-read (all folded into one fenced
-        ``UPDATE … RETURNING`` through ``_apply_transition``);
-        ``_apply_transition``'s 5-statement blocked-state recompute
-        (``projection_stable`` — no clause of ``blocked_predicate()`` can
-        tell READY from IN_PROGRESS); one of the two metadata upserts
-        (batched); ``get_workspace_for_agent`` (``record_holder`` returns
-        the row); the post-activation session re-read; and
-        ``_claimed_response``'s whole ``task_show`` payload build (~10 — it
-        now returns the task row; ``aq task show`` is the full view).  Then
-        ``clear_claim_preparation_metadata``'s second, value-scoped
-        ``needs_attention`` delete, which statement 18 had already made
-        redundant.  Most recently that method itself: its remaining delete
-        is statement 19's ``IN`` list, inside the activation transaction.
-
-        What arrived: the §10 work query became two statements rather than
-        one on 2026-09-09.  See ``select_ready_for_profile`` for why — in
-        short, the affinity ``CASE`` it used to lead its ``ORDER BY`` with
-        cannot come from an index, so a ``LIMIT 1`` had to evaluate the whole
-        frontier predicate for every candidate row and top-N sort the result
-        (~10,100 shared buffers at this fixture's scale).  Split in two, each
-        half sorts by ``priority, created_at`` alone and is an index-ordered
-        scan that stops at row one: 13-15 buffers for the pair, and the
-        pinned half costs 1-2 of those when nothing is pinned to the claiming
-        agent.  A statement here buys back ~11 ms of query, and this file's
-        own accounting is why that is worth it rather than obviously so: one
-        statement on a held connection was 0.46-0.54 ms on the box
-        ``test_claim_release_latency_against_the_wire_floor`` was measured
-        on.
+        The admission pre-reads cost three; holder recording chains the
+        session and workspace writes through a RETURNING CTE. Preparation
+        reads its fence and fresh project in one joined query. Metadata
+        writes use one PostgreSQL upsert, including candidate claim timing.
+        No budget is increased to accommodate that timing persistence.
         """
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
@@ -313,6 +267,20 @@ class TestClaimStatementBudgets:
         print(f"\ntask_claim happy path: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
+    async def test_claim_timing_metadata_write_is_one_statement(self, any_db, tmp_path):
+        """First timing persistence must cost the same as replacing it."""
+        await _seed_worker_scale(any_db)
+        sid, _wd = await pool_session(any_db, tmp_path)
+        handler = scoped(await build_handler(any_db, tmp_path), sid)
+        assert (await handler._cmd_task_claim({"next": True}))["result"] == "claimed"
+        task_id = (await any_db.get_session(sid)).task_id
+        await any_db.delete_task_meta(task_id, "claim_timing")
+        for total in (1.0, 2.0):
+            async with count_statements(any_db) as c:
+                await any_db.set_task_meta(task_id, "claim_timing", {"total_seconds": total})
+            assert c["n"] == 1, _over(c["n"], 1, c["statements"])
+            assert await any_db.get_task_meta(task_id, "claim_timing") == {"total_seconds": total}
+
     async def test_claim_transaction_statement_budget(self, any_db, tmp_path):
         """The claim transaction alone — spec §15's "≤ 6 logical statements".
 
@@ -320,7 +288,7 @@ class TestClaimStatementBudgets:
         ``_attempt_claim``'s ``immediate()`` block plus the outer loop's
         three pre-reads, which are then subtracted.
 
-        **Measured on PostgreSQL: 10**, in order: the slot CAS
+        **Measured on PostgreSQL: 9 before claim timing**, in order: the slot CAS
         (``UPDATE sessions … RETURNING``); the §10 work query, which is two
         statements — the affinity-pinned frontier and then, when nothing is
         pinned to this agent, the frontier at large (``select_ready_for_profile``
@@ -332,8 +300,8 @@ class TestClaimStatementBudgets:
         claim_epoch+1 … RETURNING`` through ``_apply_transition``);
         ``_apply_transition``'s ``needs_attention`` delete, which retires the
         previous operational incident for every execution path that reaches
-        IN_PROGRESS, push or pull; ``record_holder``'s session write and its
-        workspace ``UPDATE … RETURNING``; the batched two-key metadata
+        IN_PROGRESS, push or pull; ``record_holder``'s chained session/workspace
+        ``UPDATE … RETURNING``; the batched two-key metadata
         upsert; and the durable ``task_session_attempts`` insert that gives
         every pool claim restart/audit history.  Transaction boundaries are
         not cursor statements on PostgreSQL, so no ``BEGIN``/``COMMIT`` is
@@ -346,7 +314,7 @@ class TestClaimStatementBudgets:
 
         prepared = {}
 
-        async def _fake_prepare(session, row, task, cap=None, *, slot=None):
+        async def _fake_prepare(session, row, task, cap=None, *, slot=None, admission=None):
             prepared["task"] = task
             return {"success": True, "result": "claimed", "task": None, "claim_epoch": None}
 
@@ -401,7 +369,8 @@ class TestClaimStatementBudgets:
         print(f"\nno_ready_work: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
-    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path):
+    @pytest.mark.parametrize("recovery_hold", ["none", "stale", "current"])
+    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path, recovery_hold):
         """Both halves of the §10 work query stop at the first row.
 
         The statement budgets above count statements; this counts what one
@@ -432,26 +401,63 @@ class TestClaimStatementBudgets:
         (ANALYZE, BUFFERS)`` on the way past -- so a rewrite that keeps the
         budget by moving work into a sub-plan is still caught.
         """
+        # Reproduce statistics collected before the recovery history exists,
+        # rather than relying on when autovacuum happens to analyze this lease.
+        async with any_db._engine.begin() as conn:
+            await conn.execute(text("ANALYZE task_session_attempts"))
         await _seed_worker_scale(any_db)
-        # ``profile_id`` == the project default takes the widened
-        # ``profile_id = :p OR profile_id IS NULL`` branch, which is the half
-        # that cannot use a leading index column and needs the profile-free
-        # ``idx_tasks_claim_frontier``.  Assert both branches.
-        for default_profile in ("worker", "other"):
+        # Every arm gets real history, including the arm without a hold.
+        # An empty attempt table can legitimately use a cheap scan/sort in
+        # an unexecuted subplan; history exercises the ordered index lookup.
+        started = time.time() + 1
+        async with any_db._engine.begin() as conn:
+            await conn.execute(task_session_attempts.insert(), [{
+                "id": f"attempt-{i:03}", "session_id": f"session-{i}",
+                "task_id": "seed-1", "project_id": PROJECT_ID,
+                "profile_id": "worker", "name": "worker", "lifecycle": "task",
+                "harness": "codex", "provider": "fake", "state": "stopped",
+                "work_dir": "/unused", "started_at": started,
+                "session_started_at": started, "ended_at": started + 1,
+            } for i in range(128)])
+        if recovery_hold != "none":
+            # Exercise the recovery subplan, including its deterministic ID
+            # tie-break, instead of only explaining an empty attempt table.
+            async with any_db._engine.begin() as conn:
+                await conn.execute(tasks.update().where(tasks.c.id == "seed-1").values(priority=-1))
+            await any_db.set_task_meta("seed-1", "supervisor_recovery_incident", {
+                "decision": "hold", "claim_epoch": 0,
+                "attempt_id": "attempt-000" if recovery_hold == "stale" else "attempt-127",
+            })
+        # Measure the seeded queue, independently of when autovacuum runs or
+        # which earlier fixture occupied this leased database. Statistics
+        # collection is fixture setup, outside the explained claim queries.
+        async with any_db._engine.begin() as conn:
+            await conn.execute(text(
+                "ANALYZE tasks, task_dependencies, task_session_attempts, task_metadata"
+            ))
+        # The route filter differs with the project's router readiness
+        # (mandatory routing §9.1): ``route_source IN (router, override,
+        # role)``, widened by ``legacy`` while the router is not ready.
+        # Assert both forms.
+        for router_ready in (True, False):
             async with any_db._engine.begin() as conn:
                 explaining = _ExplainingConn(conn)
                 tid = await any_db.select_ready_for_profile(
                     explaining,
                     project_id=PROJECT_ID,
                     profile_id="worker",
-                    default_profile_id=default_profile,
                     agent_id="agent-1",
+                    router_ready=router_ready,
                 )
             assert tid is not None
+            if recovery_hold == "stale":
+                assert tid == "seed-1"
+            elif recovery_hold == "current":
+                assert tid != "seed-1"
             budget = 64
             total = sum(plan.buffers for plan in explaining.plans)
             print(
-                f"\n§10 work query (default_profile={default_profile!r}): "
+                f"\n§10 work query (router_ready={router_ready!r}): "
                 f"{len(explaining.plans)} statements, {total} shared buffers "
                 f"(budget {budget})"
             )
@@ -495,7 +501,7 @@ class TestClaimStatementBudgets:
             await any_db.release_claim(
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
-        budget = 9
+        budget = 10  # +1: release the task's fenced ref leases (git-first BranchLock)
         print(f"\nrelease_claim: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
@@ -531,9 +537,7 @@ class TestClaimStatementBudgets:
                 )
             )
         for i in range(3):
-            await any_db.create_project(
-                Project(id=f"proj-{i}", name=f"p{i}", default_profile_id="worker-0")
-            )
+            await any_db.create_project(Project(id=f"proj-{i}", name=f"p{i}"))
 
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
@@ -547,6 +551,7 @@ class TestClaimStatementBudgets:
         orch = Orchestrator(cfg)
         orch.db = any_db
         orch.bus.emit = AsyncMock()
+        await orch.router_readiness.refresh()  # the cycle's, as in production
 
         async with count_statements(any_db) as c:
             await orch._reconcile_pools()
@@ -571,7 +576,7 @@ class TestClaimStatementBudgets:
 #: worth of wire without moving a single statement budget.
 CLAIM_STATEMENTS = 20
 CLAIM_TRANSACTIONS = 4
-RELEASE_STATEMENTS = 9
+RELEASE_STATEMENTS = 10  # includes the fenced-lease release
 RELEASE_TRANSACTIONS = 2
 ROUND_TRIP_STATEMENTS = CLAIM_STATEMENTS + RELEASE_STATEMENTS
 ROUND_TRIP_TRANSACTIONS = CLAIM_TRANSACTIONS + RELEASE_TRANSACTIONS
@@ -701,8 +706,8 @@ class TestClaimLatency:
         nothing awaited between them, strictly before the long poll, so
         nothing is held across a sleep); ``_attempt_claim``'s
         ``immediate()`` block; ``_prepare_and_activate``'s block
-        (``claim_preparation_is_current`` and the project re-read, likewise
-        back to back, under the task control lock); and ``activate_claim``'s
+        (``claim_preparation_state`` joins the current project under the
+        task control lock); and ``activate_claim``'s
         ``immediate()`` block.  Release is two: ``release_claim``'s own
         block, and the ready listener's post-commit ``get_task``.
 
@@ -817,10 +822,17 @@ class TestClaimLatency:
             started = time.perf_counter()
             res = await h._cmd_task_claim({"next": True})
             assert res["result"] == "claimed"
-            await any_db.release_claim(
+            released = await any_db.release_claim(
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
+            # The command layer normally retires the exact released marker.
+            # This benchmark calls the database transition directly.
+            assert released.released
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
             times.append(time.perf_counter() - started)
+            # The benchmark calls the database release directly, so it must
+            # also perform the CLI's claim-file cleanup before reusing the slot.
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
         after = await measure_wire_floor(any_db)
 
         transaction_s = (before[0] + after[0]) / 2
