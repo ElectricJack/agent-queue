@@ -1,10 +1,15 @@
 .envrc
 .worktrees/
 __pycache__/
+.hypothesis/
 *.egg-info/
 .venv/
 *.pyc
-.claude
+# Claude Code per-checkout state stays local; the repo-level hook settings
+# (graft) are shared. Ignore the contents, not the directory, so the
+# negation below can re-include settings.json.
+**/.claude/*
+!/.claude/settings.json
 *.db
 *.db-shm
 *.db-wal
@@ -19,13 +24,15 @@ docs_out/
 eval_results
 .agent-queue-lock
 archived_tasks/
-.claude
 plan.md
-.claude
 
 # Frontend
 node_modules/
 dashboard/dist/
+dashboard/layout-checks/.out/
+# Staged by `aq install` (dashboard.build) or scripts/build_release_artifact.py.
+src/dashboard_assets/dist/
+src/dashboard_assets/.aq-dashboard-source
 dashboard/.vite/
 *.tsbuildinfo
 packages/aq-ts-client/src/
@@ -47,3 +54,6 @@ coverage.json
 htmlcov/
 # TypeScript incremental build metadata
 *.tsbuildinfo
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

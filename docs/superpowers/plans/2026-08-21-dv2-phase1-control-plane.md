@@ -1,5 +1,12 @@
 # Dashboard v2 Phase 1: Control Plane Core Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the bulletproof routing control plane: every new task is born unrouted (routing gate + triage task), a deterministic `kind: pipeline` playbook engine attaches gates and coalesces triage without any LLM in the loop, a triage agent resolves routing via `task_route`, and tasks only reach READY once a profile + intelligence class (and workspace when needed) are pinned.

@@ -1,16 +1,25 @@
 # Task modules
 
-This catalog covers the production modules owned by the [tasks concept page](../../concepts/tasks.md). Paths are source links; tests are focused entry points rather than an exhaustive test index.
+This catalog covers task lifecycle and graph modules from the
+[tasks concept page](../../concepts/tasks.md), plus the document-review service
+described in the [operator guide](../../guides/reviews.md). Paths are source links;
+tests are focused entry points rather than an exhaustive test index.
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [src/deliverables.py](../../../src/deliverables.py) | Normalizes declared deliverables and evaluates close-time local evidence. | [Tasks](../../concepts/tasks.md) | `tests/test_deliverables.py` |
 | [src/explain.py](../../../src/explain.py) | Produces structured capacity and readiness explanations for a task. | [Tasks](../../concepts/tasks.md) | `tests/test_explain.py` |
 | [src/review_keys.py](../../../src/review_keys.py) | Recognizes tasks whose work product is a review verdict. | [Tasks](../../concepts/tasks.md) | Task lifecycle support; see task command tests. |
-| [src/state_machine.py](../../../src/state_machine.py) | Defines intended status transitions and validates blocking dependency cycles. | [Tasks](../../concepts/tasks.md) | `tests/test_state_machine.py` |
+| [src/reviews/__init__.py](../../../src/reviews/__init__.py) | Marks the document-review service package. | [Document reviews](../../guides/reviews.md) | Package marker; behavior lives in the sibling modules. |
+| [src/reviews/diff.py](../../../src/reviews/diff.py) | Computes block-level Markdown diffs between document revisions. | [Document reviews](../../guides/reviews.md) | `tests/test_review_diff.py` |
+| [src/reviews/notifier.py](../../../src/reviews/notifier.py) | Delivers each submitted document-review revision through the durable notification outbox. | [Document reviews](../../guides/reviews.md) | `tests/test_review_notifier.py` |
+| [src/reviews/service.py](../../../src/reviews/service.py) | Implements document-review submission, revision, decisions, comments, delegation, withdrawal, and vault synchronization. | [Document reviews](../../guides/reviews.md) | `tests/test_review_service.py` |
+| [src/reviews/vault.py](../../../src/reviews/vault.py) | Renders, hashes, parses, and atomically writes document-review vault copies. | [Document reviews](../../guides/reviews.md) | `tests/test_review_vault.py` |
+| [src/state_machine.py](../../../src/state_machine.py) | Defines authoritative status transitions and validates blocking dependency cycles. | [Tasks](../../concepts/tasks.md) | `tests/test_state_machine.py` |
 | [src/task_names.py](../../../src/task_names.py) | Mints memorable root and dotted child task identifiers with depth limits. | [Tasks](../../concepts/tasks.md) | `tests/test_hierarchy_ids.py` |
 | [src/task_summary.py](../../../src/task_summary.py) | Renders and writes a completion summary note to the vault. | [Tasks](../../concepts/tasks.md) | Completion and archive tests cover its callers. |
 | [src/task_graph/__init__.py](../../../src/task_graph/__init__.py) | Exposes the task-graph package's public graph model surface. | [Tasks](../../concepts/tasks.md) | `tests/test_task_graph.py` |
+| [src/task_graph/integration_dependencies.py](../../../src/task_graph/integration_dependencies.py) | Orders dependency cohorts used by development and epic integration. | [Tasks](../../concepts/tasks.md) | `tests/test_epic_dependencies.py`. |
 | [src/task_graph/models.py](../../../src/task_graph/models.py) | Defines the in-memory graph document, nodes, dependencies, contexts and parse findings. | [Tasks](../../concepts/tasks.md) | `tests/test_task_graph.py` |
 | [src/task_graph/parser.py](../../../src/task_graph/parser.py) | Parses JSON/YAML graph documents and extracts fenced graphs from specs. | [Tasks](../../concepts/tasks.md) | `tests/test_task_graph.py` |
 | [src/task_graph/validator.py](../../../src/task_graph/validator.py) | Validates graph structure, dependencies, variables and vault-contained spec references. | [Tasks](../../concepts/tasks.md) | `tests/test_task_graph.py`, `tests/test_hierarchy_graph_creator.py` |
@@ -19,6 +28,7 @@ This catalog covers the production modules owned by the [tasks concept page](../
 | [src/task_graph/layout/__init__.py](../../../src/task_graph/layout/__init__.py) | Re-exports the stable layout data types used by server-side graph layout. | [Tasks](../../concepts/tasks.md) | `tests/task_graph/layout/` |
 | [src/task_graph/layout/model.py](../../../src/task_graph/layout/model.py) | Defines snapshots, persisted rows, scopes, translations and write sets for layout. | [Tasks](../../concepts/tasks.md) | `tests/task_graph/test_layout_driver.py` |
 | [src/task_graph/layout/constants.py](../../../src/task_graph/layout/constants.py) | Centralizes deterministic geometry, ranking and work-budget constants. | [Tasks](../../concepts/tasks.md) | `tests/task_graph/layout/` |
+| [src/task_graph/layout/ordering.py](../../../src/task_graph/layout/ordering.py) | Seeds root tidy order by phase, subtree activity, creation time and id. | [Tasks](../../concepts/tasks.md) | `tests/task_graph/layout/test_ordering.py` |
 | [src/task_graph/layout/order_key.py](../../../src/task_graph/layout/order_key.py) | Generates sortable fractional order keys between neighboring layout items. | [Tasks](../../concepts/tasks.md) | `tests/task_graph/layout/test_order_key.py` |
 | [src/task_graph/layout/layering.py](../../../src/task_graph/layout/layering.py) | Breaks layout-only cycles and computes minimum dependency ranks. | [Tasks](../../concepts/tasks.md) | `tests/task_graph/layout/test_layering.py` |
 | [src/task_graph/layout/flow.py](../../../src/task_graph/layout/flow.py) | Flows ranked siblings into wrapped coordinates and spatial cells. | [Tasks](../../concepts/tasks.md) | `tests/task_graph/layout/test_flow.py` |

@@ -24,15 +24,30 @@ REFERENCE_LINK_RE = re.compile(r"^\s*\[[^\]]+\]:\s*(\S+)", re.MULTILINE)
 HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,}).*?^\s*\1\s*$", re.MULTILINE | re.DOTALL)
 EXTERNAL_SCHEMES = {"http", "https", "mailto", "tel", "data", "javascript"}
+MARKDOWN_SUFFIXES = {".md", ".markdown"}
 
 
 def github_anchor(value: str) -> str:
-    """Return GitHub's stable heading slug for ordinary Markdown headings."""
+    """Return GitHub's stable heading slug for ordinary Markdown headings.
+
+    GitHub slugs the *rendered* heading text: downcase it, drop everything that
+    is not a word character, a hyphen or a space, then map every space to one
+    hyphen.  Two details are easy to get wrong and both produce silently wrong
+    answers rather than loud ones:
+
+    * An underscore is a word character, so ``## `stale_claim`: ...`` anchors as
+      ``stale_claim-...``.  Only an underscore acting as an emphasis delimiter
+      disappears, and GFM emphasis requires a non-word character beside it.
+    * Each space becomes its own hyphen.  ``## 6. Health & Observability``
+      anchors as ``6-health--observability`` — the removed ``&`` leaves two
+      spaces behind, and GitHub keeps both.
+    """
     value = re.sub(r"`([^`]*)`", r"\1", value)
     value = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", value)
-    value = re.sub(r"[*_~]", "", value).strip().lower()
+    value = re.sub(r"[*~]", "", value)
+    value = re.sub(r"(?<!\w)_|_(?!\w)", "", value).strip().lower()
     value = re.sub(r"[^\w\- ]", "", value, flags=re.UNICODE)
-    return re.sub(r"[ ]+", "-", value)
+    return value.replace(" ", "-")
 
 
 def anchors(path: Path) -> set[str]:
@@ -80,10 +95,24 @@ def check_links(paths: Iterable[Path]) -> list[str]:
             target, fragment = resolve_target(source, destination)
             if target is None:
                 continue
-            if not target.is_file():
+            # GitHub renders a repository directory as a browsable relative
+            # link too (for example ``docs/specs/``).  It has no anchors, but
+            # it is a valid destination for a navigation page.
+            if not target.is_file() and not target.is_dir():
                 problems.append(f"{source.relative_to(ROOT)}: {destination}: target does not exist")
                 continue
             if fragment:
+                if not target.is_file():
+                    problems.append(
+                        f"{source.relative_to(ROOT)}: {destination}: directory targets have no anchors",
+                    )
+                    continue
+                # A fragment on a non-Markdown file is GitHub's source-view line
+                # anchor (``#L109``, ``#L12-L20``), not a heading slug.  There
+                # are no headings to compare it against, so checking one here
+                # only invents failures for links that resolve correctly.
+                if target.suffix.lower() not in MARKDOWN_SUFFIXES:
+                    continue
                 target_anchors = anchors_by_path.setdefault(target, anchors(target))
                 if fragment not in target_anchors:
                     problems.append(
@@ -130,7 +159,14 @@ def check_module_coverage(manifest_path: Path, shard: str) -> list[str]:
         if not catalog.is_file():
             problems.append(f"{source}: catalog does not exist: {catalog_value}")
             continue
-        links = catalog_cache.setdefault(str(catalog), catalog_links(catalog))
+        # Do not use ``setdefault`` here: Python evaluates its default before
+        # the call, which reparses a large catalog once per module and makes
+        # the all-shard acceptance check unnecessarily slow.
+        cache_key = str(catalog)
+        links = catalog_cache.get(cache_key)
+        if links is None:
+            links = catalog_links(catalog)
+            catalog_cache[cache_key] = links
         if Path(source) not in links:
             problems.append(f"{source}: missing linked row in {catalog_value}")
     return problems
