@@ -18,6 +18,14 @@ tags: [design, vault, obsidian, structure]
 
 ---
 
+> **Obsolete runtime layout.** The `vault/orchestrator` tree and memory-plugin
+> ingestion described below are historical. Prime still reads project role files at
+> `projects/<id>/agent-types/<profile>/profile.md`; separate retrieval overrides live
+> at `projects/<id>/overrides/<profile>.md` and their indexer is inactive.
+> Knowledge records are database-owned and exported to Markdown. Use the
+> [current vault guide](../../concepts/configuration-and-vault.md) and
+> [system specification](../systems/configuration-and-vault.md) for seeding and watchers.
+
 ## 1. Overview
 
 The vault is a **structured, human-readable knowledge base** at `~/.agent-queue/vault/`
