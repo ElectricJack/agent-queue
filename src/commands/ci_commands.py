@@ -23,6 +23,7 @@ import os
 import time
 from dataclasses import dataclass
 
+from src.task_templates import render_task_template
 from src.git.ci_gate import GREEN, PENDING, RED, UNKNOWN, classify_rollup
 from src.models import TaskStatus
 
@@ -35,7 +36,7 @@ REPAIR_KEY_PREFIX = "ci-baseline"
 ESCALATION_KEY_PREFIX = "ci-baseline-escalation"
 #: Task metadata holding the failure a repair owns (``ci_repair_adopt``).
 REPAIR_RECORD_META = "ci_baseline_repair"
-DEFAULT_MAX_ATTEMPTS = 2
+DEFAULT_MAX_ATTEMPTS = 0
 #: Statuses that mean "this attempt is over and main is still red".
 _SPENT_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED})
 _MAX_LISTED_TESTS = 40
@@ -249,39 +250,21 @@ def render_repair_task(
         if more > 0:
             lines.append(f"- ... and {more} more")
     else:
-        lines += ["", "No pytest node ids could be read from the job logs; read the run."]
+        lines += ["", render_task_template("ci-repair-no-test-ids")]
     if in_flight:
         lines += [
             "",
-            (
-                "Other failures on this branch already belong to in-flight repair "
-                f"task(s) {', '.join(in_flight)}. This task owns only the failures listed "
-                "above; leave the rest to those tasks."
-            ),
+            render_task_template("ci-repair-other-owners", task_ids=", ".join(in_flight)),
         ]
-    lines += [
-        "",
-        "## What to do",
-        f"Make `{ref}` green again with the smallest change that does it. Reproduce the",
-        "failure at the head sha above first; if it does not reproduce, say so in the close",
-        "summary with the evidence and do not change code. Fix the actual defect, not the",
-        "test, unless the test is asserting something that is no longer true. Land the fix",
-        "through a pull request against the default branch; never push to it directly.",
-        "If this project uses an integration train, submit the repair PR for its normal",
-        "review and train collection; do not merge the repair PR yourself. The train owns",
-        "candidate CI, bounded repair, and promotion. Do not create a parallel merge path.",
-        "Do not bundle unrelated work. If the failure is outside this repository's control",
-        "(a runner outage, a rate limit), close with outcome fail and failure-class hard",
-        "and say why, so the sentinel escalates to a human instead of filing another attempt.",
-        "",
-        "## Acceptance criteria",
-        "- The failing checks above pass on the PR head"
-        if not in_flight
-        else "- The failing tests above pass on the PR head",
-        "- The change touches only what the failure required",
-        f"- This is attempt {attempt} for this failure signature",
-    ]
-    return title, "\n".join(lines)
+    return title, render_task_template(
+        "ci-repair",
+        facts="\n".join(lines),
+        ref=ref,
+        attempt=attempt,
+        acceptance=render_task_template(
+            "ci-repair-accept-tests" if in_flight else "ci-repair-accept-checks"
+        ),
+    )
 
 
 def _string_list(value: object) -> list[str] | None:
@@ -294,6 +277,61 @@ def _string_list(value: object) -> list[str] | None:
 
 class CiCommandsMixin:
     """Mixin that adds CI baseline reads to CommandHandler."""
+
+    async def _cmd_ci_completed_status(self, args: dict) -> dict:
+        """Audit recorded COMPLETED sources; unknown CI remains explicit."""
+        from src.integration.completion_ci import (
+            completion_checks, observe_completion_ci, unavailable,
+        )
+        from src.integration.delivery_path import task_repository_url
+
+        project_id = str(args.get("project_id") or "").strip()
+        if not project_id:
+            return {"success": False, "error": "project_id is required"}
+        project = await self.db.get_project(project_id)
+        if project is None:
+            return {"success": False, "error": f"unknown project: {project_id}"}
+        tasks = await self.db.list_tasks(project_id=project_id, status=TaskStatus.COMPLETED)
+        failing, unresolved = [], []
+        cache = {}
+        checked = 0
+        for task in tasks:
+            completion = await self.db.get_task_completion(task.id)
+            head = completion.commits[-1] if completion and completion.commits else (
+                await self.db.get_task_meta(task.id, "work_commit_auto")
+                or await self.db.get_task_meta(task.id, "work_commit")
+            )
+            proof = await self.db.get_task_meta(task.id, "completion_ci")
+            if (isinstance(proof, dict) and proof.get("reason") == "no_source_changes"
+                    and head and proof.get("head_sha") == head == proof.get("base_sha")
+                    and proof.get("branch") == (task.branch_name or "").removeprefix("refs/heads/")
+                    and proof.get("repository_url") == await task_repository_url(self.db, task, project)):
+                continue
+            try:
+                required = await completion_checks(self.db, self.config, task, project, audit=True)
+                if required is None:
+                    continue
+                url = await task_repository_url(self.db, task, project)
+                key = (url, head, required.names,
+                       required.trusted.version if required.trusted else None,
+                       required.trusted.producer_id if required.trusted else None)
+                if key not in cache:
+                    cache[key] = await observe_completion_ci(
+                        self.orchestrator.git, url, head, required,
+                    )
+                observed = cache[key]
+            except (ValueError, TypeError, KeyError) as exc:
+                observed = unavailable(head, "Required completion CI policy is invalid",
+                                       stage="policy", cause=exc)
+            checked += 1
+            row = {"task_id": task.id, "title": task.title, "branch": task.branch_name,
+                   **observed}
+            if observed["state"] == RED:
+                failing.append(row)
+            elif observed["state"] != GREEN:
+                unresolved.append(row)
+        return {"success": True, "project_id": project_id, "checked": checked,
+                "failing": failing, "unresolved": unresolved}
 
     async def _observe_ci_baseline(self, project, ref: str) -> dict:
         """Read *ref*'s head check runs and, when red, its failing pytest node ids.
@@ -403,7 +441,7 @@ class CiCommandsMixin:
         Args:
             project_id: Required — the project whose repository to read.
             ref: Branch or sha to judge; default the project's default branch.
-            max_attempts: Repair attempts per failure before escalating (2).
+            max_attempts: Repair attempts per failure before escalating (0 = unlimited).
         """
         project_id = str(args.get("project_id") or "").strip()
         if not project_id:
@@ -417,8 +455,8 @@ class CiCommandsMixin:
             max_attempts = DEFAULT_MAX_ATTEMPTS if raw_max is None else int(raw_max)
         except (TypeError, ValueError):
             return {"success": False, "error": "max_attempts must be an integer"}
-        if max_attempts < 1:
-            return {"success": False, "error": "max_attempts must be at least 1"}
+        if max_attempts < 0:
+            return {"success": False, "error": "max_attempts must be non-negative"}
 
         observed = await self._observe_ci_baseline(project, ref)
         result = {
@@ -450,7 +488,8 @@ class CiCommandsMixin:
             attempts=await self._ci_repair_attempts(project_id),
         )
         attempt = len(plan.prior_attempts) + 1
-        escalated = plan.reuse_key is None and len(plan.prior_attempts) >= max_attempts
+        escalated = bool(max_attempts and plan.reuse_key is None
+                         and len(plan.prior_attempts) >= max_attempts)
         title, description = render_repair_task(
             ref=ref,
             head_sha=head_sha,
