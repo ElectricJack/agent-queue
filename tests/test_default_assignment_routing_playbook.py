@@ -35,6 +35,7 @@ from src.profiles.capabilities import CapabilityPolicy
 from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.scheduler import PoolKey
 from src.sessions.harness_parser import Harness
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
@@ -137,6 +138,7 @@ def _engine(handler):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler.db,
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:76e703381ebed10a0ff1c2642ccc8eb2da50f7d24a5e12f83abcd0e4fd2dc1ce` |
+| Contract fingerprint | `sha256:9f5c1cea54857c352e405b52df771c0c5989b755cc3aa0d0c38f22481d1375bc` |
 
 ## Parameters
 
@@ -53,6 +53,8 @@ Projected into the run receipt: `project_id`, `batch_id`, `task_id`, `origin_id`
 | `preview` | success | — |
 | `refused` | failure | — |
 | `settled` | success | — |
+| `target_not_settled` | failure | — |
+| `unknown_batch` | failure | — |
 
 ## Declared effects
 

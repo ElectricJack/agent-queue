@@ -382,6 +382,16 @@ async def test_a_failed_workflow_keeps_successful_required_checks_green(db):
     assert all(check.detail["workflow_conclusion"] == "failure" for check in result.checks)
 
 
+async def test_a_run_cancelled_outside_the_required_jobs_is_final(db):
+    # A waived platform's job was cancelled; every required job succeeded.
+    client, trust = github(app=False, names=("unit", "lint"), run_conclusion="cancelled")
+
+    result = await hosted(db, client, trust, Clock()).refresh(head())
+
+    assert result.state is ChecksState.GREEN and result.green
+    assert all(check.detail["workflow_conclusion"] == "cancelled" for check in result.checks)
+
+
 async def test_mixed_hosted_workflow_caches_each_required_jobs_own_conclusion(db):
     names = (
         "Tests (migration-and-slow)",
@@ -703,3 +713,22 @@ async def test_pr_checks_are_separate_from_push_cache_and_share_one_listing_per_
     with hosted_observation_scope():
         await push.refresh(head())
     assert listed.count("check_runs") == 2
+
+
+async def test_exact_check_changes_wake_readiness_once_per_conclusion_or_attempt(db):
+    client, trust = github(app=False)
+    changed = AsyncMock()
+    checks = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)),
+                         clock=Clock(), on_change=changed)
+    assert (await checks.refresh(head())).green
+    changed.assert_awaited_once_with(head())
+    changed.reset_mock()
+    await checks.refresh(head())
+    changed.assert_not_awaited()
+    rerun(client, status="in_progress", conclusion=None)
+    assert not (await checks.refresh(head())).green
+    changed.assert_awaited_once_with(head())
+    changed.reset_mock()
+    rerun(client, status="completed", conclusion="success")
+    assert (await checks.refresh(head())).green
+    changed.assert_awaited_once_with(head())
