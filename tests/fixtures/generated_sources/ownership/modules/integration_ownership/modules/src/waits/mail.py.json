@@ -1,0 +1,19 @@
+{
+  "generic_dependencies": {
+    "src/waits/mail.py::acknowledge_in_place": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/mail.py::held_messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/mail.py::import from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/mail.py::import from src.waits.holding import WAKE_BODY_KINDS, addressed_to_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "storage_sinks": {
+    "src/waits/mail.py::acknowledge_in_place::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 80,
+      "owner": "acknowledge_in_place",
+      "owner_fingerprint": "e2817a41c581088dc14f977ee4ae0d13754cdc0afa5f018bcbef10062da61b34",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    }
+  }
+}

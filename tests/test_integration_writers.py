@@ -18,7 +18,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitManager
-from src.integration.models import BranchKey, Fence
+from src.integration.models import INTEGRATION_REPAIR_PRIORITY, BranchKey, Fence
 from src.integration.owner_recovery import OwnerRecovery
 from src.integration.ownership import BranchOwnership, StaleFence
 from src.integration.runtime_contracts import (
@@ -237,6 +237,10 @@ async def test_concurrent_filing_and_restart_keep_one_task_and_budget(env, kind,
     assert task.status is TaskStatus.BLOCKED
     assert task.profile_id is None and task.class_hint == "standard-high"
     assert task.branch_name == "candidate" and task.repo_id == "r"
+    # Repair writers hold the subject's branch, so they run ahead of ordinary work.
+    assert task.priority == (
+        100 if role is WriterRole.VERIFIER else INTEGRATION_REPAIR_PRIORITY
+    )
     # The class is a routing hint; retries cannot change it or refresh a clock.
     changed = args.model_copy(update={"budget_seconds": 900})
     assert (await restarted.file(subject, changed)).reason == "ordinal_request_changed"
@@ -616,3 +620,17 @@ async def test_stop_journal_identity_survives_a_target_ref_change(env):
     stops = [entry for entry in journal if entry["primitive"] == Primitive.WRITER_STOP_PROOF]
     assert len(stops) == 2
     assert len({entry["idempotency_key"] for entry in stops}) == 2
+
+
+async def test_unlimited_repair_deadline_preserves_writer_lease_ttl(env):
+    subject = await make_subject(env)
+    await env.writers.file(subject, filing())
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_subjects).where(
+            integration_subjects.c.id == subject.id,
+        ).values(budget_deadline_at=None, budget_attempt_limit=None, budget_attempts=1000))
+    subject = await current(env, subject)
+    result = await env.writers.lease(subject, leasing(subject))
+    assert result.outcome == "leased"
+    assert result.detail["expires_at"] == env.now + leasing(subject).ttl_seconds
+    assert not subject.budget.expired(1_000_000) and not subject.budget.exhausted

@@ -8,6 +8,8 @@ import hashlib
 from pathlib import Path
 import time
 
+import pytest
+
 import src.vault as vault_module
 from src.vault import (
     SUPERVISOR_PROFILE,
@@ -931,32 +933,52 @@ def test_starter_knowledge_covers_expected_types():
 # ---------------------------------------------------------------------------
 
 
+def test_bundled_default_playbooks_are_required_or_active():
+    """Bootstrap sources must belong to the required or live system catalog."""
+    import yaml
+
+    from src.playbooks.required import (
+        DEFAULT_SYSTEM_PLAYBOOK_IDS,
+        REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    )
+
+    # The operator catalog confirmed morning-report enabled and ready on
+    # 2026-10-11. It remains an explicitly activated policy on fresh installs.
+    active_system_playbooks = {"morning-report"}
+    expected_ids = (
+        set(REQUIRED_SYSTEM_PLAYBOOK_IDS)
+        | set(DEFAULT_SYSTEM_PLAYBOOK_IDS)
+        | active_system_playbooks
+    )
+    defaults_dir = Path(vault_module.__file__).parent / "prompts" / "default_playbooks"
+    bundled_ids = set()
+    for path in defaults_dir.glob("*.md"):
+        frontmatter = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1])
+        assert frontmatter["id"] == path.stem
+        assert frontmatter["scope"] == "system"
+        bundled_ids.add(frontmatter["id"])
+
+    assert bundled_ids == expected_ids
+
+
 def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
-    The control-plane `default-pipeline.md` and `default-assignment-routing.md`,
-    blocked-task escalation, provider failover, provider usage, and supervisor
-    failure triage and stuck-task watch ship installed by default, as do the optional, disabled
-    `morning-report.md`, `supervisor-hourly-report.md` and `supervisor-digest.md`
-    report sources (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md).
-    Retired
-    playbooks must stay absent so bootstrap cannot recreate a catalog entry that
-    an operator deleted.
+    The default pipeline, assignment, provider and supervisor policies leave
+    the opt-in stuck-task watches absent. Retired playbooks stay absent so bootstrap
+    cannot recreate a catalog entry that an operator deleted. Their reviewed
+    recordings remain available separately for audit and explicit import.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     expected_files = [
-        "blocked-task-escalation.md",
         "default-assignment-routing.md",
         "default-pipeline.md",
         "morning-report.md",
         "provider-failover.md",
         "provider-usage-probe.md",
-        "stuck-task-watch.md",
-        "supervisor-digest.md",
         "supervisor-failure-triage.md",
-        "supervisor-hourly-report.md",
     ]
 
     # All expected files must exist on disk
@@ -970,16 +992,31 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     # No extra files should be present (only .md files from the defaults dir)
     installed = sorted(f.name for f in playbooks_dir.iterdir() if f.suffix == ".md")
     assert installed == expected_files
+    assert not (playbooks_dir / "stuck-task-watch.md").exists()
+    assert not (playbooks_dir / "stuck-task-watch-reminder.md").exists()
 
 
-def test_ensure_default_playbooks_installs_report_playbooks_disabled(tmp_path):
-    """The report playbooks install as disabled sources and are never auto-activated.
+def test_ensure_default_playbooks_does_not_reseed_retired_sources(tmp_path):
+    """Deleting a retired catalog source survives repeated daemon startup."""
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    playbooks_dir.mkdir(parents=True)
+    retired = (
+        "blocked-task-escalation.md",
+        "supervisor-digest.md",
+        "supervisor-hourly-report.md",
+    )
+    for filename in retired:
+        path = playbooks_dir / filename
+        path.write_text("# previously installed retired policy\n", encoding="utf-8")
+        path.unlink()
 
-    Both are optional policies the operator imports and activates explicitly
-    (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md), so the
-    shipped source says ``enabled: false`` and neither id is a required or
-    first-start default activation.
-    """
+    for _ in range(2):
+        ensure_vault_layout(str(tmp_path))
+        assert not any((playbooks_dir / filename).exists() for filename in retired)
+
+
+def test_reviewed_report_playbooks_remain_disabled_for_explicit_import():
+    """Report recordings remain importable without seeding their catalog sources."""
     import yaml
 
     from src.playbooks.required import (
@@ -987,16 +1024,48 @@ def test_ensure_default_playbooks_installs_report_playbooks_disabled(tmp_path):
         REQUIRED_SYSTEM_PLAYBOOK_IDS,
     )
 
-    ensure_default_playbooks(str(tmp_path))
-
-    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
-    for playbook_id in ("morning-report", "supervisor-hourly-report"):
-        content = (playbooks_dir / f"{playbook_id}.md").read_text(encoding="utf-8")
+    reviewed_dir = Path(vault_module.__file__).parent / "prompts" / "reviewed_playbooks"
+    for playbook_id in ("morning-report", "supervisor-hourly-report", "supervisor-digest"):
+        content = (reviewed_dir / playbook_id / "source.md").read_text(encoding="utf-8")
         frontmatter = yaml.safe_load(content.split("---", 2)[1])
         assert frontmatter["id"] == playbook_id
         assert frontmatter["enabled"] is False, f"{playbook_id} must ship disabled"
         assert playbook_id not in REQUIRED_SYSTEM_PLAYBOOK_IDS
         assert playbook_id not in DEFAULT_SYSTEM_PLAYBOOK_IDS
+
+
+def test_legacy_seed_uses_reviewed_source_when_packaged_markdown_is_stale(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    defaults = package / "prompts/default_playbooks"
+    reviewed = package / "prompts/reviewed_playbooks/default-assignment-routing"
+    defaults.mkdir(parents=True)
+    reviewed.mkdir(parents=True)
+    (defaults / "default-assignment-routing.md").write_text("obsolete packaged policy")
+    (reviewed / "source.md").write_text("reviewed current policy")
+    monkeypatch.setattr(vault_module, "__file__", str(package / "vault.py"))
+    data = tmp_path / "data"
+
+    result = ensure_default_playbooks(str(data))
+
+    assert result["created"] == ["default-assignment-routing.md"]
+    assert (data / "vault/system/playbooks/default-assignment-routing.md").read_text() == (
+        "reviewed current policy"
+    )
+
+
+@pytest.mark.parametrize("identifier", [
+    "blocked-task-escalation", "supervisor-digest", "supervisor-hourly-report",
+])
+def test_retired_playbook_sources_are_preserved_but_never_reseeded(tmp_path, identifier):
+    path = tmp_path / "vault/system/playbooks" / f"{identifier}.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("operator custom source")
+    ensure_default_playbooks(str(tmp_path))
+    assert path.read_text() == "operator custom source"
+    path.unlink()
+    ensure_default_playbooks(str(tmp_path))
+    ensure_default_playbooks(str(tmp_path))
+    assert not path.exists()
 
 
 def test_ensure_default_playbooks_idempotent(tmp_path):
