@@ -104,6 +104,14 @@ retain their existing Git behavior and never receive a GitHub App token.
 
 `GH_TOKEN` overriding stored credentials is documented by
 [GitHub CLI](https://cli.github.com/manual/gh_help_environment).
+LOCAL cutover and promotion remote validation explicitly use a separate operator
+login to read repository ruleset detail when GitHub hides `bypass_actors` from the
+App's read permission. This reader issues only repository-bound ruleset GETs.
+It supplements the actor list only when the App and operator observations match
+on ruleset id and every public policy field; the App's own bypass result is kept.
+Hidden or null actor lists cannot prove empty bypass or form a reversible cutover
+baseline. Service and worker reads retain the configured credential authority.
+
 AQ does not run `gh auth login`, `logout`, `setup-git` or `auth token` as part
 of normal operation, and does not persist an App token in `hosts.yml`.
 
@@ -215,10 +223,11 @@ credential immediately before each network operation, not once per task or
 worker session.
 
 After a binding has been verified, retain its immutable repository identity in
-the startup-owned access service. Repeated binding still verifies that identity
-through `gh`, selecting the current token from the same ready credential cache
-as other repository reads. It must not retain a token in the binding or mint a
-separate bootstrap candidate on every poll tick or push. An authentication
+the startup-owned access service. Repeated binding reuses that verification for
+ten minutes, then verifies through `gh`, selecting the current token from the
+same ready credential cache as other repository reads. It must not retain a
+token in the binding or mint a separate bootstrap candidate on every poll tick
+or push. An authentication
 rejection during initial candidate verification discards that candidate and
 retries the verification once with a new candidate, fenced to the same numeric
 repository identity. Identity mismatches and permission failures do not trigger
@@ -266,8 +275,45 @@ can perform several requests, so a nonzero exit does not prove no mutation
 happened. After a timeout, cancellation or uncertain failure, the operation's
 existing marker/PR/ref reconciliation determines the outcome before retrying.
 In particular, distinguish a completed merge followed by failed branch cleanup
-from a merge that never happened. Preserve rate-limit retry information where
-available; retry scheduling remains with the existing caller.
+from a merge that never happened. The startup-owned `GhRunner` shares one
+rate-limit cooldown across all repositories and callers, including the train,
+CI observer, PR review poller and preflight. During that cooldown, calls fail
+before process launch with `rate_limited` and the shared `retry_at`; they do not
+sleep or replay writes. Cached repository identities remain reusable.
+
+Use `Retry-After` (seconds or HTTP date) and, when the primary quota is empty,
+`x-ratelimit-reset`; wait through both when both apply. Missing or invalid timing
+information uses a sixty-second delay. A secondary-limit message in a 403 body
+or CLI diagnostic also starts the cooldown; an ordinary permission 403 does not.
+Requests resume when the shared deadline expires. API invocations retain HTTP
+headers even when a binding/account caller only consumes the body.
+
+`aq integration status` includes a `github` snapshot, also in brief output:
+daemon-wide `api_calls_per_minute` keyed by method and endpoint (without query
+values), `gh_commands_per_minute` for non-API CLI invocations, and the active
+`retry_at` or null. These are rolling sixty-second in-memory counters, reset
+on daemon restart, with one-second resolution. Suppressed calls do not increment
+them; failed launched calls do. Endpoint cardinality and per-second buckets are
+bounded, with excess endpoints aggregated under `other endpoints` and excess
+CLI operations under `gh other commands`. A non-API `gh` invocation may
+make several HTTP requests; its counter measures invocations only.
+
+Ordinary task PR creation reuses an exact existing request. If the sole matching
+request was closed without merging, reopen that same request after validating
+its repository, base, head branch and published head SHA. The worker command's
+existing held-task branch authorization still applies. Retaining the request
+preserves its closure discussion and history. Attempt the reopen once and
+reconcile its state before reporting success or retrying on a later invocation;
+an uncertain reopen never triggers a second write in the same invocation.
+Conflicting identities or multiple matching requests remain refusals.
+
+Delivery-proof PR cleanup must leave unfinished tasks' requests open, even when
+their current head is already content-equivalent to the default branch. Match
+tasks by PR URL and by canonical branch in the designated repository, including
+tasks that have not yet saved their PR URL. Completed or failed tasks with an
+attached session, assigned agent or locked workspace also retain their PR.
+Check this during preview and again under the project and task locks before any
+cleanup comment or close, so reopening a task invalidates an earlier preview.
 
 ## 7. Shared `gh` execution contract
 
@@ -376,6 +422,13 @@ repository, use the same validated delivery policy, and are available to the
 roles that need them. Extend the existing push contract if an explicit expected
 remote OID is needed for the documented squash/lease workflow. Do not grant
 workers integration-owner or main-publication authority as a side effect.
+
+Explicit named integration publication uses the server-owned, single-use
+[publication delegation](design/delegated-integration-publication.md). Its
+issue/revoke controls require operator or live owning supervisor authority;
+workers supply that exact grant to the existing push surface. The grant binds
+the live claim, session instance, designated repository, target OID and managed
+owner fence, and preserves the validated delivery gates.
 
 Update the shipped completion protocol, delivery prompts and relevant AQ Git
 skills to use those commands for network delivery. Keep local commit/history
