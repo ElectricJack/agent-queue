@@ -402,6 +402,10 @@ class SurfaceCommandsMixin:
 
         if "description" in fields_changed:
             await self._emit_task_findings_updated(task)
+        else:
+            # Closed work can lose a hold or gain its PR/source metadata without
+            # re-entering the ready frontier. Wake its integration lane too.
+            await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         result = await self._cmd_task_show({"task_id": task_id})
         result["fields_changed"] = fields_changed
         return result
@@ -468,6 +472,11 @@ class SurfaceCommandsMixin:
             )
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
+
+        if any(section.key == "wait_outcome" for section in doc.sections):
+            await self._record_continuation_prime_delivery(
+                scope.get("session_id") or args.get("session_id"),
+            )
 
         from src.commands.principal import current_principal
         from src.knowledge.context import (
