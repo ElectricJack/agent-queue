@@ -36,12 +36,14 @@ class EscalationRecord:
         task_id (None | str | Unset):
         task_title (None | str | Unset):
         task_status (None | str | Unset):
+        deep_link (None | str | Unset):
         choices (list[Any] | None | Unset):
         terminal_outcome (None | str | Unset):
         terminal_evidence (EscalationRecordTerminalEvidenceType0 | None | Unset):
         terminal_at (float | None | Unset):
         delivery_statuses (list[str] | None | Unset):
         pending_delivery (bool | None | Unset):
+        held_while_paused (bool | Unset):  Default: False.
     """
 
     id: str
@@ -61,12 +63,14 @@ class EscalationRecord:
     task_id: None | str | Unset = UNSET
     task_title: None | str | Unset = UNSET
     task_status: None | str | Unset = UNSET
+    deep_link: None | str | Unset = UNSET
     choices: list[Any] | None | Unset = UNSET
     terminal_outcome: None | str | Unset = UNSET
     terminal_evidence: EscalationRecordTerminalEvidenceType0 | None | Unset = UNSET
     terminal_at: float | None | Unset = UNSET
     delivery_statuses: list[str] | None | Unset = UNSET
     pending_delivery: bool | None | Unset = UNSET
+    held_while_paused: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -118,6 +122,12 @@ class EscalationRecord:
         else:
             task_status = self.task_status
 
+        deep_link: None | str | Unset
+        if isinstance(self.deep_link, Unset):
+            deep_link = UNSET
+        else:
+            deep_link = self.deep_link
+
         choices: list[Any] | None | Unset
         if isinstance(self.choices, Unset):
             choices = UNSET
@@ -162,6 +172,8 @@ class EscalationRecord:
         else:
             pending_delivery = self.pending_delivery
 
+        held_while_paused = self.held_while_paused
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -188,6 +200,8 @@ class EscalationRecord:
             field_dict["task_title"] = task_title
         if task_status is not UNSET:
             field_dict["task_status"] = task_status
+        if deep_link is not UNSET:
+            field_dict["deep_link"] = deep_link
         if choices is not UNSET:
             field_dict["choices"] = choices
         if terminal_outcome is not UNSET:
@@ -200,6 +214,8 @@ class EscalationRecord:
             field_dict["delivery_statuses"] = delivery_statuses
         if pending_delivery is not UNSET:
             field_dict["pending_delivery"] = pending_delivery
+        if held_while_paused is not UNSET:
+            field_dict["held_while_paused"] = held_while_paused
 
         return field_dict
 
@@ -262,6 +278,15 @@ class EscalationRecord:
             return cast(None | str | Unset, data)
 
         task_status = _parse_task_status(d.pop("task_status", UNSET))
+
+        def _parse_deep_link(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        deep_link = _parse_deep_link(d.pop("deep_link", UNSET))
 
         def _parse_choices(data: object) -> list[Any] | None | Unset:
             if data is None:
@@ -341,6 +366,8 @@ class EscalationRecord:
 
         pending_delivery = _parse_pending_delivery(d.pop("pending_delivery", UNSET))
 
+        held_while_paused = d.pop("held_while_paused", UNSET)
+
         escalation_record = cls(
             id=id,
             project_id=project_id,
@@ -359,12 +386,14 @@ class EscalationRecord:
             task_id=task_id,
             task_title=task_title,
             task_status=task_status,
+            deep_link=deep_link,
             choices=choices,
             terminal_outcome=terminal_outcome,
             terminal_evidence=terminal_evidence,
             terminal_at=terminal_at,
             delivery_statuses=delivery_statuses,
             pending_delivery=pending_delivery,
+            held_while_paused=held_while_paused,
         )
 
         escalation_record.additional_properties = d
