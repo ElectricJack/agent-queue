@@ -1,0 +1,19 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/continuation_queries.py::continuation_prime_context": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::degrade_checkpoint": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::measurement_medians": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::wait_outcome_envelope": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "storage_sinks": {
+    "src/database/queries/continuation_queries.py::retire_task_waits::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 76,
+      "owner": "retire_task_waits",
+      "owner_fingerprint": "510021c2214216898adab6b36f10ad3c51c60679aa48aed4afa9d3148c133973",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    }
+  }
+}
