@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlalchemy import select
 
 from src.commands import CommandHandler
@@ -134,6 +135,101 @@ async def test_candidate_and_queue_waits_settle_from_exact_committed_sources(wor
     await case.train.batches.settle(await BatchStore(world.db).get(first.batch_id),
         SimpleNamespace(target_sha=first.candidate_sha, candidate_sha=first.candidate_sha))
     assert len(await rows(world, integration_outbox)) == len(publications)
+
+
+async def test_ci_wait_observer_recovers_after_quota_without_a_train_visit(world):
+    from src.git.github_contracts import GitHubAccessError
+
+    case = await runtime(world)
+    case.provider.required = case.provider.required.model_copy(update={
+        "names": ("linux", "windows"),
+    })
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    assert len(first.detail["dispatch"]["wait_ids"]) == 2
+    observe = case.provider.observe
+    retry_at = case.now[0] + 900
+    case.provider.observe = AsyncMock(side_effect=GitHubAccessError(
+        "rate_limited", "quota exhausted", retry_at=retry_at, http_status=403,
+    ))
+    # Existing subscriptions still need observation during a rollout rollback.
+    case.orch.config.wait_policy.v2_enabled = False
+    case.now[0] += 61
+    await case.service.tick()
+    assert case.provider.observe.await_count == 1  # shared repository backoff
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    case.now[0] = retry_at - 1
+    await case.service.tick()
+    assert case.provider.observe.await_count == 1
+    case.provider.green.add(first.candidate_sha)
+    case.provider.observe = observe
+    case.now[0] = retry_at + 1
+    await case.service.tick()
+    assert all(row["outcome"] == "satisfied" for row in await rows(world))
+    assert all(row["lifecycle"] != "promoted"
+               for row in await rows(world, integration_batches))
+
+
+async def test_train_ci_deadline_stays_in_supervisor_inbox_during_discord_reconcile(world):
+    from src.database.tables import messages, wait_escalations
+    from src.escalations import SinkTransport
+    from tests.test_escalation_delivery import make_service
+
+    case = await runtime(world)
+    await completed(world, "first")
+    await case.train.visit(MAIN)
+    wait = (await rows(world))[0]
+    assert wait["owner_kind"] == "integration" and wait["owner_id"].startswith("train:")
+    case.now[0] = wait["escalate_at"]
+    assert await case.service.lease()
+    result = await case.service.command("wait_deadline_fire", {
+        "wait_id": wait["id"], "deadline_type": "escalation", "generation": 1,
+    })
+    assert result["success"], result
+    sink = SinkTransport()
+    delivery = make_service(world.db, sink, clock=lambda: case.now[0])
+    await delivery.tick()
+    await delivery.tick()
+    assert sink.calls == []
+    incident = (await rows(world, wait_escalations))[0]
+    notices = [row for row in await rows(world, messages)
+               if row["thread_id"] == incident["escalation_id"]]
+    assert len(notices) == 1
+    assert notices[0]["to_kind"] == "session" and notices[0]["to_id"] == "supervisor-p"
+
+
+async def test_stalled_ci_verification_releases_graph_for_supervisor_controls(world, monkeypatch):
+    import asyncio
+
+    from src.waits.conditions import Condition, WaitError
+    from src.waits.graph import lock_graph
+
+    case = await runtime(world)
+    await completed(world, "first")
+    await case.train.visit(MAIN)
+    wait = (await rows(world))[0]
+    started = asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("src.waits.watchers.ci.OBSERVATION_TIMEOUT_SECONDS", 0.05)
+    case.provider.observe = stalled
+
+    async def verify_under_graph():
+        with pytest.raises(WaitError, match="temporarily unavailable") as error:
+            async with world.db._engine.begin() as conn:
+                await lock_graph(conn)
+                await case.service.registry.observe(conn, Condition.from_record(wait["condition"]))
+        assert error.value.code == "wait.unavailable"
+
+    observation = asyncio.create_task(verify_under_graph())
+    await started.wait()
+    async with world.db._engine.begin() as conn:
+        await lock_graph(conn, timeout=1)
+    await observation
+    assert (await rows(world))[0]["outcome"] == "pending"
 
 
 async def test_policy_replacement_and_restoration_never_replay_a_cancelled_receipt(world):

@@ -58,7 +58,7 @@ class BatchFixerService:
         await insert_message_with_source_event(conn, insert(messages).values(
             id="msg-fixer-" + identity, project_id=batch["project_id"],
             from_kind="system", from_id="integration-train", to_kind="session",
-            to_id=(f"supervisor-{batch['project_id']}" if supervisor else state["session_name"]),
+            to_id=(f"supervisor-{batch['project_id']}" if supervisor else state["session_id"]),
             subject=f"Batch fixer: {batch['id']}", body=body,
             thread_id="batch-fixer-" + batch["id"], priority=100 if supervisor else 50,
             created_at=self.clock(), archive_after_inject=1, body_kind="integration_fixer",

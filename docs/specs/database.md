@@ -11,6 +11,9 @@ tags: [spec, database]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -900,6 +903,32 @@ are never rewritten.
 the table and restores per-row charging; ledger rows survive.
 The legacy SQLite importer excludes this table because it was introduced after
 SQLite removal.
+
+Revision `a00000000122` adds `idx_transcript_usage_calls_updated`
+(`updated_at`, `usage_key`) for bounded retention scans. Calls from sessions
+stopped for more than 30 days, with counters untouched for more than 30 days,
+may be archived and replaced atomically by permanent replay fences.
+
+### Table: `transcript_usage_fences`
+
+Permanent exact membership batches for archived transcript call identities
+(Alembic `a00000000122`). Ingestion ignores fenced keys, including replay under
+another session or with higher counters. Live calls retain per-call maxima.
+Fences have no session or ledger foreign keys and never expire with those rows.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID identifying the compaction batch |
+| `usage_keys` | JSONB | NOT NULL | Object mapping each sealed usage key to `true` |
+| `archived_at` | REAL | NOT NULL | Compaction timestamp |
+| `archive_path` | TEXT | NOT NULL | Durable gzip JSONL archive containing the original counters |
+
+`idx_transcript_usage_fences_keys` is a GIN containment index using
+`jsonb_path_ops`. Archive publication and fsync precede the short transaction
+that revalidates eligibility and atomically inserts the fence and deletes the
+counter rows. Downgrade refuses to drop populated fences. The legacy SQLite
+importer excludes this table because it was introduced after SQLite removal.
+See [session runtime](design/session-runtime.md) for retention and replay semantics.
 
 ### Table: `benchmark_stage_spans`
 
@@ -2577,9 +2606,9 @@ non-terminal batch per project over `target_ref IS NULL` rows only. A row with a
 `target_ref` is the Git-first train's additive input/intent shape, advanced
 solely by that train: it is never mutually exclusive with a legacy batch, never
 reads as busy to the legacy scheduler, and never holds its members out of the
-legacy frontier — so a rollback to `integration.git_first: shadow` leaves it
-inert rather than blocking. See
-[the cutover runbook](../guides/git-first-cutover-runbook.md#rollback).
+legacy frontier. These predicates isolate historical rows; trial mode has been
+removed and the train is always active. See
+[the current train runbook](../guides/git-first-train-runbook.md).
 
 A red Git-first candidate is repaired only where the target commit it was built
 on does not also fail the same required check. An epic whose only failures are
