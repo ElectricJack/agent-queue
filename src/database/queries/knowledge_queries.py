@@ -131,7 +131,14 @@ class KnowledgeQueryMixin:
     ) -> list[dict]:
         if not 1 <= limit <= 100:
             raise ValueError("history limit must be between 1 and 100")
-        stmt = select(knowledge_revisions).where(knowledge_revisions.c.record_id == record_id)
+        stmt = (
+            select(knowledge_revisions, knowledge_revision_payloads.c.redacted_at)
+            .join(
+                knowledge_revision_payloads,
+                knowledge_revision_payloads.c.revision_id == knowledge_revisions.c.revision_id,
+            )
+            .where(knowledge_revisions.c.record_id == record_id)
+        )
         if before_sequence is not None:
             stmt = stmt.where(knowledge_revisions.c.sequence < before_sequence)
         rows = await conn.execute(stmt.order_by(knowledge_revisions.c.sequence.desc()).limit(limit))

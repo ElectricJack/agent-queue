@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:7af89d6254c41e54cfb8522dee88f88e064a2225274924a354f510ea4897d24a` |
+| Contract fingerprint | `sha256:121d889a5db8d8e7e1a04508ed1fa5c00e0ade61360106cdee0ad6d5703d52f3` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
 | `identity` | `string` | yes | — | — |
 | `operations` | `object[]` | yes | — | — |
 | `idempotency_key` | `string` | yes | — | — |
@@ -45,6 +46,7 @@
 | `items` | `object[] \| null` | — |
 | `next_cursor` | `string \| null` | — |
 | `links` | `object[] \| null` | — |
+| `edges` | `object[] \| null` | — |
 | `links_out` | `object[] \| null` | — |
 | `links_in` | `object[] \| null` | — |
 | `changed` | `string[] \| null` | — |
@@ -68,7 +70,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Link using project_id, identity, operations, idempotency_key, if_revision, if_link_token, claim_epoch | — | always |
+| Link using project_id, global_scope, identity, operations, idempotency_key, if_revision, if_link_token, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

@@ -236,7 +236,15 @@ class ContextMixin:
                 task.id, project.integration_repository_id
             )
             if origin is not None and origin.get("parent_ref"):
-                default_branch = origin["parent_ref"]
+                from sqlalchemy import select
+                from src.database.tables import projects
+                from src.integration.promotion_routing import resolve_origin_parent
+
+                async with self.db._engine.connect() as conn:
+                    cutover = await conn.scalar(select(projects.c.default_branch_cutover).where(
+                        projects.c.id == project.id))
+                default_branch = resolve_origin_parent(
+                    default_branch, origin, project.integration_repository_id, cutover)
         if workspace and await self.git.avalidate_checkout(workspace):
             has_remote = await self.git.ahas_remote(workspace)
         else:
@@ -334,6 +342,33 @@ class ContextMixin:
         except Exception:
             pass  # Non-fatal — proceed without conversation context
 
+        from src.commands.principal import current_principal
+        from src.knowledge.context import ContextService, context_enabled
+        from src.records.models import RecordError
+
+        if (context_enabled(self.config)
+                and task.project_id in self.config.knowledge.enabled_projects):
+            builder.set_l1_facts("")
+            builder.set_l1_guidance("")
+            builder.set_l2_context("")
+            principal = current_principal()
+            if principal is None:
+                # A pre-session task prompt has no retained attempt yet. It
+                # still receives the hard gate; prime handles later injection.
+                from src.knowledge.budget import ContextBudget
+
+                required, tools = builder.build()
+                ContextBudget.from_config(self.config).enforce(required, tools=tools)
+            else:
+                required, tools = builder.build()
+                bundle = await ContextService(self.db, self.config).prepare(
+                    principal=principal, required=required, query=task.title,
+                    project_ids=[task.project_id], claim_epoch=task.claim_epoch, tools=tools,
+                    task_id=task.id,
+                )
+                if not bundle.budget["fits"]:
+                    raise RecordError(bundle.budget["diagnostic"] or "context.over_budget")
+                builder.set_context_bundle(bundle)
         return builder.build_task_prompt()
 
     async def _load_project_override(

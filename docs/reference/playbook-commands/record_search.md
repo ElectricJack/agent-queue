@@ -14,15 +14,19 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/records.py`](../../../src/commands/contracts/records.py) |
-| Contract fingerprint | `sha256:40e79f1d802bace684904f99322a94f2c00c7ce66a460208c698d2aa19b73430` |
+| Contract fingerprint | `sha256:801d2f1deec7d6845df09834fa888fe870e38e8306c9031c76ab4dae3e7a1fb9` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `project_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
+| `kind` | `"task" \| "knowledge" \| "all"` | no | `"knowledge"` | — |
 | `query` | `string` | no | `""` | — |
 | `category` | `string \| null` | no | `null` | — |
+| `lifecycle` | `"active" \| "retired" \| null` | no | `null` | — |
+| `verification` | `"unverified" \| "verified" \| "disputed" \| null` | no | `null` | — |
 | `include_retired` | `boolean` | no | `false` | — |
 | `include_disputed` | `boolean` | no | `false` | — |
 | `limit` | `integer` | no | `25` | — |
@@ -45,6 +49,7 @@
 | `items` | `object[] \| null` | — |
 | `next_cursor` | `string \| null` | — |
 | `links` | `object[] \| null` | — |
+| `edges` | `object[] \| null` | — |
 | `links_out` | `object[] \| null` | — |
 | `links_in` | `object[] \| null` | — |
 | `changed` | `string[] \| null` | — |
@@ -68,7 +73,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, query, category, include_retired, include_disputed, limit, cursor | — | always |
+| Read using project_id, global_scope, kind, query, category, lifecycle, verification, include_retired, include_disputed, limit, cursor | — | always |
 
 <!-- aq:generated:end -->
 

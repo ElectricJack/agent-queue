@@ -9,10 +9,15 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import projects, record_consumer_receipts, record_outbox
+from src.database.tables import (
+    projects,
+    record_consumer_receipts,
+    record_outbox,
+    knowledge_redactions,
+)
 from src.records.models import RecordError
 
 logger = logging.getLogger(__name__)
@@ -52,10 +57,11 @@ class RecordOutbox:
 
     async def claim_due(self, *, limit=2) -> list[dict]:
         cfg = self.config
-        if not cfg.enabled or not cfg.enabled_projects:
-            return []
         now = self.clock()
         destinations = ["audit"] + (["export"] if cfg.export.enabled else [])
+        enabled_scopes = [f"project:{p}" for p in cfg.enabled_projects]
+        if cfg.global_enabled:
+            enabled_scopes.append("global")
         async with self.db.immediate() as conn:
             rows = (
                 (
@@ -69,15 +75,28 @@ class RecordOutbox:
                                 record_outbox.c.lease_until.is_(None),
                                 record_outbox.c.lease_until <= now,
                             ),
-                            record_outbox.c.destination.in_(destinations),
-                            record_outbox.c.scope_key.in_(
-                                [f"project:{p}" for p in cfg.enabled_projects]
+                            or_(
+                                record_outbox.c.destination == "purge",
+                                and_(
+                                    cfg.enabled,
+                                    record_outbox.c.destination.in_(destinations),
+                                    record_outbox.c.scope_key.in_(enabled_scopes),
+                                    or_(
+                                        record_outbox.c.scope_key == "global",
+                                        select(projects.c.id)
+                                        .where(
+                                            record_outbox.c.scope_key == "project:" + projects.c.id
+                                        )
+                                        .exists(),
+                                    ),
+                                ),
                             ),
-                            select(projects.c.id)
-                            .where(record_outbox.c.scope_key == "project:" + projects.c.id)
-                            .exists(),
                         )
-                        .order_by(record_outbox.c.available_at, record_outbox.c.event_id)
+                        .order_by(
+                            case((record_outbox.c.destination == "purge", 0), else_=1),
+                            record_outbox.c.available_at,
+                            record_outbox.c.event_id,
+                        )
                         .limit(max(1, min(limit, 50)))
                         .with_for_update(skip_locked=True)
                     )
@@ -131,6 +150,41 @@ class RecordOutbox:
                 .where(record_outbox.c.event_id == event["event_id"])
                 .values(delivered_at=now, lease_token=None, lease_until=None, last_error_code=None)
             )
+            if event["destination"] == "purge":
+                redaction_id = event["payload"].get("redaction_id")
+                from uuid import UUID
+
+                await conn.execute(
+                    select(knowledge_redactions.c.redaction_id)
+                    .where(
+                        knowledge_redactions.c.redaction_id == UUID(redaction_id),
+                    )
+                    .with_for_update()
+                )
+                pending = await conn.scalar(
+                    select(record_outbox.c.event_id)
+                    .where(
+                        record_outbox.c.destination == "purge",
+                        record_outbox.c.payload["redaction_id"].astext == redaction_id,
+                        record_outbox.c.delivered_at.is_(None),
+                    )
+                    .limit(1)
+                )
+                if not pending:
+                    await conn.execute(
+                        update(knowledge_redactions)
+                        .where(
+                            knowledge_redactions.c.redaction_id == UUID(redaction_id),
+                        )
+                        .values(
+                            completed_at=now,
+                            cleanup_state={
+                                "export": "purged",
+                                "artifact": "purged",
+                                "index": "absent",
+                            },
+                        )
+                    )
         return True
 
     async def fail(self, event, code):
@@ -157,8 +211,14 @@ class RecordOutbox:
             try:
                 async with asyncio.timeout(5):
                     cfg = self.config
+                    if event["destination"] == "purge":
+                        from src.knowledge.redaction import purge_event
+
+                        result = await purge_event(self.db, self.exporter, event)
+                        return await self.acknowledge(event, result)
                     if not cfg.enabled or event["scope_key"] not in {
-                        f"project:{p}" for p in cfg.enabled_projects
+                        *[f"project:{p}" for p in cfg.enabled_projects],
+                        *(["global"] if cfg.global_enabled else []),
                     }:
                         raise RecordError("knowledge.disabled")
                     if event["destination"] == "export":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,8 +11,10 @@ import pytest
 from sqlalchemy import delete, func, insert, select, update
 
 from src.agent_waits import WaitError
+from src.config import MessagesConfig
 from src.database import Database
 from src.database.tables import archived_tasks, messages, sessions, tasks
+from src.messages.delivery import MessageDeliveryEngine
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
 
@@ -205,6 +208,84 @@ async def test_outbox_failure_and_retry_are_durable(env, monkeypatch):
     await env.db.reconcile_agent_waits(now=NOW + 4)
     assert await result_count(env.db, row["id"]) == 1
     assert (await env.db.get_agent_wait(row["id"]))["result_message_id"]
+
+
+async def test_consume_repairs_outbox_after_restart_without_duplicate_wake(env, monkeypatch):
+    row = await register(env, kind="timer", match={"due_at": NOW + 1})
+    original = env.db._enqueue_wait_result
+    monkeypatch.setattr(env.db, "_enqueue_wait_result", AsyncMock())
+    await env.db.reconcile_agent_waits(now=NOW + 2)
+    resolved = await env.db.get_agent_wait(row["id"])
+    assert resolved["state"] == "satisfied" and resolved["result_message_id"] is None
+    fresh = Database(env.db._dsn)
+    fresh._engine = env.db._engine
+    # Recreated adapter has no in-memory delivery or registration state.
+    consumed = await fresh.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 3)
+    assert consumed["digest"] == resolved["digest"]
+    assert consumed["version"] == resolved["version"]
+    message = await fresh.get_message(consumed["result_message_id"])
+    assert message.delivered_at == NOW + 3 and message.via == "wait_consume"
+    for now in (NOW + 4, NOW + 100):
+        await fresh.reconcile_agent_waits(now=now)
+        assert await fresh.consume_agent_wait(row["id"], identity=env.identity, now=now) == consumed
+    assert await result_count(fresh, row["id"]) == 1
+    assert await fresh.get_pending_messages("task", "owner") == []
+    assert (await fresh.get_message(message.id)).delivered_at == message.delivered_at
+    monkeypatch.setattr(env.db, "_enqueue_wait_result", original)
+
+
+async def test_failed_consumption_does_not_discard_pending_result(env, monkeypatch):
+    row = await register(env, kind="timer", match={"due_at": NOW + 1})
+    monkeypatch.setattr(env.db, "_enqueue_wait_result", AsyncMock())
+    await env.db.reconcile_agent_waits(now=NOW + 2)
+    with pytest.raises(WaitError) as exc:
+        await env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 3)
+    assert exc.value.code == "wait.result_pending"
+    result = await env.db.get_agent_wait(row["id"])
+    assert result["state"] == "satisfied" and result["result_message_id"] is None
+
+
+async def test_consumption_keeps_feedback_and_active_exemption(env):
+    row = await register(env)
+    active = await env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 1)
+    assert active == row and await env.db.blocking_wait_for(env.session, 1, NOW + 1)
+    feedback = await env.db.create_message(
+        project_id="p", from_kind="user", from_id="operator", to_kind="task", to_id="owner",
+        body="Recheck the deployment before closing.",
+    )
+    await complete(env.db, status="FAILED", outcome="fail")
+    await env.db.reconcile_agent_waits(now=NOW + 60)
+    await asyncio.gather(*(
+        env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 61)
+        for _ in range(3)
+    ))
+    result = await env.db.get_agent_wait(row["id"])
+    assert result["digest"]["status"] == "FAILED" and result["digest"]["outcome"] == "fail"
+    assert await result_count(env.db, row["id"]) == 1
+    assert [msg.id for msg in await env.db.get_pending_messages("task", "owner")] == [feedback.id]
+    assert result["wait_resumed_at"] == NOW + 60
+
+
+async def test_historical_consumption_requires_current_claim_and_never_renews_it(env):
+    row = await register(env, kind="timer", match={"due_at": NOW + 1})
+    await env.db.reconcile_agent_waits(now=NOW + 2)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+        await conn.execute(update(sessions).where(sessions.c.id == "s").values(
+            last_claim_epoch=2, instance_token="new-token",
+        ))
+    with pytest.raises(WaitError):
+        await env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 3)
+    current = dict(env.identity, claim_epoch=2, instance_token="new-token")
+    with pytest.raises(WaitError) as exc:
+        await env.db.consume_agent_wait(
+            row["id"], identity={**current, "claim_epoch": 1}, now=NOW + 3
+        )
+    assert exc.value.code == "stale_claim"
+    consumed = await env.db.consume_agent_wait(row["id"], identity=current, now=NOW + 4)
+    assert consumed["claim_epoch"] == 1 and consumed["wait_resumed_at"] == NOW + 2
+    assert consumed["session_instance_token"] == "token"
+    assert await env.db.blocking_wait_for("s", 2, NOW + 4) is None
 
 
 @pytest.mark.parametrize("boundary", ["message", "pointer"])
@@ -508,3 +589,96 @@ async def test_targeted_resolution_cannot_be_starved_by_pending_outbox_history(e
     assert result["scanned"] == 1 and result["resolved"] == 1
     assert (await env.db.get_agent_wait(wait["id"]))["wait_resumed_at"] == NOW + 200
     assert (await env.db.get_agent_wait("old-outbox-0"))["result_message_id"] is None
+
+
+async def test_supervisor_prose_never_satisfies_worker_waits_only_a_native_reply_does(env):
+    """2026-10-12: a supervisor's general progress about another task became
+    the transcript-tail reply to two workers' requests and cleared one
+    worker's message wait. Both waits stay pending through the sweep; an
+    explicit reply resolves exactly the wait it answers."""
+    await env.db.create_agent(
+        Agent(id="b", name="B", profile_id="worker-codex", state=AgentState.BUSY)
+    )
+    await env.db.create_task(
+        Task(
+            id="peer",
+            project_id="p",
+            title="Peer",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_agent_id="b",
+            claim_epoch=1,
+        )
+    )
+    await env.db.update_agent("b", current_task_id="peer")
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "peer").values(claim_epoch=1))
+    await env.db.create_session(
+        SessionRecord(
+            **{
+                **vars(env.session),
+                "id": "s2",
+                "name": "p-peer",
+                "instance_token": "token2",
+                "task_id": "peer",
+                "agent_id": "b",
+            }
+        )
+    )
+    workers = {
+        "s": dict(env.identity),
+        "s2": {**env.identity, "session_id": "s2", "instance_token": "token2"},
+    }
+    requests, waits = {}, {}
+    for session_id, identity in workers.items():
+        thread = f"ask-{session_id}"
+        requests[session_id] = await env.db.create_message(
+            project_id="p",
+            from_kind="session",
+            from_id=session_id,
+            to_kind="session",
+            to_id="supervisor-p",
+            thread_id=thread,
+            body="Blocked: which schema should I target?",
+        )
+        await env.db.mark_delivered(requests[session_id].id, via="read")
+        waits[session_id] = await env.db.register_agent_wait(
+            identity=identity,
+            kind="message",
+            match={"thread_id": thread, "after_seq": requests[session_id].created_seq},
+            deadline_at=NOW + 100,
+            idempotency_key=f"ask-{session_id}",
+            now=NOW,
+        )
+    async with env.db._engine.begin() as conn:
+        await conn.execute(
+            update(messages)
+            .where(messages.c.id.in_([m.id for m in requests.values()]))
+            .values(delivered_at=time.time() - 121.0)
+        )
+    tail = AsyncMock(return_value="Progress: clear-stone merged; patrol continues.")
+    engine = MessageDeliveryEngine(
+        env.db, SimpleNamespace(tail_assistant_turn=tail), MessagesConfig(enabled=True)
+    )
+
+    assert await engine.check_reply_timeouts() == 0
+    tail.assert_not_awaited()
+    await env.db.reconcile_agent_waits(now=NOW + 5)
+    for session_id in workers:
+        assert (await env.db.get_agent_wait(waits[session_id]["id"]))["state"] == "active"
+
+    reply = await env.db.create_message(
+        project_id="p",
+        from_kind="session",
+        from_id="supervisor-p",
+        to_kind="session",
+        to_id="s2",
+        thread_id="ask-s2",
+        reply_to_id=requests["s2"].id,
+        body="Target the v2 schema.",
+    )
+    await env.db.reconcile_agent_waits(now=NOW + 6)
+    answered = await env.db.get_agent_wait(waits["s2"]["id"])
+    assert answered["state"] == "satisfied"
+    assert answered["result_ref"] == f"message:{reply.id}"
+    assert (await env.db.get_agent_wait(waits["s"]["id"]))["state"] == "active"

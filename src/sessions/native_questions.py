@@ -22,16 +22,21 @@ module only *reads* that store, read-only and outside the event loop, and
 never decides anything: :mod:`src.sessions.questions` owns identity, routing
 and delivery. An unreadable store is unknown evidence (``None``), never "no
 question".
+
+Which OpenCode sessions an AQ session owns — the scoping this reader and the
+liveness reader (:mod:`src.sessions.opencode_store`) must agree on — lives in
+that module, beside the store path and the rules for opening it.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from src.sessions.opencode_store import scoped_session_ids, store_path
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +185,7 @@ class OpenCodeQuestionStore:
     harness = "opencode"
 
     def __init__(self, data_dir: Path | None = None, *, timeout: float = 2.0) -> None:
-        if data_dir is None:
-            base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-            data_dir = Path(base) / "opencode"
-        self.path = Path(data_dir) / "opencode.db"
+        self.path = store_path(data_dir)
         self.timeout = timeout
 
     def snapshot(self, work_dir: str, since: float) -> NativeSnapshot | None:
@@ -208,21 +210,7 @@ class OpenCodeQuestionStore:
 
     def _snapshot(self, conn, work_dir: str, since: float) -> NativeSnapshot:
         since_ms = int(since * 1000)
-        directories = sorted({work_dir, os.path.realpath(work_dir)})
-        marks = ",".join("?" * len(directories))
-        parents = dict(
-            conn.execute(
-                f"SELECT id, parent_id FROM session WHERE directory IN ({marks})"
-                " AND time_updated >= ?",
-                (*directories, since_ms),
-            ).fetchall()
-        )
-        # A root busy in a subagent may not have been touched since; it is
-        # still the session whose composer AQ types into.
-        for parent in {p for p in parents.values() if p} - parents.keys():
-            row = conn.execute("SELECT id, parent_id FROM session WHERE id = ?", (parent,)).fetchone()
-            if row is not None:
-                parents[row[0]] = row[1]
+        parents = scoped_session_ids(conn, work_dir, since)
         pending, settled, busy, activity = [], {}, set(), 0.0
         for session_id, parent_id in parents.items():
             for created, data in conn.execute(
@@ -298,14 +286,25 @@ class OpenCodeQuestionStore:
             busy.add(session_id)
 
 
-#: Harnesses whose native question dialogs AQ can observe.
+#: CLIs whose native question dialogs AQ can observe.
 NATIVE_HARNESSES = frozenset({OpenCodeQuestionStore.harness})
 
 
 def resolve_native_question_source(
-    harness: str, data_dir: Path | None = None
+    harness: str, data_dir: Path | None = None, *, registry=None, project_id: str | None = None
 ) -> OpenCodeQuestionStore | None:
-    """The structured question store for *harness*, or ``None`` if it has none."""
-    if harness == OpenCodeQuestionStore.harness:
+    """The structured question store for *harness*, or ``None`` if it has none.
+
+    The store belongs to the CLI, not to one harness file: with *registry*, a
+    harness such as ``opencode-zen`` that runs the ``opencode`` executable
+    against another backend shares the same store
+    (:func:`~src.sessions.harness_registry.runs_cli`).  *project_id* resolves
+    the harness in that project's scope, the way the launch path does: a
+    project file that shadows the id with a different executable moves the
+    store with it, for that project alone.
+    """
+    from src.sessions.harness_registry import runs_cli
+
+    if runs_cli(OpenCodeQuestionStore.harness, harness, registry, project_id):
         return OpenCodeQuestionStore(data_dir)
     return None

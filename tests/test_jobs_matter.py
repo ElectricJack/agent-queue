@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -16,8 +17,11 @@ from sqlalchemy import update
 from src.config import AppConfig
 from src.database.tables import jobs
 from src.jobs.artifacts import atomic_json, job_directory, read_json
+from src.jobs.editor_pin import RETENTION_SECONDS, pin_editor, prune_pins
 from src.jobs.matter import capture_inputs, native_status, retain_capture, windows_path
 from src.jobs.policy import JobError, next_admission
+from src.jobs.result import build_result, render_profile_record
+from src.object_loop.render_profile import render_profile_sha256
 from src.jobs.service import JobService
 from src.jobs.identity import stop_tree
 from src.resources.box_lock import BoxLock
@@ -41,7 +45,7 @@ def configured(tmp_path, *, delay=0):
             "version": 1,
             "candidate_sha256": "a" * 64,
             "rig_sha256": "b" * 64,
-            "manifest": {"rig": {"views": [{"name": "front"}]}},
+            "manifest": {"rig": {"hold_frames": 90, "views": [{"name": "front"}]}},
         },
     )
     adapter = tmp_path / "adapter.py"
@@ -57,6 +61,12 @@ def main(argv):
         data = kind.encode()
         (output / ('front' + suffix)).write_bytes(data)
         view[kind] = {'sha256': hashlib.sha256(data).hexdigest()}
+    view['image'].update(width=1280, height=720)
+    view['capture'] = {'result': {
+        'presented': {'id': 'front-frame'},
+        'image': {'format': 'png', 'width': 1280, 'height': 720},
+        'readiness': {'ready': True, 'blockers': [], 'missing_vt': 0,
+                      'vt_queue_depth': 0, 'stable_camera_frames': 96}}}
     receipt = {k: candidate[k] for k in ('candidate_sha256', 'rig_sha256')}
     editor = pathlib.Path(argv[argv.index('--editor') + 1])
     receipt.update(version=1, status='complete', views={'front': view},
@@ -120,8 +130,111 @@ async def test_render_submission_uses_separate_device_domain(db, tmp_path):
     assert "locks/gpus/" in job["contract"]["lock_dir"]
     assert "AQ_TEST_RUN_ID" not in job["contract"]["env"]
     assert job["contract"]["capture_expected"]["views"] == ["front"]
-    assert job["argv"][3:6] == [str(tmp_path), "/bin/true", str(tmp_path / "bundle")]
+    # The rig's frame budget is admitted with the rest of the render preset.
+    assert job["contract"]["capture_expected"]["hold_frames"] == 90
+    pinned = job["contract"]["editor_pin"]
+    assert job["argv"][3:5] == [str(tmp_path), pinned["path"]]
+    # The capture launches a pinned copy of the configured build, never the
+    # shared path itself, and the profile names the copy's digest.
+    assert pinned["path"].startswith(str(tmp_path / "data" / "editor-pins" / "binaries"))
+    assert job["argv"][5] == str(tmp_path / "bundle")
+    assert job["contract"]["capture_expected"]["editor_sha256"] == pinned["sha256"]
+    assert Path(pinned["path"]).read_bytes() == Path("/bin/true").read_bytes()
     assert not list((tmp_path / "data" / "locks" / "test-slots").glob("*"))
+
+
+async def settle(svc, db, job_id, timeout=30):
+    """Drive one submitted job to its terminal state through the real sweep."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await svc.tick()
+        current = await db.get_job(job_id)
+        if current["state"] in {"succeeded", "failed", "lost", "cancelled"}:
+            return current
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"job {job_id} never settled")
+
+
+async def test_an_attempt_pins_one_editor_build_across_a_shared_rebuild(db, tmp_path):
+    """A rebuilt shared editor does not change an attempt that is still running.
+
+    The pilot's 35.5 blocked on 'current editor SHA differs from claim-2 binary':
+    the editor build the attempt's render profile names had been rebuilt under
+    it. Two captures of one attempt now render the same pinned bytes, so their
+    profiles are the same digest — even though the object under test and the
+    shared build both changed between them — and only a new attempt re-pins.
+    """
+    config = configured(tmp_path)
+    editor = tmp_path / "matter-editor"
+    editor.write_bytes(b"build-one")
+    config.resources.jobs.matter_editor = str(editor)
+    second_bundle = tmp_path / "bundle2"
+    second_bundle.mkdir()
+    atomic_json(second_bundle / "candidate.json", {
+        "version": 1, "candidate_sha256": "c" * 64, "rig_sha256": "b" * 64,
+        "manifest": {"rig": {"hold_frames": 90, "views": [{"name": "front"}]}},
+    })
+    svc = JobService(db, config)
+    base = {
+        "project_id": "p", "task_id": "t", "session_id": "s", "claim_epoch": 1,
+        "workspace_id": "w", "generation": 0, "preset": "matter_render",
+        "attempt_id": "rock-me3-a1",
+    }
+    first = await svc.submit(args=["bundle"], idempotency_key="render", **base)
+    await svc.launch(first)
+    baseline = await settle(svc, db, first["id"])
+    assert baseline["state"] == "succeeded", baseline["result"]["excerpt"]
+
+    editor.write_bytes(b"build-two")
+    second = await svc.submit(args=["bundle2"], idempotency_key="render-2", **base)
+    await svc.launch(second)
+    candidate = await settle(svc, db, second["id"])
+    assert candidate["state"] == "succeeded", candidate["result"]["excerpt"]
+
+    pinned = first["contract"]["editor_pin"]
+    assert first["contract"]["capture_expected"]["editor_sha256"] == pinned["sha256"]
+    assert candidate["contract"]["editor_pin"] == pinned
+    assert candidate["argv"][4] == pinned["path"] == first["argv"][4]
+    assert Path(pinned["path"]).read_bytes() == b"build-one"
+    # Two different objects, one preset: the profiles are comparable.
+    assert (baseline["result"]["capture"]["receipt"]["candidate_sha256"]
+            != candidate["result"]["capture"]["receipt"]["candidate_sha256"] == "c" * 64)
+    assert (baseline["result"]["render_profile"]["sha256"]
+            == candidate["result"]["render_profile"]["sha256"])
+    assert baseline["result"]["render_profile"]["editor_sha256"] == pinned["sha256"]
+
+    # A new attempt is the only thing that moves the editor build.
+    third = await svc.submit(args=["bundle"], idempotency_key="render-3",
+                             **{**base, "attempt_id": "rock-me3-a2"})
+    assert third["contract"]["editor_pin"]["sha256"] != pinned["sha256"]
+    assert Path(third["contract"]["editor_pin"]["path"]).read_bytes() == b"build-two"
+    # ...and a lost pin is refused rather than silently swapped.
+    Path(third["contract"]["editor_pin"]["path"]).unlink()
+    with pytest.raises(JobError, match="editor_pin_lost"):
+        await svc.submit(args=["bundle"], idempotency_key="render-4",
+                         **{**base, "attempt_id": "rock-me3-a2"})
+    for key, value in (("space", "with space"), ("traversal", "../escape"), ("empty", "")):
+        with pytest.raises(JobError, match="attempt_invalid"):
+            await svc.submit(args=["bundle"], idempotency_key=f"bad-{key}",
+                             **{**base, "attempt_id": value})
+    with pytest.raises(JobError, match="attempt_invalid"):
+        await svc.submit(args=["-q", "tests"], idempotency_key="lint", preset="lint",
+                         **{k: v for k, v in base.items() if k != "preset"})
+
+
+def test_editor_pins_are_pruned_only_once_nothing_can_use_them(tmp_path):
+    """A pin outlives its attempt's window; inside it, the binary stays."""
+    data_dir = tmp_path / "data"
+    editor = tmp_path / "matter-editor"
+    editor.write_bytes(b"build-one")
+    first = pin_editor(editor, data_dir, "rock-me3-a1")
+    editor.write_bytes(b"build-two")
+    pin_editor(editor, data_dir, "rock-me3-a2")
+    assert prune_pins(data_dir) == 0
+    assert Path(first["path"]).is_file()
+    assert prune_pins(data_dir, now=time.time() + RETENTION_SECONDS) >= 4
+    assert [p.name for p in (data_dir / "editor-pins").rglob("*") if p.is_file()] == []
+    assert prune_pins(tmp_path / "absent") == 0
 
 
 def test_gpu_and_pytest_frontiers_are_independent():
@@ -202,6 +315,7 @@ async def test_timed_out_complete_capture_cannot_pass(db, tmp_path):
 
 async def test_atomic_render_wait_recovers_once_and_evidence_outlives_logs(setup, tmp_path):
     config = configured(tmp_path)
+    config.wait_policy.v2_enabled = False  # Legacy rollback adapter; v2 is covered at command level.
     svc = JobService(setup.db, config)
     args = dict(
         project_id="p",
@@ -242,6 +356,15 @@ async def test_atomic_render_wait_recovers_once_and_evidence_outlives_logs(setup
             == artifact["sha256"]
         )
     expected = adopted["contract"]["capture_expected"]
+    profile = adopted["result"]["render_profile"]
+    assert profile["sha256"] == render_profile_sha256(adopted["contract"], capture)
+    assert profile["views"]["front"]["resolution"] == {"width": 1280, "height": 720}
+    assert profile["hold_frames"] == 90
+    # The readiness counters are what this capture reported, so they ride beside
+    # the profile rather than inside its digest.
+    assert profile["observed"]["views"]["front"]["vt_budget"]["ready"] is True
+    # The digest is inside the immutable result, not beside it.
+    assert profile["sha256"] in json.dumps(adopted["result"], sort_keys=True)
     with pytest.raises(ValueError, match="budget"):
         retain_capture(directory, (directory / "capture/capture.json").stat().st_size, expected)
     image = directory / "capture/front.png"
@@ -400,3 +523,29 @@ async def test_native_render_job_adoption_and_wsl_owner_recovery(db, tmp_path, m
     finally:
         atomic_json(directory / "cancel.json", {})
         await stop_tree(job["runner_nonce"], grace=0.1)
+
+
+def test_render_profile_record_is_absent_not_invented():
+    """A result says what it has: a profile, no profile, or why there is none."""
+    capture = {"receipt": {"version": 1, "status": "complete", "views": {"front": {}}}}
+    contract = {"adapter_sha256": "b" * 64, "gpu_id": "gpu0",
+                "capture_expected": {"views": ["front"], "hold_frames": 90}}
+    job = {"id": "j", "preset": "matter_render", "input_mode": "live", "contract": contract}
+    assert render_profile_record(job, None) is None
+    assert render_profile_record({"contract": None}, None) is None
+    profile = render_profile_record(job, capture)
+    assert profile["sha256"] == render_profile_sha256(contract, capture)
+    partial = render_profile_record(job, {"receipt": {"status": "partial", "views": {}}})
+    assert list(partial) == ["error"] and "completed capture receipt" in partial["error"]
+
+    # The profile is part of the immutable result, so result_hash covers it: the
+    # same capture rendered through a different adapter is a different result.
+    result = build_result(job, {"exit_code": 0, "capture": capture})
+    assert result["render_profile"]["sha256"] == profile["sha256"]
+    elsewhere = dict(contract, adapter_sha256="c" * 64)
+    other = build_result(
+        dict(job, contract=elsewhere), {"exit_code": 0, "capture": capture}
+    )
+    assert other["render_profile"]["sha256"] != profile["sha256"]
+    assert other["result_hash"] != result["result_hash"]
+    assert build_result(job, {"exit_code": 0})["render_profile"] is None

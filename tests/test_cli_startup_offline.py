@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import statistics
+from importlib import metadata
 from pathlib import Path
 import site
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,6 +23,53 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def _pg_backend():
     """These tests prove DB isolation; never allocate a test database."""
+
+
+@pytest.mark.parametrize("module", ["src.cli.app", "src.tools.definitions"])
+def test_client_import_does_not_load_handler_or_database(module: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import importlib
+import sys
+
+module = importlib.import_module(sys.argv[1])
+prefixes = ("src.commands.handler", "src.database", "sqlalchemy", "asyncpg")
+if sys.argv[1] == "src.cli.app":
+    assert "task" in module.cli.commands
+    prefixes += ("src.tools.definitions", "src.plugins.registry")
+for prefix in prefixes:
+    loaded = [name for name in sys.modules if name == prefix or name.startswith(prefix + ".")]
+    assert not loaded, loaded
+""", module],
+        cwd=ROOT, capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_packaged_command_catalogue_matches_live_discovery() -> None:
+    from src.tools.command_catalogue import CATALOGUE_PATH, render_command_catalogue
+
+    assert CATALOGUE_PATH.read_text(encoding="utf-8") == render_command_catalogue(), (
+        "run python scripts/generate-command-catalogue.py"
+    )
+
+
+@pytest.mark.perf
+def test_cli_help_startup_budget(perf_strict) -> None:
+    """Time fresh processes running the installed console script's entry point."""
+    elapsed = []
+    for _ in range(3):
+        start = time.perf_counter()
+        result = subprocess.run(
+            [sys.executable, "-c", "from src.cli.app import main; main()", "--help"],
+            cwd=ROOT, capture_output=True, text=True, timeout=10, check=False,
+        )
+        elapsed.append(time.perf_counter() - start)
+        assert result.returncode == 0, result.stderr
+        assert "Agent Q CLI" in result.stdout
+    median = statistics.median(elapsed)
+    print(f"aq --help startup: median={median:.3f}s, samples={elapsed}")
+    assert median < 1.0, f"aq --help median startup {median:.3f}s exceeds 1s budget"
 
 
 def _install_fixture_entry_point(path: Path) -> None:
@@ -95,6 +145,40 @@ engine.run_startup_data_migrations = forbidden
     return marker
 
 
+def _install_legacy_memory_entry_point(path: Path) -> Path:
+    """Install aq-memory's ``memory`` entry point; importing it leaves a marker.
+
+    Mirrors the editable ``aq-memory`` install an operator's system Python can
+    still carry: its entry point names the core-owned ``aq memory`` group.
+    """
+    marker = path / "legacy-memory-imported"
+    package = path / "aq_memory"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        f"""
+from pathlib import Path
+
+Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+
+
+class MemoryPlugin:
+    pass
+""".lstrip(),
+        encoding="utf-8",
+    )
+    dist_info = path / "aq_memory-0.1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: aq-memory\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[aq.plugins]\nmemory = aq_memory:MemoryPlugin\n",
+        encoding="utf-8",
+    )
+    return marker
+
+
 def _offline_env(tmp_path: Path, *, worker: bool, database_url: str | None) -> tuple[dict, Path]:
     _install_fixture_entry_point(tmp_path)
     marker = _install_database_tripwire(tmp_path)
@@ -122,7 +206,7 @@ def _offline_env(tmp_path: Path, *, worker: bool, database_url: str | None) -> t
     [
         (["--help"], "fixture-plugin"),
         (["--help-all"], "Show the configured fixture value"),
-        (["--version"], "version 0.1.0"),
+        (["--version"], f"version {metadata.version('agent-queue')}"),
         (["schema"], "task_status"),
         (["test", "--aq-help"], "box-wide test semaphore"),
     ],
@@ -148,6 +232,37 @@ def test_discovery_commands_are_offline_and_never_initialize_database(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    ("args", "returncode", "expected"),
+    [
+        (["--help"], 0, "memory"),
+        (["memory", "--help"], 0, "Search memory."),
+        (["--json", "task", "show", "fixture-task-1"], 3, '"daemon_unreachable"'),
+    ],
+    ids=["help", "core-memory-help", "json-task-show"],
+)
+def test_installed_legacy_memory_plugin_leaves_ordinary_commands_clean(
+    tmp_path: Path, args: list[str], returncode: int, expected: str
+) -> None:
+    env, marker = _offline_env(tmp_path, worker=True, database_url=None)
+    imported = _install_legacy_memory_entry_point(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "src.cli.app", *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == returncode, result.stderr
+    assert expected in result.stdout
+    assert result.stderr == ""
+    assert not imported.exists()
+    assert not marker.exists()
+
+
 def test_cli_command_discovery_does_not_import_daemon_runtime():
     result = subprocess.run(
         [sys.executable, "-c", """
@@ -157,7 +272,8 @@ from src.mcp_registration import _discover_all_commands
 
 commands = _discover_all_commands()
 assert "task_claim" in commands
-assert commands["integration_development_sweep"]["input_schema"]["properties"]
+assert commands["integration_seal_now"]["input_schema"]["properties"]
+assert "integration_build_candidate" not in commands
 assert "task" in cli.commands
 assert not any(name == "mcp" or name.startswith("mcp.") for name in sys.modules)
 assert not any(name == "src.orchestrator" or name.startswith("src.orchestrator.")
