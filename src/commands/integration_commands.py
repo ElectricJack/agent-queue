@@ -2220,7 +2220,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationCloseDeliveredPrArgs
         from src.integration.pr_delivery import DeliveredPullRequestClosure
-        from src.integration.pr_cleanup import SWEEP_PRINCIPAL
+        from src.integration.pr_cleanup import SWEEP_PRINCIPAL, SWEEP_PULL
 
         try:
             request = IntegrationCloseDeliveredPrArgs.model_validate(args)
@@ -2235,6 +2235,7 @@ class IntegrationCommandsMixin:
             principal, refusal = await integration_operator(self.db, request.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
+        inventory = SWEEP_PULL.get() if sweep and request.dry_run else None
         result = await DeliveredPullRequestClosure(
             self.db, self._integration_repository_git()
         ).run(
@@ -2245,9 +2246,41 @@ class IntegrationCommandsMixin:
             reason=request.reason,
             operator_id=principal,
             aq_only=sweep,
+            inventory_pull=(inventory[2] if inventory is not None
+                            and inventory[:2] == (request.project_id, request.pr_number) else None),
         )
         return {
             "success": result["outcome"] in {"would_close", "closed", "nothing_to_close"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
+    async def _cmd_integration_fast_forward_pr(self, args: dict) -> dict:
+        """Adopt a separately filed repair's published passing head into its root PR."""
+
+        from src.commands.contracts.integration import IntegrationFastForwardPrArgs
+        from src.integration.pr_repair_publication import PRRepairPublication
+
+        try:
+            request = IntegrationFastForwardPrArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid PR fast-forward request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await PRRepairPublication(
+            self.db, self._integration_repository_git(), self.config,
+            event_bus=getattr(self.orchestrator, "bus", None),
+        ).run(
+            request.task_id, request.pr_number, dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha, reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_publish", "published", "already_published"},
             "dry_run": request.dry_run,
             **result,
         }

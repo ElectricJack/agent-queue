@@ -699,8 +699,9 @@ async def test_branch_materialization_drain_is_not_reentrant():
 
 
 @pytest.mark.parametrize("use_app", [False, True])
+@pytest.mark.parametrize("mapping", [False, True])
 async def test_configured_orchestrator_installs_shared_repository_client(
-    tmp_path, monkeypatch, use_app
+    tmp_path, monkeypatch, use_app, mapping
 ):
     from src.git.github import GitHubClient
     from src.git.github_contracts import GitHubCredentialMode, GitHubRepositoryBinding
@@ -745,7 +746,8 @@ async def test_configured_orchestrator_installs_shared_repository_client(
             repository = RepoConfig(
                 id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=reference,
             )
-            resolved = await orchestrator.github_repository_binding_resolver(repository)
+            value = {"url": repository.url} if mapping else repository
+            resolved = await orchestrator.github_repository_binding_resolver(value)
             resolved_client = orchestrator.github_client_factory(binding)
 
             assert resolved == binding, reference
@@ -777,7 +779,8 @@ async def test_configured_orchestrator_installs_shared_repository_client(
             "https://github.com/acme/widgets%2fother.git",
         ):
             repository.url = reference
-            assert await orchestrator.github_repository_binding_resolver(repository) is None
+            value = {"url": repository.url} if mapping else repository
+            assert await orchestrator.github_repository_binding_resolver(value) is None
         assert bind_repository.await_count == len(references)
         assert orchestrator.github_client_factory(binding) is client
 
@@ -787,11 +790,53 @@ async def test_configured_orchestrator_installs_shared_repository_client(
 
         bind_repository.side_effect = GitHubAccessError("credentials", "binding denied")
         repository.url = "git@github.com:acme/widgets.git"
+        value = {"url": repository.url} if mapping else repository
         with pytest.raises(GitHubAccessError, match="binding denied"):
-            await orchestrator.github_repository_binding_resolver(repository)
+            await orchestrator.github_repository_binding_resolver(value)
         assert orchestrator.github_client_factory(binding) is client
     finally:
         await orchestrator.shutdown()
+
+
+async def test_ci_watcher_prepares_mapping_with_real_repository_resolver(orch, monkeypatch):
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.dispatch_waits import DispatchWaits
+    from src.waits.conditions import Condition
+    from src.waits.watchers.ci import CheckWatcher
+
+    await orch.db.create_project(Project(id="p", name="project"))
+    await orch.db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url="git@github.com:acme/widgets.git",
+    ))
+    binding = GitHubRepositoryBinding(303, "acme/widgets")
+    bind_repository = AsyncMock(return_value=binding)
+    monkeypatch.setattr(orch.github_access, "bind_repository", bind_repository)
+    head = "a" * 40
+    origin_head = AsyncMock(return_value=head)
+    monkeypatch.setattr(orch.git, "acommit_head_sha", origin_head)
+    exact = object()
+    checks = AsyncMock(return_value=exact)
+    dispatch = DispatchWaits(orch)
+    watcher = CheckWatcher(
+        orch.db, dispatch.commit, orch.git, checks=checks, repository=dispatch.repository,
+    )
+    condition = Condition(
+        "ci_check", {"repository_id": "repo", "head_sha": head, "check_name": "linux"},
+        context={"project_id": "p"},
+    )
+    async with orch.db._engine.connect() as conn:
+        repo, resolved, prepared_checks, reason = await watcher._prepare(conn, condition)
+
+    assert isinstance(repo, dict)
+    assert repo["url"] == "git@github.com:acme/widgets.git"
+    assert resolved == binding
+    assert prepared_checks is exact
+    assert reason is None
+    bind_repository.assert_awaited_once_with("acme/widgets")
+    origin_head.assert_awaited_once_with("acme/widgets", head, repository=binding)
+    checks.assert_awaited_once_with(repo, condition)
+    assert orch.github_client_factory(binding).access is orch.github_access
 
 
 async def test_config_reload_does_not_swap_live_github_credential_provider(orch):

@@ -7489,7 +7489,7 @@
   "integration_close_delivered_pr": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_close_delivered_pr",
-    "source_digest": "sha256:d8fdf9e5857408c3e1960ebdbf4626c7230cef322f3be9970ae830302b6254a8",
+    "source_digest": "sha256:af0a6625ec8bd214cb30fd21c6020cb24f4e632b1d9c701b0d6b211f8798d8c4",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7887,6 +7887,42 @@
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
+  },
+  "integration_fast_forward_pr": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_fast_forward_pr",
+    "source_digest": "sha256:bdd1fe308913288a3b516449ea184d41c68201040ca25d65b3ecbc5854ebebd7",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "argument_reads_diagnostic_only": [],
+    "return_branches": [
+      {
+        "return": "{'success': result['outcome'] in {'would_publish', 'published', 'already_published'}, 'dry_run': request.dry_run, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'would_publish', 'published', 'already_published'}"
+      },
+      {
+        "return": "_failure('unauthorized', refusal)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('invalid', f'invalid PR fast-forward request: {exc}')",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_integration_pr_repair_publication.py",
+      "tests/test_cli_integration.py"
+    ],
+    "review_notes": "Typed operator/project-supervisor control uses integration_operator for the task's project; invalid and unauthorized requests retain explicit false envelopes. Preview is the default. Apply requires the expected head and a reason, verifies the repair task's passing close, the PR's open state and that the root PR head is an ancestor of the repair head, then fast-forwards the PR branch with a leased push. The success boolean is derived from the publication outcome."
   },
   "integration_file_children": {
     "mode": "typed",
