@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
+from src.api.models.ask import AskSourceRecord
 
 
 class GateSummary(BaseModel):
@@ -13,6 +16,7 @@ class GateSummary(BaseModel):
     """
 
     model_config = {"extra": "allow"}
+    ask: AskSourceRecord | None = None
     id: str
     gate_type: str
     project_id: str
@@ -63,9 +67,20 @@ class GateResolveResponse(BaseModel):
     success: bool = True
     gate_id: str
     unblocked_task_ids: list[str] = []
+    decision_id: str | None = None
+    application_state: str | None = None
+    created: bool | None = None
+    receipt: dict[str, Any] | None = None
+
+
+class GateReopenResponse(BaseModel):
+    success: bool = True
+    gate_id: str
+    ask: AskSourceRecord
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "gate_reopen": GateReopenResponse,
     "gate_create": GateCreateResponse,
     "gate_list": GateListResponse,
     "gate_show": GateShowResponse,

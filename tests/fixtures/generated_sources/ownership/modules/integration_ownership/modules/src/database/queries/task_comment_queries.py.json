@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_comment_queries.py::TaskCommentQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_comment_queries.py::TaskFindingsConflict": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "escalation_delivery_source_ci_repair": {
+    "failed_job": "https://github.com/ElectricJack/agent-queue/actions/runs/38160634858/job/114532613120",
+    "generic_dependencies": {
+      "src/dashboard_paths.py::escalation_path": "Generic dashboard route escaping for every human incident. No code integration, ref identity, lifecycle state or delivery authority; integration callers remain charged separately.",
+      "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately."
+    },
+    "notification_transport_exclusion": {
+      "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    },
+    "owned_definition_additions": [
+      "src/doctor/stall_checks.py::_escalation_delivery_findings"
+    ],
+    "owned_total_after": 155453,
+    "owned_total_before": 155543,
+    "reason": "Consolidated existing supervisor-message writes and dossier projections, preserving recipients, deduplication identities, priorities and evidence history. Reviewed generic notification helpers separately from the charged stall sweep adapter; delivery_status in the overdue notification query is transport, not code delivery. Immutable baseline, landing measurements, storage classifications and caps remain unchanged.",
+    "refactored_definitions": [
+      "src/integration/repair.py::RepairService._current_receipts_on",
+      "src/integration/repair.py::RepairService._dossier_with_evidence",
+      "src/integration/repair.py::RepairService._escalate_stuck_batch_on",
+      "src/integration/repair.py::RepairService._escalate_unstaged_parent_red_on",
+      "src/integration/repair.py::RepairService._stage_notice_on"
+    ],
+    "source_head": "a2755f5993b048a07ebe4c138647b10ef00e814e",
+    "transition_cap": 155499
+  }
+}
