@@ -3,18 +3,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
+from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "p"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "et.db"))
+    d = Database(lease_dsn("et.db"))
     await d.initialize()
     await d.create_project(Project(id=PROJECT_ID, name="P"))
     yield d
@@ -28,7 +29,7 @@ def config(tmp_path):
     return AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
-        database_path=str(tmp_path / "et.db"),
+        database=DatabaseConfig(url=lease_dsn("et.db")),
         data_dir=data_dir,
     )
 
@@ -39,6 +40,19 @@ async def handler(db, config):
     o.db = db
     o.git = MagicMock()
     return CommandHandler(o, config)
+
+
+async def _ensure_as_pipeline(handler, args: dict) -> dict:
+    """``ensure_task`` as a playbook command step dispatches it.
+
+    Only a SERVICE or PLAYBOOK principal may name a role profile (reviewer,
+    triage, ...); the local operator is refused like any other filer
+    (mandatory task routing §4, §5.1).
+    """
+    from src.commands.principal import ExecutionPrincipal, principal_context
+
+    with principal_context(ExecutionPrincipal.service("playbook-dispatch")):
+        return await handler.execute("ensure_task", args)
 
 
 async def test_ensure_task_creates_when_missing(handler):
@@ -63,6 +77,28 @@ async def test_ensure_task_returns_existing(handler):
     assert r2["success"] is True
     assert r2["created"] is False
     assert r2["task_id"] == r1["task_id"]
+
+
+async def test_ensure_task_preserves_source_repair_repository_and_type(handler):
+    args = {"project_id": PROJECT_ID, "dedup_key": "source-ci:source:head:1",
+            "title": "Repair source", "repo_id": "repo", "task_type": "bugfix",
+            "integration_mode": "pull_request", "root": True}
+    with patch.object(handler, "_cmd_create_task", new=AsyncMock(return_value={"created": "repair"})) as filing:
+        response = await handler._cmd_ensure_task(args)
+    assert response["success"] is True
+    filed = filing.call_args.args[0]
+    assert filed["repo_id"] == "repo" and filed["task_type"] == "bugfix"
+    assert filed["integration_mode"] == "pull_request" and filed["root"] is True
+
+
+async def test_ensure_task_records_an_internal_filers_origin(handler, db):
+    # Source-CI recovery files its repair this way; the origin routes it.
+    internal = await handler._cmd_ensure_task({
+        "project_id": PROJECT_ID, "dedup_key": "source-ci:x:1", "title": "Repair source",
+        "_created_by_kind": "source_ci_repair", "_created_by_id": "source-ci:x",
+    })
+    task = await db.get_task(internal["task_id"])
+    assert (task.created_by_kind, task.created_by_id) == ("source_ci_repair", "source-ci:x")
 
 
 async def test_ensure_task_ignores_completed_task(handler, db):
@@ -152,26 +188,26 @@ async def reviewer(db):
 
 
 async def test_ensure_task_records_explicit_intelligence_class(handler, db, reviewer):
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t1",
             "title": "Review",
             "profile_id": reviewer,
-            "intelligence_class": "standard-low",
+            "intelligence_class": "deep-low",
         },
     )
     assert res["success"] is True, res
     task = await db.get_task(res["task_id"])
     assert task.profile_id == "reviewer"
-    assert task.intelligence_class == "standard-low"
+    assert task.intelligence_class == "deep-low"
 
 
 async def test_ensure_task_without_class_invents_none(handler, db, reviewer):
     """A profile default must never stand in for the task's route."""
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t2",
@@ -185,8 +221,8 @@ async def test_ensure_task_without_class_invents_none(handler, db, reviewer):
 
 
 async def test_ensure_task_rejects_unknown_intelligence_class(handler, db, reviewer):
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t3",
@@ -201,18 +237,18 @@ async def test_ensure_task_rejects_unknown_intelligence_class(handler, db, revie
 
 
 async def test_ensure_task_class_applies_only_on_create(handler, db, reviewer):
-    first = await handler.execute(
-        "ensure_task",
+    first = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t4",
             "title": "Review",
             "profile_id": reviewer,
-            "intelligence_class": "standard-low",
+            "intelligence_class": "deep-low",
         },
     )
-    second = await handler.execute(
-        "ensure_task",
+    second = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t4",
@@ -224,7 +260,7 @@ async def test_ensure_task_class_applies_only_on_create(handler, db, reviewer):
     assert second["created"] is False
     assert second["task_id"] == first["task_id"]
     task = await db.get_task(first["task_id"])
-    assert task.intelligence_class == "standard-low"
+    assert task.intelligence_class == "deep-low"
 
 
 async def test_ensure_task_routes_canonical_triage_task(handler, db):
@@ -236,28 +272,28 @@ async def test_ensure_task_routes_canonical_triage_task(handler, db):
         Task(id="unrouted", project_id=PROJECT_ID, title="Unrouted", description="")
     )
     await db.create_gate(PROJECT_ID, "routing", "Route task", waiter_task_ids=["unrouted"])
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "triage-open",
             "title": "Triage",
             "profile_id": "triage",
-            "intelligence_class": "standard-low",
+            "intelligence_class": "deep-low",
         },
     )
     assert res["success"] is True, res
     assert res["created"] is True, res
     task = await db.get_task(res["task_id"])
-    assert task.intelligence_class == "standard-low"
+    assert task.intelligence_class == "deep-low"
 
 
 async def test_ensure_task_rejects_unknown_class_for_triage(handler, db):
     await db.create_profile(
         AgentProfile(id="triage", name="Triage", harness="claude", needs_workspace=False)
     )
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "triage-open",
@@ -297,8 +333,8 @@ async def test_ensure_task_refuses_a_review_of_a_pipeline_review(handler, db):
             status=TaskStatus.COMPLETED,
         )
     )
-    first = await handler.execute(
-        "ensure_task",
+    first = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:orig",
@@ -309,8 +345,8 @@ async def test_ensure_task_refuses_a_review_of_a_pipeline_review(handler, db):
     assert first["success"] is True and first["created"] is True
     review_id = first["task_id"]
 
-    second = await handler.execute(
-        "ensure_task",
+    second = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": f"review:task:{review_id}",
@@ -338,8 +374,8 @@ async def test_ensure_task_refuses_a_review_of_a_final_review(handler, db):
             dedup_key="branch-review:feat/x",
         )
     )
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:final-1",
@@ -348,6 +384,7 @@ async def test_ensure_task_refuses_a_review_of_a_final_review(handler, db):
         },
     )
     assert res["success"] is False
+    assert "review" in res["error"].lower(), res
     assert await db.find_task_by_dedup_key(PROJECT_ID, "review:task:final-1") is None
 
 
@@ -365,8 +402,8 @@ async def test_ensure_task_still_reviews_ordinary_and_unknown_tasks(handler, db)
         )
     )
     for reviewed in ("work-1", "no-such-row"):
-        res = await handler.execute(
-            "ensure_task",
+        res = await _ensure_as_pipeline(
+            handler,
             {
                 "project_id": PROJECT_ID,
                 "dedup_key": f"review:task:{reviewed}",
@@ -375,3 +412,100 @@ async def test_ensure_task_still_reviews_ordinary_and_unknown_tasks(handler, db)
             },
         )
         assert res["success"] is True and res["created"] is True, (reviewed, res)
+
+
+# ── parent_key on ensure_task (graph-visibility A2) ──────────────────────
+
+
+async def standing_ids(db, key="maintenance"):
+    from src.database.tables import tasks as tasks_table
+
+    async with db._engine.begin() as conn:
+        rows = (
+            await conn.execute(
+                tasks_table.select().where(
+                    tasks_table.c.project_id == PROJECT_ID,
+                    tasks_table.c.dedup_key == f"parent:{key}",
+                )
+            )
+        ).mappings().fetchall()
+    return [row["id"] for row in rows]
+
+
+async def test_ensure_task_files_under_the_standing_parent(handler, db):
+    res = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "ci-baseline:abc:1",
+            "title": "Repair CI",
+            "parent_key": "maintenance",
+        },
+    )
+    assert res["success"] is True
+    assert res["created"] is True
+    container_ids = await standing_ids(db)
+    assert len(container_ids) == 1
+    assert res["parent_id"] == container_ids[0]
+    assert (await db.get_task(res["task_id"])).parent_task_id == container_ids[0]
+    assert (await db.get_task(container_ids[0])).title == "Maintenance"
+
+
+async def test_ensure_task_dedup_still_holds_for_the_child(handler, db):
+    args = {
+        "project_id": PROJECT_ID,
+        "dedup_key": "ci-baseline:abc:1",
+        "title": "Repair CI",
+        "parent_key": "maintenance",
+    }
+    first = await handler.execute("ensure_task", args)
+    second = await handler.execute("ensure_task", dict(args))
+    assert second["created"] is False
+    assert second["task_id"] == first["task_id"]
+    # A replay neither creates a second container nor a second child.
+    assert len(await standing_ids(db)) == 1
+    assert len(await db.get_children(first["parent_id"])) == 1
+
+
+async def test_ensure_task_reuses_the_container_across_keys(handler, db):
+    first = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "ci-baseline:abc:1",
+            "title": "Repair one",
+            "parent_key": "maintenance",
+        },
+    )
+    second = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "ci-baseline:def:1",
+            "title": "Repair two",
+            "parent_key": "maintenance",
+        },
+    )
+    assert second["created"] is True
+    assert second["parent_id"] == first["parent_id"]
+    assert len(await standing_ids(db)) == 1
+    assert len(await db.get_children(first["parent_id"])) == 2
+
+
+async def test_ensure_task_parent_key_conflicts_with_parent_id(handler, db):
+    await db.create_task(
+        Task(id="other", project_id=PROJECT_ID, title="o", description="o")
+    )
+    res = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "k",
+            "title": "t",
+            "parent_key": "maintenance",
+            "parent_id": "other",
+        },
+    )
+    assert res["success"] is False
+    assert res["code"] == "hierarchy.parent_conflict"
+    assert await standing_ids(db) == []

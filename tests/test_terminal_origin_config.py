@@ -10,7 +10,7 @@ def test_terminal_origins_load_and_are_editable(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump({
         "discord": {"bot_token": "test-token", "guild_id": "1"},
-        "database_path": str(tmp_path / "state.db"),
+        "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
         "api_auth": {"trusted_dashboard_origins": origins},
     }))
     config = load_config(str(path))

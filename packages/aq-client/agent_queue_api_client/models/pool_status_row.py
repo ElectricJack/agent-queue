@@ -9,7 +9,10 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.outside_pool_session_status import OutsidePoolSessionStatus
     from ..models.pool_instance_status import PoolInstanceStatus
+    from ..models.pool_project_status import PoolProjectStatus
+    from ..models.pool_provider_unavailable import PoolProviderUnavailable
 
 
 T = TypeVar("T", bound="PoolStatusRow")
@@ -17,25 +20,35 @@ T = TypeVar("T", bound="PoolStatusRow")
 
 @_attrs_define
 class PoolStatusRow:
-    """One (project, profile) worker-pool row — swarm-work-model §11.
+    """One worker pool -- a profile, fleet-wide (global-worker-pools §6.1).
 
-    Attributes:
-        project_id (str):
-        profile_id (str):
-        min_active (int):
-        desired (int):
-        running_idle (int):
-        running_busy (int):
-        starting (int):
-        draining (int):
-        ready (int):
-        max_active (int | None | Unset):
-        quarantined_until (float | None | Unset):
-        quarantined_reason (None | str | Unset):
-        instances (list[PoolInstanceStatus] | Unset):
+    A row used to be one ``(project_id, profile_id)`` pair, which quietly
+    multiplied ``min_active``/``max_active`` by the number of active
+    projects.  Bounds and supply are aggregates over the whole fleet now,
+    and the per-project detail lives in ``projects``.
+
+        Attributes:
+            profile_id (str):
+            min_active (int):
+            desired (int):
+            running_idle (int):
+            running_busy (int):
+            starting (int):
+            draining (int):
+            ready (int):
+            name (str | Unset):  Default: ''.
+            service_tier (None | str | Unset):
+            enabled (bool | Unset):  Default: True.
+            max_active (int | None | Unset):
+            min_per_project (int | Unset):  Default: 0.
+            evictable (int | Unset):  Default: 0.
+            blocked_on_input (int | Unset):  Default: 0.
+            projects (list[PoolProjectStatus] | Unset):
+            instances (list[PoolInstanceStatus] | Unset):
+            outside_pools (list[OutsidePoolSessionStatus] | Unset):
+            provider_unavailable (None | PoolProviderUnavailable | Unset):
     """
 
-    project_id: str
     profile_id: str
     min_active: int
     desired: int
@@ -44,14 +57,21 @@ class PoolStatusRow:
     starting: int
     draining: int
     ready: int
+    name: str | Unset = ""
+    service_tier: None | str | Unset = UNSET
+    enabled: bool | Unset = True
     max_active: int | None | Unset = UNSET
-    quarantined_until: float | None | Unset = UNSET
-    quarantined_reason: None | str | Unset = UNSET
+    min_per_project: int | Unset = 0
+    evictable: int | Unset = 0
+    blocked_on_input: int | Unset = 0
+    projects: list[PoolProjectStatus] | Unset = UNSET
     instances: list[PoolInstanceStatus] | Unset = UNSET
+    outside_pools: list[OutsidePoolSessionStatus] | Unset = UNSET
+    provider_unavailable: None | PoolProviderUnavailable | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
+        from ..models.pool_provider_unavailable import PoolProviderUnavailable
 
         profile_id = self.profile_id
 
@@ -69,23 +89,34 @@ class PoolStatusRow:
 
         ready = self.ready
 
+        name = self.name
+
+        service_tier: None | str | Unset
+        if isinstance(self.service_tier, Unset):
+            service_tier = UNSET
+        else:
+            service_tier = self.service_tier
+
+        enabled = self.enabled
+
         max_active: int | None | Unset
         if isinstance(self.max_active, Unset):
             max_active = UNSET
         else:
             max_active = self.max_active
 
-        quarantined_until: float | None | Unset
-        if isinstance(self.quarantined_until, Unset):
-            quarantined_until = UNSET
-        else:
-            quarantined_until = self.quarantined_until
+        min_per_project = self.min_per_project
 
-        quarantined_reason: None | str | Unset
-        if isinstance(self.quarantined_reason, Unset):
-            quarantined_reason = UNSET
-        else:
-            quarantined_reason = self.quarantined_reason
+        evictable = self.evictable
+
+        blocked_on_input = self.blocked_on_input
+
+        projects: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.projects, Unset):
+            projects = []
+            for projects_item_data in self.projects:
+                projects_item = projects_item_data.to_dict()
+                projects.append(projects_item)
 
         instances: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.instances, Unset):
@@ -94,11 +125,25 @@ class PoolStatusRow:
                 instances_item = instances_item_data.to_dict()
                 instances.append(instances_item)
 
+        outside_pools: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.outside_pools, Unset):
+            outside_pools = []
+            for outside_pools_item_data in self.outside_pools:
+                outside_pools_item = outside_pools_item_data.to_dict()
+                outside_pools.append(outside_pools_item)
+
+        provider_unavailable: dict[str, Any] | None | Unset
+        if isinstance(self.provider_unavailable, Unset):
+            provider_unavailable = UNSET
+        elif isinstance(self.provider_unavailable, PoolProviderUnavailable):
+            provider_unavailable = self.provider_unavailable.to_dict()
+        else:
+            provider_unavailable = self.provider_unavailable
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "profile_id": profile_id,
                 "min_active": min_active,
                 "desired": desired,
@@ -109,24 +154,39 @@ class PoolStatusRow:
                 "ready": ready,
             }
         )
+        if name is not UNSET:
+            field_dict["name"] = name
+        if service_tier is not UNSET:
+            field_dict["service_tier"] = service_tier
+        if enabled is not UNSET:
+            field_dict["enabled"] = enabled
         if max_active is not UNSET:
             field_dict["max_active"] = max_active
-        if quarantined_until is not UNSET:
-            field_dict["quarantined_until"] = quarantined_until
-        if quarantined_reason is not UNSET:
-            field_dict["quarantined_reason"] = quarantined_reason
+        if min_per_project is not UNSET:
+            field_dict["min_per_project"] = min_per_project
+        if evictable is not UNSET:
+            field_dict["evictable"] = evictable
+        if blocked_on_input is not UNSET:
+            field_dict["blocked_on_input"] = blocked_on_input
+        if projects is not UNSET:
+            field_dict["projects"] = projects
         if instances is not UNSET:
             field_dict["instances"] = instances
+        if outside_pools is not UNSET:
+            field_dict["outside_pools"] = outside_pools
+        if provider_unavailable is not UNSET:
+            field_dict["provider_unavailable"] = provider_unavailable
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.outside_pool_session_status import OutsidePoolSessionStatus
         from ..models.pool_instance_status import PoolInstanceStatus
+        from ..models.pool_project_status import PoolProjectStatus
+        from ..models.pool_provider_unavailable import PoolProviderUnavailable
 
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         profile_id = d.pop("profile_id")
 
         min_active = d.pop("min_active")
@@ -143,6 +203,19 @@ class PoolStatusRow:
 
         ready = d.pop("ready")
 
+        name = d.pop("name", UNSET)
+
+        def _parse_service_tier(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        service_tier = _parse_service_tier(d.pop("service_tier", UNSET))
+
+        enabled = d.pop("enabled", UNSET)
+
         def _parse_max_active(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -152,23 +225,20 @@ class PoolStatusRow:
 
         max_active = _parse_max_active(d.pop("max_active", UNSET))
 
-        def _parse_quarantined_until(data: object) -> float | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(float | None | Unset, data)
+        min_per_project = d.pop("min_per_project", UNSET)
 
-        quarantined_until = _parse_quarantined_until(d.pop("quarantined_until", UNSET))
+        evictable = d.pop("evictable", UNSET)
 
-        def _parse_quarantined_reason(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
+        blocked_on_input = d.pop("blocked_on_input", UNSET)
 
-        quarantined_reason = _parse_quarantined_reason(d.pop("quarantined_reason", UNSET))
+        _projects = d.pop("projects", UNSET)
+        projects: list[PoolProjectStatus] | Unset = UNSET
+        if _projects is not UNSET:
+            projects = []
+            for projects_item_data in _projects:
+                projects_item = PoolProjectStatus.from_dict(projects_item_data)
+
+                projects.append(projects_item)
 
         _instances = d.pop("instances", UNSET)
         instances: list[PoolInstanceStatus] | Unset = UNSET
@@ -179,8 +249,33 @@ class PoolStatusRow:
 
                 instances.append(instances_item)
 
+        _outside_pools = d.pop("outside_pools", UNSET)
+        outside_pools: list[OutsidePoolSessionStatus] | Unset = UNSET
+        if _outside_pools is not UNSET:
+            outside_pools = []
+            for outside_pools_item_data in _outside_pools:
+                outside_pools_item = OutsidePoolSessionStatus.from_dict(outside_pools_item_data)
+
+                outside_pools.append(outside_pools_item)
+
+        def _parse_provider_unavailable(data: object) -> None | PoolProviderUnavailable | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                provider_unavailable_type_0 = PoolProviderUnavailable.from_dict(data)
+
+                return provider_unavailable_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | PoolProviderUnavailable | Unset, data)
+
+        provider_unavailable = _parse_provider_unavailable(d.pop("provider_unavailable", UNSET))
+
         pool_status_row = cls(
-            project_id=project_id,
             profile_id=profile_id,
             min_active=min_active,
             desired=desired,
@@ -189,10 +284,17 @@ class PoolStatusRow:
             starting=starting,
             draining=draining,
             ready=ready,
+            name=name,
+            service_tier=service_tier,
+            enabled=enabled,
             max_active=max_active,
-            quarantined_until=quarantined_until,
-            quarantined_reason=quarantined_reason,
+            min_per_project=min_per_project,
+            evictable=evictable,
+            blocked_on_input=blocked_on_input,
+            projects=projects,
             instances=instances,
+            outside_pools=outside_pools,
+            provider_unavailable=provider_unavailable,
         )
 
         pool_status_row.additional_properties = d

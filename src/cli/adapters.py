@@ -141,7 +141,6 @@ def project_proxy(d: Any) -> DictProxy | TypedProxy:
         if isinstance(status, str) and status:
             patched["status"] = status.upper()
         patched.setdefault("total_tokens_used", 0)
-        patched.setdefault("discord_channel_id", None)
         return DictProxy(patched)
     return TypedProxy(d)
 
@@ -156,11 +155,12 @@ def agent_proxy(d: Any) -> DictProxy | TypedProxy:
         patched.setdefault("session_tokens_used", 0)
         patched.setdefault("agent_type", "claude")
         patched.setdefault("last_heartbeat", None)
+        patched.setdefault("last_activity", None)
+        patched.setdefault("live", False)
         aliases = {} if patched.get("id") else {"id": "workspace_id"}
         return DictProxy(patched, aliases=aliases)
     identity = getattr(d, "id", None)
     aliases = {} if identity and not _is_unset(identity) else {"id": "workspace_id"}
     return TypedProxy(d, aliases=aliases)
-
 
 

@@ -47,6 +47,31 @@ class TestEventSchemasStructure:
 class TestExpectedEventTypes:
     """Verify that all known event types from the codebase are registered."""
 
+    def test_publication_notification_requires_verified_ref_facts(self):
+        event = "integration.publication_verified"
+        payload = {"project_id": "p", "batch_id": "b", "revision": 0,
+                   "repository_id": "repo", "target_ref": "refs/heads/main",
+                   "head_sha": "published", "candidate_sha": "tested",
+                   "publication_verified": True}
+        assert not validate_payload(event, payload, strict_extras=True)
+        for field in payload:
+            assert validate_payload(event, {k: v for k, v in payload.items() if k != field})
+        assert validate_payload(event, {**payload, "revision": "0"})
+        assert validate_payload(event, {**payload, "intent_id": "invented"}, strict_extras=True)
+
+    def test_batch_wakeups_bind_structure_and_allow_unassigned_reviewer(self):
+        from src.event_schemas import resolve_event_path
+
+        payload = {"project_id": "p", "batch_id": "b", "structure_revision": 1,
+                   "structure_digest": "d" * 64, "reviewer_task_id": None}
+        for event in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released"):
+            assert event in EVENT_SCHEMAS
+            assert not validate_payload(event, payload, strict_extras=True)
+            for field in payload:
+                assert resolve_event_path(event, field)
+                assert validate_payload(event, {k: v for k, v in payload.items() if k != field})
+            assert validate_payload(event, {**payload, "structure_revision": "1"})
+
     def test_task_lifecycle_events(self):
         expected = [
             "task.started",
@@ -98,6 +123,7 @@ class TestExpectedEventTypes:
             "notify.system_online",
             "notify.task_thread_open",
             "notify.task_message",
+            "notify.task_comment",
             "notify.task_thread_close",
             "notify.text",
         ]
@@ -344,3 +370,81 @@ class TestTimerEventSchemas:
     def test_validate_payload_catches_missing_timer_fields(self):
         errors = validate_payload("timer.10m", {"tick_time": "2026-01-01T00:00:00Z"})
         assert any("interval" in e for e in errors)
+
+
+class TestPoolEventSchemas:
+    """Global worker pools §4/§6.3 — the two new events and ``pool.scaled``."""
+
+    def test_pool_scaled_accepts_a_placement_reason(self):
+        """Optional, not required: a drain reports no reason and never had one."""
+        schema = get_schema("pool.scaled")
+        assert "placement_reason" in schema["optional"]
+        assert "placement_reason" not in schema["required"]
+        errors = validate_payload(
+            "pool.scaled",
+            {
+                "project_id": "p",
+                "profile_id": "worker",
+                "kind": "start",
+                "count": 1,
+                "placement_reason": "warm_floor",
+            },
+        )
+        assert errors == []
+
+    def test_pool_placement_starved_required_fields(self):
+        schema = get_schema("pool.placement_starved")
+        assert schema["required"] == ["profile_id", "wanted", "reasons"]
+
+    def test_pool_placement_starved_payload_validates(self):
+        errors = validate_payload(
+            "pool.placement_starved",
+            {"profile_id": "worker", "wanted": 2, "reasons": {"p": "no_workspace"}},
+        )
+        assert errors == []
+
+    def test_pool_bounds_rescoped_carries_both_ceilings(self):
+        schema = get_schema("pool.bounds_rescoped")
+        assert "effective_max_active" in schema["required"]
+        assert "previous_effective_max_active" in schema["required"]
+        assert "eligible_projects" in schema["required"]
+
+    def test_pool_bounds_rescoped_payload_validates(self):
+        errors = validate_payload(
+            "pool.bounds_rescoped",
+            {
+                "profile_id": "worker",
+                "eligible_projects": 5,
+                "effective_max_active": 4,
+                "effective_min_active": 0,
+                "previous_effective_max_active": 20,
+                "previous_effective_min_active": 0,
+            },
+        )
+        assert errors == []
+
+    def test_pool_spilled_payload_validates(self):
+        """provider-failover D24 S7: one summary per sweep that spilled work."""
+        schema = get_schema("pool.spilled")
+        assert schema["required"] == ["batch_id", "moved"]
+        errors = validate_payload(
+            "pool.spilled",
+            {
+                "batch_id": "spill-20260927T1405",
+                "moved": 2,
+                "routes": [
+                    {
+                        "from_profile_id": "standard-high-opencode",
+                        "to_profile_id": "standard-high-claude",
+                        "count": 2,
+                    }
+                ],
+                "projects": ["agent-queue"],
+                "held": {"spill_no_target": 1},
+            },
+        )
+        assert errors == []
+
+    def test_new_pool_events_are_registered(self):
+        for event_type in ("pool.placement_starved", "pool.bounds_rescoped", "pool.spilled"):
+            assert event_type in registered_event_types()

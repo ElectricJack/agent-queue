@@ -25,6 +25,8 @@ from tests.session_dispatch_helpers import (
     create_session_project,
     drain_running_tasks,
 )
+from tests.db_fixtures import lease_dsn
+from src.config import DatabaseConfig
 
 
 class MockAdapter:
@@ -57,7 +59,7 @@ class MockAdapterFactory:
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -123,6 +125,7 @@ class TestTaskFailedEvent:
                 title="Retry task",
                 description="test",
                 status=TaskStatus.READY,
+                profile_id="claude", route_source="legacy",
                 max_retries=1,
                 retry_count=0,
             )
@@ -209,7 +212,7 @@ class TestTaskFailedEvent:
             description="test",
             status=TaskStatus.IN_PROGRESS,
             assigned_agent_id="a-3",
-            profile_id="claude",
+            profile_id="claude", route_source="legacy",
             max_retries=1,
             retry_count=0,
         )
@@ -254,7 +257,7 @@ class TestTaskFailedEvent:
             description="test",
             status=TaskStatus.IN_PROGRESS,
             assigned_agent_id="a-4",
-            profile_id="claude",
+            profile_id="claude", route_source="legacy",
             max_retries=3,
             retry_count=0,
         )

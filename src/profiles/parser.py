@@ -51,6 +51,7 @@ CONFIG_KNOWN_KEYS = frozenset(
     {
         "permission_mode",
         "codex_full_auto",
+        "codex_service_tier",
         "claude_dangerously_skip_permissions",
         "max_tokens_per_task",
         # Named-session fields (supervisor-agent spec §7).  ``workspaces``
@@ -66,9 +67,12 @@ CONFIG_KNOWN_KEYS = frozenset(
         "default_class",
         "needs_workspace",
         "read_only",
+        # Operator kill-switch: false means "hand this profile no new work".
+        "enabled",
         "allow_base_checkout",
         "min_active",
         "max_active",
+        "min_per_project",
         "max_claims_per_session",
     }
 )
@@ -111,6 +115,16 @@ class ProfileFrontmatter:
     id: str = ""
     name: str = ""
     tags: list[str] = field(default_factory=list)
+    #: Id of the profile this one inherits its prompt and capabilities from.
+    #: One level only — a template may not itself extend another, so there is
+    #: no chain to resolve and no cycle to detect.  See
+    #: :mod:`src.profiles.inheritance`.
+    extends: str = ""
+    #: A template is a source for :data:`extends`, not a profile in its own
+    #: right: it is never synced to ``agent_profiles`` and nothing can be
+    #: routed to it.  Shipped worker templates carry the prompt, capabilities
+    #: and harness that every derived rung of that harness shares.
+    template: bool = False
     # Preserve any extra frontmatter keys for forward-compatibility.
     extra: dict = field(default_factory=dict)
 
@@ -261,6 +275,8 @@ def parse_frontmatter(text: str) -> tuple[ProfileFrontmatter, str]:
         id=str(data.pop("id", "")),
         name=str(data.pop("name", "")),
         tags=data.pop("tags", []),
+        extends=str(data.pop("extends", "") or "").strip(),
+        template=data.pop("template", False) is True,
         extra=data,
     )
     if not isinstance(fm.tags, list):
@@ -521,6 +537,13 @@ def _validate_config(config: dict) -> list[str]:
         elif value and config.get("harness") != required_harness:
             errors.append(f"Config '{key}: true' requires harness '{required_harness}'")
 
+    if "codex_service_tier" in config:
+        tier = config["codex_service_tier"]
+        if tier not in ("default", "fast") or not isinstance(tier, str):
+            errors.append("Config 'codex_service_tier' must be 'default' or 'fast'")
+        elif config.get("harness") != "codex":
+            errors.append("Config 'codex_service_tier' requires harness 'codex'")
+
     # --- max_tokens_per_task ---
     if "max_tokens_per_task" in config:
         mtt = config["max_tokens_per_task"]
@@ -569,6 +592,11 @@ def _validate_config(config: dict) -> list[str]:
         v = config["read_only"]
         if not isinstance(v, bool):
             errors.append(f"Config 'read_only' must be a boolean, got {type(v).__name__}")
+
+    if "enabled" in config:
+        v = config["enabled"]
+        if not isinstance(v, bool):
+            errors.append(f"Config 'enabled' must be a boolean, got {type(v).__name__}")
 
     if "allow_base_checkout" in config:
         v = config["allow_base_checkout"]
@@ -674,7 +702,13 @@ def _validate_session_config(config: dict) -> list[str]:
 
     # Pool-only sizing keys (swarm-work-model §9).  NULL/absent = unlimited
     # for max_claims_per_session; 0 is a parse error everywhere.
-    for key in ("min_active", "max_active", "max_claims_per_session"):
+    #
+    # ``min_per_project`` (global-worker-pools §2.1) is a *warm floor per
+    # eligible project*, not a bound on the fleet, so it follows ``min_active``
+    # rather than the "positive or omitted" siblings: an explicit ``0`` is the
+    # meaningful (and default) statement "keep nothing resident in a project
+    # that has no work", and only a negative value is nonsense.
+    for key in ("min_active", "max_active", "min_per_project", "max_claims_per_session"):
         if key not in config:
             continue
         value = config[key]
@@ -683,9 +717,9 @@ def _validate_session_config(config: dict) -> list[str]:
         if isinstance(value, bool) or not isinstance(value, int):
             errors.append(f"Config '{key}' must be an integer, got {type(value).__name__}")
             continue
-        if key == "min_active":
+        if key in ("min_active", "min_per_project"):
             if value < 0:
-                errors.append(f"Config 'min_active' must be >= 0, got {value}")
+                errors.append(f"Config '{key}' must be >= 0, got {value}")
         elif value <= 0:
             errors.append(f"Config '{key}' must be positive (omit it for unlimited), got {value}")
         if lifecycle != "pool":
@@ -928,13 +962,13 @@ def parse_profile(
     ...
     ... ## Config
     ... ```json
-    ... {"default_class": "standard-medium"}
+    ... {"default_class": "standard-high"}
     ... ```
     ... ''')
     >>> result.is_valid
     True
     >>> result.config
-    {'default_class': 'standard-medium'}
+    {'default_class': 'standard-high'}
     >>> result.frontmatter.id
     'coding'
     """
@@ -1082,6 +1116,8 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     for key in ("codex_full_auto", "claude_dangerously_skip_permissions"):
         if key in parsed.config:
             result[key] = parsed.config[key]
+    if "codex_service_tier" in parsed.config:
+        result["codex_service_tier"] = parsed.config["codex_service_tier"]
 
     if "default_class" in parsed.config:
         result["default_class"] = parsed.config["default_class"]
@@ -1089,6 +1125,8 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         result["needs_workspace"] = bool(parsed.config["needs_workspace"])
     if "read_only" in parsed.config:
         result["read_only"] = bool(parsed.config["read_only"])
+    if "enabled" in parsed.config:
+        result["enabled"] = bool(parsed.config["enabled"])
     if "allow_base_checkout" in parsed.config:
         result["allow_base_checkout"] = bool(parsed.config["allow_base_checkout"])
 
@@ -1101,7 +1139,7 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         value = parsed.config.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             result[key] = value
-    for key in ("min_active", "max_active", "max_claims_per_session"):
+    for key in ("min_active", "max_active", "min_per_project", "max_claims_per_session"):
         value = parsed.config.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             result[key] = value
@@ -1224,6 +1262,7 @@ def agent_profile_to_markdown(
     permission_mode: str = "",
     harness: str | None = None,
     codex_full_auto: bool = False,
+    codex_service_tier: str | None = None,
     claude_dangerously_skip_permissions: bool = False,
     allowed_tools: list[str] | None = None,
     mcp_servers: list[str] | dict[str, dict] | None = None,
@@ -1292,6 +1331,11 @@ def agent_profile_to_markdown(
     ):
         if not isinstance(value, bool):
             raise ValueError(f"{key} must be a boolean, got {type(value).__name__}")
+    if codex_service_tier is not None:
+        if codex_service_tier not in ("default", "fast"):
+            raise ValueError("codex_service_tier must be 'default' or 'fast'")
+        if harness != "codex":
+            raise ValueError("codex_service_tier requires harness 'codex'")
 
     lines: list[str] = []
 
@@ -1335,6 +1379,8 @@ def agent_profile_to_markdown(
         config["permission_mode"] = permission_mode
     if codex_full_auto:
         config["codex_full_auto"] = True
+    if codex_service_tier is not None:
+        config["codex_service_tier"] = codex_service_tier
     if claude_dangerously_skip_permissions:
         config["claude_dangerously_skip_permissions"] = True
     if default_class:

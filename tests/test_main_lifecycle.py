@@ -2,7 +2,7 @@
 
 Drives the real ``src.main.run`` coroutine with monkeypatched config,
 logging, Orchestrator, messaging adapter, and runtime registry so startup
-ordering, degraded messaging, SQLite-only directory creation, argument
+ordering, degraded messaging, database URL handling, argument
 parsing, health checks, and the readiness-race teardown are exercised
 without a real daemon, database, or Discord connection.
 """
@@ -20,6 +20,33 @@ import pytest
 import src.main as main_mod
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.event_bus import EventBus
+from src.remote_links import DashboardLinkResolver
+
+
+@pytest.fixture
+async def lifecycle_clock(monkeypatch):
+    """Advance asyncio timers with loop turns instead of waiting 30 real seconds."""
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    monkeypatch.setattr(loop, "time", lambda: now)
+
+    async def run(awaitable):
+        nonlocal now
+        task = asyncio.create_task(awaitable)
+        try:
+            # A bounded number of turns also catches a dead scheduler without
+            # making the timeout depend on how busy the test machine is.
+            for _ in range(300):
+                await asyncio.sleep(0)
+                if task.done():
+                    return task.result()
+                now += 0.1
+            pytest.fail("daemon lifecycle did not finish within 30 simulated seconds")
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return run
 
 
 class LoginFailure(Exception):
@@ -61,14 +88,17 @@ class _FakeAdapter:
         self.events.append("adapter.close")
 
 
-def _sqlite_config(tmp_path) -> AppConfig:
+def _postgres_config(tmp_path) -> AppConfig:
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "workspaces"),
-        database_path=str(tmp_path / "db" / "agent-queue.db"),
+        database=DatabaseConfig(url="postgresql+asyncpg://user:pw@localhost:5432/aq"),
         data_dir=str(tmp_path / "data"),
     )
     config.mcp_server.enabled = False
+    # These process-lifecycle tests have no metrics database. Sampler behavior
+    # is covered by the metrics suite; keep its background loop disabled here.
+    config.metrics.enabled = False
     return config
 
 
@@ -80,8 +110,9 @@ def _install_run_env(monkeypatch, config, adapter):
     class FakeOrchestrator:
         def __init__(self, cfg, runtimes=None):
             self.config = cfg
-            self.db = SimpleNamespace()
+            self.db = SimpleNamespace(reviews_pending_notification=AsyncMock(return_value=[]))
             self.bus = EventBus()
+            self.dashboard_links = DashboardLinkResolver(lambda: self.config)
             self._restart_requested = False
             self._paused = False
             self._running_tasks: dict = {}
@@ -121,20 +152,21 @@ def _install_run_env(monkeypatch, config, adapter):
 
 
 async def test_run_initializes_before_adapter_and_runs_degraded_after_login_failure(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, lifecycle_clock, caplog
 ):
     """Orchestrator initialization precedes adapter startup; a login failure
     degrades messaging instead of tearing the daemon down; shutdown closes
     the adapter and the orchestrator."""
-    config = _sqlite_config(tmp_path)
+    config = _postgres_config(tmp_path)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
+    monkeypatch.setenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "parent-compact-value")
+    monkeypatch.setenv("AQ_FUTURE_CONTROL", "parent-aq-value")
     adapter = _FakeAdapter([])
     events_ref, state = _install_run_env(monkeypatch, config, adapter)
     adapter.events = events_ref  # share the recorder installed by the env
     state["on_first_cycle"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
 
-    async with asyncio.timeout(30):
-        restart = await main_mod.run(str(tmp_path / "config.yaml"))
+    restart = await lifecycle_clock(main_mod.run(str(tmp_path / "config.yaml")))
 
     assert restart is False
     assert "orch.initialize" in events_ref and "adapter.start" in events_ref
@@ -145,11 +177,17 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     assert events_ref.index("first_cycle") < events_ref.index("adapter.close")
     assert "orch.shutdown" in events_ref
     assert "CLAUDE_CODE_SESSION_ID" not in os.environ
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in os.environ
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" in caplog.text
+    assert "AQ_FUTURE_CONTROL" in caplog.text
+    assert "parent-compact-value" not in caplog.text
+    assert "parent-aq-value" not in caplog.text
+    # Startup diagnostics must not remove the worker database fence.
+    assert os.environ["AQ_FUTURE_CONTROL"] == "parent-aq-value"
 
 
-async def test_run_uses_database_url_only_for_sqlite_directory_creation(monkeypatch, tmp_path):
-    """SQLite: the database parent directory is created. PostgreSQL: no
-    URL-derived path is ever passed to makedirs."""
+async def test_run_never_creates_a_directory_from_the_database_url(monkeypatch, tmp_path):
+    """A PostgreSQL URL must never be passed to makedirs."""
 
     class _StopStartup(Exception):
         pass
@@ -168,23 +206,12 @@ async def test_run_uses_database_url_only_for_sqlite_directory_creation(monkeypa
     monkeypatch.setattr(main_mod, "Orchestrator", exploding_orchestrator)
     monkeypatch.setattr(os, "makedirs", recording_makedirs)
 
-    sqlite_config = _sqlite_config(tmp_path)
-    monkeypatch.setattr(main_mod, "load_config", lambda path, profile=None: sqlite_config)
-    with pytest.raises(_StopStartup):
-        await main_mod.run(str(tmp_path / "config.yaml"))
-    expected_parent = os.path.dirname(
-        sqlite_config.database.url or sqlite_config.database_path
-    )
-    assert makedirs_calls == [expected_parent]
-
-    makedirs_calls.clear()
     pg_config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "workspaces"),
         database=DatabaseConfig(url="postgresql+asyncpg://user:pw@localhost:5432/aq"),
         data_dir=str(tmp_path / "data"),
     )
-    assert pg_config.database.backend == "postgresql"
     monkeypatch.setattr(main_mod, "load_config", lambda path, profile=None: pg_config)
     with pytest.raises(_StopStartup):
         await main_mod.run(str(tmp_path / "config.yaml"))
@@ -213,18 +240,15 @@ def test_parse_args_preserves_path_and_profile_precedence(monkeypatch):
 
 
 async def test_health_checks_reports_each_failed_dependency_independently(tmp_path):
-    """One failing DB call marks only its own check unhealthy; healthy
-    subsystems and the messaging status stay present alongside it."""
-    config = _sqlite_config(tmp_path)
+    """Database/agent checks share a query; unrelated subsystem checks survive."""
+    config = _postgres_config(tmp_path)
     orch = SimpleNamespace(
         config=config,
         _paused=False,
         _running_tasks={},
         db=SimpleNamespace(
-            # First call (database check) fails; second (agents check) is
-            # healthy — proving the checks are independent.
-            list_agents=AsyncMock(side_effect=[RuntimeError("db down"), []]),
-            list_tasks=AsyncMock(side_effect=RuntimeError("query timeout")),
+            list_agents=AsyncMock(side_effect=RuntimeError("db down")),
+            count_tasks_by_status=AsyncMock(side_effect=RuntimeError("query timeout")),
         ),
     )
     adapter = _FakeAdapter([])
@@ -232,8 +256,8 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
     checks = await main_mod._health_checks(orch, adapter)
 
     assert checks["database"] == {"ok": False, "error": "db down"}
-    assert checks["agents"]["ok"] is True
-    assert checks["agents"]["total"] == 0
+    assert checks["agents"] == {"ok": False, "error": "db down"}
+    orch.db.list_agents.assert_awaited_once()
     assert checks["tasks"]["ok"] is False
     assert "query timeout" in checks["tasks"]["error"]
     assert checks["orchestrator"]["ok"] is True
@@ -242,11 +266,45 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
     assert checks["messaging"]["connected"] is False
 
 
-async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        ({}, {"ok": True, "in_progress": 0, "ready": 0}),
+        ({"READY": 10_000}, {"ok": True, "in_progress": 0, "ready": 10_000}),
+        (
+            {"IN_PROGRESS": 7, "READY": 10_000, "COMPLETED": 23},
+            {"ok": True, "in_progress": 7, "ready": 10_000},
+        ),
+    ],
+)
+async def test_health_checks_counts_tasks_without_loading_rows(tmp_path, counts, expected):
+    """Health probes use global aggregates even with a large ready backlog."""
+    db = SimpleNamespace(
+        list_agents=AsyncMock(return_value=[]),
+        count_tasks_by_status=AsyncMock(return_value=counts),
+        list_tasks=AsyncMock(side_effect=AssertionError("health must not load task rows")),
+    )
+    orch = SimpleNamespace(
+        config=_postgres_config(tmp_path),
+        _paused=False,
+        _running_tasks={},
+        db=db,
+    )
+
+    checks = await main_mod._health_checks(orch, _FakeAdapter([]))
+
+    assert checks["tasks"] == expected
+    db.count_tasks_by_status.assert_awaited_once_with()
+    db.list_tasks.assert_not_called()
+
+
+async def test_readiness_race_tasks_are_awaited_after_cancellation(
+    monkeypatch, tmp_path, lifecycle_clock
+):
     """PLA-2: when the readiness race resolves, the losing task must be
     awaited — its cancellation cleanup observed — before the scheduler
     proceeds, so no pending readiness coroutine survives into shutdown."""
-    config = _sqlite_config(tmp_path)
+    config = _postgres_config(tmp_path)
     adapter = _FakeAdapter([])
     events_ref, state = _install_run_env(monkeypatch, config, adapter)
     adapter.events = events_ref
@@ -259,14 +317,59 @@ async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, 
 
     state["on_first_cycle"] = on_first_cycle
 
-    async with asyncio.timeout(30):
-        await main_mod.run(str(tmp_path / "config.yaml"))
+    await lifecycle_clock(main_mod.run(str(tmp_path / "config.yaml")))
 
     # The losing wait_until_ready task was cancelled…
     assert adapter.ready_cancel_delivered is True
     # …and had been *awaited to completion* before the first scheduler cycle.
     assert cleanup_seen_at_first_cycle == [True]
     assert adapter.ready_cleanup_finished is True
+
+
+@pytest.mark.parametrize("freeze", [True, False])
+async def test_startup_heap_freezes_once_before_the_first_cycle_only_on_opt_in(
+    monkeypatch, tmp_path, freeze
+):
+    """The freeze runs after startup, before scheduling -- and never for a
+    caller (like this test) that did not ask, since it would outlive it."""
+    config = _postgres_config(tmp_path)
+    adapter = _FakeAdapter([])
+    events_ref, state = _install_run_env(monkeypatch, config, adapter)
+    adapter.events = events_ref
+    monkeypatch.setattr(main_mod, "_freeze_startup_heap", lambda: events_ref.append("freeze"))
+    state["on_first_cycle"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
+
+    async with asyncio.timeout(30):
+        await main_mod.run(str(tmp_path / "config.yaml"), freeze_startup_heap=freeze)
+
+    if freeze:
+        assert events_ref.count("freeze") == 1
+        assert events_ref.index("orch.initialize") < events_ref.index("freeze")
+        assert events_ref.index("freeze") < events_ref.index("first_cycle")
+    else:
+        assert "freeze" not in events_ref
+        assert "first_cycle" in events_ref
+
+
+def test_daemon_entry_point_opts_into_the_startup_heap_freeze(monkeypatch):
+    seen = {}
+
+    async def fake_run(config_path, profile=None, **kwargs):
+        seen.update(kwargs, config_path=config_path, profile=profile)
+        return False
+
+    monkeypatch.setattr(main_mod, "run", fake_run)
+    monkeypatch.setattr(main_mod.sys, "argv", ["agent-queue", "cfg.yaml"])
+    main_mod.main()
+    assert seen == {"config_path": "cfg.yaml", "profile": None, "freeze_startup_heap": True}
+
+
+def test_freeze_startup_heap_collects_garbage_before_freezing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_mod.gc, "collect", lambda *a: calls.append("collect"))
+    monkeypatch.setattr(main_mod.gc, "freeze", lambda: calls.append("freeze"))
+    main_mod._freeze_startup_heap()
+    assert calls == ["collect", "freeze"]
 
 
 @pytest.mark.asyncio
@@ -297,6 +400,91 @@ async def test_scheduler_cycle_failure_is_logged_and_next_cycle_runs(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_long_cycle_report_preserves_waiting_work_and_omits_locals(caplog):
+    from src.main import _report_long_scheduler_cycle
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def waiting_phase():
+        private_value = "must-not-appear-in-diagnostics"
+        entered.set()
+        await release.wait()
+        return private_value
+
+    cycle = asyncio.create_task(waiting_phase())
+    await entered.wait()
+    reporter = asyncio.create_task(_report_long_scheduler_cycle(cycle, interval=0.001))
+    try:
+        async with asyncio.timeout(2):
+            while "await chain" not in caplog.text:
+                await asyncio.sleep(0.001)
+        assert "waiting_phase" in caplog.text
+        assert "must-not-appear-in-diagnostics" not in caplog.text
+        assert not cycle.done()
+        release.set()
+        assert await cycle == "must-not-appear-in-diagnostics"
+        await reporter
+    finally:
+        cycle.cancel()
+        reporter.cancel()
+        await asyncio.gather(cycle, reporter, return_exceptions=True)
+
+
+async def test_pool_watchdog_runs_during_blocked_cycle_and_stops_with_scheduler(monkeypatch):
+    import src.orchestrator.pools as pools
+
+    monkeypatch.setattr(pools, "POOL_WATCHDOG_INTERVAL", 0.001)
+    shutdown, release = asyncio.Event(), asyncio.Event()
+    ticks = []
+
+    async def cycle():
+        await release.wait()
+        shutdown.set()
+
+    async def progress():
+        ticks.append(1)
+        if len(ticks) == 3:
+            release.set()
+
+    orch = SimpleNamespace(run_one_cycle=cycle, _check_pool_progress=progress)
+    async with asyncio.timeout(5):
+        await main_mod._run_scheduler_cycles(orch, shutdown)
+    assert len(ticks) == 3
+    assert not any(task.get_name() == "pool-watchdog" for task in asyncio.all_tasks())
+
+
+async def test_pool_watchdog_retries_failure_and_cancels_pending_check(monkeypatch, caplog):
+    import src.orchestrator.pools as pools
+
+    monkeypatch.setattr(pools, "POOL_WATCHDOG_INTERVAL", 0.001)
+    shutdown, entered, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def progress():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient read failure")
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def cycle():
+        await entered.wait()
+        shutdown.set()
+
+    orch = SimpleNamespace(run_one_cycle=cycle, _check_pool_progress=progress)
+    async with asyncio.timeout(5):
+        await main_mod._run_scheduler_cycles(orch, shutdown)
+    assert calls == 2
+    assert cancelled.is_set()
+    assert "Pool progress watchdog failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_pending_readiness_cleanup_is_bounded(monkeypatch, caplog):
     from unittest.mock import MagicMock
     from src.main import _cancel_readiness_tasks
@@ -315,3 +503,113 @@ async def test_pending_readiness_cleanup_is_bounded(monkeypatch, caplog):
     lingering.cancel.assert_called_once()
     finished.cancel.assert_called_once()
     assert "did not finish cancellation" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scheduler_injected_cadence_remains_interruptible(monkeypatch):
+    shutdown = asyncio.Event()
+    timeouts = []
+    orch = SimpleNamespace(run_one_cycle=AsyncMock())
+
+    async def wait(awaitable, timeout):
+        timeouts.append(timeout)
+        shutdown.set()
+        await awaitable
+
+    monkeypatch.setattr(asyncio, "wait_for", wait)
+    await main_mod._run_scheduler_cycles(orch, shutdown, interval=0.25)
+    assert timeouts == [0.25]
+    orch.run_one_cycle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_coalesces_events_during_cycle_and_enforces_minimum_cadence(monkeypatch):
+    from src.config import SchedulingConfig
+
+    bus = EventBus(validate_events=False)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    clock = {"now": 100.0}
+    monkeypatch.setattr(loop, "time", lambda: clock["now"])
+    cycles = []
+    timeouts = []
+    config = SimpleNamespace(scheduling=SchedulingConfig())
+
+    async def cycle():
+        cycles.append(clock["now"])
+        if len(cycles) == 1:
+            for _ in range(100):
+                await bus.emit("task.created")
+        else:
+            shutdown.set()
+
+    async def wait(awaitable, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            await awaitable
+        else:
+            awaitable.close()
+            clock["now"] += timeout
+            raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", wait)
+    await main_mod._run_scheduler_cycles(SimpleNamespace(bus=bus, config=config, run_one_cycle=cycle), shutdown)
+    assert cycles == [100, 101]
+    assert timeouts == [5, 1]
+    assert all(bus.subscriber_count(event) == 0 for event in main_mod.SCHEDULER_WAKE_EVENTS)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_event_wakes_sleep_and_unsubscribes_on_cancellation():
+    from src.config import SchedulingConfig
+
+    bus = EventBus(validate_events=False)
+    entered = asyncio.Event()
+    second = asyncio.Event()
+    shutdown = asyncio.Event()
+    calls = 0
+
+    async def cycle():
+        nonlocal calls
+        calls += 1
+        (entered if calls == 1 else second).set()
+
+    config = SimpleNamespace(scheduling=SchedulingConfig(cycle_interval_seconds=60,
+                                                        min_cycle_interval_seconds=0.001))
+    scheduler = asyncio.create_task(main_mod._run_scheduler_cycles(
+        SimpleNamespace(bus=bus, config=config, run_one_cycle=cycle), shutdown))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await bus.emit("provider.state_changed")
+        await asyncio.wait_for(second.wait(), 5)
+    finally:
+        scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
+    assert calls == 2
+    assert all(bus.subscriber_count(event) == 0 for event in main_mod.SCHEDULER_WAKE_EVENTS)
+
+
+@pytest.mark.asyncio
+async def test_degraded_scheduler_ignores_event_storm_until_periodic_retry(monkeypatch):
+    bus = EventBus(validate_events=False)
+    shutdown = asyncio.Event()
+    delays = []
+    calls = 0
+
+    async def cycle():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await bus.emit("task.created")
+            raise RuntimeError("database temporarily unavailable")
+        shutdown.set()
+
+    async def wait(awaitable, timeout):
+        delays.append((awaitable.cr_code.co_name, timeout))
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", wait)
+    await main_mod._run_scheduler_cycles(SimpleNamespace(bus=bus, run_one_cycle=cycle), shutdown)
+    assert calls == 2
+    assert delays == [("wait", 5)]
