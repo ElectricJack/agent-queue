@@ -14,10 +14,6 @@ vi.mock("../../api/hooks", () => ({
 vi.mock("../../ws/useTranscriptStream", () => ({ useTranscriptStream: () => ({
   entries: [{ _idx: 0, type: "assistant", text: "Saved transcript" }], status: "open", clear: vi.fn(),
 }) }));
-vi.mock("../../ws/usePaneStream", () => ({ usePaneStream: () => ({ screen: null, status: "connecting" }) }));
-vi.mock("../../components/WatchTerminal", () => ({
-  default: ({ sessionId, focusHref }: { sessionId: string; focusHref?: string }) => <p>Watching {sessionId} → {focusHref}</p>,
-}));
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../testUtils/terminal")).FitAddonMock }));
 
@@ -38,7 +34,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("Session terminal", () => {
   it("opens and focuses a selected live session only after its terminal is ready", async () => {
     render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
-    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Worker terminal connection" })).toBeInTheDocument();
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     const term = TerminalMock.instances[0]!;
     expect(term.focus).not.toHaveBeenCalled();
@@ -75,7 +71,7 @@ describe("Session terminal", () => {
     render(page());
     expect(TerminalSocketMock.instances).toHaveLength(0);
     fireEvent.click(screen.getByText("Pane"));
-    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Worker terminal connection" })).toBeInTheDocument();
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     const socket = TerminalSocketMock.instances[0]!;
     const terminal = TerminalMock.instances[0]!;
@@ -84,6 +80,8 @@ describe("Session terminal", () => {
     const colored = new TextEncoder().encode("\x1b[38;2;255;90;0mColor\x1b[0m");
     act(() => socket.message(colored));
     expect(terminal.write).toHaveBeenCalledWith(Uint8Array.from(colored), expect.any(Function));
+    fireEvent.click(screen.getByRole("button", { name: "Details for Worker" }));
+    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Send Enter to Worker" }));
     expect(socket.inputs().map((bytes) => new TextDecoder().decode(bytes))).toEqual(["\r"]);
     fireEvent.click(screen.getByText("Transcript", { exact: true }));
@@ -97,7 +95,7 @@ describe("Session terminal", () => {
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     const socket = TerminalSocketMock.instances[0]!;
     act(() => socket.open());
-    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Worker terminal connection" })).toBeInTheDocument();
     state.session.state = "stopped";
     view.rerender(page());
     expect(screen.queryByText("Pane")).not.toBeInTheDocument();
@@ -106,20 +104,20 @@ describe("Session terminal", () => {
   });
 });
 
-describe("Session terminal below 768 px", () => {
+describe("The session terminal is one window at every width", () => {
   const original = window.matchMedia;
-  beforeEach(() => {
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true, writable: true,
-      value: (query: string) => ({ matches: query === "(max-width: 767.98px)", media: query,
-        addEventListener: () => {}, removeEventListener: () => {} }),
-    });
-  });
   afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
 
-  it("the pane view watches and opens no terminal socket", async () => {
+  it.each(["(max-width: 767.98px)", "(min-width: 768px)"])("opens the host shell page's terminal at %s", async (query) => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true, writable: true,
+      value: (asked: string) => ({ matches: asked === query, media: asked,
+        addEventListener: () => {}, removeEventListener: () => {} }),
+    });
     render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
-    expect(await screen.findByText("Watching session-a → /focus/sessions/session-a")).toBeInTheDocument();
-    expect(TerminalSocketMock.instances).toHaveLength(0);
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    // One attach, from the same component the host shell page draws.
+    expect(TerminalSocketMock.instances[0]!.url).toContain("/ws/terminal/session-a");
+    expect(screen.getByRole("textbox", { name: "Worker terminal input" })).toBeInTheDocument();
   });
 });
