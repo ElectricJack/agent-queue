@@ -191,6 +191,16 @@ a bundle with `aq install --restart-from dashboard.build` (or
 `python scripts/build_release_artifact.py`) and run `aq dashboard serve` — see
 the [dashboard guide](../guides/dashboard.md#architecture-and-api-boundary).
 
+Both paths use a separate OS process and event loop from `src.main`: Node/Vite
+for development, or `python -m src.dashboard_server` for the installed bundle.
+The installer builds assets in its own CLI/build processes. The `aq start` and
+`aq restart` CLI commands can start both services, but never mount the UI in the
+daemon. `--no-dashboard` skips the interactive Vite prompt;
+`--no-dashboard-server` suppresses management of the installed dashboard server.
+Use `aq dashboard status` to inspect its separate PID. API calls still consume
+daemon resources; the shared graph projection and operational metrics are
+documented in the [process boundary](../specs/dashboard-server.md#current-process-boundary-2026-10-23).
+
 ## Editor and agent configuration
 
 | File | What it configures |
