@@ -1,0 +1,1 @@
+The epic's pre-existing required-check failures are fixed on the verified default branch {{decision_ref}} at {{decision_sha}}.

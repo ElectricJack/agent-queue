@@ -202,7 +202,6 @@ def apply_formatter(command: str, result: dict, console, *, data_override: Any =
 def _register_all():
     """Register all built-in formatters. Called once at import time."""
     from .adapters import (
-        agent_proxy,
         plain_proxy,
         project_proxy,
         task_proxy,
@@ -210,7 +209,7 @@ def _register_all():
     from .formatters import (
         format_active_tasks_all,
         format_task_recent_activity,
-        format_agent_table,
+        format_flock,
         format_archived_tasks,
         format_available_tools,
         format_chain_health,
@@ -249,6 +248,9 @@ def _register_all():
             {
                 "IN_PROGRESS": 0,
                 "WAITING_INPUT": 1,
+                "WAITING": 4,
+                "HIBERNATED": 5,
+                "RESUME_PENDING": 5,
                 "ASSIGNED": 2,
                 "READY": 3,
                 "VERIFYING": 6,
@@ -308,14 +310,7 @@ def _register_all():
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-        entity="agent",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
 
     # -- Task extra commands ---------------------------------------------------
 
@@ -413,14 +408,7 @@ def _register_all():
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-        entity="agent",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
     FORMATTERS["list_profiles"] = FormatterSpec(
         render=format_profile_list,
         extract=None,
@@ -532,6 +520,16 @@ def _register_all():
     )
 
     # -- Document reviews ----------------------------------------------------
+
+    from .formatters import (
+        format_ask_list, format_ask_detail, format_ask_preview, format_ask_receipt,
+    )
+    for name, renderer in {
+        "ask_list": format_ask_list, "ask_show": format_ask_detail,
+        "ask_prepare_decision": format_ask_preview, "ask_reply": format_ask_receipt,
+        "ask_decide": format_ask_receipt, "ask_history": format_ask_receipt,
+    }.items():
+        FORMATTERS[name] = FormatterSpec(render=renderer, extract=None, many=False, entity="ask")
 
     FORMATTERS["review_show"] = FormatterSpec(
         render=format_review_detail,

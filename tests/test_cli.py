@@ -52,6 +52,33 @@ def test_task_help_does_not_advertise_retired_ask_human(runner):
     assert "No such command 'ask-human'" in call_result.output
 
 
+def test_ask_cutover_status_forwards_project_and_json(runner):
+    import json
+
+    from src.cli.app import cli
+
+    receipt = {
+        "success": True,
+        "result": {
+            "project_id": "p",
+            "configured_destination": "discord:1:2",
+            "destinations": [],
+        },
+    }
+    # Stub the health probe too: without it the test needs a live daemon.
+    with (
+        patch.object(CLIClient, "connect", new_callable=AsyncMock),
+        patch.object(CLIClient, "close", new_callable=AsyncMock),
+        patch.object(
+            CLIClient, "execute", new_callable=AsyncMock, return_value=receipt
+        ) as execute,
+    ):
+        result = runner.invoke(cli, ["ask", "cutover-status", "--project-id", "p", "--json"])
+    assert result.exit_code == 0, result.output
+    execute.assert_awaited_once_with("ask_cutover_status", {"project_id": "p"})
+    assert json.loads(result.output)["data"] == receipt
+
+
 # Mock response helpers
 
 
@@ -232,6 +259,34 @@ class TestFormatterCompatibility:
         console = Console(record=True, width=200, force_terminal=False)
         console.print(renderable)
         return console.export_text()
+
+    def test_format_task_detail_prints_the_route(self):
+        """Mandatory routing §10: the source, the target and the router's why."""
+        routed = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Routed",
+            "route_source": "router", "profile_id": "standard-high-codex",
+            "intelligence_class": "standard-high",
+            "route": {"lane": "code-design", "rule": "kind:design",
+                      "reason": "lowest pressure"},
+        })
+        text = self._render(format_task_detail(routed))
+        assert "Route: router -> standard-high-codex (standard-high)" in text
+        assert "Route rule: kind:design / lane code-design" in text
+        assert "Route reason: lowest pressure" in text
+
+        pinned = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Pinned",
+            "route_source": "override", "profile_id": "standard-high-claude",
+            "route": {"override": {"by": "human:local-operator", "reason": "outage"}},
+        })
+        text = self._render(format_task_detail(pinned))
+        assert "Override: by human:local-operator: outage" in text
+
+        unrouted = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Waiting",
+            "route_source": "unrouted",
+        })
+        assert "Route: unrouted" in self._render(format_task_detail(unrouted))
 
     def test_format_task_detail_groups_edges_by_type(self):
         # A parent-child edge and a real blocks edge must land in two
@@ -767,7 +822,7 @@ class TestAutoCommands:
 
         result = runner.invoke(cli, ["playbook", "commands", "--help"])
         assert result.exit_code == 0
-        assert "registered Playbook V2 command" in result.output
+        assert "playbook command contracts" in result.output
 
     def test_prefix_stripping(self):
         """Category prefixes/suffixes should be stripped from command names."""
@@ -807,6 +862,23 @@ class TestCLICommands:
 
         mock_client.execute = AsyncMock(side_effect=mock_execute)
         return mock_client
+
+    @pytest.mark.parametrize("flags, resume", [([], False), (["--resume"], True)])
+    def test_supervisor_restart_dispatches_fresh_or_resume(self, runner, flags, resume):
+        from src.cli.app import cli
+
+        mock = self._mock_client({"supervisor_restart": {
+            "success": True, "session_id": "replacement", "name": "supervisor-global",
+            "state": "running", "mode": "resume" if resume else "fresh",
+        }})
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["supervisor", "restart", *flags, "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock.execute.await_args.args[0] == "supervisor_restart"
+        args = mock.execute.await_args.args[1]
+        assert args.get("resume", False) is resume
+        assert args.get("name", "supervisor-global") == "supervisor-global"
+        assert "replacement" in result.output
 
     def test_task_list_with_formatter(self, runner):
         """`task list` (hand-crafted since aq-surface Phase S0, previously
