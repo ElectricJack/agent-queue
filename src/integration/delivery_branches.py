@@ -330,6 +330,7 @@ async def live_branch_references(
     for row in await rows(
         select(integration_batches.c.id, integration_batches.c.integration_branch).where(
             integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES)
+            | (integration_batches.c.fixer_queue["status"].astext.in_(("deferred", "companion")))
             | (
                 (integration_batches.c.lifecycle == "promoted")
                 & (integration_batches.c.cleanup_state != "complete")
@@ -870,6 +871,21 @@ async def completed_branch_dispositions(
         return entries
     ids = sorted({row["id"] for row, _, _ in owners.values()})
 
+    dispositions = {}
+    if repository_id is not None:
+        from src.database.queries.result_queries import ResultQueryMixin
+        from src.integration.delivery_truth import load_delivery_requests
+
+        default = await conn.scalar(select(repos.c.default_branch).where(repos.c.id == repository_id))
+        if default:
+            requests = await load_delivery_requests(
+                ResultQueryMixin, ids, repository_id=repository_id,
+                target_ref="refs/heads/" + default.removeprefix("refs/heads/"), conn=conn,
+                reduced=True,
+            )
+            dispositions = {tid: request.lifecycle_disposition for tid, request in requests.items()
+                            if request.lifecycle_disposition is not None}
+
     retirements: dict[str, dict] = {}
     for row in (
         await conn.execute(
@@ -968,6 +984,11 @@ async def completed_branch_dispositions(
         elif task_id in batches:
             batch_id, lifecycle, target = batches[task_id]
             rule, reason = "carried", f"batch {batch_id} ({lifecycle}) carries it to {target}"
+        elif task_id in dispositions and head == dispositions[task_id].source_oid:
+            rule, reason = "delivered_by_other_means", (
+                "its default-target obligation was retired under plan "
+                + dispositions[task_id].plan_digest
+            )
         elif task_id in proofs:
             proof = proofs[task_id]
             sha = (proof["delivered_sha"] or "")[:12]
@@ -1037,7 +1058,7 @@ async def observe_completed_branches(
     from functools import partial
 
     from src.integration.delivery_observer import DeliveryTarget
-    from src.integration.git_truth import GitTruth, GitTruthSnapshot
+    from src.integration.git_truth import GitTruth, GitTruthSnapshot, merge_noop
     from src.integration.train_sources import project_delivered
 
     now = time.time() if now is None else now
@@ -1076,9 +1097,22 @@ async def observe_completed_branches(
                 if ref.startswith("refs/remotes/origin/")
             }
             store, tip, git = observation.store, observation.target_oid, observer.git
+            target_tree = None
 
-            async def reachable(head, store=store, tip=tip, git=git):
-                return await git.ais_ancestor(store, head, tip, strict=True)
+            async def reachable(head, store=store, tip=tip, git=git, observation=observation):
+                nonlocal target_tree
+
+                ancestry = await git.ais_ancestor(store, head, tip, strict=True)
+                if ancestry is not False:
+                    return ancestry
+                # Inventory only: hand landing can preserve all content under
+                # different commits. This is not strict train containment and
+                # does not authorize deleting a ref or publishing a candidate.
+                if target_tree is None:
+                    target_tree = await git.atree_sha(store, tip)
+                if await git.atree_sha(store, head) == target_tree:
+                    return True
+                return await merge_noop(observation, head, tip, target_tree=target_tree)
 
             async def contains(head, branch, store=store, heads=heads, git=git):
                 return bool(await git.ais_ancestor(store, head, heads[branch], strict=True))
@@ -1101,7 +1135,7 @@ async def observe_completed_branches(
 #: Rules under which something on record explains the branch or will move it.
 _ACCOUNTED_RULES = frozenset(
     {"retiring", "carried", "recorded", "delivered", "integrated", "awaiting_delivery",
-     "awaiting_backstop"}
+     "awaiting_backstop", "delivered_by_other_means"}
 )
 
 
