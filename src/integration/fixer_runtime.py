@@ -25,6 +25,9 @@ class FixerCapacityUnavailable(ValueError):
     """No process or checkout was created; retry the same identity when due."""
 
 
+FIXER_INPUT_FILE = ".aq/tmp/batch-fixer-input.json"
+
+
 class DaemonFixerRuntime:
     def __init__(self, orchestrator, *, lanes, clock=time.time):
         self.orchestrator, self.db = orchestrator, orchestrator.db
@@ -241,7 +244,10 @@ class DaemonFixerRuntime:
             env.update(session_db_isolation(str(path)))
             env.update(identity.env())
             env.update(AQ_SESSION_NAME=state["session_name"], AQ_SESSION_KIND="named")
-            spec = replace(spec, session_name=state["session_name"], env=env)
+            spec = replace(
+                spec, session_name=state["session_name"], env=env,
+                files=(*spec.files, (FIXER_INPUT_FILE, json.dumps(state, indent=2, sort_keys=True))),
+            )
             row = SessionRecord(
                 id=state["session_id"], project_id=state["project_id"], task_id=None,
                 profile_id=profile.id, harness=harness.id, provider=orch.config.sessions.provider,
@@ -511,6 +517,20 @@ class DaemonFixerRuntime:
 
 
 def fixer_prompt(state):
+    # Every failure group carries the complete frozen member file proof. Large
+    # refreshes repeat hundreds of KB per group; retain those bytes on disk.
+    evidence = state.get("failure_evidence") or {}
+    preview = {key: state.get(key) for key in (
+        "batch_id", "target_ref", "delivery_ref", "starting_sha", "head_sha", "brief", "members",
+    )}
+    preview.update(check_count=len(evidence.get("checks") or []),
+                   failure_group_count=len(evidence.get("groups") or []))
+    summary = json.dumps(preview, indent=2, sort_keys=True).encode("utf-8")
+    limit = 12 * 1024
+    if len(summary) > limit:
+        summary = summary[:limit].decode("utf-8", errors="ignore") + "\n[preview truncated]"
+    else:
+        summary = summary.decode("utf-8")
     return (
         "You are the single in-place integration fixer for this batch. You have no task "
         "or claim. Work in this retained checkout on the existing batch branch. "
@@ -525,5 +545,8 @@ def fixer_prompt(state):
         "`aq integration batch-fix --action rebind`; never switch branches yourself. "
         "On a green message stop editing. On a blocker report it once to the project "
         "supervisor and preserve your work. Budget expiry does not create a successor.\n\n"
-        "Frozen batch input:\n" + json.dumps(state, indent=2, sort_keys=True)
+        f"The complete frozen batch input and failure evidence are in {FIXER_INPUT_FILE}. "
+        "Inspect relevant JSON fields as needed before repairing; avoid dumping repeated "
+        "ownership proofs into your context. The preview below is bounded; all members "
+        "and ownership proofs remain in that file.\n\nBatch preview:\n" + summary
     )
