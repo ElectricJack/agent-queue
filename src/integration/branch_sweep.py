@@ -104,6 +104,25 @@ async def _run(git: GitManager, checkout: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+async def _stash_entries(git: GitManager, checkout: str) -> list[str]:
+    """List stashes read-only, in bare integration stores as well.
+
+    ``git stash list`` refuses to run outside a work tree, and the daily sweep
+    visits bare stores. The stash ref is shared by every linked worktree, so
+    walk its reflog the way ``git stash list`` does instead.
+    """
+    exists = await git.aref_exists(checkout, "refs/stash")
+    if exists is None:
+        raise GitError("stash ref state is unknown")
+    if not exists:
+        return []
+    output = await _run(
+        git, checkout, "log", "-g", "--first-parent", "-m", "--format=%gd %H %s",
+        "refs/stash", "--",
+    )
+    return [line for line in output.splitlines() if line.strip()]
+
+
 def _run_adapter(git: GitManager):
     async def run(checkout: str, *args: str) -> str:
         return await _run(git, checkout, *args)
@@ -283,8 +302,7 @@ async def sweep_checkout(
     )
     await git.aworktree_prune(checkout)
 
-    stash_output = await _run(git, checkout, "stash", "list", "--format=%gd %H %s")
-    report.stashes = [line for line in stash_output.splitlines() if line.strip()]
+    report.stashes = await _stash_entries(git, checkout)
 
     worktrees = await git.aworktree_list(checkout)
     attached = {branch_of(row["branch"]) for row in worktrees if row.get("branch")}
