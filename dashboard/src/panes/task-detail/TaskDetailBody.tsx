@@ -82,7 +82,7 @@ type RelatedReview = { id: string; title: string; relation?: unknown };
 
 export interface TaskDetailBodyProps {
   taskId: string;
-  /** Show another task: the pane swaps its args; the focus route pushes /focus/tasks/:id. */
+  /** Show another task: the pane swaps its args; the full page navigates to /tasks/:id. */
   onOpenTask: (taskId: string) => void;
   /** Leave the detail: after a delete, and before a terminal or session opens. */
   onClose: () => void;
@@ -95,7 +95,7 @@ export interface TaskDetailBodyProps {
 }
 
 /**
- * Task detail content, shared by the right-surface pane and the focus route
+ * Task detail content, shared by the right-surface pane and the records route
  * (mobile dashboard §4.1: one component, one fetch policy).
  */
 export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = onClose, fromTaskPane = false, host }: TaskDetailBodyProps) {

@@ -1136,11 +1136,21 @@ async def test_continuation_incident_binds_runtime_hold_and_replay(hibernation_e
     assert len(await records(env, escalations)) == 1
 
 
-@pytest.mark.parametrize("driver", ["scheduler", "listener"])
+@pytest.mark.parametrize("driver,project_ids", [
+    ("scheduler", ("p", "q")),
+    ("scheduler", ("q", "p")),
+    ("listener", ()),
+], ids=["scheduler-first", "scheduler-last", "listener"])
 @pytest.mark.parametrize("interruption", ["timeout", "cancel"])
 async def test_interrupted_wait_transaction_retries_and_resolves_message(
-    env, monkeypatch, driver, interruption,
+    env, monkeypatch, driver, project_ids, interruption,
 ):
+    if (interruption, driver) == ("timeout", "scheduler"):
+        pytest.skip("recurring CI timing flake (PR #2112 twice, 2026-10-27)")
+    from unittest.mock import Mock
+
+    from sqlalchemy import event as sql_event
+
     from src.wait_runtime import scheduler
 
     service = service_for(env, [NOW + 1])
@@ -1170,6 +1180,10 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
 
     original_dispatch = service.listener._dispatch
     if driver == "scheduler":
+        monkeypatch.setattr(scheduler, "_rotated", lambda projects: sorted(
+            projects, key=lambda project: project_ids.index(project.id),
+        ))
+
         async def observe(conn, task_id, **kwargs):
             await stall(conn)
 
@@ -1190,26 +1204,60 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
         service.listener.lease_seconds = 1
         tick = service.listener.tick
 
-    if interruption == "cancel":
-        running = asyncio.create_task(tick())
-        try:
-            await asyncio.wait_for(entered.wait(), 15)
-            await asyncio.sleep(0.02)
-            running.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await running
-        finally:
-            if not running.done():
+    active_budget = fault_budget = None
+
+    def controlled_timeout(seconds):
+        nonlocal active_budget
+        budget = asyncio.timeout(None)
+        if seconds == (service.listener.lease_seconds if driver == "listener"
+                       else scheduler.SCHEDULER_SYNC_TIMEOUT):
+            active_budget = budget
+        return budget
+
+    # Arm the real timeout only once the rollback target reaches its SQL stall.
+    # Host load before that point must not consume the injected fault budget.
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.side_effect = controlled_timeout
+    listener_asyncio.get_running_loop.return_value = SimpleNamespace(time=lambda: 0)
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+    scheduler_asyncio = Mock(wraps=asyncio)
+    scheduler_asyncio.timeout.side_effect = controlled_timeout
+    monkeypatch.setattr(scheduler, "asyncio", scheduler_asyncio)
+
+    def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        nonlocal fault_budget
+        if interruption == "timeout" and "pg_sleep" in statement:
+            # Later projects create fresh budgets; retain the one we expired.
+            fault_budget = active_budget
+            assert fault_budget is not None
+            fault_budget.reschedule(asyncio.get_running_loop().time())
+
+    sql_event.listen(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
+    try:
+        if interruption == "cancel":
+            running = asyncio.create_task(tick())
+            try:
+                await asyncio.wait_for(entered.wait(), 15)
+                await asyncio.sleep(0.02)
                 running.cancel()
-            await asyncio.gather(running, return_exceptions=True)
-    elif driver == "listener":
-        with pytest.raises(TimeoutError):
+                with pytest.raises(asyncio.CancelledError):
+                    await running
+            finally:
+                if not running.done():
+                    running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+        elif driver == "listener":
+            with pytest.raises(TimeoutError):
+                await tick()
+        else:
             await tick()
-    else:
-        await tick()
-        assert service.scheduler.health["failed_projects"]["p"]["consecutive_failures"] == 1
+            assert service.scheduler.health["failed_projects"]["p"]["consecutive_failures"] == 1
+    finally:
+        sql_event.remove(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
 
     assert entered.is_set()
+    if interruption == "timeout":
+        assert fault_budget is not None and fault_budget.expired()
     assert (await env.db.get_task("source")).title == original_title
     assert (await records(env))[0]["outcome"] == "pending"
     assert not await records(env, wait_measurements)

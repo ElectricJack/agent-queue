@@ -108,6 +108,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_promotion_policy_input`](integration_promotion_policy_input.md) | Integration Promotion Policy Input | Read pinned source and outstanding promotion facts for reviewed policy. |
 | [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
+| [`integration_rebind_batch_authority`](integration_rebind_batch_authority.md) | Integration Rebind Batch Authority | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
 | [`integration_reconcile_git_truth`](integration_reconcile_git_truth.md) | Integration Reconcile Git Truth | Daemon-only repair of Git-derived integration projections. |
 | [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
@@ -141,6 +142,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_settle_batch`](integration_settle_batch.md) | Integration Settle Batch | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
+| [`integration_store_maintenance`](integration_store_maintenance.md) | Maintain retained integration packs | Preview or consolidate configured retained stores while keeping unreachable objects. |
 | [`integration_supersede_completion`](integration_supersede_completion.md) | Supersede one retained completion | Operator or owning supervisor retires an exact stopped Subject with original verified human evidence. |
 | [`integration_train_tick`](integration_train_tick.md) | Integration Train Tick | Start one level-triggered visit per idle target (git_first: active). |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
@@ -361,7 +363,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status, owner identity and bounded diagnostics. |
 | [`load_tools`](load_tools.md) | Load Tools | Load tools by category or individual name. |
 | [`merge_branch`](merge_branch.md) | Merge Branch | Execute the merge_branch command. |
-| [`message_inbox`](message_inbox.md) | Message Inbox | List a recipient's pending messages, optionally marking them delivered. |
+| [`message_inbox`](message_inbox.md) | Message Inbox | List unread, unarchived mail; inject claims only undelivered messages. |
 | [`message_list`](message_list.md) | Message List | List messages with project/thread/recipient filters. |
 | [`message_reply`](message_reply.md) | Message Reply | Reply to a message: marks it read and writes the linked reply row. |
 | [`message_status`](message_status.md) | Message Status | Return the durable delivery state of one message. |
@@ -485,6 +487,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
 | [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
 | [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
+| [`recover_retained_holder`](recover_retained_holder.md) | Recover Retained Holder | Execute the recover_retained_holder command. |
 | [`release_project_constraint`](release_project_constraint.md) | Release Project Constraint | Release (remove) the scheduling constraint from a project. |
 | [`release_workspace`](release_workspace.md) | Release Workspace | Release only after rechecking the checkout's independent fences. |
 | [`reload_config`](reload_config.md) | Reload Config | Manually trigger a config hot-reload from disk. |
@@ -572,6 +575,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_children`](task_children.md) | Task Children | Direct or recursive children of a task.  Backs ``aq task children``. |
 | [`task_claim`](task_claim.md) | Task Claim | Execute the task_claim command. |
+| [`task_claim_abort`](task_claim_abort.md) | Task Claim Abort | Cancel one exact preparation without waiting for its task-control lock. |
 | [`task_close`](task_close.md) | Task Close | Close a task with an outcome.  Backs ``aq task close``. |
 | [`task_comment`](task_comment.md) | Task Comment | Execute the task_comment command. |
 | [`task_comment_delete`](task_comment_delete.md) | Task Comment Delete | Execute the task_comment_delete command. |

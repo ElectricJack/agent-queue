@@ -658,6 +658,7 @@ def size_pools(
     max_starts_per_tick: int,
     max_drains_per_tick: int,
     repair_demand: dict[PoolKey, int] | None = None,
+    resume_demand: dict[PoolKey, int] | None = None,
 ) -> tuple[list[PoolAction], dict[PoolKey, float]]:
     """Desired-state pool sizing (swarm-work-model §11.1).  Pure — no I/O, no clock.
 
@@ -685,6 +686,13 @@ def size_pools(
     drain action are the fleet-wide oldest-first idle set; placement
     re-selects which of them actually go, because "oldest in the fleet" is a
     poor answer once a quiet project's one warm worker is in the running.
+
+    ``resume_demand`` is the part of ``demand`` that is queued continuations.
+    Each needs a fresh process that resume admission launches itself; no pool
+    session can adopt one.  Those seats count toward the clamp, but they are
+    withheld from the pool's own target: the pool never starts a session for
+    them, and an idle claim-looping session is surplus rather than covering
+    them, so it drains and leaves the seat to the resume launch.
     """
     actions: list[PoolAction] = []
     new_surplus: dict[PoolKey, float] = {}
@@ -698,6 +706,7 @@ def size_pools(
         d = max(lo, want)
         if hi is not None:
             d = min(d, hi)
+        d -= min((resume_demand or {}).get(key, 0), demand.get(key, 0))
         d = max(d, sup.running_busy + sup.starting)
         desired[key] = d
         current[key] = sup.running_idle + sup.running_busy + sup.starting
@@ -799,6 +808,9 @@ class PlacementCandidate:
     repair_ready: int = 0  # current active batch repair delegates in ready
     evictable: int = 0
     workspace_kind: str = "project-repo"
+    # Of ``ready``, queued resume continuations. Each launches its own session,
+    # so no pool start or idle worker serves one; only an eviction frees a seat.
+    resume_ready: int = 0
 
     @property
     def placement_key(self) -> tuple[str, str]:
@@ -823,6 +835,7 @@ def project_pool_candidates(candidates: list[PlacementCandidate]) -> list[Placem
                 warm_floor=previous.warm_floor + candidate.warm_floor,
                 repair_ready=previous.repair_ready + candidate.repair_ready,
                 evictable=previous.evictable + candidate.evictable,
+                resume_ready=previous.resume_ready + candidate.resume_ready,
                 idle_session_ids=previous.idle_session_ids + candidate.idle_session_ids,
             )
     return sorted(grouped.values(), key=lambda c: c.project_id)
@@ -953,9 +966,10 @@ def place_pool_actions(
         # backlog swallows the whole budget on stale arithmetic.
         pending = {pid: 0 for pid in cands}
 
-        def unserved(c: PlacementCandidate) -> int:
+        def unserved(c: PlacementCandidate, *, resumes: bool = False) -> int:
             pid = c.placement_key
-            return c.ready - (len(idle_ids[pid]) + c.starting + pending[pid])
+            ready = c.ready if resumes else c.ready - c.resume_ready
+            return ready - (len(idle_ids[pid]) + c.starting + pending[pid])
 
         def repair_unserved(c: PlacementCandidate) -> int:
             return c.repair_ready - (len(idle_ids[c.placement_key])
@@ -963,13 +977,15 @@ def place_pool_actions(
 
         if action.kind == 'evict':
             remaining = action.count
-            for candidate in sorted(cands.values(), key=lambda c: (-unserved(c), c.project_id)):
+            for candidate in sorted(cands.values(),
+                                    key=lambda c: (-unserved(c, resumes=True), c.project_id)):
                 if candidate.quarantined or candidate.idle_session_ids or candidate.starting:
                     continue
                 funded = sum(s.count for s in placed_starts if s.key == action.key
                              and s.project_id == candidate.project_id
                              and s.workspace_kind == candidate.workspace_kind and s.reason != 'evict')
-                count = min(remaining, candidate.evictable, max(0, unserved(candidate) - funded))
+                count = min(remaining, candidate.evictable,
+                            max(0, unserved(candidate, resumes=True) - funded))
                 if count:
                     placed_starts.append(PlacedStart(action.key, candidate.project_id,
                                                      count, 'evict', candidate.workspace_kind))
@@ -1059,7 +1075,8 @@ def place_pool_actions(
                 break
             eligible.sort(
                 key=lambda c: (
-                    -(len(idle_ids[c.placement_key]) - max(0, c.ready - c.starting)),
+                    -(len(idle_ids[c.placement_key])
+                      - max(0, c.ready - c.resume_ready - c.starting)),
                     c.placement_key,
                 )
             )
@@ -1109,7 +1126,8 @@ def rebalance_idle_pools(
         for _ in range(budget):
             pairs = []
             for pid, receiver in cands.items():
-                deficit = receiver.ready - len(idle[pid]) - receiver.starting - pending[pid]
+                deficit = (receiver.ready - receiver.resume_ready - len(idle[pid])
+                           - receiver.starting - pending[pid])
                 if deficit <= 0:
                     continue
                 urgent = receiver.repair_ready > len(idle[pid]) + receiver.starting + pending[pid]
@@ -1129,7 +1147,8 @@ def rebalance_idle_pools(
                     # repairs. Ordinary demand may yield to a smaller share.
                     if len(idle[source]) <= max(0, donor.repair_ready - donor.starting):
                         continue
-                    spare = len(idle[source]) > max(0, donor.ready - donor.starting)
+                    spare = len(idle[source]) > max(
+                        0, donor.ready - donor.resume_ready - donor.starting)
                     if not (spare or urgent or live[source] > live[pid] + 1):
                         continue
                     pairs.append((not urgent, live[pid], -live[source], -deficit, pid, source))

@@ -378,3 +378,49 @@ async def test_speculative_ci_run_wait_retains_integration_service_authority(sce
                 await adapter.authorise(conn, condition, scope)
             assert error.value.code == "wait.source_unresolved"
             reader.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", ["pending", "retryable"])
+async def test_unsettled_regeneration_keeps_the_operation_and_resume_completes(
+    scenario, failure,
+):
+    from src.integration.regeneration import GeneratedRegenerationFailure, RegenerationPending
+
+    s = scenario
+    prepare = s.runtime.prepare
+    error = (RegenerationPending("queued", 300) if failure == "pending"
+             else GeneratedRegenerationFailure("generated regeneration failed: timed out", ()))
+    s.runtime.prepare = AsyncMock(side_effect=error)
+    result = await s.runtime.run(s.row["id"])
+    assert not result["completed"] and s.manager.pushes == 0
+    assert result["operation_id"] == s.row["id"] and result["candidate_path"] is None
+    assert result["reason"] == ("candidate_regeneration_pending" if failure == "pending"
+                                else "candidate_regeneration_retry")
+    assert result["next_step"] == "aq integration continue-close --operation-id " + s.row["id"]
+    row = await s.runtime.store.get(s.row["id"])
+    assert row["last_failure"].startswith(result["reason"])
+    s.runtime.prepare = prepare
+    result = await s.runtime.run(s.row["id"])
+    assert result["completed"] and result["state"] == "finished"
+
+
+async def test_pending_candidate_regeneration_is_resumable(scenario):
+    from src.integration.regeneration import RegenerationFailure, RegenerationPending
+
+    s = scenario
+    prepare, regenerate = s.runtime.prepare, s.runtime.regenerate
+
+    async def committed_candidate(row, repo, store):
+        # As if the author committed past the prepared candidate.
+        return await store.save(await prepare(row, repo, store), evidence={})
+
+    s.runtime.prepare = committed_candidate
+    s.runtime.regenerate = AsyncMock(side_effect=RegenerationPending("running", 300))
+    result = await s.runtime.run(s.row["id"])
+    assert not result["completed"] and result["reason"] == "candidate_regeneration_pending"
+    assert result["candidate_path"] and s.manager.pushes == 0
+    s.runtime.regenerate = AsyncMock(side_effect=RegenerationFailure("non-generated path"))
+    with pytest.raises(RegenerationFailure):  # A content refusal is never retried silently.
+        await s.runtime.run(s.row["id"])
+    s.runtime.regenerate = regenerate
+    assert (await s.runtime.run(s.row["id"]))["completed"]

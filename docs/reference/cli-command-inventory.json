@@ -5591,6 +5591,39 @@
       }
     },
     {
+      "path": "aq integration rebind-batch-authority",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_rebind_batch_authority",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "batch_id"
+        ],
+        "optional": [
+          "--reason",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration record-noop",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -6374,6 +6407,38 @@
         ],
         "optional": [
           "--control-only",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration store-maintenance",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_store_maintenance",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
@@ -11516,6 +11581,46 @@
           "--session-id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq project recover-retained-holder",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "recover_retained_holder",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--reason"
+        ],
+        "optional": [
+          "--workspace-id",
+          "--expected-proof",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
@@ -17302,6 +17407,42 @@
       }
     },
     {
+      "path": "aq system integration-rebind-batch-authority",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_rebind_batch_authority",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id"
+        ],
+        "optional": [
+          "--reason",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system integration-reconcile-expired-mutation",
       "registration": "generated",
       "owner_kind": "core",
@@ -20067,6 +20208,44 @@
       }
     },
     {
+      "path": "aq task claim-abort",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_claim_abort",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--session-id",
+          "--claim-epoch",
+          "--instance-token",
+          "--reason"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task close",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -22612,6 +22791,7 @@
         "required": [],
         "optional": [
           "--aq-detach",
+          "--aq-backend",
           "--aq-wait",
           "--aq-idempotency-key",
           "--aq-status",
@@ -23308,6 +23488,41 @@
           "--timeout",
           "--project-id",
           "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq wait retire",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "wait_decide",
+      "callback": "src.cli.waits.wait_retire",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "continuation_id",
+          "--expected-generation",
+          "--note"
+        ],
+        "optional": [
+          "--project",
           "--json",
           "--brief",
           "--save-output",

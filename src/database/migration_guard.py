@@ -317,7 +317,7 @@ def migration_decision(url: str | None, *, scope: str | None = None) -> str:
 
 def refusal_message(url: str | None, *, detail: str, scope: str | None = None) -> str:
     """The one message every refusal shares, plus a case-specific *detail*."""
-    from src.database import redact_dsn
+    from src.database.dsn import redact_dsn
 
     return (
         f"{detail} This process ({SCOPE_ENV}={scope or current_scope()}) may not run "
@@ -335,7 +335,7 @@ def assert_not_production_database(url: str | None, *, actor: str) -> None:
     daemon's real database, whatever the environment says.
     """
     if is_production_database(url):
-        from src.database import redact_dsn
+        from src.database.dsn import redact_dsn
 
         raise MigrationRefused(
             f"{actor} refused: {redact_dsn(normalize_database_url(url))} is the daemon's "
