@@ -1,29 +1,30 @@
-# Hierarchical integration trains: reconciler operation
+# Hierarchical integration trains: operation and recovery
 
 <!-- aq:optional-mode -->
-> Hierarchical and strict train modes are per-project choices. The reconciler
-> owns delivery in every enabled mode. See [integration modes](../concepts/integration.md)
-> for the different review and verification requirements.
+> Hierarchical and strict train modes are per-project choices. The Git-first
+> train owns enabled delivery. Start with the [train runbook](git-first-train-runbook.md)
+> for activation, current status and batch controls.
 
-The autonomous legacy engine and its rollout, adoption and rollback controls
-were removed on 2026-10-04. New subjects start under the reconciler. Disabling
-`integration.reconciler_active` pauses visits while preserving subject ownership.
-It does not select another engine. Existing subjects keep the repository and
-reviewed policy artifact they were created with.
+The Subject publishers and runtimes were retired on 2026-10-12. Retained Subject
+rows, gates and ownership records support historical recovery; they do not run
+an alternative delivery engine. Set `integration.git_first: active` to construct
+the train. The default `shadow` selects no writer, and changing
+`integration.reconciler_active` does not pause the active train. Use the project's
+train playbook activation or the batch controls to pause current delivery.
 
-Inspect recorded state before changing configuration:
+Inspect current state before changing configuration:
 
 ```bash
 aq integration status PROJECT_ID
 aq task show TASK_ID
-aq doctor --check integration.subjects_overdue
-aq doctor --check integration.subjects_held
+aq doctor --check integration.delivery_engine
+aq doctor --check integration.train_batches_stalled
 ```
 
-Status projects each live subject's phase, last journal record, policy pin and
-next visit. Doctor reports overdue visits and human holds. Neither advances a
-subject or writes Git. Fix a held subject's named gate through the gate workflow;
-a reviewed gate release requires that subject's exact version:
+Train status reports targets, batch intent, exact candidate checks, repair state
+and blockers. Historical Subject holds remain binding where they apply to source
+admission. Only for such a retained hold, resolve its named gate and use the
+exact Subject version:
 
 ```bash
 aq integration release-held-gate SUBJECT_ID GATE_ID --apply --expected-version VERSION --reason REASON
@@ -44,37 +45,145 @@ Policy routes must resolve to reviewed artifacts available to the project.
 Configuration changes never replace an in-flight subject's frozen artifact.
 
 The git-first train accepts an optional `train` block in the hierarchical
-integration policy:
-
-```json
-{
-  "train": {
-    "cadence_seconds": 300,
-    "settling_cap_seconds": 1800
-  }
-}
-```
-
-This fragment belongs alongside the required `parent`, `root`,
-`branchless_parent` and `on_failed_child` fields. Both train timing values
-must be positive integers. Omitting `train` uses the timing defaults at
-runtime and keeps the field absent from serialized policy snapshots, so
-pre-existing snapshots still compare equal.
-
-A root seals after a quiet period of `cadence_seconds` since the latest
-admission, or at `settling_cap_seconds` since the first admission, whichever
-comes first. With the defaults, roots admitted at 0 s and 10 s share a batch
-at 310 s; arrivals every 200 s share a batch at the 1800 s cap. This corrects
-the fidelity spec's 300 s example to use the old settling rule, latest
-admission plus cadence. The status state is `settling`, with the admission
-times and `seal_at` in `detail`. Admission timing survives daemon restarts
-but never substitutes for the current PR gate or Git delivery proof.
+integration policy. Its `cadence_seconds` and `settling_cap_seconds` fields are
+**deprecated**: they still parse, so stored `policy_snapshot` values validate,
+but the fast flow ignores them. A lane dispatches as soon as it is idle and
+batches everything eligible while it is busy; there is no timer, and sealing
+now is the normal path rather than a bypass (spec 2026-10-12
+fast-smooth-integration §6.2). The one
+remaining reader is the `aq doctor` no-progress alert, which uses
+`settling_cap_seconds` (default 1800) as its threshold. Omitting `train` keeps
+the block absent from serialized snapshots, so pre-existing snapshots still
+compare equal; do not add the deprecated fields to new policy.
 Epic collection and local development targets freeze immediately.
 
-The `IntegrationTrain.visit(target, seal_now=True)` and
-`DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
-window for one call. They preserve all admission and publication checks;
-an empty or blocked call does not arm a bypass for future work. The supervisor
+The installable `fast-smooth-train` playbook supplies the current train policy.
+Copy its shipped source into the project's playbooks, set its scope to
+`project:PROJECT_ID`, and compile and activate it through the ordinary playbook
+commands. Its `integration-policy.train` block chooses immediate admission or a
+finite wait, in-place repair or a finite wait for red/conflicting candidates, and
+the current required checks. Exact green proceeds through the existing publisher
+fence; explicit holds and competing live writers remain binding. Unknown facts
+are retried with a due time. This policy has no repair tasks or exhaustion gates.
+
+Disabling that project activation stops new train batches and fenced writes,
+including author-assisted integration, while workers can publish and close their
+source branches. It preserves frozen sources and candidates. Re-enabling resumes
+from Git. Editing required check names/version/producer affects the same pending
+candidate; it does not abort and requeue that batch. The publisher rechecks the
+current check policy inside its fence, and activation edits serialize with writes.
+
+The conventional activation id is `fast-smooth-train`. For a renamed project
+copy, set the project integration policy's `train.playbook_id` to its id. A missing,
+unreadable or unhealthy bound artifact causes a finite retry, never legacy
+publication. Existing projects without this activation or binding keep their
+pre-install behavior until their operator installs it. The shipped template is
+available on installation but is not automatically activated on existing projects.
+
+Epic checks are advisory by default. An enabled, ready project playbook can opt
+into a gate through `tables.parent_episode.required_checks`. Stored parent check
+settings alone do not gate epic settlement; root and promotion gates still apply.
+
+A red batch starts one task-free fixer session on its existing candidate branch.
+The session uses a retained checkout outside task slots; subsequent red results
+reuse both the session and checkout. It creates no repair task, claim or successor
+repair. The project's reviewed routing policy selects the worker profile. Frozen
+member file ownership and exact failing checks supply the failure groups in its
+input. The fixer commits locally and runs `aq integration batch-fix --action push`;
+this command derives its batch from the authenticated session and can publish
+only that candidate branch. It refuses rewritten history, missing frozen sources,
+changed session identity, withdrawn source authority and disabled integration.
+
+Each distinct red result notifies the same fixer once. The primary repair time
+budget and at most three CI rounds bound automatic notifications; exhaustion or
+an uncertain launch reports once to the supervisor and preserves the work. It
+never launches a successor or wakes an agent on a timer. Trusted green checks
+advance delivery even after exhaustion. Exhaustion releases the lane, retains the
+frozen sources and candidate, and schedules a finite re-observation (default
+300 seconds). Unchanged exhausted evidence does not re-admit work or notify an
+agent. A changed saved head or exact current-policy green can resume delivery.
+Capacity waits retry the same unlaunched identity without spending code rounds.
+An interrupted launch still awaiting registration after 120 seconds enters the
+same bounded retry path when no session was registered or its process is confirmed
+stopped. Each retry gets its own grace period; a possibly live registration stays
+retained for reconciliation.
+Only an explicit operator decision creates an indefinite hold.
+When every conclusive red group identifies a strict subset, the repair policy's
+`split_attributed` decision (default true) removes that subset and its transitive
+dependents. A reduced batch tests from the same delivery tip. Shared or uncertain
+evidence prevents splitting. The original frozen batch and all fix commits stay
+as a retained companion; cleanup cannot delete them. Each reduced membership is
+attempted once. A split alone never starts a fixer.
+
+After the remainder settles, a successor freezes the original sources and merges
+the retained companion, including fixes saved since the split. A red successor
+reuses the same fixer. The fixer saves and publishes its current work, then runs
+`aq integration batch-fix --action rebind` to switch its clean checkout under both
+branch fences. Publication derives the current binding from the session and
+rechecks it under lock. Companion writes and delivery are serialized so an older
+green result cannot lose a later fix. Full family delivery stops the session.
+The project boundary's repair policy also supplies `primary_seconds`,
+`primary_attempts` (capped at three), and `deferred_revisit_seconds`; legacy
+`on_exhausted: human` does not create an automatic hold for task-free fixers.
+
+Existing ordinary repair tasks remain readable and can finish through their old
+close protocol, but the active allocator does not file new ordinary repairs.
+
+Passing a legacy ordinary repair close reseals its current open batch and wakes
+the delivery target. A later visit recovers a missed close handoff, including after
+repair archival. Neither action changes frozen sources or bypasses candidate
+checks. `integration.train_batches_stalled` and `stall.sweep` flag sealed batches
+with no progress past `settling_cap_seconds` (an alert threshold only), allowing bounded visits and announced
+retry deadlines. Paused batches and unfinished repairs retain their own
+diagnostics. Inspect the named lane and checks before changing batch intent.
+
+The daemon also opens one durable escalation per sealed, open batch after 60
+minutes without progress. It notifies the project supervisor and queues a Discord
+incident through the escalation outbox. Snapshot errors, running visits and retry
+deadlines do not postpone this alert; a recent repair update does. Paused, aborted
+and promoted batches are excluded. Cancel the incident after recovery; the alert
+itself does not pause or resume delivery.
+
+An empty loose object in a retained integration clone triggers automatic recovery
+after a failed fetch. The daemon quarantines zero-byte objects under
+`.git/aq-empty-object-backups/`, refetches the authorized origin without trusting
+local tips, and requires `git fsck --full` to pass. A `pending` marker retains an
+interrupted or failed recovery for the next visit. Local candidates and refs stay
+in place: an object available only locally cannot be restored from origin, so its
+snapshot remains unknown and requires operator recovery. Retained clones enable
+Git fsync for committed data. See the
+[recovery contract](../specs/design/integration-repository-recovery.md).
+
+Speculative next-batch CI is disabled by default. Enable it last, per project,
+only after operator validation of hosted root CI and independent runner capacity.
+The policy's `train` block accepts:
+
+```yaml
+train:
+  speculative_ci: true
+  speculative_public_hosted: true
+```
+
+`speculative_public_hosted` records the operator's validation that this repository
+is public and uses free hosted runners. A private repository instead needs
+`speculative_batch_ci_p90_seconds` set to its measured batch CI p90, strictly below
+60 seconds. Without either form of evidence, validation refuses with
+`speculative_ci_compute_not_eligible`. Local or hybrid root CI refuses with
+`speculative_ci_requires_hosted_root`. Keep Matter Engine disabled while it uses
+local compute. No speculative setting is emitted at its default value.
+
+While a root batch waits for CI, the train may build one disposable successor on
+its exact candidate. The successor has no delivery target ownership until ordinary
+admission freezes it after the predecessor lands. Its exact hosted run appears as
+a shared `ci_run` wait. Reuse requires that its first parent is the published tip
+and that the predecessor landed without split or repair. Otherwise the train
+rebuilds normally. Speculative work runs separately; an unfinished build never
+holds up the predecessor's publication. Restart can lose speculative scheduling
+hints; Git parentage, durable predecessor state and current checks still govern reuse.
+
+The `seal_now=True` hooks remain accepted by train visits and batch selection.
+Idle lanes already dispatch immediately; these hooks preserve all admission and
+publication checks and do not arm future work. The supervisor
 can use `aq integration seal-now --project PROJECT_ID --apply` to freeze the
 currently eligible members immediately. It leaves building, checks, reviews
 and publication to the train. If a batch already owns the target, the command
@@ -95,7 +204,7 @@ Pausing a paused batch or resuming an open batch refuses with `refused`.
 atomically aborts the old batch and freezes its remaining exact sources under
 a new identity. A paused batch produces a paused replacement. The original
 membership stays intact, and the removed task keeps its PR and approval,
-returns to pending, and can enter a new batch at the next cadence. An ordinary
+returns to pending, and can enter a new batch on a later eligible visit. An ordinary
 abort continues to withhold its frozen sources. Ejection refuses removal of an
 undelivered prerequisite that the remaining members need.
 
@@ -127,21 +236,35 @@ These four supervisor controls default to preview; `--dry-run` explicitly
 requests it. Applying an ejection requires a nonblank reason. Paused batches
 can resume; aborted or promoted batches cannot.
 
-The git-first path still rebuilds on target movement. It does not implement
-`on_main_moved: wait` or a `max_wait_seconds` limit on candidate rebuilds;
-these policy gaps are tracked separately from cadence and settling.
+The Git-first path rebuilds on target movement. Historical `on_main_moved`
+settings do not change that behavior. The train playbook supplies finite policy
+waits; these are distinct from the legacy candidate-rebuild settings.
 
 The project policy `hierarchical_integration_policy.prerequisite_branches` accepts
-`stacked` or `wait-for-parent`. The `agent-queue` project defaults to `stacked`;
-other projects default to `wait-for-parent`.
+`stacked` or `wait-for-parent`. Every project defaults to `stacked`; an explicitly
+authored `wait-for-parent` choice remains in force.
 
-In stacked mode, a child with completed `blocks` prerequisites under the same
-parent can start as soon as Git proves their checkpointed heads on their own
-task branches. One prerequisite supplies the child's base directly; multiple
-prerequisites are merged over the epic head. The origin records this stack
-separately from its immutable filing base. Preparation preserves existing child
-commits under the managed writer fence. Scheduler, pool demand, explain and
-claim consume the same verified frontier rule.
+In stacked mode, completed passing `blocks` prerequisites in the same repository
+can supply sources from siblings, another epic or a root task. They do not wait
+for parent assembly or default-branch delivery. Git's retained completion names
+the immutable final source; deleting or moving its task branch does not change
+that generation. Preparation includes the current parent/default base and every
+required source, ordered by dependency topology then stable task ID. Contained
+heads are deduplicated, fast-forwards are allowed, and divergent inputs use real
+merge commits. Every required source must be an ancestor of the prepared head.
+The origin records this stack separately from its immutable filing base.
+Preparation preserves existing child commits under the managed writer fence.
+Scheduler, pool demand, explain and
+claim consume the same verified frontier rule. Cross-repository dependencies
+continue to use their artifact contract and cannot contribute a Git stack.
+
+Explicit holds, required human decisions and current reviewer rejections travel
+through prerequisite sources and their owning epics. An open epic or a missing
+epic review row alone adds no gate. Reopening or replacing a prerequisite
+invalidates the consumed generation. A running worker receives `stack_stale_input`
+on heartbeat and on a passing close until it merges the current required sources.
+Its checkout and authored commits are preserved; ancestry of those sources
+satisfies the stack without a separate review or proof submission.
 
 A batch carries prerequisites before their dependents, or proves the absent
 prerequisites already reached its target. It tests the exact combined candidate.
@@ -177,10 +300,10 @@ shared parent first. Preparation merges that exact parent head into the child.
 Both modes preserve the filing origin and exclude unrelated default-branch
 commits. Unknown or stale evidence leaves the child unclaimable.
 
-A completed prerequisite in another epic, or a root prerequisite, must reach
-the project's default branch before its dependent becomes claimable. Git proves
-the exact completion source by ancestry, an `AQ-Source` trailer or whole-source
-patch equivalence. `aq task explain` names an unproven prerequisite and its epic
+With an explicit `wait-for-parent` choice, a completed prerequisite in another
+epic, or a root prerequisite, must reach the project's default branch before its
+dependent becomes claimable. The configured delivery observer proves the exact
+completion source. `aq task explain` names an unproven prerequisite and its epic
 with `prerequisite_not_on_default_branch`. Pool demand and claims use the same
 proof.
 
@@ -196,20 +319,22 @@ The project integration policy defaults to
 `cross_epic_prerequisites: default_branch`; an explicit `completed` value restores
 the legacy rule that completion alone releases cross-epic dependencies.
 
-Before starting a cross-epic dependent, its epic must contain the proven sources.
-A refresh brings them from the default branch through a frozen train batch.
+In `wait-for-parent` mode, before starting a cross-epic dependent, its epic must
+contain the proven sources. A refresh brings them from the default branch through
+a frozen train batch.
 Publication needs the epic's lease,
 checks on the exact candidate and attestation. Checks or an occupied lease keep
-the refresh pending; a content conflict files ordinary repair work on the epic
-branch and withholds children whose prerequisites are still outside that epic.
-If the repair publishes a merge containing every required source, those children
-can start while the refresh candidate still awaits checks and attestation.
+the refresh pending; a content conflict starts the same task-free fixer on the
+refresh candidate and withholds children whose prerequisites remain outside the
+epic. The train publishes the repaired candidate only after its exact checks and
+attestation pass; the fixer cannot bypass that gate by pushing the epic itself.
 Preparation preserves the child's existing
 commits and records its actual refreshed parent head and default head in the
 filing origin's `base_refresh` annotation. The original `base_sha` stays fixed.
 Preparation requires the epic to contain each proven cross-epic source; unrelated
-default-branch commits arriving during CI do not force another refresh. It refreshes
-before constructing a sibling prerequisite stack, so both inputs reach the child.
+default-branch commits arriving during CI do not force another refresh. The
+default stacked mode instead merges those exact sources directly into the child
+over its current epic base, without requiring an epic refresh.
 Status includes each epic's `ahead` and `behind` commit counts against the default
 branch, or an unknown distance when Git cannot observe it.
 
@@ -232,23 +357,45 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+For stale children, `aq doctor --check stall.sweep` reports `epic_refresh_needed`
+and the operator stall script prints `EPIC-REFRESH-NEEDED`, with the epic's refresh
+command and any blocking batch ids. A conflicting apply files an ordinary train
+repair on the epic branch. Repeating apply reuses that batch and repair; the child
+continues waiting for the refresh's checks, attestation and publication.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
+Refresh failures are compared with the default SHA frozen into the batch. A
+failure already present on the epic is still repairable when that default SHA
+passes the check. Status reports `epic_refresh_checks_failed`, the exact baseline
+and a supervisor action. Exhausted repairs send one incident asking the
+supervisor to repair the refresh candidate or abort the batch with
+`aq integration abort-batch BATCH_ID --apply --reason REASON`. Red candidate
+checks continue to block publication after exhaustion.
 
 GitHub runs no `pull_request` workflows for a PR that conflicts with its base, so
 a conflicting root PR would wait for checks forever. When the PR read reports it
 conflicting, the root's blocker is `pr_conflicting`, with the PR URL and the
 default-branch SHA; a still-computing mergeability is a short `awaiting_pr_checks`
-retry. For an epic root the train's next visit starts the same attested refresh as
-`refresh-epic --apply`, once per (epic head, default head) pair, and the blocker's
-`refresh` names its batch. The refreshed head is held for its own review and its
-own exact-head PR checks. For a leaf root nothing is started: merge the default
-branch into the task branch, push it and close the task again. Push-event runs
+retry. For leaves and epics the train first tries a mechanical merge using the
+regenerating drivers. A clean result is pushed as a bot merge, retaining the
+original authored head's PR checks and approvals for admission. Batch-tip CI
+still gates delivery. A real source conflict reopens the original task on its
+own branch with the conflicting paths and default tip; its worker merges,
+runs targeted tests only and closes. The train never reopens the same
+(head, default tip) pair twice, including after a daemon restart, and preserves
+the task's original age. The hot-file fix (Phase A5) must ship before or with
+this policy. Explicit `refresh-epic --apply` remains available. Push-event runs
 never count as PR checks.
 
-For an existing historical subject, `engine-transfer` and
-`development-engine-transfer` offer a forward-only audited transfer to
-`reconciler`. Preview first, then supply every exact subject version, the reason
+Root admission first probes the fetched target and source with local `merge-tree`.
+A source conflict reports `pr_conflicting` without a GitHub read; conflicts confined
+to files marked `merge=aq-generated` follow the build's regeneration policy instead.
+An unavailable probe reports unknown. Conflicting refusals refund the selection
+work quantum, leaving time to admit clean sources in the same visit.
+
+For an existing historical root subject, `engine-transfer` offers a forward-only
+audited ownership transfer to `reconciler`. It does not install a publisher.
+Development subject transfer was retired with the dormant development runtime. Preview first, then supply every exact subject version, the reason
 and reviewed cutover evidence. There is no transfer back to the retired engine.
 
 GitHub App readiness remains available through `aq integration app-verify PROJECT_ID`. See [App-mode setup](../config/app-mode-train.md) for
@@ -298,6 +445,13 @@ Selection now routes before root proof and reuses its member window within a
 single visit. Root proof still removes delivered work before the member limit;
 historical delivery and out-of-window dependency checks remain active.
 
+Time spent evaluating a root refused for red PR checks or exhausted automatic
+recovery does not spend the candidate-selection quantum. Later independent roots
+can reach admission during the same visit; green and other candidate work still
+spends the quantum. The outer visit deadline remains in effect. Red roots keep
+their named blockers, and their dependents still require delivery or an admitted
+paired repair before they can enter a batch.
+
 Two bounded, isolated benchmarks make the measurements reproducible:
 
 ```bash
@@ -318,12 +472,47 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 
 ## Controls quick reference
 
-- `aq integration seal-now --project PROJECT_ID --apply` freezes eligible root inputs immediately, bypassing cadence once.
+- `aq integration seal-now --project PROJECT_ID --apply` requests an immediate visit to freeze eligible root inputs when the target is idle.
 - `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
 - `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
 - `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
+- `aq integration settle-batch BATCH_ID` previews settlement when every frozen source is already on its target. A legacy epic-sync instead requires every frozen source on the designated default branch; preview reports that default `target_ref` and its SHA, and replay can resume cleanup of an already promoted sync. An epic refresh settles once its epic has the frozen default head as an ancestor, including a merge its repair published to the epic; until then `abort-batch` withdraws it. Apply with `--apply --target-sha TARGET_SHA --reason REASON`. It records delivery without advancing the target; normal guarded branch cleanup still runs, and active human holds and incomplete or unavailable source proof refuse settlement. See the [required-job and settlement specification](../specs/design/required-job-train-settlement.md).
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
+- `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
+
+After a hand landing, an ordinary open epic batch settles automatically when
+the configured default branch proves every frozen input, including when the
+epic ref has been deleted. Its membership and history remain available; no ref
+is recreated or published. Partial or unknown proof and human holds preserve
+the batch. Paused, epic sync/refresh and promotion batches keep their protocols.
+
+Completed root epics receive ordinary aggregate train visits automatically,
+including after child origins retire. They do not depend on a parent integration
+run. A missing root origin stays visible as a readiness blocker. Implementation
+settlement alone does not display delivery as complete: the epic waits for
+aggregate verification or reports unavailable delivery evidence. Both
+`integration.completed_undelivered` and `stall.sweep` report completed root
+branches outside the default branch even when a PR, batch or disposition
+accounts for the pending work. The diagnostic clears when the branch tip is
+contained; an unreadable ancestry result remains unknown.
+
+Reverification apply also retires the completed epic's own detached `worker`
+reservation under its branch fence. The reservation must have no session,
+workspace or unexpired lease. Preview leaves it intact; live writers, other
+owners, attached rows and open batches still block the request.
+
+A target visit first settles an ordinary batch whose complete frozen inputs are
+already delivered. Current bound playbook checks overlay a pending candidate as
+described above. On the retained stored-policy path, removing a required check causes
+the next root or epic target visit to supersede an open, unpromoted batch that froze that check. Its
+sources can seal under the updated policy; the original snapshot and sources
+remain in the audit history. Special epic sync and refresh batches retain their
+purpose in an atomic replacement. The visit names `batch_required_checks_removed`
+and reports whether it released the batch. Explicit pauses and human holds stay
+in force: resume a paused batch, or release the recorded human decision, before
+replacement can proceed. Missing Git proof retains the batch. Promotion requests
+keep their separately pinned check sets.
 
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
 `redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
@@ -340,72 +529,40 @@ and other fences. Never edit integration tables to bypass a gate or CI proof.
 aq integration redrive-root TASK_ID
 aq integration redrive-child CHILD_TASK_ID
 aq integration reopen-collection PARENT_TASK_ID
-aq integration rebind-repair --task-id REPAIR_TASK --dry-run
-aq integration rebind-detached-repair OPERATION_ID
-aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
-aq integration resolve-candidate-member --help
-aq integration recover-candidate-member RESERVATION_ID
+aq integration reevaluate-repair OPERATION_ID
+aq integration release-owner --task-id REPAIR_TASK --dry-run
 aq integration close-delivered-pr PROJECT_ID PR_NUMBER
 ```
 
 ## Repair and collection recovery
 
-A parent conflict successor retains the current intent as its trigger and
-publishes with its own fence. If an older attachment names a displaced intent,
-preview `rebind-repair` with the repair task id before applying its current head.
+`aq task reparent --task-id CHILD_ID --root` can move an unheld no-commit leaf
+out of an epic. An unused reservation is replaced from the default branch.
+A materialized branch must still equal its recorded base; its branch and base
+remain unchanged while delivery now targets the default branch. Moving to
+another parent requires that parent's checkpoint to match the materialized
+base. The transaction advances affected parent generations and invalidates
+their verification. Live writers, workspace locks, attached branch owners,
+delivery receipts, completed work and sealed ancestors refuse the move.
 
-Use the full `head_sha` reported by the dry run. The command refuses a stopped
-writer, expired authority, changed candidate or moved remote target. Applying
-records the reservation under the current intent; the attached repair session
-then pushes with its current fence and closes. If the writer has stopped,
-recover its attachment through the existing repair lifecycle first.
+Branch ownership cannot attach to the shared repository base checkout. Recovery
+ignores a stale base-workspace attachment when the task branch is elsewhere,
+without snapshotting, detaching, unlocking or disabling the operator checkout.
+A task branch actually checked out in the base still requires operator attention.
 
-When a parent repair stage exhausts at the open conflict's old tip, its debug
-successor keeps that conflict intent as its trigger. Its writer resolves and
-publishes through `integration-resolve-conflict` and `push-conflict-resolution`
-under its own fence, with no rebind. Any other debug stage carries the trigger
-`stage-exhausted:<operation>:<ordinal>`.
+The train owns current integration work. Inspect `aq integration status PROJECT_ID`
+and the blocker returned by its batch or repair operation. A stopped attachment uses
+`release-owner --task-id TASK_ID --dry-run`; apply only the exact recovery that the
+preview proves. An audited no-op repair can be previewed with
+`aq integration reevaluate-repair OPERATION_ID`. Its apply requires the reported
+head, generation, stage, fence and snapshot digest plus a reason, and repeats the
+trusted exact-head green-CI proof.
 
-A parent debug stage can be frozen on a commit the parent branch never
-received: its retained handoff bound a stopped writer's local head, so every
-delegate fails admission with `slot_reset_failed` ("repair branch no longer
-descends from its frozen starting commit") and its `stage-exhausted` trigger
-cannot resolve the open conflict. The same operators can rebind that detached
-stage to the conflict at the published head:
-
-```bash
-aq integration rebind-detached-repair OPERATION_ID
-aq integration rebind-detached-repair OPERATION_ID --apply \
-    --stage STAGE --remote-head PUBLISHED_SHA --reason "..."
-```
-
-Pass the `stage` and `remote_head_sha` the dry run reported. The command
-refuses unless the writer is detached and unclaimed, the stage is within its
-unchanged deadline and attempts, the published head is the conflict's
-expected target, and the frozen head is an unpublished descendant of it. Every
-receipt must also sit in the published history. Apply changes only the stage's
-starting commit, trigger and subject, and records the previous values in the
-dossier's `detached_rebinds`. The branch, fence, budget, intent and gates are
-left as they were. The same delegate is then readied, and it resolves the
-conflict through the normal fenced publication path. Design:
-[detached repair rebind](../superpowers/specs/2026-10-01-detached-repair-rebind-design.md).
-
-If a debug stage has already expired without progress, but its stopped writer
-completed a resolution that `release-owner` preserved, preview that exact commit:
-
-```bash
-aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
-```
-
-Run the returned `apply_command` after inspecting its source, target, parents,
-tree, released fence and remaining attempts. Apply requires `--stage`,
-`--released-fence` and `--reason`; it repeats every proof and publishes with an
-expected-old compare-and-swap under a fresh collector fence. It consumes only
-the audited two-parent merge. The expired deadline and consumed attempts remain
-unchanged, the former delegate stays blocked, and normal parent verification is
-still required. An exhausted attempt budget or human gate returns a specific
-blocker. An interrupted push with an unchanged target is ambiguous and is never
-blindly retried. See [preserved repair recovery](../superpowers/specs/2026-10-01-preserved-repair-recovery-design.md).
+The former candidate-member and parent repair rebind/preserved-publication commands
+were retired with the legacy publishers. Their historical dossiers and evidence remain
+available to recovery and archival checks; they do not authorize a legacy publisher.
+See the [consumer retirement audit](../reports/2026-10-12-legacy-consumer-retirement.md)
+for the retained contracts and table exclusions.
 
 ### No-code child receipts
 
@@ -447,11 +604,43 @@ needed and both refuse an IN_PROGRESS parent anyway.
 
 ### Stopped pool-writer handoff recovery
 
-Preview `aq integration release-owner --task-id TASK_ID --dry-run`. The existing
+Failed pool preparation can attach a branch owner before checking out the task branch.
+If the exact claim is still `preparing`, the checkout is clean and detached at the freshly
+published default tip, and the task branch is fully published, failed preparation releases
+the claim to READY. `aq task stop TASK_ID` uses the same proof for a retained preparation
+and also returns it to READY; `aq task restart TASK_ID` can then retry it. This preserves
+the task's existing resume point and never discards dirty or unpublished work.
+
+The orphan sweep automatically preserves and releases a confirmed stopped pool
+writer's retained active claim to READY before the `session_not_live` fallback.
+It leaves refused proofs and operator holds in place for recovery and respects
+`integration.owner_recovery_sweep: false`.
+
+Preview `aq integration release-owner --task-id TASK_ID` (or add `--dry-run`). The existing
 owner recovery probes the provider, verifies the current fence, preserves
 unpublished work and releases only a proved stopped attachment. It refuses a
 live writer, reused checkout or changed fence. Repair handoff and retry remain
 Subject decisions under the frozen policy and unchanged stage budget.
+
+A project supervisor can use this control for a task left
+`BLOCKED/session_close_hard_failure` with `integration_handoff_unproven`. Review
+the dry-run result, then add `--apply` to release the stopped attachment.
+If its session is still live, stop that exact session through the normal session
+control and wait for confirmed termination; a stopped database status alone is
+insufficient. Release preserves the task's failure status. After reviewing the
+failure, use `aq task restart TASK_ID` for an intentional retry. `aq task recover`
+does not automatically retry a hard failure.
+
+An IN_PROGRESS task whose stop returns `Integration branch handoff is unproven` uses this
+same recovery control. The refusal names its exact writer and the commands to run: kill
+that session, wait for termination to be confirmed, preview and apply `release-owner`,
+then retry task stop if it remains IN_PROGRESS and restart it. A recovery incident is not
+required. The release audits and preserves work before freeing the branch and claim.
+
+Failed-close cleanup keeps HEAD at the task tip until handoff verifies and
+detaches it. A live pool worker uses its claim and checkout proof, while a
+task-lifecycle worker also needs a provider stop proof. This protocol is the
+same for every harness and model.
 
 `aq task restart TASK_ID` is the supported restart for a stopped repair
 delegate: it redispatches the delegate's current stage through the same fenced
@@ -466,9 +655,10 @@ To disable future admission, use the project configuration CAS:
 aq project set PROJECT_ID integration-mode disabled --expected-integration-generation GENERATION --reason REASON
 ```
 
-Existing Subjects retain their identity, pins and scheduling. Pausing all visits
-uses `integration.reconciler_active: false`; re-enabling resumes those same
-Subjects. There is no engine rollback or automatic drain that restores old policy.
+Historical Subject rows retain their identity and pins; no Subject runtime is
+started by the current daemon. `integration.reconciler_active: false` does not pause
+the train. Use the bound project train activation to stop train work, or pause the
+specific batch. Neither operation revokes a live writer or restores old policy.
 
 ## No-code root completions
 
@@ -506,7 +696,15 @@ An unchanged failing head, exhausted recovery or a container root instead
 notifies the supervisor with a named blocker. Existing source-CI repairs keep
 their paired admission path. See [root PR check recovery](../specs/design/root-pr-check-recovery.md).
 
-Source CI observation of a train root's exact PR head files a repair only when
+New source-CI recovery retains the original branch and PR and reopens a leaf task
+once. The budget persists across repaired heads and checkpoint generations.
+A further genuine failure, including failure on a historical repair delegate,
+notifies the supervisor once; it never creates another task, repair PR or chain.
+Existing historical delegates retain their ownership and delivery protections.
+Containers notify the supervisor to coordinate repair on the original branch.
+After the original source lands, the supervisor closes its obsolete repair PRs.
+
+Source CI observation of a train root's exact PR head reopens the original task only when
 at least one required check genuinely failed (`failure`, `timed_out`,
 `action_required`). A run whose non-success required checks are *all* cancelled
 is infrastructure — typically a GitHub Actions outage, annotated "The job was
@@ -535,6 +733,33 @@ source-CI observation path so the two agree.
 
 ## Delivery evidence
 
+The delivery watchdog keeps one wait projection per repository, task completion
+generation and target. Repeated and overlapping scans reuse that row, including
+its original completion age and takeover history. A previously settled wait keeps
+its outcome when the same generation is observed again. Each task observation
+and each settlement has its own transaction: a failed task rolls back, is logged
+with its project and task id, and appears in the scan's `errors` list. Other tasks
+continue and the project cursor advances; the failed task is retried on a later
+pass.
+
+The train automatically re-runs a required Actions job once if its check stays
+`in_progress` for five minutes after its workflow or all job steps completed.
+The check remains pending until fresh authenticated evidence concludes it.
+Integration status includes durable `check_reconciliation` evidence with the
+exact SHA, job, workflow attempt, actor and request outcome. A reserved request
+after interruption, or an unavailable request, consumes the same one-shot bound.
+
+The owning supervisor can preview and apply the same bounded recovery:
+
+```bash
+aq integration rerequest-check BATCH_ID --check 'Tests (postgres-integration)'
+aq integration rerequest-check BATCH_ID --check 'Tests (postgres-integration)' --apply --candidate-sha PREVIEW_SHA --reason 'Reconcile completed workflow with unfinished check'
+```
+
+This uses GitHub's [job rerun endpoint](https://docs.github.com/en/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run),
+which requires Actions write permission. A failed or ambiguous request is retained
+for supervisor attention; it never makes the check green or files a code repair.
+
 `task show` and the dashboard report delivery from receipts and observed Git
 history. A worker close, queued request or historical journal entry alone does
 not prove that the task's exact revision reached the default branch. Pending
@@ -556,6 +781,53 @@ disable integration. Enabling a mode without an engine is refused. An active
 train supports `development` as well as `train` and `hierarchy`; `observe` and
 `disabled` intentionally perform no delivery.
 
+Enabling `train` or `hierarchy` also backfills branch origins for existing open
+tasks and completed tasks that carry legacy delivery artifacts. Published task
+branches are adopted at their exact remote tips, with their fork bases recorded
+separately; absent branches receive reservations for ordinary materialization.
+Existing origins, checkpoints and retired completion history are preserved.
+An unknown remote state or conflicting branch ownership refuses the edit and
+rolls back its database changes.
+
+Re-enabling the train playbook also recovers detached READY roots filed while
+it was off: branch reconciliation backfills missing origins before draining
+reservations. The same bounded pass catches system filings that have no origin;
+the delivery watchdog reserves an origin when it files a takeover while the
+train is enabled. Failures are retried without blocking later roots, and the
+pass rechecks train activation and writer ownership under the project lock.
+
+A reservation is cut by the branch materialization drain
+(`src/integration/branch_materialization.py`), ten origins per pass, so a
+large backfill reaches its last origins minutes later; until then those tasks
+are honestly `origin_not_materialized` and `reserve-owner` refuses them because
+the origin is not yet materialized. Backfill keeps a pre-existing managed owner row and leases
+it to the task with the finite ref-lease TTL, which a long backlog can outlive.
+The drain then re-leases that row before cutting the ref, but only under all of
+these, checked under the project hierarchy lock and the ref lease lock:
+
+* the origin is live, reserved, unmaterialized, and names the task's exact
+  branch in the project's designated integration repository;
+* the owner row is a managed `worker` lease held by that same task, expired,
+  and attached to no session or workspace;
+* the task has no assigned agent, no attached session and no locked workspace.
+
+Re-leasing bumps the fence (`BranchLock.acquire_on`), so any older grant is
+fenced out, and records an `integration.origin_lease_reacquired` event with the
+previous and new fence. The cut itself is unchanged: an absent ref is created
+at the pinned base, an exact one is accepted, a ref published at any other
+commit is refused (`delivery_target_fixed`) and kept, and an unreadable remote
+stays unknown. A foreign or unexpired holder, a live writer, or legacy
+ownership is never re-leased. Task status, holds, routes and budgets are left
+as they are; only a DEFINED, unblocked task becomes READY. No operator step is
+needed. The drain retries the origin on its next pass.
+
+For projects enabled before this backfill existed, run `aq doctor --check
+integration.branch_origins`, then add `--fix` to repair through a generation-fenced
+project mode edit. App verification, functional preflight and cutover all report
+`branch_origins_missing` until the affected tasks have delivery identities.
+Adoption alone does not prove delivery: completed work still needs its exact
+completion provenance and the normal batch admission checks.
+
 COMPLETED therefore does not mean delivered. `aq doctor --check
 integration.completed_undelivered` lists every COMPLETED task, archived ones
 included, whose branch tip the default branch cannot reach, with the rule that
@@ -566,3 +838,48 @@ whose PR is green yet not delivering answers `aq integration authorize-root`
 with the condition it fails or the train blocker it waits on, never a bare
 `not_eligible`. Re-landed content and archive dispositions are recorded as in
 [branch retirement](../specs/design/branch-retirement.md#re-landed-content).
+
+## Author-assisted parent merge on close
+
+A passing worker close in an active train project can retain the author through
+its merge into a non-default parent branch. The daemon freezes the clean,
+exactly published source commit, creates a separate warm candidate checkout and
+performs a real two-parent merge. The task branch remains the completion source.
+Conflicts and failed candidate checks return the candidate path to the same
+claim holder; commit fixes there, then run:
+
+```bash
+aq integration continue-close --operation-id <id>
+```
+
+Each changed candidate is regenerated and checked against the current parent
+check requirements. Managed jobs use the shared cache and resource limits. A
+pending exact job/check returns a verified wait; follow that receipt instead of
+polling. Only the publisher can update the parent, with a short expected-old
+lease, renewed claim and explicit-hold checks, and remote readback. Parent
+advances merge the retained candidate onto the new parent, preserving author
+fixes, with at most three automatic rebuilds.
+
+`hierarchical_integration_policy.close_merge` accepts `author_assist` (default
+`true`) and `author_budget_seconds` (default `1200`). Defaults are omitted from
+policy dumps. This reader uses the same live project mode and parent check
+projection as the git-first train; retired playbook-route pins do not gate a
+close. A disabled train completes source work normally without a close proposal
+or parent lease. `author_assist: false`, unavailable candidate validation, or
+exhausted automatic retries hand the exact retained candidate to the existing
+publisher. Root/default-branch publication remains publisher-owned.
+
+An author budget is an integration-origin verified wait. Expiry sends one
+incident to the project supervisor; it does not pause, wake, or release the
+author. Changed source generations cancel obsolete budget observations while
+retaining their workspaces. An uncertain push is resolved from current Git
+ancestry, never from the operation's stored `finished` state alone.
+
+Storage disposition: the approved fast-smooth-integration section 5 adds
+`integration_close_attempts` (migration `a00000000117`). It stores version-fenced
+proposal identity, retained candidate and validation evidence, and links the
+integration budget wait. It is not a delivery receipt or a second scheduler.
+The source completion continues through the existing accepted-close recovery
+protocol. This additive table and all close helpers remain charged to the
+integration ownership inventory; historical and final size/table caps are not
+raised by this feature.

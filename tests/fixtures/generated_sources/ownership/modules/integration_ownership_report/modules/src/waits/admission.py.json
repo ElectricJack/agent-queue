@@ -1,0 +1,18 @@
+{
+  "shared_definitions": {
+    "src/waits/admission.py::AdmissionReader.observe_task": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::branch_holders": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": {
+      "landing_span": [
+        14,
+        18
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records": {
+      "reason": "Admission reads canonical integration ownership and repair blockers; integration source authority remains charged."
+    },
+    "src/waits/admission.py::import from src.database.tables import integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::reservation_scope": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership."
+  }
+}

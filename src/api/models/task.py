@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+from src.models import TaskStatus
+
+from src.observations.models import SnapshotValue
 
 from . import TaskRef
+
+
+# Preserve loose response projections and their empty legacy default while
+# exposing the lifecycle vocabulary from the enum to generated clients.
+TaskStatusValue = Annotated[str, Field(json_schema_extra={
+    "enum": ["", *(status.value for status in TaskStatus)],
+})]
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +177,25 @@ class EpicDeliveryStatus(BaseModel):
     implementation_total: int = 0
 
 
+class ClaimReadinessReason(BaseModel):
+    code: str
+    detail: str
+    ref: str | None = None
+    batch_id: str | None = None
+    batch_ids: list[str] | None = None
+    epic_id: str | None = None
+    action: str | None = None
+    blocking_task_ids: list[str] | None = None
+
+
+class ClaimReadiness(BaseModel):
+    state: Literal["claimable", "waiting_on_delivery", "withheld", "unknown"]
+    claimable: bool
+    label: str
+    reason: str = ""
+    reasons: list[ClaimReadinessReason] = Field(default_factory=list)
+
+
 class TaskDisplayFields(BaseModel):
     """A container's rollup of its descendants (``src/task_graph/activity.py``).
 
@@ -178,6 +207,7 @@ class TaskDisplayFields(BaseModel):
     display_reason: str | None = None
     child_state_counts: dict[str, int] | None = None
     descendant_state_counts: dict[str, int] | None = None
+    claim_readiness: ClaimReadiness | None = None
 
 
 class TaskDetail(TaskDisplayFields):
@@ -185,7 +215,7 @@ class TaskDetail(TaskDisplayFields):
     project_id: str
     title: str
     description: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
     priority: int = 0
     assigned_agent: str | None = None
     retry_count: int = 0
@@ -250,7 +280,7 @@ class TaskDict(BaseModel):
     model_config = {"extra": "allow"}
     id: str
     title: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +288,7 @@ class TaskDict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ListTasksResponse(BaseModel):
+class ListTasksResponse(SnapshotValue):
     display_mode: str = "flat"
     tasks: list[TaskDetail] = []
     total: int = 0
@@ -333,6 +363,9 @@ class TaskShowResponse(TaskDetail):
     labels: list[str] = []
     provenance: list[dict[str, Any]] = []
     claimed_by: ClaimedBy | None = None
+    # Present only on the assigned fidelity reviewer's bounded member read.
+    batch_member: dict[str, Any] | None = None
+    fidelity: dict[str, Any] | None = None
 
 
 class TaskSetResponse(TaskShowResponse):
@@ -519,28 +552,96 @@ class HierarchyRefusalResponse(BaseModel):
     error: str
 
 
-class DeleteTaskResponse(BaseModel):
-    deleted: str
+class DeleteWarning(BaseModel):
+    code: str
+    message: str
+
+
+class DeleteTaskSummary(BaseModel):
+    id: str
     title: str
-    #: Branches the delete discarded, when it was asked to.  Removal itself is
-    #: asynchronous; these are the refs queued for it.
-    discarded_branches: list[DeletedBranch] = []
+    status: str
 
 
-class RemoveTaskResponse(BaseModel):
+class DeleteSession(BaseModel):
+    session_id: str
+    task_id: str
+    state: str
+
+
+class DeleteLocalRef(BaseModel):
+    path: str
+    sha: str | None = None
+    tracking_sha: str | None = None
+
+
+class DeleteWorktree(BaseModel):
+    path: str
+    head: str | None = None
+    branch: str | None = None
+
+
+class DeleteBranchDetail(BaseModel):
+    task_ids: list[str] = []
+    repository_id: str | None = None
+    branch: str
+    local_refs: list[DeleteLocalRef] = []
+    remote_sha: str | None = None
+    remote_state: str
+    remote_path: str | None = None
+    worktrees: list[DeleteWorktree] = []
+    action: Literal["keep", "delete"]
+
+
+class DeleteCleanupResult(BaseModel):
+    resource: str
+    outcome: Literal["complete", "failed"]
+    error: str | None = None
+
+
+class DeleteTaskResponse(BaseModel):
     success: bool = True
-    removed: str | None = None
+    deleted: str | None = None
     title: str
     task_ids: list[str] = []
-    disposition: Literal["preview", "deleted", "archived"]
-    branches: Literal["keep"] = "keep"
-    aborted_batches: list[str] = []
-    cancelled_operations: list[str] = []
+    disposition: Literal["preview", "deleted"]
+    recursive: bool = False
+    branches: Literal["keep", "delete"] = "keep"
+    stop_running: bool = False
+    tasks: list[DeleteTaskSummary] = []
+    reparented_tasks: list[str] = []
+    sessions: list[DeleteSession] = []
+    dependents: list[str] = []
+    gate_ids: list[str] = []
+    review_ids: list[str] = []
+    escalation_ids: list[str] = []
+    batch_ids: list[str] = []
+    operation_ids: list[str] = []
+    branch_details: list[DeleteBranchDetail] = []
+    warnings: list[DeleteWarning] = []
+    cleanup_results: list[DeleteCleanupResult] = []
+    audit_id: int | None = None
+    reason: str | None = None
+
+
+class RemoveTaskResponse(DeleteTaskResponse):
+    """Deprecated delete alias, including the legacy removed result key."""
+
+    removed: str | None = None
+    deprecated_alias: str = "remove_task"
 
 
 class TaskControlResponse(BaseModel):
     task_id: str
     status: str
+
+
+class DiscardPauseCheckpointResponse(BaseModel):
+    task_id: str
+    discarded: bool
+    branch: str | None = None
+    ref: str | None = None
+    commit: str | None = None
 
 
 class StopTaskResponse(BaseModel):
@@ -702,6 +803,18 @@ class TaskProgressResponse(TaskDisplayFields):
     depth: int
 
 
+class TaskSplitResponse(BaseModel):
+    success: bool
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
+    code: str | None = None
+    error: str | None = None
+    owner: dict[str, Any] | None = None
+    safe_continuation: str | None = None
+
+
 class ReparentTaskResponse(BaseModel):
     success: bool
     task_id: str
@@ -820,6 +933,15 @@ class AssignmentRouteDetail(BaseModel):
     override: dict[str, Any] | None = None
 
 
+class ClaimTimingDetail(BaseModel):
+    session_id: str
+    claim_epoch: int | None = None
+    total_seconds: float
+    phases: dict[str, float] = {}
+    current_phase: str | None = None
+    result: str | None = None
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
@@ -827,6 +949,7 @@ class ExplainTaskResponse(BaseModel):
     assignment_route: AssignmentRouteDetail | None = None
     provider_hold: ProviderHoldDetail | None = None
     phase_hold: PhaseHoldDetail | None = None
+    claim_timing: ClaimTimingDetail | None = None
 
 
 class ReadyTask(BaseModel):
@@ -925,6 +1048,46 @@ class TaskRouteOverrideResponse(BaseModel):
 
 class SpecApproveResponse(BaseModel):
     success: bool = True
+    decision_id: str
+    packet_sha256: str
+    snapshot_id: str
+
+
+class ApprovedSpecPacketResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+    review_id: str | None
+    revision: int | None
+    snapshot_id: str | None
+    spec_kind: str
+    spec_path: str
+    content_sha256: str
+    body: str
+    packet: dict[str, Any]
+    feedback: list[dict[str, Any]]
+    # The batch's frozen approved design lineage, never a caller-selected document.
+    design: dict[str, Any] | None = None
+
+
+class SpecIngestReconcileResponse(BaseModel):
+    success: bool = True
+    dispatched: int
+    errors: list[dict[str, str]]
+
+
+class BatchReconcileResponse(BaseModel):
+    success: bool = True
+    recovered: list[dict[str, str]]
+    errors: list[dict[str, str]]
+
+
+class SpecIngestLegacyInventoryResponse(BaseModel):
+    success: bool = True
+    assignments: list[dict[str, Any]]
+    next_after_id: str | None
+    policy: str
 
 
 class TaskBatchProposeResponse(BaseModel):
@@ -940,15 +1103,47 @@ class TaskBatchProposeResponse(BaseModel):
     proposal_id: str | None = None
     dry_run: bool = False
     committed: bool = False
+    already_committed: bool = False
     task_ids: list[str] | None = None
     diff: dict[str, Any] | None = None
 
 
 class TaskBatchAckResponse(BaseModel):
-    """``task_batch_update`` / ``task_batch_discard`` — bare acknowledgement."""
+    """Acknowledgement, including the current held graph after a scoped update."""
 
     success: bool = True
     diff: dict[str, Any] | None = None
+    proposal_id: str | None = None
+    batch_id: str | None = None
+    state: str | None = None
+    status: str | None = None
+    structure_revision: int | None = None
+    structure_digest: str | None = None
+    members: dict[str, str] | None = None
+    task_ids: list[str] | None = None
+    replayed: bool | None = None
+    lineage: dict[str, Any] | None = None
+    release_receipt: dict[str, Any] | None = None
+    reviewer_task_id: str | None = None
+
+
+class TaskBatchValidateResponse(BaseModel):
+    """``task_batch_validate`` — the automatic-check report; nothing is written."""
+
+    success: bool = True
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SpecIngestLegacyAdoptResponse(TaskBatchAckResponse):
+    """Adoption replays a held batch receipt or retains the proposal's human gate."""
+
+    left_gated: bool = False
 
 
 class ClaimSessionSummary(BaseModel):
@@ -959,6 +1154,7 @@ class ClaimSessionSummary(BaseModel):
     cap: int | None = None
     desired_state: str | None = None
     claim_phase: str | None = None
+    failed_preparation: dict[str, Any] | None = None
 
 
 class TaskClaimResponse(BaseModel):
@@ -977,8 +1173,15 @@ class TaskClaimResponse(BaseModel):
     task: dict[str, Any] | None = None
     claim_epoch: int | None = None
     session: ClaimSessionSummary = ClaimSessionSummary()
+    task_id: str | None = None
+    claim_phase: str | None = None
+    claim_phase_at: float | None = None
+    claim_timing: ClaimTimingDetail | None = None
     reason: str | None = None
     error: str | None = None
+    retry_after: int | None = None
+    refusal_count: int | None = None
+    instructions: str | None = None
 
 
 class TaskBatchCommitResponse(BaseModel):
@@ -1045,6 +1248,7 @@ class PoolProjectStatus(BaseModel):
     ready: int = 0
     running_idle: int = 0
     running_busy: int = 0
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int = 0
     draining: int = 0
     #: The project's own ``max_concurrent_agents`` ceiling, which bounds how
@@ -1100,6 +1304,7 @@ class PoolStatusRow(BaseModel):
     desired: int
     running_idle: int
     running_busy: int
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int
     draining: int
     ready: int
@@ -1232,6 +1437,17 @@ class PoolRenameResponse(BaseModel):
     error: str | None = None
 
 
+class PoolDeleteResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    deleted: str | None = None
+    retired: bool = False
+    depth: str | None = None
+    sessions: list[str] = []
+    warnings: list[str] = []
+    error: str | None = None
+
+
 class PoolSetEnabledResponse(BaseModel):
     success: bool
     profile_id: str | None = None
@@ -1245,8 +1461,7 @@ class TaskRecoveryResponse(BaseModel):
     incident_id: str
     decision: str
     status: str
-
-
+    decided_at: float | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
@@ -1272,6 +1487,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
+    "discard_pause_checkpoint": DiscardPauseCheckpointResponse,
     "restart_task": RestartTaskResponse,
     "task_recover": TaskRecoveryResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,
@@ -1292,12 +1508,20 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_children": TaskChildrenResponse,
     "task_progress": TaskProgressResponse,
     "reparent_task": ReparentTaskResponse,
+    "task_split": TaskSplitResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
     "task_recent_activity": TaskRecentActivityResponse,
     "explain_task": ExplainTaskResponse,
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,
+    "ensure_spec_ingest": EnsureTaskResponse,
+    "ensure_fidelity_review": EnsureTaskResponse,
+    "approved_spec_packet": ApprovedSpecPacketResponse,
+    "spec_ingest_reconcile": SpecIngestReconcileResponse,
+    "batch_reconcile": BatchReconcileResponse,
+    "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
+    "spec_ingest_legacy_adopt": SpecIngestLegacyAdoptResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,
@@ -1305,10 +1529,12 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_propose": TaskBatchProposeResponse,
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
+    "task_batch_validate": TaskBatchValidateResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
     "pool_rename": PoolRenameResponse,
+    "pool_delete": PoolDeleteResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
     "pool_set_enabled": PoolSetEnabledResponse,
