@@ -34,6 +34,7 @@ from src.database.queries.task_queries import (
 from src.deliverables import REVIEW_TARGETS
 from src.notifications.render import classify_error
 from src.models import (
+    SUSPENDED_TASK_STATUSES,
     BLOCKING_DEP_TYPES,
     DEP_TYPE_VALUES,
     INTEGRATION_MODES,
@@ -80,7 +81,9 @@ logger = logging.getLogger(__name__)
 #: ``build_capacity_reasons`` produces still applies to the pull path: a
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
-_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent"})
+_PUSH_ONLY_REASON_CODES = frozenset({
+    "no_idle_agent", "no_compatible_agent", "project_agent_cap",
+})
 
 #: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
 #: resolver (graph-visibility A2).  Deliberately **not**
@@ -1049,14 +1052,23 @@ class TaskCommandsMixin:
     ) -> None:
         """Publish a committed graph edit; subscriber failures cannot undo it.
 
-        Persist the small identity-only audit row for reconnect replay. The bus
+        Persist the small identity/status audit row for reconnect replay. The bus
         uses the usual task base fields (never description or command arguments).
         This intentionally does not emit task.created, which triggers routing.
         """
         pid = project_id or task.project_id
         seq = None
+        payload = None
+        if event_type == "task.updated":
+            details["status"] = task.status.value
+            payload = json.dumps({"status": task.status.value})
+            if details.get("edited_fields"):
+                payload = json.dumps({"status": task.status.value,
+                                      "edited_fields": details["edited_fields"]})
         try:
-            seq = await self.db.log_event(event_type, project_id=pid, task_id=task.id)
+            seq = await self.db.log_event(
+                event_type, project_id=pid, task_id=task.id, payload=payload,
+            )
         except Exception:
             logger.warning(
                 "Could not persist graph change %s for %s", event_type, task.id, exc_info=True
@@ -1549,6 +1561,7 @@ class TaskCommandsMixin:
         )
         claimed = moved is None or moved.status in (
             TaskStatus.IN_PROGRESS,
+            *SUSPENDED_TASK_STATUSES,
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
         ) or moved.assigned_agent_id is not None
@@ -4120,7 +4133,10 @@ class TaskCommandsMixin:
         refusal = _filing_refusal("edit_task", args)
         if refusal is not None:
             return refusal
-        claimed = task.status == TaskStatus.IN_PROGRESS or bool(task.assigned_agent_id)
+        claimed = (
+            task.status in (TaskStatus.IN_PROGRESS, *SUSPENDED_TASK_STATUSES)
+            or bool(task.assigned_agent_id)
+        )
         if "intelligence_class" in args and claimed:
             return {"success": False, "error": "Task is running or claimed; stop the task before changing its class hint."}
 
@@ -4309,10 +4325,11 @@ class TaskCommandsMixin:
                 "monorepo support. Use 'exclusive' instead ('branch-isolated' is "
                 "deprecated and now behaves identically to 'exclusive')."
             )
-        await self._emit_task_graph_change("task.updated", task)
+        refreshed = await self.db.get_task(task.id) or task
+        await self._emit_task_graph_change("task.updated", refreshed, edited_fields=all_fields)
         if updates.get("project_id", task.project_id) != task.project_id:
             await self._emit_task_graph_change(
-                "task.updated", task, project_id=updates["project_id"]
+                "task.updated", refreshed, project_id=task.project_id
             )
         return result
 
@@ -4705,22 +4722,28 @@ class TaskCommandsMixin:
                 if incident.get("id") != args.get("incident_id"):
                     return {"success": False, "error": "Incident is stale or not found"}
                 stopped_session = await self._confirm_recovery_worker_stopped(incident)
-        result = await self.db.decide_task_recovery(
-            task_id,
-            args.get("incident_id"),
-            decision,
-            reason.strip(),
-            author_kind="supervisor" if scope.get("kind") == "session" else "user",
-            author_id=actor or scope.get("session_id") or "operator",
-            project_id=scope.get("project_id"),
-            stopped_session=stopped_session,
-            expected_hold_at=expected_hold_at,
-            operator_handoff=operator_handoff,
-            operator_release=operator_release,
-            ask_decision_id=ask_decision["id"] if ask_decision else None,
-            ask_evidence_entry_id=ask_decision["evidence_entry_id"] if ask_decision else None,
-            ask_expected_meaning=ask_decision["packet"]["domain"]["meaning"] if ask_decision else None,
-        )
+        try:
+            result = await self.db.decide_task_recovery(
+                task_id,
+                args.get("incident_id"),
+                decision,
+                reason.strip(),
+                author_kind="supervisor" if scope.get("kind") == "session" else "user",
+                author_id=actor or scope.get("session_id") or "operator",
+                project_id=scope.get("project_id"),
+                stopped_session=stopped_session,
+                expected_hold_at=expected_hold_at,
+                operator_handoff=operator_handoff,
+                operator_release=operator_release,
+                ask_decision_id=ask_decision["id"] if ask_decision else None,
+                ask_evidence_entry_id=ask_decision["evidence_entry_id"] if ask_decision else None,
+                ask_expected_meaning=ask_decision["packet"]["domain"]["meaning"] if ask_decision else None,
+            )
+        except ValueError as exc:
+            if ask_decision:
+                raise  # The ask operation reconciles its own application failures.
+            # The fenced transaction refused (stale incident, closed task); nothing changed.
+            return {"success": False, "error_code": "task_recovery.refused", "error": str(exc)}
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
 
@@ -4751,53 +4774,70 @@ class TaskCommandsMixin:
             return {"success": False, "error": f"Task '{task_id}' not found in this project"}
         return result
 
-    async def _cmd_restart_task(self, args: dict) -> dict:
-        task = await self.db.get_task(args["task_id"])
-        if not task:
-            return {"success": False, "error": f"Task '{args['task_id']}' not found"}
-        if task.status == TaskStatus.IN_PROGRESS:
-            return {"success": False, "error": "Task is currently in progress. Stop it first."}
-        project = await self.db.get_project(task.project_id)
-        managed = (
-            project is not None
-            and project.hierarchical_integration_mode in {"hierarchy", "train"}
-        )
-        if managed and task.status in _RESTART_RESERVATION_STATUSES:
-            # A repair delegate owns no branch origin of its own: the claim
-            # frontier admits it only on the exact reserved ``repair`` fence of
-            # its operation's branch, so it restarts through that handoff
-            # rather than through a bare status flip.
-            if task.created_by_kind == "integration_repair":
-                return await self._restart_repair_delegate(task)
-            if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
-                task.id
-            ):
-                from src.integration.canonical_reservation import (
-                    reserve_canonical_task_branch,
-                )
+    async def _resume_manual_pause(self, task_id: str) -> dict | None:
+        """Clear a manual pause through Resume before Restart, or return its refusal.
 
-                reservation = await reserve_canonical_task_branch(self.db, task.id)
-                if reservation["outcome"] not in {"acquired", "already_reserved"}:
-                    return {"success": False, "error": (
-                        f"Cannot restart integration task: {reservation['reason']}. "
-                        "For a stopped writer, preview "
-                        f"aq integration release-owner --task-id {task.id} --dry-run; "
-                        "apply only after its provider-backed proof succeeds, then retry restart."
-                    )}
-        old_status = task.status.value
-        await self.db.transition_task(
-            args["task_id"],
-            TaskStatus.READY,
-            context="restart_task",
-            retry_count=0,
-            assigned_agent_id=None,
-        )
-        return {
-            "success": True,
-            "restarted": args["task_id"],
-            "title": task.title,
-            "previous_status": old_status,
-        }
+        A manual pause refuses every lifecycle write but its own resume: same
+        scope check, same stop proofs. The control lock is not reentrant, so
+        this runs before restart takes it.
+        """
+        paused = await self.db.get_task(task_id)
+        if (paused is None or paused.status != TaskStatus.PAUSED
+                or await self.db.get_task_meta(task_id, "manual_pause") is None):
+            return None
+        resumed = await self._cmd_resume_task({"task_id": task_id})
+        return None if resumed.get("success") else resumed
+
+    async def _cmd_restart_task(self, args: dict) -> dict:
+        from src.integration.repair import OrdinaryRepairService
+        from src.wait_runtime.restart import readmit, release_continuations, restart_lock
+        from src.waits.conditions import WaitError
+
+        if (refused := await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])) is not None:
+            return refused
+        # Resume's task-control lock covers continuation cleanup and readmission.
+        async with restart_lock(self, args["task_id"]):
+            task = await self.db.get_task(args["task_id"])
+            if not task:
+                return {"success": False, "error": f"Task '{args['task_id']}' not found"}
+            if task.status == TaskStatus.IN_PROGRESS:
+                return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            if stale := await OrdinaryRepairService(self.db).stale(task):
+                return {"success": False, "error": stale, "error_code": "stale_repair"}
+            try:
+                released = await release_continuations(self, task)
+            except WaitError as exc:
+                return {"success": False, "error": str(exc), "error_code": exc.code}
+            project = await self.db.get_project(task.project_id)
+            from src.integration.train_policy import worker_integration_enabled
+
+            managed = await worker_integration_enabled(self.db, project)
+            if managed and task.status in _RESTART_RESERVATION_STATUSES:
+                # Repair delegates restart through their operation's reserved branch fence.
+                if task.created_by_kind == "integration_repair":
+                    return await self._restart_repair_delegate(task)
+                if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
+                    task.id
+                ):
+                    from src.integration.canonical_reservation import reserve_canonical_task_branch
+
+                    reservation = await reserve_canonical_task_branch(self.db, task.id)
+                    if reservation["outcome"] not in {"acquired", "already_reserved"}:
+                        return {"success": False, "error": (
+                            f"Cannot restart integration task: {reservation['reason']}. "
+                            "For a stopped writer, preview "
+                            f"aq integration release-owner --task-id {task.id} --dry-run; "
+                            "apply only after its provider-backed proof succeeds, then retry restart."
+                        )}
+            old_status = task.status.value
+            if not await readmit(self, task, released):
+                return {"success": False, "error": "Task changed during cold restart; retry."}
+            return {
+                "success": True,
+                "restarted": args["task_id"],
+                "title": task.title,
+                "previous_status": old_status,
+            }
 
     async def _restart_repair_delegate(self, task) -> dict:
         """Restart an integration repair delegate through its own reservation.
@@ -4939,7 +4979,6 @@ class TaskCommandsMixin:
             review_task = await self.db.get_task(review_task_id) if review_task_id else None
             session = await self.db.get_session(session_id) if session_id else None
             if review_task is not None and review_task.profile_id in REVIEW_PROFILE_IDS:
-                from src.database.queries.hierarchy_queries import HierarchyError
                 from src.integration.reviews import ReviewEvidenceProducer
 
                 try:
@@ -4981,24 +5020,30 @@ class TaskCommandsMixin:
             self.db, task.project_id, subject="task reopen"
         )
         transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
-        if review_evidence_snapshot is None:
-            await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
-        else:
-            from src.integration.reviews import ReviewEvidenceProducer
+        try:
+            if review_evidence_snapshot is None:
+                await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
+            else:
+                from src.integration.reviews import ReviewEvidenceProducer
 
-            async with self.db.immediate() as conn:
-                transition = await ReviewEvidenceProducer(
-                    self.db, None
-                ).reject_and_reopen_on(
-                    conn,
-                    task_id,
-                    review_evidence_snapshot["reviewer_task_id"],
-                    review_evidence_snapshot,
-                    **transition_values,
+                transition_values["integration_delivery"] = await self.db.observe_removal_delivery(
+                    [task_id], for_mutation=True,
                 )
-            await self.db.log_blocked_flips(transition.flipped)
-            await self.db._notify_settled(transition.settled)
-            await self.db._notify_ready(transition.ready)
+                async with self.db.immediate() as conn:
+                    transition = await ReviewEvidenceProducer(
+                        self.db, None
+                    ).reject_and_reopen_on(
+                        conn,
+                        task_id,
+                        review_evidence_snapshot["reviewer_task_id"],
+                        review_evidence_snapshot,
+                        **transition_values,
+                    )
+                await self.db.log_blocked_flips(transition.flipped)
+                await self.db._notify_settled(transition.settled)
+                await self.db._notify_ready(transition.ready)
+        except HierarchyError as exc:
+            return self._hierarchy_failure(exc)
 
         # Store feedback as a structured task_context entry so agents and
         # tooling can access individual reopen comments programmatically.
@@ -5518,6 +5563,9 @@ class TaskCommandsMixin:
                     "code": "integration.completion_provenance_required",
                 }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
+        refreshed = await self.db.get_task(task_id)
+        if refreshed:
+            await self._emit_task_graph_change("task.updated", refreshed)
         return {
             "success": True,
             "task_id": task_id,
@@ -5776,7 +5824,7 @@ class TaskCommandsMixin:
                                f"is gone")
             elif needs_attention in {
                 "integration_prepare_failed", "integration_prepare_failed_attached",
-                "repair_target_unpublished",
+                "repair_target_unpublished", "child_preparation_conflict",
             }:
                 prepared = await self.db.get_task_meta(str(task_id), "prepare_failure")
                 if isinstance(prepared, dict) and prepared.get("reason"):
@@ -5859,12 +5907,6 @@ class TaskCommandsMixin:
         # route filter depends on the project's router readiness (§9.1).
         from src.routing.readiness import orchestrator_router_ready
 
-        reasons.extend(await self.db.claim_frontier_exclusions(
-            str(task_id),
-            router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
-            cached_only=True,
-        ))
-
         from src.integration.admission import observe_admission
 
         admission = await observe_admission(
@@ -5873,6 +5915,8 @@ class TaskCommandsMixin:
             self._development_integration(),
             cached_only=True,
             default_mode=self.config.integration.default_mode,
+            router_ready_projects=({task.project_id} if await orchestrator_router_ready(
+                self.orchestrator, task.project_id) else set()),
         )
         from src.integration.delivery_engine import project_delivery_issue
 
@@ -5896,9 +5940,14 @@ class TaskCommandsMixin:
                     ) if prerequisite_project is not None else None
                 )
             issue = delivery_issues.get(prerequisite_project_id)
+            engine_reason = issue and (
+                delivery_reason["code"].startswith(("development_", "pr_"))
+                or (delivery_reason["code"] == "delivery_evidence_unavailable"
+                    and delivery_reason["ref"] != str(task_id))
+            )
             reasons.append(
                 Reason(code="delivery_engine_unavailable", detail=issue["detail"],
-                       ref=delivery_reason["ref"]) if issue else delivery_reason
+                       ref=delivery_reason["ref"]) if engine_reason else dict(delivery_reason)
             )
         issue = delivery_issues.get(task.project_id)
         if issue and not any(reason.get("code") == "delivery_engine_unavailable" for reason in reasons):

@@ -218,6 +218,7 @@ class ProjectQueryMixin:
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""
         control_fields = {
+            "storage_binding",
             "hierarchical_integration_desired_mode",
             "hierarchical_integration_draining",
             "hierarchical_integration_generation",
@@ -451,6 +452,7 @@ class ProjectQueryMixin:
             repo_default_branch=row.get("repo_default_branch") or "main",
             preferred_provider=row.get("preferred_provider"),
             supervisor_enabled=bool(row.get("supervisor_enabled", False)),
+            storage_binding=row.get("storage_binding"),
             # NOT NULL; an empty binding is read as stored, so doctor
             # (``routing.bypassed``) sees the project as unbound.
             assignment_playbook_id=row.get("assignment_playbook_id") or "",
