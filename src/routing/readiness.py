@@ -182,6 +182,7 @@ class RouterReadiness:
                 sorted(self._ready), sorted(ready),
             )
         self._ready = ready
+        db._ready_router_projects = ready
         return ready
 
     async def ready_projects(self) -> frozenset[str]:

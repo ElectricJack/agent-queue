@@ -240,6 +240,33 @@ def test_admission_aged_order_and_exclusive_frontier():
     assert next_admission([integration, old], 1300, 4, 2) == old
 
 
+@pytest.mark.parametrize("full_state", ["starting", "running", "cancelling"])
+def test_full_suite_allows_two_focused_jobs_and_queues_second_suite(full_state):
+    def row(name, state="queued", weight=1, scope="focused", submitted=100):
+        return {
+            "id": name, "state": state, "job_class": "shared", "weight": weight,
+            "priority_band": 2, "submitted_at": submitted, "owner_id": name,
+            "contract": {"test_scope": scope},
+        }
+
+    full = row("full", full_state, weight=4, scope="full")
+    second = row("second", weight=4, scope="full")
+    first = row("foreign-focused-1", submitted=101)
+    later = row("foreign-focused-2", submitted=102)
+    rows = [full, second, first, later]
+    assert next_admission(rows, 200, 6, 2) == first
+    first["state"] = "running"
+    assert next_admission(rows, 200, 6, 2) == later
+    later["state"] = "running"
+    assert next_admission(rows, 200, 6, 2) is None
+    full["state"] = "succeeded"
+    assert next_admission(rows, 200, 6, 2) == second
+    # A waiting first full suite keeps its position as existing work drains.
+    full["state"] = "queued"
+    first["weight"] = 3
+    assert next_admission(rows, 200, 6, 2) is None
+
+
 async def test_wrong_launch_identity_and_corrupt_receipt_never_release_pin(db, tmp_path):
     svc = service(db, tmp_path)
     job = await db.submit_job(values())
@@ -384,3 +411,49 @@ async def test_missing_observed_output_cannot_be_adopted_as_pass(db, tmp_path):
     result = (await db.get_job(job["id"]))["result"]
     assert result["outcome"] == "infrastructure"
     assert not await db.workspace_has_job_pin("w")
+
+
+async def test_startup_recovery_releases_pin_of_a_launch_that_never_ran(db, tmp_path):
+    """A restart proves a receipt-less, intent-less launch dead (smart-lantern-91).
+
+    The pin it left would otherwise block workspace recovery on every start.
+    """
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    # Fresh: the 30s exec grace is a runtime bound, not a startup one.
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time())
+    await svc.recover_on_startup()
+    lost = await db.get_job(job["id"])
+    assert lost["state"] == "lost"
+    assert not lost["cleanup_blocked"]
+    assert not await db.workspace_has_job_pin("w")
+
+
+async def test_startup_recovery_releases_an_earlier_runtime_lost_pin(db, tmp_path):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time() - 31)
+    await svc.reconcile(job)
+    assert (await db.get_job(job["id"]))["cleanup_blocked"]
+    await svc.recover_on_startup()
+    assert not (await db.get_job(job["id"]))["cleanup_blocked"]
+    assert not await db.workspace_has_job_pin("w")
+
+
+async def test_startup_recovery_keeps_queued_live_and_intent_pins(db, tmp_path, monkeypatch):
+    svc = service(db, tmp_path)
+    queued = await db.submit_job(values())
+    await svc.recover_on_startup()
+    assert (await db.get_job(queued["id"]))["state"] == "queued"
+    assert await db.workspace_has_job_pin("w")
+
+    job = await db.transition_job(queued["id"], 0, "starting", launch_at=time.time())
+    alive = {job["runner_nonce"]}
+
+    async def live(nonce):
+        return [1] if nonce in alive else []
+
+    monkeypatch.setattr("src.jobs.service.processes", live)
+    await svc.recover_on_startup()
+    assert (await db.get_job(job["id"]))["state"] == "starting"
+    assert await db.workspace_has_job_pin("w")

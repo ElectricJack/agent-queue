@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/reports/morning.py::_repository": {
+      "baseline_span": [
+        72,
+        123
+      ],
+      "landing_span": [
+        72,
+        123
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

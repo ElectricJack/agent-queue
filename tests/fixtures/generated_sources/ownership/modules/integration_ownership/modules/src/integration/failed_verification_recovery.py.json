@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/failed_verification_recovery.py::FailedVerificationRecovery._apply_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 615,
+      "owner": "FailedVerificationRecovery._apply_on",
+      "owner_fingerprint": "18fa85ad210bd7118b500307f129385ae6a0c70edd92dbe0d62aad61e32ba1d1",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/failed_verification_recovery.py::FailedVerificationRecovery._apply_on::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 589,
+      "owner": "FailedVerificationRecovery._apply_on",
+      "owner_fingerprint": "18fa85ad210bd7118b500307f129385ae6a0c70edd92dbe0d62aad61e32ba1d1",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

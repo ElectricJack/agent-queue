@@ -11,6 +11,8 @@ tags: [implementation, cli, mcp, api, auth, prime, surface]
 > Start at [the documentation home](../../README.md) for what AQ does today, and
 > see [historical material](../../history/README.md) for how this material is
 > organised.
+> Current command dispatch, discovery and authorization:
+> [daemon-core](../systems/daemon-core.md#24-the-command-handler).
 
 **Status:** Draft — approved direction (2026-08-19)
 **Related:** [../design/aq-surface](../design/aq-surface.md) (design), [../design/session-runtime](../design/session-runtime.md), [../design/work-graph](../design/work-graph.md), [../design/supervisor-agent](../design/supervisor-agent.md), [../design/feature-pauses](../design/feature-pauses.md), [../design/trust-and-ops](../design/trust-and-ops.md), [../../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md)
@@ -191,6 +193,11 @@ class SessionTokenStore:
 
 Mint/revoke are called by [../design/session-runtime](../design/session-runtime.md) at session start/end (in-process —
 no HTTP hop). A `revoke_expired()` sweep joins the existing 5s cascade housekeeping.
+The sweep is rate-limited to once per minute. Before deletion it renews valid
+elevated credentials nearing expiry for the same live named supervisor launch,
+as specified in [authentication mechanics](../design/aq-surface.md#71-mechanics-owned-here).
+Renewal changes only `expires_at` and evicts the corresponding cache entry;
+neither expiry nor revocation can be undone by presenting an old bearer.
 
 **Revocation window (decided; was API-1).** `validate()` serves its in-memory
 cache until the row's `expires_at` and does not re-read the database on every

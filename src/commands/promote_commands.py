@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -13,6 +14,9 @@ from pathlib import Path
 
 from sqlalchemy import func, insert, select, update
 
+from src.waits.sources import execute_task_status_mutation
+from src.waits.sources import execute_batch_mutation
+from src.task_templates import render_task_template
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.database.tables import (
@@ -48,8 +52,12 @@ from src.integration.promotion_steps import (
     FlowSchema,
     PromotionSourceRefusal,
     check_source_green,
+    fail_stranded_promotion_tasks_on,
     promotion_ref,
+    promotion_task_defect,
 )
+from src.models import TaskStatus
+from src.routing.sources import UNROUTED
 
 
 class PromoteCommandsMixin:
@@ -419,14 +427,16 @@ class PromoteCommandsMixin:
                 task = Task(
                     id="", project_id=project.id, repo_id=repository.id,
                     title=f"Prepare {step['id']} {version}", task_type=TaskType.CHORE,
-                    description=(f"Prepare version {version} on {repository.default_branch}. "
-                                 f"Bump {step['versioning']['source']}; keep mirrored versions equal, "
-                                 + ("draft the configured notes from metadata.notes_input "
-                                    "(aq task show <own id> --json), and " if draft is not None else "")
-                                 + "regenerate artifacts affected by the bump. Read only your own task. "
-                                 "Commit and publish through the ordinary PR-gated train.\n\n"
-                                 + (f"Notes path: {step['notes']['path'].format(version=version)}\n"
-                                    + (draft or "") if draft is not None else "")),
+                    description=(render_task_template(
+                        "promotion-prepare",
+                        version=version,
+                        default_branch=repository.default_branch,
+                        version_source=step["versioning"]["source"],
+                        notes_instructions=render_task_template("promotion-draft-notes") if draft is not None else "",
+                        notes_details=f"Notes path: {step['notes']['path'].format(version=version)}\n" + (draft or "")
+                        if draft is not None
+                        else "",
+                    )),
                     dedup_key=key, created_by_kind=PREPARE_CONTEXT,
                     created_by_id=_requester_identity(current_principal() or TRUSTED_LOCAL),
                 )
@@ -653,10 +663,17 @@ class PromoteCommandsMixin:
 
         request = PromoteRequestArgs.model_validate(args)
         try:
+            if request.allow_breaking_migration and (
+                current_principal() or TRUSTED_LOCAL
+            ).kind is not PrincipalKind.LOCAL:
+                raise PromotionRefusal("breaking_migration_override_forbidden",
+                                       "Only a local operator may override migration admission.")
             project, repository, raw, flow = await self._promotion_inputs(
                 request.project_id, command="integration_backmerge_source" if backmerge else "promote_request"
             )
             step = _find_step(flow, request.step_id)
+            if request.allow_breaking_migration and (backmerge or not step_has_version(step)):
+                raise PromotionRefusal("step_not_versioned", "Migration override requires a tagged release.")
             manifest = await self._promotion_manifest(repository)
             validation = FlowSchema.validate(
                 raw, default_branch=repository.default_branch, manifest=manifest
@@ -789,6 +806,14 @@ class PromoteCommandsMixin:
                     metadata = notes_metadata(authored_notes, step["notes"]["kind"], version)
                     if metadata.get("source_digest") != notes_input["source_digest"]:
                         raise PromotionRefusal("notes_stale", "Notes do not cover the pinned source set.")
+                admission = None
+                if not backmerge and step_has_version(step):
+                    from src.integration.promotion_migrations import migration_admission
+
+                    admission = await migration_admission(
+                        ops, repo, step, source, previous,
+                        {**requester, "recorded_at": time.time()} if request.allow_breaking_migration else None,
+                    )
                 now = time.time()
                 meta = {
                     "request_id": request_id,
@@ -806,6 +831,7 @@ class PromoteCommandsMixin:
                     "requester": requester,
                     "notes_sha256": notes_sha,
                     "notes_input": notes_input,
+                    **({"migration_admission": admission} if admission is not None else {}),
                 }
                 if hotfix:
                     meta.update(kind="hotfix", hotfix_task_id=request.from_task)
@@ -825,7 +851,8 @@ class PromoteCommandsMixin:
                     if observed.state is RemoteRefState.PRESENT:
                         raise PromotionRefusal("tag_exists", f"Tag {tag} already exists.")
                 body = step_pr_body(step, source, request_id, notes_input, authored_notes,
-                                    origin_ref=(backmerge or hotfix or {}).get("origin_ref"))
+                                    origin_ref=(backmerge or hotfix or {}).get("origin_ref"),
+                                    migration_admission=admission)
                 digest = hashlib.sha256(f"{project.id}:{request_id}".encode()).hexdigest()
                 batch = Batch(
                     "promotion-" + digest, project.id, repository.id, target_ref, created_at=now
@@ -836,7 +863,7 @@ class PromoteCommandsMixin:
                 remote = await ops.remote(repo, ref)
                 if remote is None:
                     try:
-                        await ops.push(repo, ref, source, "")
+                        await ops.push(repo, ref, source, "0" * 40)
                     except GitError:
                         if await ops.remote(repo, ref) != source:
                             raise
@@ -863,6 +890,12 @@ class PromoteCommandsMixin:
                 # Held only for the writes: a flow edit waits for this intent or
                 # this intent sees the edit and rolls back.
                 await _check_flow(conn, project.id, raw, repository.id, lock=True)
+                # An aborted or failed intent never settles its task. The next
+                # intent on this target supersedes it rather than running beside it.
+                superseded = await fail_stranded_promotion_tasks_on(
+                    self.db, conn, now=now, project_id=project.id,
+                    repository_id=repository.id, target_ref=target_ref,
+                )
                 await conn.execute(
                     insert(tasks).values(
                         id=member.task_id,
@@ -896,7 +929,7 @@ class PromoteCommandsMixin:
                 await promotion_policy_event(conn, project_id=project.id, step_id=step["id"],
                     kind="intent_due", identity=batch.id, now=now, batch_id=batch.id, source_sha=source)
 
-                await conn.execute(
+                await execute_batch_mutation(conn,
                     update(integration_batches)
                     .where(
                         integration_batches.c.id == batch.id,
@@ -913,9 +946,12 @@ class PromoteCommandsMixin:
                     "intent": "open",
                     "promotion": meta,
                     "pr_url": pr_url,
+                    **({"superseded_task_ids": superseded} if superseded else {}),
                 }, project.id, repository.id, target_ref)
         except (PromotionRefusal, NotesRefusal, PromotionSourceRefusal) as exc:
-            return {"success": False, "outcome": exc.outcome, "error": str(exc)}
+            return {"success": False, "outcome": exc.outcome, "error": str(exc),
+                    **({"migration_admission": exc.migration_admission}
+                       if hasattr(exc, "migration_admission") else {})}
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
             return _unavailable(exc)
 
@@ -928,19 +964,11 @@ class PromoteCommandsMixin:
 
     async def _promotion_intent(self, project_id, request_id):
         async with self.db._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_batches).where(
-                            integration_batches.c.project_id == project_id,
-                            integration_batches.c.request_id == request_id,
-                            integration_batches.c.trigger == "promotion",
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.project_id == project_id,
+                integration_batches.c.request_id == request_id,
+                integration_batches.c.trigger == "promotion",
+            ))).mappings().first()
         if row is None:
             raise PromotionRefusal("not_found", "Promotion request does not exist.")
         meta = row["policy_snapshot"].get(PROMOTION_CONTEXT)
@@ -1000,19 +1028,8 @@ class PromoteCommandsMixin:
                 )
             # Serialize with cancel and publication; a review never opens a local gate.
             async with self.db.immediate() as conn:
-                locked = (
-                    (
-                        await conn.execute(
-                            select(integration_batches)
-                            .where(
-                                integration_batches.c.id == row["id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
+                locked = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == row["id"]).with_for_update())).mappings().one()
                 if locked["intent"] != "open" or locked["lifecycle"] == "promoted":
                     raise PromotionRefusal("promotion_not_open", "Request is no longer open.")
                 await _check_pull(client, repo.binding, meta)
@@ -1100,23 +1117,12 @@ class PromoteCommandsMixin:
                 )
             if row["intent"] == "aborted":
                 return _intent_response("already_cancelled", row)
-            lane, ops, repo, client = await self._promotion_runtime(
+            _lane, ops, repo, client = await self._promotion_runtime(
                 project, repository, meta["step"]
             )
             async with self.db.immediate() as conn:
-                locked = (
-                    (
-                        await conn.execute(
-                            select(integration_batches)
-                            .where(
-                                integration_batches.c.id == row["id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
+                locked = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == row["id"]).with_for_update())).mappings().one()
                 if locked["intent"] == "aborted":
                     return _intent_response("already_cancelled", locked)
                 if locked["lifecycle"] == "promoted":
@@ -1144,37 +1150,68 @@ class PromoteCommandsMixin:
                     )
                 await _check_pull(client, repo.binding, meta, allow_closed=True)
                 await client.close_pull_request(number=meta["pr_number"])
-                members = await lane.service.store.members(row["id"])
                 now = time.time()
-                await conn.execute(
-                    update(integration_batches)
-                    .where(
-                        integration_batches.c.id == row["id"],
-                    )
-                    .values(
-                        intent="aborted",
-                        lifecycle="aborted",
-                        cleanup_state="pending",
-                        human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
-                        updated_at=now,
-                    )
-                )
-                await conn.execute(
-                    update(tasks)
-                    .where(tasks.c.id == members[0].task_id, tasks.c.status == "IN_PROGRESS")
-                    .values(status="FAILED", updated_at=now)
-                )
+                await execute_batch_mutation(conn, update(integration_batches).where(
+                    integration_batches.c.id == row["id"]).values(
+                    intent="aborted", lifecycle="aborted", cleanup_state="pending",
+                    human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
+                    updated_at=now))
+                await fail_stranded_promotion_tasks_on(self.db, conn, now=now, batch_id=row["id"])
             return self._woken({
-                "success": True,
-                "outcome": "cancelled",
-                "project_id": project.id,
-                "request_id": request.request_id,
-                "batch_id": row["id"],
-                "pr_url": meta["pr_url"],
+                "success": True, "outcome": "cancelled", "project_id": project.id,
+                "request_id": request.request_id, "batch_id": row["id"], "pr_url": meta["pr_url"],
             }, project.id, row["repository_id"], row["target_ref"])
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
+            return _unavailable(exc)
+
+    async def _cmd_promote_repair(self, args):
+        """Back up, then restore a stranded promotion task to the row StepAdmission admits."""
+        from src.commands.contracts.promote import PromoteIntentArgs
+
+        request = PromoteIntentArgs.model_validate(args)
+        try:
+            project, _, _, _ = await self._promotion_inputs(
+                request.project_id, command="promote_repair")
+            row, _ = await self._promotion_intent(project.id, request.request_id)
+            async with self.db.immediate() as conn:
+                row = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == row["id"]).with_for_update())).mappings().one()
+                if row["intent"] == "aborted" or row["lifecycle"] in {
+                        "promoted", "aborted", "failed", "empty"}:
+                    raise PromotionRefusal("promotion_not_open", "Promotion intent is closed.")
+                members = (await conn.execute(select(tasks).join(
+                    integration_batch_members, integration_batch_members.c.task_id == tasks.c.id,
+                ).where(integration_batch_members.c.batch_id == row["id"]))).mappings().all()
+                if len(members) != 1 or (task := members[0])["task_type"] != "promotion":
+                    raise PromotionRefusal("promotion_intent_invalid",
+                                           "Intent has no single promotion task.")
+                result = {"success": True, "outcome": "already_healthy", "project_id": project.id,
+                          "request_id": row["request_id"], "batch_id": row["id"],
+                          "task_id": task["id"]}
+                if promotion_task_defect(task, allow_completed=True) is None:
+                    return result
+                backup = Path(self.config.data_dir, "backups", "promotion",
+                              f"{task['id']}-{time.time_ns()}.json")
+                def write_backup():  # before the row changes; a failed write changes nothing
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    backup.write_text(json.dumps(dict(task), default=str, indent=2, sort_keys=True))
+                await asyncio.to_thread(write_backup)
+                await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id == task["id"]).values(
+                    status="IN_PROGRESS", profile_id=None, route_source=UNROUTED, route=None,
+                    updated_at=time.time()))
+                if task["status"] == "FAILED":
+                    await self.db._record_recovery_failure_generation_on(
+                        conn, task["id"], TaskStatus.FAILED, TaskStatus.IN_PROGRESS, time.time(),
+                    )
+            return self._woken(result | {"outcome": "repaired", "backup_path": str(backup),
+                                         "previous": {key: task[key] for key in (
+                                             "status", "profile_id", "route_source", "route")}},
+                               project.id, row["repository_id"], row["target_ref"])
+        except PromotionRefusal as exc:
+            return exc.response()
+        except (OSError, ValueError) as exc:
             return _unavailable(exc)
 
     async def _cmd_promote_status(self, args):
@@ -1502,16 +1539,15 @@ async def _hotfix_source(db, conn, ops, repo, project_id, repository_id, step, r
         raise PromotionRefusal("promotion_source_not_on_chain", "Hotfix completion record is missing.")
     identity = CompletionIdentity(project_id, repository_id, row["id"],
                                   recorded.completion_id or recorded.legacy_generation)
-    retained = await ops.git.als_remote_ref(str(repo.store), identity.branch,
-                                           repository_url=f"https://github.com/{repo.binding.full_name}.git")
+    provenance = GitProvenance(ops.git, str(repo.store),
+        repository_url=f"https://github.com/{repo.binding.full_name}.git")
+    retained_ref, retained = await provenance.remote_completion(identity)
     if retained.state is RemoteRefState.ERROR:
         raise GitError(retained.error or "Hotfix retention cannot be observed.")
     if not retained.oid:
         raise PromotionRefusal("promotion_source_not_on_chain", "Hotfix completion is not retained.")
     await _fetch_commit(ops, repo, retained.oid)
-    completion = await GitProvenance(ops.git, str(repo.store),
-        repository_url=f"https://github.com/{repo.binding.full_name}.git").read_completion(
-        identity, refs={"refs/remotes/origin/" + identity.branch: retained.oid})
+    completion = await provenance.read_completion(identity, refs={retained_ref: retained.oid})
     source = completion and completion["source_oid"]
     if not source or (request.source_sha and request.source_sha != source):
         raise PromotionRefusal("promotion_source_not_on_chain", "Source differs from the hotfix completion.")
