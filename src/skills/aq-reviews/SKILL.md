@@ -36,6 +36,18 @@ aq review show --review-id <id> --diff-from 1        # block diff against an ear
 
 ## Author
 
+For a spec, use `docs/templates/spec.md` and the **Spec supersession checklist**
+in `docs/guides/reviews.md`. Find approved specs it supersedes or overlaps,
+including its approved design; cite their approved revisions and approval
+evidence. List every predecessor goal as `kept`, `changed` or `dropped`, with
+replacement/retained-spec sections and reasons. If none apply, record what you
+checked. A removed outcome is a drop even within a changed or deferred goal.
+Flag every drop in the submitted review. Each requires Jack's explicit sign-off
+for that goal and replacement revision; record its decision reference and date,
+or mark it pending. Pending sign-off blocks approval and affected implementation,
+not submission. Delegated approval and silence do not authorize a drop. Ask the
+supervisor for inaccessible predecessor evidence rather than guessing.
+
 1. Write the document in your checkout. Do not commit it.
 2. Submit it (`--kind spec`, `plan`, or `other` for a proposal or report):
 
@@ -110,6 +122,18 @@ else gets `not_your_task`).
 
 4. Close the task with the new revision number and content hash.
 
+The daemon resolves an omitted `--review-id` from your held revision task's
+assignment. It refuses a different review id with `not_your_task`; never
+create a parallel review to work around a resubmission refusal. Report the
+refusal and preserve the assigned review.
+
+A passing close is refused with `reviews.revision_unpublished` until this
+task publishes a newer revision of its assigned review. Edit a local draft,
+not the vault mirror or its frontmatter. An unrelated review or another
+task's submission does not meet this requirement, and deliverable waivers
+cannot waive it. A failing close remains available. Do not wait for approval
+after publication.
+
 `--resolves` marks a comment resolved in the new revision; it does not make a
 rebuttal accepted. The decider checks each one, and the next round's reviewer
 sees it. `stale_revision` means the review moved: re-read, never bump the
@@ -127,6 +151,15 @@ revision you review and whether this is a clean-room read.
   any session but the one holding this task (`not_dispatched`).
 - **Verify against the repository.** Treat every claim in the document as
   unproven until the code, a test or a command output supports it.
+- **Check spec supersession.** Follow the checklist in `docs/guides/reviews.md`:
+  independently compare approved predecessor goals with the spec's `kept`,
+  `changed`, `dropped` table and its replacement sections. Missing predecessors
+  or rows, unsupported dispositions and drops without Jack's explicit sign-off
+  are `[blocking]`. Flag every drop in the review and verdict, including signed-off
+  drops, citing the goal, approved revision, reason and decision evidence. A
+  deferral or delegated approval cannot replace sign-off. Recheck on revisions;
+  sign-off must cover the current proposal. If predecessor evidence is unavailable,
+  report the gap rather than claim there are no findings.
 - **Anchor every finding** with `--quote "<exact text>"` or
   `--heading-path '["<section>","<subsection>"]'` (else `anchor_required`).
 - **Lead with a severity**, then give the claim, the evidence (`path:symbol`
@@ -164,7 +197,7 @@ It is opt-in: the software-factory policy forbids mandatory multi-pass review
 chains, so run it only on a document that warrants it. Workers never dispatch
 or decide; `aq review dispatch` answers `operator_only` to them.
 
-**Pick rungs from the installed ladder**, never from memory:
+**Read the installed ladder**, never recall it from memory:
 
 ```bash
 aq system list-intelligence-classes
@@ -174,17 +207,20 @@ aq agent list-profiles
 On the shipped ladder Fable is `deep-high`'s `anthropic` slice
 (`deep-high-claude`) and Astra is the OpenAI-only `astra-high`
 (`astra-high-codex`). An install whose `deep-high` OpenAI slice is
-`gpt-6-astra` has Astra on `deep-high-codex`; the commands below assume that.
+`gpt-6-astra` has Astra on `deep-high-codex`. Nobody picks those rungs: the
+project's router does, from a task's kind and class hint, so the loop steers
+families through kinds and the reviewer's provider exclusion.
 
-**Family diversity is observed, not configured.** Dispatch has no `--pin`
-(the reviewer task is `preferred`); a revision task is `preferred` with
-`--responder-profile`, `class_only` without; an author task's `--pin` does not
-carry over to later tasks. Failover inside a class crosses families: an
-Anthropic outage can move `deep-high-claude` work to `deep-high-codex`. So for
-every writing and reviewing task, check what actually ran:
+**Family diversity is observed, not configured.** Dispatch names no profile:
+each reviewer excludes the provider the author revision ran on and the router
+picks among the other families; a revision task is unrouted with the
+`--responder-class` hint, and the router routes it like any other task.
+Failover inside a class can cross families: an Anthropic outage can move
+`deep-high-claude` work to `deep-high-codex`. So for every writing and
+reviewing task, check what actually ran:
 
 ```bash
-aq task show <task-id>                         # provider_intent, rerouted_from, reroute
+aq task show <task-id>                         # route, provider_intent, rerouted_from
 aq task recent-activity --hours 48 --json      # items[].attempts[].model
 ```
 
@@ -194,20 +230,28 @@ record it so, and never claim coverage you did not observe.
 
 **Procedure.**
 
-1. Record the plan — review, author and reviewer rungs, round cap (at most
+1. Before round 1, file the author task with the kind whose lane is the
+   author's family. On the shipped routing policy, `design` (code design)
+   runs at `deep-high` on Claude first and falls back to Codex, and `art`
+   (art-heavy design) runs on Codex and holds for it:
+
+   ```bash
+   aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --type design
+   ```
+
+   Check the route the router wrote (`aq task show`). If the human requires a
+   family the router did not pick, the local operator or the supervisor may
+   pin that one task with `aq task route-override --task-id <author-task>
+   --profile-id <profile> --reason "..."` on the human's word; otherwise take
+   the family that ran and record it.
+
+2. Record the plan — review, the author's observed family, round cap (at most
    three) and deadline (default two working days) — as a comment on the
    author task, and append each round's result there. The revision number is
    not the round counter.
 
    ```bash
-   aq task comment <author-task> --body "Adversarial review plan: author deep-high-claude, reviewer deep-high-codex, cap 3 rounds, deadline <date>."
-   ```
-
-2. Before round 1, file the author task on the author's rung, with `--pin`
-   when the family is a requirement:
-
-   ```bash
-   aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --profile deep-high-claude --pin
+   aq task comment <author-task> --body "Adversarial review plan: author on deep-high-claude (routed), reviewers exclude its provider, cap 3 rounds, deadline <date>."
    ```
 
 3. Read the current revision from `aq review show --review-id <id>`, then
@@ -215,22 +259,29 @@ record it so, and never claim coverage you did not observe.
    later rounds keep the default `--with-comments`.
 
    ```bash
-   aq review dispatch --review-id <id> --revision <n> --to deep-high-codex --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
+   aq review dispatch --review-id <id> --revision <n> --class deep-high --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
    ```
 
-4. Wait for the reviewer task to end (`aq task show <task-id>`). A failed or
-   cancelled reviewer is an incomplete review. Check attribution, then read the
-   findings and the verdict:
+4. Register one durable task wait and end the turn:
+
+   ```bash
+   aq wait register --kind task --ref <task-id> --idempotency-key review-round-N
+   ```
+
+   Resume with `aq wait show <wait-id> --consume --json`. Act on its result or
+   recorded supervisor decision; keep the same wait. A failed or cancelled reviewer
+   is an incomplete review. Check
+   attribution, then read the findings and the verdict:
 
    ```bash
    aq review show --review-id <id> --revision <n> --comments
    ```
 
-5. For material defects, request changes on that exact revision, naming both
-   the responder class and profile:
+5. For material defects, request changes on that exact revision, naming the
+   responder class (a hint; the router routes the revision task):
 
    ```bash
-   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high --responder-profile deep-high-claude
+   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
    ```
 
    After the revision task resubmits, check its attribution and record every
@@ -253,14 +304,30 @@ record it so, and never claim coverage you did not observe.
   a different document, never mid-round without recording a new assignment.
 - Three rounds is a cap, not a quota.
 
-## This loop is not a playbook
+## Review commands in playbooks
 
-`review_dispatch`, `review_show` and `review_decide` are not contracted
-commands, so a V2 `command` step cannot call them. An `agent_task` reviewer is
-outside the dispatch ledger, so its comments are refused `not_dispatched`.
-`review.dispatched` has no event schema, so a rule on it fails validation
-(`unknown_event`). A playbook principal cannot decide. Do not write a playbook
-that pretends otherwise; contracting the verbs is a separate feature.
+Catalogue coverage and caller authority are independent. `review_dispatch`,
+`review_show` and `review_decide` are discoverable through generated contracts;
+coverage does not turn a PLAYBOOK principal into a supervisor or human decider.
+Consult `playbook_commands` for schemas/outcomes and the current caller gates.
+Review decisions still require current authorized human/delegated evidence.
+An ordinary `agent_task` reviewer is outside the dispatch ledger and its comments
+are refused `not_dispatched`. Unregistered event types fail `unknown_event`;
+never infer an event schema from a command name. The four universally denied
+commands are `run_command`, `shutdown`, `restart_daemon`, `update_and_restart`.
+
+For a playbook proposal, review the actual paths, predicates, thresholds,
+recipients, intervals, completeness gates and state revisions against source.
+Required capabilities are declarations, never grants. Source supplies state
+version and script manifests/policy; server code resolves digests and execution
+identity. Compiler output contains exactly `rules` and `steps`, with the existing
+source-checked integration-policy compatibility path. A state version change
+selects a new namespace and can re-alert; reset is an explicit operator decision.
+Snapshot absence is valid only after complete producer coverage and all pages.
+Scripts use ordinary processes, timeout/output caps and strict optional JSON;
+there is no sandbox prerequisite or real-host gate. Ambiguous execution cannot
+be automatically replayed. Protected streams require run-authorized job readback.
+See `docs/guides/playbook-building-blocks.md` for rollout and rollback evidence.
 
 ## Refusals you will meet
 
@@ -269,8 +336,9 @@ that pretends otherwise; contracting the verbs is a separate feature.
 | `not_your_task` | Resubmitting without holding the revision task, or acting on another project's review. |
 | `not_dispatched` / `wrong_revision` | Commenting without holding the dispatch task, or on another revision. |
 | `anchor_required` | A dispatched reviewer's comment had neither `--quote` nor `--heading-path`. |
-| `duplicate_dispatch` | That profile already has this revision. |
+| `duplicate_dispatch` | This revision was already dispatched; `--force` dispatches more. |
+| `routing.choice_forbidden` | A profile or pin on a filing, a dispatch or a decision; the router routes every task. |
 | `operator_only` | Dispatch from a session that is neither the local operator nor elevated. |
-| `invalid_responder` / `invalid_responder_class` / `invalid_responder_profile` | `--responder-profile` without `--responder-class`, responder options on an approval, or a class or worker that does not exist. |
+| `invalid_responder` / `invalid_responder_class` | Responder options on an approval, or a class that does not exist. |
 | `stale_revision` / `not_in_review` | The review moved or is not awaiting a decision; re-read it. |
 | `vault_diverged` | The vault file was edited outside the review. |
