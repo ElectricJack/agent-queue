@@ -46,8 +46,8 @@ resources:
   # Physical budget. null → os.cpu_count().
   cores: null
   # How many agents this box is expected to run at once. This is the
-  # denominator of the per-session share, so it should match the largest
-  # project's max_concurrent_agents.
+  # denominator of the per-session share across the whole box, including
+  # sessions in different projects.
   max_concurrent_agents: 8
   # Explicit override for the per-session share. null → cores // agents.
   per_session_cpu_share: null
@@ -73,8 +73,13 @@ resources:
 ```
 
 The section is hot-reloadable: the launcher reads it per launch and `aq
-test` reads it per run, so a change takes effect on the next session
-without a daemon restart.
+test` reads it per run. New sessions receive the updated resource environment
+without a daemon restart; an already running harness keeps its inherited
+`AQ_*` and thread/xdist caps until relaunched.
+
+`resources.max_concurrent_agents` is a budget denominator, not a hard ceiling
+on all session lifecycles. It also supplies the default pool ceiling when
+`swarm.global_max_active` is unset; an explicit swarm ceiling can differ.
 
 On the 24-core box above, the defaults derive **3 workers per session** and
 **2 concurrent test runs**, which bounds the worst case at 6 test processes
@@ -117,7 +122,7 @@ spike. `aq test` is a pytest wrapper that takes one of `test_slots` slots
 first.
 
 ```bash
-aq test tests/test_pools.py              # one file, still slot-gated
+aq test tests/test_pool_sizing.py        # one file, still slot-gated
 aq test tests/ -k claim                  # a slice of the suite
 aq test --aq-status                      # who is holding the slots
 aq test --aq-no-wait tests/              # fail instead of queueing
@@ -140,10 +145,22 @@ so it is now enforced:
   slot** while it waits. With `--aq-no-wait` it is refused at once with exit
   75, naming the holder's task, cwd and how long it has been running.
 - **Focused runs never touch the lock**: they only compete for the
-  `test_slots` slots, so at most one of those is ever spent on the whole
-  suite.
+  `test_slots` slots. A foreground full suite uses one of those slots;
+  managed full suites use the bounded weight described below.
 - `aq test --aq-status` shows the lock's holder and waiters under the slot
   table, and marks the slot a full-suite run holds as `busy (full suite)`.
+
+Managed full suites (`aq test --aq-detach`) use that same full-suite lock,
+then bounded shared admission. With six test slots they hold four, leaving
+two for focused work across projects. Configure the reserve with the positive
+integer `resources.jobs.full_suite_reserved_slots` (default `2`); the full-suite
+weight is `max(1, test_slots - full_suite_reserved_slots)`. With two slots a
+full suite takes one; a one-slot box necessarily serializes all testing.
+Further managed full suites queue without blocking focused jobs behind them.
+`aq test --aq-status` names the task, project, job id and held slot numbers for
+each managed holder. Accepted jobs retain their original admission contract;
+an already running exclusive full suite must finish before the new policy helps.
+E2E and database cleanup still require exclusive box access.
 
 What counts as the full suite is decided from the command line, before any
 lock is taken (collecting 14,000 tests to find out would itself be the heavy
@@ -151,7 +168,7 @@ run):
 
 | Full suite | Focused |
 |---|---|
-| no path (pytest collects `testpaths`), `tests/`, `tests`, `.` | `tests/test_pools.py`, `tests/perf`, any `::node-id` |
+| no path (pytest collects `testpaths`), `tests/`, `tests`, `.` | `tests/test_pool_sizing.py`, `tests/perf`, any `::node-id` |
 | files covering at least half the tree's test modules (`tests/test_*.py` expanded by the shell) | an area such as `tests/test_playbook*.py` |
 | a broad `-k`/`-m`: `-k "not slow"`, `-m "not perf"`, `-m ""` (`--aq-all-markers`) | a narrowing `-k`/`-m`: `tests/ -k claim`, `-m perf` |
 | `--lf` with nothing recorded (pytest then runs everything) | `--lf` with failures on record, `--co` / `--collect-only` |
@@ -189,6 +206,13 @@ serial — still under its slot — instead of an `-n` pytest would reject.
 `aq test` names the interpreter it chose on stderr, so `--aq-dry-run`'s
 stdout stays a command line you can paste. Detached jobs and development
 validation use the same project interpreter selected in their pinned workspace.
+
+For managed tests, request serial execution with
+`aq test --aq-detach --aq-wait tests/test_example.py -n 0`, or
+`aq job submit --preset test --wait -- tests/test_example.py -n 0`.
+The equivalent `-n0`, `--numprocesses 0` and `--numprocesses=0` spellings are
+also accepted. Serial runs still take their normal test slots. Managed jobs
+reject nonzero worker-count overrides; omit the option to use the configured cap.
 
 ### Test scope and the recorded baseline
 
@@ -329,10 +353,10 @@ tuned at least as far. `pg_stat_statements` is also preloaded via
 `shared_preload_libraries`; it still needs `CREATE EXTENSION
 pg_stat_statements;` run once by an operator before it is queryable.
 
-`-m perf` matters as much as `AQ_PERF_STRICT`: `--aq-all-markers` only stops
-`aq test` from adding its *own* `-m`, and pyproject's `addopts` still carries
-`-m "not perf and ..."`, so without an explicit `-m` the run deselects
-everything and reports "no tests were collected". `-s` matters too: each
+Use `-m perf` to select only performance tests. `--aq-all-markers` supplies
+an empty `-m ''` when no marker expression was supplied, overriding both the
+wrapper's deselects and pyproject's `addopts`; it selects the other marker
+families too. `-s` matters too: each
 latency test prints its p95, median and max, so a passing run records the
 margin rather than only the verdict.
 
@@ -350,9 +374,9 @@ A caller that times a run can ask how much of it was queueing. With
 `AQ_TEST_SLOT_REPORT=<file>` set, `aq test` appends one JSON line per slot
 event (`waiting`, `acquired` with `waited`, `slot_timeout`, `released`;
 format in `src/resources/slot_report.py`), and `AQ_TEST_WAIT_TIMEOUT=<s>`
-overrides `test_wait_timeout` (`--aq-timeout` still wins). The development
-publisher sets both so its `timeout_seconds` charges only the run, not the
-wait for a slot. For a full-suite run the wait for the full-suite lock and
+overrides `test_wait_timeout` (`--aq-timeout` still wins). This is a foreground
+diagnostic hook; integration validation uses managed jobs with separate queue
+and run deadlines instead. For a full-suite run the wait for the full-suite lock and
 the slot after it are one reported wait, and the timeout bounds both
 together.
 
@@ -364,6 +388,33 @@ contain a `/` or end in `.py`), and a `::node-id` suffix is stripped before
 the stat, so `-k` and `-m` expressions are never mistaken for paths. For the
 same reason pytest's exit code **5** (nothing collected) is reported with an
 explicit "nothing was verified" line.
+
+### Managed test jobs
+
+With `resources.jobs.enabled: true` and a disposable
+`resources.jobs.test_database_url` configured for agent-queue tests, submit a
+detached run and its durable wait together:
+
+```bash
+aq test --aq-detach --aq-wait --aq-idempotency-key focused-validation tests/test_cli_test_runner.py
+# Equivalent finite preset submission:
+aq job submit --preset test --wait --idempotency-key focused-validation -- tests/test_cli_test_runner.py
+```
+
+Choose one submission form and retain its key and returned job/wait IDs for
+recovery. End the turn when instructed, then consume the delivered result with
+`aq wait show <wait-id> --consume --json`. A completed wait reports the job's
+actual outcome; it does not imply the tests passed. Inspect it with
+`aq job result <job-id>`. `aq job logs <job-id> --follow` attaches to retained
+output; Ctrl+C detaches, and `aq job cancel <job-id>` explicitly cancels.
+
+Detached tests use server-owned admission and caps, so foreground flags such as
+`--aq-timeout`, `--aq-no-wait`, `--aq-workers` and `--aq-dry-run`, and smart
+selection flags, cannot be combined with `--aq-detach`. `--aq-all-markers` and
+the explicit serial worker count remain supported. Jobs stay disabled by
+default; otherwise use foreground `aq test`. See
+[managed jobs](../specs/implementation/managed-jobs.md) for recovery, pins,
+presets and retention.
 
 ### Why `flock`
 
@@ -396,10 +447,10 @@ After admission it releases the turnstile and keeps the box and capacity
 descriptors inheritable until execution ends. Closing a wrapper's descriptors
 does not unlock a surviving child that inherited them.
 
-This first rollout preserves today's test policy: both focused and full-suite
-`aq test` runs use shared admission with weight one, and the separate full-suite
-lock still limits full suites to one alongside focused tests. It introduces
-neither managed jobs nor detached execution. The test database cleanup entry
+Foreground focused and full-suite `aq test` runs use shared admission with weight
+one. Managed full suites use the configured bounded weight; the separate
+full-suite lock limits foreground and managed full suites to one alongside
+focused tests. The test database cleanup entry
 point uses exclusive admission and reserves all observed slots, including
 those left by a larger capacity override.
 
@@ -490,13 +541,13 @@ resources:
 ```
 
 ```bash
-./run.sh restart
+aq restart --no-dashboard
 aq doctor --check resources.cgroups
 ```
 
-**Absence degrades, it never blocks a launch.** The daemon probes
-delegation once at startup, logs the reason if it is missing, and falls
-back to layer 1. `resources.cgroups` reports `info` when layer 3 is off and
+**Absence degrades, it never blocks a launch.** The delegation probe runs
+on first use and caches its result per process. Missing delegation is logged
+and falls back to layer 1. `resources.cgroups` reports `info` when layer 3 is off and
 `warn` when it is switched on but not actually working — the latter being
 the dangerous state, where an operator believes hard limits are protecting
 them and they are not.
@@ -521,9 +572,10 @@ deployment steps do need a human, because both touch live shared state:
    the line from both files to let the derived share apply; the vault
    watcher picks it up live, no restart.
 2. **Pin the denominator.** `resources.max_concurrent_agents` defaults to
-   `8`. If your project's `max_concurrent_agents` differs, set it to match,
-   or the derived share will be wrong in whichever direction the two
-   disagree.
+   `8`. Set it to the expected aggregate concurrent session count across the
+   box, rather than copying one project's cap. If you set a different explicit
+   swarm ceiling, include that fleet and any other expected session load when
+   choosing the resource denominator.
 
 Then confirm the launcher is doing it — the daemon states the budget once
 at startup:
@@ -534,6 +586,18 @@ session, nice +10, 2 global test slot(s)
 ```
 
 ## Diagnosing a saturated box
+
+For a responsive daemon with slow probes, `aq doctor --check perf.health_latency`
+reports `/health` p95 over three minutes of completed requests (at least ten
+probes; warns above two seconds). `perf.sustained_loop_lag` covers scheduling
+delays that occur before HTTP dispatch. With `metrics.perf_enabled` on, an
+independent watchdog logs the loop thread's sampled stack after a heartbeat
+is more than one second late, then at most once per 30 seconds until recovery.
+Look for `Event loop heartbeat` and `Event loop recovered` in daemon logs; no
+ptrace permissions are needed. These sampled locations can indicate synchronous
+Python, blocking I/O or host starvation. See the
+[responsiveness contract](../specs/design/event-loop-responsiveness.md) and the
+[repeatable transcript profile](../analysis/2026-10-03-transcript-loop-profile.md).
 
 ```bash
 aq doctor --check resources.load

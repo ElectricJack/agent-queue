@@ -14,14 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:9bcd818cc23e3c0c35c9a898cf22fb976152de64e5b77cf837648f753de85550` |
+| Contract fingerprint | `sha256:6b1d7abe4afb8768db6cded913ea20d825aaaf9478fde968dad300a11b0779d3` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `operation_id` | `string` | yes | — | — |
-| `stage` | `0 \| 1 \| null` | no | `null` | — |
+| `stage` | `integer \| null` | no | `null` | — |
 | `batch_id` | `string \| null` | no | `null` | — |
 | `revision` | `integer \| null` | no | `null` | — |
 | `head_sha` | `string \| null` | no | `null` | — |
@@ -31,7 +31,7 @@
 | Field | Type | Description |
 |---|---|---|
 | `operation_id` | `string \| null` | — |
-| `stage` | `0 \| 1 \| null` | — |
+| `stage` | `integer \| null` | — |
 | `repair_task_id` | `string \| null` | — |
 | `writer_kind` | `"repair_delegate" \| "existing_verifier" \| null` | — |
 | `fence` | `Fence \| null` | — |
@@ -140,11 +140,12 @@ names.
    task must still exist (or be restorable from the archive via
    `_restore_archived_delegate_on`, `src/integration/repair.py:2675`), must
    have `writer_kind == "repair_delegate"`, and must match the operation,
-   target and project — otherwise `human_required`. If the stage names no
+   target and project — otherwise `unknown` (see below). A delegate carrying
+   an operator `manual_pause` hold is `human_required`. If the stage names no
    task, the stage must name an `intelligence_class` (`configuration_blocked`
    when it names none; a stage `profile_id` is deprecated and never chooses a
    route), a task id `repair-<operation_id>-<stage>` is reserved, an id
-   collision is `human_required`, and a `PAUSED`, `unrouted` task is created
+   collision is `unknown`, and a `PAUSED`, `unrouted` task is created
    with the class as its `class_hint`, `created_by_kind =
    "integration_repair"`, the integration branch as `branch_name`, and a
    description built by `_delegate_description_on`
@@ -170,7 +171,7 @@ names.
    `repair` at exactly the fence token just obtained, and the pair
    (owner state, task status) to be a coherent *reserved* (`PAUSED`/`READY`) or
    *attached* (`ASSIGNED`/`IN_PROGRESS` with a live session whose `work_dir` is
-   the locked workspace path) shape. Anything else is `human_required`.
+   the locked workspace path) shape. Anything else is `unknown`.
 8. **Release** — a reserved delegate still `PAUSED` is transitioned to `READY`
    under context `integration_repair_dispatch`, and the ready notifications are
    published after commit. The result carries the delegate id, `writer_kind`
@@ -198,10 +199,17 @@ names.
 | `dispatched` | A fresh delegate now owns the branch. | — |
 | `already_dispatched` | The delegate already held the fence; replay. | — |
 | `writer_reused` | An attached verifier is doing the work; no delegate needed. | — |
-| `busy` | A reserved external mutation exists, or the predecessor has not confirmed stopped/detached. | Retry after the mutation reconciles; see [publication pending](../../guides/integration-troubleshooting.md#publication-pending). |
+| `busy` | A reserved external mutation exists, or the predecessor has not confirmed stopped/detached. | Retry after the mutation reconciles; see [publication pending](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery). |
 | `configuration_blocked` | The stage names no intelligence class to hint the router with. | Set the stage's `*_intelligence_class` in the integration policy, then re-dispatch. |
 | `stale` | Unknown operation or stage, or the pinned candidate subject is no longer current. | Expected during a rebuild; the next candidate event re-drives it. |
-| `human_required` | Delegate identity mismatch, id collision, missing owner row, or an incoherent owner/task/session shape after the transfer. | `aq integration status <project>` → `ownership`, and [a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-branch-is-held-by-a-writer-that-is-gone). |
+| `unknown` (handler) / `busy` (contract) | A state dispatch did not expect: missing or mismatched delegate, writer kind, id collision, missing owner row, a fence held by a non-predecessor, an incoherent owner/task/session shape after the transfer, or a subject that moved under proven preserved progress. The result carries the exact `reason` and a `reason_code`. | Nothing: nothing was consumed, the continuation and reservation passes retry the stage, and the supervisor gets one message per operation and reason. Inspect with `aq integration status <project>` → `ownership` if it persists. |
+| `human_required` | A human decision: the delegate carries an operator `manual_pause` hold, or its preserved progress no longer proves its lineage (an unexplained remote move). | Release the hold, or decide on the preserved history; see [a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-finished-task-still-owns-its-branch). |
+
+`unknown` is newer than the frozen contract. Reviewed playbooks pin this
+contract's fingerprint, so the contract adapter reports it as the declared,
+retryable `busy` with the exact reason as the receipt summary; direct callers
+(the command handler, the orchestrator continuation pass, `RepairService`) see
+`unknown` itself (rev-agile-ridge §6 phase 0, item 5).
 
 Worth knowing: `repair-<operation_id>-<stage>` is a predictable task id, so
 `aq task show repair-<operation_id>-0` is usually the fastest way to read the

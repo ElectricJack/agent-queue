@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4` |
+| Contract fingerprint | `sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5` |
 
 ## Parameters
 
@@ -23,6 +23,9 @@
 | `dedup_key` | `string` | yes | — | Deduplication key |
 | `title` | `string` | yes | — | Title |
 | `project_id` | `string \| null` | no | `null` | Project |
+| `repo_id` | `string \| null` | no | `null` | — |
+| `task_type` | `string \| null` | no | `null` | — |
+| `integration_mode` | `string \| null` | no | `null` | — |
 | `description` | `string \| null` | no | `null` | Description |
 | `priority` | `integer \| null` | no | `null` | Priority |
 | `profile_id` | `string \| null` | no | `null` | Agent profile |
@@ -89,10 +92,11 @@ pattern:
 
 - [`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md),
   rule `spec-ingest-on-approve`: one ingest task per approved spec file, keyed
-  `spec-ingest:{event.spec_path}`, filed on the `spec-ingest` role profile. A
-  role task is never routed: it is born with `route_source: role` and the role
-  profile's own `default_class`, and the step's `intelligence_class` is used
-  only when the role profile has none.
+  `spec-ingest:{event.spec_path}`, filed on the `spec-ingest` role profile with
+  a `standard-high` class hint. It is born with `route_source: role` and uses
+  the role profile's `default_class` for execution, falling back to the class
+  hint only if that profile has no default. It needs no routing decision when
+  `ensure_task` suppresses `task.created`.
 - [`src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md`](../../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md),
   rule `keep-main-green` step 2: the repair task for a red default branch, keyed
   `ci-baseline:<signature>:<n>` by
@@ -145,10 +149,10 @@ to retry it.
      writes, no events.
    - **The creation.** Otherwise it builds a `create_task` payload with
      `_suppress_created_event: True` (control-plane bookkeeping must not
-     re-trigger the pipeline against itself, and no routing gate is evaluated
-     for it; the router still routes the new task, because `task.route_needed`
-     comes from the cascade, not from `task.created`), forwards `parent_id` /
-     `root` / `reason` /
+     re-trigger the pipeline against itself). Role tasks need no routing
+     decision; the cascade still emits `task.route_needed` for non-role tasks
+     independently of `task.created`. It forwards `parent_id` / `root` /
+     `reason` /
      `discovered_from` by *presence* rather than truthiness so an explicit
      `parent_id: null` still means "file at the root", forwards
      `parent_key` / `parent_title` the same way, and delegates to
@@ -200,9 +204,10 @@ transition.
 
 `retry_safe: yes` means the engine may retry the step; the key makes the retry
 converge. To diagnose, `aq task show <id>` prints the row (its `dedup_key`
-included) and `aq task explain --task-id <id>` says why an ensured task is not running —
-for an unrouted task, the router's answer (`awaiting_route`, `route_held`,
-`route_no_candidates`, `route_failed`, `router_not_ready` or `router_unbound`).
+included) and `aq task explain --task-id <id>` says why an ensured task is not running.
+For an unrouted non-role task, it reports the router's answer (`awaiting_route`,
+`route_held`, `route_no_candidates`, `route_failed`, `router_not_ready` or
+`router_unbound`). A role task already has its route when it is created.
 
 ## Example step
 

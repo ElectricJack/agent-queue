@@ -1,0 +1,12 @@
+{
+  "exclusions": {
+    "src/routing/sources.py::claimable_sources": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/routing/sources.py::DEFAULT_ROUTER_PLAYBOOK_ID": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/sources.py::ROLE": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/sources.py::UNROUTED": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/sources.py::claimable_sources": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/routing/sources.py::declared_route_source": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
