@@ -18,7 +18,6 @@ from src.database.tables import (
     integration_parent_operation_completions,
     integration_release_results,
     integration_repair_operations,
-    task_delivery_receipts,
     task_integration_checkpoints,
     tasks,
 )
@@ -71,15 +70,6 @@ def terminal_reservation_clause(owner=integration_branch_owners, *, allow_cleanu
     )
     parent = tasks.alias("drain_owner_parent")
     archived_parent = archived_tasks.alias("drain_owner_archived_parent")
-    delivered_child = (
-        select(task_delivery_receipts.c.id)
-        .where(
-            task_delivery_receipts.c.source_task_id == owner.c.owner_id,
-            task_delivery_receipts.c.repository_id == owner.c.repository_id,
-            task_delivery_receipts.c.disposition.in_(("code", "noop")),
-        )
-        .exists()
-    )
     released_member = (
         select(integration_batch_members.c.task_id)
         .join(integration_batches, integration_batches.c.id == integration_batch_members.c.batch_id)
@@ -101,7 +91,6 @@ def terminal_reservation_clause(owner=integration_branch_owners, *, allow_cleanu
             tasks.c.id == owner.c.owner_id,
             tasks.c.status == "COMPLETED",
             or_(
-                delivered_child,
                 released_member,
                 select(parent.c.id)
                 .where(
@@ -123,7 +112,6 @@ def terminal_reservation_clause(owner=integration_branch_owners, *, allow_cleanu
             archived_tasks.c.id == owner.c.owner_id,
             archived_tasks.c.status == "COMPLETED",
             or_(
-                delivered_child,
                 released_member,
                 select(parent.c.id)
                 .where(
