@@ -1,0 +1,20 @@
+{
+  "reconciliation_definitions": {
+    "src/api/models/integration.py::IntegrationBatchFixResponse": {
+      "fingerprint": "978f8547b8afc8f80da766484aee7a1eaa3ddb3f436d295e1be1be42a6fe647f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/integration.py::IntegrationContinueCloseResponse": {
+      "fingerprint": "85e499a5a3b11b36fe66c8d9acd9bd1332f092bb0bbb91d70bb0081573746af6",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/integration.py::RESPONSE_MODELS['integration_batch_fix']": {
+      "fingerprint": "9f5c608333b6be98df460225a5317573c7a381d05eee6500c59f468a99ab1f86",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/integration.py::RESPONSE_MODELS['integration_continue_close']": {
+      "fingerprint": "dd0762347fc35f62737319c95cb3ea80ae1b03a679143ebdf136a561956f276b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}
