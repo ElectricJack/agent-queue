@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/command_inventory.py::offline_snapshot": "Generic offline command-descriptor composition for every transport and playbook; imports the shared CommandHandler without integration policy, delivery authority or storage. Integration-specific handler definitions are charged independently."
+  }
+}

@@ -1,30 +1,41 @@
 name: Tests
 
-# The full suite runs before a change reaches `main`, never after:
+# The full suite runs on candidate work before branch promotion:
 #
-# * `pull_request` into `main` tests the PR's merge with its base.
+# * `pull_request` into `dev`, `staging` or `main` tests the PR merge with its base.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
-#   the train promotes that exact tested SHA to `main`.
-# * A push to `aq/parent/**` tests an immutable parent snapshot ref that
-#   `src/integration/parent_ci.py` publishes and then reads the run from.
+#   the root train promotes that exact tested SHA to `dev`.
+# * A push to `aq/batches/**` tests the git-first train's batch candidate
+#   (`src/integration/batches.py:candidate_ref`) the same way.
+# * A push to `aq/promote/**` tests the exact promotion source SHA.
+# * A push to `aq/backmerge/**` tests an immutable backmerge source SHA.
+# * A push to `aq/parent/**` tests an immutable parent snapshot ref. The parent-CI
+#   publisher that pushed these refs is retired; the trigger is kept.
 #
-# `main` itself is not a trigger. Everything that reaches it was validated
+# The delivery branches themselves are not push triggers. Their work is validated
 # first, by one of the runs above or by the development publisher's
 # pre-publish validation, so a run per `main` commit only repeated that work.
 # `workflow_dispatch` runs the suite by hand on any branch, `main` included.
 # `workflow_call` is the break-glass audit: `main-attestation.yml` calls this
-# workflow for a push to `main` that carries no valid integration attestation.
+# workflow for a delivery-branch push that carries no valid branch attestation.
 # Its checks are named `unattested-ci / Tests (...)`, so they never collide
-# with the required check names the train observes on a candidate.
+# with the required check names the train observes on a candidate. A committed
+# promotion-source-audit check set may trust these names for source admission;
+# candidate CI and publication attestations still require the canonical names.
 on:
   pull_request:
     branches:
+      - dev
+      - staging
       - main
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - 'aq/parent/**'
       - 'aq/integration/**'
+      - 'aq/batches/**'
+      - 'aq/promote/**'
+      - 'aq/backmerge/**'
   workflow_dispatch:
   workflow_call:
 
@@ -50,7 +61,10 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The cache-miss install and the tests each have their own step deadline;
+    # this total is their sum plus setup and cleanup, so a slow PyPI cannot
+    # spend the tests' time (eight jobs in runs up to 36831813696 did).
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -62,32 +76,32 @@ jobs:
           # with the command documented in docs/contributing/ci.md.
           - name: default-1/8
             group: 1
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 1 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 1 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: default-2/8
             group: 2
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 2 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 2 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: default-3/8
             group: 3
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 3 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 3 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: default-4/8
             group: 4
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 4 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 4 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: default-5/8
             group: 5
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 5 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 5 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: default-6/8
             group: 6
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 6 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 6 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: default-7/8
             group: 7
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 7 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 7 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: default-8/8
             group: 8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 8 --splitting-algorithm least_duration --store-durations --clean-durations
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 8 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py --store-durations --clean-durations
           - name: migration-and-slow
             command: pytest tests/ -n 4 --dist loadfile -m "migration or slow"
           - name: postgres-integration
-            command: pytest tests/ -n 4 --dist loadfile -m "integration or perf" --ignore=tests/test_e2e_cli_stateful.py
+            command: pytest tests/ -n 4 --dist loadfile -m "(integration or perf) and not migration and not slow" --ignore=tests/test_e2e_cli_stateful.py
 
     env:
       # Base DSN -- ``tests/pg_dsn.py`` rewrites this per xdist worker
@@ -123,14 +137,33 @@ jobs:
 
       # Service containers cannot pass server arguments. Preserve PR #640's
       # connection headroom and disable durability only for disposable CI data.
+      # The image comes from Google's Docker Hub mirror: anonymous Docker Hub
+      # pulls are rate limited per runner IP (run 37990643989 failed every
+      # Postgres job with `toomanyrequests`), and a login secret would not
+      # reach pull requests from forks.
       - name: Start PostgreSQL
         run: |
-          docker run --detach --name ci-postgres \
+          # A mirror can fail mid-pull with `unknown blob` (run 38157010908).
+          # Retry image fetching separately so a container-start error is fatal.
+          for pull_attempt in 1 2 3; do
+            if docker pull mirror.gcr.io/library/postgres:18; then
+              break
+            else
+              pull_status=$?
+            fi
+            if (( pull_attempt == 3 )); then
+              echo "::error::PostgreSQL image pull failed after $pull_attempt attempts"
+              exit "$pull_status"
+            fi
+            echo "::warning::PostgreSQL image pull failed (attempt $pull_attempt/3); retrying in 5s"
+            sleep 5
+          done
+          docker run --pull=never --detach --name ci-postgres \
             --publish 127.0.0.1:5432:5432 \
             --env POSTGRES_USER=agent_queue \
             --env POSTGRES_PASSWORD=agent_queue \
             --env POSTGRES_DB=agent_queue \
-            postgres:18 \
+            mirror.gcr.io/library/postgres:18 \
             -c max_connections=300 \
             -c fsync=off \
             -c synchronous_commit=off \
@@ -155,6 +188,8 @@ jobs:
 
       # Share installed dependencies between suite arms and commits. Use only
       # exact matches: a changed manifest or interpreter needs a fresh venv.
+      # venv-cache.yml saves this key on `main`, where every run can restore
+      # it, so its path and key must stay identical to these.
       - name: Cache virtual environment
         id: venv
         uses: actions/cache@v4
@@ -162,11 +197,30 @@ jobs:
           path: .venv
           key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
 
+      # pip retries a refused connection but not a download that stalls
+      # mid-body (run 36828686954: ReadTimeoutError at 68 kB/s). Retry the
+      # install; pip's HTTP cache keeps each wheel an earlier attempt finished.
+      # A completed slow install has taken 571 s.
       - name: Install dependencies on cache miss
         if: steps.venv.outputs.cache-hit != 'true'
+        timeout-minutes: 12
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+          # Retry the complete install: an interrupted wheel download can
+          # escape pip's connection retries before any tests have run.
+          for install_attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              break
+            else
+              install_status=$?
+            fi
+            if (( install_attempt == 3 )); then
+              echo "::error::Dependency installation failed after $install_attempt attempts"
+              exit "$install_status"
+            fi
+            echo "::warning::Dependency installation failed (attempt $install_attempt/3); retrying in 5s"
+            sleep 5
+          done
 
       - name: Use virtual environment
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
@@ -176,6 +230,13 @@ jobs:
       # use this checkout, rather than the commit that populated the cache.
       - name: Refresh local packages
         run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
+
+      # Keep wall-clock startup budgets off the parallel default shards.
+      - name: Check CLI startup budget
+        if: matrix.suite.name == 'cli-conformance'
+        env:
+          AQ_PERF_STRICT: "1"
+        run: aq test -m perf -p no:xdist -s tests/test_cli_startup_offline.py
 
       # The SQLite half of this check is gone with the backend.  It was never
       # a proxy for production anyway: it stored booleans as integers and
@@ -195,9 +256,30 @@ jobs:
 
       - name: Run tests
         id: tests
+        # Run 38601833262 exhausted ten minutes while default shards were
+        # still progressing (collection alone took up to three minutes), and
+        # run 38612265340 exhausted fifteen on a slow runner at 92% of a shard
+        # that had finished in under nine minutes one run earlier.
+        # Keep the per-test timeout below; leave time for the final diagnostics.
+        timeout-minutes: 20
         # Include fixture setup/teardown in the per-test deadline. Keep the
         # failed/error node IDs and the slowest phases visible in every arm.
-        run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+        run: |
+          echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+          ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+
+      - name: Check test runtime budget
+        if: ${{ always() && steps.tests.outputs.started_at != '' }}
+        env:
+          TEST_STARTED_AT: ${{ steps.tests.outputs.started_at }}
+          TEST_SUITE: ${{ matrix.suite.name }}
+          TEST_BUDGET_SECONDS: "1200"
+        run: |
+          elapsed=$(( $(date +%s) - TEST_STARTED_AT ))
+          echo "$TEST_SUITE took ${elapsed}s of its ${TEST_BUDGET_SECONDS}s test budget"
+          if (( elapsed * 100 > TEST_BUDGET_SECONDS * 80 )); then
+            echo "::warning title=Test runtime budget::$TEST_SUITE took ${elapsed}s, exceeding 80% of its ${TEST_BUDGET_SECONDS}s budget; refresh timings and rebalance shards"
+          fi
 
       # Each default shard records only its selected tests. Keep the committed
       # map as the selection input; merge all eight outputs to refresh it.
@@ -233,16 +315,24 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Include setup and post-job cleanup around the real daemon scenarios.
+    # A passing graphs group consumed 261 seconds before its cleanup steps.
+    # A branch's first run can install cold (25s to 7m30s on hosted runners;
+    # run 36829390463 spent 5m06s), and run 36830122857's 439 s install
+    # cancelled the passing cli group inside a shared 10-minute total. The
+    # install and the scenarios therefore each have a step deadline; this
+    # total is their sum plus setup and cleanup.
+    timeout-minutes: 26
     strategy:
       fail-fast: false
       matrix:
-        # IDs in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
+        # Shards in tests/test_e2e_cli_stateful.py; together these cover S1-S20.
         group: [claims, cli, graphs, failover]
 
     services:
       postgres:
-        image: postgres:18
+        # The same Docker Hub mirror as the test job's `Start PostgreSQL`.
+        image: mirror.gcr.io/library/postgres:18
         env:
           POSTGRES_USER: agent_queue
           POSTGRES_PASSWORD: agent_queue
@@ -282,6 +372,8 @@ jobs:
 
       # Share installed dependencies between suite arms and commits. Use only
       # exact matches: a changed manifest or interpreter needs a fresh venv.
+      # venv-cache.yml saves this key on `main`, where every run can restore
+      # it, so its path and key must stay identical to these.
       - name: Cache virtual environment
         id: venv
         uses: actions/cache@v4
@@ -289,11 +381,30 @@ jobs:
           path: .venv
           key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
 
+      # pip retries a refused connection but not a download that stalls
+      # mid-body (run 36828686954: ReadTimeoutError at 68 kB/s). Retry the
+      # install; pip's HTTP cache keeps each wheel an earlier attempt finished.
+      # A completed slow install has taken 571 s.
       - name: Install dependencies on cache miss
         if: steps.venv.outputs.cache-hit != 'true'
+        timeout-minutes: 12
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+          # Retry the complete install: an interrupted wheel download can
+          # escape pip's connection retries before any tests have run.
+          for install_attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              break
+            else
+              install_status=$?
+            fi
+            if (( install_attempt == 3 )); then
+              echo "::error::Dependency installation failed after $install_attempt attempts"
+              exit "$install_status"
+            fi
+            echo "::warning::Dependency installation failed (attempt $install_attempt/3); retrying in 5s"
+            sleep 5
+          done
 
       - name: Use virtual environment
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
@@ -305,6 +416,63 @@ jobs:
         run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
 
       # The smoke setup migrates its own unique disposable database. Run only
-      # this group's node, with no xdist workers or other suites competing.
+      # this shard's scenario items, with no xdist workers or other suites competing.
+      # Each item has its own 540-second pytest-timeout, which reports its
+      # diagnostics; a cache-miss install has its own deadline above.
       - name: Run scenario group
-        run: pytest 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' -m integration -s --durations=0
+        timeout-minutes: 11
+        env:
+          AQ_E2E_TIMINGS_DIR: ${{ runner.temp }}/e2e-timings
+        run: pytest tests/test_e2e_cli_stateful.py -k '${{ matrix.group }}-' -m integration -s --durations=0 --junitxml=e2e-results.xml
+
+      - name: Upload scenario results and timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-${{ matrix.group }}
+          path: |
+            e2e-results.xml
+            ${{ runner.temp }}/e2e-timings/*.jsonl
+
+  dashboard:
+    name: Dashboard (typecheck/build)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !(github.event.pull_request.head.repo.full_name == github.repository &&
+         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # The root lockfile installs dashboard and the TS client workspace.
+      # Both dashboard commands generate the client from committed openapi.json.
+      - name: Install dependencies
+        timeout-minutes: 8
+        run: npm ci
+
+      - name: Typecheck dashboard
+        timeout-minutes: 2
+        working-directory: dashboard
+        run: npm run typecheck
+
+      - name: Build dashboard
+        timeout-minutes: 3
+        working-directory: dashboard
+        run: npm run build
