@@ -1,8 +1,8 @@
 // The reviews inbox: what `/reviews` asks for beyond the shell's own requests.
 import { REVIEW as COMMENT_REVIEW_ID, review as commentReview } from "./review-comments.mjs";
 
-/** @satisfies {import("@aq/ts-client").PendingPullRequestsResponse} */
-const pullRequests = { pull_requests: [] };
+/** @satisfies {import("@aq/ts-client").PullRequestProjectSummariesResponse} */
+const pullRequests = { projects: [] };
 
 export const REVIEW_ID = "fixture-review";
 export const REVIEW_TITLE = "../Café\\plan: draft?";
@@ -34,6 +34,6 @@ function review(body) {
 }
 
 export const routes = {
-  "GET /api/reviews/pull-requests": () => pullRequests,
+  "GET /api/reviews/pull-requests/summary": () => pullRequests,
   "POST /api/review/show": review,
 };

@@ -2,7 +2,18 @@
 
 The Reviews tab projects task-linked GitHub pull requests into a single
 PostgreSQL snapshot. The API reads that row and reports its age; it does no
-GitHub I/O on GET. A daemon background task refreshes every 60 seconds. It
+GitHub I/O on GET. Since 2026-10-11 the Reviews page uses
+`GET /api/reviews/pull-requests/summary`: PostgreSQL counts distinct task-linked
+open PR URLs per active project from the existing snapshot, returning project
+names, counts and canonical GitHub repository `/pulls` links. Active projects
+with a configured GitHub repository remain visible with zero open PRs; projects
+without a valid GitHub repository are omitted. Before the first snapshot,
+counts display as unknown, and snapshot age remains visible after refreshes.
+The page renders one row per project, above document reviews. It fetches no
+individual PR details and offers no PR approval controls. The detail and
+approval APIs remain available with their existing authorization requirements.
+
+A daemon background task refreshes every 300 seconds. It
 groups task PR links by repository, binds each repository once, pages its open
 PR list, and matches those open PRs to canonical task URLs. A successful pass
 atomically replaces the snapshot. A failed pass leaves the previous snapshot
@@ -14,6 +25,22 @@ review decision at that SHA, check-run status at that SHA, and, for train
 projects, the integration batch lifecycle. A review by a bot or for an older
 head cannot decide the badge. A user approval is not proof of train admission
 until the train's own review poller records its evidence.
+
+The refresher caches reviews and check runs independently per repository/PR number.
+Reviews are fetched only when GitHub `updated_at` changes (or is missing), and
+their exact-head decision is recomputed when the head SHA changes. Check runs
+are fetched for a new head; terminal success/failure is reused for that head
+even when `updated_at` changes. Pending checks are retried without requiring a PR
+update, with exponential delays starting at the refresh interval and capped at
+900 seconds. A new head resets that backoff. Closed or unlinked PRs are evicted
+from this in-memory cache; a daemon restart repopulates it. Task and train metadata
+are rebuilt each pass. Cached dashboard badges are advisory; same-head reruns after
+a terminal verdict are observed by the train independently. The approval path
+forces a single-row badge refresh and updates the cache without rescanning the
+repository. Its confirmed human approval is retained for that exact head even
+when the review list lags the successful POST. Full refreshes run as
+`dashboard_pr_snapshot` background work and share the GitHub ten-percent quota reserve; an explicit row refresh is foreground
+work. Their component context follows child tasks created by `asyncio.gather`.
 
 The Approve action is an operator write through CommandHandler. It accepts a
 task ID and the displayed 40-digit head SHA, requires that row in the
@@ -27,7 +54,7 @@ train project.
 
 The dashboard proxy distinguishes its real peer before relaying requests.
 Loopback viewers and configured trusted origins reached over a Tailscale
-address may see and use Approve. Other viewers receive no button, and their
+address may use the approval API. Other viewers' approval
 POST is refused at the edge. The proxy replaces any inbound viewer assertion;
 the Vite development proxy replaces it too and grants only loopback peers.
 The daemon also requires local operator scope, a loopback proxy peer, and a

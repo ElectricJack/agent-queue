@@ -1,0 +1,132 @@
+==> starting daemon (config /tmp/aq-e2e-calm-vault-68-3-final-smoke/config.yaml)
+==> ready after 14s: http://127.0.0.1:53990 (pid 953543)
+registered project 'e2e' with 5 workspace(s)
+registered project 'other' with 1 workspace(s)
+swarm e2e (Tier 1) — daemon at http://127.0.0.1:53990
+
+PASS S1 pool sizing (2.8s)
+     2 sessions for 3 ready tasks; pool.scaled = 'start 2 worker'
+TIMING {"scenario": "S1", "seconds": 2.756880931905471, "condition_seconds": 2.187431231024675, "condition_waits": 1}
+PASS S2 claim loop as a worker (10.1s)
+     claimed 1/1 then drain_requested; a5ded507-ac8a-4658-9c4e-55d9956d55b7 retired, replaced by 24d28451-fbe8-4deb-973d-12c8cc573368
+TIMING {"scenario": "S2", "seconds": 10.068291314062662, "condition_seconds": 1.0596668750513345, "condition_waits": 4, "cli_seconds": 9.765791413839906, "cli_calls": 7}
+PASS S3 worker-filed work (6.9s)
+     stark-delta DEFINED + discovered-from keen-harbor + routing gate gate-88abb4617e82 resolved
+TIMING {"scenario": "S3", "seconds": 6.903057142044418, "condition_seconds": 1.2055631859693676, "condition_waits": 2, "cli_seconds": 5.830658396007493, "cli_calls": 5}
+PASS S4 formulas (16.4s)
+     cooked fleet-summit (fleet-summit.1, fleet-summit.2); as-cooked matches; settled as COMPLETED
+TIMING {"scenario": "S4", "seconds": 16.38528786005918, "cli_seconds": 13.535394949140027, "cli_calls": 11, "condition_seconds": 2.4060875579016283, "condition_waits": 3}
+PASS S5 fence + scope (15.4s)
+     cross-session heartbeat and cross-project prime both refused (sound-torrent)
+TIMING {"scenario": "S5", "seconds": 15.42665954399854, "condition_seconds": 5.825013158028014, "condition_waits": 3, "cli_seconds": 9.573123620008118, "cli_calls": 7}
+PASS S6 doctor (14.6s)
+     19 swarm checks clean; hot-reload flip warned ('9 pool profile(s) configured but swarm.enabled is false — their tasks are never pushed and never claimed (report-only)') and restored ('swarm.enabled is true')
+TIMING {"scenario": "S6", "seconds": 14.646122909965925, "cli_seconds": 14.644619241938926, "cli_calls": 5, "condition_seconds": 7.757057024049573, "condition_waits": 2}
+PASS S7 PostgreSQL claim race (11.3s)
+     outcomes ['claimed', 'no_ready_work'] — one winner, loser said no_ready_work
+TIMING {"scenario": "S7", "seconds": 11.347729175933637, "condition_seconds": 4.838357382919639, "condition_waits": 3, "cli_seconds": 3.2367429400328547, "cli_calls": 2}
+PASS S8 project onboarding (7.7s)
+     real CLI linked an unchanged repository and initialized main + README; each project has one enabled project-repo workspace and standard vault storage
+TIMING {"scenario": "S8", "seconds": 7.672833024989814, "cli_seconds": 7.630060713156126, "cli_calls": 5}
+PASS S9 task lifecycle (12.9s)
+     partial flags exited 2 without persistence; full JSON receipt yielded ['sound-rapids']; update persisted; priority failure rolled back; task deleted
+TIMING {"scenario": "S9", "seconds": 12.894294237950817, "cli_seconds": 12.892987051862292, "cli_calls": 9}
+PASS S10 workspace + file/git/note writes (29.4s)
+     workspace/file/git/note CRUD persisted across processes; refusals rolled back
+TIMING {"scenario": "S10", "seconds": 29.442213787930086, "cli_seconds": 29.01028577447869, "cli_calls": 18}
+PASS S11 messages (8.3s)
+     queued/injected/replied to msg-b8b6a3fce1174cb19403e51261b3cdc3 through database-only sink; bad target refused
+TIMING {"scenario": "S11", "seconds": 8.336252213921398, "cli_seconds": 8.335682423086837, "cli_calls": 7}
+PASS S12 MCP registry (7.5s)
+     registry create/read/delete passed; loopback:1 probe = dependency-unavailable
+TIMING {"scenario": "S12", "seconds": 7.489691426046193, "cli_seconds": 7.489282991969958, "cli_calls": 6}
+PASS S13 plugin extensions (2.8s)
+     disposable entry point loaded when present and was an exit-2 unknown command when absent
+TIMING {"scenario": "S13", "seconds": 2.7881160910474136, "cli_seconds": 2.7879950740607455, "cli_calls": 2}
+PASS S14 graph + vault (5.7s)
+     layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
+TIMING {"scenario": "S14", "seconds": 5.727284868014976, "cli_seconds": 5.726859008893371, "cli_calls": 4}
+PASS S15 integration surface cleanup (1.2s)
+     current integration status remains available and legacy development controls are retired
+TIMING {"scenario": "S15", "seconds": 1.2343963909661397, "cli_seconds": 1.234285230981186, "cli_calls": 1}
+     · paused the automatic provider-failover playbook for manual sweep coverage
+     · fake script: {"prova": "ok", "provb": "ok"}
+     · baseline: prova available
+     · baseline: provb available
+     · fake script: {"prova": "login_required", "provb": "ok"}
+     · queued 3 preferred ['amber-crest', 'sharp-apex', 'vivid-cascade'], pinned calm-ember, solo-high amber-willow, class_only ['bold-rapids', 'swift-dune']
+     · prova unauthenticated (login_required): a launch died on its login dialog and the login probe reports not signed in — after 2 launch(es); remediation: run `prova login` on the host; if the account is out of usage the login will not stick until it resets. Then `aq provider recheck --provider prova`.
+     · no further prova launches across two completed cycles (2 total)
+     · held-tasks: amber-crest=failover_inactive, calm-ember=provider_pinned, sharp-apex=failover_inactive, bold-rapids=failover_inactive, vivid-cascade=failover_inactive, swift-dune=failover_inactive, amber-willow=no_equivalent_rung
+     · explain calm-ember: provider_pinned on prova
+     · dry run: would move ['amber-crest'], hold {'provider_pinned': 1, 'awaiting_failover_capacity': 4, 'no_equivalent_rung': 1}
+     · sweep: moved amber-crest std-high-prova -> std-high-provb (batch prb-prova-2); held {'provider_pinned': 1, 'awaiting_failover_capacity': 4, 'no_equivalent_rung': 1}
+     · provb session accb486f-451f-42f2-91f7-38110b4a257d claimed and closed amber-crest
+     · top-up sweep: moved sharp-apex into the same batch prb-prova-2
+     · provb never exceeded max_active=1 (peak 1)
+     · notices: 1 to user:dashboard ('Provider prova: unauthenticated'), 1 to supervisor-e2e for prb-prova-2
+     · escalation escalation-provider-prova-2 (high, needs_human): Provider prova is unauthenticated and needs a login
+     · aq provider status prova: unauthenticated since 1791739759, held 5, rerouted 2 (batch prb-prova-2)
+     · fake script: {"prova": "ok", "provb": "ok"}
+     · recheck: probe authenticated -> degraded (recovering), probation
+     · canary 36785043-6099-4450-bdf3-328280387ba8 (solo-high-prova) claimed held amber-willow; prova available
+     · b3ed9b11-40e2-40b9-989b-8d881aa254f8 claimed and closed the pinned task calm-ember on prova
+     · moved sharp-apex stayed on std-high-provb; holds cleared; escalation resolved (Provider prova is launchable again (degraded: on probation: the login probe reports signed in; the next successful launch completes recovery).)
+     · reroute-undo returned sharp-apex to std-high-prova
+     · fake script: {"prova": "login_required", "provb": "usage_limit"}
+     · prova logged out again; claude, codex and provb disabled by override
+     · all-down sweep: moved none, held {'all_providers_unavailable': 5}
+     · claude session claim while every provider is down: drain_requested
+     · escalation escalation-provider-prova-6 is critical: Provider prova is unauthenticated and needs a login
+     · doctor providers.availability: error — every session provider is unavailable -- nothing can launch: claude disabled since 2026-10-11 10:30 (e2e S16: every prov
+     · fake script: {"prova": "ok", "provb": "ok"}
+PASS S16 provider failover (74.9s)
+     prova tripped in 2 launch(es); moved amber-crest,sharp-apex to provb within max_active=1 (batch prb-prova-2); pin/solo held; notices deduplicated; recheck→probation→available; undo returned sharp-apex; all-down held everything, claim=drain_requested, critical escalation
+TIMING {"scenario": "S16", "seconds": 74.89863652002532, "cli_seconds": 41.02829900791403, "cli_calls": 30, "condition_seconds": 31.7974123719614, "condition_waits": 18, "provider_recovery_seconds": 34.46614120597951}
+PASS S17 phased graph (59.9s)
+     dry-run/cook smart-ember; phase 2 withheld then released after branchless phase 1 COMPLETED; prime rendered 3 checklist rows and close skipped all 3
+TIMING {"scenario": "S17", "seconds": 59.89576426404528, "cli_seconds": 53.72189932980109, "cli_calls": 27, "condition_seconds": 8.014844374731183, "condition_waits": 10}
+PASS S18 supervisor failure triage (16.6s)
+     task.failed completed triage run 6579ef74372844458415ea64e5ca211a and queued one durable supervisor notice msg-recovery-bd2b224928555f56e2f82184ab989434
+TIMING {"scenario": "S18", "seconds": 16.642443338991143, "condition_seconds": 9.81457325303927, "condition_waits": 5, "cli_seconds": 7.398729219916277, "cli_calls": 5}
+PASS S19 scoped planner graph (45.4s)
+     planner 48aad98c-cd9d-43a4-aed1-3eaeab650027 filed wise-orbit.1 under wise-orbit; root, cross-project, and foreign-parent requests were refused; one 10-node quota batch committed and one rolled back
+TIMING {"scenario": "S19", "seconds": 45.43339790601749, "condition_seconds": 7.304934358806349, "condition_waits": 6, "cli_seconds": 32.32314092107117, "cli_calls": 18}
+PASS S20 train-mode delivery (18.0s)
+     train-mode close retained its source; delivery explicitly untested (git_first needs active)
+TIMING {"scenario": "S20", "seconds": 18.015895172022283, "cli_seconds": 12.81532713607885, "cli_calls": 10, "condition_seconds": 3.6923698160098866, "condition_waits": 3}
+
+20/20 scenarios passed
+
+Capability report (passed | broken | unsupported | dependency-unavailable | explicitly-untested)
+  passed                 agent/session/pool: S1: 2 sessions for 3 ready tasks; pool.scaled = 'start 2 worker'
+  passed                 task/session/workspace: S2: claimed 1/1 then drain_requested; a5ded507-ac8a-4658-9c4e-55d9956d55b7 retired, replaced by 24d28451-fbe8-4deb-973d-12c8cc573368
+  passed                 task/dependency/gate: S3: stark-delta DEFINED + discovered-from keen-harbor + routing gate gate-88abb4617e82 resolved
+  passed                 formula/task-graph: S4: cooked fleet-summit (fleet-summit.1, fleet-summit.2); as-cooked matches; settled as COMPLETED
+  passed                 authentication/scope: S5: cross-session heartbeat and cross-project prime both refused (sound-torrent)
+  passed                 config/doctor: S6: 19 swarm checks clean; hot-reload flip warned ('9 pool profile(s) configured but swarm.enabled is false — their tasks are never pushed and never claimed (report-only)') and restored ('swarm.enabled is true')
+  passed                 task/claim/postgresql: S7: outcomes ['claimed', 'no_ready_work'] — one winner, loser said no_ready_work
+  passed                 project/git/vault: S8: real CLI linked an unchanged repository and initialized main + README; each project has one enabled project-repo workspace and standard vault storage
+  passed                 task CRUD/rollback: S9: partial flags exited 2 without persistence; full JSON receipt yielded ['sound-rapids']; update persisted; priority failure rolled back; task deleted
+  passed                 workspace CRUD: S10: workspace/file/git/note CRUD persisted across processes; refusals rolled back
+  passed                 file/git/note CRUD: S10: workspace/file/git/note CRUD persisted across processes; refusals rolled back
+  passed                 message CRUD: S11: queued/injected/replied to msg-b8b6a3fce1174cb19403e51261b3cdc3 through database-only sink; bad target refused
+  passed                 MCP registry CRUD: S12: registry create/read/delete passed; loopback:1 probe = dependency-unavailable
+  passed                 plugin extension startup: S13: disposable entry point loaded when present and was an exit-2 unknown command when absent
+  passed                 graph/vault: S14: layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
+  passed                 integration/CLI: S15: current integration status remains available and legacy development controls are retired
+  passed                 provider availability/failover: S16: prova tripped in 2 launch(es); moved amber-crest,sharp-apex to provb within max_active=1 (batch prb-prova-2); pin/solo held; notices deduplicated; recheck→probation→available; undo returned sharp-apex; all-down held everything, claim=drain_requested, critical escalation
+  passed                 task graph/phases/subtasks: S17: dry-run/cook smart-ember; phase 2 withheld then released after branchless phase 1 COMPLETED; prime rendered 3 checklist rows and close skipped all 3
+  passed                 playbooks/failure triage: S18: task.failed completed triage run 6579ef74372844458415ea64e5ca211a and queued one durable supervisor notice msg-recovery-bd2b224928555f56e2f82184ab989434
+  passed                 authentication/scoped graph/quota: S19: planner 48aad98c-cd9d-43a4-aed1-3eaeab650027 filed wise-orbit.1 under wise-orbit; root, cross-project, and foreign-parent requests were refused; one 10-node quota batch committed and one rolled back
+  passed                 integration/train/provenance: S20: train-mode close retained its source; delivery explicitly untested (git_first needs active)
+  dependency-unavailable memory semantic search: memory.enabled=false; no Milvus/Ollama or aq-memory service is contacted
+  dependency-unavailable MCP remote tools: S12 probes only a deliberately closed loopback port
+  unsupported            agent questions: questions belong to harness transcripts; no second CLI ask-human state machine
+  unsupported            plugin hook history: hooks were replaced by playbooks; the compatibility command is not history
+  explicitly-untested    real providers/tmux/external messaging: Tier 2 only; Tier 1 spends no tokens and sends no network messages
+  explicitly-untested    plugin install/update/remove from remote git: would mutate the interpreter environment or require an external repository
+  explicitly-untested    database upgrade/daemon control: workers never migrate databases or start/stop anything except the disposable daemon wrapper
+
+==> stopping daemon (pid 953543)
+==> stopped after 1s
