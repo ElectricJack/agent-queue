@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { AskInbox } from "../FocusInbox";
+import { AskInbox } from "../AskInbox";
 import { askPage } from "../../../testUtils/asks";
 const wire = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("../../../api/asks", () => ({ useAsks: wire.list }));
@@ -9,7 +9,7 @@ beforeEach(() => wire.list.mockReturnValue({ data: askPage(), refetch: vi.fn() }
 it("uses the canonical count and links, and changes server views", () => {
   render(<MemoryRouter><AskInbox /></MemoryRouter>);
   expect(screen.getByText("Needs you: 1")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /Architecture proposal/ })).toHaveAttribute("href", "/focus/asks/ask-one");
+  expect(screen.getByRole("link", { name: /Architecture proposal/ })).toHaveAttribute("href", "/asks/ask-one");
   fireEvent.click(screen.getByRole("button", { name: "Waiting on AQ" }));
   expect(wire.list).toHaveBeenLastCalledWith({ view: "waiting", source_kind: undefined, cursor: undefined });
 });

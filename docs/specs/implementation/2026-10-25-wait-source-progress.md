@@ -8,6 +8,12 @@ its undispatched row as durable retry ownership. Later events may proceed. Cance
 and lease loss never authorize this advance. Retry passes are bounded and back off.
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
+Retained undispatched events older than the listener safety cadence share alternating
+turns with forward work once their observation backoff expires. Preserve the next
+turn across drain passes, including timeouts, so a continuous forward backlog cannot
+starve retries and an unavailable source cannot starve forward work even when a pass
+fits only one attempt. Existing retry batch limits still apply. Retry selection and
+coalescing never advance the cursor past unrelated forward events.
 
 CI observations of the same source and generation reobserve once at the newest
 sequence through the captured committed watermark. This includes hints interleaved
@@ -48,6 +54,21 @@ with zero pending waits they can release held continuations. No source observati
 or owner progress preparation is needed for a retired batch. Registration remains
 serialized by the graph fence. An empty retirement scan must still allow one
 forward/retry attempt before the pass yields.
+
+Forward prefix discovery uses the already loaded, bounded event window before
+acquiring the graph fence. Under the fence, recheck only that planned prefix
+against grouped minimum watermarks of current pending verified subscriptions;
+do not repeat an event-history scan or a correlated subscriber scan per event.
+Any resource subscriber conservatively preserves a resource invalidation.
+If a new subscription invalidates the entire plan, release the transaction and
+repeat unlocked preparation. A shortened prefix may commit on its own. Keep the
+leased cursor race check, and stamp at most one event window per acquisition.
+Source dispatch and outcome mutations remain fenced and atomic with the cursor.
+
+For graph holds of at least one second, log time spent in lease validation,
+prefix retirement, admission recheck, dispatch, outcome/cursor writes and
+transaction completion. Include failed and cancelled attempts so a timeout does
+not hide the dominant step. Acquisition wait is excluded from these hold times.
 
 An idle drain or unsubscribed backlog must not prepare fleet-wide admission.
 Only a source with a pending verified resource subscriber needs that preparation.

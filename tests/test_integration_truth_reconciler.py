@@ -256,6 +256,10 @@ async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
     service.observer.truth = repo.truth
     service.observer.store_path = lambda _repository: repo.path
     service.observer._store = AsyncMock(side_effect=AssertionError("redundant store open"))
+    # Binding lookup is independent of the shared-flight timeout. Keep database
+    # latency from exhausting the tiny budget before the reader can join.
+    monkeypatch.setattr("src.projects.storage_binding.repository_path",
+                        AsyncMock(return_value=repo.path))
     entered, release, joined = asyncio.Event(), asyncio.Event(), asyncio.Event()
     expire = asyncio.Event()
     fetch = repo.git.afetch_origin
@@ -492,6 +496,40 @@ async def test_failed_delivery_source_does_not_prevent_other_repairs(db, tmp_pat
     result = await service.tick(100.0)
     assert result["sentinels"] == 1
     assert result["origins"] == 2
+
+
+async def test_phase_profile_preserves_failure_rotation_and_cancellation(tmp_path, monkeypatch):
+    from src.logging_config import get_correlation_context
+    from src.metrics.operation_profile import profile_duration, profile_repository
+
+    service = GitTruthReconciler(SimpleNamespace(), SimpleNamespace(), data_dir=tmp_path)
+    logged = []
+    monkeypatch.setattr(truth_module.logger, "info", lambda message: logged.append(
+        get_correlation_context()["git_truth_timing"],
+    ))
+
+    async def fail(now, counts):
+        profile_duration("db.query", 0.25)
+        profile_repository("p", "r")
+        raise RuntimeError("original failure")
+
+    service._completed = fail
+    for name in ("owners", "sentinels", "orphans", "origins", "repairs"):
+        monkeypatch.setattr(service, "_" + name, AsyncMock(return_value=0))
+    assert (await service.tick(1))["origins"] == 0
+    phases = logged[0]["phases"]
+    assert list(phases) == ["delivery", "owners", "sentinels", "orphans", "origins", "repairs"]
+    assert phases["delivery"]["outcome"] == "error"
+    assert phases["delivery"]["operations"]["db.query"]["seconds"] == 0.25
+    assert phases["delivery"]["repositories"] == [["p", "r"]]
+    assert phases["origins"]["operations"] == {}
+
+    service._owners.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await service.tick(2)
+    assert list(logged[1]["phases"]) == ["owners"]
+    assert logged[1]["phases"]["owners"]["outcome"] == "cancelled"
+    assert not service._lock.locked()
 
 
 async def test_reconcile_command_requires_daemon_principal():

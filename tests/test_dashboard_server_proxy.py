@@ -85,6 +85,11 @@ async def proxied(
     *, daemon: FakeDaemon | None = None, **proxy_options: Any
 ) -> AsyncIterator[Stack]:
     daemon = daemon if daemon is not None else FakeDaemon()
+    # Functional relay tests use the harness guard for connection setup, just
+    # like ws_connect below. The production 2 s deadline can expire on a busy
+    # CI worker before an SSE test reaches the cancellation it needs to assert.
+    # Callers testing timeout behavior can still supply their own deadline.
+    proxy_options.setdefault("connect_timeout", GUARD)
     async with serve_asgi(daemon.app) as daemon_url:
         proxy = DaemonProxy(daemon_url, version=VERSION, **proxy_options)
         async with serve_asgi(proxy_asgi(proxy)) as url:
@@ -354,8 +359,9 @@ async def test_sse_chunk_is_delivered_before_the_daemon_finishes(stack, client):
 
 async def test_browser_disconnect_cancels_the_upstream_stream(stack):
     daemon = stack.daemon
-    async with aiohttp.ClientSession() as browser:
+    async with asyncio.timeout(GUARD), aiohttp.ClientSession() as browser:
         response = await browser.get(f"{stack.url}/api/sse")
+        assert response.status == 200
         first = await asyncio.wait_for(response.content.readuntil(b"\n\n"), GUARD)
         assert first == b"data: first\n\n"
         response.close()  # the tab went away mid-stream
