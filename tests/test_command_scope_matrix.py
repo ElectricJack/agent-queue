@@ -52,8 +52,9 @@ from src.models import Project, SessionRecord, Task
 _ID_KEYS = ("task_id", "project_id", "session_id")
 
 #: In-set commands with no entry in the tool-definition registry.  Asserted as
-#: an exact equality so the exemption cannot quietly grow.
-_NO_DEFINITION = {"prime", "session_drain_ack"}
+#: an exact equality so the exemption cannot quietly grow.  ``read_file`` is
+#: registered by the aq-files plugin, not the built-in registry.
+_NO_DEFINITION = {"prime", "read_file", "session_drain_ack"}
 
 #: ``message_inbox`` addresses a mailbox by ``to_kind``/``to_id``, so it has
 #: no ID-triple property in its schema — the plan's floor listed it, but the
@@ -478,7 +479,8 @@ def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
     # The whole session family the derivation reaches, so a new unfenced
     # session command cannot appear without this test noticing.
     assert _dispatchable_session_commands() == [
-        "session_drain_ack", "session_kill", "session_logs", "session_peek",
+        "rebind_workspace", "session_drain_ack", "session_kill", "session_logs", "session_peek",
+        "supervisor_restart",
     ]
 
 
@@ -522,7 +524,10 @@ async def test_a_project_supervisor_cannot_reach_another_projects_session(
     ``session_drain_ack`` asks for its teardown and ``session_logs`` reads its
     transcript; all four resolve their argument the same way, so each is
     dispatched here the way the file under test resolves it, against a session
-    belonging to the *other* project.  The refusal has to arrive before
+    belonging to the *other* project.  ``supervisor_restart`` reads
+    ``session_id`` only as the expected identity of the supervisor it restarts;
+    its fence is the supervisor ``name`` (``supervisor-global`` by default),
+    which a project-A token is refused before the session is consulted.  The refusal has to arrive before
     anything is read, written or signalled — hence the unchanged row.
 
     Handlers are called directly with ``_current_scope`` set rather than
@@ -611,7 +616,10 @@ async def test_matching_scope_reads_succeed_and_foreign_reads_are_refused(matrix
     foreign = await matrix.execute(command, {"task_id": "t2", "_scope": _scope()})
     assert foreign["success"] is False
     assert foreign["result"] == "out_of_scope"
-    assert foreign["error_code"] == "resource_scope_denied"
+    if command == "task_show":
+        assert "outside this session's scope" in foreign["error"]
+    else:
+        assert foreign["error_code"] == "resource_scope_denied"
 
 
 @pytest.mark.parametrize("command", _READS + ["message_inbox"])
@@ -681,7 +689,7 @@ async def test_task_set_accepts_the_held_task_and_refuses_a_foreign_one(matrix):
     )
     assert refused["success"] is False
     assert refused["result"] == "out_of_scope"
-    assert refused["error_code"] == "resource_scope_denied"
+    assert "does not hold task t2" in refused["error"]
 
     # The rejection changed nothing.
     after = await matrix.db.get_task("t2")

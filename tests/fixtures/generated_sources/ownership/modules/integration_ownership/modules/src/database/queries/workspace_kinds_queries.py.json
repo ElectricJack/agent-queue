@@ -1,0 +1,10 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin._row_to_workspace_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin.list_workspace_kinds_for_project": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin.resolve_workspace_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin.upsert_workspace_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::import from src.models import KIND_MODE_WORKTREE, SYSTEM_KIND_SCOPE, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
