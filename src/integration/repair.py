@@ -1,4 +1,4 @@
-"""Ordinary git-first repair tasks and the temporary shadow protocol.
+"""Ordinary git-first repair tasks and retained historical repair evidence.
 
 OrdinaryRepairService is the reduced train's allocation port. RepairService
 below remains legacy compatibility until the protocol retirement; active

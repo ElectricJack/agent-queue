@@ -5,7 +5,7 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-10-20T15:28:38.191456Z",
+  "compiled_at": "2026-10-23T05:50:22.708273Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "provider-usage-probe",
   "purpose": "routine",
@@ -15,11 +15,11 @@
       "id": "probe-claude-usage",
       "name": "probe-claude-usage",
       "source": {
-        "end_line": 30,
+        "end_line": 32,
         "excerpt": "## Rule: probe-claude-usage",
         "heading": "Rule: probe-claude-usage",
         "path": "provider-usage-probe.md",
-        "start_line": 30
+        "start_line": 32
       },
       "trigger": {
         "event_type": "timer.10m"
@@ -30,17 +30,17 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:4ccfbf67ab574f54cecd76d32d0d46643197614d9a1c86d486a2dbfcafe46378",
+  "source_hash": "sha256:c04d7e2d4b873ef8bd51be92420f7cb999726550cdc145da471e0d954cdbdaa9",
   "steps": {
     "probe-claude-usage--done": {
       "outcome": "completed",
       "rule": "probe-claude-usage",
       "source": {
-        "end_line": 42,
+        "end_line": 44,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "provider-usage-probe.md",
-        "start_line": 42
+        "start_line": 44
       },
       "title": "Completed",
       "type": "terminal"
@@ -49,11 +49,11 @@
       "outcome": "failed",
       "rule": "probe-claude-usage",
       "source": {
-        "end_line": 42,
+        "end_line": 44,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "provider-usage-probe.md",
-        "start_line": 42
+        "start_line": 44
       },
       "title": "Failed",
       "type": "terminal"
@@ -69,11 +69,11 @@
       "rule": "probe-claude-usage",
       "save_result_as": "usage",
       "source": {
-        "end_line": 34,
+        "end_line": 36,
         "excerpt": "1. Call `provider_usage_probe` with `provider` `claude`. Bind the result as",
         "heading": "Rule: probe-claude-usage",
         "path": "provider-usage-probe.md",
-        "start_line": 34
+        "start_line": 36
       },
       "title": "probe",
       "transitions": {
@@ -87,6 +87,11 @@
       },
       "type": "command"
     }
+  },
+  "trusted_execution": {
+    "required_capabilities": [
+      "provider_usage_probe"
+    ]
   },
   "version": 1
 }

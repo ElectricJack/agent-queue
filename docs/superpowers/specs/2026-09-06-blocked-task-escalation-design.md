@@ -7,8 +7,11 @@
 > material](../../history/README.md).
 
 **Date:** 2026-09-06
-**Status:** shipped (default playbook, enabled)
-**Source:** `src/prompts/default_playbooks/blocked-task-escalation.md`
+**Status:** retired; the original shipped behavior below is historical. It is not
+in the initial installation or required-policy sets. Current failure notification
+uses `supervisor-failure-triage`; stateful stuck-task watches are optional. See
+[current policy](../../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+**Former source (removed):** `src/prompts/default_playbooks/blocked-task-escalation.md`
 **Reviewed bundle:** `tests/fixtures/playbooks/v2/blocked-task-escalation/`
 
 ## Problem
@@ -141,6 +144,10 @@ incident and hold timestamp in the READY transaction, preserves decision history
 and records the releasing actor and reason in the incident and a task comment.
 `task_explain` reports the active hold, its owner and diagnosis. A refused restart
 keeps the hold; an undecided incident does not require an override.
+
+When restart first resumes a manual pause, the resume transaction fences the
+same exact hold and preserves it for the final restart transaction to release
+and audit. A replacement hold refuses resume without removing the manual pause.
 
 An accepted `reopen_with_feedback` or authorized `restart_task` supersedes the previous
 incident in the READY transaction, including a READY-to-READY restart. It keeps

@@ -615,7 +615,8 @@ class TaskQueryMixin:
                     tasks.c.created_at.asc(),
                 )
             )
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def count_tasks_by_status(
         self,
@@ -1293,6 +1294,36 @@ class TaskQueryMixin:
                     "reason": "Checkpoint or preparation child termination is unproved",
                 }, conn=conn)
 
+    async def record_task_pause_cleanup_retained(
+        self, task_id: str, snapshot: dict, reason: str,
+    ) -> bool:
+        """Record one fence refusal without validating or releasing changed resources."""
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.id == task_id,
+            ).with_for_update())).first()
+            encoded = await self._read_manual_pause(conn, task_id)
+            if row is None or encoded is None or json.loads(encoded) != snapshot:
+                return False  # Never suppress cleanup of a newer pause.
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_cleanup_retained",
+            ))
+            if raw is not None and json.loads(raw).get("snapshot") == snapshot:
+                return False
+            await self._upsert_meta(task_id, "manual_pause_cleanup_retained", {
+                "snapshot": snapshot, "reason": reason, "recorded_at": time.time(),
+            }, conn=conn)
+            await self.add_task_comment(
+                task_id,
+                f"Pause cleanup retained for recovery: {reason}. "
+                "Automatic cleanup is suspended for this pause snapshot; resources and "
+                "the manual hold remain intact. Review ownership before repeating Pause "
+                "or using guarded Resume recovery.",
+                author_kind="supervisor", author_id="pause-cleanup", conn=conn,
+            )
+            return True
+
     async def finish_task_pause(self, task_id: str, snapshot: dict, *, before_release=None) -> None:
         """Release only this stopped claim's resources, never a reused worker's."""
         async with self.immediate() as conn:
@@ -1348,6 +1379,10 @@ class TaskQueryMixin:
             ).values(assigned_agent_id=None))
             saved = {**snapshot, "cleanup_pending": False}
             await self._upsert_meta(task_id, "manual_pause", saved, conn=conn)
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_cleanup_retained",
+            ))
 
     async def _slot_reset_claim_sessions(self, conn, task_id: str, *, lock: bool) -> list[dict]:
         record_query = select(task_metadata.c.value).where(
@@ -1815,6 +1850,7 @@ class TaskQueryMixin:
         accepted_close: dict | None = None,
         integration_delivery=None,
         allow_missing_provenance_reopen: bool = False,
+        _preserve_collected_children: bool = False,
         _defer_recovery_supersession: bool = False,
         _recovery_hold_override: dict | None = None,
         pr_merge_gate: str | None = None,
@@ -1949,6 +1985,10 @@ class TaskQueryMixin:
                 task_id, "reopen", conn=conn, delivery=integration_delivery,
                 allow_missing_provenance_reopen=(
                     allow_missing_provenance_reopen and context == "reopen_with_feedback"
+                    and new_status == TaskStatus.READY
+                ),
+                preserve_collected_children=(
+                    _preserve_collected_children and context == "reopen_with_feedback"
                     and new_status == TaskStatus.READY
                 ),
             )
@@ -3230,7 +3270,8 @@ class TaskQueryMixin:
             result = await conn.execute(
                 select(tasks).where(tasks.c.parent_task_id == parent_task_id)
             )
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def get_parent_tasks(
         self,
@@ -3253,7 +3294,8 @@ class TaskQueryMixin:
         stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def find_task_by_dedup_key(self, project_id: str, dedup_key: str) -> "Task | None":
         """Return the non-terminal task with (project_id, dedup_key), or None.
