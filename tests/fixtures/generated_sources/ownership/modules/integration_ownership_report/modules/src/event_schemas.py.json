@@ -1,4 +1,14 @@
 {
+  "reconciliation_definitions": {
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.publication_verified']": {
+      "fingerprint": "f678cb8a2927073604b7d5b2556468f7aa87bb6275d22138d3eb6256ec03ff54",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.readiness_changed']": {
+      "fingerprint": "48462459748b9d385291bcdd0fc6b195009dd8b5964c0b52e3a83bd7a68a6679",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/event_schemas.py::EVENT_SCHEMAS['integration.completed_container_checkpoint_recovered']": {
       "reason": "Defines required retained-checkpoint recovery audit fields, including owner proof, origin, Git head, completion and delivery observation."

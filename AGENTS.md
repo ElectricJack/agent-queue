@@ -53,8 +53,8 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   a shipped profile or skill changes nothing on an existing install. `aq doctor --check
   profiles.system_drift` / `skills.installed_drift` name the gap; `aq agent
   profile-reseed --profile-id <id> --grants-only` merges new grants without clobbering
-  operator edits. The exceptions are the supervisor and worker templates' `## Capabilities`: the daemon merges
-  shipped grants its vault copy lacks on every start and profile reload, additively
+  operator edits. The exception is shipped system profiles' `## Capabilities`: the daemon merges
+  shipped grants each vault copy lacks on every start and profile reload, additively
   (`src/profiles/capability_sync.py`; frontmatter `capability_sync: false` opts out).
 - **Reviewed playbook bundles** (`tests/fixtures/playbooks/v2/<id>/`): after editing, run
   `python scripts/rebuild-reviewed-playbook-artifacts.py <id>`; it updates fixture
@@ -63,6 +63,9 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   The authoring command refreshes the fixture and shipped copies; assembly uses
   `scripts/generate-recorded-artifacts.py` to project these approved inputs unchanged.
   `src/prompts/reviewed_playbooks/<id>/` is the only path an install imports from.
+  A shipped profile grant or command-contract change must rebuild affected bundles
+  in the same commit. `aq test tests/test_default_playbook_v2_artifacts.py` validates
+  every shipped artifact against shipped profiles and current contracts.
 - **Import the `.aq/claim.json` helpers from `src/claim_file.py`**, never from
   `src.commands.claim_commands`, or `src.sessions` and `src.commands` form an import cycle.
 - **`openapi.json` and both API clients are generated.** After any change to

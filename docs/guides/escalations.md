@@ -319,6 +319,18 @@ aq escalation get --escalation-id escalation-abc123
 aq escalation resolve --escalation-id escalation-abc123 --outcome "Shipped from main."
 ```
 
+To clear a false delivery-watchdog alarm, the owning supervisor cancels its
+incident with an explanation and the revision from `aq escalation get`:
+
+```bash
+aq escalation update --escalation-id INCIDENT --expected-revision REVISION --state cancelled --terminal-outcome 'False alarm: work was hand landed'
+```
+
+The next watchdog scan cancels that generation's wait projection and stops
+redriving or paging it. The decision survives restart and applies only to that
+completion generation; it does not assert Git containment. The inventory also
+recognizes equal trees and content already on the target after hand landing.
+
 Pausing a project holds its escalation and review notifications silently, including
 human gate pings. The dashboard labels open requests **held while paused**. Existing
 workers receive a notice to stop at the next safe point and preserve their progress.

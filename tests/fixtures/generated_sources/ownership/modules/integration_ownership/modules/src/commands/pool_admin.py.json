@@ -1,5 +1,14 @@
 {
   "storage_sinks": {
+    "src/commands/pool_admin.py::delete_pool::36f98b75a75bc4576ec1125146fe6b7d6140ab80fccd2cdc8c5aaa13356443ce": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 323,
+      "owner": "delete_pool",
+      "owner_fingerprint": "8bf71aa51ebb35d53c12b90ca89cc1648b039f4e0d7c50cf410817fa5642688d",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
     "src/commands/pool_admin.py::rename_pool::86546be0a111fd801cb74165b8a70f19a9daab1dfeee5d339799e5985c673cca": {
       "call": "log_event",
       "disposition": "ordinary",

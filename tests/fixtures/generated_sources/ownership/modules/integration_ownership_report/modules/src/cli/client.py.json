@@ -1,4 +1,22 @@
 {
+  "reconciliation_definitions": {
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_fast_forward_pr']": {
+      "fingerprint": "7a9cde85605326e89215cfbd2f4cfd00b9ae40c0e0b5a1d6354f5c764969ad47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_redrive_root']": {
+      "fingerprint": "7a9cde85605326e89215cfbd2f4cfd00b9ae40c0e0b5a1d6354f5c764969ad47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_withheld_source']": {
+      "fingerprint": "e450d6faf7a2c317ac076a863ae0d4b3f5df44e3e96f7b1722b02c736d84cb2b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_restore_task_origin']": {
+      "fingerprint": "7a9cde85605326e89215cfbd2f4cfd00b9ae40c0e0b5a1d6354f5c764969ad47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
       "baseline_span": [

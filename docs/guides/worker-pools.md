@@ -279,6 +279,18 @@ profile — READY tasks routed to it. An unrouted task is demand for no pool, an
 neither is a legacy route once its project's router is ready: pools size for
 claimable work only.
 
+**Held ingestion work is not demand.** A spec-ingest batch is created held
+(`tasks.held_batch_id` set) until its fidelity review releases it
+([spec-ingestion](../specs/implementation/spec-ingestion.md)). The claim
+frontier's `ingest_held` predicate excludes those members, and
+`count_ready_by_profile` reads the same frontier, so a large held batch starts
+no workers, even when its members are READY and routed. `aq task explain` on a
+member names the reason: "member of ingestion batch <id> awaiting fidelity
+review". The batch's one reviewer task is an ordinary, non-held root task routed
+to the `fidelity-reviewer` profile, and it does count as demand for that pool.
+On release, the members join the frontier on the next cycle and the pools size
+for them like any other READY work.
+
 `min_active` is raised to `max(min_active, Σ min_per_project over eligible
 projects)` before the clamp, so a per-project warm floor the global floor
 cannot fund raises the floor instead of being silently ignored.
@@ -379,6 +391,15 @@ deadline returns `no_ready_work` with `delivery_observation_timeout` or
 observation timed out, not that the queue is empty. `claim_conflict` and ordinary
 `no_ready_work` use the normal claim loop; preparation refusals use the bounded
 protocol below.
+
+An active claim whose `.aq/claim.json` is missing is recovered by the session
+reconciler: it stops the exact worker, then requeues the task with preparation
+backoff and `needs_attention = claim_file_missing`. The `session.claim_file_missing`
+event identifies the session, task and epoch. If process exit cannot be confirmed,
+the claim stays held and teardown retries. Attached branch owners retain the stopped
+writer's bindings for normal owner recovery. Unavailable checkouts and unreadable
+markers stay untouched. A marker write/readback failure during preparation drains
+the worker instead of leaving it idle on a claim it cannot use.
 
 ### Repeated claim preparation refusals
 

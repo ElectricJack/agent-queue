@@ -1,4 +1,18 @@
 {
+  "reconciliation_definitions": {
+    "src/wait_runtime/resume.py::ResumeTransaction.requeue": {
+      "fingerprint": "785accff5b08eddd30f89fe135c9ff1dbe62d6cb730226a4ef5fbd4d575f7f68",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.workspace_retry": {
+      "fingerprint": "8b5969dbb025f613f5925eef6b1430c0f8da696e1ea1035d854fe12a013d1697",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/resume.py::import from src.wait_runtime.legacy_parking import parked": {
+      "fingerprint": "5e07e31f569e550fdcf8ca882ff3291f60c0d2866d9b0f2badb21b7f83d9ad68",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/wait_runtime/resume.py::ResumeTransaction._reserve": {
       "landing_span": [

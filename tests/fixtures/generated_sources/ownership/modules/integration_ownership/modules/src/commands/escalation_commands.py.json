@@ -11,9 +11,9 @@
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 288,
+      "line": 298,
       "owner": "EscalationCommandsMixin._create_escalation",
-      "owner_fingerprint": "622139d33b44c7e86fa57ecc80997d50ccd4ef5d376c1758e039676349ec7b2d",
+      "owner_fingerprint": "8643b8689ca9abcc76e861057859b003edc4588297a26812a875b7885a4db171",
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     },
     "src/commands/escalation_commands.py::EscalationCommandsMixin._emit_escalation::e567c4df6888253586398ebb135acb235554072114ae8b253509beb96b5d5cc1": {

@@ -126,9 +126,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 447,
+      "line": 450,
       "owner": "ArchiveQueryMixin._archive_task_on",
-      "owner_fingerprint": "8ed7de11b46e6f1fe22e1a230b1aafa61d9e2b7d4553a2f2595c13ba10044a4f",
+      "owner_fingerprint": "0f49ad9000380dc5b017b45f3422a828518a2801c3159301c1cbe5a34d567ee7",
       "reason": "Audits task.delivery_abandoned with the explicit archive disposition; the event reports accepted abandonment and never asserts successful delivery."
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._clear_archive_refusal::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {

@@ -31,7 +31,8 @@ Its explicit fix restores the required reviewed bundles and activations.
 ``playbooks.reviewed_bundles`` compares installed reviewed bundles with their
 shipped recordings. Its explicit fix refreshes installed copies, preserving
 superseded bytes, and repairs required activations. Uninstalled optional
-bundles are neither reported nor restored.
+bundles are neither reported nor restored. Enabled activations with different
+hashes get an explicit import command; optional activations are never replaced.
 
 Mirrors ``src/doctor/formula_checks.py``'s shape: a private ``_check_*``
 function plus a factory returning the :class:`DoctorCheck` list.
@@ -535,6 +536,49 @@ async def _check_pending_event_replay_policy(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _reviewed_activation_updates(ctx: DoctorContext, installed: tuple[str, ...]) -> list[dict]:
+    """Offer shipped policy at the same scope without inferring upgrade consent.
+
+    Hash inequality need not mean older: a customized artifact can be healthy
+    and intentionally different. Disabled and absent activations are opt-outs.
+    """
+    from src.playbooks.definition import artifact_sha256, load_definition_json
+    from src.playbooks.required import reviewed_bundle_source
+
+    if ctx.db is None or not hasattr(ctx.db, "list_playbook_activations"):
+        return []
+    activations = await ctx.db.list_playbook_activations(enabled_only=True)
+    updates = []
+    for identifier in installed:
+        candidates = [
+            row for row in activations if row["playbook_id"] == identifier and row["enabled"]
+        ]
+        if not candidates:
+            continue
+        definition = load_definition_json(
+            (reviewed_bundle_source() / identifier / "artifact.json").read_text(encoding="utf-8")
+        )
+        scope = definition.scope
+        scope_identifier = getattr(scope, "project_id", None) or getattr(scope, "agent_type", "")
+        shipped_sha = artifact_sha256(definition)
+        for row in candidates:
+            if (
+                row["scope"] != scope.type
+                or (row.get("scope_identifier") or "") != scope_identifier
+                or row.get("active_artifact_sha256") == shipped_sha
+            ):
+                continue
+            updates.append({
+                "playbook_id": identifier,
+                "scope": scope.type,
+                "scope_identifier": scope_identifier,
+                "active_sha256": row.get("active_artifact_sha256"),
+                "shipped_sha256": shipped_sha,
+                "import_command": f"aq playbook import --path reviewed-playbooks/{identifier} --activate",
+            })
+    return updates
+
+
 async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
     """Shipped reviewed bundles against their vault copies.  Read-only."""
     playbooks = getattr(ctx.config, "playbooks", None)
@@ -554,23 +598,36 @@ async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
 
     shipped = _installed_bundle_ids(data_dir)
     drift = reviewed_bundle_drift(data_dir, ids=shipped)
-    if not drift:
+    updates = await _reviewed_activation_updates(ctx, shipped)
+    if not drift and not updates:
         return CheckResult(
             id=REVIEWED_BUNDLES_CHECK_ID,
             severity=Severity.OK,
             detail=f"{len(shipped)} shipped reviewed bundle(s) match their vault copies",
             data={"checked": len(shipped)},
         )
-    return CheckResult(
-        id=REVIEWED_BUNDLES_CHECK_ID,
-        severity=Severity.WARN,
-        detail=(
+    details = []
+    if drift:
+        details.append(
             f"{len(drift)} shipped reviewed bundle(s) differ from their vault copies "
             f"({', '.join(row['playbook_id'] for row in drift)}); an import reads the vault "
             "copy, so a stale one can leave its activation at stale_contract. Run "
             "aq doctor --check playbooks.reviewed_bundles --fix to refresh installed copies"
-        ),
-        data={"checked": len(shipped), "count": len(drift), "drift": drift},
+        )
+    for update in updates:
+        details.append(
+            f"{update['playbook_id']} ({update['scope']} {update['scope_identifier']!r}): "
+            f"active {update['active_sha256']} differs from shipped {update['shipped_sha256']}. "
+            "Review the shipped policy and any local customization, then explicitly import/activate "
+            f"{'after refreshing the vault bundle: ' if drift else 'with: '}"
+            f"{update['import_command']}"
+        )
+    return CheckResult(
+        id=REVIEWED_BUNDLES_CHECK_ID,
+        severity=Severity.WARN,
+        detail="; ".join(details),
+        data={"checked": len(shipped), "count": len(drift), "drift": drift,
+              "activation_updates": updates},
     )
 
 
@@ -588,14 +645,14 @@ async def _fix_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
     if written and inspect.iscoroutinefunction(reconcile):
         status = await reconcile(repair=True)
         data["required_playbooks"] = status
-    return CheckResult(
-        id=REVIEWED_BUNDLES_CHECK_ID,
-        severity=Severity.OK,
-        detail=f"refreshed {len(written)} reviewed bundle(s) in the vault",
-        fixable=True,
-        fix_applied=True,
-        data=data,
-    )
+    result = await _check_reviewed_bundles(ctx)
+    result.detail = f"refreshed {len(written)} reviewed bundle(s) in the vault; {result.detail}"
+    result.fixable = result.fix_applied = True
+    result.data.update(data)
+    if "required_playbooks" in data and not data["required_playbooks"]["ok"]:
+        result.severity = Severity.ERROR
+        result.detail += "; required policy repair failed; inspect diagnostics"
+    return result
 
 
 def playbook_v2_checks() -> list[DoctorCheck]:

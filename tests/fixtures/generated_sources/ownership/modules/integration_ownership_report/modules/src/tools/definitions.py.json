@@ -1,4 +1,14 @@
 {
+  "reconciliation_definitions": {
+    "src/tools/definitions.py::_TOOL_CATEGORIES['integration_batch_fix']": {
+      "fingerprint": "c8da975ebc4570e403c47ce3728ea47115998bb2f0fd3143bef551df5a2f6e93",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/tools/definitions.py::statement:9dbb3d96e20fc1cb": {
+      "fingerprint": "9dbb3d96e20fc1cbf2da9089e4cb9e4bb0fdf453f06477f6a142b00315d066d8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]": {
       "reason": "Registers the operator-only first-repository binding command and its exact expected URL and audit reason; explicitly refuses reassignment and live integration."

@@ -1,5 +1,23 @@
 {
   "storage_sinks": {
+    "src/integration/child_delivery.py::ChildDelivery._adopt_source::c7d104449a70d66ca26fe189a9a028a871a53fdf1db34120d93a682b87d109f1": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 579,
+      "owner": "ChildDelivery._adopt_source",
+      "owner_fingerprint": "7b2852f5cb7ec91a4e8d1836faaa995b800db74b66cd1a17f3767bca3d1272d8",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/integration/child_delivery.py::ChildDelivery.run::bb2c4c5d19e39e1bc639add68267e3e3f9d7f4f7480dc07260a55d6c80a1ceff": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 431,
+      "owner": "ChildDelivery.run",
+      "owner_fingerprint": "e5718575721ddb9dc379f2fa5ca20c69c3c8ddae5e0d1b2b3b2270686036f0a5",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
     "src/integration/child_delivery.py::ChildDelivery.run::ec1a6f074eeb4a11b5b2dccbdfa9655731669c03f0b01ac74e350940d0cb455b": {
       "call": "log_event",
       "disposition": "ordinary",
