@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/cli/vault.py::_resolve_data_dir": {
+      "baseline_span": [
+        19,
+        33
+      ],
+      "landing_span": [
+        19,
+        33
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}
