@@ -42,7 +42,11 @@ from src.commands.contracts import CONTRACTS
 from src.commands.contracts.models import CommandArgs
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
+    ask_decision_previews,
+    ask_decisions,
+    conversation_inputs,
     gates,
+    human_asks,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -501,8 +505,9 @@ _FOREIGN_TARGETS = [
     ("integration_reopen_collection", {"task_id": "foreign", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-other"}),
     ("integration_release", {"batch_id": "batch-other"}),
-    ("integration_recover_candidate_member", {"reservation_id": "res-other"}),
     ("integration_release_owner", {"owner_row_id": "owner-other"}),
+    ("integration_restore_task_origin", {"task_id": "foreign"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-foreign"}),
     ("integration_eject", {"batch_id": "batch-other", "task_id": "foreign", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-other", "gate_id": "gate-p"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-other"}),
@@ -514,8 +519,8 @@ _OWN_TARGETS = [
     ("integration_reopen_collection", {"task_id": "own", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-p"}),
     ("integration_release", {"batch_id": "batch-p"}),
-    ("integration_recover_candidate_member", {"reservation_id": "res-p"}),
     ("integration_release_owner", {"owner_row_id": "owner-p"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-own"}),
     ("integration_eject", {"batch_id": "batch-p", "task_id": "own", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-p"}),
 ]
@@ -534,11 +539,94 @@ async def test_the_same_call_on_this_projects_target_is_admitted(db, command, ar
     assert await check_request_scope(command, dict(args), _scope("p"), db=db) is None
 
 
+@pytest.fixture
+async def asks_db(db):
+    async with db._engine.begin() as conn:
+        for project in ("p", "other"):
+            ask_id = f"ask-{project}"
+            await conn.execute(insert(human_asks).values(
+                id=ask_id, project_id=project, source_kind="question", source_key=ask_id,
+                source_identity={}, source_fingerprint="source", generation_fingerprint="gen",
+                context={}, context_state="context_needed", audience={}, logical_owner="owner",
+                decider={}, created_at=1, updated_at=1,
+            ))
+            await conn.execute(insert(ask_decision_previews).values(
+                id=f"preview-{project}", ask_id=ask_id, decision_generation=1,
+                actor_id="user:jack", source_fingerprint="source", feedback_version=0,
+                packet={}, packet_sha256="packet", created_at=1, expires_at=60,
+            ))
+            await db.insert_ask_correspondence({
+                "id": f"ask-evidence-{project}", "ask_id": ask_id, "direction": "inbound",
+                "transport": "local", "verified_actor": "user:jack", "text": "Answer",
+                "entry_kind": "decision_evidence", "received_at": 1, "created_at": 1,
+            }, conn=conn)
+            await conn.execute(insert(ask_decisions).values(
+                id=f"decision-{project}", ask_id=ask_id, decision_generation=1,
+                option_key="answer", adapter="question", adapter_version="1",
+                actor_id="user:jack", actor={}, evidence_entry_id=f"ask-evidence-{project}",
+                idempotency_key="answer", request_sha256="request", source_fingerprint="source",
+                feedback_version=0, packet={}, packet_sha256="packet", created_at=1,
+            ))
+        for project in ("p", "other", None):
+            await conn.execute(insert(conversation_inputs).values(
+                id=f"input-{project}", project_id=project, transport="local",
+                external_message_id=f"message-{project}", verified_actor="user:jack",
+                author_id="jack", channel_id="local", text="Answer", text_sha256="text",
+                char_count=6, received_at=1, created_at=1,
+            ))
+    return db
+
+
+@pytest.mark.parametrize("command,key,prefix", [
+    ("ask_history", "ask_id", "ask"),
+    ("ask_decide", "preview_id", "preview"),
+    ("ask_retry_operation", "decision_id", "decision"),
+    ("ask_show", "input_id", "input"),
+    ("ask_apply_input", "input_id", "input"),
+    ("ask_discussion_reply", "input_id", "input"),
+])
+async def test_ask_targets_resolve_their_project_and_refuse_foreign_rows(
+    asks_db, command, key, prefix,
+):
+    assert await target_scope_error(command, {key: f"{prefix}-p"}, "p", db=asks_db) is None
+    foreign = await target_scope_error(command, {key: f"{prefix}-other"}, "p", db=asks_db)
+    assert foreign is not None and "another project" in foreign
+    missing = await target_scope_error(command, {key: "missing"}, "p", db=asks_db)
+    assert missing is not None and "out of scope" in missing
+
+
+@pytest.mark.parametrize("command,key,prefix", [
+    ("ask_decide", "preview_id", "preview"),
+    ("ask_apply_input", "input_id", "input"),
+    ("ask_discussion_reply", "input_id", "input"),
+])
+async def test_an_owned_ask_does_not_admit_a_foreign_preview_or_input(
+    asks_db, command, key, prefix,
+):
+    args = {"ask_id": "ask-p", key: f"{prefix}-other"}
+    error = await target_scope_error(command, args, "p", db=asks_db)
+    assert error is not None and "another project" in error
+
+
+async def test_an_owned_ask_does_not_admit_an_unowned_input(asks_db):
+    error = await target_scope_error(
+        "ask_apply_input", {"ask_id": "ask-p", "input_id": "input-None"}, "p", db=asks_db,
+    )
+    assert error is not None and "out of scope" in error
+    assert unresolvable_targets({"input_id": "input-p"}, command="supervisor_inbox_reply") == [
+        "input_id",
+    ]
+
+
 @pytest.mark.parametrize("command,args,outcome,method", [
     ("integration_abort_batch", {"batch_id": "batch-p"}, "preview", "abort_batch"),
     ("integration_abort_batch", {"batch_id": "batch-p", "dry_run": False,
                                  "reason": "duplicate"}, "aborted", "abort_batch"),
     ("integration_retire_origin", {"task_id": "own"}, "preview", "retire_origin"),
+    ("integration_reverify_epic", {"task_id": "own"}, "preview", "reverify_epic"),
+    ("integration_reverify_epic", {"task_id": "own", "dry_run": False,
+                                   "expected_head_sha": "a" * 40, "reason": "retry"},
+     "visited", "reverify_epic"),
     ("integration_retire_origin", {"task_id": "own", "origin_id": "origin-own",
                                    "dry_run": False, "reason": "delivered"},
      "retired", "retire_origin"),
@@ -562,11 +650,14 @@ async def test_supervisor_train_controls_dispatch_through_the_contract(
     assert result["success"], result
     control.assert_awaited_once()
     assert control.call_args.kwargs["operator_id"] == f"supervisor session:{SUPERVISOR}"
+    if method == "reverify_epic":
+        assert control.call_args.kwargs["expected_project_id"] == "p"
 
 
 @pytest.mark.parametrize("command,args", [
     ("integration_abort_batch", {"batch_id": "batch-p"}),
     ("integration_retire_origin", {"task_id": "own"}),
+    ("integration_reverify_epic", {"task_id": "own"}),
 ])
 async def test_plain_session_cannot_reach_train_controls(db, command, args):
     assert check_command_scope(command, dict(args), _scope("p", elevated=False)) is not None
@@ -619,9 +710,9 @@ def test_the_derivation_is_not_vacuously_small():
 
 
 def test_extra_forbid_is_untouched_on_every_contract():
-    """The mechanism is target resolution, never a looser model."""
-    for name in CONTRACTS.names():
-        model = CONTRACTS.get(name).contract.execution.args_model
+    """Target resolution never loosens an existing typed dispatch model."""
+    for name, contract in CONTRACTS.typed_contracts().items():
+        model = contract.execution.args_model
         assert issubclass(model, CommandArgs)
         assert model.model_config.get("extra") == "forbid", name
 
@@ -708,6 +799,9 @@ async def test_no_target_keyed_command_dies_on_an_injected_project_id(db, comman
 #: partial check.  Each is here for a stated reason; a new one is a gap in
 #: :data:`TARGET_RESOLVERS`, not an oversight in the policy.
 _UNRESOLVED_TARGETS = {
+    # These are authenticated daemon/local-only controls, never project-session calls.
+    "ask_button": ["author_id", "channel_id", "custom_id", "guild_id", "interaction_id", "message_id"],
+    "ask_repair_delivery": ["delivery_id"],
     "escalation_apply_reply": ["target_id"],  # an action's target is polymorphic
     "integration_repair_start": ["trigger_id"],  # a daemon event, not a project row
     "integration_transfer_owner": ["next_owner_id"],  # an agent, resolved in-handler
@@ -735,7 +829,7 @@ def test_the_refused_surface_is_exactly_the_one_that_is_declared():
             for field, spec in model.model_fields.items()
             if spec.is_required() and field not in VALUE_ARGUMENTS
         }
-        missing = unresolvable_targets(args)
+        missing = unresolvable_targets(args, command=name)
         if missing:
             unresolvable[name] = missing
     assert unresolvable == _UNRESOLVED_TARGETS
@@ -746,6 +840,38 @@ def test_the_resolver_table_names_only_row_references():
     for name in TARGET_RESOLVERS:
         assert name.endswith(TARGET_REFERENCE_SUFFIX) or name in TARGET_REFERENCE_NAMES, name
     assert not set(TARGET_RESOLVERS) & VALUE_ARGUMENTS
+
+
+@pytest.mark.parametrize("command", ["decision_record", "decision_list"])
+@pytest.mark.parametrize(
+    ("kind", "own", "foreign"),
+    [("task", "own", "foreign"), ("batch", "batch-p", "batch-other"),
+     ("operation", "op-p", "op-other")],
+)
+async def test_decision_scope_resolves_the_tagged_object(db, command, kind, own, foreign):
+    args = {"object_kind": kind, "object_id": own}
+    assert await check_request_scope(command, args, _scope("p"), db=db) is None
+    assert "project_id" not in args
+    args["object_id"] = foreign
+    error = await check_request_scope(command, args, _scope("p"), db=db)
+    assert error == f"out of scope: {command} targets another project (object_id belongs to other)"
+
+
+@pytest.mark.parametrize("command", ["decision_record", "decision_list"])
+@pytest.mark.parametrize(
+    ("kind", "identity"),
+    [("task", "gone"), ("batch", "gone"), ("operation", "gone"),
+     ("task", "batch-p"), ("invalid", "own"), (None, "own"), (["task"], "own")],
+)
+async def test_decision_scope_refuses_missing_objects_and_invalid_tags(db, command, kind, identity):
+    args = {"object_kind": kind, "object_id": identity}
+    error = await check_request_scope(command, args, _scope("p"), db=db)
+    assert error is not None and error.startswith("out of scope:"), error
+
+
+def test_an_unrelated_command_cannot_use_a_decision_discriminator():
+    args = {"object_kind": "task", "object_id": "own"}
+    assert unresolvable_targets(args, command="unrelated") == ["object_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -865,9 +991,6 @@ async def test_a_session_with_null_project_is_refused(db):
 
 
 @pytest.mark.parametrize(
-    "command", ["integration_reconcile_promotion", "integration_push_conflict_resolution"]
-)
-@pytest.mark.parametrize(
     ("intent_id", "expected_error"),
     [
         ("intent-p", None),
@@ -878,9 +1001,10 @@ async def test_a_session_with_null_project_is_refused(db):
     ],
 )
 async def test_promotion_intent_ownership_uses_repository_when_project_is_null(
-    db, command, intent_id, expected_error
+    db, intent_id, expected_error
 ):
-    error = await check_request_scope(command, {"intent_id": intent_id}, _scope("p"), db=db)
+    command = "historical_intent_read"
+    error = await target_scope_error(command, {"intent_id": intent_id}, "p", db=db)
 
     assert error == (None if expected_error is None else f"out of scope: {command} {expected_error}")
 
@@ -1095,3 +1219,13 @@ def test_the_local_operator_bypasses_both_gates():
 
     assert check_command_scope("integration_reserve_owner", args, RequestScope(kind="local")) is None
     assert args == {}
+
+
+@pytest.mark.parametrize(("reservation_id", "foreign"), [("res-p", False), ("res-other", True)])
+async def test_historical_candidate_reservation_resolver_preserves_ownership(db, reservation_id, foreign):
+    error = await target_scope_error(
+        "historical_reservation_read", {"reservation_id": reservation_id}, "p", db=db
+    )
+    assert (error is not None) == foreign
+    if foreign:
+        assert "another project" in error
