@@ -35,6 +35,7 @@ from pathlib import Path
 from src.git.identity import GitIdentity, resolve_git_identity
 from src.profiles.capabilities import HARNESS_TOOL_NAMES
 from src.resources.limits import session_env_caps, wrap_session_argv
+from src.sessions.dialogs import first_match
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
 from src.sessions.provider import DialogRule, SessionSpec
@@ -221,7 +222,7 @@ SUPERVISOR_PATROL_PROMPT = (
     "`python3 ~/.agent-queue/operator-checks/stall-sweep.py` from the vault, "
     "poll all three supervisor inboxes (`aq --json message inbox --inject`, "
     "`aq --json message inbox --to profile:supervisor`, and "
-    "`aq --json message inbox --to session:supervisor-agent-queue`), and FIX "
+    "`aq --json message inbox --to {supervisor_inbox}`), and FIX "
     "what it finds rather than only reporting it. A scheduler job is not a "
     "background inbox poll or shell sleep loop. The patrol only lives as long "
     "as this session; re-establish it after any restart. If your harness has "
@@ -236,7 +237,7 @@ SUPERVISOR_PATROL_PROMPT = (
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
 #: scope at launch; the worker claims its own work in a loop.  ``{}`` fields:
-#: project_name, profile_id.
+#: project_name, profile_id, message_wait_guidance.
 POOL_BOOTSTRAP_PROMPT = (
     "You are a pool worker for project {project_name} (profile {profile_id}).\n"
     "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
@@ -247,7 +248,7 @@ POOL_BOOTSTRAP_PROMPT = (
     "On a repeated identical refusal, report the blocker ONCE to the project supervisor.\n"
     "If idle (no held claim or preparation), run `aq session drain-ack` and exit 0.\n"
     "If preparation is retained, preserve it and end the turn awaiting the supervisor's\n"
-    "inbox delivery. With an active claim, use ONE durable message wait for the reply.\n"
+    "inbox delivery. {message_wait_guidance}\n"
     "Do not poll claims or inboxes, reread unchanged context, or repeat the report.\n"
     "A refusal_count >= 2 or a\n"
     "drain_requested with blocker instructions also requires that one report.\n"
@@ -275,6 +276,16 @@ def _infer_provider_from_harness(harness) -> str:
     mapping = {"claude": "anthropic", "codex": "openai", "gemini": "google"}
     key = getattr(harness, "id", "") or getattr(harness, "command", "")
     return mapping.get(key, "")
+
+
+#: Codex 0.162's trust screen as painted in a worker slot (verified live,
+#: 2026-10-21). A harness whose own rules miss it gets a built-in one.
+_CODEX_TRUST_SCREEN = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+    "  permission settings.\n\n"
+    "› 1. Trust and continue\n"
+    "  2. Back to Agent Command Center\n"
+)
 
 
 def _is_codex_cli(harness) -> bool:
@@ -447,6 +458,7 @@ class SessionSpecBuilder:
         wake: str = "fresh",
         resume_key: str | None = None,
         prompt: str | None = None,
+        workspace_source_type=None,
         knowledge=None,
     ) -> SessionSpec:
         """Spec for a persistent session (``lifecycle="named"``).
@@ -458,6 +470,9 @@ class SessionSpecBuilder:
         A *knowledge* selection prepared before this launch is wrapped for the
         harness and recorded on the spec; the bundle's delivery acknowledgment
         still requires the persisted live session row.
+
+        Callers with a verified isolated worktree may pass *workspace_source_type*;
+        otherwise permission bypass requires the profile's explicit opt-in.
         """
         profile_id = getattr(profile, "id", "") or ""
         # Keep the established global runtime name for restart adoption; the
@@ -483,7 +498,12 @@ class SessionSpecBuilder:
                 f"You supervise project {project_id}; stay within that project's scope.\n"
                 if is_supervisor else ""
             ),
-            supervisor_patrol=SUPERVISOR_PATROL_PROMPT if is_supervisor else "",
+            supervisor_patrol=SUPERVISOR_PATROL_PROMPT.format(
+                supervisor_inbox=(
+                    f"session:supervisor-{project_id}"
+                    if project_id is not None else "session:supervisor-agent-queue"
+                ),
+            ) if is_supervisor else "",
         )
         return self._build(
             harness=harness,
@@ -501,9 +521,9 @@ class SessionSpecBuilder:
             resume_key=effective_resume,
             bootstrap=bootstrap,
             lifecycle="named",
-            # Named sessions have no workspace, so only the profile's
-            # explicit permission opt-in can grant the skip-permissions flag.
-            allow_skip_permissions=skip_permissions_allowed(profile, None, harness=harness),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             knowledge=knowledge,
         )
 
@@ -544,8 +564,17 @@ class SessionSpecBuilder:
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
         project_name = getattr(project, "name", "") or project_id
+        from src.waits.policy import enabled as waits_enabled
+
+        message_wait_guidance = (
+            "With an active claim, use ONE durable message wait for the reply."
+            if waits_enabled(self.config, project_id)
+            else "Wait registration is disabled for this project. With an active claim, "
+            "preserve it and end the turn awaiting the supervisor's inbox delivery."
+        )
         bootstrap = prompt if prompt is not None else POOL_BOOTSTRAP_PROMPT.format(
-            project_name=project_name, profile_id=profile_id
+            project_name=project_name, profile_id=profile_id,
+            message_wait_guidance=message_wait_guidance,
         )
         extra_env = {
             "AQ_SESSION_KIND": "pool",
@@ -751,6 +780,18 @@ class SessionSpecBuilder:
                 keys=(),
                 quarantine=True,
             ), *dialogs)
+        codex_project_trust = _is_codex_cli(harness) and allow_skip_permissions
+        if _is_codex_cli(harness) and first_match(dialogs, _CODEX_TRUST_SCREEN) is None:
+            # Codex 0.162 renamed its trust screen, and an operator-edited
+            # vault harness keeps the old rule. Its "› 1. Trust and continue"
+            # row must never pass for the composer. Pre-trust normally keeps
+            # the screen away; without the worktree argument, fail startup.
+            dialogs = (*dialogs, DialogRule(
+                name="trust-folder",
+                pattern=r"(?m)Trust this folder\?[\s\S]*^\s*›\s*1\. Trust and continue\s*$",
+                is_regex=True,
+                keys=("Enter",) if codex_project_trust else (),
+            ))
 
         return SessionSpec(
             session_name=session_name,
@@ -772,6 +813,7 @@ class SessionSpecBuilder:
             hooks_provisioned=hooks_provisioned,
             git_identity_digest=git_identity.digest if git_identity is not None else None,
             knowledge_transport=knowledge_transport,
+            codex_project_trust=codex_project_trust,
         )
 
     def _compose_argv(
