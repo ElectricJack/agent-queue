@@ -27,7 +27,7 @@ import re
 import time
 from typing import Any
 
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, exists, func, literal, or_, select, update
 
 from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
 from src.database.tables import (
@@ -41,8 +41,10 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
+from src.integration.epics import abandoned_archive_ids
 from src.logging_config import log_handled
 from src.models import TaskStatus
 from src.projects.github import GitHubError
@@ -415,7 +417,8 @@ class RootDeliveryRedrive:
             ):
                 return {**base, "outcome": "blocked",
                         "reason": "the epic's aggregate verification has not completed; "
-                        "its parent integration run completes it"}
+                        "the integration train verifies its collected branch; "
+                        f"inspect `aq integration reverify-epic {task_id}`"}
             head = checkpoint["verified_sha"]
         else:
             source = leaf_root_source(
@@ -519,6 +522,25 @@ class EpicPullRequestService:
 
     async def open_for_epic(self, epic_id: str, *,
                             expected_head_sha: str | None = None) -> dict[str, Any]:
+        result = await self._open_for_epic(epic_id, expected_head_sha=expected_head_sha)
+        if result["outcome"] != "already_open":
+            return result
+        # A retained URL is descriptive state, not proof the PR remains open.
+        # Read GitHub outside the transaction and surface a recoverable blocker.
+        task = await self._db.get_task(epic_id)
+        repo = await self._db.get_repo(task.repo_id)
+        binding = await self._git.bind_github_repository(repo.url)
+        GitHubAccess.validate_pr_url(binding, result["pr_url"])
+        pull = await self._git._github_client(binding).pull_request(result["pr_url"])
+        if pull.get("state") == "closed":
+            return {**result, "outcome": "pr_closed",
+                    "reason": "stored pull request is closed; reopen it before root admission"}
+        if pull.get("state") != "open":
+            raise ValueError("GitHub pull request state is malformed")
+        return result
+
+    async def _open_for_epic(self, epic_id: str, *,
+                             expected_head_sha: str | None = None) -> dict[str, Any]:
         if expected_head_sha is None and getattr(self._db, "_delivery_observer", None) is not None:
             # The retry locates the source from the immutable completion ref,
             # rather than treating a descriptive completion row as code truth.
@@ -560,14 +582,16 @@ class EpicPullRequestService:
 
             active_children = (
                 await conn.execute(
-                    select(tasks.c.id, tasks.c.title, tasks.c.status)
+                    select(tasks.c.id, tasks.c.title, tasks.c.status, tasks.c.parent_task_id,
+                           literal(False).label("archived"))
                     .where(tasks.c.parent_task_id == epic_id)
                     .order_by(tasks.c.id)
                 )
             ).mappings().all()
             archived_children = (
                 await conn.execute(
-                    select(archived_tasks.c.id, archived_tasks.c.title, archived_tasks.c.status)
+                    select(archived_tasks.c.id, archived_tasks.c.title, archived_tasks.c.status,
+                           archived_tasks.c.parent_task_id, literal(True).label("archived"))
                     .where(archived_tasks.c.parent_task_id == epic_id)
                     .order_by(archived_tasks.c.id)
                 )
@@ -591,7 +615,9 @@ class EpicPullRequestService:
                 head = checkpoint["checkpoint_sha"]
             else:
                 head = checkpoint["verified_sha"] if checkpoint is not None else None
-            pending = [child["id"] for child in children if child["status"] != "COMPLETED"]
+            abandoned = await abandoned_archive_ids(conn, children, project_id=epic["project_id"])
+            pending = [child["id"] for child in children
+                       if child["id"] not in abandoned and child["status"] != "COMPLETED"]
             if pending:
                 return {"outcome": "children_incomplete", "epic_id": epic_id, "pending": pending}
             if not epic["branch_name"]:

@@ -203,24 +203,16 @@ def test_wallclock_stub_does_not_change_result(monkeypatch):
 def test_target_is_computed_once_per_container_pass(monkeypatch):
     """``_tidy_sweep`` calls ``_evaluate`` thousands of times. The row target
     depends only on the children's sizes, so recomputing it inside the hot
-    loop would be a pure regression (reorganisation design §3.1). The
-    never-grows clamp is likewise once per pass, and its own cost is bounded
-    by the ladder: ``1 + len(row_target_rungs(floor, up_to=target))`` flow
-    passes (t24 finding F1)."""
+    loop would be a pure regression (reorganisation design §3.1)."""
     from src.task_graph.layout import flow as flow_module
 
-    calls = {"row_target": 0, "clamp": 0, "flows": 0}
+    calls = {"row_target": 0, "flows": 0}
     real_row_target = flow_module.row_target
-    real_clamp = flow_module.clamp_row_target
     real_flow_container = flow_module.flow_container
 
     def counting_row_target(*a, **kw):
         calls["row_target"] += 1
         return real_row_target(*a, **kw)
-
-    def counting_clamp(*a, **kw):
-        calls["clamp"] += 1
-        return real_clamp(*a, **kw)
 
     def counting_flow_container(*a, **kw):
         calls["flows"] += 1
@@ -228,28 +220,28 @@ def test_target_is_computed_once_per_container_pass(monkeypatch):
 
     monkeypatch.setattr(flow_module, "row_target", counting_row_target)
     monkeypatch.setattr(engine_module, "row_target", counting_row_target)
-    monkeypatch.setattr(engine_module, "clamp_row_target", counting_clamp)
     monkeypatch.setattr(engine_module, "flow_container", counting_flow_container)
 
     ids = [f"t{i}" for i in range(20)]
     kids = [task(i, created=k) for k, i in enumerate(ids)]
     edges = [(ids[i], ids[i - 4]) for i in range(4, 20)]
-    # A real container, not the root: the root is deliberately not clamped.
-    inner = ContainerScope(
-        container_id="e",
-        container_path="/e/",
-        depth=1,
-        children={t.id: t for t in kids},
-        existing={},
-        sibling_edges=list(edges),
-        child_sizes={t.id: (CARD_W, CARD_H) for t in kids},
-        origin=(0.0, 0.0),
-    )
-    layout_container(inner, mode="tidy")
+    layout_container(scope(kids, edges), mode="tidy")
 
     assert calls["flows"] > 1  # the sweep really did run
     assert calls["row_target"] == 1
-    assert calls["clamp"] == 1
+
+
+def test_epic_uses_fixed_width_without_optimizer_or_adaptive_target(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("epic dependency rows must not be optimized or widened")
+
+    monkeypatch.setattr(engine_module, "row_target", forbidden)
+    monkeypatch.setattr(engine_module, "_tidy_sweep", forbidden)
+    kids = [task(f"t{i}", created=i) for i in range(60)]
+    s = scope(kids)
+    s.container_id = "e"
+    result = layout_container(s, mode="tidy")
+    assert len({row.rel_y for row in result.rows.values()}) == 15
 
 
 def test_deterministic_under_shuffled_inputs():
