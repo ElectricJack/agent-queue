@@ -130,7 +130,7 @@ HANDCRAFTED_COVERAGE = {
     "wait_list",
     "wait_cancel",
     "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
-    "wait_decide", "wait_lift", "wait_legacy_bridge",
+    "wait_decide", "wait_lift", "wait_legacy_bridge", "wait_source_redispatch",
     # collaboration.py — positional THREAD ids and --claim-epoch resolution.
     "collaboration_create",
     "collaboration_accept",

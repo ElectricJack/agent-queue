@@ -7,12 +7,15 @@ Read-only. Prints one line per finding, or "OK: nothing stalled". Written
 integration-pipeline-incident-2026-09-20.md). The supervisor session runs it on
 a timer and acts on what it prints.
 """
+import argparse
+import atexit
 import datetime
 import json
 import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -20,6 +23,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
+STARTED = time.monotonic()
 NOW = time.time()
 READY_STALE_S = 20 * 60
 DEFINED_STALE_S = 30 * 60
@@ -64,7 +68,79 @@ _auth_lock = Lock()
 _auth_failed = False
 
 
+_read_cache = {}
+_timing_lock = Lock()
+_timings = Counter()
+_read_counts = Counter()
+_budget_reported = False
+
+
+def run(cmd, *, timeout=60, **kwargs):
+    """All external work shares one monotonic sweep budget, including Git."""
+    global _budget_reported
+    started = time.monotonic()
+    remaining = DEADLINE - started
+    try:
+        if remaining > 0:
+            kwargs.pop("capture_output", None)
+            with subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True, **kwargs,
+            ) as proc:
+                try:
+                    stdout, stderr = proc.communicate(timeout=min(timeout, remaining))
+                    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    # Shell pipelines and CLI children can inherit the pipes.
+                    # Kill the group before draining them so cleanup is bounded.
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    proc.communicate()
+                    if time.monotonic() < DEADLINE:
+                        raise
+        with _timing_lock:
+            if not _budget_reported:
+                _budget_reported = True
+                if findings:
+                    print("\n".join(findings), flush=True)
+                print(
+                    f"SWEEP-INCOMPLETE: {options.timeout:g}s sweep budget exhausted; "
+                    "remaining checks were not observed", flush=True,
+                )
+        raise SystemExit(1)
+    finally:
+        group = " ".join(cmd[:4] if cmd[0] == "aq" else cmd[:1])
+        with _timing_lock:
+            _timings[group] += time.monotonic() - started
+            _read_counts[group] += 1
+
+
+def print_timings():
+    if options.timings:
+        print(f"SWEEP-TIMING total {time.monotonic() - STARTED:.3f}s", file=sys.stderr)
+        for group in sorted(_timings):
+            print(f"SWEEP-TIMING {group}: {_read_counts[group]} calls, "
+                  f"{_timings[group]:.3f}s cumulative", file=sys.stderr)
+
+
 def aq(*args, timeout=60, missing_ok=False):
+    # One snapshot per identical read, including failures. Prefetch deduplicates
+    # requests before threads run; subsequent classification uses the same result.
+    key = (args, missing_ok)
+    if key not in _read_cache:
+        _read_cache[key] = observe(*args, timeout=timeout, missing_ok=missing_ok)
+    return _read_cache[key]
+
+
+def prefetch(reads, *, missing_ok=False):
+    reads = list(dict.fromkeys(tuple(args) for args in reads))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda args: aq(*args, missing_ok=missing_ok), reads))
+
+
+def observe(*args, timeout=60, missing_ok=False):
     global _auth_failed
     with _auth_lock:
         if _auth_failed:
@@ -77,7 +153,7 @@ def aq(*args, timeout=60, missing_ok=False):
         return None
 
     try:
-        proc = subprocess.run(
+        proc = run(
             ["aq", "--json", *args], capture_output=True, text=True, timeout=timeout
         )
     except subprocess.TimeoutExpired:
@@ -248,7 +324,7 @@ def aq(*args, timeout=60, missing_ok=False):
 
 def sh(cmd, timeout=30):
     try:
-        return subprocess.run(
+        return run(
             cmd, capture_output=True, text=True, timeout=timeout,
             encoding="utf-8", errors="replace",
         ).stdout
@@ -309,14 +385,14 @@ def stalled_blockers(dep_rows):
             continue
         if NOW - float(b["updated_at"]) < BLOCKER_STALE_S:
             continue
-        why = explain(bid)
-        brows = (why.get("reasons") or []) if isinstance(why, dict) else []
         # A blocker that is itself only queued behind another task is a link in
         # a chain; the chain's root reports on its own line. READY blockers are
         # covered by POOL-STARVED. Report each root blocker once per sweep.
         if bstatus in ("DEFINED", "READY") or bid in _blockers_reported:
             continue
         _blockers_reported.add(bid)
+        why = explain(bid)
+        brows = (why.get("reasons") or []) if isinstance(why, dict) else []
         cause = "; ".join(f"{x['code']}: {x['detail'][:70]}" for x in brows[:2]) or "no reason reported"
         notes.append(f"waits on {bid} [{bstatus} {age(b['updated_at'])}] -> {cause}")
     return notes
@@ -324,7 +400,17 @@ def stalled_blockers(dep_rows):
 
 # A per-project supervisor token reads only its own project; `--project PID`
 # sweeps just that one instead of tripping SWEEP-AUTH on the first other one.
-ONLY = sys.argv[sys.argv.index("--project") + 1] if "--project" in sys.argv else None
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--project", help="Sweep only this project")
+parser.add_argument("--skip-pools", action="store_true", help="Skip pool status reads")
+parser.add_argument("--timings", action="store_true", help="Print command timings to stderr")
+parser.add_argument("--timeout", type=float, default=55, help="Sweep budget in seconds (max 55)")
+options = parser.parse_args()
+if not math.isfinite(options.timeout) or not 0 < options.timeout <= 55:
+    parser.error("--timeout must be greater than zero and at most 55 seconds")
+ONLY = options.project
+DEADLINE = STARTED + options.timeout
+atexit.register(print_timings)
 # 2026-10-09: the development publisher, its validation database and
 # DAEMON_CHECKOUT belong to agent-queue. matter-engine-cpp's `--project` patrol
 # was reading agent-queue's tasks and database through those checks, so they
@@ -376,6 +462,7 @@ ready_by_profile = Counter()
 candidates: list[tuple[str, dict]] = []
 tasks_by_project: dict[str, list[dict]] = {}
 
+prefetch(("task", "list", "-p", pid) for pid in active)
 for pid in active:
     project_tasks = aq("task", "list", "-p", pid)
     if project_tasks is None:
@@ -402,24 +489,36 @@ for pid in active:
         ):
             candidates.append((pid, t))
 
-# `aq task explain` is one HTTP round trip each against a daemon that is often
-# busy; doing them serially took the sweep past 5 minutes on 2026-09-22 (it had
-# been ~45s). Fan them out and cache, so repeat ids cost nothing.
-_explain_cache: dict[str, dict] = {}
-
-
+# Explain only rows whose classification consumes it. Terminal and paused
+# rows need child counts instead; explaining all of them wastes CLI startups.
 def explain(tid):
-    if tid not in _explain_cache:
-        _explain_cache[tid] = aq("task", "explain", "--task-id", tid)
-    return _explain_cache[tid]
+    return aq("task", "explain", "--task-id", tid)
 
 
-with ThreadPoolExecutor(max_workers=8) as pool:
-    for tid, res in zip(
-        [c[1]["id"] for c in candidates],
-        pool.map(lambda c: aq("task", "explain", "--task-id", c[1]["id"]), candidates),
-    ):
-        _explain_cache[tid] = res
+queued = [t for _, t in candidates if t["status"] in ("READY", "DEFINED")]
+open_rows = [t for _, t in candidates if t["status"] in ("BLOCKED", "FAILED", "PAUSED")
+             and t["id"] not in HOLDS
+             and not (t["status"] == "FAILED" and t["id"] in SETTLED_FAILED)]
+prefetch([("task", "explain", "--task-id", t["id"]) for t in queued]
+         + [("task", "get", "--task-id", t["id"]) for t in open_rows])
+# Dependencies form a second read wave. Repeated dependents share one blocker
+# observation, including completion time; foreign-project refs remain untouched.
+blockers = set()
+for t in queued:
+    why = explain(t["id"]) or {}
+    for row in why.get("reasons") or []:
+        match = re.search(r"dep '([^']+)'", row["detail"])
+        if row["code"] == "blocked_dependency" and match and not foreign_blocker(row["detail"]):
+            blockers.add(match.group(1))
+prefetch(("task", "get", "--task-id", bid) for bid in sorted(blockers))
+prefetch(("task", "explain", "--task-id", bid) for bid in sorted(blockers)
+         if (b := aq("task", "get", "--task-id", bid) or {}).get("status")
+         in ("BLOCKED", "FAILED", "PAUSED")
+         and b.get("updated_at") and NOW - float(b["updated_at"]) >= BLOCKER_STALE_S)
+prefetch((("task", "get", "--task-id", m.group(1))
+          for t in open_rows if t["status"] in ("BLOCKED", "FAILED")
+          and t["id"].startswith("verify-") and (m := VERIFIER_TITLE.match(t["title"]))),
+         missing_ok=True)
 
 for pid, t in candidates:
         tid, status, prof = t["id"], t["status"], t.get("profile_id") or "-"
@@ -568,7 +667,7 @@ for pid, t in candidates:
         stale_ready[prof] += 1
 # `--project-id` filters only the per-project rows; a pool's own counters stay
 # fleet-wide, so a scoped sweep compares against its project's frontier.
-pools = aq("pool", "status", *(("--project-id", ONLY) if ONLY else ())) or []
+pools = [] if options.skip_pools else aq("pool", "status", *(("--project-id", ONLY) if ONLY else ())) or []
 for p in pools if isinstance(pools, list) else pools.get("pools", []):
     prof = p.get("profile_id")
     if not p.get("enabled"):
@@ -663,6 +762,11 @@ def wait_evidence(pid, task, holder, session):
 # An empty successful list proves absence; a failed/truncated read does not.
 # Read current claim identity before classifying an old task-list observation.
 if session_rows is not None:
+    prefetch(("task", "show", t["id"])
+             for tasks in tasks_by_project.values() for t in tasks
+             if t["status"] == "IN_PROGRESS" and not t.get("is_container")
+             and t.get("task_type") not in ("epic", "container")
+             and NOW - float(t["updated_at"]) > SESSION_IDLE_S)
     for pid, project_tasks in tasks_by_project.items():
         for t in project_tasks:
             if (t["status"] != "IN_PROGRESS" or t.get("is_container")
@@ -853,10 +957,6 @@ def development_checks():
     """
     sh(["docker", "exec", "aq-postgres", "psql", "-U", "agent_queue", "-d", "agent_queue", "-At",
         "-F", " ", "-o", "/tmp/strand.txt", "-c", STRAND_SQL])
-    def explain_cached(tid):
-        if tid not in _explain_cache:
-            _explain_cache[tid] = aq("task", "explain", "--task-id", tid) or {}
-        return _explain_cache[tid]
 
     for line in sh(["docker", "exec", "aq-postgres", "cat", "/tmp/strand.txt"]).splitlines():
         parts = line.split()
@@ -869,7 +969,7 @@ def development_checks():
         # only proves it has no delivery of its own, which is true of all unstarted
         # work. Ask the daemon whether it is actually held by THIS blocker
         # (2026-09-22: smart-beacon.2/.3 and grand-falcon.2 were false positives).
-        why = explain_cached(dependent)
+        why = explain(dependent)
         reasons = why.get("reasons", []) if isinstance(why, dict) else []
         if not any(r.get("code") == "blocked_dependency" and blocker in (r.get("detail", "") + r.get("ref", ""))
                    for r in reasons):
@@ -913,7 +1013,7 @@ def development_checks():
         # a skip still matters: resolved when the child's commit is on main, OR when
         # merging it into main would change nothing (its content already landed via
         # another branch, e.g. a superseded repair; 2026-09-24).
-        delivered = subprocess.run(
+        delivered = run(
             ["git", "-C", DAEMON_CHECKOUT, "merge-base", "--is-ancestor",
              child_tip, "origin/main"], capture_output=True).returncode == 0
         if not delivered and _main_tree:

@@ -226,6 +226,61 @@ async def test_batch_dep_map_includes_status(db):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("filters, expected", [
+    ({}, ["active", "ready", "other-ready"]),
+    ({"status": "READY"}, ["ready", "other-ready"]),
+    ({"include_completed": True}, ["completed", "active", "ready", "other-ready"]),
+    ({"completed_only": True}, ["completed"]),
+    ({"project_id": PROJECT_ID, "status": "READY"}, ["ready"]),
+])
+async def test_list_tasks_limit_after_filters_across_projects(handler, db, filters, expected):
+    await db.create_project(Project(id="other", name="Other"))
+    for priority, (tid, status, project) in enumerate([
+        ("completed", TaskStatus.COMPLETED, PROJECT_ID),
+        ("active", TaskStatus.IN_PROGRESS, PROJECT_ID),
+        ("ready", TaskStatus.READY, PROJECT_ID),
+        ("other-ready", TaskStatus.READY, "other"),
+    ]):
+        await db.create_task(Task(
+            id=tid, project_id=project, title=tid, description="d",
+            status=status, priority=priority,
+        ))
+    result = await handler.execute("list_tasks", {**filters, "limit": 1})
+    assert "error" not in result
+    assert [t["id"] for t in result["tasks"]] == expected[:1]
+    assert result["total"] == len(expected)
+    if not filters:
+        assert result["hidden_completed"] == 1
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "1"])
+async def test_list_tasks_invalid_limit(handler, limit):
+    result = await handler.execute("list_tasks", {"limit": limit})
+    assert result["success"] is False
+    assert "positive integer" in result["error"]
+
+
+@pytest.mark.parametrize("args, message", [
+    ({"display_mode": "tree"}, "flat"),
+    ({"display_mode": "compact"}, "flat"),
+    ({"pagination": "snapshot"}, "page_size"),
+])
+async def test_list_tasks_limit_unsupported_modes(handler, args, message):
+    result = await handler.execute("list_tasks", {**args, "limit": 1})
+    assert result["success"] is False
+    assert message in result["error"]
+
+
+async def test_list_tasks_limit_empty_and_larger_than_total(handler, db):
+    empty = await handler.execute("list_tasks", {"limit": 5})
+    assert empty["tasks"] == []
+    assert empty["total"] == 0
+    await db.create_task(_task("only-task"))
+    result = await handler.execute("list_tasks", {"limit": 5})
+    assert [t["id"] for t in result["tasks"]] == ["only-task"]
+    assert result["total"] == 1
+
+
 @pytest.mark.asyncio
 async def test_list_tasks_show_dependencies(handler, db):
     """list_tasks with show_dependencies=True should include dep data."""

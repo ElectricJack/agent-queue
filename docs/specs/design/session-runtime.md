@@ -169,6 +169,11 @@ exit classifier:
 | Task already closed, session lingering | Normal drain path (kill, `stopped`) |
 | Productive death (ran long, exited, task open) | `needs_attention` / re-queue per retry policy — never silently READY |
 
+During orphan reconciliation, a `RESUME_PENDING` task's live session is retained
+when its id is in `continuation_occupancy()`'s resuming set. Read that set at most
+once per tick. This protects the continuation's new session until acknowledgment
+without treating old sessions or all `RESUME_PENDING` tasks as live pool claims.
+
 Restart counters (`restarts`) and `quarantined_at` are **persisted on the session row**, so
 the ladder survives daemon restarts.
 
