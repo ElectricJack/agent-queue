@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:5bf976ec1f3fb7e6f958bcd477098e5ba8f36195439bc1eee798321c5de6bae7` |
+| Contract fingerprint | `sha256:ac35b2a56e0692d193a17880626dcd3f44984791e226d8647ab8e8133e6098f9` |
 
 ## Parameters
 
@@ -46,6 +46,7 @@ Projected into the run receipt: `project_id`, `batch_id`, `task_id`, `origin_id`
 
 | Outcome | Classification | Meaning |
 |---|---|---|
+| `existing_batch` | success | — |
 | `no_ready_work` | success | — |
 | `preview` | success | — |
 | `refused` | failure | — |
