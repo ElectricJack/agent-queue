@@ -1,5 +1,6 @@
 """Reserve common capacity and launch a fresh continuation through task execution."""
 
+import errno
 import json
 import time
 import uuid
@@ -16,10 +17,26 @@ from src.database.tables import (
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
 from src.waits.conditions import WaitError
+from src.waits.admission import admission_pass
+
+from src.waits.graph import background_graph_work
 from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
 from src.wait_runtime.legacy_parking import parked
+
+
+WORKSPACE_ATTEMPTS = 3
+
+
+def retryable_workspace_error(exc):
+    """Retry contention and interrupted transport, never checkout identity failures."""
+    if isinstance(exc, WaitError):
+        return exc.code == 'wait.graph_busy'
+    return (isinstance(exc, (TimeoutError, ConnectionError))
+            or isinstance(exc, OSError) and exc.errno in {
+                errno.EAGAIN, errno.EBUSY, errno.ETIMEDOUT, errno.ECONNRESET,
+            })
 
 
 async def verify_saved_branch(orch, task, path):
@@ -68,7 +85,20 @@ class ResumeTransaction:
         self.db = self.orch.db
         self.clock = clock
 
+    @background_graph_work()
     async def reserve(self, continuation_id, generation):
+        """Refresh Git before capturing admission, outside the global graph lock."""
+        from src.integration.delivery_observer import hierarchy_frontier_modes
+        async with self.db._engine.connect() as conn:
+            task_id = await conn.scalar(select(continuations.c.task_id).where(
+                continuations.c.id == continuation_id, continuations.c.resume_state == 'queued',
+            ))
+        if task_id:
+            await hierarchy_frontier_modes(self.db, task_id=task_id)
+        return await self._reserve(continuation_id, generation)
+
+    @admission_pass("service.scheduler.reader")
+    async def _reserve(self, continuation_id, generation):
         async with self.db._engine.begin() as conn:
             wait_id = await conn.scalar(select(continuations.c.wait_id).where(
                 continuations.c.id == continuation_id,
@@ -155,10 +185,16 @@ class ResumeTransaction:
             if await git._arun(['status', '--porcelain'], cwd=target):
                 raise WaitError('continuation.head_drift', 'recovered checkout is not clean')
             kind = await self.db.resolve_workspace_kind(task.project_id, workspace.kind_id)
+            base = await self.db.get_workspace(workspace.base_workspace_id)
+            if base is None:
+                raise WaitError('wait.unavailable', 'worktree base disappeared')
+            await self.db.update_workspace(workspace.id, workspace_path=target)
+            self.orch._worktree_base_paths[target] = base.workspace_path
             await self.orch._worktree_slots().reprovision_slot(
                 replace(workspace, workspace_path=target), kind, prune=False,
             )
-            await self.db.update_workspace(workspace.id, workspace_path=target)
+            # A restart may have landed before the old folder was retired.
+            await self.retire_checkout(stage['old_path'], target, base)
             return target
         path = await self.orch._prepare_workspace_locked(task, agent)
         workspace = await self.db.get_workspace_for_task(task.id)
@@ -191,18 +227,33 @@ class ResumeTransaction:
             await git._arun_unlocked(['worktree', 'add', target, intent['branch']],
                                      cwd=base.workspace_path)
         fresh = replace(workspace, workspace_path=target)
+        # Cleanup must see the checkout holding the branch even if setup fails.
+        await self.db.update_workspace(workspace.id, workspace_path=target)
+        self.orch._worktree_base_paths[target] = base.workspace_path
         # reprovision reuses this *new* checkout and applies the configured
         # setup and ownership sentinel. It never copies an old agent folder.
         await self.orch._worktree_slots().reprovision_slot(fresh, kind, prune=False)
         await git._arun(['merge-base', '--is-ancestor', intent['saved_head'], 'HEAD'], cwd=target)
-        await self.db.update_workspace(workspace.id, workspace_path=target)
-        # Old detached folder is clean and unowned after the atomic path update.
-        # Removal failure is harmless retained disk, never a second writer.
+        await self.retire_checkout(path, target, base)
+        return target
+
+    async def retire_checkout(self, old_path, target, base):
+        """Remove the superseded detached folder once no row names it.
+
+        The old folder is clean and unowned after the atomic path update;
+        ``worktree remove`` without ``--force`` refuses anything else, so a
+        failure is harmless retained disk, never a second writer.
+        """
+        old = Path(old_path)
+        if old.resolve() == Path(target).resolve() or not old.is_dir():
+            return
+        for row in await self.db.list_workspaces():
+            if row.workspace_path and Path(row.workspace_path).resolve() == old.resolve():
+                return
         try:
-            await git._arun(['worktree', 'remove', path], cwd=base.workspace_path)
+            await self.orch.git._arun(['worktree', 'remove', str(old)], cwd=base.workspace_path)
         except Exception:
             pass
-        return target
 
     async def dispatch(self, args, *, principal, scope, handler):
         async with self.db._engine.connect() as conn:
@@ -245,14 +296,64 @@ class ResumeTransaction:
                         continuations.c.id == current['id'],
                     ).values(facts=facts))
             except Exception as exc:
-                await self.failed(action, task, f'workspace preparation: {exc}', handler=handler,
-                                  hold_reason='resume_workspace_failed')
-                return {'success': True, 'held': True}
+                if retry_at := await self.workspace_retry(action, intent['wait_id'], exc):
+                    return {'success': True, 'retry_queued': True, 'retry_at': retry_at}
+                return await self.failed(action, task, f'workspace preparation: {exc}',
+                                         handler=handler, hold_reason='resume_workspace_failed')
             try:
                 await self.orch._launch_session_for_task_locked(action, task, None, workspace)
             except Exception as exc:
                 return await self.failed(action, task, str(exc), handler=handler)
             return {'success': True, 'dispatched': True}
+
+    async def workspace_retry(self, action, wait_id, exc):
+        """Keep the reservation and checkout for a backoff; None means hold instead."""
+        async with self.db._engine.begin() as conn:
+            task, _, intent = await locked_suspension(conn, wait_id)
+            if (intent['id'], intent['suspension_generation'], intent['resume_state']) != (
+                    action.continuation_id, action.generation, 'reserved'):
+                return None
+            failures = intent['facts'].get('workspace_retry', {}).get('failures', 0) + 1
+            retry_at = self.clock() + 5 * 2 ** (failures - 1)
+            await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+                facts={**intent['facts'], 'workspace_retry': {
+                    'failures': failures, 'due_at': retry_at, 'error': str(exc)}}))
+        if task['status'] != 'PAUSED' and failures < WORKSPACE_ATTEMPTS and retryable_workspace_error(exc):
+            return retry_at
+
+    async def requeue(self, args, *, principal, scope, handler):
+        """Supervisor repair of a resolved wait's held resume, fenced by generation."""
+        async with self.db._engine.begin() as conn:
+            task, wait, intent = await locked_suspension(conn, args['wait_id'])
+            if scope.get('project_id') not in (None, task['project_id']):
+                raise WaitError('wait.out_of_scope', 'continuation is outside supervisor scope')
+            await self.service.decisions.authorize(conn, principal, task['project_id'])
+            if (intent['id'], intent['suspension_generation']) != (
+                    args['continuation_id'], args['expected_generation']):
+                raise WaitError('continuation.stale_generation', 'held resume generation changed')
+            if (intent['resume_state'] != 'held' or task['status'] != 'RESUME_PENDING'
+                    or intent['hold_reason'] not in {'resume_workspace_failed', 'resume_launch_failed'}
+                    or wait['outcome'] == 'pending' or wait['cleared_at'] is not None):
+                raise WaitError('wait.unavailable', 'continuation has no repairable resume hold')
+            if await conn.scalar(select(sessions.c.id).where(sessions.c.task_id == task['id'],
+                                 sessions.c.state.not_in(('stopped', 'failed'))).limit(1)):
+                raise WaitError('continuation.stop_uncertain', 'task still has a live process')
+            audit = {'wait_id': wait['id'], 'continuation_id': intent['id'],
+                     'generation': intent['suspension_generation'], 'at': self.clock(),
+                     'note': args['note'], 'principal_kind': principal.kind,
+                     'session_id': principal.session_id, 'hold_reason': intent['hold_reason']}
+            # A workspace hold keeps its reserved agent and grant; a launch hold released both.
+            kept = task['assigned_agent_id'] is not None
+            await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+                resume_state='reserved' if kept else 'queued', hold_reason=None,
+                launch_attempts=intent['launch_attempts'] if kept else 0, new_session_id=None,
+                envelope_id=None, version=intent['version'] + 1,
+                facts={**intent['facts'], 'workspace_retry': {}, 'resume_requeue': audit}))
+            await conn.execute(insert(events).values(
+                event_type='wait.resume_requeued', project_id=task['project_id'],
+                task_id=task['id'], timestamp=audit['at'], payload=json.dumps(audit)))
+            return {'success': True, 'wait_id': wait['id'], 'decision': 'requeue',
+                    'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
 
     async def bind_launch(self, action, record):
         """Commit the next process identity and immutable envelope before spawn."""
@@ -293,8 +394,8 @@ class ResumeTransaction:
             ).values(state='consumed', consumed_by_session_id=record.id, consumed_at=self.clock()))
 
     async def failed(self, action, task, reason, *, handler, hold_reason=None):
-        from src.database.tables import integration_branch_owners
-        from src.orchestrator.workspace_attachments import detach_slot_for_integration_handoff
+        from src.database.queries.claim_queries import retire_owner_attachments
+        from src.orchestrator.workspace_attachments import detach_task_slot
 
         async with self.db._engine.connect() as conn:
             original = (await conn.execute(select(continuations).where(
@@ -304,16 +405,10 @@ class ResumeTransaction:
         workspace = await self.db.get_workspace_for_task(action.task_id)
         if session and session.state != 'stopped':
             hold_reason = 'resume_stop_uncertain'
-        if not hold_reason and workspace:
-            project = await self.db.get_project(task.project_id)
-            repository = await self.db.get_repo(task.repo_id or project.integration_repository_id)
-            detached = bool(repository and await detach_slot_for_integration_handoff(
-                self.db, self.orch.git, self.orch._git_mutex, workspace,
-                expected_branch=original['branch'], repository_url=repository.url,
-                default_branch=repository.default_branch,
-            ))
-            if not detached:
-                hold_reason = 'resume_detach_uncertain'
+        if not hold_reason and workspace and not await detach_task_slot(
+            self.db, self.orch, task, workspace, original['branch'],
+        ):
+            hold_reason = 'resume_detach_uncertain'
         async with self.db._engine.begin() as conn:
             task_row, wait, intent = await locked_suspension(conn, original['wait_id'])
             if intent['suspension_generation'] != action.generation:
@@ -333,17 +428,9 @@ class ResumeTransaction:
                     conn, task_row, wait, intent, hold_reason, handler, detail=reason,
                 )
             if session and workspace:
-                owners = (await conn.execute(select(integration_branch_owners).where(
-                    integration_branch_owners.c.owner_id == task_row['id'],
-                    integration_branch_owners.c.session_id == session.id,
-                ).with_for_update())).mappings().all()
-                for owner in owners:
-                    if owner['handoff_state'] != 'attached' or owner['workspace_id'] != workspace.id:
-                        raise WaitError('continuation.stop_uncertain', 'resume attachment changed')
-                    await conn.execute(update(integration_branch_owners).where(
-                        integration_branch_owners.c.id == owner['id'],
-                    ).values(handoff_state='reserved', session_id=None, workspace_id=None,
-                             confirmed_workspace_id=workspace.id, updated_at=self.clock()))
+                await retire_owner_attachments(conn, task_row['id'], {session.id}, {workspace.id},
+                    WaitError('continuation.stop_uncertain', 'resume attachment changed'),
+                    self.clock())
             if intent['launch_attempts'] >= 2:
                 result = await self.service.lifecycle.hibernate.hold(
                     conn, task_row, wait, intent, 'resume_launch_failed', handler, detail=reason,

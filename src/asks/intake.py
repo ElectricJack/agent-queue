@@ -12,6 +12,7 @@ from sqlalchemy import or_, select
 
 from src.asks import discussion
 from src.asks.authority import addressed_supervisor, public_allowed, visible
+from src.asks.delivery import config_fingerprint
 from src.asks.models import (
     AskError,
     DecisionActor,
@@ -113,7 +114,9 @@ async def admit_gateway(handler, envelope, *, source):
     if not envelope.text.strip() or len(envelope.text) > 4000:
         raise AskError("ask.invalid_input", "Live human input must contain 1–4000 characters")
     if not await handler.db.ask_channel_enabled(
-        channel_id=envelope.channel_id, guild_id=envelope.guild_id
+        channel_id=envelope.channel_id, guild_id=envelope.guild_id,
+        project_id=settings.project_id or None,
+        config_fingerprint=config_fingerprint(handler.config),
     ):
         raise AskError("ask.channel_disabled", "Shared intake ownership has not transferred")
     values = input_values(
@@ -309,7 +312,10 @@ async def route(handler, item):
                 mode = await db.get_ask_mode(
                     ask["project_id"], destination(handler.config), conn=conn
                 )
-                if not mode or mode["mode"] != "channel":
+                if (
+                    not mode or mode["mode"] != "channel"
+                    or mode["config_fingerprint"] != config_fingerprint(handler.config)
+                ):
                     return await clarify(
                         handler,
                         item,

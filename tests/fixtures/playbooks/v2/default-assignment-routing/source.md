@@ -5,6 +5,9 @@ role: assignment-routing
 profile_id: playbook-compiler
 scope: system
 enabled: true
+required_capabilities:
+  - task_route_plan
+  - task_route_apply
 triggers:
   - task.route_needed
 max_tokens: 4096
@@ -34,10 +37,9 @@ it; no code changes. The design is
 
 The rule is admitted only when all of these hold:
 
-- the current hydrated `task` row is `DEFINED`, `READY` or `BLOCKED`;
-- its `task.route_source` is `unrouted` or `legacy`;
-- the event's `router`, the project's bound routing playbook, is
-  `default-assignment-routing`, this playbook's id.
+- the hydrated `task.status` is `in` `["DEFINED", "READY", "BLOCKED"]`;
+- the hydrated `task.route_source` is `in` `["unrouted", "legacy"]`;
+- the event's `router` is `eq` `default-assignment-routing`, this playbook's id.
 
 The guard reads the current row rather than the event payload: route-needed
 events are re-emitted, and one can arrive after another run routed the task or
@@ -83,6 +85,24 @@ once.
    also ends it and writes nothing: the task was claimed, finished or routed
    after it was planned. A `rejected` or `runtime_error` outcome fails the
    rule.
+
+## Typed command boundary
+
+The source declares exactly `task_route_plan` and `task_route_apply` as
+`required_capabilities`. They are typed commands: branch on their declared
+outcomes, bind their complete values, and pass the selected plan unchanged to
+apply. The classifier reads only `plan_a.title`, `plan_a.description`,
+`plan_a.task_type`, `plan_a.class_hint`, `plan_a.questions`,
+`plan_a.allowed_kinds` and `plan_a.allowed_classes`. Its existing limits are
+`max_calls` `1`, `max_output_tokens` `4096`, `max_total_tokens` `4096` and
+`timeout_seconds` `300`, with tools disabled.
+
+Keep the three plan/apply paths: bindings are single assignment and each apply
+must receive the plan from its own path. Capacity and quota observations stay
+inside the planner and are refreshed by apply; an extra snapshot would change
+the observation boundary. This rule needs no collection loop, durable state,
+notification, doctor scan or script. Routing policy and classifier guidance
+below remain verbatim.
 
 ## Routing policy
 

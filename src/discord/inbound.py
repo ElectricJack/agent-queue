@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+from src.asks.delivery import config_fingerprint
 from src.commands.principal import ExecutionPrincipal, principal_context
 from src.conversations.intake import (
     ACTION_IGNORE,
@@ -147,7 +148,9 @@ class DiscordInboundRouter:
         if enabled is not None:
             try:
                 active = await enabled(channel_id=str(self._config.discord.channel_id),
-                                       guild_id=str(self._config.discord.guild_id))
+                                       guild_id=str(self._config.discord.guild_id),
+                                       project_id=self._config.discord.project_id or None,
+                                       config_fingerprint=config_fingerprint(self._config))
                 if active is True:
                     return await self._route_shared(message, bot_user_id=bot_user_id, source=source)
             except Exception:
