@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-
+import contextlib
+import subprocess
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,7 +21,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.git.manager import GitError
+from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, BranchOwnershipError
 from src.models import (
@@ -34,6 +35,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from src.orchestrator.workspace_attachments import _probe_workspace_checkout
 
 pytestmark = pytest.mark.asyncio
 
@@ -2889,3 +2891,85 @@ async def test_public_transfer_refuses_an_orphaned_attachment_with_newer_session
         ).transfer(Fence(target=target, owner_id="task", token=4), "operation", "collector")
 
     assert events == []
+
+
+@pytest.mark.parametrize("unsafe", [None, "live", "dirty", "reused", "hung"])
+async def test_reopen_settles_drained_pool_predecessor_before_ready(
+    orchestrator_factory, tmp_path, monkeypatch, unsafe,
+):
+    orch = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending",
+    )
+    db = orch.db
+    await db.update_task("task", status=TaskStatus.COMPLETED)
+    events = []
+    current_branch, run = _clean_git(events, dirty=unsafe == "dirty")
+    orch.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orch.git._arun_unlocked = AsyncMock(side_effect=run)
+    orch.git._arun = AsyncMock(side_effect=run)
+
+    async def confirm(_handle):
+        if unsafe == "hung":
+            await asyncio.Event().wait()
+        return unsafe != "live"
+
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(side_effect=confirm))
+    monkeypatch.setattr(orch.session_providers, "create", lambda *_args: provider)
+    if unsafe == "reused":
+        await db.create_task(Task(
+            id="another-task", project_id="p", title="Replacement", description="",
+        ))
+        await db.update_agent("agent", current_task_id="another-task")
+    if unsafe == "hung":
+        orch.config.swarm.prepare_timeout = 0.1
+    result = await asyncio.wait_for(orch._command_handler.execute(
+        "reopen_with_feedback", {"task_id": "task", "feedback": "Please fix the regression"},
+    ), timeout=5)
+    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch="aq/parent"))
+    if unsafe is None:
+        assert result["success"], result
+        assert (await db.get_task("task")).status is TaskStatus.READY
+        assert (await db.get_task("task")).claim_epoch == 3
+        assert owner["handoff_state"] == "reserved" and owner["fence_token"] > 4
+        assert (await db.get_session("session")).task_id is None
+        assert (await db.get_workspace("slot")).locked_by_task_id is None
+        assert "detach" in events
+    else:
+        assert not result["success"], result
+        assert (await db.get_task("task")).status is TaskStatus.COMPLETED
+        assert owner["handoff_state"] == "handoff_pending" and owner["fence_token"] == 4
+        assert (await db.get_session("session")).task_id == "task"
+        assert (await db.get_workspace("slot")).locked_by_task_id == "task"
+        assert "detach" not in events
+
+
+def _run_git(cwd, *args) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("case", ["published", "unpublished", "other_branch"])
+async def test_probe_treats_a_never_created_task_branch_as_already_detached(tmp_path, case):
+    # A preparation that failed before checkout leaves no local task branch.
+    origin, slot = tmp_path / "origin.git", tmp_path / "slot"
+    _run_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    _run_git(tmp_path, "clone", "-q", str(origin), str(slot))
+    for key, value in (("user.email", "t@example.com"), ("user.name", "t")):
+        _run_git(slot, "config", key, value)
+    _run_git(slot, "commit", "-q", "--allow-empty", "-m", "base")
+    _run_git(slot, "push", "-q", "origin", "main")
+    if case == "other_branch":
+        _run_git(slot, "switch", "-q", "-c", "aq/other")
+    else:
+        _run_git(slot, "switch", "-q", "--detach")
+    if case == "unpublished":
+        _run_git(slot, "commit", "-q", "--allow-empty", "-m", "local only")
+    head = _run_git(slot, "rev-parse", "HEAD")
+
+    proof = await _probe_workspace_checkout(
+        GitManager(), lambda _path: contextlib.nullcontext(),
+        SimpleNamespace(workspace_path=str(slot)), expected_branch="aq/never-created",
+    )
+
+    assert proof == (head if case == "published" else None)

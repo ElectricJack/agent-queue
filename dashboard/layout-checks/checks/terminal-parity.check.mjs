@@ -208,7 +208,12 @@ export async function run(t) {
     `rotating back left ${JSON.stringify(initial.cols)} columns`);
 
   await t.page.$eval(PHONE_HOST, el => el.scrollIntoView({ block: "start" }));
-  const covered = Math.round(vp.height * 0.4);
+  const terminal = await rect(t.page, PHONE_HOST);
+  // A short terminal can fit above a keyboard covering 40% of the viewport.
+  // Cover its lower rows too, so this always exercises the keyboard resize.
+  const covered = Math.round(Math.max(
+    vp.height * 0.4, vp.height - terminal.top - terminal.height * 0.6,
+  ));
   await setKeyboard(t.page, covered);
   const typing = await poll(() => reported(phoneViewer), (size) => size.rows < initial.rows, 5_000,
     "the on-screen keyboard did not take rows from the agent terminal");

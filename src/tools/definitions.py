@@ -361,6 +361,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
+    "task_claim_abort": "task",
     "memory_save": "memory",
     "memory_search": "memory",
     "knowledge_create": "knowledge",
@@ -5922,6 +5923,25 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "task_claim_abort",
+        "description": (
+            "Abort one exact hung pool claim preparation (operator or live supervisor only). "
+            "Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains "
+            "the claim and branch ownership; active workers are refused."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Preparing task ID."},
+                "session_id": {"type": "string", "description": "Exact preparing session ID."},
+                "claim_epoch": {"type": "integer", "minimum": 1},
+                "instance_token": {"type": "string", "minLength": 1},
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "required": ["task_id", "session_id", "claim_epoch", "instance_token", "reason"],
+        },
+    },
+    {
         "name": "task_handoff",
         "description": (
             "Record a structured handoff (8 KiB combined UTF-8 agent text, at most 20 "
@@ -9539,7 +9559,7 @@ _WAIT_V2_DESCRIPTIONS = {
     "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
     "wait_decide": "Record a supervisor decision for a verified wait.",
     "wait_lift": "Lift an escalated verified wait with an authorized decision.",
-    "wait_source_redispatch": "Reobserve one durable source event in a supervisor project.",
+    "wait_source_redispatch": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
 }
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],

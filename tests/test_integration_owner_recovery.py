@@ -10,6 +10,7 @@ See docs/superpowers/specs/2026-09-21-integration-owner-recovery-design.md §3.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import subprocess
 import time
@@ -32,6 +33,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitManager
+from src.git.repository_lock import RepositoryLock, repository_lock_wait_limit
 from src.integration.owner_recovery import (
     RECOVERABLE_STATES,
     OwnerRecovery,
@@ -280,6 +282,89 @@ def detached(path) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(("operation", "fetch_fails", "late_live"), [
+    ("recover", False, False),
+    ("restore", False, False),
+    ("recover", True, False),
+    ("restore", True, False),
+    ("recover", False, True),
+])
+async def test_slow_owner_refresh_allows_bounded_claim_waiter(
+    env, monkeypatch, operation, fetch_fails, late_live,
+):
+    from src.commands.contracts.integration import IntegrationRestoreTaskOriginArgs
+    from src.git.manager import GitError
+
+    env.branch("aq/refresh")
+    await env.task("refresh")
+    await env.db.update_task("refresh", repo_id="r", branch_name="aq/refresh")
+    slot = await env.slot("slot", "aq/refresh") if operation == "recover" else None
+    await env.owner(
+        "owner", "aq/refresh", "refresh",
+        state="attached" if operation == "recover" else "released",
+        workspace_id="ws-slot" if slot else None,
+    )
+    service = env.service()
+    lock = RepositoryLock()
+    service.git_mutex = lambda _path: lock
+    service.git.set_lock_provider(lambda _path: lock)
+    checking, finish = asyncio.Event(), asyncio.Event()
+    fetch, remote = service.git.afetch_origin, service.git.als_remote_ref
+
+    async def slow_refresh(*args, **kwargs):
+        checking.set()
+        await finish.wait()
+        assert not kwargs.get("lock_held", False)
+        if fetch_fails:
+            raise GitError("lender verification failed")
+        return await fetch(*args, **kwargs)
+
+    async def read_remote(*args, **kwargs):
+        assert lock.locked(), "remote proof must be captured under repository exclusion"
+        return await remote(*args, **kwargs)
+
+    monkeypatch.setattr(service.git, "afetch_origin", slow_refresh)
+    monkeypatch.setattr(service.git, "als_remote_ref", read_remote)
+    run = asyncio.create_task(
+        service.recover("owner", principal="supervisor") if operation == "recover" else
+        service.restore_task_origin(
+            IntegrationRestoreTaskOriginArgs(task_id="refresh"), principal="supervisor",
+        )
+    )
+    try:
+        await asyncio.wait_for(checking.wait(), 10)
+        with repository_lock_wait_limit(0.1):
+            async with service.git.arepository_transaction(str(env.base)):
+                assert not run.done()
+                assert (await env.row("owner"))["handoff_state"] == (
+                    "attached" if operation == "recover" else "released"
+                )
+                if slot:
+                    assert not detached(slot)
+        if late_live:
+            await env.session(
+                "successor", work_dir=slot, state="running", desired_state="running",
+                lifecycle="named",
+            )
+        finish.set()
+        result = await asyncio.wait_for(run, 10)
+        outcome = result.outcome if operation == "recover" else result["outcome"]
+        assert outcome == (
+            "not_eligible" if fetch_fails or late_live else
+            "released" if operation == "recover" else "preview"
+        )
+        if slot:
+            assert detached(slot) is (not fetch_fails and not late_live)
+        if late_live:
+            assert result.reason == "checkout_in_use"
+            assert (await env.row("owner"))["handoff_state"] == "attached"
+        assert not lock.locked()
+    finally:
+        finish.set()
+        run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
+
+
 async def test_stopped_writer_on_a_clean_published_checkout_is_released(env):
     env.branch("aq/t1")
     slot = await env.slot("slot", "aq/t1", locked_by_task_id=None)
@@ -497,6 +582,44 @@ async def test_a_writer_that_is_not_proven_gone_is_refused(env, case):
     assert len(await env.events("integration.owner_recovery_refused")) == 1
     if case == "running":
         confirm.assert_not_awaited()
+
+
+@pytest.mark.parametrize("dead", [True, False])
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_a_drained_writer_whose_stop_write_was_lost_needs_only_provider_proof(
+    env, dead, dry_run,
+):
+    # A teardown that never wrote state=stopped leaves draining under stop intent.
+    env.branch("aq/t6d")
+    slot = await env.slot("slot", "aq/t6d", locked_by_task_id=None)
+    await env.task("t6d")
+    await env.session(
+        "s6d", work_dir=slot, state="draining", desired_state="stopped", task_id="t6d",
+    )
+    await env.owner(
+        "o6d", "aq/t6d", "t6d", session_id="s6d", workspace_id="ws-slot",
+        state="handoff_pending",
+    )
+    confirm = AsyncMock(return_value=dead)
+
+    result = await env.service(confirm_stopped=confirm).recover(
+        "o6d", principal="human:local-operator", dry_run=dry_run,
+    )
+
+    async with env.db._engine.connect() as conn:
+        state = (await conn.execute(
+            select(sessions.c.state).where(sessions.c.id == "s6d"))).scalar_one()
+    if not dead:
+        assert (result.outcome, result.reason) == ("not_eligible", "writer_live")
+        assert state == "draining"
+    elif dry_run:
+        # A preview records nothing, so the unrecorded stop still refuses it.
+        assert (result.outcome, result.reason) == ("not_eligible", "writer_live")
+        assert state == "draining"
+    else:
+        assert (result.outcome, result.reason) == ("released", None)
+        assert state == "stopped"
+        assert (await env.row("o6d"))["handoff_state"] == "released"
 
 
 @pytest.mark.parametrize("case", ["claimed", "claiming", "named"])
