@@ -38,6 +38,7 @@ from src.playbooks.executors.command import (
 from src.playbooks.executors.decision import DecisionExecutor
 from src.playbooks.executors.foreach import ForEachExecutor
 from src.playbooks.executors.llm import LiveLlmExecutor, SymbolicLlmExecutor
+from src.playbooks.executors.script import LiveScriptExecutor, SymbolicScriptExecutor
 from src.playbooks.executors.terminal import TerminalExecutor
 from src.playbooks.executors.wait import LiveWaitExecutor, ReportingWaitExecutor
 
@@ -56,6 +57,7 @@ REPORTING_WAIT_EXECUTOR = ReportingWaitExecutor()
 
 EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
     ExecutionMode.LIVE: {
+        "script": LiveScriptExecutor(),
         "agent_task": LiveAgentTaskExecutor(),
         "command": LiveCommandExecutor(),
         "llm": LiveLlmExecutor(),
@@ -65,6 +67,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.DRY_RUN: {
+        "script": SymbolicScriptExecutor(),
         "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": PreviewCommandExecutor(),
         "llm": SymbolicLlmExecutor(),
@@ -74,6 +77,7 @@ EXECUTORS: Mapping[ExecutionMode, Mapping[str, Executor]] = {
         "terminal": TERMINAL_EXECUTOR,
     },
     ExecutionMode.SHADOW: {
+        "script": SymbolicScriptExecutor(),
         "agent_task": SYMBOLIC_AGENT_TASK_EXECUTOR,
         "command": ShadowCommandExecutor(),
         "llm": SymbolicLlmExecutor(),
