@@ -1,7 +1,9 @@
 import pathlib
 import subprocess
 import pytest
+
 from src.git.manager import GitManager, GitError
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -42,15 +44,11 @@ def _head_sha(cwd: str) -> str:
 
 @pytest.fixture
 def git_repo(tmp_path):
-    """Create a bare remote + working clone for testing."""
+    """Create a bare remote + working clone for this test."""
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(str(remote))
     clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
+    clone_seed(str(remote), str(clone))
     # Create initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
@@ -62,6 +60,7 @@ def git_repo(tmp_path):
     )
     subprocess.run(["git", "push"], cwd=str(clone), check=True, capture_output=True)
     return {"remote": str(remote), "clone": str(clone)}
+
 
 
 class TestGitManager:
@@ -102,6 +101,12 @@ class TestGitManager:
         refs = await mgr.als_remote_qualified_refs(clone, ["refs/tags/v1.2.3", "refs/tags/v1.2.3^{}"])
         assert refs["refs/tags/v1.2.3"].oid == oid
         assert refs["refs/tags/v1.2.3^{}"].oid == source
+        # Inventory is remote-authoritative, including both annotated objects
+        # and peels, with no locally created-but-unpublished tag mixed in.
+        _git(["tag", "local-only", source], cwd=clone)
+        assert await mgr.als_remote_tag_refs(clone) == {
+            "refs/tags/v1.2.3": oid, "refs/tags/v1.2.3^{}": source,
+        }
         with pytest.raises(GitError, match="absent ref"):
             await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
                                          expected_old_oid=oid)
