@@ -1,0 +1,168 @@
+name: macOS acceptance
+
+# Native macOS evidence for the installer's matrix row.
+#
+# `docs/plans/install-onboarding/contract.md` says "Supported" means a clean
+# install, a rerun, a repair and a first task have *native* acceptance
+# evidence, and `docs/contributing/installer-testing.md` says a cross-platform
+# mock may never stand in for it. Nobody on the team runs CI on a Mac, so this
+# workflow is where that row gets filled in: GitHub's hosted macOS runners are
+# real Macs on both architectures the matrix names, and the journey below is
+# the documented one, run unattended.
+#
+# It is deliberately not part of `tests.yml`. It changes the machine it runs on
+# (Homebrew formulae, a PostgreSQL service, `~/.agent-queue`), takes minutes,
+# and its result is an artifact a human reads and records, not a gate on a
+# merge. Run it per release, or after any change to `src/install/macos.py`,
+# the PostgreSQL adapter's Homebrew branch or the documented macOS quickstart.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runners:
+        description: 'JSON array of runner labels (default: Apple Silicon + Intel)'
+        required: false
+        default: '["macos-15", "macos-14", "macos-15-intel"]'
+  push:
+    # A branch under this prefix exists to collect evidence; nothing merges
+    # from it. `workflow_dispatch` only reaches workflows on the default
+    # branch, so this is how the workflow is exercised before it lands.
+    branches:
+      - 'ci/macos-acceptance**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    name: Resolve the runner matrix
+    runs-on: ubuntu-latest
+    outputs:
+      runners: ${{ steps.pick.outputs.runners }}
+    steps:
+      - id: pick
+        env:
+          REQUESTED: ${{ github.event.inputs.runners }}
+        run: |
+          value="${REQUESTED:-}"
+          if [ -z "$value" ]; then
+            value='["macos-15", "macos-14", "macos-15-intel"]'
+          fi
+          echo "runners=$value" >> "$GITHUB_OUTPUT"
+
+  acceptance:
+    name: ${{ matrix.runner }} (postgres ${{ matrix.preinstalled_postgres }})
+    needs: matrix
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.matrix.outputs.runners) }}
+        # A hosted runner arrives with Homebrew's PostgreSQL already linked
+        # into the prefix, which is *not* what a developer's Mac looks like.
+        # `unlinked` unlinks every PostgreSQL the image brought so the journey
+        # sees only what AQ installs -- the state in which Homebrew's keg-only
+        # versioned formula decides whether a `psql` exists at all.
+        preinstalled_postgres: [keep, unlinked]
+    env:
+      # The journey creates commits through the real CLI; hosted runners ship
+      # with no git identity.
+      GIT_AUTHOR_NAME: macOS acceptance
+      GIT_AUTHOR_EMAIL: acceptance@example.invalid
+      GIT_COMMITTER_NAME: macOS acceptance
+      GIT_COMMITTER_EMAIL: acceptance@example.invalid
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Record the host before anything is changed
+        run: |
+          set -x
+          sw_vers
+          uname -a
+          arch
+          sysctl -n hw.model || true
+          sysctl -n hw.optional.arm64 || true
+          sysctl -n sysctl.proc_translated || true
+          xcode-select -p || true
+          brew --version || true
+          brew --prefix || true
+          echo "SHELL=$SHELL"
+
+      - name: Unlink the image's own PostgreSQL
+        if: matrix.preinstalled_postgres == 'unlinked'
+        run: |
+          # Nothing is uninstalled: unlinking removes the symlinks from the
+          # Homebrew prefix, which is exactly how a Mac that never had these
+          # formulae looks to `which`.
+          for formula in $(brew list --formula | grep -E '^(postgresql@|libpq$)' || true); do
+            brew services stop "$formula" || true
+            brew unlink "$formula" || true
+            echo "unlinked $formula"
+          done
+          command -v psql && echo "psql still on PATH" || echo "no psql on PATH"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AQ from this checkout
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/aq-client
+          pip install -e ".[dev,cli]"
+          aq --version
+
+      - name: Run the native macOS acceptance journey
+        id: journey
+        continue-on-error: true
+        run: |
+          python3 scripts/acceptance/macos_acceptance.py \
+            --output "$RUNNER_TEMP/macos-acceptance" \
+            --aq "$(command -v aq)" \
+            --repo "$GITHUB_WORKSPACE"
+
+      - name: Summarise the evidence
+        if: always()
+        run: |
+          record="$RUNNER_TEMP/macos-acceptance/evidence.md"
+          if [ -f "$record" ]; then
+            cat "$record" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The journey produced no evidence record." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Collect the daemon's own logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/macos-acceptance/logs"
+          for path in "$HOME/.agent-queue/logs" "$HOME/.agent-queue/install-state.json" \
+                      "$HOME/.agent-queue/config.yaml"; do
+            [ -e "$path" ] && cp -R "$path" "$RUNNER_TEMP/macos-acceptance/logs/" || true
+          done
+          # The credential the installer wrote must never leave the machine.
+          find "$RUNNER_TEMP/macos-acceptance/logs" -name 'config.yaml' -print0 \
+            | xargs -0 -I{} sed -i '' -E 's#(postgres(ql)?(\+asyncpg)?://[^:]+:)[^@]*@#\1REDACTED@#g' {} || true
+          rm -f "$RUNNER_TEMP/macos-acceptance/logs/database-url" || true
+
+      - name: Upload the evidence record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-acceptance-${{ matrix.runner }}-${{ matrix.preinstalled_postgres }}
+          path: ${{ runner.temp }}/macos-acceptance
+          if-no-files-found: warn
+
+      - name: Fail the job when the journey failed
+        if: steps.journey.outcome != 'success'
+        run: |
+          echo "The macOS acceptance journey did not pass; read the uploaded evidence."
+          exit 1

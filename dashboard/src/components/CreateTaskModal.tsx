@@ -9,7 +9,7 @@ interface CreateTaskModalProps {
   defaultProjectId?: string;
   onCreated?: (taskId: string) => void;
 }
-const TASK_TYPES = ["feature", "bugfix", "refactor", "test", "docs", "chore", "research"];
+const TASK_TYPES = ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan", "design", "art"];
 const inputClass = "w-full rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none";
 
 export default function CreateTaskModal({ open, onClose, defaultProjectId, onCreated }: CreateTaskModalProps) {
@@ -24,9 +24,12 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
   const [priority, setPriority] = useState(100);
   const [taskType, setTaskType] = useState("");
   const [integrationMode, setIntegrationMode] = useState("");
-  // The class is required: a task that reaches the queue without one waits on
-  // the assignment router, and the operator creating it by hand already knows
-  // how much reasoning the work needs.
+  // The class is a hint to the project's router, which picks the profile,
+  // provider and final class from it and the task type (mandatory task
+  // routing): a task never names its own route, and the daemon refuses a
+  // profile or pin with routing.choice_forbidden.  The hint stays required
+  // here because the operator creating a task by hand already knows how much
+  // reasoning the work needs.
   const [intelligenceClass, setIntelligenceClass] = useState("");
   const valid = !!title.trim() && !!projectId && !!intelligenceClass && Number.isInteger(priority);
   const error: unknown = createTask.error;
@@ -92,6 +95,9 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
               ))}
             </select>
             {classesError && <p className="mt-1 text-xs text-red-400">Could not load intelligence classes.</p>}
+            <p className="mt-1 text-xs text-gray-500">
+              A hint to the project&apos;s router, which picks the profile and provider from the class and the type.
+            </p>
           </div>
           <div>
             <label htmlFor={`${id}-type`} className="mb-1 block text-sm text-gray-400">Type</label>
