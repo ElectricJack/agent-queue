@@ -263,7 +263,7 @@ class MessageDeliveryEngine:
             "Message wake submitted message_id=%s recipient=%s:%s",
             msg.id, to_kind, to_id,
         )
-        if msg.body_kind == "wait_outcome":
+        if msg.body_kind in {"wait_outcome", "wait_decision"}:
             await self._db.mark_wait_wake_delivered(msg.id, now=now)
         if scheduled:
             await self.cron_service.finish_delivery(msg.id, delivered=True)
@@ -551,11 +551,17 @@ def _render_nudge(batch: list[Message]) -> str:
     to ``[Pasted text #N +M lines]``, and taller than the composer's row window
     it shows only its last rows.  Unconfirmable, it sat unsubmitted and every
     later nudge to the worker deferred behind it (2026-10-01).
+
+    A message pointer says that running it is the acknowledgment.  Bare, a
+    supervisor that had peeked at the bodies with ``aq message inbox``
+    answered each retry from memory, never ran status, and was re-nudged
+    until it did (2026-10-20).  The text is the same on every attempt: a
+    retry that matches a pasted-but-unsubmitted pointer only submits it.
     """
     if batch[0].body_kind == "schedule_prompt":
         schedule_id = batch[0].id.split(":")[1]
         return f"Handle `aq cron show {shlex.quote(schedule_id)} --consume --json`."
-    if batch[0].body_kind in {"wait_result", "wait_outcome"}:
+    if batch[0].body_kind in {"wait_result", "wait_outcome", "wait_decision"}:
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.
         wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result").removesuffix(":outcome")
@@ -565,4 +571,5 @@ def _render_nudge(batch: list[Message]) -> str:
         return f"Handle `aq job result {shlex.quote(job_id)} --json`."
     if batch[0].body_kind in COLLABORATION_BODY_KINDS:
         return f"Handle `aq collaboration show {shlex.quote(batch[0].thread_id)} --json`."
-    return f"Handle `aq message status {shlex.quote(batch[0].id)} --json`."
+    return (f"Handle `aq message status {shlex.quote(batch[0].id)} --json` "
+            "(running it marks the message read).")

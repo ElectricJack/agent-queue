@@ -14,6 +14,7 @@ writers must not acquire that fence after locking a source task.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import uuid
 from dataclasses import replace
@@ -24,6 +25,7 @@ from src.database.tables import (
     agents,
     admission_reservations,
     continuations,
+    events,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -130,6 +132,27 @@ async def get_wait(conn, wait_id: str, *, project_id: str):
     )
 
 
+async def pending_human_waits(conn, *, now, project_ids=None):
+    """Current reminders, independent of report windows and wait deadlines."""
+    query = select(wait_records, tasks.c.title).outerjoin(
+        tasks, and_(wait_records.c.owner_kind == "task", tasks.c.id == wait_records.c.owner_id,
+                    tasks.c.project_id == wait_records.c.project_id),
+    ).where(wait_records.c.condition_kind == "human", wait_records.c.outcome == "pending")
+    if project_ids is not None:
+        query = query.where(wait_records.c.project_id.in_(project_ids))
+    rows = (await conn.execute(query.order_by(
+        wait_records.c.created_at, wait_records.c.id,
+    ))).mappings()
+    return [{
+        "wait_id": r["id"], "project_id": r["project_id"],
+        "task_id": r["owner_id"] if r["owner_kind"] == "task" else None,
+        "title": r["title"] or "", "subject": r["condition"]["subject"],
+        "age_seconds": max(0, now - r["created_at"]), "created_at": r["created_at"],
+        **{key: r["condition"][key] for key in ("thread_id", "review_id", "revision")
+           if key in r["condition"]},
+    } for r in rows]
+
+
 async def register_wait(
     conn,
     *,
@@ -145,13 +168,18 @@ async def register_wait(
     claimed: str | None = None,
     escalate_after_seconds: float | None = None,
     loop_check=None,
+    on_loop_detected=None,
+    ceiling_anchor_at=None,
+    observe_sleep_inputs=None,
 ) -> dict:
     """Register and return a stable receipt, or a structured refusal.
 
     ``policy``, ``decide_sleep`` and ``loop_check`` are server-injected seams
     for their owning leaves. decide_sleep(cond, evidence) is synchronous;
     loop_check(conn, scope, evidence, now) returns an overriding SleepDecision
-    or None. Runtime flag checks belong to the caller; v1 never calls here.
+    or None. observe_sleep_inputs optionally supplies audit inputs when the loop
+    policy bypasses the ordinary sleep decision. Runtime flag checks belong to
+    the caller; v1 never calls here.
 
     Supply exactly one of read_source_watermark or source_watermark. The async
     callback calls db.wait_source_watermark() on a separate short READ COMMITTED
@@ -187,7 +215,7 @@ async def register_wait(
         source_watermark = await read_source_watermark()
     if type(source_watermark) is not int or source_watermark < 0:
         raise ValueError("source watermark must be a nonnegative committed sequence bound")
-    await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+    await lock_graph(conn)  # REGISTRATION_LOCK is the graph fence; waiting is bounded
     scope = await verify_owner(conn, scope, lock_owner=False)
     cond = registry.normalise(condition)
     request_hash = hashlib.sha256(
@@ -214,6 +242,8 @@ async def register_wait(
         # Replay precedes source verification: the producer may have finished or
         # disappeared since the receipt was committed, and timers may be past due.
         return old["decision_inputs"]["registration_receipt"]
+    if cond.kind == "human" and cond.parameters["subject"] == "task_comment":
+        cond = cond.bind(generation=cond.generation, source_watermark_seq=source_watermark)
     evidence = await registry.verify(conn, cond, scope)
     cond = evidence.condition
     adapter = registry.adapter(cond.kind)
@@ -274,9 +304,19 @@ async def register_wait(
     scope = await verify_owner(conn, scope)
     if await would_create_cycle(conn, edges):
         raise WaitError("wait.cycle", "condition would create a semantic dependency cycle")
-    decision = await loop_check(conn, scope, evidence, now) if loop_check else None
+    if loop_check:
+        decision = await loop_check(conn, scope, evidence, now)
+    else:
+        from src.waits.loops import detect
+        decision = await detect(conn, scope, evidence, now, policy=policy)
     if decision is None:
         decision = decide_sleep(cond, evidence)
+    else:
+        measured = observe_sleep_inputs(cond, evidence) if observe_sleep_inputs else {}
+        decision = SleepDecision(decision.mode, decision.reason,
+                                 {**measured, **decision.inputs, 'loop_detected': True})
+        if getattr(policy, 'hibernation_enabled', True) is False:
+            decision = SleepDecision('in_place', 'flag', decision.inputs)
     if not isinstance(decision, SleepDecision) or decision.mode not in {"in_place", "hibernate"}:
         raise ValueError("sleep decision must be supplied by the server")
     if cond.kind == "human":
@@ -288,9 +328,15 @@ async def register_wait(
             invalid("an agent may only shorten a non-human escalation deadline")
         seconds = escalate_after_seconds
     escalate_at = (deadlines.due_at or now) + seconds if seconds is not None else None
+    if decision.reason == "wait.loop_detected":
+        escalate_at = now
+    if ceiling_anchor_at is None:
+        from src.waits.decision import ceiling_anchor
+
+        ceiling_anchor_at = await ceiling_anchor(conn, scope, now=now, policy=policy)
     ceiling_at = (
-        now + policy.in_place_ceiling_seconds
-        if decision.mode == "in_place" and cond.kind not in {"human", "resource"}
+        ceiling_anchor_at + policy.in_place_ceiling_seconds
+        if decision.mode == "in_place" and cond.kind not in {"human", "resource", "close_merge"}
         else None
     )
     wait_id = str(uuid.uuid4())
@@ -337,7 +383,7 @@ async def register_wait(
             created_at=now,
             escalate_at=escalate_at,
             due_at=deadlines.due_at,
-            ceiling_anchor_at=now if ceiling_at is not None else None,
+            ceiling_anchor_at=ceiling_anchor_at if ceiling_at is not None else None,
             sleep_decision=decision.mode,
             decision_reason=decision.reason,
             decision_inputs={**decision.inputs, "delivery": delivery,
@@ -402,6 +448,28 @@ async def register_wait(
         )
         await clear_edges(conn, wait_id, now=now)
     await recompute_from(conn, changed_keys, now=now)
+    await conn.execute(insert(events).values(
+        event_type="wait.registered", project_id=scope.project_id,
+        task_id=scope.owner_id if scope.owner_kind == "task" else None,
+        timestamp=now, payload=json.dumps({"wait_id": wait_id, "project_id": scope.project_id,
+                                         "condition": cond.as_dict(),
+                                         "decision": receipt["decision"]}),
+    ))
+    if receipt["success"] and decision.reason == "wait.loop_detected":
+        payload = {"wait_id": wait_id, "project_id": scope.project_id,
+                   "task_id": scope.owner_id, "registrations": [
+            *decision.inputs.get("loop_registrations", []),
+            {"wait_id": wait_id, "registered_at": now},
+        ]}
+        for kind in ("wait.loop_detected", "continuation.loop_detected"):
+            await conn.execute(insert(events).values(
+                event_type=kind, project_id=scope.project_id, task_id=scope.owner_id,
+                timestamp=now, payload=json.dumps(payload),
+            ))
+        callback = on_loop_detected or getattr(registry, "loop_handler", None)
+        if callback:
+            wait = await get_wait(conn, wait_id, project_id=scope.project_id)
+            await callback(conn, wait, now=now)
     return receipt
 
 
@@ -669,7 +737,8 @@ async def wait_explain(
         ):
             raise WaitError("wait.not_found", "wait owner is outside the query scope or missing")
         query = query.where(
-            wait_records.c.owner_id == task_id, wait_records.c.owner_kind.in_(("task", "scheduler"))
+            wait_records.c.owner_id == task_id,
+            wait_records.c.owner_kind.in_(("task", "scheduler", "integration")),
         )
         if not history:
             query = query.where(wait_records.c.outcome == "pending")
@@ -721,7 +790,8 @@ async def wait_explain(
 
 
 async def wait_graph(
-    conn, *, project_id=None, fleet=False, fleet_authorized=False, now, limit=100, offset=0
+    conn, *, project_id=None, fleet=False, fleet_authorized=False, now, limit=100, offset=0,
+    costs=False,
 ):
     """Project/fleet summaries share the explain projection and explicit bounds.
 
@@ -853,9 +923,20 @@ async def wait_graph(
             .order_by(continuations.c.id)
             .limit(limit + 1),
         )
+        cost_projection = {}
+        if costs:
+            from src.database.queries.continuation_queries import measurement_medians
+            from src.database.queries.wait_metrics import wait_metrics_snapshot
+
+            medians = await measurement_medians(conn, pid, now=now)
+            cost_projection = {'costs': {'durations': list(medians['durations'].values()),
+                                         'resume': medians['cost'],
+                                         'metrics': await wait_metrics_snapshot(
+                                             conn, now=now, project_id=pid)}}
         summaries.append(
             {
                 "project_id": pid,
+                **cost_projection,
                 "counts": counts,
                 "waits": await _explain_rows(conn, records, project_id=pid, history=False, now=now),
                 "total_waits": sum(c["count"] for c in counts),

@@ -522,7 +522,7 @@ async def run(
             ).run(),
             name="aq-review-notifier",
         )
-        from src.waits.service import WaitService
+        from src.wait_runtime.service import WaitService
 
         orch.wait_service = WaitService(orch)
         wait_service_task = asyncio.create_task(orch.wait_service.run(), name="aq-waits")
@@ -633,6 +633,15 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     else:
         required_playbooks = getattr(orch, "required_playbook_status", {"ok": True})
     checks["required_playbooks"] = required_playbooks
+
+    # Routing needs protected storage even when every activation is healthy.
+    # Inspect the loaded key ring, rather than a newly configured environment.
+    from src.playbooks.private_values import private_value_key_health
+
+    checks["playbook_private_value_key"] = private_value_key_health(
+        orch.config.playbooks,
+        service=orch.db.playbook_private_values() if orch.config.playbooks.enabled else None,
+    )
 
     # Agent status
     try:

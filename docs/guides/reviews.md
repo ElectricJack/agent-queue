@@ -49,8 +49,12 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
   revision task carrying that feedback (§ What happens when you reject).
 - `approved` — the gate is resolved and dependent tasks become routable.
   For kind `spec` or `plan`, approval also sets the vault status to `approved`
-  and emits `spec.approved`, starting one deep-high spec-ingest task per path
-  (`spec-ingest:<absolute vault path>`). Other documents do not ingest.
+  and dispatches `spec.approved`, starting one deep-high spec-ingest task per
+  immutable approval decision (`spec-ingest:decision:<id>`). Replays reuse its
+  task receipt after completion, closure as obsolete, or archive, and committed
+  graph receipts prevent duplicate work. The vault path is a mirror link;
+  existing text that mentions a path does not confer ingestion authority.
+  Other documents do not ingest.
 - `withdrawn` — the review's gate is cancelled in the same transaction. Its
   dependent tasks remain held for approval and are flagged for attention;
   their IDs appear in the response and review detail and are sent to the
