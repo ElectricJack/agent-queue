@@ -1,0 +1,118 @@
+{
+  "generic_dependencies": {
+    "src/api/models/task.py::PhaseHoldDetail": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/task.py::TaskDetail": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/api/models/task.py::CreateTaskResponse.integration_mode": {
+      "baseline_span": [
+        255,
+        255
+      ],
+      "landing_span": [
+        255,
+        255
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::EpicDeliveryRef": {
+      "baseline_span": [
+        114,
+        128
+      ],
+      "landing_span": [
+        114,
+        128
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::EpicDeliveryStatus": {
+      "baseline_span": [
+        129,
+        167
+      ],
+      "landing_span": [
+        129,
+        167
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::EpicDeliveryStatus.hold": {
+      "baseline_span": [
+        158,
+        158
+      ],
+      "landing_span": [
+        158,
+        158
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::EpicDeliveryStatus.links": {
+      "baseline_span": [
+        164,
+        164
+      ],
+      "landing_span": [
+        164,
+        164
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::EpicDeliveryStatus.responsible": {
+      "baseline_span": [
+        161,
+        161
+      ],
+      "landing_span": [
+        161,
+        161
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::TaskDetail.delivery_status": {
+      "baseline_span": [
+        223,
+        225
+      ],
+      "landing_span": [
+        223,
+        225
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::TaskDetail.effective_integration_mode": {
+      "baseline_span": [
+        181,
+        181
+      ],
+      "landing_span": [
+        181,
+        181
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::TaskDetail.integration_mode": {
+      "baseline_span": [
+        180,
+        180
+      ],
+      "landing_span": [
+        180,
+        180
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/task.py::TaskDetail.integration_mode_source": {
+      "baseline_span": [
+        182,
+        182
+      ],
+      "landing_span": [
+        182,
+        182
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
