@@ -6,17 +6,81 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     agents, archived_tasks, benchmark_stage_spans, projects, sessions, task_session_attempts, tasks,
-    token_ledger,
+    token_ledger, transcript_usage_calls,
 )
 
 
 class TokenQueryMixin:
     """Query mixin for token ledger operations.  Expects ``self._engine``."""
+
+    async def record_transcript_usage(
+        self, *, usage_key: str, project_id: str | None, agent_id: str,
+        task_id: str, session_id: str, attempt_id: str | None,
+        model: str | None, model_source: str | None, counters: dict[str, int],
+        legacy_call_ids: list[str],
+    ) -> None:
+        """Atomically append only new per-call counter maxima.
+
+        The progress row serializes concurrent readers, independently of AQ
+        session IDs and byte checkpoints. Original ledger rows are immutable.
+        On upgrade, legacy content UUIDs seed maxima, never sums of duplicates.
+        """
+        fields = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+        observed = {key: int(counters.get(key) or 0) for key in fields}
+        if any(value < 0 for value in observed.values()):
+            raise ValueError("transcript usage counters must be nonnegative")
+        async with self._engine.begin() as conn:
+            await conn.execute(pg_insert(transcript_usage_calls).values(
+                usage_key=usage_key, first_ledger_id=None, updated_at=time.time(),
+                **dict.fromkeys(fields, 0),
+            ).on_conflict_do_nothing(index_elements=["usage_key"]))
+            prior = (await conn.execute(select(transcript_usage_calls).where(
+                transcript_usage_calls.c.usage_key == usage_key
+            ).with_for_update())).mappings().one()
+            baseline = {key: prior[key] for key in fields}
+            first_id = prior["first_ledger_id"]
+            source = None
+            if first_id:
+                source = (await conn.execute(select(token_ledger).where(
+                    token_ledger.c.id == first_id
+                ))).mappings().one()
+            elif legacy_call_ids:
+                legacy = (await conn.execute(select(token_ledger).where(
+                    token_ledger.c.call_id.in_(legacy_call_ids)
+                ).order_by(token_ledger.c.timestamp, token_ledger.c.id))).mappings().all()
+                if legacy:
+                    source = legacy[0]
+                    first_id = source["id"]
+                    baseline = {key: max(int(row[key] or 0) for row in legacy) for key in fields}
+            maxima = {key: max(baseline[key], observed[key]) for key in fields}
+            delta = {key: maxima[key] - baseline[key] for key in fields}
+            if sum(delta.values()):
+                revision = ":".join(str(maxima[key]) for key in fields)
+                call_id = f"{usage_key}:{revision}"
+                ledger_id = str(uuid.uuid5(uuid.NAMESPACE_URL, call_id))
+                attribution = {
+                    "project_id": project_id, "agent_id": agent_id, "task_id": task_id,
+                    "session_id": session_id, "attempt_id": attempt_id,
+                }
+                if source is not None:
+                    attribution = {key: source[key] for key in attribution}
+                await conn.execute(insert(token_ledger).values(
+                    id=ledger_id, **attribution, call_id=call_id,
+                    model=model or (source["model"] if source is not None else None),
+                    model_source=model_source or (
+                        source["model_source"] if source is not None else None
+                    ),
+                    tokens_used=sum(delta.values()), **delta, timestamp=time.time(),
+                ))
+                first_id = first_id or ledger_id
+            await conn.execute(update(transcript_usage_calls).where(
+                transcript_usage_calls.c.usage_key == usage_key
+            ).values(**maxima, first_ledger_id=first_id, updated_at=time.time()))
 
     async def record_token_usage(
         self,
