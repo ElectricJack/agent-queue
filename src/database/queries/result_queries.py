@@ -165,6 +165,13 @@ class ResultQueryMixin:
             if idempotent:
                 statement = statement.on_conflict_do_nothing(index_elements=["id"])
             await conn.execute(statement)
+            if completion.outcome == "fail" or completion.work_outcome == "abandoned":
+                from src.integration.branch_retirement import request_task_retirement_on
+
+                await request_task_retirement_on(
+                    conn, completion.task_id, request_id="close:" + completion.id,
+                    reason="failed close" if completion.outcome == "fail" else "abandoned close",
+                )
             flipped = await self.recompute_blocked({completion.task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
 
@@ -220,6 +227,43 @@ class ResultQueryMixin:
                     )
                 )
         return recovered
+
+    async def accepted_close_in_flight(
+        self, task_id: str, *, session_id: str, claim_epoch: int
+    ) -> bool:
+        """Whether *session_id*'s accepted close of *task_id* is still finishing.
+
+        True only on the exact identity: ``ACCEPTED_CLOSE_KEY`` names this
+        session and claim epoch, and that close's own draft is still pending
+        (it is discarded once the record is saved, before the claim is
+        released, and at daemon start by ``recover_pending_completions``).
+        """
+        async with self._engine.begin() as conn:
+            rows = {
+                row.key: row.value
+                for row in (
+                    await conn.execute(
+                        select(task_metadata.c.key, task_metadata.c.value).where(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key.in_(
+                                (PENDING_COMPLETION_KEY, ACCEPTED_CLOSE_KEY)
+                            ),
+                        )
+                    )
+                ).all()
+            }
+        try:
+            draft = json.loads(rows[PENDING_COMPLETION_KEY])
+            accepted = json.loads(rows[ACCEPTED_CLOSE_KEY])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (
+            isinstance(accepted, dict)
+            and isinstance(draft, dict)
+            and draft.get("identity") == accepted
+            and accepted.get("session_id") == session_id
+            and accepted.get("claim_epoch") == claim_epoch
+        )
 
     async def discard_pending_completion(
         self, task_id: str, completion_id: str, *, keep_accepted: bool = True
