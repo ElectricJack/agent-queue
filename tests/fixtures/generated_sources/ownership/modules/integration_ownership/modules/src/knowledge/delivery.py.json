@@ -1,0 +1,10 @@
+{
+  "exclusions": {
+    "src/knowledge/delivery.py::UNKNOWN": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/knowledge/delivery.py::STARTUP_GUIDANCE": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/knowledge/delivery.py::STARTUP_GUIDANCE_FILE": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/knowledge/delivery.py::startup_guidance": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
