@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeftIcon,
   CheckCircleIcon,
@@ -9,6 +9,7 @@ import {
 import {
   usePlaybooks,
   usePlaybookSource,
+  usePlaybookCommands,
   usePlaybookRuns,
   useUpdatePlaybookSource,
   type PlaybookUpdateResult,
@@ -26,13 +27,42 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "runs", label: "Runs" },
 ];
 
+const DEFAULT_TAB: TabId = "source";
+
+function isTabId(value: string | null): value is TabId {
+  return TABS.some((t) => t.id === value);
+}
+
+/**
+ * The open tab lives in `?tab=`, so a surface that already knows which view an
+ * operator wants — the command center's "View graph" — can link straight to it
+ * on this same route instead of landing on Source and making them click again.
+ * An unknown or missing value is the Source tab, and switching tabs replaces
+ * the entry so the Back button still leaves the page rather than walking the
+ * tabs the operator just visited.
+ */
+function useTabParam(): [TabId, (next: TabId) => void] {
+  const [params, setParams] = useSearchParams();
+  const requested = params.get("tab");
+  const tab = isTabId(requested) ? requested : DEFAULT_TAB;
+  const setTab = useCallback((next: TabId) => {
+    setParams((previous) => {
+      const updated = new URLSearchParams(previous);
+      if (next === DEFAULT_TAB) updated.delete("tab");
+      else updated.set("tab", next);
+      return updated;
+    }, { replace: true });
+  }, [setParams]);
+  return [tab, setTab];
+}
+
 export default function PlaybookDetail() {
   const { playbookId = "" } = useParams<{ playbookId: string }>();
   const location = useLocation();
   const id = playbookId;
   const from = (location.state as { from?: string } | null)?.from ?? "/settings/playbooks";
   const navigate = useNavigate();
-  const [tab, setTab] = useState<TabId>("source");
+  const [tab, setTab] = useTabParam();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { data: playbooks } = usePlaybooks();
@@ -104,6 +134,7 @@ export default function PlaybookDetail() {
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
+            aria-current={tab === t.id ? "page" : undefined}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
               tab === t.id
                 ? "border-b-2 border-indigo-400 text-indigo-400"
@@ -129,6 +160,7 @@ export default function PlaybookDetail() {
 
 function SourceTab({ playbookId }: { playbookId: string }) {
   const { data: source, isLoading, refetch } = usePlaybookSource(playbookId);
+  const { data: commandCatalog } = usePlaybookCommands();
   const update = useUpdatePlaybookSource();
 
   const [draft, setDraft] = useState("");
@@ -147,6 +179,10 @@ function SourceTab({ playbookId }: { playbookId: string }) {
   }, [source]);
 
   const dirty = source ? draft !== source.markdown : false;
+  const inlineCodeLinks = useMemo(() => {
+    if (!commandCatalog) return undefined;
+    return new Map(commandCatalog.commands?.map(({ name, docs_url }) => [name, docs_url]));
+  }, [commandCatalog]);
 
   const onSave = async () => {
     setSaveError(null);
@@ -190,7 +226,7 @@ function SourceTab({ playbookId }: { playbookId: string }) {
             aria-label="Playbook source preview"
             className="min-h-[60vh] w-full overflow-y-auto rounded-lg border border-gray-800 bg-gray-900 p-4"
           >
-            <MarkdownPreview source={draft} />
+            <MarkdownPreview source={draft} inlineCodeLinks={inlineCodeLinks} />
           </div>
 
           <div className="flex items-center gap-3">

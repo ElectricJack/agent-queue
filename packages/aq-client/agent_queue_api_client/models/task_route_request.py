@@ -15,24 +15,33 @@ T = TypeVar("T", bound="TaskRouteRequest")
 class TaskRouteRequest:
     """
     Attributes:
-        task_id (str): Task ID to route
-        profile_id (str): Agent profile ID that should execute the task
-        intelligence_class (None | str | Unset): Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high')
-            from vault/intelligence-classes/. Requires a matching worker at launch. Omit to preserve the task's existing
-            class or profile default.
-        workspace_id (None | str | Unset): Workspace to prefer for execution (optional)
+        task_id (str): Task ID to re-route
+        intelligence_class (None | str | Unset): New intelligence-class hint for the router (e.g. 'fast-high',
+            'standard-high', 'deep-high'); the router honours it within its policy's bounds for the kind. Omit to keep the
+            task's hint; an empty value clears it.
+        task_type (None | str | Unset): New kind for the router (e.g. 'feature', 'bugfix', 'design', 'docs'). Omit to
+            keep the task's kind; an empty value clears it.
+        prefer (None | str | Unset): Routing preference for the router to weigh before scoring: a harness id (e.g.
+            'codex') or a worker profile id. The router still picks the route; this only decides whether it may route
+            elsewhere. Omit to keep the task's preference; an empty value clears it. An unknown name, a disabled profile and
+            a non-worker profile are refused.
+        prefer_mode (str | Unset): How the router may refuse 'prefer': 'soft' (default) routes to it when it has
+            headroom and routes normally when it does not; 'strict' admits only that harness or profile and holds the task
+            rather than falling back to another one. On 'aq task route' a mode with no 'prefer' keeps the stored target.
+            Default: 'soft'.
+        reason (None | str | Unset): Why the task is re-routed; posted as a task comment.
     """
 
     task_id: str
-    profile_id: str
     intelligence_class: None | str | Unset = UNSET
-    workspace_id: None | str | Unset = UNSET
+    task_type: None | str | Unset = UNSET
+    prefer: None | str | Unset = UNSET
+    prefer_mode: str | Unset = "soft"
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
-
-        profile_id = self.profile_id
 
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
@@ -40,24 +49,43 @@ class TaskRouteRequest:
         else:
             intelligence_class = self.intelligence_class
 
-        workspace_id: None | str | Unset
-        if isinstance(self.workspace_id, Unset):
-            workspace_id = UNSET
+        task_type: None | str | Unset
+        if isinstance(self.task_type, Unset):
+            task_type = UNSET
         else:
-            workspace_id = self.workspace_id
+            task_type = self.task_type
+
+        prefer: None | str | Unset
+        if isinstance(self.prefer, Unset):
+            prefer = UNSET
+        else:
+            prefer = self.prefer
+
+        prefer_mode = self.prefer_mode
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "task_id": task_id,
-                "profile_id": profile_id,
             }
         )
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
-        if workspace_id is not UNSET:
-            field_dict["workspace_id"] = workspace_id
+        if task_type is not UNSET:
+            field_dict["task_type"] = task_type
+        if prefer is not UNSET:
+            field_dict["prefer"] = prefer
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -65,8 +93,6 @@ class TaskRouteRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         task_id = d.pop("task_id")
-
-        profile_id = d.pop("profile_id")
 
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
@@ -77,20 +103,42 @@ class TaskRouteRequest:
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
-        def _parse_workspace_id(data: object) -> None | str | Unset:
+        def _parse_task_type(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        workspace_id = _parse_workspace_id(d.pop("workspace_id", UNSET))
+        task_type = _parse_task_type(d.pop("task_type", UNSET))
+
+        def _parse_prefer(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer = _parse_prefer(d.pop("prefer", UNSET))
+
+        prefer_mode = d.pop("prefer_mode", UNSET)
+
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
 
         task_route_request = cls(
             task_id=task_id,
-            profile_id=profile_id,
             intelligence_class=intelligence_class,
-            workspace_id=workspace_id,
+            task_type=task_type,
+            prefer=prefer,
+            prefer_mode=prefer_mode,
+            reason=reason,
         )
 
         task_route_request.additional_properties = d

@@ -166,6 +166,14 @@ printf '%s\n' \
     > "$E2E_MARKER"
 mkdir -p "$AQ_E2E_HOME/workspaces"
 mkdir -p "$E2E_ONBOARDING_ROOT"
+# This fixture deliberately performs first installation before adding its own
+# vault files. Normal daemon startup never seeds a nonempty operator vault.
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$AQ_E2E_HOME" <<'PY'
+import sys
+from src.playbooks.required import install_initial_playbooks
+
+install_initial_playbooks(sys.argv[1])
+PY
 mkdir -p "$E2E_VAULT/agent-types"
 mkdir -p "$E2E_VAULT/formulas"
 mkdir -p "$E2E_BIN"
@@ -354,7 +362,7 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 {
   "harness": "claude",
   "lifecycle": "pool",
-  "default_class": "standard-medium",
+  "default_class": "fast-high",
   "min_active": 0,
   "max_active": 2,
   "max_claims_per_session": 1,
@@ -381,8 +389,86 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 - On `session_exhausted` or `drain_requested`, run `aq session drain-ack`.
 MD
 
-# `review-and-fix` names `reviewer` and `coding` as node profiles; graph
-# validation resolves both against the DB, so the vault must carry them.
+# S21 impersonates the assigned role reviewer through its real session token.
+mkdir -p "$E2E_VAULT/agent-types/fidelity-reviewer"
+cat > "$E2E_VAULT/agent-types/fidelity-reviewer/profile.md" <<'MD'
+---
+id: fidelity-reviewer
+name: "E2E Fidelity Reviewer"
+---
+
+## Role
+Review the pinned ingestion batch. The Tier 1 runner supplies the judgments.
+
+## Config
+```json
+{"harness":"claude","lifecycle":"task","default_class":"deep-high","needs_workspace":false}
+```
+
+## Capabilities
+```json
+{"harness_tools":["Bash"],"plugin_tools":[],"aq_commands":["approved_spec_packet","task_batch_validate","task_batch_review_record","task_show","task_heartbeat","task_close"]}
+```
+MD
+
+# S19 exercises the scoped graph capability through a session token. The
+# production planner is task-lifecycle, while the fake-provider kit needs a
+# pullable session for its CLI runner to impersonate, so this fixture keeps
+# the planner's capability contract but gives it a tiny pool.
+mkdir -p "$E2E_VAULT/agent-types/planner"
+cat > "$E2E_VAULT/agent-types/planner/profile.md" <<'MD'
+---
+id: planner
+name: "E2E Planner"
+tags: [profile, agent-type, e2e]
+---
+
+# E2E Planner
+
+## Role
+Plan a graph only beneath the task currently held by this session.
+
+## Config
+```json
+{
+  "harness": "claude",
+  "lifecycle": "pool",
+  "default_class": "fast-high",
+  "min_active": 0,
+  "max_active": 1,
+  "max_claims_per_session": 1,
+  "needs_workspace": true,
+  "workspaces": ["project-repo"]
+}
+```
+
+## Capabilities
+```json
+{
+  "harness_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+  "aq_commands": [
+    "create_task_graph",
+    "prime",
+    "session_drain_ack",
+    "task_claim",
+    "task_children",
+    "task_close",
+    "task_heartbeat",
+    "task_show"
+  ],
+  "plugin_tools": []
+}
+```
+
+## Rules
+- A graph may only create direct children of the held planning task.
+- Supply a filing reason, use dry-run first, and never retry an ambiguous result.
+MD
+
+# The `reviewer` and `coding` profiles.  `review-and-fix` once named them as
+# node profiles; a graph node now carries hints only (mandatory task routing),
+# and the formula keeps the names as labels.  The profiles stay: S4's review
+# child is a no-code task by the reviewer's `read_only` declaration.
 #
 # The reviewer mirrors the shipped `reviewer` profile: `read_only: true`
 # and no write tools.  That flag is the pipeline's declarative "this task
@@ -392,11 +478,11 @@ MD
 # never carry (task solid-forge-63).
 for role in reviewer coding; do
     if [ "$role" = "reviewer" ]; then
-        default_class="standard-low"
+        default_class="fast-low"
         read_only=true
         tools='["Bash", "Read", "Glob", "Grep"]'
     else
-        default_class="standard-medium"
+        default_class="standard-high"
         read_only=false
         tools='["Bash", "Read", "Write", "Edit", "Glob", "Grep"]'
     fi
@@ -411,8 +497,8 @@ tags: [profile, agent-type, e2e]
 # E2E $role
 
 ## Role
-A task-lifecycle profile the formula fixtures route nodes to.  Present so
-\`aq formula show\` / \`aq formula cook\` can resolve \`profile: $role\`.
+A task-lifecycle profile S4 routes the cooked formula nodes to, standing in
+for the project's router; a formula node carries hints only.
 
 ## Config
 \`\`\`json
@@ -443,16 +529,32 @@ done
 cp "$REPO_ROOT/tests/fixtures/formulas/base-review.md" "$E2E_VAULT/formulas/base-review.md"
 cp "$REPO_ROOT/tests/fixtures/formulas/review-and-fix.md" "$E2E_VAULT/formulas/review-and-fix.md"
 
+# The provider-failover kit (docs/specs/provider-failover.md D23, scenario
+# S16): two fake harnesses, `prova` and `provb`; a class both can run
+# (`std-high`) and one only `prova` can (`solo-high`, the astra-high
+# analogue); and a hand-authored pool profile per (class, harness).  Whether
+# a fake start succeeds -- and what the fake login probe answers -- is read
+# from $E2E_FAKE_SCRIPT on every start, so S16 exhausts and restores a
+# provider by rewriting that one file.
+FAILOVER_KIT="$REPO_ROOT/tests/fixtures/provider_failover"
+mkdir -p "$E2E_VAULT/harnesses" "$E2E_VAULT/intelligence-classes"
+cp "$FAILOVER_KIT"/harnesses/*.md "$E2E_VAULT/harnesses/"
+cp "$FAILOVER_KIT"/intelligence-classes/*.md "$E2E_VAULT/intelligence-classes/"
+for profile_dir in "$FAILOVER_KIT"/agent-types/*/; do
+    profile_id="$(basename "$profile_dir")"
+    mkdir -p "$E2E_VAULT/agent-types/$profile_id"
+    cp "$profile_dir/profile.md" "$E2E_VAULT/agent-types/$profile_id/profile.md"
+done
+
 # ---------------------------------------------------------------------------
 # 4. Config
 # ---------------------------------------------------------------------------
 #
-# One switch decides the tier.  `AQ_E2E_SESSION_PROVIDER=tmux` means real
-# `claude` processes, and a live agent needs playbooks plus named supervisor
-# sessions.  Under `fake` those stay off because both need an LLM.  The
-# durable message queue remains enabled in both tiers; with
-# `messaging_platform: none` it is a local database sink for S11, not an
-# external messaging provider.
+# One switch decides the tier. `AQ_E2E_SESSION_PROVIDER=tmux` means real
+# `claude` processes and a named supervisor session. Command-only reviewed
+# playbooks also run under `fake` for S18; neither that route nor the durable
+# message queue needs an LLM. With `messaging_platform: none` the latter is a
+# local database sink, never an external messaging provider.
 
 if [ "$AQ_E2E_SESSION_PROVIDER" = "fake" ]; then
     TIER=1
@@ -461,6 +563,30 @@ else
     TIER=2
     LIVE_SUBSYSTEMS=true
 fi
+
+# Command-only reviewed playbooks are deterministic under the fake provider:
+# S18 uses that tier to exercise a durable task.failed subscription without a
+# model process or a named supervisor.  Keep the switch explicit for a caller
+# diagnosing a playbook issue, but make the isolated kit cover the shipped
+# path by default.
+PLAYBOOKS_ENABLED="${AQ_E2E_PLAYBOOKS_ENABLED:-true}"
+
+# Protected playbook values (command results saved with save_result_as, LLM
+# transcripts) need an encryption key in the daemon's environment; without
+# one, S18's shipped triage step refuses with private_storage_key_unavailable.
+# The daemon loads .env beside its config, as an operator install does.  The
+# key is disposable but kept for this world's lifetime, so a non-reset rerun
+# can still decrypt values the database already holds.
+E2E_ENV_FILE="$AQ_E2E_HOME/.env"
+if ! grep -q '^AQ_E2E_PLAYBOOK_PRIVATE_KEY=' "$E2E_ENV_FILE" 2>/dev/null; then
+    ( umask 077
+      printf 'AQ_E2E_PLAYBOOK_PRIVATE_KEY=%s\n' "$(python3 -c \
+          'import base64, os; print(base64.b64encode(os.urandom(32)).decode())')" \
+          >> "$E2E_ENV_FILE" )
+fi
+
+# Both fake providers start healthy; S16 rewrites this file mid-run.
+printf '{"prova": "ok", "provb": "ok"}\n' > "$E2E_FAKE_SCRIPT"
 
 echo "==> writing $E2E_CONFIG (tier $TIER, provider $AQ_E2E_SESSION_PROVIDER)"
 cat > "$E2E_CONFIG" <<YAML
@@ -489,6 +615,13 @@ database:
   pool_min_size: 1
   pool_max_size: 8
 
+# S15 publishes only after a real managed pytest job validates its snapshot.
+# Keep its test maintenance DSN separate from this daemon's database.
+resources:
+  jobs:
+    enabled: true
+    test_database_url: ${POSTGRES_TEST_DSN:-postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres}
+
 health_check:
   enabled: true
   port: $AQ_E2E_PORT
@@ -502,6 +635,11 @@ mcp_server:
     enabled: false
 
 # The whole point of the kit.
+scheduling:
+  cycle_interval_seconds: ${AQ_E2E_CYCLE_SECONDS:-5}
+  min_cycle_interval_seconds: 1
+  config_poll_interval_seconds: ${AQ_E2E_CONFIG_POLL_SECONDS:-30}
+
 swarm:
   enabled: true
   # Keep the fixture aligned with the production default: every claimed task
@@ -521,6 +659,9 @@ sessions:
   # Tier 1: nothing is spawned; the smoke runner acts as the pool worker.
   # Tier 2: switch to \`tmux\` (see docs/guides/e2e-swarm.md).
   provider: ${AQ_E2E_SESSION_PROVIDER}
+  # Tier 1 only (ignored by tmux): which fake harness starts die, and on
+  # which dialog -- rewritten by S16 mid-run.  src/sessions/fake_script.py.
+  fake_script_file: $E2E_FAKE_SCRIPT
   tmux_socket: $AQ_E2E_TMUX_SOCKET
   lease_ttl_seconds: 480
   adopt_on_start: false
@@ -539,21 +680,23 @@ worktrees:
   enabled: false
 
 work_graph:
-  blocked_state_authoritative: false
-  gate_sweep_interval_seconds: 5
+  gate_sweep_interval_seconds: ${AQ_E2E_GRAPH_SWEEP_SECONDS:-5}
   conditional_autoclose: true
-  container_sweep_interval_seconds: 5
+  container_sweep_interval_seconds: ${AQ_E2E_GRAPH_SWEEP_SECONDS:-5}
 
 state_machine:
   enforce: false
 
-# Tier 2 only: playbooks provide worker-filed triage and supervisor_agent
-# launches the named chat sessions.  The durable message queue itself is on
-# in both tiers so S11 can use a synthetic user recipient as a database-only
-# sink.  messaging_platform:none means no Discord/webhook/external send is
-# possible, and fake sessions mean there is no model process to wake.
+# Command-only reviewed playbooks run in both tiers; the fake tier's S18
+# verifies their durable event/command path without an LLM.  The supervisor
+# agent itself stays Tier 2 because it launches a named chat session. The
+# durable message queue remains on in both tiers so S11 and S18 use a local
+# database-only sink; messaging_platform:none prevents external delivery.
 playbooks:
-  enabled: $LIVE_SUBSYSTEMS
+  enabled: $PLAYBOOKS_ENABLED
+  private_value_active_key_id: e2e
+  private_value_key_env:
+    e2e: AQ_E2E_PLAYBOOK_PRIVATE_KEY
 
 messages:
   enabled: true
@@ -583,6 +726,13 @@ api_auth:
   token_ttl_hours: 72
   require_session_token: false
 YAML
+
+# A caller-owned fragment may provide the integration block (the App kit does).
+# Otherwise Tier 1 exercises the default integration configuration.
+if [ -n "${AQ_E2E_EXTRA_CONFIG:-}" ]; then
+    echo "==> appending $AQ_E2E_EXTRA_CONFIG to the config"
+    cat "$AQ_E2E_EXTRA_CONFIG" >> "$E2E_CONFIG"
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Database
