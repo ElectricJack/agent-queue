@@ -252,16 +252,23 @@ class TestSkipPermissionsGating:
         assert self.FLAG in spec.command
         assert "--permission-mode" not in spec.command
 
-    def test_a_named_session_without_opt_in_is_withheld(self, builder):
+    @pytest.mark.parametrize("harness", [
+        CLAUDE,
+        Harness(id="codex", command="codex",
+                permission_flag="--dangerously-bypass-approvals-and-sandbox"),
+    ], ids=["claude", "codex"])
+    @pytest.mark.parametrize("source_type", [None, "link", "worktree"])
+    def test_named_session_permission_boundary(self, builder, harness, source_type):
         spec = builder.build_named_spec(
-            profile=_Profile(id="supervisor"),
-            harness=CLAUDE,
+            profile=_Profile(id="supervisor", harness=harness.id),
+            harness=harness,
             project_id="proj-1",
             work_dir="/vault/projects/proj-1",
             session_id="s1",
             instance_token="t1",
+            **({"workspace_source_type": source_type} if source_type else {}),
         )
-        assert self.FLAG not in spec.command
+        assert (harness.permission_flag in spec.command) == (source_type == "worktree")
 
     def test_the_policy_helper_is_the_single_definition(self):
         from src.models import RepoSourceType
