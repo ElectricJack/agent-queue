@@ -24,7 +24,7 @@ from src.vault import ensure_default_intelligence_classes
 
 
 @pytest.fixture
-async def handler(tmp_path):
+async def handler(tmp_path, reuse_database):
     config = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"), data_dir=str(tmp_path / "data")
     )
@@ -33,7 +33,8 @@ async def handler(tmp_path):
         config, intelligence_classes=load_intelligence_classes(config.data_dir)
     )
     orch = SimpleNamespace(
-        db=SimpleNamespace(), bus=EventBus(validate_events=False), session_spec_builder=builder
+        db=await reuse_database("class-editing"), bus=EventBus(validate_events=False),
+        session_spec_builder=builder,
     )
     result = CommandHandler(orch, config)
     result.set_active_project(None)
@@ -159,6 +160,7 @@ async def test_optional_revision_remains_compatible(handler):
         {"mapping": {"anthropic": {"model": 4}}},
         {"mapping": {"anthropic": {"model": "model", "thinking": "impossible"}}},
         {"mapping": {"codex": {"model": "model", "reasoning_effort": "impossible"}}},
+        {"mapping": {"codex": {"model": "model", "service_tier": "priority"}}},
         {"mapping": {"google": {"model": "model", "thinking_budget": True}}},
         {"mapping": {"other": {"model": "model", "value": float("nan")}}},
     ],
@@ -168,6 +170,16 @@ async def test_invalid_values_leave_file_unchanged(handler, change):
     before = class_path(handler).read_bytes()
     result = await edit(handler, {**args, **change})
     assert "error" in result and class_path(handler).read_bytes() == before
+
+
+async def test_codex_fast_service_tier_round_trips(handler):
+    args = await payload(handler)
+    args["mapping"]["codex"]["service_tier"] = "fast"
+    result = await edit(handler, args)
+    assert result["success"]
+    assert load_intelligence_classes(handler.config.data_dir)["fast-low"].mapping[
+        "codex"
+    ]["service_tier"] == "fast"
 
 
 async def test_existing_unknown_values_can_be_saved_unchanged(handler):

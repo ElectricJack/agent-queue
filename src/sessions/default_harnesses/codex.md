@@ -40,7 +40,8 @@ vault watcher; no restart, no release.
   "dialogs": [
     {
       "name": "trust-directory",
-      "pattern": "Do you trust the contents of this directory",
+      "pattern": "Do you trust the contents of this directory|Trust this folder\\?",
+      "is_regex": true,
       "keys": ["Enter"]
     },
     {
@@ -48,7 +49,44 @@ vault watcher; no restart, no release.
       "pattern": "Sign in with ChatGPT|codex login|log out and sign in again",
       "is_regex": true,
       "keys": [],
-      "quarantine": true
+      "quarantine": true,
+      "signal": "auth"
+    }
+  ],
+  "input_prompts": [
+    {
+      "name": "model-upgrade-menu",
+      "pattern": "Try new model.*Use existing model|Use existing model.*Try new model",
+      "is_regex": true
+    },
+    {
+      "name": "numbered-menu",
+      "pattern": "(?m)^[ \\t]*[›>❯]?[ \\t]*[0-9]+[.)][ \\t]+.+$",
+      "is_regex": true
+    },
+    {
+      "name": "menu-navigation",
+      "pattern": "Use .* to move, press enter to confirm",
+      "is_regex": true
+    },
+    {
+      "name": "login-required",
+      "pattern": "Sign in with ChatGPT|codex login|log out and sign in again",
+      "is_regex": true
+    },
+    {
+      "name": "usage-limit",
+      "pattern": "usage limit|limit reached|you.ve hit your .* limit",
+      "is_regex": true
+    },
+    {
+      "name": "trust-or-permission",
+      "pattern": "Do you trust|Trust this folder|Hooks need review|approval required|Allow command",
+      "is_regex": true
+    },
+    {
+      "name": "press-enter-to-continue",
+      "pattern": "press enter to continue"
     }
   ]
 }
@@ -182,13 +220,25 @@ trust menu renders `› 1. Yes, continue` — the same prefix the readiness poll
 looks for — and it can land *after* the first dismissal pass. Startup
 therefore refuses readiness on any capture where a rule above matches, and
 holds the final pass open for `sessions.dialog_settle_seconds` (default
-1.5 s). Verified live on Codex 0.151 (task smart-orbit.7).
+1.5 s). Verified live on Codex 0.151 (task smart-orbit.7). Codex 0.162
+renamed it "Trust this folder?" with `› 1. Trust and continue`; the rule
+matches both texts. An isolated worktree launch also records the repository
+root (the main checkout, for a linked worktree) as `trust_level = "trusted"`
+in `$CODEX_HOME/config.toml` before starting, so the screen normally never
+appears, and the session builder adds a fallback rule for an older vault copy
+that misses the new text (task nimble-harbor-12).
 
 **Startup noise is harmless:** an update banner, a bubblewrap PATH warning,
 and possible MCP-startup warnings all render above the composer and need no
 keys. The `login-required` dialog quarantines instead of typing — an
 unauthenticated codex cannot be fixed by keystrokes; run `codex login` on
 the host.
+
+**`input_prompts` is observation-only.** AQ checks these signatures only on
+an unclaimed pool worker whose pane has stayed unchanged past the claim-loop
+stall window. A match is reported by doctor and `aq pool status`; no listed
+prompt is ever answered automatically. Add a named substring or regex here
+when a new Codex interactive chooser appears.
 
 **`composer_clear_keys: ["C-u"]`** is the recovery key for a nudge that was
 typed but never submitted. Enter races the composer's repaint (an attached

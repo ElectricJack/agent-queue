@@ -30,6 +30,13 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S12 MCP registry           CRUD plus an unavailable optional endpoint
     S13 plugin extensions      installed entry point present and absent
     S14 graph + vault          layout mutations and isolated vault dry-run
+    S15 integration surface    supported reconciler controls and retired legacy commands
+    S16 provider failover      exhaust a fake provider: detect, re-route, hold, recover
+    S17 phased graph           real CLI graph phases, subtasks, prime, and close semantics
+    S18 failure triage         durable task.failed playbook dispatch and supervisor notice
+    S19 scoped planner graph   authenticated graph filing and checklist settlement
+    S20 train delivery         ordinary close provenance and git-first batch publication
+    S21 held ingestion         approval, held graph, assigned review, release and replay
 """
 
 from __future__ import annotations
@@ -41,7 +48,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 AQ_LAUNCHER = os.path.join(REPO_ROOT, "scripts", "e2e", "aq.py")
@@ -50,10 +59,20 @@ API_URL = os.environ.get("AQ_API_URL", "http://127.0.0.1:8099").rstrip("/")
 PROJECT = "e2e"
 OTHER_PROJECT = "other"
 POOL_PROFILE = "worker"
-POOL_CLASS = "standard-medium"
+POOL_CLASS = "fast-high"
+PLANNER_PROFILE = "planner"
 
-#: How long a scenario waits for the 5s cascade to converge before failing.
+#: Bounded convergence budget; cadence belongs to the disposable daemon launcher.
 CONVERGE_TIMEOUT = float(os.environ.get("AQ_E2E_CONVERGE_TIMEOUT", "60"))
+POLL_INTERVAL = float(os.environ.get("AQ_E2E_POLL_SECONDS", "2"))
+TIMINGS: dict[str, float] = {}
+
+
+def train_delivery_timeout() -> float:
+    """Allow the default root settling window before publication convergence."""
+    from src.integration.models import IntegrationTrainPolicy
+
+    return IntegrationTrainPolicy().cadence_seconds + CONVERGE_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -114,8 +133,10 @@ def _cli_env(
     """
     env = dict(os.environ)
     env["AQ_API_URL"] = API_URL
-    env.pop("AQ_API_TOKEN", None)
-    env.pop("AQ_SESSION_ID", None)
+    # A fixture session must resolve its own task and claim. Inheriting the
+    # caller's task makes `prime` address a task outside the disposable world.
+    for name in ("AQ_API_TOKEN", "AQ_SESSION_ID", "AQ_TASK_ID", "AQ_CLAIM_EPOCH"):
+        env.pop(name, None)
     if token:
         env["AQ_API_TOKEN"] = token
     if session_id:
@@ -145,6 +166,7 @@ def run_aq(
     if json_mode:
         argv.append("--json")
     argv.extend(args)
+    started = time.monotonic()
     proc = subprocess.run(
         argv,
         capture_output=True,
@@ -153,6 +175,8 @@ def run_aq(
         env=_cli_env(token=token, session_id=session_id, extra=extra_env),
         timeout=timeout,
     )
+    TIMINGS["cli_seconds"] = TIMINGS.get("cli_seconds", 0) + time.monotonic() - started
+    TIMINGS["cli_calls"] = TIMINGS.get("cli_calls", 0) + 1
     return CliRun(proc.returncode, proc.stdout.strip(), proc.stderr.strip())
 
 
@@ -235,11 +259,13 @@ def aq_text(*args: str, timeout: float = 120.0) -> str:
 
 
 def api(command: str, args: dict | None = None, *, token: str | None = None) -> dict:
-    """``POST /api/execute`` — the surface for commands the CLI cannot pass args to.
+    """``POST /api/execute`` — fixture setup and background state inspection.
 
     ``gate_list``, ``explain_task`` and friends are categorized but carry
     only a codegen input schema, so the auto-generated Click command takes
-    no options.  The REST endpoint does, and it is just as public.
+    no options.  The REST endpoint does, and it is just as public. Polling
+    also uses this path so waiting for the daemon does not repeatedly launch
+    a Python CLI. Scenario mutations and explicit CLI assertions still use aq.
     """
     body = json.dumps({"command": command, "args": args or {}}).encode()
     req = urllib.request.Request(
@@ -260,21 +286,80 @@ def api(command: str, args: dict | None = None, *, token: str | None = None) -> 
     return payload.get("result") or {}
 
 
-def wait_for(predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = 2.0):
+def api_checked(command: str, args: dict) -> dict | list:
+    """Run a fixture command, failing promptly if it was refused."""
+    result = api(command, args)
+    if isinstance(result, dict):
+        check(result.get("success", True) is not False and "error" not in result,
+              f"{command} fixture command failed: {result}")
+    return result
+
+
+def supervisor_recipient() -> str:
+    """Read the fixture project's opted-in supervisor destination."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    return f"supervisor-{PROJECT}" if project["supervisor_enabled"] else "supervisor-global"
+
+
+def wait_for(
+    predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = POLL_INTERVAL,
+    extend_if=None, diagnostic=None,
+):
     """Poll *predicate* until it returns something truthy, or fail loudly.
 
-    Every wait in this file is on the 5s cascade, so the failure message
-    matters more than the mechanism: "the pool never reached 2 sessions
+    The failure message must name the condition: "the pool never reached 2 sessions
     (last saw 1)" is a bug report; "timeout" is not.
     """
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
     last = None
-    while time.monotonic() < deadline:
+    extended = False
+    allowed = timeout
+    while True:
         last = predicate()
         if last:
+            TIMINGS["condition_seconds"] = (
+                TIMINGS.get("condition_seconds", 0) + time.monotonic() - started
+            )
+            TIMINGS["condition_waits"] = TIMINGS.get("condition_waits", 0) + 1
             return last
-        time.sleep(interval)
-    raise Failure(f"timed out after {timeout:.0f}s waiting for {what} (last saw {last!r})")
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(interval, remaining))
+            continue
+        if extend_if is not None and not extended:
+            extra = extend_if()
+            if extra > 0:
+                extended = True
+                allowed += extra
+                deadline = time.monotonic() + extra
+                print(f"     pool wait for {what}: allowing {extra:.0f}s more for convergence")
+                continue
+        detail = f"; {diagnostic()}" if diagnostic is not None else ""
+        raise Failure(
+            f"timed out after {allowed:.0f}s waiting for {what} "
+            f"(last saw {last!r}{detail})"
+        )
+
+
+def observe_scheduler_cycles(assertion, *, cycles: int = 2) -> None:
+    """Keep a negative assertion true across completed fake-daemon cycles."""
+    path = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e"))) / "scheduler-cycles"
+    if not path.exists():
+        # A manually started src.main daemon has no test observer. Retain the
+        # original observation window rather than infer its cadence.
+        for _ in range(6):
+            assertion()
+            time.sleep(2)
+        assertion()
+        return
+    initial = int(path.read_text())
+
+    def observed():
+        assertion()
+        return int(path.read_text()) - initial >= cycles
+
+    wait_for(observed, what=f"{cycles} completed scheduler cycles")
 
 
 # ---------------------------------------------------------------------------
@@ -283,15 +368,17 @@ def wait_for(predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interva
 
 
 def pool_row(project_id: str = PROJECT, profile_id: str = POOL_PROFILE) -> dict:
-    for row in collection_rows(aq("pool", "status", "--project-id", project_id), "pools"):
+    for row in collection_rows(api_checked("pool_status", {"project_id": project_id}), "pools"):
         if row["profile_id"] == profile_id:
             return row
     raise Failure(f"no pool row for {project_id}/{profile_id}")
 
 
-def pool_sessions(project_id: str | None = PROJECT) -> list[dict]:
-    rows = collection_rows(aq("session", "list", "--lifecycle", "pool"), "sessions")
-    live = ("starting", "running")
+def pool_sessions(
+    project_id: str | None = PROJECT, *, include_draining: bool = False,
+) -> list[dict]:
+    rows = collection_rows(api_checked("session_list", {"lifecycle": "pool"}), "sessions")
+    live = ("starting", "running", "draining") if include_draining else ("starting", "running")
     return [
         s
         for s in rows
@@ -299,27 +386,181 @@ def pool_sessions(project_id: str | None = PROJECT) -> list[dict]:
     ]
 
 
+def pool_wait_state(project_id: str, profile_id: str) -> dict:
+    """The daemon's own placement inputs, kept compact for a timeout report."""
+    try:
+        row = pool_row(project_id, profile_id)
+    except (CliError, Failure) as exc:
+        return {"project": project_id, "profile": profile_id, "status_error": str(exc)}
+    project = next(
+        (item for item in row.get("projects", []) if item["project_id"] == project_id),
+        {},
+    )
+    return {
+        "project": project_id,
+        "profile": profile_id,
+        "enabled": row.get("enabled"),
+        "ready": row.get("ready"),
+        "desired": row.get("desired"),
+        "running_idle": row.get("running_idle"),
+        "running_busy": row.get("running_busy"),
+        "starting": row.get("starting"),
+        "draining": row.get("draining"),
+        "provider_unavailable": row.get("provider_unavailable"),
+        "placement": project,
+        "instances": [
+            {key: instance.get(key) for key in ("session_id", "state", "task_id", "quarantine_reason")}
+            for instance in row.get("instances", [])
+            if instance.get("project_id") == project_id
+        ],
+    }
+
+
+def wait_for_pool_session(
+    predicate, *, what: str, project_id: str = PROJECT, profile_id: str = POOL_PROFILE,
+    timeout: float = CONVERGE_TIMEOUT,
+):
+    """Give an observable launch one more window and explain a failed placement."""
+    def status() -> dict:
+        return pool_wait_state(project_id, profile_id)
+
+    def extend_if() -> float:
+        snapshot = status()
+        placement = snapshot.get("placement") or {}
+        if snapshot.get("provider_unavailable") or snapshot.get("enabled") is False:
+            return 0
+        quarantine_left = (placement.get("quarantined_until") or 0) - time.time()
+        # A launch backoff that will clear within the extra window is
+        # convergence.  A long crash quarantine is a real blocker; report it
+        # at the original deadline instead of waiting pointlessly.
+        if quarantine_left > 0:
+            return timeout if quarantine_left < timeout else 0
+        if placement.get("starting", 0):
+            return timeout
+        supply = sum(snapshot.get(key) or 0 for key in ("running_idle", "running_busy", "starting"))
+        if (placement.get("ready", 0) and placement.get("workspace_capacity", 0)
+                and (snapshot.get("desired") or 0) > supply):
+            return timeout
+        return 0
+
+    return wait_for(
+        predicate, what=what, timeout=timeout, extend_if=extend_if,
+        diagnostic=lambda: f"pool_status={json.dumps(status(), sort_keys=True)}",
+    )
+
+
 def session_token(session_id: str) -> str:
     return aq("session", "token", session_id)["token"]
 
 
-def create_task(title: str, *, project_id: str = PROJECT, profile: str | None = None) -> str:
-    """``create_task`` over REST — ``aq task create`` has no JSON envelope yet."""
+#: The stage profiles a role task keeps (mandatory routing §4, D3): never routed.
+# S4 and S19 deliberately dispatch dedicated stages, outside ordinary worker selection.
+ROLE_PROFILES = frozenset({
+    "triage", "spec-ingest", "fidelity-reviewer", "reviewer", "final-reviewer", "coding", "planner",
+})
+
+#: Why the operator overrides a route in this kit; the override needs 10-400 chars.
+OVERRIDE_REASON = "e2e Tier 1: the operator routes this task by hand"
+
+
+def _e2e_sql(statement: str, *params) -> str:
+    """Run one statement on the disposable e2e database (Tier 1 stand-ins only)."""
+    import asyncio
+
+    import asyncpg
+
+    url = os.environ.get("E2E_DB_URL", "")
+    check(url, "E2E_DB_URL is not set: run the kit through scripts/e2e-smoke.sh")
+
+    async def run() -> str:
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg://", "postgresql://", 1))
+        try:
+            return await conn.execute(statement, *params)
+        finally:
+            await conn.close()
+
+    return asyncio.run(run())
+
+
+def route_task(task_id: str, profile: str, intelligence_class: str) -> None:
+    """Write the route the project's router would write for *task_id*.
+
+    Filing carries hints, never routes, and only the bound routing playbook
+    writes a route (mandatory task routing).  Tier 1 runs no router LLM and
+    its fixture profiles and classes are not in the shipped policy, so this
+    stands in for the router's choice: a ``router`` route -- ``role`` for a
+    stage profile -- whose candidates are every enabled profile of the class
+    with the chosen one first, which is what failover, spill and undo move
+    among.  The operator's audited lever, ``aq task route-override``, is
+    exercised by S3, S16 and S19 (:func:`override_route`).
+    """
+    profiles = collection_rows(api("list_profiles", {}), "profiles")
+    same_class = [
+        row for row in profiles
+        if row.get("default_class") == intelligence_class and row.get("enabled", True)
+        and row.get("id") != profile and row.get("id") not in ROLE_PROFILES
+    ]
+    chosen = next((row for row in profiles if row.get("id") == profile), {"id": profile})
+    candidates = [
+        {
+            "profile_id": row["id"], "intelligence_class": intelligence_class,
+            "harness": row.get("harness") or "", "lifecycle": row.get("lifecycle") or "task",
+        }
+        for row in ([chosen] + ([] if profile in ROLE_PROFILES else same_class))
+    ]
+    route = {
+        "version": 1, "profile_id": profile, "intelligence_class": intelligence_class,
+        "provider_intent": "class_only", "candidates": candidates, "rule": "e2e",
+        "reason": "e2e Tier 1 stand-in for the router's deterministic choice",
+    }
+    source = "role" if profile in ROLE_PROFILES else "router"
+    status = _e2e_sql(
+        "UPDATE tasks SET profile_id = $1, intelligence_class = $2, "
+        "provider_intent = 'class_only', route_source = $3, route = $4::jsonb, "
+        "updated_at = extract(epoch from now()) "
+        "WHERE id = $5 AND assigned_agent_id IS NULL "
+        "AND status IN ('DEFINED', 'READY', 'BLOCKED', 'PAUSED')",
+        profile, intelligence_class, source, json.dumps(route), task_id,
+    )
+    check(status == "UPDATE 1", f"could not route {task_id} to {profile}: {status}")
+
+
+def override_route(task_id: str, profile: str, intelligence_class: str) -> dict:
+    """The operator's audited emergency override: pinned, and resolves a routing gate."""
+    return api_checked("task_route_override", {
+        "task_id": task_id, "profile_id": profile,
+        "intelligence_class": intelligence_class, "reason": OVERRIDE_REASON,
+    })
+
+
+def create_task(
+    title: str,
+    *,
+    project_id: str = PROJECT,
+    profile: str | None = None,
+    intelligence_class: str | None = None,
+) -> str:
+    """``create_task`` over REST — ``aq task create`` has no JSON envelope yet.
+
+    With *profile*, the task is filed with its class as a hint and then given
+    the route the router would write for *profile* (:func:`route_task`).
+    """
     args = {"project_id": project_id, "title": title, "description": f"e2e: {title}"}
-    if profile:
-        args["profile_id"] = profile
-    if profile == POOL_PROFILE:
-        # Tier 1 has no assignment-playbook LLM. Explicit classification is
-        # therefore the fixture's deterministic assignment decision.
-        args["intelligence_class"] = POOL_CLASS
+    if intelligence_class is None and profile == POOL_PROFILE:
+        intelligence_class = POOL_CLASS
+    if intelligence_class is not None:
+        args["intelligence_class"] = intelligence_class
     result = api("create_task", args)
     task_id = result.get("created") or result.get("task_id")
     check(task_id, f"create_task({title}) returned no id: {result}")
+    if profile:
+        check(intelligence_class, f"routing {title} to {profile} needs a class")
+        route_task(task_id, profile, intelligence_class)
     return task_id
 
 
 def task_show(task_id: str) -> dict:
-    return aq("task", "show", task_id)
+    return api_checked("task_show", {"task_id": task_id})
 
 
 @dataclass
@@ -338,8 +579,8 @@ class Worker:
     def aq(self, *args: str, check_ok: bool = True) -> dict:
         return aq(*args, token=self.token, session_id=self.session_id, check_ok=check_ok)
 
-    def claim_next(self, *, check_ok: bool = True) -> dict:
-        out = self.aq("task", "claim", "--next", check_ok=check_ok)
+    def claim_next(self, *, check_ok: bool = True, wait: int = 0) -> dict:
+        out = self.aq("task", "claim", "--next", "--wait", str(wait), check_ok=check_ok)
         if isinstance(out, dict) and out.get("result") == "claimed":
             self.task_id = out["task"]["id"]
             self.claim_epoch = out["claim_epoch"]
@@ -379,7 +620,49 @@ class Worker:
         )
 
 
-def fresh_workers(count: int) -> list[Worker]:
+def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> dict:
+    """Bound transient empty claims without hiding a wrong task or session failure."""
+    fixtures = [task_ids] if isinstance(task_ids, str) else task_ids
+    check(fixtures, f"{what}: no fixture tasks available")
+    last_claim = None
+
+    def claim():
+        nonlocal last_claim
+        # SKIP LOCKED can skip a READY fixture; releasing its row lock emits
+        # no task.ready event to wake a long poll. Leave time for retries.
+        # Preparation can outlive this short observation; the next call
+        # resumes the session's existing attempt.
+        last_claim = worker.claim_next(wait=1)
+        if last_claim.get("result") == "no_ready_work":
+            return None
+        if last_claim.get("result") == "claim_in_progress":
+            check(last_claim.get("task_id") in fixtures,
+                  f"{what}: expected fixture {task_ids}, preparing {last_claim.get('task_id')}")
+            return None
+        check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
+        check(worker.task_id in fixtures,
+              f"{what}: expected fixture {task_ids}, held {worker.task_id}")
+        return last_claim
+
+    def diagnostic():
+        keys = ("id", "status", "profile_id", "route_source", "is_blocked", "claimed_by")
+        fixture_state = [
+            {key: task.get(key) for key in keys}
+            for task in (task_show(task_id) for task_id in fixtures)
+        ]
+        return f"last_claim={last_claim}; fixture={fixture_state}"
+
+    return wait_for(
+        claim, what=what, timeout=CONVERGE_TIMEOUT, diagnostic=diagnostic,
+    )
+
+
+def fresh_workers(
+    count: int,
+    *,
+    project_id: str = PROJECT,
+    cleanup_projects: tuple[str, ...] = (PROJECT, OTHER_PROJECT),
+) -> list[Worker]:
     """Put the pool in a known state: exactly *count* idle, unspent workers.
 
     Scenarios that ran earlier leave the pool in whatever shape they
@@ -403,29 +686,35 @@ def fresh_workers(count: int) -> list[Worker]:
     """
 
     def _quiesced():
-        for project_id in (PROJECT, OTHER_PROJECT):
-            _delete_open_pool_tasks(project_id)
-        live = pool_sessions(None)
+        for cleanup_project_id in cleanup_projects:
+            _delete_open_pool_tasks(cleanup_project_id)
+        # Draining rows still consume supply/capacity until the reconciler
+        # marks them stopped.  Leaving them behind can starve the next case.
+        live = pool_sessions(None, include_draining=True)
         for s in live:
-            aq("session", "kill", s["id"], check_ok=False)
+            api("session_kill", {"session_id": s["id"]})
         return not live and not any(
-            _open_pool_tasks(project_id) for project_id in (PROJECT, OTHER_PROJECT)
+            _open_pool_tasks(cleanup_project_id) for cleanup_project_id in cleanup_projects
         )
 
     wait_for(_quiesced, what="the pool to quiesce (no live sessions, empty frontier)")
 
-    fillers = [create_task(f"pool primer {n}", profile=POOL_PROFILE) for n in range(count)]
+    fillers = [
+        create_task(f"pool primer {n}", project_id=project_id, profile=POOL_PROFILE)
+        for n in range(count)
+    ]
 
     def _enough_sessions():
-        rows = pool_sessions()
+        rows = pool_sessions(project_id)
         return rows if len(rows) >= count else None
 
-    live = wait_for(
+    live = wait_for_pool_session(
         _enough_sessions,
         what=f"{count} fresh pool sessions",
+        project_id=project_id,
     )
     for task_id in fillers:
-        aq("task", "delete", "--task-id", task_id)
+        api_checked("delete_task", {"task_id": task_id, "recursive": True, "branches": "delete", "confirmed": True})
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
@@ -438,20 +727,19 @@ def _open_pool_tasks(project_id: str = PROJECT) -> list[dict]:
     everything still open in either isolated fixture project is leftover
     scenario scaffolding, and clearing all of it is exactly the point.
     """
-    rows = aq("task", "list", "--project", project_id)
+    rows = api_checked("list_tasks", {"project_id": project_id})
     return list(rows) if isinstance(rows, list) else rows.get("tasks", [])
 
 
 def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     """Clear the frontier so a scenario starts from zero.
 
-    ``--cascade`` because a worker-filed task from S3 may still hang off
-    one of these; ``check_ok=False`` because a task a session is still
-    holding refuses deletion, and the caller's loop retries after the kill
-    has released it.
+    Cascade because a worker-filed task from S3 may still hang off one of
+    these. A refusal is retried by the caller after killing its session.
+    This is fixture cleanup; S9 asserts task deletion through the real CLI.
     """
     for task in _open_pool_tasks(project_id):
-        aq("task", "delete", "--task-id", task["id"], "--cascade", check_ok=False)
+        api("delete_task", {"task_id": task["id"], "recursive": True, "branches": "delete", "confirmed": True})
 
 
 def idle_worker() -> Worker:
@@ -463,7 +751,7 @@ def idle_worker() -> Worker:
                 return s["id"]
         return None
 
-    sid = wait_for(_find, what="an idle pool session")
+    sid = wait_for_pool_session(_find, what="an idle pool session")
     return Worker.adopt(sid)
 
 
@@ -473,29 +761,28 @@ def idle_worker() -> Worker:
 
 
 def ensure_project(project_id: str, workspaces: list[str]) -> None:
-    existing = {p["id"] for p in collection_rows(aq("project", "list"), "projects")}
+    """Prepare scaffolding through the same public handlers as the CLI.
+
+    Registration runs both on daemon startup and before scenarios. It is
+    fixture setup; S8/S10 independently assert the real project/workspace CLI.
+    """
+    existing = {p["id"] for p in collection_rows(api_checked("list_projects", {}), "projects")}
     if project_id not in existing:
-        aq(
-            "project", "create",
-            "--name", project_id,
-            "--default-profile-id", POOL_PROFILE,
-        )
+        # Bound to the default router; a project has no default profile (routing §8).
+        api_checked("create_project", {"name": project_id})
     have = {
         w["workspace_path"]
         for w in collection_rows(
-            aq("project", "list-workspaces", "--project-id", project_id), "workspaces"
+            api_checked("list_workspaces", {"project_id": project_id}), "workspaces"
         )
     }
     for path in workspaces:
         if path in have:
             continue
-        aq(
-            "project", "add-workspace",
-            "--project-id", project_id,
-            "--source", "link",
-            "--path", path,
-            "--name", os.path.basename(path),
-        )
+        api_checked("add_workspace", {
+            "project_id": project_id, "source": "link", "path": path,
+            "name": os.path.basename(path),
+        })
 
 
 def workspace_paths(project_id: str) -> list[str]:
@@ -518,7 +805,7 @@ def setup() -> None:
     check(
         any(
             r["profile_id"] == POOL_PROFILE
-            for r in collection_rows(aq("pool", "status"), "pools")
+            for r in collection_rows(api_checked("pool_status", {}), "pools")
         ),
         f"profile '{POOL_PROFILE}' is not a pool profile — is the vault fixture in place?",
     )
@@ -536,23 +823,25 @@ def s1_pool_sizing(state: dict) -> str:
 
     def _pool_at_max():
         row = pool_row()
-        return row if row["running_idle"] + row["running_busy"] + row["starting"] == 2 else None
+        check(row["max_active"] == 2, f"max_active should be 2, got {row['max_active']}")
+        supply = row["running_idle"] + row["running_busy"] + row["starting"]
+        check(supply <= 2, f"pool supply exceeded max_active=2: saw {supply}")
+        sessions = pool_sessions()
+        check(len(sessions) <= 2,
+              f"live pool sessions exceeded max_active=2: saw {len(sessions)}")
+        # `starting` includes reserved launches before their session rows
+        # exist. The batch's scale audit follows the last completed launch.
+        if supply != 2 or len(sessions) != 2:
+            return None
+        events = api("get_recent_events", {"event_type": "pool.scaled", "limit": 10})["events"]
+        scaled = [e for e in events
+                  if e["project_id"] == PROJECT and e["payload"].startswith("start")]
+        return (row, scaled) if scaled else None
 
-    row = wait_for(_pool_at_max, what="the pool to reach max_active=2 sessions")
-    check(row["max_active"] == 2, f"max_active should be 2, got {row['max_active']}")
+    row, scaled = wait_for_pool_session(
+        _pool_at_max, what="the pool to reach max_active=2 durable sessions with a scale-up audit",
+    )
     check(row["ready"] >= 3, f"expected >=3 ready tasks, saw {row['ready']}")
-    check(
-        len(pool_sessions()) == 2,
-        f"expected exactly 2 live pool sessions, saw {len(pool_sessions())}",
-    )
-
-    events = api("get_recent_events", {"event_type": "pool.scaled", "limit": 10})["events"]
-    scaled = [e for e in events if e["project_id"] == PROJECT]
-    check(scaled, "no pool.scaled audit row for project 'e2e'")
-    check(
-        any(e["payload"].startswith("start") for e in scaled),
-        f"pool.scaled rows record no scale-up: {[e['payload'] for e in scaled]}",
-    )
     return f"2 sessions for 3 ready tasks; pool.scaled = {scaled[0]['payload']!r}"
 
 
@@ -562,8 +851,11 @@ def s2_claim_loop(state: dict) -> str:
     worker = idle_worker()
     state["s2_session"] = worker.session_id
 
-    first = worker.claim_next()
-    check(first["result"] == "claimed", f"first claim: {first}")
+    # S1 may have run in a previous pytest item's subprocess, so read its
+    # remaining fixtures through the public surface rather than local state.
+    fixtures = [task["id"] for task in _open_pool_tasks()
+                if task["title"].startswith("S1 worker task ")]
+    first = claim_fixture(worker, fixtures, what="S2 worker to claim an S1 fixture")
     check(isinstance(first["claim_epoch"], int), f"no integer claim_epoch: {first}")
     first_task = worker.task_id
 
@@ -599,7 +891,7 @@ def s2_claim_loop(state: dict) -> str:
     # held comes back, and `pools.orphan_agents` (which *does* read agent
     # rows) stays clean, which it would not if the agent were left behind.
     def _retired():
-        shown = aq("session", "show", worker.session_id)
+        shown = api_checked("session_show", {"session_id": worker.session_id})
         row = shown.get("session") or shown
         return row if row.get("state") == "stopped" else None
 
@@ -615,7 +907,7 @@ def s2_claim_loop(state: dict) -> str:
         f"pools.orphan_agents is {orphan_check.get('severity')}: {orphan_check.get('detail')}",
     )
 
-    replacement = wait_for(
+    replacement = wait_for_pool_session(
         lambda: next(
             (s for s in pool_sessions() if s["id"] not in initial_session_ids),
             None,
@@ -631,17 +923,23 @@ def s2_claim_loop(state: dict) -> str:
 def s3_worker_filed_work(state: dict) -> str:
     """Work a worker discovers is DEFINED, provenance-linked and gated."""
     worker = idle_worker()
-    claimed = worker.claim_next()
-    check(claimed["result"] == "claimed", f"S3 needs a held task: {claimed}")
+    fixtures = [task["id"] for task in _open_pool_tasks()
+                if task["title"].startswith("S1 worker task ")]
+    claim_fixture(worker, fixtures, what="S3 worker to claim a remaining S1 fixture")
     held = worker.task_id
     state["s3_worker"] = worker
 
+    # A bare worker filing lands as a child of the held task with no gate of
+    # its own (7d5af2879; tests/test_worker_filing.py).  The durable routing
+    # gate this scenario exercises belongs to a *root* filing -- cross-cutting
+    # work that does not ship with the held deliverable -- so ask for one.
     filed = api(
         "create_task",
         {
             "title": "S3 discovered work",
             "description": "filed by a worker mid-task",
             "reason": "follow-up work discovered while executing the held task",
+            "root": True,
         },
         token=worker.token,
     )
@@ -659,10 +957,12 @@ def s3_worker_filed_work(state: dict) -> str:
         f"worker-filed work moved to unexpected status {row['status']}",
     )
     check(row["is_blocked"], "worker-filed work lost its routing blocker")
+    check(row.get("parent_task_id") is None, f"root filing got a parent: {row.get('parent_task_id')}")
     check(row["project_id"] == PROJECT, "worker-filed work escaped the session's project")
+    # A filing carries hints only; the filer's own profile is never the route.
     check(
-        row["profile_id"] == POOL_PROFILE,
-        f"worker-filed work did not inherit the caller profile: {row['profile_id']}",
+        not row["profile_id"],
+        f"worker-filed work inherited the filer's route: {row['profile_id']}",
     )
     check(
         row["intelligence_class"] is None,
@@ -686,17 +986,19 @@ def s3_worker_filed_work(state: dict) -> str:
     check(gate_reasons, f"no open routing gate on {filed_id}; explain said {reasons}")
     gate_id = gate_reasons[0]["ref"]
 
-    # `task_route` is the only resolver for a routing gate (dv2 phase 1).
-    # A triage *agent* calls it; with no LLM in Tier 1 the operator surface
-    # stands in, which exercises the same command the agent would run.
+    # Only a route write resolves a routing gate: the project's router, or
+    # the operator's audited override (mandatory routing §7).  With no router
+    # LLM in Tier 1 the operator's override stands in.
     routed = aq(
-        "task", "route",
+        "task", "route-override",
         "--task-id", filed_id,
         "--profile-id", POOL_PROFILE,
         "--intelligence-class", POOL_CLASS,
+        "--reason", OVERRIDE_REASON,
     )
-    check(routed.get("success"), f"task route failed: {routed}")
-    check(routed["resolved_gate_ids"], "routing did not resolve the gate")
+    check(routed.get("success"), f"task route-override failed: {routed}")
+    check(routed["resolved_gate_ids"], "the override did not resolve the gate")
+    check(routed["route_source"] == "override", f"not an override: {routed}")
 
     after = task_show(filed_id)
     check(after["profile_id"] == POOL_PROFILE, f"profile not written: {after['profile_id']}")
@@ -720,6 +1022,20 @@ def s3_worker_filed_work(state: dict) -> str:
 
 def s4_formulas(state: dict) -> str:
     """A formula resolves, cooks, renders back as-cooked, and settles."""
+    # S1 leaves two live idle pool sessions at the project's cap of two.
+    # Formula role tasks run in their own task sessions, so provision one
+    # additional seat while exercising their sequential execution. Idle
+    # pool sessions consume real capacity even without current task pins.
+    project = api_checked("get_project", {"project_id": PROJECT})
+    cap = project["max_concurrent_agents"]
+    api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap + 1})
+    try:
+        return _s4_formulas(state)
+    finally:
+        api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap})
+
+
+def _s4_formulas(state: dict) -> str:
     names = {f["name"] for f in aq("formula", "list", "--project-id", PROJECT)["formulas"]}
     check({"base-review", "review-and-fix"} <= names, f"formula fixtures missing: {names}")
 
@@ -743,6 +1059,13 @@ def s4_formulas(state: dict) -> str:
     container = cooked["container_id"]
     state["s4_container"] = container
     check(len(cooked["task_ids"]) == 2, f"expected 2 children, got {cooked['task_ids']}")
+    # Formula nodes carry hints, never a route: the operator routes each to
+    # the task-lifecycle profile its label names.
+    routes = {"review": ("reviewer", "fast-low"), "fix": ("coding", "standard-high")}
+    nodes = {node["key"]: node["task_id"] for node in cooked["nodes"]}
+    check(set(nodes) == set(routes), f"cooked nodes: {cooked['nodes']}")
+    for key, (profile, cls) in routes.items():
+        route_task(nodes[key], profile, cls)
 
     row = task_show(container)
     check(
@@ -764,7 +1087,7 @@ def s4_formulas(state: dict) -> str:
         f"as-cooked titles differ from the resolved ones: {snap_titles} vs {titles}",
     )
 
-    # Close both children through their own sessions.  Both are routed to
+    # Close both children through their own sessions.  Both were routed to
     # task-lifecycle profiles, so the push scheduler launches a session for
     # each as it enters the frontier — `review` first, `fix` once `review`
     # is done.  Minting each session's token and closing through it is the
@@ -772,6 +1095,8 @@ def s4_formulas(state: dict) -> str:
     for _ in range(2):
         _close_next_child(container)
 
+    # Exercise the CLI list surface once; session readiness polling uses the API.
+    aq("session", "list")
     progress = aq("task", "progress", "--task-id", container)
     check(progress["done"] == 2, f"container progress not settled: {progress}")
 
@@ -793,17 +1118,19 @@ def _close_next_child(container: str) -> None:
     """Wait for the next child to be picked up, then close it as its session."""
     def _held():
         for child in collection_rows(
-            aq("task", "children", "--task-id", container), "children"
+            api_checked("task_children", {"task_id": container}), "children"
         ):
             if child["status"] in ("COMPLETED", "DONE"):
                 continue
-            sessions = collection_rows(aq("session", "list"), "sessions")
+            sessions = collection_rows(api_checked("session_list", {}), "sessions")
             for s in sessions:
                 if s.get("task_id") == child["id"] and s["state"] in ("starting", "running"):
                     return (child["id"], s["id"])
         return None
 
-    task_id, session_id = wait_for(_held, what=f"a session to pick up a child of {container}")
+    task_id, session_id = wait_for_pool_session(
+        _held, what=f"a session to pick up a child of {container}"
+    )
     token = session_token(session_id)
     # ``no-op`` is the truthful outcome: under Tier 1 this runner *is* the
     # session and it commits nothing.  A ``shipped`` close is held to the
@@ -825,9 +1152,8 @@ def _close_next_child(container: str) -> None:
 def s5_fence_and_scope(state: dict) -> str:
     """A token is an identity, not a key to the daemon."""
     holder, intruder = fresh_workers(2)
-    create_task("S5 task for the holder", profile=POOL_PROFILE)
-    claimed = holder.claim_next()
-    check(claimed["result"] == "claimed", f"S5 needs a held task: {claimed}")
+    fixture = create_task("S5 task for the holder", profile=POOL_PROFILE)
+    claim_fixture(holder, fixture, what=f"S5 holder to claim fixture {fixture}")
     held, epoch = holder.task_id, holder.claim_epoch
 
     # A second, *different* pool session's token must not touch it.
@@ -856,7 +1182,7 @@ def s5_fence_and_scope(state: dict) -> str:
     # Pool bounds are global. Remove this scope-only fixture before closing
     # the holder frees capacity, or OTHER_PROJECT starts a worker that consumes
     # one of S7's two required slots for the entire scale-down grace period.
-    aq("task", "delete", "--task-id", foreign)
+    aq("task", "delete", foreign, "--recursive", "--branches", "delete", "--yes")
     state.pop("s5_foreign", None)
     holder.close(summary="S5 held task")
     return f"cross-session heartbeat and cross-project prime both refused ({foreign})"
@@ -943,26 +1269,55 @@ def s7_claim_race(state: dict) -> str:
     # Let the task land in the frontier before both callers ask for it.
     wait_for(lambda: task_show(task_id)["status"] == "READY", what=f"{task_id} to be READY")
 
-    procs = []
-    for sid, token in tokens:
-        env = dict(os.environ)
-        env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
-        procs.append(
-            subprocess.Popen(
-                [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-        )
     outcomes = []
-    for p in procs:
-        out, _err = p.communicate(timeout=120)
-        payload = json.loads(out.strip() or "{}")
-        data = payload.get("data") or {}
-        details = (payload.get("error") or {}).get("details") or {}
-        outcomes.append(data.get("result") or details.get("result") or "unknown")
+
+    def race():
+        nonlocal outcomes
+        procs = []
+        for sid, token in tokens:
+            env = dict(os.environ)
+            env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
+            procs.append(
+                subprocess.Popen(
+                    [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+            )
+        outcomes = []
+        for worker, p in zip(workers, procs, strict=True):
+            out, _err = p.communicate(timeout=120)
+            payload = json.loads(out.strip() or "{}")
+            data = payload.get("data") or {}
+            details = (payload.get("error") or {}).get("details") or {}
+            result = data.get("result") or details.get("result") or "unknown"
+            if result == "claim_in_progress":
+                check(data.get("task_id") == task_id,
+                      f"race is preparing a different task: {data}")
+                preparing_epoch = data.get("claim_epoch")
+                check(isinstance(preparing_epoch, int) and preparing_epoch > 0,
+                      f"race preparation omitted its generation: {data}")
+                # Keep selection concurrent and immediate, then join the
+                # winning generation once before asserting final ownership.
+                data = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
+                result = data.get("result") or "unknown"
+                check(data.get("claim_epoch") == preparing_epoch,
+                      f"race preparation changed generation: {data}")
+            if result == "claimed":
+                check(data.get("task", {}).get("id") == task_id,
+                      f"race claimed a different task: {data}")
+            outcomes.append(result)
+        # READY does not mean unlocked: both SKIP LOCKED queries can miss
+        # the task during a scheduler transaction. Race both callers again
+        # only when neither claimed; all other results retain the assertions.
+        return None if outcomes == ["no_ready_work", "no_ready_work"] else outcomes
+
+    wait_for(
+        race, what=f"one concurrent claim of {task_id}", timeout=CONVERGE_TIMEOUT,
+        diagnostic=lambda: f"outcomes={outcomes}; fixture={task_show(task_id)}",
+    )
 
     winners = [o for o in outcomes if o == "claimed"]
     check(
@@ -1128,8 +1483,6 @@ def s9_task_lifecycle(state: dict) -> str:
             "137",
             "--type",
             "test",
-            "--profile",
-            POOL_PROFILE,
             "--intelligence-class",
             POOL_CLASS,
             "--requires-kind",
@@ -1155,7 +1508,7 @@ def s9_task_lifecycle(state: dict) -> str:
             "source=smoke",
         )
         check(changed.get("success", True) is not False, f"task set failed: {changed}")
-        after = task_show(full_id)
+        after = aq("task", "show", full_id)
         check(after["description"] == "stateful CLI updated description", f"edit lost: {after}")
         check("e2e-stateful" in after.get("labels", []), f"label did not persist: {after}")
 
@@ -1181,7 +1534,7 @@ def s9_task_lifecycle(state: dict) -> str:
         )
     finally:
         for task_id in created:
-            aq("task", "delete", "--task-id", task_id, check_ok=False)
+            aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes", check_ok=False)
 
     for task_id in created:
         gone = run_aq("task", "show", task_id)
@@ -1194,7 +1547,7 @@ def s9_task_lifecycle(state: dict) -> str:
 
 def _workspace_by_path(path: str) -> dict | None:
     rows = collection_rows(
-        aq("project", "list-workspaces", "--project-id", PROJECT), "workspaces"
+        api_checked("list_workspaces", {"project_id": PROJECT}), "workspaces"
     )
     wanted = os.path.realpath(path)
     return next(
@@ -1349,18 +1702,13 @@ def s10_workspace_file_git_note(state: dict) -> str:
             "note", "read", "--project-id", PROJECT, "--title", note_title, check_ok=False
         )
         check(missing_note.get("_error") is not None, "deleted note remained readable")
+        # This removal is a CLI acceptance check; finally only cleans fixtures.
+        aq("project", "remove-workspace", "--workspace-id", workspace_id,
+           "--project-id", PROJECT)
     finally:
-        aq("note", "delete", "--project-id", PROJECT, "--title", note_title, check_ok=False)
+        api("delete_note", {"project_id": PROJECT, "title": note_title})
         if workspace_id:
-            aq(
-                "project",
-                "remove-workspace",
-                "--workspace-id",
-                workspace_id,
-                "--project-id",
-                PROJECT,
-                check_ok=False,
-            )
+            api("remove_workspace", {"workspace_id": workspace_id, "project_id": PROJECT})
         if os.path.exists(forbidden):
             os.unlink(forbidden)
 
@@ -1482,61 +1830,1448 @@ def s14_graph_and_vault(state: dict) -> str:
     return "layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes"
 
 
+def s15_integration_surface(state: dict) -> str:
+    """Check that the CLI exposes current integration controls, not retired legacy paths."""
+    help_text = aq_text("integration", "--help")
+    if "Commands:" not in help_text:
+        raise Failure(f"integration help omitted its command list: {help_text[:400]!r}")
+    commands = {
+        line.strip().split(maxsplit=1)[0]
+        for line in help_text.split("Commands:", 1)[1].splitlines()
+        if line.strip()
+    }
+    check("status" in commands, f"current integration status command is missing: {commands}")
+    retired = {"adopt", "adopt-legacy-deliveries", "develop", "migrate-provenance", "sweep"}
+    still_exposed = sorted(retired & commands)
+    check(not still_exposed, f"retired integration commands remain exposed: {still_exposed}")
+    return "current integration status remains available and legacy development controls are retired"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
 
-def s15_development_delivery(state: dict) -> str:
-    """Operator configure → real published branch → AQ validation/promotion → adoption."""
-    from pathlib import Path
-    root = Path(os.environ["AQ_E2E_HOME"]) / "onboarding"
-    remote, source = root / "development.git", root / "development-source"
-    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)], check=True, capture_output=True)
-    subprocess.run(["git", "clone", str(remote), str(source)], check=True, capture_output=True)
-    _git_text(str(source), "config", "user.name", "AQ E2E")
-    _git_text(str(source), "config", "user.email", "e2e@example.test")
-    (source / "README.md").write_text("development fixture\n")
-    _git_text(str(source), "add", ".")
-    _git_text(str(source), "commit", "-m", "base")
-    _git_text(str(source), "push", "origin", "main")
-    aq_text("project", "onboard", "--request-id", "e2e-development", "--source-mode", "link",
-            "--root-id", "e2e-onboarding", "--relative-path", "development-source",
-            "--project-name", "Development", "--project-id", "e2e-development")
-    configured = aq("integration", "develop", "e2e-development", "--command", "test -f README.md",
-                    "--interval-seconds", "86400", "--reason", "isolated acceptance")
-    check(configured.get("outcome") == "configured", str(configured))
-    _git_text(str(source), "checkout", "-b", "fixture-feature")
-    (source / "feature.txt").write_text("delivered by AQ\n")
-    _git_text(str(source), "add", ".")
-    _git_text(str(source), "commit", "-m", "feature")
-    head = _git_text(str(source), "rev-parse", "HEAD")
-    _git_text(str(source), "push", "origin", "fixture-feature")
-    task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
-        "title": "development delivery", "description": "real Git fixture"})
-    task_id = task.get("task_id") or task.get("created")
-    check(bool(task_id), str(task))
-    aq("task", "set", task_id, "--branch", "fixture-feature")
-    aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
-    successor = api("create_task", {
-        "project_id": "e2e-development", "title": "wait for delivered code",
-        "description": "must not start before the prerequisite reaches main",
-        "profile_id": POOL_PROFILE, "intelligence_class": POOL_CLASS,
+DEVELOPMENT_VALIDATION_COMMAND = "pytest test_validation.py -q"
+
+
+def _seed_development_validation(source: Path) -> None:
+    """Seed a finite pytest equivalent of the fixtures' README file check."""
+    (source / "test_validation.py").write_text(
+        "from pathlib import Path\n\n\n"
+        "def test_readme_exists():\n"
+        "    assert Path('README.md').is_file()\n"
+    )
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# S16 — provider failover (docs/specs/provider-failover.md D23, bold-rapids.5)
+# ---------------------------------------------------------------------------
+
+#: The fake providers of ``tests/fixtures/provider_failover`` and their rungs.
+PROVA, PROVB = "prova", "provb"
+STD_A, STD_B, SOLO_A = "std-high-prova", "std-high-provb", "solo-high-prova"
+FAILOVER_PROFILES = (STD_A, STD_B, SOLO_A)
+FAILOVER_PLAYBOOK = "provider-failover"
+
+
+def note(message: str) -> None:
+    """One line of a long scenario's narrative, printed as it happens.
+
+    S16 is the end-to-end transcript bold-rapids.5 attaches, so it says what
+    it is doing at each step rather than only how it finished.
+    """
+    print(f"     · {message}", flush=True)
+
+
+def fake_script(**modes: str) -> None:
+    """Rewrite the fake session provider's script (``sessions.fake_script_file``).
+
+    Re-read on every fake start and by the fake login probe, so this is how
+    the scenario logs a provider out, exhausts it, or restores it.
+    """
+    path = os.environ.get("E2E_FAKE_SCRIPT") or os.path.join(
+        os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")),
+        "fake-provider-script.json",
+    )
+    script = {PROVA: "ok", PROVB: "ok", **modes}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(script, fh)
+    note(f"fake script: {json.dumps(script)}")
+
+
+def provider(key: str) -> dict:
+    """*key*'s availability row, or ``{}`` before the daemon tracks it.
+
+    Tracked providers are re-read from the profiles once a minute, so a
+    daemon started moments ago may not list one yet; callers poll.
+    """
+    rows = collection_rows(api_checked("provider_status", {"provider": key}), "providers")
+    return rows[0] if rows else {}
+
+
+def provider_state(key: str) -> str:
+    return str(provider(key).get("state") or "")
+
+
+def wait_provider(key: str, states: tuple[str, ...], *, what: str) -> dict:
+    return wait_for(
+        lambda: (row if (row := provider(key)).get("state") in states else None),
+        what=f"{key} to become {'/'.join(states)} ({what})",
+    )
+
+
+def set_provider_state(key: str, state: str, reason: str = "e2e S16") -> dict:
+    args = ["provider", "set-state", "--provider", key, "--state", state]
+    if state != "auto":
+        args += ["--reason", reason, "--for", "30m"]
+    return aq(*args)
+
+
+def set_failover_policy_enabled(enabled: bool) -> None:
+    """Isolate manual sweeps from failover and unavailable-route recovery."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    for playbook in (FAILOVER_PLAYBOOK, project["assignment_playbook_id"]):
+        result = aq(
+            "playbook", "set-enabled", "--playbook-id", playbook,
+            "--enabled" if enabled else "--no-enabled",
+        )
+        check(result.get("enabled") is enabled, f"could not set {playbook}: {result}")
+    if not enabled:
+        # Router readiness is cached until the cascade observes the activation.
+        observe_scheduler_cycles(lambda: None)
+
+
+def wait_for_restored_readiness() -> None:
+    """Wait for the health snapshot to observe an explicitly restored policy.
+
+    S16 temporarily disables a required policy. Re-enabling its activation is
+    synchronous, but the cached /ready verdict is collected independently. Do
+    not pass that disabled snapshot on to the next scenario's preflight.
+    """
+    from scripts.e2e.probe import READY, fetch
+
+    last = None
+    deadline = time.monotonic() + 15
+
+    def restored():
+        nonlocal last
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        last = fetch(API_URL, timeout=min(2, remaining))
+        return last[0] == READY
+
+    wait_for(restored, what="readiness after restoring the failover policy", timeout=15,
+             diagnostic=lambda: f"last readiness probe={last!r}")
+
+
+def held_tasks() -> dict[str, dict]:
+    rows = collection_rows(api_checked("provider_held_tasks", {"project_id": PROJECT}), "tasks")
+    return {row["task_id"]: row for row in rows}
+
+
+def reroute(*extra: str) -> dict:
+    return aq("provider", "reroute", *extra)
+
+
+def login_deaths(key: str, *, since: float) -> list[dict]:
+    """Launches that died on *key*'s login dialog since *since*, from its evidence ring.
+
+    A startup death leaves no session row ``aq session list`` shows, but
+    every one is ``startup_dialog`` evidence on the provider.
+    """
+    rows = collection_rows(
+        api_checked("provider_status", {"provider": key, "verbose": True}), "providers"
+    )
+    return [
+        e for e in rows[0].get("evidence") or []
+        if e.get("kind") == "startup_dialog" and float(e.get("at") or 0) >= since
+    ]
+
+
+def live_sessions_for(profile_id: str) -> list[dict]:
+    return [
+        s for s in pool_sessions(None)
+        if s.get("profile_id") == profile_id
+    ]
+
+
+def _wait_for_failover_logout() -> dict:
+    """Clear recovery sessions until a fresh fake launch observes the logout."""
+    stopped: set[str] = set()
+
+    def logged_out():
+        # Recovery can still have a launch in flight when the fake script
+        # changes. A single snapshot misses that healthy session, leaving
+        # the pool full and preventing the login failure from being observed.
+        live = [
+            session for session in pool_sessions(None, include_draining=True)
+            if session.get("profile_id") in (STD_A, SOLO_A, STD_B)
+        ]
+        for session in live:
+            session_id = session["id"]
+            if session_id not in stopped:
+                api_checked("session_kill", {"session_id": session_id})
+                stopped.add(session_id)
+        row = provider(PROVA)
+        return row if not live and row.get("state") == "unauthenticated" else None
+
+    return wait_for(logged_out, what=f"{PROVA} to become unauthenticated (the second logout)")
+
+
+def failover_task(title: str, profile: str, cls: str, *, priority: int, pin: bool = False) -> str:
+    """File a hint-only task, then route it to *profile*.
+
+    Unpinned, it carries the route the router would write: ``class_only``,
+    with every profile of its class as a candidate.  ``pin`` pins it by the
+    operator's audited override instead, the only pin there is.
+    """
+    args = {
+        "project_id": PROJECT,
+        "title": title,
+        "description": f"e2e S16: {title}",
+        "intelligence_class": cls,
+        "priority": priority,
+    }
+    result = api("create_task", args)
+    task_id = result.get("created") or result.get("task_id")
+    check(task_id, f"create_task({title}) returned no id: {result}")
+    if pin:
+        override_route(task_id, profile, cls)
+    else:
+        route_task(task_id, profile, cls)
+    return task_id
+
+
+def provider_escalations() -> list[dict]:
+    payload = api_checked("escalation_list", {"project_id": PROJECT})
+    rows = payload.get("escalations", []) if isinstance(payload, dict) else payload
+    return [row for row in rows if row.get("source_kind") == "provider_availability"]
+
+
+def _quiesce_failover() -> None:
+    """Start from a clean fleet: no open e2e tasks, no live pool sessions."""
+
+    def _quiet():
+        _delete_open_pool_tasks(PROJECT)
+        live = pool_sessions(None, include_draining=True)
+        for s in live:
+            api("session_kill", {"session_id": s["id"]})
+        return not live and not _open_pool_tasks(PROJECT)
+
+    wait_for(_quiet, what="the fleet to quiesce before S16")
+
+
+def _restore_providers() -> None:
+    """Leave every provider launchable again, whatever S16 got up to.
+
+    The fleet is quiesced *first*: ``auto`` puts a still-unavailable provider
+    on probation, and probation admits one canary launch -- which queued S16
+    work would spend on a session nobody ever works, holding the provider's
+    launches for ``CANARY_TIMEOUT_SECONDS``.
+    """
+    _quiesce_failover()
+    fake_script()
+    for key in ("claude", "codex", PROVB, PROVA):
+        api_checked("provider_set_state", {"provider": key, "state": "auto"})
+
+
+def s16_provider_failover(state: dict) -> str:
+    """A provider runs out: detect, suppress, re-route, hold, recover, undo, all-down."""
+    return _run_failover_phase(state, _s16)
+
+
+def _run_failover_phase(state: dict, phase) -> str:
+    """Keep each independently prepared CI phase fenced and self-cleaning."""
+    state["s16_started"] = True
+    # S18 needs command-only playbooks enabled for this same Tier-1 run.  The
+    # shipped provider-failover playbook would otherwise consume S16's state
+    # change and move the first task before this scenario can inspect the full
+    # held set and exercise the operator's dry-run/live commands itself.
+    # The ready router's unavailable-route recovery would also clear those
+    # deliberately stranded routes, so pause its activation for this phase.
+    try:
+        set_failover_policy_enabled(False)
+        note("paused automatic failover and routing recovery for manual sweep coverage")
+        return phase(state)
+    finally:
+        try:
+            _restore_providers()
+        finally:
+            set_failover_policy_enabled(True)
+            wait_for_restored_readiness()
+
+
+def _s16(state: dict) -> str:
+    outage = _s16_outage(state)
+    return outage["detail"] + "; " + _s16_recovery(outage)
+
+
+def _failover_baseline() -> None:
+    _quiesce_failover()
+    fake_script()  # both fake providers healthy
+    for key in ("claude", "codex", PROVB, PROVA):
+        api_checked("provider_set_state", {"provider": key, "state": "auto"})
+    for key in (PROVA, PROVB):
+        row = wait_provider(key, ("available", "degraded"), what="S16 baseline")
+        note(f"baseline: {key} {row['state']}")
+
+
+def _s16_outage(state: dict) -> dict:
+    _failover_baseline()
+    # -- 1. prova logs out; queue the mix -------------------------------------
+    t0 = time.time()
+    fake_script(prova="login_required")
+    pref = [
+        failover_task(f"S16 preferred {n}", STD_A, "std-high", priority=p)
+        for n, p in ((1, 10), (2, 20), (3, 30))
+    ]
+    pinned = failover_task("S16 pinned", STD_A, "std-high", priority=15, pin=True)
+    solo = failover_task("S16 solo-high", SOLO_A, "solo-high", priority=40)
+    class_only = []
+    for n, p in ((1, 25), (2, 35)):
+        class_only.append(failover_task(f"S16 class-only {n}", STD_A, "std-high", priority=p))
+    intents = {tid: task_show(tid)["provider_intent"] for tid in pref + [pinned, solo] + class_only}
+    check(
+        all(intents[t] == "class_only" for t in pref + [solo] + class_only),
+        f"a router route is class_only: {intents}",
+    )
+    check(intents[pinned] == "pinned", f"the override did not pin: {intents[pinned]}")
+    note(f"queued 3 preferred {pref}, pinned {pinned}, solo-high {solo}, class_only {class_only}")
+
+    # -- 2. detected within two launches; nothing further launches ------------
+    down = wait_provider(PROVA, ("unauthenticated",), what="the login dialog on launch")
+    prova_launches = login_deaths(PROVA, since=t0)
+    check(
+        1 <= len(prova_launches) <= 2,
+        f"prova should trip within two launches, saw {len(prova_launches)}",
+    )
+    note(
+        f"prova {down['state']} ({down['reason_code']}): {down['reason']} — after "
+        f"{len(prova_launches)} launch(es); remediation: {down['remediation']}"
+    )
+    # Both prova pools (std-high and solo-high, max_active 1 each) launch at
+    # once, so a launch the scheduler started before the trip can die on the
+    # dialog after the trip is observed (D4).  The bound is the spec's two
+    # launches in total, not the count seen at the trip; any launch decided
+    # after it would exceed that bound.
+    def suppressed():
+        current = login_deaths(PROVA, since=t0)
+        check(len(current) <= 2,
+              f"launches continued against unavailable prova: {len(prova_launches)} -> {len(current)}")
+
+    observe_scheduler_cycles(suppressed)
+    after = login_deaths(PROVA, since=t0)
+    check(
+        len(after) <= 2,
+        f"launches continued against unavailable prova: {len(prova_launches)} -> {len(after)}",
+    )
+    note(f"no further prova launches across two completed cycles ({len(after)} total)")
+
+    # -- 3. every hold names its reason ----------------------------------------
+    held = held_tasks()
+    check(set(held) == set(pref + [pinned, solo] + class_only), f"held set: {sorted(held)}")
+    check(held[pinned]["kind"] == "provider_pinned", f"pinned hold: {held[pinned]}")
+    check(held[solo]["kind"] == "no_equivalent_rung", f"solo-high hold: {held[solo]}")
+    note("held-tasks: " + ", ".join(f"{t}={held[t]['kind']}" for t in held))
+    explained = api("explain_task", {"task_id": pinned})
+    check("provider_hold" in (explained.get("reason_codes") or []), f"explain: {explained}")
+    check(
+        (explained.get("provider_hold") or {}).get("kind") == "provider_pinned",
+        f"explain names no pin: {explained.get('provider_hold')}",
+    )
+    note(f"explain {pinned}: {explained['provider_hold']['kind']} on {explained['provider_hold']['provider']}")
+
+    # -- 4. the sweep: same class on provb, one pool-width at a time -----------
+    plan = reroute("--dry-run")
+    check(plan["outcome"] == "rerouted" and plan["applied"] is False, f"dry run: {plan}")
+    planned = [d["task_id"] for d in plan["moved"]]
+    check(planned == [pref[0]], f"dry run should move only the most urgent task: {planned}")
+    check(task_show(pref[0])["profile_id"] == STD_A, "a dry run moved a task")
+    note(f"dry run: would move {planned}, hold {plan['held_by_kind']}")
+
+    first = reroute()
+    check(first["outcome"] == "rerouted" and first["applied"], f"sweep: {first}")
+    check([d["task_id"] for d in first["moved"]] == [pref[0]], f"sweep moved {first['moved']}")
+    kinds = {d["task_id"]: d["kind"] for d in first["held"]}
+    check(kinds[pinned] == "provider_pinned" and kinds[solo] == "no_equivalent_rung", str(kinds))
+    check(
+        all(kinds[t] == "awaiting_failover_capacity" for t in pref[1:] + class_only),
+        f"the rest should await capacity: {kinds}",
+    )
+    batch = first["batch_ids"][0]
+    moved = task_show(pref[0])
+    check(moved["profile_id"] == STD_B, f"moved task is on {moved['profile_id']}")
+    check(moved["rerouted_from"] == STD_A, f"rerouted_from: {moved['rerouted_from']}")
+    check(moved["provider_intent"] == "class_only", "a re-route changed the intent")
+    check(moved["intelligence_class"] == "std-high", "a re-route changed the class")
+    comments = aq("task", "comments", pref[0])
+    bodies = [c.get("body", "") for c in collection_rows(comments, "comments")]
+    check(any("Re-routed from" in b for b in bodies), f"no re-route comment: {bodies}")
+    note(f"sweep: moved {pref[0]} {STD_A} -> {STD_B} (batch {batch}); held {first['held_by_kind']}")
+
+    # provb's pool starts at most max_active=1 session; this runner works it.
+    peak = 0
+
+    def _provb_session():
+        nonlocal peak
+        live = live_sessions_for(STD_B)
+        peak = max(peak, len(live))
+        return live[0] if live else None
+
+    sess = wait_for_pool_session(
+        _provb_session, what="a provb pool session for the moved task", profile_id=STD_B,
+    )
+    worker = Worker.adopt(sess["id"])
+    claim_fixture(worker, pref[0], what=f"S16 provb worker to claim moved task {pref[0]}")
+    worker.close(summary="S16 moved task done on provb")
+    worker.drain_ack()
+    note(f"provb session {sess['id']} claimed and closed {pref[0]}")
+
+    second = reroute()
+    check([d["task_id"] for d in second["moved"]] == [pref[1]], f"top-up moved {second['moved']}")
+    check(second["batch_ids"] == [batch], f"a top-up opened a new batch: {second['batch_ids']}")
+    note(f"top-up sweep: moved {pref[1]} into the same batch {batch}")
+    observe_scheduler_cycles(_provb_session)
+    check(peak <= 1, f"provb ran {peak} sessions at once; max_active is 1")
+    note(f"provb never exceeded max_active=1 (peak {peak})")
+
+    # -- 5. notifications: one per half change, one per batch per project ------
+    global_notes = collection_rows(
+        aq("message", "list", "--to-kind", "user", "--to-id", "dashboard", "--since", str(t0)),
+        "messages",
+    )
+    prova_notes = [
+        m for m in global_notes if m.get("subject") == f"Provider {PROVA}: unauthenticated"
+    ]
+    check(len(prova_notes) == 1, f"expected one prova outage notice to the human: {prova_notes}")
+    supervisor = supervisor_recipient()
+    project_notes = [
+        m for m in collection_rows(
+            aq(
+                "message", "list", "--to-kind", "session", "--to-id", supervisor,
+                "--since", str(t0),
+            ),
+            "messages",
+        )
+        if m.get("thread_id") == f"reroute:{batch}:{PROJECT}"
+    ]
+    check(len(project_notes) == 1, f"expected one batch notice for {PROJECT}: {project_notes}")
+    check(project_notes[0].get("project_id") == PROJECT, "batch notice lost its project context")
+    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to {supervisor} for {batch}")
+    incidents = [e for e in provider_escalations() if e.get("source_identity", "").startswith(f"{PROVA}:")]
+    open_incidents = [e for e in incidents if e.get("terminal_at") is None]
+    check(len(open_incidents) == 1, f"expected one open prova escalation: {incidents}")
+    incident = open_incidents[0]
+    check(incident["severity"] == "high", f"escalation severity {incident['severity']}")
+    note(f"escalation {incident['id']} ({incident['severity']}, {incident['state']}): {incident['summary']}")
+    status = provider(PROVA)
+    check(status["rerouted"] == 2 and status["batch_id"] == batch, f"status counts: {status}")
+    note(
+        f"aq provider status prova: {status['state']} since {status['since']:.0f}, "
+        f"held {status['held']}, rerouted {status['rerouted']} (batch {status['batch_id']})"
+    )
+    return {
+        "pref": pref, "pinned": pinned, "solo": solo, "incident": incident,
+        "detail": (
+            f"prova tripped in {len(prova_launches)} launch(es); moved {pref[0]},{pref[1]} "
+            f"to provb within max_active=1 (batch {batch}); pin/solo held; notices deduplicated"
+        ),
+    }
+
+
+def _claim_probation_canary(pinned: str, solo: str) -> tuple[Worker, dict, str]:
+    """Adopt prova's probation canary and claim the held task its pool owns.
+
+    Probation admits one launch -- whichever prova pool asks first.  Its
+    first authenticated call is the success that completes recovery, and
+    the task it claims is a held one, running on prova.
+    """
+    canary = wait_for(
+        lambda: next(iter(live_sessions_for(STD_A) + live_sessions_for(SOLO_A)), None),
+        what="prova's canary launch",
+    )
+    expected = pinned if canary["profile_id"] == STD_A else solo
+    worker = Worker.adopt(canary["id"])
+    claim_fixture(worker, expected, what=f"S16 prova canary {canary['id']} to claim held {expected}")
+    return worker, canary, expected
+
+
+def _s16_recovery(outage: dict) -> str:
+    pref, pinned, solo, incident = (
+        outage[key] for key in ("pref", "pinned", "solo", "incident")
+    )
+    started = time.monotonic()
+    # -- 6. recovery: log in, recheck, probation, one launch -------------------
+    fake_script()  # prova's login works again
+    recheck = aq("provider", "recheck", "--provider", PROVA)
+    check(recheck.get("probe") == "authenticated", f"recheck probe: {recheck}")
+    probation = provider(PROVA)
+    check(
+        probation["state"] == "degraded" and probation.get("probation"),
+        f"recheck should put prova on probation: {probation}",
+    )
+    note(f"recheck: probe authenticated -> {probation['state']} ({probation['reason_code']}), probation")
+    worker_a, canary, expected = _claim_probation_canary(pinned, solo)
+    recovered = wait_provider(PROVA, ("available",), what="the canary's first authenticated call")
+    note(
+        f"canary {canary['id']} ({canary['profile_id']}) claimed held {expected}; "
+        f"prova {recovered['state']}"
+    )
+    worker_a.close(summary="S16 held task done on prova")
+    worker_a.drain_ack()
+    if expected != pinned:
+        sess_a = wait_for_pool_session(
+            lambda: next(iter(live_sessions_for(STD_A)), None),
+            what="a std-high-prova session for the pinned task",
+            profile_id=STD_A,
+        )
+        worker_p = Worker.adopt(sess_a["id"])
+        claim_fixture(worker_p, pinned, what=f"S16 prova worker to claim the pinned task {pinned}")
+        worker_p.close(summary="S16 pinned task done on prova")
+        worker_p.drain_ack()
+        note(f"{sess_a['id']} claimed and closed the pinned task {pinned} on prova")
+    still = task_show(pref[1])
+    check(still["profile_id"] == STD_B, f"moved-and-queued work went home: {still['profile_id']}")
+    check(not held_tasks(), f"holds outlived the outage: {sorted(held_tasks())}")
+    resolved = wait_for(
+        lambda: next(
+            (e for e in provider_escalations()
+             if e["id"] == incident["id"] and e.get("terminal_at") is not None),
+            None,
+        ),
+        what=f"escalation {incident['id']} to resolve on recovery",
+    )
+    note(
+        f"moved {pref[1]} stayed on {STD_B}; holds cleared; escalation {resolved['state']} "
+        f"({resolved.get('terminal_outcome')})"
+    )
+
+    undone = aq("provider", "reroute-undo", "--task-id", pref[1])
+    check(undone.get("outcome") == "undone", f"undo: {undone}")
+    back = task_show(pref[1])
+    check(back["profile_id"] == STD_A and back["rerouted_from"] is None, f"undo: {back}")
+    note(f"reroute-undo returned {pref[1]} to {STD_A}")
+
+    # -- 7. every provider down: holds, no moves, drain, critical --------------
+    # Both fakes go dark first.  Idle sessions the recovery started hold the
+    # prova/provb pools at their bounds (and the project at its session
+    # cap); stopping them makes prova relaunch into the login dialog and
+    # frees a slot for the claude session this phase keeps across the outage.
+    fake_script(prova="login_required", provb="usage_limit")
+    _wait_for_failover_logout()
+    filler = create_task("S16 claude worker", profile=POOL_PROFILE)
+    claude_sess = wait_for_pool_session(
+        lambda: next(iter(live_sessions_for(POOL_PROFILE)), None),
+        what="a claude pool session to hold across the outage",
+    )
+    claude_worker = Worker.adopt(claude_sess["id"])
+    for key in ("claude", "codex", PROVB):
+        set_provider_state(key, "disabled", "e2e S16: every provider down")
+    note("prova logged out again; claude, codex and provb disabled by override")
+    sweep = reroute()
+    check(not sweep["moved"], f"moved work with every provider down: {sweep['moved']}")
+    check(sweep["outcome"] == "held", f"all-down sweep outcome {sweep['outcome']}")
+    check(
+        "all_providers_unavailable" in sweep["held_by_kind"],
+        f"no all_providers_unavailable hold: {sweep['held_by_kind']}",
+    )
+    note(f"all-down sweep: moved none, held {sweep['held_by_kind']}")
+    refused = claude_worker.claim_next(check_ok=False)
+    result = refused.get("result") if isinstance(refused, dict) else None
+    if result is None and isinstance(refused, dict) and refused.get("_error"):
+        result = refused["_error"].result
+    check(result in ("drain_requested", "not_admissible"), f"claim while all down: {refused}")
+    note(f"claude session claim while every provider is down: {result}")
+    critical = wait_for(
+        lambda: next(
+            (
+                e for e in provider_escalations()
+                if e.get("terminal_at") is None and e.get("severity") == "critical"
+            ),
+            None,
+        ),
+        what="a critical provider escalation",
+    )
+    note(f"escalation {critical['id']} is {critical['severity']}: {critical['summary']}")
+    doctor = aq("doctor", "--check", "providers.availability", check_ok=False)
+    [check_row] = [c for c in doctor.get("checks", []) if c["id"] == "providers.availability"]
+    check(check_row["severity"] == "error", f"doctor with every provider down: {check_row}")
+    note(f"doctor providers.availability: {check_row['severity']} — {check_row['detail'][:120]}")
+    aq("task", "delete", filler, "--recursive", "--branches", "delete", "--yes", check_ok=False)
+    TIMINGS["provider_recovery_seconds"] = time.monotonic() - started
+    return (
+        "recheck→probation→available; "
+        f"undo returned {pref[1]}; all-down held everything, claim={result}, critical escalation"
+    )
+
+
+def s16a_provider_outage(state: dict) -> str:
+    """Detect the outage, inspect holds, reroute with capacity and deduplicate notices."""
+    return _run_failover_phase(state, lambda current: _s16_outage(current)["detail"])
+
+
+def _prepare_failover_recovery(state: dict) -> str:
+    """Prepare recovery through public commands, without replaying outage assertions.
+
+    A real login failure creates the provider incident. One preferred task is
+    rerouted and stays queued on provb; the remaining preferred, class-only,
+    pinned and solo tasks stay on prova, matching S16a's unfinished task mix.
+    This is the boundary recovery needs, independently of S16a's fixture.
+    """
+    _failover_baseline()
+    fake_script(prova="login_required")
+    moved = failover_task("S16 recovery moved", STD_A, "std-high", priority=20)
+    pinned = failover_task("S16 recovery pinned", STD_A, "std-high", priority=15, pin=True)
+    solo = failover_task("S16 recovery solo", SOLO_A, "solo-high", priority=40)
+    failover_task("S16 recovery preferred", STD_A, "std-high", priority=30)
+    for priority in (25, 35):
+        failover_task("S16 recovery class-only", STD_A, "std-high", priority=priority)
+    wait_provider(PROVA, ("unauthenticated",), what="the recovery fixture login failure")
+    sweep = reroute()
+    check([row["task_id"] for row in sweep["moved"]] == [moved], f"recovery fixture sweep: {sweep}")
+    check(task_show(moved)["profile_id"] == STD_B, "recovery fixture did not reroute to provb")
+    incident = wait_for(
+        lambda: next(
+            (row for row in provider_escalations()
+             if row.get("source_identity", "").startswith(f"{PROVA}:")
+             and row.get("terminal_at") is None),
+            None,
+        ),
+        what="the recovery fixture provider incident",
+    )
+    return _s16_recovery({"pref": [None, moved], "pinned": pinned, "solo": solo, "incident": incident})
+
+
+def s16b_provider_recovery(state: dict) -> str:
+    """Recover a provider, preserve queued reroutes, undo, then exercise all-down."""
+    return _run_failover_phase(state, _prepare_failover_recovery)
+
+
+def _ensure_phased_development_project(
+    project_id: str = "e2e-phased", *, fixture_name: str = "phased-graph",
+    validation: str = "focused",
+) -> tuple[str, Path, Path]:
+    """Bind a disposable local repository and configure its validation settings."""
+    home = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")))
+    root = home / "onboarding"
+    remote = root / f"{fixture_name}.git"
+    source = root / f"{fixture_name}-source"
+    root.mkdir(parents=True, exist_ok=True)
+
+    if not remote.exists():
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+            check=True,
+            capture_output=True,
+        )
+    if not source.exists():
+        subprocess.run(["git", "clone", str(remote), str(source)], check=True, capture_output=True)
+    if not (source / "README.md").exists():
+        _git_text(str(source), "config", "user.name", "AQ E2E")
+        _git_text(str(source), "config", "user.email", "e2e@example.test")
+        (source / "README.md").write_text("phased graph fixture\n")
+        _seed_development_validation(source)
+        _git_text(str(source), "add", ".")
+        _git_text(str(source), "commit", "-m", "base")
+        _git_text(str(source), "push", "origin", "main")
+
+    project_ids = {p["id"] for p in collection_rows(aq("project", "list"), "projects")}
+    if project_id not in project_ids:
+        aq_text(
+            "project",
+            "onboard",
+            "--request-id",
+            project_id,
+            "--source-mode",
+            "link",
+            "--root-id",
+            "e2e-onboarding",
+            "--relative-path",
+            source.name,
+            "--project-name",
+            fixture_name,
+            "--project-id",
+            project_id,
+        )
+
+    status = aq("integration", "status", project_id)
+    configured = api_checked("edit_project", {
+        "project_id": project_id,
+        "hierarchical_integration_mode": "development",
+        "integration_repository": {"id": project_id + "-repo", "url": str(remote),
+                                   "default_branch": "main"},
+        "hierarchical_integration_policy": {"validation": validation,
+                                            "commands": [DEVELOPMENT_VALIDATION_COMMAND]
+                                                        if validation != "none" else [],
+                                            "interval_seconds": 86400},
+        "expected_integration_generation": status["generation"],
+        "reason": "isolated phased-graph acceptance",
     })
-    successor_id = successor.get("task_id") or successor.get("created")
-    check(bool(successor_id), str(successor))
-    api("add_dependency", {"task_id": successor_id, "depends_on": task_id})
-    check(task_show(successor_id)["is_blocked"], "undelivered code released its successor")
-    result = aq("integration", "sweep", "e2e-development")
-    check(result.get("outcome") == "delivered", str(result))
-    check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
-    check(not task_show(successor_id)["is_blocked"], "publication did not release the successor")
-    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                 "--head-sha", head, "--reason", "prove repeatable operator reconciliation")
-    check(adopted.get("outcome") == "adopted", str(adopted))
-    status = aq("integration", "status", "e2e-development")
-    check(status.get("effective_mode") == "development", str(status))
-    return "local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
+    check(configured.get("outcome") == "configured", f"development configuration: {configured}")
+    return project_id, home, source
+
+
+def _pin_train_validation(project_id: str, home: Path) -> dict:
+    """Import a deterministic local-checks artifact through the public command."""
+    from src.integration.development import DevelopmentPolicy
+    from src.integration.development_policy import render_development_policy
+    from src.playbooks.artifact_ref import ARTIFACT_SCHEMA_GENERATION
+    from src.playbooks.definition import (
+        ProjectScope, artifact_sha256, canonical_bytes, load_definition_json,
+        referenced_profile_ids, source_digest,
+    )
+    from src.playbooks.integration_policy import policy_from_markdown
+
+    settings = DevelopmentPolicy(validation="none", commands=[], interval_seconds=86400)
+    source = render_development_policy(project_id, settings)
+    definition = load_definition_json(Path(
+        REPO_ROOT, "docs/history/legacy-train-policies/root-train/artifact.json",
+    ).read_text()).model_copy(update={
+        "id": f"{project_id}-development", "scope": ProjectScope(project_id=project_id),
+        "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
+    })
+    # Only the retained cleanup command remains activatable. The active train
+    # reads this pin for its frozen validation settings, never for publication.
+    definition = definition.model_copy(update={
+        "rules": [rule for rule in definition.rules if rule.id == "cleanup-promoted"],
+        "steps": {name: step for name, step in definition.steps.items()
+                  if name.startswith("cleanup-promoted--")},
+    })
+    digest = artifact_sha256(definition)
+    bundle = home / "vault" / "e2e-bundles" / definition.id
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "artifact.json").write_bytes(canonical_bytes(definition))
+    (bundle / "artifact.sha256").write_text(digest + "\n")
+    (bundle / "source.md").write_text(source)
+    manifest = {
+        "playbook_id": definition.id, "artifact_sha256": digest,
+        "source_sha256": definition.source_hash,
+        "contract_fingerprint": definition.contract_fingerprint(),
+        "profiles_referenced": list(referenced_profile_ids(definition)),
+    }
+    (bundle / "manifest.md").write_text("---\n" + json.dumps(manifest) + "\n---\n")
+    imported = api_checked("playbook_v2_import", {"path": str(bundle)})
+    check(imported.get("success") is True, f"S20 policy import failed: {imported}")
+    return {
+        **settings.model_dump(mode="json"),
+        "development": {"route": {
+            "playbook_id": definition.id, "scope": "project", "scope_identifier": project_id,
+            "artifact": {
+                "playbook_id": definition.id, "artifact_sha256": digest,
+                "contract_fingerprint": definition.contract_fingerprint(),
+                "schema_generation": ARTIFACT_SCHEMA_GENERATION,
+                "source_digest": definition.source_hash, "compiler_build": definition.compiler_build,
+                "compiled_at": str(definition.compiled_at), "version": definition.version,
+            },
+        }},
+    }
+
+
+def s20_train_delivery(state: dict) -> str:
+    """Close ordinary train work through the daemon, then observe actual Git delivery.
+
+    Pin local validation first, then select train mode through the configuration
+    CAS. This exercises a non-development completion and the real train without
+    needing GitHub or an LLM. Hosted exact-candidate checks have their own tests.
+    """
+    project_id, home, source = _ensure_phased_development_project(
+        "e2e-train", fixture_name="train-delivery", validation="none",
+    )
+    status = aq("integration", "status", project_id)
+    configured = api_checked("edit_project", {
+        "project_id": project_id,
+        "hierarchical_integration_policy": _pin_train_validation(project_id, home),
+        "expected_integration_generation": status["generation"],
+        "reason": "S20 pinned disposable local-checks artifact",
+    })
+    check(configured.get("outcome") == "configured", f"S20 validation pin: {configured}")
+    # A tiny new source must remain provable when earlier changes on its paths
+    # exceed GitManager's general stdin cap. This is the active-train outage
+    # shape: whole-source proof also compares complete historical target diffs.
+    _git_text(str(source), "checkout", "main")
+    _git_text(str(source), "pull", "--ff-only", "origin", "main")
+    readme = source / "README.md"
+    history = "historical train fixture\n" * 50_000
+    readme.write_text(history)
+    _git_text(str(source), "add", "README.md")
+    _git_text(str(source), "commit", "--allow-empty", "-m", "S20 oversized historical change")
+    _git_text(str(source), "push", "origin", "main")
+    worker = fresh_workers(
+        1, project_id=project_id, cleanup_projects=(PROJECT, OTHER_PROJECT, project_id),
+    )[0]
+    status = aq("integration", "status", project_id)
+    configured = api_checked("edit_project", {
+        "project_id": project_id, "hierarchical_integration_mode": "train",
+        "expected_integration_generation": status["generation"],
+        "reason": "S20 ordinary train-mode completion with pinned local validation",
+    })
+    check(configured.get("outcome") == "configured", f"train configuration: {configured}")
+    task_id = create_task("S20 ordinary train source", project_id=project_id, profile=POOL_PROFILE)
+    claim_fixture(worker, task_id, what="S20 worker to claim its ordinary source")
+    task = task_show(task_id)
+    check(task["parent_task_id"] is None, f"S20 source must be an ordinary root: {task}")
+    check(task["branch_name"].startswith("aq/epic/"),
+          f"S20 source must use the canonical train root branch: {task['branch_name']}")
+    prime = run_aq("prime", json_mode=False, token=worker.token, session_id=worker.session_id)
+    check(prime.returncode == 0, f"S20 prime failed: {prime}")
+    rows = collection_rows(api_checked("list_workspaces", {"project_id": project_id}), "workspaces")
+    held = next((row for row in rows if row.get("locked_by_task_id") == task_id), None)
+    check(held is not None, f"S20 task has no held workspace: {rows}")
+    checkout = Path(held["workspace_path"])
+    _git_text(str(checkout), "config", "user.name", "AQ E2E")
+    _git_text(str(checkout), "config", "user.email", "e2e@example.test")
+    artifact = f"{task_id}.txt"
+    (checkout / artifact).write_text("ordinary train delivery\n")
+    with (checkout / "README.md").open("a") as handle:
+        handle.write(f"ordinary train source {task_id}\n")
+    _git_text(str(checkout), "add", artifact, "README.md")
+    _git_text(str(checkout), "commit", "-m", f"S20 train work\n\nAQ-Task: {task_id}")
+    head = _git_text(str(checkout), "rev-parse", "HEAD")
+    _git_text(str(checkout), "push", "-u", "origin", "HEAD")
+    remote = Path(os.environ["AQ_E2E_HOME"]) / "onboarding" / "train-delivery.git"
+    before = _git_text(str(remote), "rev-parse", "refs/heads/main")
+    closed = worker.aq("task", "close", "--claim-epoch", str(worker.claim_epoch),
+                       "--outcome", "pass", "--commit", head,
+                       "--summary", "S20 ordinary train source published")
+    check(closed.get("success") is not False, f"S20 source close: {closed}")
+    shown = task_show(task_id)
+    check(shown["status"] == "COMPLETED", f"S20 source did not complete: {shown}")
+    completion = shown.get("completion") or {}
+    check(completion.get("commits") == [head], f"S20 final source was not recorded: {completion}")
+    refs = _git_text(str(remote), "for-each-ref", "--format=%(refname)",
+                     "refs/aq/provenance/completions/").splitlines()
+    check(refs, "S20 ordinary train close published no completion provenance")
+    records = [json.loads(_git_text(str(remote), "show", "-s", "--format=%B", ref)) for ref in refs]
+    check(any(record.get("source_oid") == head and
+              record.get("identity", {}).get("generation") == completion.get("id")
+              for record in records), f"S20 provenance does not bind the immutable close: {records}")
+    status = aq("integration", "status", project_id)
+    check(status["effective_mode"] == "train", f"S20 project is not in train mode: {status}")
+    check(status.get("projection_kind") == "train", f"S20 default engine is not the train: {status}")
+
+    def delivered():
+        current = aq("integration", "status", project_id, "--control-only")
+        check(not any(blocker.get("task_id") == task_id and blocker.get("code") in {
+            "missing_git_provenance", "missing_or_ambiguous_source",
+        } for blocker in current.get("blockers", [])),
+              f"S20 ordinary completion became UNKNOWN: {current}")
+        tip = _git_text(str(remote), "rev-parse", "refs/heads/main")
+        if tip == before:
+            return None
+        _git_text(str(remote), "merge-base", "--is-ancestor", head, tip)
+        return tip
+
+    tip = wait_for(delivered, what="S20 train to publish its ordinary completion",
+                   timeout=train_delivery_timeout(),
+                   diagnostic=lambda: str(aq("integration", "status", project_id)))
+    check(_git_text(str(remote), "show", f"{tip}:{artifact}") == "ordinary train delivery",
+          "S20 delivered target lost the source artifact")
+    return (f"ordinary train-mode close {task_id}@{head} retained and delivered to main@{tip} "
+            "with oversized target history")
+
+
+def s17_phased_graph(state: dict) -> str:
+    """Cook and work a phased spec through the real CLI in development mode."""
+    project_id, home, source = _ensure_phased_development_project()
+    first_worker = fresh_workers(
+        1,
+        project_id=project_id,
+        cleanup_projects=(PROJECT, OTHER_PROJECT, project_id),
+    )[0]
+    retired_session_ids: set[str] = set()
+
+    graph = {
+        "version": 1,
+        "defaults": {"intelligence_class": POOL_CLASS},
+        "parent": {"title": "S17 phased graph"},
+        "phases": [
+            {"key": "prepare", "title": "Prepare fixture"},
+            {"key": "exercise", "title": "Exercise runner"},
+        ],
+        "nodes": [
+            {
+                "key": "fixture",
+                "title": "Create deterministic fixture",
+                "phase": "prepare",
+                "acceptance": ["fixture contract is explicit"],
+                "subtasks": [
+                    "Write the fixture",
+                    "Record the contract",
+                    "Check the expected result",
+                ],
+            },
+            {
+                "key": "verification",
+                "title": "Verify fixture",
+                "phase": "prepare",
+                "acceptance": ["fixture verification is complete"],
+            },
+            {
+                "key": "runner",
+                "title": "Run the fixture",
+                "phase": "exercise",
+                "acceptance": ["runner starts after preparation"],
+            },
+        ],
+    }
+    spec_relative = f"projects/{project_id}/specs/s17-phased-graph.md"
+    spec_path = home / "vault" / spec_relative
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        "---\n"
+        "title: S17 phased graph\n"
+        f"project: {project_id}\n"
+        "status: approved\n"
+        "---\n\n"
+        "# S17 phased graph\n\n"
+        "This disposable fixture proves graph phase and checklist behavior through the CLI.\n\n"
+        "```aq-graph\n"
+        f"{json.dumps(graph, indent=2)}\n"
+        "```\n",
+        encoding="utf-8",
+    )
+
+    create_args = (
+        "task",
+        "create",
+        "--project",
+        project_id,
+        "--from-spec",
+        spec_relative,
+        "--intelligence-class",
+        POOL_CLASS,
+    )
+    dry_run = aq(*create_args, "--dry-run")
+    check(len(dry_run.get("phases", [])) == 2, f"dry-run phases: {dry_run}")
+    check(len(dry_run.get("nodes", [])) == 3, f"dry-run nodes: {dry_run}")
+    check(
+        sum(node.get("subtasks", 0) for node in dry_run.get("nodes", [])) == 3,
+        f"dry-run subtask counts: {dry_run}",
+    )
+    absent = run_aq("task", "show", dry_run["parent_id"])
+    check(absent.returncode != 0, f"dry-run persisted {dry_run['parent_id']}: {absent}")
+
+    cooked = aq(*create_args)
+    epic = cooked["parent_id"]
+    phases = {row["key"]: row["task_id"] for row in cooked["phases"]}
+    nodes = {row["key"]: row["task_id"] for row in cooked["nodes"]}
+    # Graph nodes carry their class as a hint; the operator routes them.
+    for node_id in nodes.values():
+        route_task(node_id, POOL_PROFILE, POOL_CLASS)
+    check(set(phases) == {"prepare", "exercise"}, f"cooked phases: {cooked}")
+    check(set(nodes) == {"fixture", "verification", "runner"}, f"cooked nodes: {cooked}")
+
+    def phase_rows() -> list[dict]:
+        return aq("task", "phase-list", "--project-id", project_id, "--parent-id", epic)["phases"]
+
+    before = {row["order"]: row for row in phase_rows()}
+    check(set(before) == {1, 2}, f"phase orders: {before}")
+    check(before[2]["is_blocked"], f"phase 2 was not withheld: {before[2]}")
+    check(task_show(nodes["runner"])["is_blocked"], "phase-2 task escaped its withheld parent")
+
+    phase_one_nodes = {nodes["fixture"], nodes["verification"]}
+
+    def fixture_ready() -> dict | None:
+        row = task_show(nodes["fixture"])
+        return row if row["status"] == "READY" else None
+
+    wait_for(
+        fixture_ready,
+        what="the first phase-1 task to reach the claim frontier",
+    )
+    first_claim = first_worker.claim_next(wait=int(CONVERGE_TIMEOUT))
+    check(first_claim.get("result") == "claimed", f"first phase-1 claim: {first_claim}")
+    check(first_worker.task_id in phase_one_nodes, f"withheld runner was claimed: {first_worker.task_id}")
+
+    def retire(worker: Worker) -> None:
+        worker.drain_ack()
+
+        def stopped() -> dict | None:
+            shown = aq("session", "show", worker.session_id)
+            row = shown.get("session") or shown
+            return row if row.get("state") == "stopped" else None
+
+        wait_for(stopped, what=f"session {worker.session_id} to drain")
+        retired_session_ids.add(worker.session_id)
+
+    def replacement_worker(expected_task_id: str, what: str) -> Worker:
+        session = wait_for_pool_session(
+            lambda: next(
+                (
+                    row
+                    for row in pool_sessions(project_id)
+                    if row["id"] not in retired_session_ids and not row.get("task_id")
+                ),
+                None,
+            ),
+            what=what,
+            project_id=project_id,
+        )
+        worker = Worker.adopt(session["id"])
+        claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
+        check(claim.get("result") == "claimed", f"{what} claim: {claim}")
+        check(worker.task_id == expected_task_id, f"{what} claimed {worker.task_id}")
+        return worker
+
+    def push_current_branch() -> None:
+        """Meet development mode's exact-pushed-workspace close requirement."""
+        _git_text(str(source), "push", "-u", "origin", "HEAD")
+
+    first_task_id = first_worker.task_id
+    if first_task_id == nodes["verification"]:
+        push_current_branch()
+        first_worker.close(summary="S17 phase-1 verification")
+        retire(first_worker)
+        fixture_worker = replacement_worker(nodes["fixture"], "a worker for the checklist task")
+    else:
+        fixture_worker = first_worker
+    prime = run_aq(
+        "prime",
+        json_mode=False,
+        token=fixture_worker.token,
+        session_id=fixture_worker.session_id,
+    )
+    check(prime.returncode == 0, f"prime failed: {prime}")
+    check("## Subtasks" in prime.stdout, f"prime omitted checklist: {prime.stdout}")
+    check("- [ ] 1. Write the fixture" in prime.stdout, f"prime checklist: {prime.stdout}")
+    check("- [ ] 3. Check the expected result" in prime.stdout, f"prime checklist: {prime.stdout}")
+
+    refused = fixture_worker.aq(
+        "task",
+        "close",
+        "--outcome",
+        "pass",
+        "--summary",
+        "S17 open-checklist refusal",
+        "--work-outcome",
+        "no-op",
+        "--claim-epoch",
+        str(fixture_worker.claim_epoch),
+        check_ok=False,
+    )
+    refusal = refused.get("_error")
+    check(refusal is not None, "open checklist close unexpectedly succeeded")
+    check(
+        "subtasks.open" in f"{refusal.error} {refusal.details}",
+        f"open checklist refused for the wrong reason: {refusal}",
+    )
+
+    push_current_branch()
+    closed = fixture_worker.aq(
+        "task",
+        "close",
+        "--outcome",
+        "pass",
+        "--summary",
+        "S17 skip the graph-seeded checklist",
+        "--work-outcome",
+        "no-op",
+        "--claim-epoch",
+        str(fixture_worker.claim_epoch),
+        "--skip-open-subtasks",
+    )
+    check(closed.get("success") is not False, f"skip-open-subtasks close: {closed}")
+    retire(fixture_worker)
+
+    if first_task_id == nodes["fixture"]:
+        verification_worker = replacement_worker(
+            nodes["verification"], "a worker for the second phase-1 task"
+        )
+        push_current_branch()
+        verification_worker.close(summary="S17 phase-1 verification")
+        retire(verification_worker)
+
+    subtasks = aq("task", "subtasks", nodes["fixture"])
+    rows = subtasks["subtasks"]
+    check(subtasks["total"] == 3 and subtasks["settled"] == 3, f"subtask counts: {subtasks}")
+    check(
+        [row["status"] for row in rows] == ["skipped", "skipped", "skipped"],
+        f"skipped rows: {rows}",
+    )
+    check(
+        all(row["note"] == "skipped at close" for row in rows),
+        f"skipped-row notes: {rows}",
+    )
+
+    def released_phase() -> list[dict] | None:
+        rows = api_checked("phase_list", {"project_id": project_id, "parent_id": epic})["phases"]
+        by_order = {row["order"]: row for row in rows}
+        if by_order[1]["status"] in ("COMPLETED", "DONE") and not by_order[2]["is_blocked"]:
+            return rows
+        return None
+
+    released = wait_for(
+        released_phase,
+        what="phase 1 to settle COMPLETED and release phase 2",
+    )
+    check(task_show(phases["prepare"]).get("branch_name") is None, "phase container has a branch")
+    check(not {row["order"]: row for row in released}[2]["is_blocked"], f"phase 2 still held: {released}")
+
+    runner_worker = replacement_worker(
+        nodes["runner"], "a replacement pool session for the released phase-2 task"
+    )
+    push_current_branch()
+    runner_worker.close(summary="S17 phase-2 runner")
+    retire(runner_worker)
+
+    def epic_settled() -> dict | None:
+        row = task_show(epic)
+        return row if row["status"] in ("COMPLETED", "DONE") else None
+
+    wait_for(epic_settled, what=f"phased epic {epic} to settle")
+    aq("task", "delete", epic, "--recursive", "--yes")
+    gone = run_aq("task", "show", epic)
+    check(gone.returncode != 0, f"S17 cleanup left epic {epic}: {gone}")
+    return (
+        f"dry-run/cook {epic}; phase 2 withheld then released after branchless phase 1 COMPLETED; "
+        "prime rendered 3 checklist rows and close skipped all 3"
+    )
+
+
+def s18_supervisor_failure_triage(state: dict) -> str:
+    """Drive one real terminal failure through the reviewed playbook path."""
+    del state
+    worker = fresh_workers(1)[0]
+    started_at = time.time()
+    task_id = create_task("S18 supervisor failure triage", profile=POOL_PROFILE)
+    claim_fixture(worker, task_id, what=f"S18 worker to claim fixture {task_id}")
+
+    def triage_runs() -> list[dict]:
+        return collection_rows(
+            api_checked("list_playbook_runs", {
+                "playbook_id": "supervisor-failure-triage", "limit": 10,
+            }),
+            "runs",
+        )
+
+    previous_runs = {row["run_id"] for row in triage_runs()}
+    failed = worker.aq(
+        "task",
+        "close",
+        "--outcome",
+        "fail",
+        "--failure-class",
+        "hard",
+        "--work-outcome",
+        "abandoned",
+        "--summary",
+        "S18 deliberate terminal failure",
+        "--claim-epoch",
+        str(worker.claim_epoch),
+    )
+    check(failed.get("success") is not False, f"S18 fail close: {failed}")
+    check(task_show(task_id)["status"] == "BLOCKED", "hard failure did not reach terminal BLOCKED")
+    worker.drain_ack()
+
+    def triage_run() -> dict | None:
+        # This isolated world emits one failure here. Event inputs are private;
+        # correlate by the new public run id, then verify the task-specific notice.
+        rows = [row for row in triage_runs() if row["run_id"] not in previous_runs]
+        check(len(rows) <= 1, f"S18 expected one new triage run: {rows}")
+        for row in rows:
+            detail = api_checked("inspect_playbook_run", {"run_id": row["run_id"]})["run"]
+            # The run row appears as soon as dispatch starts it; judge it only
+            # once it has left ``running`` (its command steps take a moment).
+            if detail.get("lifecycle") not in ("running", "cancelling"):
+                return detail
+        return None
+
+    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run to finish")
+    check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
+    supervisor = supervisor_recipient()
+
+    def supervisor_notice() -> dict | None:
+        rows = collection_rows(
+            api_checked("message_list", {
+                "to_kind": "session", "to_id": supervisor, "since": started_at,
+            }),
+            "messages",
+        )
+        return next((row for row in rows if task_id in (row.get("body") or "")), None)
+
+    notice = wait_for(supervisor_notice, what="the S18 durable supervisor notice")
+    check(notice.get("project_id") == PROJECT, "triage notice lost its project context")
+    aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes")
+    return (
+        f"task.failed completed triage run {run['run_id']} and queued one durable supervisor "
+        f"notice {notice['id']}"
+    )
+
+
+def s19_scoped_planner_graph(state: dict) -> str:
+    """File a planner graph as an authenticated scoped session, not a handler call."""
+    del state
+    worker = fresh_workers(1)[0]
+    held_task = create_task(
+        "S19 planner graph parent", profile=PLANNER_PROFILE, intelligence_class=POOL_CLASS,
+    )
+    planner_session = wait_for_pool_session(
+        lambda: next(
+            (row for row in live_sessions_for(PLANNER_PROFILE) if not row.get("task_id")),
+            None,
+        ),
+        what="an idle planner pool session",
+        profile_id=PLANNER_PROFILE,
+    )
+    planner = Worker.adopt(planner_session["id"])
+    claim_fixture(planner, held_task, what=f"S19 planner to claim fixture {held_task}")
+
+    home = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")))
+    graph_path = home / "s19-scoped-planner-graph.json"
+    graph = {
+        "version": 1,
+        "nodes": [{
+            "key": "checklist",
+            "title": "S19 planner checklist child",
+            "acceptance": ["the planner-owned child closes only after its checklist settles"],
+            "subtasks": ["Read the scoped graph", "Record the filing result"],
+        }],
+    }
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    graph_args = (
+        "task", "create", "--project", PROJECT, "--graph", str(graph_path),
+        "--intelligence-class", POOL_CLASS,
+        "--reason", "S19 verifies planner-scoped graph filing",
+    )
+
+    before = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(before.get("count") == 0, f"planner parent started with children: {before}")
+    dry_run = planner.aq(*graph_args, "--dry-run")
+    check(dry_run.get("parent_id") == held_task, f"scoped dry-run parent: {dry_run}")
+    after_dry_run = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(after_dry_run.get("count") == 0, f"scoped dry-run wrote children: {after_dry_run}")
+
+    # Graph filing dispatches the router immediately. Hold scheduling until
+    # the fixture override is written so a task-lifecycle route cannot launch
+    # the child before its pool worker claims it.
+    api_checked("set_project_constraint", {"project_id": PROJECT, "pause_scheduling": True})
+    try:
+        created = planner.aq(*graph_args)
+        check(created.get("created") is True, f"scoped graph creation: {created}")
+        check(created.get("request_id"), f"scoped graph omitted request id: {created}")
+        child_id = created["nodes"][0]["task_id"]
+        override_route(child_id, POOL_PROFILE, POOL_CLASS)
+    finally:
+        api_checked("release_project_constraint", {
+            "project_id": PROJECT, "fields": ["pause_scheduling"],
+        })
+    child = task_show(child_id)
+    check(child.get("parent_task_id") == held_task, f"scoped child parent: {child}")
+    provenance = [
+        edge for edge in aq("task", "deps", "--task-id", child_id).get("provenance", [])
+        if edge.get("dep_type") == "discovered-from"
+    ]
+    check(
+        any(edge.get("id") == held_task for edge in provenance),
+        f"scoped child lost discovered-from provenance: {provenance}",
+    )
+
+    foreign_parent = create_task("S19 foreign parent", project_id=OTHER_PROJECT)
+    foreign = planner.aq(*graph_args, "--parent", foreign_parent, check_ok=False).get("_error")
+    check(
+        foreign is not None and "hierarchy.parent_out_of_scope" in f"{foreign.error} {foreign.details}",
+        f"foreign parent was not refused by the scoped graph route: {foreign}",
+    )
+    cross_project = planner.aq(
+        "task", "create", "--project", OTHER_PROJECT, "--graph", str(graph_path),
+        "--reason", "S19 must not cross projects",
+        check_ok=False,
+    ).get("_error")
+    check(
+        cross_project is not None and "project_id mismatch" in f"{cross_project.error} {cross_project.details}",
+        f"cross-project graph was not refused by token scope: {cross_project}",
+    )
+    # A worker graph may go to the root only as a new container it declares
+    # with a ``parent:`` block (bold-flare-35); this graph declares none.
+    cli_root = planner.aq(*graph_args, "--root", check_ok=False).get("_error")
+    check(
+        cli_root is not None
+        and "graph.root_needs_parent" in f"{cli_root.error} {cli_root.details}",
+        f"CLI root graph refusal: {cli_root}",
+    )
+    server_root = api(
+        "create_task_graph",
+        {
+            "project_id": PROJECT,
+            "graph": graph,
+            "root": True,
+            "reason": "S19 must not request a root filing without a container",
+        },
+        token=planner.token,
+    )
+    check(
+        server_root.get("code") == "graph.root_needs_parent",
+        f"server root graph refusal: {server_root}",
+    )
+    after_denials = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(after_denials.get("count") == 1, f"denied graphs wrote children: {after_denials}")
+
+    def child_ready() -> dict | None:
+        row = task_show(child_id)
+        return row if row.get("status") == "READY" else None
+
+    wait_for(child_ready, what="the scoped graph child to reach the claim frontier")
+    claim_fixture(worker, child_id, what=f"S19 worker to claim scoped graph child {child_id}")
+    prime = run_aq("prime", json_mode=False, token=worker.token, session_id=worker.session_id)
+    check(prime.returncode == 0 and "## Subtasks" in prime.stdout, f"S19 checklist prime: {prime}")
+    check("- [ ] 1. Read the scoped graph" in prime.stdout, f"S19 checklist contents: {prime.stdout}")
+    open_close = worker.aq(
+        "task", "close", "--outcome", "pass", "--summary", "S19 open checklist refusal",
+        "--work-outcome", "no-op", "--claim-epoch", str(worker.claim_epoch), check_ok=False,
+    ).get("_error")
+    check(
+        open_close is not None and "subtasks.open" in f"{open_close.error} {open_close.details}",
+        f"open graph checklist close refusal: {open_close}",
+    )
+    closed_child = worker.aq(
+        "task", "close", "--outcome", "pass", "--summary", "S19 settle graph checklist",
+        "--work-outcome", "no-op", "--claim-epoch", str(worker.claim_epoch), "--skip-open-subtasks",
+    )
+    check(closed_child.get("success") is not False, f"S19 checklist close: {closed_child}")
+    worker.drain_ack()
+
+    batch_path = home / "s19-quota-batch.json"
+    batch = {
+        "version": 1,
+        "nodes": [
+            {
+                "key": f"batch-{index}",
+                "title": f"S19 quota child {index}",
+                "acceptance": ["the transaction either creates this complete batch or none"],
+            }
+            for index in range(10)
+        ],
+    }
+    batch_path.write_text(json.dumps(batch), encoding="utf-8")
+    batch_args = (
+        "task", "create", "--project", PROJECT, "--graph", str(batch_path),
+        "--intelligence-class", POOL_CLASS,
+    )
+
+    def file_batch(reason: str) -> dict:
+        return planner.aq(*batch_args, "--reason", reason, check_ok=False)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = list(executor.map(file_batch, ("S19 quota batch one", "S19 quota batch two")))
+    outcomes = (first, second)
+    successful = [result for result in outcomes if "_error" not in result]
+    refused = [result.get("_error") for result in outcomes if "_error" in result]
+    check(len(successful) == 1, f"quota boundary did not admit exactly one graph: {outcomes}")
+    check(
+        len(refused) == 1 and "filing_quota_exceeded" in f"{refused[0].error} {refused[0].details}",
+        f"quota boundary refusal: {refused}",
+    )
+    children_after_quota = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(
+        children_after_quota.get("count") == 11,
+        f"quota refusal left a partial graph: {children_after_quota}",
+    )
+
+    for node in successful[0]["nodes"]:
+        api_checked("delete_task", {"task_id": node["task_id"], "confirmed": True})
+    api_checked("delete_task", {"task_id": foreign_parent, "confirmed": True})
+    closed_planner = planner.close(summary="S19 scoped planner graph acceptance")
+    check(closed_planner.get("success") is not False, f"S19 planner close: {closed_planner}")
+    planner.drain_ack()
+    return (
+        f"planner {planner.session_id} filed {child_id} under {held_task}; root, cross-project, and "
+        f"foreign-parent requests were refused; one 10-node quota batch committed and one rolled back"
+    )
+
+
+def s21_held_ingestion(state: dict) -> str:
+    """Replay committed commands as a restarted client against the real daemon."""
+    del state
+    worker = fresh_workers(1)[0]
+    home = Path(os.environ["AQ_E2E_HOME"])
+    path = home / "vault/projects/e2e/specs/s21-held-ingestion.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nspec_kind: implementation\n---\n# S21\n"
+                    "## Delivery\nImplement src/s21.py and verify its acceptance.\n")
+    approval = api_checked("spec_approve", {"project_id": PROJECT, "spec_path": str(path)})
+    dispatched = api_checked("ensure_spec_ingest", {
+        "project_id": PROJECT, "decision_id": approval["decision_id"],
+        "packet_sha256": approval["packet_sha256"],
+    })
+
+    def assigned_session(profile, task_id):
+        return wait_for(
+            lambda: next((s for s in collection_rows(api_checked("session_list", {}), "sessions")
+                          if s.get("profile_id") == profile and s.get("task_id") == task_id
+                          and s.get("state") == "running"), None),
+            what=f"S21 {profile} assignment for {task_id}",
+        )
+
+    ingester = assigned_session("spec-ingest", dispatched["task_id"])
+    token = session_token(ingester["id"])
+    graph = {
+        "project_id": PROJECT, "source": f"spec:decision:{approval['decision_id']}",
+        "tasks": [
+            {"tempId": key, "title": f"S21 {key}", "description": f"{path}: {key}",
+             "section_anchor": f"S21 / {key}", "primary_outcome": f"Deliver {key}",
+             "acceptance": [f"Verify {key}"], "constraints": ["Preserve held isolation"],
+             "size": "s", "owned_modules": [f"src/s21_{key}.py"],
+             **({"task_type": "feature", "intelligence_class": "standard-high"}
+                if key == "leaf" else {})}
+            for key in ("epic", "leaf")
+        ],
+        "edges": [{"from": "leaf", "to": "epic", "dep_type": "parent-child"}],
+    }
+    batch = api("task_batch_propose", graph, token=token)
+    check(batch.get("success") and batch.get("state") == "held", f"S21 propose: {batch}")
+    # Lose the first response locally, then reconstruct authentication and retry.
+    replay = api("task_batch_propose", graph, token=session_token(ingester["id"]))
+    check(replay.get("replayed") and replay.get("members") == batch["members"],
+          f"S21 materialization replay duplicated work: {replay}")
+    leaf_id = batch["members"]["leaf"]
+    route_task(leaf_id, POOL_PROFILE, POOL_CLASS)
+    claim = worker.claim_next()
+    check(claim.get("result") == "no_ready_work", f"S21 held leaf was claimable: {claim}")
+    # The project admits two live sessions: the idle pool worker and one role.
+    # Finish ingestion after its receipt replay, as the real ingester does,
+    # so the fidelity reviewer can take that role's execution slot.
+    closed_ingester = api("task_close", {
+        "task_id": dispatched["task_id"], "session_id": ingester["id"],
+        "outcome": "pass", "work_outcome": "no-op",
+        "summary": f"S21 materialized held batch {batch['batch_id']}; replay verified",
+    }, token=token)
+    check(closed_ingester.get("success"), f"S21 ingester close: {closed_ingester}")
+    ensure_args = {"project_id": PROJECT, "batch_id": batch["batch_id"],
+                   "structure_revision": batch["structure_revision"]}
+    reviewer = api_checked("ensure_fidelity_review", ensure_args)
+    again = api_checked("ensure_fidelity_review", ensure_args)
+    check(again.get("task_id") == reviewer.get("task_id") and not again.get("created"),
+          f"S21 reviewer replay duplicated assignment: {again}")
+    review_session = assigned_session("fidelity-reviewer", reviewer["task_id"])
+    review_token = session_token(review_session["id"])
+    validation = api("task_batch_validate", {"project_id": PROJECT,
+                     "batch_id": batch["batch_id"], "expected_revision": 1}, token=review_token)
+    check(validation.get("success") and validation.get("passed"), f"S21 validation: {validation}")
+    recorded = api("task_batch_review_record", {
+        "batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+        "expected_digest": batch["structure_digest"],
+        "section_verdicts": {f"S21 / {key}": "faithful" for key in ("epic", "leaf")},
+        "reverse_coverage_verdict": "faithful", "walkthrough_verdict": "faithful",
+        "structural_findings": [],
+    }, token=review_token)
+    check(recorded.get("success") and recorded.get("passing"), f"S21 attestation: {recorded}")
+    release_args = {"batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+                    "expected_digest": batch["structure_digest"]}
+    released = api_checked("task_batch_release", release_args)
+    repeated = api_checked("task_batch_release", release_args)
+    check(repeated.get("already_released")
+          and repeated.get("release_receipt") == released.get("release_receipt"),
+          f"S21 release replay changed evidence: {repeated}")
+    claim_fixture(worker, leaf_id, what="S21 released leaf claim")
+    worker.close(summary="S21 held leaf released by fidelity receipt")
+    worker.drain_ack()
+    return f"batch {batch['batch_id']} held until assigned review; materialization, dispatch and release replayed"
 
 
 @dataclass
@@ -1571,7 +3306,22 @@ SCENARIOS: list[Scenario] = [
     Scenario("S12", "MCP registry", s12_mcp_registry, ("MCP registry CRUD",)),
     Scenario("S13", "plugin extensions", s13_plugin_extensions, ("plugin extension startup",)),
     Scenario("S14", "graph + vault", s14_graph_and_vault, ("graph/vault",)),
-    Scenario("S15", "development integration", s15_development_delivery, ("integration",)),
+    Scenario("S15", "integration surface cleanup", s15_integration_surface, ("integration/CLI",)),
+    Scenario(
+        "S16", "provider failover", s16_provider_failover, ("provider availability/failover",)
+    ),
+    Scenario("S17", "phased graph", s17_phased_graph, ("task graph/phases/subtasks",)),
+    Scenario("S18", "supervisor failure triage", s18_supervisor_failure_triage, ("playbooks/failure triage",)),
+    Scenario("S19", "scoped planner graph", s19_scoped_planner_graph, ("authentication/scoped graph/quota",)),
+    Scenario("S20", "train-mode delivery", s20_train_delivery, ("integration/train/provenance",)),
+    Scenario("S21", "held ingestion and replay", s21_held_ingestion, ("ingestion/recovery/fidelity",)),
+]
+
+# Selecting these IDs replaces S16's serial transcript with independent worlds.
+# The default developer run executes all twenty-one scenarios.
+FAILOVER_PHASES = [
+    Scenario("S16a", "provider outage and rerouting", s16a_provider_outage, ("provider availability/failover",)),
+    Scenario("S16b", "provider recovery and all-down", s16b_provider_recovery, ("provider availability/failover",)),
 ]
 
 # These exclusions are intentional properties of Tier 1, not silent omissions.
@@ -1606,11 +3356,6 @@ EXPLICIT_CAPABILITIES: tuple[tuple[str, str, str], ...] = (
         "plugin install/update/remove from remote git",
         "explicitly-untested",
         "would mutate the interpreter environment or require an external repository",
-    ),
-    (
-        "playbook activation/run",
-        "explicitly-untested",
-        "playbooks.enabled=false in deterministic Tier 1; formula mutation is covered by S4",
     ),
     (
         "database upgrade/daemon control",
@@ -1648,6 +3393,11 @@ class Report:
 def main() -> int:
     only = set(sys.argv[1:])
     print(f"swarm e2e (Tier 1) — daemon at {API_URL}\n")
+    available = SCENARIOS + FAILOVER_PHASES
+    unknown = only - {scenario.key for scenario in available}
+    if unknown:
+        print("FAIL selection — unknown scenarios: " + ", ".join(sorted(unknown)))
+        return 1
 
     try:
         setup()
@@ -1657,10 +3407,11 @@ def main() -> int:
 
     state: dict = {}
     report = Report()
-    for scenario in SCENARIOS:
+    for scenario in available if only else SCENARIOS:
         if only and scenario.key not in only:
             continue
         report.scenarios.append(scenario)
+        TIMINGS.clear()
         started = time.monotonic()
         try:
             scenario.detail = scenario.fn(state) or ""
@@ -1675,6 +3426,8 @@ def main() -> int:
         status = "PASS" if scenario.ok else "FAIL"
         print(f"{status} {scenario.key} {scenario.title} ({scenario.seconds:.1f}s)")
         print(f"     {scenario.detail}")
+        print("TIMING " + json.dumps({"scenario": scenario.key,
+                                      "seconds": scenario.seconds, **TIMINGS}))
 
     # A scenario that bailed mid-flight may have left swarm disabled.
     if state.get("swarm_disabled"):

@@ -102,3 +102,44 @@ def test_module_coverage_requires_linked_rows_and_exclusion_reasons(tmp_path, mo
     assert checker.check_module_coverage(manifest_path, "topic") == [
         "notes/history.md: intentional exclusion/category has no reason",
     ]
+
+
+def test_github_anchor_matches_githubs_own_slug_for_the_cases_that_bite():
+    """Slugs verified against GitHub's ``POST /markdown`` renderer.
+
+    Each of these produced a wrong answer once: an underscore inside an
+    identifier is a word character GitHub keeps, while an underscore acting as
+    an emphasis delimiter disappears, and a removed character such as ``+`` or
+    ``&`` leaves a space behind that becomes its own hyphen.
+    """
+    checker = _checker()
+
+    assert checker.github_anchor("`stale_claim`: the task moved on") == (
+        "stale_claim-the-task-moved-on"
+    )
+    assert checker.github_anchor("8. `memory_save` flow") == "8-memory_save-flow"
+    assert checker.github_anchor("Windows + WSL2 quickstart") == "windows--wsl2-quickstart"
+    assert checker.github_anchor("6. Memory Health & Observability") == (
+        "6-memory-health--observability"
+    )
+    assert checker.github_anchor("_Italic_ heading") == "italic-heading"
+    assert checker.github_anchor("**Bold** heading") == "bold-heading"
+
+
+def test_check_links_leaves_line_anchors_on_source_files_alone(tmp_path, monkeypatch):
+    """``file.py#L109`` is GitHub's source-view line anchor, not a heading slug."""
+    checker = _checker()
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "thing.py").write_text("x = 1\n", encoding="utf-8")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    source = docs / "source.md"
+    source.write_text("[line](../src/thing.py#L109)\n", encoding="utf-8")
+
+    assert checker.check_links([source]) == []
+
+    source.write_text("[gone](../src/missing.py#L109)\n", encoding="utf-8")
+    assert checker.check_links([source]) == [
+        "docs/source.md: ../src/missing.py#L109: target does not exist",
+    ]

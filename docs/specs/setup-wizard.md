@@ -5,12 +5,16 @@ tags: [spec, setup, cli]
 # Setup Wizard Specification
 
 <!-- aq:historical -->
-> **Design record — not current documentation.** A spec states the behaviour
-> intended when it was approved; it is written before the code and is not
-> revised to track it. Where this page and the code disagree, the code is right.
-> Start at [the documentation home](../README.md) for what AQ does today, and
-> see [historical material](../history/README.md) for how this material is
-> organised.
+> **Retired design record — not current documentation.** This describes the
+> first-run wizard that `src/setup_wizard.py` implemented. That module was
+> deleted: machine setup is now one command, `aq install`, whose steps live in
+> `src/install/` and whose published surface is
+> [the `aq install` reference](../reference/cli/install.md). Two decisions on
+> this page were deliberately reversed — Discord is optional and no longer a
+> required prompt, and the wizard no longer owns configuration writing or
+> daemon launch on its own. Start at [Install AQ](../tutorials/install.md) for
+> what AQ does today, and see [historical material](../history/README.md) for
+> how this material is organised.
 
 ## 1. Overview
 
@@ -18,7 +22,9 @@ The setup wizard is an interactive CLI tool that guides a first-time user throug
 
 ## Source Files
 
-- `src/setup_wizard.py`
+- `src/setup_wizard.py` — **deleted.** Its successors are `src/install/onboarding.py`
+  (the configuration, Discord, daemon and dashboard steps), `src/install/wizard.py`
+  (the question plan and closing summary) and `src/cli/install.py`.
 
 ---
 
@@ -36,7 +42,7 @@ The wizard runs via `./setup.sh` (which handles venv and dependencies) or direct
 8. Step 7: Launch daemon
 
 There is no chat-provider step. The wizard writes a fixed `llm:` block
-(`provider: anthropic`, `default_class: fast-medium`) to `config.yaml` — see
+(`provider: anthropic`, `default_class: fast-low`) to `config.yaml` — see
 §9 below — and leaves any further tuning of the direct LLM path (`docs/specs/config.md` §4.6) to manual config editing.
 
 If an existing `~/.agent-queue/config.yaml` or `~/.agent-queue/.env` is found, values are loaded and used as defaults throughout.
@@ -186,7 +192,7 @@ Prompts for model name with default from existing config or `claude-sonnet-4-202
 > there is no in-process chat agent to configure an LLM for (the Supervisor
 > was deleted; see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`).
 > `step_write_config` (§11 below) writes a fixed `llm:` block
-> (`provider: anthropic`, `default_class: fast-medium`); provider/model/`base_url`
+> (`provider: anthropic`, `default_class: fast-low`); provider/model/`base_url`
 > tuning — including pointing it at Ollama via `openai` + `base_url` — is a
 > manual edit to `config.yaml`, documented in [specs/config](config.md) §4.6.
 
@@ -218,7 +224,7 @@ Written to `~/.agent-queue/.env` with mode `0o600`:
 Written to `~/.agent-queue/config.yaml`. Includes:
 - `workspace_dir` and `database_path`
 - `discord` section: bot token as `${DISCORD_BOT_TOKEN}`, guild ID and one explicit shared `channel_id` (quoted), plus optional authorized users
-- `llm` section: fixed `provider: anthropic`, `default_class: fast-medium` (see note in §9 above)
+- `llm` section: fixed `provider: anthropic`, `default_class: fast-low` (see note in §9 above)
 - `global_token_budget_daily`: only written if set
 - `scheduling` section: rolling window hours, min_task_guarantee always true
 - `pause_retry` section: rate limit backoff, token exhaustion retry

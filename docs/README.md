@@ -14,7 +14,7 @@ links to the source and focused checks behind its claims.
 | # | Page | What you learn |
 | --- | --- | --- |
 | 1 | [Glossary](reference/glossary.md) | AQ’s durable-state, agent, and delivery vocabulary. |
-| 2 | [Install and start AQ](tutorials/install.md) | Prerequisites, PostgreSQL, a harness credential, first startup, and shutdown. |
+| 2 | [Install and start AQ](tutorials/install.md) | [Windows + WSL2](tutorials/install.md#windows--wsl2-quickstart) and [macOS](tutorials/install.md#macos-quickstart) quickstarts; prerequisites, PostgreSQL, a harness credential, first startup, and recovery. |
 | 3 | [Run your first isolated task](tutorials/first-task.md) | Create a disposable project, follow one task, inspect its result, and clean up. |
 | 4 | [Tasks](concepts/tasks.md) and [scheduling](concepts/scheduling.md) | Why AQ changes task state and when a worker can start. |
 | 5 | [Integration](concepts/integration.md) and [operations](guides/operations.md) | The distinction between task completion and delivery, plus recovery paths. |
@@ -43,6 +43,7 @@ before contributor internals.
 | [Configuration and vault](concepts/configuration-and-vault.md) | Configured policy, editable Markdown, and database projections. |
 | [Providers](concepts/providers.md) | Provider settings, model selection, usage, and budgets. |
 | [Messaging](concepts/messaging.md) | Worker messages, the activity digest, and human escalation replies. |
+| [Software-factory policy](concepts/factory-policy.md) | The normative admission, delivery and recovery contract that every role instruction references. |
 
 ## Guides
 
@@ -52,13 +53,20 @@ local policy, not as a universal default.
 | Need | Guide |
 | --- | --- |
 | Use the web UI | [Dashboard](guides/dashboard.md) |
+| See what changed for an existing install | [Release notes](release-notes.md) |
 | Create and manage a project | [Project onboarding](guides/project-onboarding.md) |
 | Operate pull-based workers | [Worker pools](guides/worker-pools.md) |
+| Coordinate running agents on one shared goal | [Agent collaboration threads](guides/agent-collaboration.md) |
+| Schedule recurring agent prompt wake-ups | [Agent cron](guides/agent-cron.md) |
+| Handle a provider that ran out of usage or logged out | [Provider outage](guides/provider-outage.md) |
 | Keep tests from exhausting the host | [Resource gating](guides/resource-gating.md) |
 | Configure plugins and MCP | [Plugins and MCP](guides/plugins-and-mcp.md) |
 | Configure digests and answer an escalation | [Escalations](guides/escalations.md) |
 | Diagnose a daemon, task, session, or delivery issue | [Operations](guides/operations.md) |
 | Deliver development branches | [Development integration](guides/development-integration.md) |
+| Operate train batch controls | [Git-first train runbook](guides/git-first-train-runbook.md#supervisor-controls) |
+| Configure promotion branches and their PR gates | [Promotion flows](guides/promotion-flow.md) — draft with task-marked pending mechanisms |
+| Prepare, deploy or recover a release | [Releases](guides/releases.md) — shipped deploy/restore and task-marked preparation work |
 | Understand database migration authority | [Migrations](guides/migrations.md) |
 
 ## Reference
@@ -70,6 +78,7 @@ look-up material. Its most-used pages are:
 | --- | --- |
 | [Module catalog](reference/modules/README.md) | Every production source module, its purpose, component page, and test pointer. |
 | [CLI reference](reference/cli/README.md) | Current `aq` command groups, contracts, agent tools, and prime documents. |
+| [Playbook commands](reference/playbook-commands/README.md) | One page per command a playbook step may call: parameters, outcomes, internals, and failure modes. |
 | [HTTP API](reference/api/README.md) | REST, WebSocket, and generated Python/TypeScript clients. |
 | [Configuration](reference/configuration.md) | Settings, defaults, and reload boundaries. |
 | [Database](reference/database/README.md) | PostgreSQL tables, queries, migrations, and lifecycle. |
