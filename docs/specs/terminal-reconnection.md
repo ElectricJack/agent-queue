@@ -19,7 +19,13 @@ stop retrying. An opaque browser handshake failure is diagnosed with a read-only
 uses the same origin, credentials, loopback and session checks as the WebSocket;
 it never attaches a PTY. Its response identifies ready, exited, or error, with a
 safe message, close code and retryability. The edge's existing terminal-prefix
-gate also covers this HTTP request. WebSocket handshake denials stay denials.
+gate also covers this HTTP request and admits it from the same explicitly
+trusted LAN origins as the terminal WebSocket. Same-origin browser GETs may
+omit `Origin`: for this read-only GET only, use the single `browser_origin`
+query value, or the request scheme and Host when it is absent. An actual
+`Origin` header takes precedence and still must pass the Origin gate. Missing
+or duplicate/malformed query origins cannot widen access, and remote bearer
+requests remain refused. WebSocket handshake denials stay denials.
 Known server errors carry their code and retryability in their control frame.
 
 The proxy has no WebSocket idle receive timeout. Enable upstream ping/pong every

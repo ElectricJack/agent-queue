@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 from pathlib import Path
 
 import click
@@ -98,9 +100,72 @@ def review_submit(
     emit(ctx, _execute(ctx, "review_submit", {key: value for key, value in params.items() if value is not None}))
 
 
+@review.command("attach")
+@click.option("--review-id", required=True)
+@click.option("--revision", type=click.IntRange(min=1), required=True)
+@click.option("--file", "file_path", type=click.Path(path_type=Path, exists=True), required=True)
+@click.option("--content-type", default=None, help="Image MIME type; inferred from the extension when omitted.")
+@click.option("--caption", required=True)
+@click.option("--view-id", required=True)
+@click.option("--candidate-id", required=True)
+@click.pass_context
+@_handle_errors
+def review_attach(
+    ctx: click.Context, review_id: str, revision: int, file_path: Path,
+    content_type: str | None, caption: str, view_id: str, candidate_id: str,
+) -> None:
+    """Append a verified screenshot to an open review revision."""
+    from src.api.task_attachments import MAX_ATTACHMENT_BYTES
+
+    if file_path.stat().st_size > MAX_ATTACHMENT_BYTES:
+        raise click.UsageError("image exceeds the 10 MiB cap")
+    media_type = content_type or mimetypes.guess_type(file_path.name)[0]
+    emit(ctx, _execute(ctx, "review_attachment_add", {
+        "review_id": review_id, "revision": revision,
+        "data_base64": base64.b64encode(file_path.read_bytes()).decode("ascii"),
+        "content_type": media_type, "caption": caption,
+        "view_id": view_id, "candidate_id": candidate_id,
+    }))
+
+
+@review.command("attachments")
+@click.option("--review-id", required=True)
+@click.option("--revision", type=click.IntRange(min=1), required=True)
+@click.pass_context
+@_handle_errors
+def review_attachments(ctx: click.Context, review_id: str, revision: int) -> None:
+    """List screenshots belonging to one review revision."""
+    emit(ctx, _execute(ctx, "review_attachment_list", {
+        "review_id": review_id, "revision": revision,
+    }))
+
+
+@review.command("download-attachment")
+@click.option("--review-id", required=True)
+@click.option("--revision", type=click.IntRange(min=1), required=True)
+@click.option("--attachment-id", required=True)
+@click.option("--output", type=click.Path(path_type=Path), required=True)
+@click.pass_context
+@_handle_errors
+def review_download_attachment(
+    ctx: click.Context, review_id: str, revision: int, attachment_id: str, output: Path,
+) -> None:
+    """Download a revision-pinned image after the server's access check."""
+    async def run():
+        async with _get_client((ctx.obj or {}).get("api_url")) as client:
+            return await client.download_review_attachment(review_id, revision, attachment_id)
+
+    data = _run(run())
+    output.write_bytes(data)
+    emit(ctx, {"success": True, "output": str(output), "size": len(data)})
+
+
 @review.command("dispatch")
 @click.option("--review-id", required=True)
-@click.option("--to", "profiles", multiple=True, required=True)
+@click.option("--count", type=click.IntRange(min=1, max=10), default=1, show_default=True,
+              help="Number of adversarial reviewer tasks.")
+@click.option("--class", "intelligence_class", default="deep-high", show_default=True,
+              help="Intelligence-class hint for the reviewers.")
 @click.option("--revision", type=click.IntRange(min=1), default=None)
 @click.option("--with-comments/--no-comments", default=True)
 @click.option("--focus", default=None)
@@ -110,16 +175,23 @@ def review_submit(
 def review_dispatch(
     ctx: click.Context,
     review_id: str,
-    profiles: tuple[str, ...],
+    count: int,
+    intelligence_class: str,
     revision: int | None,
     with_comments: bool,
     focus: str | None,
     force: bool,
 ) -> None:
-    """Send a pinned review revision to one or more adversarial reviewers."""
+    """Send a pinned review revision to COUNT adversarial reviewers.
+
+    Each reviewer task carries the --class hint and excludes the provider the
+    author revision ran on; the project's router picks its profile, so a
+    dispatch lands on another model family. No reviewer profile is named.
+    """
     params = {
         "review_id": review_id,
-        "to": list(profiles),
+        "count": count,
+        "intelligence_class": intelligence_class,
         "with_comments": with_comments,
         "force": force,
     }

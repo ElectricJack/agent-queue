@@ -1,0 +1,29 @@
+[
+  {
+    "code": "delegation_runtime_checked",
+    "field": "/profile_id",
+    "message": "the router chooses the child profile; every enabled worker candidate must fit the parent and step capability ceiling at run time",
+    "rule_id": "pre-market",
+    "severity": "info",
+    "source": "path='tests/fixtures/quilt_health_watch/candidate/quilt-health-watch/source.md' start_line=116 end_line=116 heading='Rule: pre-market' excerpt='1. Start the check task described above with mode \"pre-market (03:00, before'",
+    "step_id": "pre-market--check"
+  },
+  {
+    "code": "delegation_runtime_checked",
+    "field": "/profile_id",
+    "message": "the router chooses the child profile; every enabled worker candidate must fit the parent and step capability ceiling at run time",
+    "rule_id": "market-hours",
+    "severity": "info",
+    "source": "path='tests/fixtures/quilt_health_watch/candidate/quilt-health-watch/source.md' start_line=116 end_line=116 heading='Rule: pre-market' excerpt='1. Start the check task described above with mode \"pre-market (03:00, before'",
+    "step_id": "market-hours--check"
+  },
+  {
+    "code": "delegation_runtime_checked",
+    "field": "/profile_id",
+    "message": "the router chooses the child profile; every enabled worker candidate must fit the parent and step capability ceiling at run time",
+    "rule_id": "off-hours",
+    "severity": "info",
+    "source": "path='tests/fixtures/quilt_health_watch/candidate/quilt-health-watch/source.md' start_line=116 end_line=116 heading='Rule: pre-market' excerpt='1. Start the check task described above with mode \"pre-market (03:00, before'",
+    "step_id": "off-hours--check"
+  }
+]

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _ACTIVE_TASK = {
     TaskStatus.ASSIGNED,
     TaskStatus.IN_PROGRESS,
-    TaskStatus.WAITING_INPUT,
+    TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
 }
 
 
@@ -118,6 +118,10 @@ async def _start_locked(orchestrator, agent_id, config, project_id: str | None):
         raise TerminalStartError("Agent not found")
     if not agent.enabled:
         raise TerminalStartError("Agent is disabled; enable it before starting a terminal")
+    if agent.id == SUPERVISOR_AGENT_ID and agent.role == "supervisor":
+        # A project selection from an older client must not narrow global scope
+        # or make an existing global terminal look like a conflicting session.
+        project_id = None
     if project_id is not None:
         project = await db.get_project(project_id)
         if project is None:
@@ -258,7 +262,6 @@ async def _start_locked(orchestrator, agent_id, config, project_id: str | None):
             raise TerminalStartError("Agent settings or ownership changed during startup")
         launch_attempted = True
         launched_at = time.time()
-        await provider.start(spec)
         row = SessionRecord(
             id=session_id,
             agent_id=agent.id,
@@ -279,14 +282,20 @@ async def _start_locked(orchestrator, agent_id, config, project_id: str | None):
             hooks_provisioned=spec.hooks_provisioned,
             **resolve_launch_settings(profile, harness, builder),
         )
-        await db.create_session(row, release_agent_reservation=True)
+        from src.sessions.launch import launch_session
+
+        await launch_session(
+            db, provider, spec, row, release_agent_reservation=True,
+            bus=getattr(orchestrator, "bus", None),
+        )
         return row
     except BaseException as exc:
-        stopped = not launch_attempted
-        if launch_attempted:
+        own = await db.get_session(session_id) if launch_attempted else None
+        stopped = own is None or own.state == "stopped"
+        if not stopped:
             try:
                 await provider.stop(handle)
-                stopped = not await provider.is_running(handle)
+                stopped = await provider.confirm_stopped(handle)
             except Exception:
                 logger.exception("Could not confirm terminal cleanup for agent %s", agent.id)
         try:
