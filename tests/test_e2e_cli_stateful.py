@@ -34,7 +34,12 @@ SCENARIO_GROUPS = {
     "graphs": ("S10", "S16b", "S18", "S6", "S21"),
     "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
 }
-PREREQUISITES = {"S2": ("S1",), "S3": ("S1", "S2")}
+PREREQUISITES = {
+    "S2": ("S1",),
+    "S3": ("S1", "S2"),
+    # Idle and retiring pool sessions must leave room for formula task sessions.
+    "S4": ("S1", "S2", "S3"),
+}
 
 
 def load_smoke(env):

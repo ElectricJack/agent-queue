@@ -152,6 +152,7 @@ class TestWebSocketReplay:
         assert live_frames[0]["seq"] is None
 
     @pytest.mark.parametrize("replay_delay", [0, 0.1])
+    @pytest.mark.timeout(60)
     async def test_replay_filters_non_forwarded_event_types(self, db, monkeypatch, replay_delay):
         """Replay respects the same ``_FORWARDED_PREFIXES`` filter as live
         mode.  The filter was extended in Wave-4 (D3/D1/D2) to cover
@@ -176,26 +177,20 @@ class TestWebSocketReplay:
         mgr.start()
         ws = _FakeWS(after_seq="0")
 
-        replayed = asyncio.Event()
         send_json = ws.send_json
 
-        async def signal_last_replay_frame(frame):
+        async def disconnect_after_last_replay_frame(frame):
             await send_json(frame)
             if frame.get("_event_type") == "message.chat":
-                replayed.set()
+                raise WebSocketDisconnect()
 
-        ws.send_json = signal_last_replay_frame
+        ws.send_json = disconnect_after_last_replay_frame
 
-        task = asyncio.create_task(mgr.handle(ws))  # type: ignore[arg-type]
         try:
-            # Wait for delivery, even when a replay query takes longer than 50 ms.
-            await asyncio.wait_for(replayed.wait(), timeout=2)
+            # Finish on delivery; PostgreSQL contention is not a replay deadline.
+            # The test runner's timeout still catches missing terminal frames.
+            await mgr.handle(ws)  # type: ignore[arg-type]
         finally:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
             mgr.shutdown()
 
         types = [f.get("_event_type") for f in ws.sent]

@@ -716,6 +716,25 @@ RETAINED_FSCK_TIMEOUT_SECONDS = 900.0
 #: Full-body verification is a separate phase from negotiated object transfer.
 _RETAINED_VERIFY_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
 _RETAINED_VERIFY_RETRY_DELAYS = (1.0, 2.0, 4.0)
+#: A timed-out transfer or full check is discarded whole (its scratch repository is
+#: removed), so retrying under the same fixed budget on a busy host only repeats
+#: the loss. Each consecutive timeout of one store doubles that store's next
+#: budget up to these ceilings; one success returns it to the base.
+_ESCALATED_FETCH_CEILING_SECONDS = 1200.0
+_ESCALATED_FSCK_CEILING_SECONDS = 7200.0
+
+
+def _escalated_budget(streaks: dict, key: str, base: float, ceiling: float) -> float:
+    """*base* doubled once per consecutive timeout recorded for *key*, capped."""
+    return min(base * 2 ** min(streaks.get(key, 0), 16), max(base, ceiling))
+
+
+def _record_budget_outcome(streaks: dict, key: str, exc: BaseException | None) -> None:
+    """Count a consecutive timeout for *key*; any success or other outcome resets."""
+    if exc is not None and "reason=git_timeout" in str(exc):
+        streaks[key] = streaks.get(key, 0) + 1
+    else:
+        streaks.pop(key, None)
 
 
 def _common_git_dir(git_dir: str) -> Path:
@@ -780,6 +799,23 @@ _RETAINED_REFRESH_AGE_SECONDS = _RETAINED_VERIFY_TTL_SECONDS / 2
 #: Common stores whose exclusion the current context already holds.
 _RETAINED_EXCLUSIONS_HELD: ContextVar[frozenset[str]] = ContextVar(
     "retained_store_exclusions_held", default=frozenset())
+
+
+def _repack_output_only(before: tuple, after: tuple) -> bool:
+    """Whether *after* adds nothing to *before* beyond one new pack family.
+
+    Derived metadata (repack refreshes ``info/packs``) is not object content.
+    """
+    known = {entry[0] for entry in before}
+    families = set()
+    for path, _size, _inode in set(after) - set(before):
+        if _RETAINED_METADATA_RE.fullmatch(path):
+            continue
+        match = _RETAINED_PACK_RE.fullmatch(path)
+        if path in known or match is None:
+            return False
+        families.add(match.group(1))
+    return len(families) <= 1
 
 
 def _retained_increment(previous: tuple, current: tuple) -> tuple[tuple, tuple] | None:
@@ -1237,14 +1273,14 @@ class GitManager:
     async def _amaintenance_exclusion(
         self, args: list[str], cwd: str | None, timeout: float,
     ) -> AsyncIterator[float]:
-        """Exclude full verification while foreground maintenance rewrites packs.
+        """Serialize diagnostic fsck and maintenance with full verification.
 
         Separate from the repository transaction: its callers may already hold
         that lock. Git's global options (notably maintenance's `-c`) are skipped
         when identifying the command. Independent Git processes still require
         the verifier's bounded retry.
         """
-        if _git_subcommand(args) not in {"gc", "repack", "maintenance"}:
+        if _git_subcommand(args) not in {"fsck", "gc", "repack", "maintenance"}:
             yield timeout
             return
         loop = asyncio.get_running_loop()
@@ -2466,6 +2502,23 @@ class GitManager:
         return specs
 
     async def _afetch_origin_with_auth_to_url(
+        self, checkout_path: str, **options: Any,
+    ) -> _OriginFetchTransfer:
+        """Run the staged fetch under a budget that grows while it keeps timing out."""
+        streaks = self.__dict__.setdefault("_origin_fetch_timeouts", {})
+        key = os.path.realpath(checkout_path)
+        budget = _escalated_budget(
+            streaks, key, self._GIT_TIMEOUT, _ESCALATED_FETCH_CEILING_SECONDS)
+        try:
+            transfer = await self._afetch_origin_with_auth_to_url_once(
+                checkout_path, budget=budget, **options)
+        except GitError as exc:
+            _record_budget_outcome(streaks, key, exc)
+            raise
+        _record_budget_outcome(streaks, key, None)
+        return transfer
+
+    async def _afetch_origin_with_auth_to_url_once(
         self,
         checkout_path: str,
         *,
@@ -2474,6 +2527,7 @@ class GitManager:
         refetch: bool = False,
         refs: Sequence[str] | None = None,
         lock_held: bool = False,
+        budget: float | None = None,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2502,7 +2556,8 @@ class GitManager:
                            *(["+refs/tags/*:refs/tags/*"] if refetch else [])]
         loop = asyncio.get_running_loop()
         started = loop.time()
-        deadline = started + self._GIT_TIMEOUT
+        budget = self._GIT_TIMEOUT if budget is None else budget
+        deadline = started + budget
         destination_git_dir, borrowable_objects = await self._aorigin_fetch_destination(
             checkout_path
         )
@@ -2565,7 +2620,7 @@ class GitManager:
                         repository_url=source_url,
                         token=token,
                         deadline=deadline,
-                        budget_seconds=self._GIT_TIMEOUT,
+                        budget_seconds=budget,
                     )
                 except GitError as exc:
                     raise GitError(
@@ -2963,7 +3018,9 @@ class GitManager:
         carried repack finished meanwhile) is not checked again.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + RETAINED_FSCK_TIMEOUT_SECONDS
+        streaks = self.__dict__.setdefault("_retained_fsck_timeouts", {})
+        deadline = loop.time() + _escalated_budget(
+            streaks, key, RETAINED_FSCK_TIMEOUT_SECONDS, _ESCALATED_FSCK_CEILING_SECONDS)
         async with _isolated_git_directory(prefix="aq-retained-verify-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
@@ -2979,12 +3036,14 @@ class GitManager:
                 try:
                     await self._afsck_retained_store(key, home=home, deadline=deadline)
                 except GitError as exc:
+                    _record_budget_outcome(streaks, key, exc)
                     if str(exc).startswith("retained Git object integrity"):
                         verified = self.__dict__.setdefault("_retained_verified", {})
                         if verified.get(key, (None, started))[1] <= started:
                             verified.pop(key, None)
                     raise
                 after = await asyncio.to_thread(_object_store_fingerprint, key)
+        _record_budget_outcome(streaks, key, None)
         if fingerprint is None or after is None:
             return None
         unchanged = set(after)
@@ -3235,15 +3294,16 @@ class GitManager:
         the result carries that clean result over with its original age, so the
         background refresh still comes due on schedule. Unverified additions,
         a failed repack or a failed check leave the store to the full check.
-        The store exclusion is held throughout, so no full check overlaps.
+        The store exclusion is held throughout, so no full check overlaps. The
+        repack may run beside other writers, so anything added beyond its own
+        pack also leaves the store to the full check.
         """
         loop = asyncio.get_running_loop()
         async with self._aretained_store_exclusion(git_dir, deadline=loop.time() + timeout):
             key, before = await asyncio.to_thread(_retained_store_state, git_dir)
             cached = self._retained_baseline(key)
             result = await self.arun_git_result(
-                args, cwd=cwd, lock_held=True, env={"LC_ALL": "C"},
-                timeout=timeout, low_priority=True,
+                args, cwd=cwd, env={"LC_ALL": "C"}, timeout=timeout, low_priority=True,
             )
             if (result.returncode or result.stderr.strip() or cached is None
                     or before is None or before != cached[0]):
@@ -3264,7 +3324,8 @@ class GitManager:
                 return result
             after = await asyncio.to_thread(_object_store_fingerprint, key)
             verified = self.__dict__.setdefault("_retained_verified", {})
-            if after is not None and verified.get(key) == cached:
+            if (after is not None and _repack_output_only(before, after)
+                    and verified.get(key) == cached):
                 verified[key] = (after, cached[1])
         return result
 

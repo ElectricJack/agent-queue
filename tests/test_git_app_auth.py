@@ -45,10 +45,23 @@ from src.metrics.operation_profile import operation_profile
 
 
 def _git(args: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True
+        )
+    except subprocess.CalledProcessError as exc:
+        exc.add_note(f"Git fixture failed in {cwd}:\n{exc.stderr}")
+        raise
     return result.stdout.strip()
+
+
+def test_git_fixture_failure_reports_stderr(tmp_path):
+    _git(["init", "--initial-branch=main", "--template="], tmp_path)
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _git(["add", "missing-fixture-file"], tmp_path)
+    assert caught.value.returncode == 128
+    assert "missing-fixture-file" in caught.value.stderr
+    assert caught.value.stderr in "\n".join(caught.value.__notes__)
 
 
 def _git_push_case(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
@@ -4102,6 +4115,68 @@ async def test_slow_full_fsck_outlives_caller_budget_and_is_reused(tmp_path, mon
     assert not manager._retained_verify_flights
 
 
+@pytest.mark.parametrize("bounded_claim", [False, True])
+async def test_recovery_preserves_pending_verification_without_second_fsck(
+    tmp_path, monkeypatch, bounded_claim,
+):
+    from src.integration.repository_recovery import fetch_retained_origin
+
+    work, remote, _trap, _base, _tip = _git_push_case(tmp_path)
+    directory = work / ".git"
+    manager = GitManager()
+    entered, release = asyncio.Event(), asyncio.Event()
+    isolated = manager._run_isolated_import_git
+    checks = []
+
+    async def slow_check(args, **kwargs):
+        if "fsck" in args:
+            checks.append(args)
+            entered.set()
+            await release.wait()
+        return await isolated(args, **kwargs)
+
+    async def fetch(checkout_path, *, repository_url, all_heads, **kwargs):
+        assert all_heads
+        return await manager._afetch_origin_with_auth_to_url(
+            checkout_path, source_url=Path(repository_url).as_uri(), token=None, **kwargs,
+        )
+
+    async def unexpected_diagnosis(args, **kwargs):
+        if "fsck" in args:
+            pytest.fail("recovery started a second full fsck while verification was pending")
+        return await original_run(args, **kwargs)
+
+    original_run = manager.arun_git_result
+    monkeypatch.setattr(manager_module, "_RETAINED_VERIFY_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(manager, "_run_isolated_import_git", slow_check)
+    monkeypatch.setattr(manager, "afetch_origin", fetch)
+    monkeypatch.setattr(manager, "arun_git_result", unexpected_diagnosis)
+    try:
+        if bounded_claim:
+            with repository_lock_wait_limit(0.01), pytest.raises(RetainedVerificationPending):
+                await fetch_retained_origin(manager, work, repository_url=str(remote))
+        else:
+            with pytest.raises(GitError, match="reason=verification_pending"):
+                await fetch_retained_origin(manager, work, repository_url=str(remote))
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        flight = manager._retained_verify_flights[str(directory.resolve())]
+        assert not flight.done()
+        assert not (directory / "aq-empty-object-backups").exists()
+        # The refusal released repository exclusion, so unrelated preparation proceeds.
+        with repository_lock_wait_limit(0.01):
+            async with manager.arepository_transaction(str(work)):
+                pass
+        release.set()
+        await flight
+        # A later acquisition uses the completed clean result, without another check.
+        await fetch_retained_origin(manager, work, repository_url=str(remote))
+        assert len(checks) == 1
+    finally:
+        release.set()
+        for pending in list(manager.__dict__.get("_retained_verify_flights", {}).values()):
+            await pending
+
+
 async def test_queued_full_check_skips_only_a_fresh_exact_clean_result(tmp_path, monkeypatch):
     """sound-journey-54: a full check that waited on the store exclusion reuses
     a clean result recorded meanwhile, but a refresh still rereads the store."""
@@ -4531,7 +4606,7 @@ async def test_unreferenced_exact_shortcut_verifies_actual_lender(tmp_path, monk
 
 
 @pytest.mark.parametrize('result_runner', [False, True])
-@pytest.mark.parametrize('command', ['gc', 'repack', 'maintenance'])
+@pytest.mark.parametrize('command', ['fsck', 'gc', 'repack', 'maintenance'])
 @pytest.mark.parametrize('prepacked', [False, True])
 async def test_full_verification_excludes_linked_worktree_maintenance(
     tmp_path, monkeypatch, result_runner, command, prepacked,
@@ -4627,7 +4702,8 @@ async def test_integrity_retry_cannot_renew_exhausted_deadline(tmp_path, monkeyp
     assert not manager.retained_store_verified(str(tmp_path))
 
 
-async def test_repack_blocks_verification_only_for_its_store(tmp_path, monkeypatch):
+@pytest.mark.parametrize('command', ['fsck', 'repack'])
+async def test_repack_blocks_verification_only_for_its_store(tmp_path, monkeypatch, command):
     work, _source, other = _exact_fetch_case(tmp_path)
     gitdir = _git(['rev-parse', '--absolute-git-dir'], work)
     manager = GitManager()
@@ -4653,7 +4729,8 @@ async def test_repack_blocks_verification_only_for_its_store(tmp_path, monkeypat
     checks = AsyncMock(return_value=b'')
     monkeypatch.setattr(manager, '_run_isolated_import_git', checks)
     deadline = asyncio.get_running_loop().time() + 30
-    maintenance = asyncio.create_task(manager._arun_unlocked(['repack', '-ad'], cwd=str(work)))
+    args = ['fsck', '--full'] if command == 'fsck' else ['repack', '-ad']
+    maintenance = asyncio.create_task(manager._arun_unlocked(args, cwd=str(work)))
     await asyncio.wait_for(repacking.wait(), timeout=10)
     verify = asyncio.create_task(manager._averify_retained_objects(
         gitdir, home=tmp_path, deadline=deadline,
@@ -4729,7 +4806,13 @@ async def test_integrity_persistent_failure_keeps_safe_object_evidence(tmp_path,
 
 
 async def test_linked_gitdir_integrity_cache_observes_shared_object_changes(tmp_path, monkeypatch):
-    work, _source, _store = _exact_fetch_case(tmp_path)
+    # This cache test needs a committed common store and a linked gitdir.
+    # Transfer volume and remote repositories belong to the fetch tests.
+    work = tmp_path / 'work'
+    work.mkdir()
+    _git(['init', '--initial-branch=main', '--template='], work)
+    _git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+          'commit', '--allow-empty', '-m', 'base'], work)
     linked = tmp_path / 'linked'
     _git(['worktree', 'add', '--detach', str(linked), 'HEAD'], work)
     gitdir = _git(['rev-parse', '--absolute-git-dir'], linked)
