@@ -121,14 +121,20 @@ class ObservedQueuePool(AsyncAdaptedQueuePool):
             perf_registry().observe_pool_timeout()
             raise
         finally:
-            perf_registry().observe_pool_wait((time.perf_counter() - started) * 1000.0)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            perf_registry().observe_pool_wait(elapsed_ms)
+            if elapsed_ms >= 1000:
+                logger.warning(
+                    "database pool wait duration_ms=%.1f checked_out=%s size=%s overflow=%s",
+                    elapsed_ms, self.checkedout(), self.size(), self.overflow(),
+                )
 
 
 def _install_query_observer(engine: AsyncEngine) -> None:
     """Time every cursor execution.  The statement and parameters are never read.
 
-    A statement that raises never reaches ``after_cursor_execute``; its start
-    time is simply overwritten by the next statement on that connection.
+    Failed statements are timed by ``handle_error``. Slow queries and pool waits
+    log durations with the current request/command context, never SQL or parameters.
     """
     from src.metrics.perf import perf_registry
 
@@ -138,9 +144,25 @@ def _install_query_observer(engine: AsyncEngine) -> None:
 
     @event.listens_for(engine.sync_engine, "after_cursor_execute")
     def _finished(conn, cursor, statement, parameters, context, executemany):
+        _record_query(conn, failed=False)
+
+    @event.listens_for(engine.sync_engine, "handle_error")
+    def _failed(context):
+        try:
+            if context.connection is not None:
+                _record_query(context.connection, failed=True)
+        except Exception:  # diagnostics must preserve the original database failure
+            logger.debug("failed query timing unavailable", exc_info=True)
+
+    def _record_query(conn, *, failed):
         started = conn.info.pop("aq_perf_started", None)
         if started is not None:
-            perf_registry().observe_query((time.perf_counter() - started) * 1000.0)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            perf_registry().observe_query(elapsed_ms)
+            if elapsed_ms >= 1000:
+                logger.warning(
+                    "database query duration_ms=%.1f failed=%s", elapsed_ms, failed,
+                )
 
 
 def create_postgres_engine(

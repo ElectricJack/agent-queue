@@ -1,6 +1,7 @@
 import { getProjectOnboarding, onboardProject } from "../../../api/client";
 import type { SubmitProject, WizardSubmission } from "./ProjectOnboardingWizard";
 import type { OnboardingResult, SubmissionError } from "./state";
+import { randomUUID } from "../../../randomUUID";
 
 /** Normalize whatever a `SubmitProject` rejected with into a `SubmissionError`. */
 export function toSubmissionError(err: unknown): SubmissionError {
@@ -10,7 +11,7 @@ export function toSubmissionError(err: unknown): SubmissionError {
 }
 
 export function newRequestId(): string {
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 /** Build the one daemon-owned request, then poll its durable phase while it is in flight. */
