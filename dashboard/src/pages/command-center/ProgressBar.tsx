@@ -4,6 +4,10 @@ export interface ProgressBarProps {
   running?: number;
   blocked?: number;
   className?: string;
+  /** The accessible name; defaults to "<done> of <total> done". */
+  label?: string;
+  /** `line` is the 2px square-ended rule along an epic frame's header (§2.4). */
+  variant?: "bar" | "line";
 }
 
 /**
@@ -15,7 +19,7 @@ export interface ProgressBarProps {
  * drawn at its raw width. Renders nothing when there is nothing to show a
  * fraction of.
  */
-export function ProgressBar({ done, total, running = 0, blocked = 0, className = "" }: ProgressBarProps) {
+export function ProgressBar({ done, total, running = 0, blocked = 0, className = "", label, variant = "bar" }: ProgressBarProps) {
   if (total <= 0) return null;
   const doneW = Math.max(0, Math.min(done, total));
   const runningW = Math.max(0, Math.min(running, total - doneW));
@@ -24,15 +28,15 @@ export function ProgressBar({ done, total, running = 0, blocked = 0, className =
   return (
     <span
       role="progressbar"
-      aria-label={`${done} of ${total} done`}
+      aria-label={label ?? `${done} of ${total} done`}
       aria-valuemin={0}
       aria-valuemax={total}
       aria-valuenow={doneW}
-      className={`flex h-1 w-full overflow-hidden rounded bg-white/10 ${className}`}
+      className={`flex w-full overflow-hidden bg-g-border ${variant === "line" ? "h-[2px]" : "h-1 rounded"} ${className}`}
     >
-      <span aria-hidden data-segment="done" className="block h-full bg-emerald-400" style={{ width: `${pct(doneW)}%` }} />
-      <span aria-hidden data-segment="running" className="block h-full bg-indigo-400" style={{ width: `${pct(runningW)}%` }} />
-      <span aria-hidden data-segment="blocked" className="block h-full bg-amber-400" style={{ width: `${pct(blockedW)}%` }} />
+      <span aria-hidden data-segment="done" className="block h-full bg-g-done" style={{ width: `${pct(doneW)}%` }} />
+      <span aria-hidden data-segment="running" className="block h-full bg-g-accent" style={{ width: `${pct(runningW)}%` }} />
+      <span aria-hidden data-segment="blocked" className="block h-full bg-g-blocked" style={{ width: `${pct(blockedW)}%` }} />
     </span>
   );
 }
