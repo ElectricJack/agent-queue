@@ -933,6 +933,120 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'settled_claim_wake_composition': {'authorized_engine_delta': 0,
+                                    'authorized_owned_delta': 5,
+                                    'authorized_shared_owned_delta': 5,
+                                    'authorized_table_delta': 0,
+                                    'charged_files': {'src/commands/claim_commands.py': 2,
+                                                      'src/sessions/reconciler.py': 3},
+                                    'dev_source_revision': '1473a49fe665890bb017b9a656e166bacd72c201',
+                                    'fix_task_id': 'nimble-journey-85',
+                                    'measured_engine_lines': 84356,
+                                    'measured_owned_total': 161096,
+                                    'measured_table_count': 45,
+                                    'operator_decision': '6679052c',
+                                    'previous_measured_engine_lines': 84356,
+                                    'previous_measured_owned_total': 161091,
+                                    'previous_measured_table_count': 45,
+                                    'reason': 'Exact supervisor-requested +5 owned/+0 engine/+5 '
+                                              'shared/+0 tables for landing the settled pool claim '
+                                              'wake and drained-preparation stop '
+                                              '(nimble-journey-85 / 4c0d396ec), measured over dev '
+                                              '1473a49fe. claim_commands.py '
+                                              'ClaimCommandsMixin._cmd_task_claim attaches '
+                                              'same-turn retry instructions to claim_in_progress '
+                                              '(+2 shared); reconciler.py '
+                                              'SessionReconciler._stop_drain_acked_holder routes a '
+                                              'drain-acked holder still claiming/preparing to the '
+                                              'unactivated-preparation stop proof (+3 shared). The '
+                                              'engine is unchanged. Preserve the original '
+                                              'baseline, every historical grant and ownership '
+                                              'classification, zero remaining headroom, the '
+                                              's4_modules expiry and existing storage categories, '
+                                              "including 2104's admission fencing, 2169's "
+                                              "retained_verification and 2115's store maintenance "
+                                              'entries.',
+                                    'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                    'source_revision': '4c0d396ec37513860b6a5d40daf99050c97c50dc',
+                                    'task_id': 'nimble-journey-85'},
+ 'delivery_watchdog_target_verification_composition': {'authorized_engine_delta': 77,
+                                                       'authorized_owned_delta': 77,
+                                                       'authorized_shared_owned_delta': 0,
+                                                       'authorized_table_delta': 0,
+                                                       'charged_files': {'src/integration/delivery_branches.py': 5,
+                                                                         'src/integration/delivery_watchdog.py': 72},
+                                                       'dev_source_revision': 'c2dfcd683dbb18cb6a8da08b3c53cd72dc9fdc95',
+                                                       'fix_task_id': 'bright-stone-69',
+                                                       'measured_engine_lines': 84212,
+                                                       'measured_owned_total': 160861,
+                                                       'measured_table_count': 45,
+                                                       'operator_decision': '6679052c',
+                                                       'original_dev_source_revision': '17d0d73891157519e2ccb94bed4d8331491af400',
+                                                       'previous_measured_engine_lines': 84135,
+                                                       'previous_measured_owned_total': 160784,
+                                                       'previous_measured_table_count': 45,
+                                                       'reason': 'Exact supervisor-approved +77 '
+                                                                 'engine/+77 owned/+0 shared/+0 '
+                                                                 'tables for landing the delivery '
+                                                                 'watchdog target-verification fix '
+                                                                 '(bright-stone-69 / 68331c71e), '
+                                                                 'originally measured over dev '
+                                                                 '17d0d7389 and re-recorded over '
+                                                                 'dev c2dfcd683 after PRs 2166, '
+                                                                 '2169 and 2168. '
+                                                                 'delivery_watchdog.py verifies '
+                                                                 'the judged target ref, keeps a '
+                                                                 'projection pending while the '
+                                                                 'head is still not an ancestor '
+                                                                 'and never watches the land-* '
+                                                                 'tasks it filed itself (+72 '
+                                                                 'engine); delivery_branches.py '
+                                                                 'exposes the landing-task marker '
+                                                                 '(+5 engine). Preserve the '
+                                                                 'original baseline, every '
+                                                                 'historical grant and ownership '
+                                                                 'classification, zero remaining '
+                                                                 'headroom, the s4_modules expiry '
+                                                                 'and existing storage categories.',
+                                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                       'source_revision': '68331c71ed5e1302d4f80e3566e1526e2a4590e6',
+                                                       'supervisor_grant_reference': 'msg-4fda2e4d5dfd4a92821d88782489b933',
+                                                       'task_id': 'bright-stone-69'},
+ 'dangling_assignment_recovery_retry_composition': {'authorized_engine_delta': 0,
+                                                    'authorized_owned_delta': 13,
+                                                    'authorized_shared_owned_delta': 13,
+                                                    'authorized_table_delta': 0,
+                                                    'charged_files': {'src/database/queries/task_recovery_queries.py': 13},
+                                                    'dev_source_revision': '5eaf02c7f9f663748decf041f35167b83b715d60',
+                                                    'fix_task_id': 'steady-impact-12',
+                                                    'measured_engine_lines': 84135,
+                                                    'measured_owned_total': 160784,
+                                                    'measured_table_count': 45,
+                                                    'operator_decision': '6679052c',
+                                                    'previous_measured_engine_lines': 84135,
+                                                    'previous_measured_owned_total': 160771,
+                                                    'previous_measured_table_count': 45,
+                                                    'reason': 'Exact supervisor-approved +13 '
+                                                              'owned/+0 engine/+13 shared/+0 '
+                                                              'tables for landing the dangling '
+                                                              'assigned_agent recovery fix '
+                                                              '(steady-impact-12 / 7dfc711a5), '
+                                                              'measured over dev 5eaf02c7f. '
+                                                              'task_recovery_queries.py lets '
+                                                              'supervisor retry clear an '
+                                                              'assignment whose agent is gone and '
+                                                              'whose sessions are stopped, while a '
+                                                              'live assignment is still refused '
+                                                              '(+13 shared). The engine is '
+                                                              'unchanged. Preserve the original '
+                                                              'baseline, every historical grant '
+                                                              'and ownership classification, zero '
+                                                              'remaining headroom, the s4_modules '
+                                                              'expiry and existing storage '
+                                                              'categories.',
+                                                    'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                    'source_revision': '7dfc711a5b43d540f8e2e22f250383546fa6b9e8',
+                                                    'task_id': 'steady-impact-12'},
  'close_regeneration_single_flight_composition': {'authorized_engine_delta': 210,
                                                   'authorized_owned_delta': 211,
                                                   'authorized_shared_owned_delta': 1,
@@ -1357,6 +1471,78 @@ HAND_INTEGRATION_RECONCILIATION = {
                                             'referenced_decision': 'size-cap-delegation-2026-10-23',
                                             'source_revision': '30d8c9fd755a90cc2580dd3af856a0a1fb25193e',
                                             'task_id': 'sharp-harbor-94'},
+ 'retained_store_maintenance_dev_merge_measurement': {'authorized_engine_delta': 144,
+                                                      'authorized_owned_delta': 230,
+                                                      'authorized_shared_owned_delta': 86,
+                                                      'authorized_table_delta': 0,
+                                                      'charged_files': {'src/api/scope.py': 1,
+                                                                        'src/cli/auto_commands.py': 1,
+                                                                        'src/cli/integration.py': 10,
+                                                                        'src/commands/contracts/integration.py': 28,
+                                                                        'src/commands/integration_commands.py': 31,
+                                                                        'src/git/repository_lock.py': 11,
+                                                                        'src/integration/repository_maintenance.py': 170,
+                                                                        'src/integration/repository_recovery.py': -26,
+                                                                        'src/orchestrator/core.py': 4},
+                                                      'dev_source_revision': 'f3b2b8a466fde5fb3b36e8c91a78efcb02a81f3f',
+                                                      'evidence_path': 'docs/reports/2026-10-27-retained-store-maintenance-dev-merge-ownership.json',
+                                                      'measured_engine_lines': 83917,
+                                                      'measured_owned_total': 159885,
+                                                      'measured_table_count': 45,
+                                                      'operator_decision': '6679052c',
+                                                      'previous_measured_engine_lines': 83773,
+                                                      'previous_measured_owned_total': 159655,
+                                                      'previous_measured_table_count': 45,
+                                                      'prior_grant_evidence': 'docs/reports/2026-10-26-retained-store-maintenance-pair-refresh-ownership.json',
+                                                      'reason': 'Fresh-dev measurement of '
+                                                                'unchanged maintenance scope under '
+                                                                'existing approval (pre-approved '
+                                                                '+240 owned/+150 engine/0 tables). '
+                                                                'Preserve every historical grant, '
+                                                                'baseline, classification, zero '
+                                                                'headroom, s4_modules expiry and '
+                                                                'storage categories.',
+                                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                      'source_revision': '810d3106dd31ac10c03147fe11dd790a6d153e22',
+                                                      'supervisor_decision_message_id': 'msg-52016cbae0e445e1baa70acb295b19ec',
+                                                      'task_id': 'clear-rapids-41'},
+ 'retained_store_maintenance_landing_measurement': {'authorized_engine_delta': 144,
+                                                    'authorized_owned_delta': 230,
+                                                    'authorized_shared_owned_delta': 86,
+                                                    'authorized_table_delta': 0,
+                                                    'charged_files': {'src/api/scope.py': 1,
+                                                                      'src/cli/auto_commands.py': 1,
+                                                                      'src/cli/integration.py': 10,
+                                                                      'src/commands/contracts/integration.py': 28,
+                                                                      'src/commands/integration_commands.py': 31,
+                                                                      'src/git/repository_lock.py': 11,
+                                                                      'src/integration/repository_maintenance.py': 173,
+                                                                      'src/integration/repository_recovery.py': -29,
+                                                                      'src/orchestrator/core.py': 4},
+                                                    'dev_source_revision': '036ca25bbc82d2c6673186dc645d2149c7a90d4f',
+                                                    'evidence_path': 'docs/reports/2026-10-28-retained-store-maintenance-landing-ownership.json',
+                                                    'measured_engine_lines': 84356,
+                                                    'measured_owned_total': 161091,
+                                                    'measured_table_count': 45,
+                                                    'operator_decision': '6679052c',
+                                                    'previous_measured_engine_lines': 84212,
+                                                    'previous_measured_owned_total': 160861,
+                                                    'previous_measured_table_count': 45,
+                                                    'prior_grant_evidence': 'docs/reports/2026-10-27-retained-store-maintenance-dev-merge-ownership.json',
+                                                    'reason': 'Measured landing delta over dev '
+                                                              '036ca25bb, approved exact by the '
+                                                              'supervisor under the global landing '
+                                                              'protocol: unchanged +230 owned/+144 '
+                                                              'engine/+86 shared/0 tables after '
+                                                              'composing the retained-verification '
+                                                              'flight. Preserve every historical '
+                                                              'grant, baseline, classification, '
+                                                              'zero headroom, s4_modules expiry '
+                                                              'and storage categories.',
+                                                    'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                    'source_revision': '8f8cbacb59939e7b1157459dee10482ea33ef5a9',
+                                                    'supervisor_decision_message_id': 'msg-52016cbae0e445e1baa70acb295b19ec',
+                                                    'task_id': 'clear-rapids-41'},
  'promotion_ci_policy_composition': {'authorized_engine_delta': 94,
  'authorized_owned_delta': 101,
  'authorized_shared_owned_delta': 7,
@@ -1385,6 +1571,39 @@ HAND_INTEGRATION_RECONCILIATION = {
  'source_revision': '03a30e91b1374d1b91e3c04fc6d2a63825cf9565',
  'supervisor_decision_message_id': 'msg-e2b6f604ca564c87b63159d46b56b709',
  'task_id': 'sound-flare-80'},
+ 'retained_store_maintenance_dev_refresh_measurement': {'authorized_engine_delta': 144,
+ 'authorized_owned_delta': 230,
+ 'authorized_shared_owned_delta': 86,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/api/scope.py': 1,
+                   'src/cli/auto_commands.py': 1,
+                   'src/cli/integration.py': 10,
+                   'src/commands/contracts/integration.py': 28,
+                   'src/commands/integration_commands.py': 31,
+                   'src/git/repository_lock.py': 11,
+                   'src/integration/repository_maintenance.py': 170,
+                   'src/integration/repository_recovery.py': -26,
+                   'src/orchestrator/core.py': 4},
+ 'dev_source_revision': '3f6e5052e51eba1777323c00f9618e5dafe17a24',
+ 'evidence_path': 'docs/reports/2026-10-26-retained-store-maintenance-dev-refresh-ownership.json',
+ 'measured_engine_lines': 83797,
+ 'measured_owned_total': 159752,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83653,
+ 'previous_measured_owned_total': 159522,
+ 'previous_measured_table_count': 45,
+ 'prior_grant_evidence': 'docs/reports/2026-10-26-retained-store-maintenance-reopen-ownership.json',
+ 'reason': 'Fresh-dev remeasurement of the unchanged exact +230 owned/+144 engine/+86 shared/0 '
+           'table maintenance disposition after composing the separately approved Bazel slice A '
+           '+314 owned/0 engine grant. Supervisor msg-52016cbae0e445e1baa70acb295b19ec '
+           'pre-approves current-dev remeasurement up to +240/+150/0. Preserve original baselines, '
+           'every historical grant and report, unchanged ownership classifications, zero headroom, '
+           's4_modules expiry and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '6167daf56153f62ddae6814384e1b8f66126dd5b',
+ 'supervisor_decision_message_id': 'msg-52016cbae0e445e1baa70acb295b19ec',
+ 'task_id': 'clear-rapids-41'},
  'bazel_slice_a_lazy_task_graph_exports_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 314,
  'authorized_shared_owned_delta': 314,
@@ -1411,6 +1630,71 @@ HAND_INTEGRATION_RECONCILIATION = {
  'supervisor_decision_message_id': 'msg-bb71c846812341e68b2a81bd464d39ef',
  'task_id': 'clear-beacon-42',
  'working_tree_source_sha256': {'src/task_graph/__init__.py': '998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06'}},
+ 'retained_store_maintenance_scope_refresh_measurement': {'additional_engine_delta': 29,
+ 'additional_owned_delta': 29,
+ 'authorized_engine_delta': 144,
+ 'authorized_owned_delta': 230,
+ 'authorized_shared_owned_delta': 86,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/api/scope.py': 1,
+                   'src/cli/auto_commands.py': 1,
+                   'src/cli/integration.py': 10,
+                   'src/commands/contracts/integration.py': 28,
+                   'src/commands/integration_commands.py': 31,
+                   'src/git/repository_lock.py': 11,
+                   'src/integration/repository_maintenance.py': 170,
+                   'src/integration/repository_recovery.py': -26,
+                   'src/orchestrator/core.py': 4},
+ 'dev_source_revision': 'ae4f7a8db418fd481728cb58d0a1d43ce89dce07',
+ 'evidence_path': 'docs/reports/2026-10-26-retained-store-maintenance-reopen-ownership.json',
+ 'measured_engine_lines': 83797,
+ 'measured_owned_total': 159438,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83653,
+ 'previous_measured_owned_total': 159208,
+ 'previous_measured_table_count': 45,
+ 'prior_grant_evidence': 'docs/reports/2026-10-26-retained-store-maintenance-ownership.json',
+ 'reason': 'Exact supervisor-approved expanded retained-store maintenance scope: registered main '
+           'repository loose-object thresholds and stale temporary-pack cleanup. Total task delta '
+           '+230 owned/+144 engine/+86 shared/0 tables; incremental delta from the preserved '
+           'published grant is +29 owned/engine. Preserves historical grants, original baselines, '
+           'unchanged ownership classifications, zero headroom, s4_modules expiry and no new '
+           'storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '6167daf56153f62ddae6814384e1b8f66126dd5b',
+ 'supervisor_decision_message_id': 'msg-52016cbae0e445e1baa70acb295b19ec',
+ 'task_id': 'clear-rapids-41'},
+ 'retained_store_maintenance_composition': {'task_id': 'clear-rapids-41',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'supervisor_decision_message_id': 'msg-ac391b12aa444a02aa254a1038a0cd89',
+ 'dev_source_revision': '512996c4738a348ac2a6372697f184e20a955a8c',
+ 'source_revision': '677a14ca8560dbdc009221c9c5c0d5aa691ebe06',
+ 'previous_measured_owned_total': 159208,
+ 'previous_measured_engine_lines': 83653,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 201,
+ 'authorized_shared_owned_delta': 86,
+ 'authorized_engine_delta': 115,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 159409,
+ 'measured_engine_lines': 83768,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/api/scope.py': 1,
+                   'src/cli/auto_commands.py': 1,
+                   'src/cli/integration.py': 10,
+                   'src/commands/contracts/integration.py': 28,
+                   'src/commands/integration_commands.py': 31,
+                   'src/git/repository_lock.py': 11,
+                   'src/integration/repository_maintenance.py': 141,
+                   'src/integration/repository_recovery.py': -26,
+                   'src/orchestrator/core.py': 4},
+ 'evidence_path': 'docs/reports/2026-10-26-retained-store-maintenance-ownership.json',
+ 'reason': 'Exact supervisor-approved retained-store pack maintenance and scoped preview/apply '
+           'control after merging origin/dev. Preserves full fsck, original baselines, historical '
+           'grants, ownership classification, zero remaining headroom, s4_modules expiry and no '
+           'new storage category.'},
  'cold_restart_deadline_composition': {'task_id': 'calm-ember-15',
                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
                                        'operator_decision': '6679052c',
@@ -1566,7 +1850,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 5192,
+ 'authorized_owned_delta': 5597,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1601,6 +1885,43 @@ HAND_INTEGRATION_RECONCILIATION = {
                                          'source_revision': 'd8d689ee345e610843884c394a566f2e038797b5',
                                          'task_id': 'amber-summit-41.4',
                                          'thread_id': 'batch-fixer-bazel-size-51'},
+ 'claim_binding_resume_composition': {'authorized_engine_delta': 0,
+                                      'authorized_owned_delta': 80,
+                                      'authorized_shared_owned_delta': 80,
+                                      'authorized_table_delta': 0,
+                                      'charged_files': {'src/sessions/reconciler.py': 54,
+                                                        'src/wait_runtime/resume.py': 2,
+                                                        'src/waits/resume_ack.py': 24},
+                                      'decision_message_id': 'msg-c0e32116ecff483580559a15cd8bfb11',
+                                      'dev_source_revision': '0da40df0be7fd79c7196413c30aa8ed21d171752',
+                                      'measured_engine_lines': 84135,
+                                      'measured_owned_total': 160771,
+                                      'measured_table_count': 45,
+                                      'operator_decision': '6679052c',
+                                      'previous_measured_engine_lines': 84135,
+                                      'previous_measured_owned_total': 160691,
+                                      'previous_measured_table_count': 45,
+                                      'reason': 'Exact supervisor-approved +80 owned/+0 engine/+80 '
+                                                'shared/+0 tables for binding a resumed '
+                                                "continuation's live claim atomically with its "
+                                                'launch (prime-willow-11, bold-rapids-90.3), '
+                                                'originally measured over dev 17d0d7389 and '
+                                                're-recorded over dev 0da40df0b. '
+                                                'src/sessions/reconciler.py +54 '
+                                                '(_step_claim_binding stall detector), '
+                                                'src/waits/resume_ack.py +24 (bind_live_claim and '
+                                                'import), src/wait_runtime/resume.py +2 '
+                                                '(bind_launch call); charged only through the '
+                                                'owned CLAIMED_BY_SESSION_KEY import; the engine '
+                                                'is unchanged. Preserve the original baseline, '
+                                                'every historical grant and ownership '
+                                                'classification, zero remaining headroom, the '
+                                                's4_modules expiry and existing storage '
+                                                'categories.',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'source_revision': '9ea5947c26a443fd6af16e24e632a8a037cb354a',
+                                      'task_id': 'prime-willow-11',
+                                      'thread_id': 'prime-willow-11-size'},
  'claim_marker_recovery_composition': {'authorized_engine_delta': 0,
                                        'authorized_owned_delta': 5,
                                        'authorized_shared_owned_delta': 5,
@@ -2137,8 +2458,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84135,
- 'measured_owned_total': 160691,
+ 'measured_engine_lines': 84356,
+ 'measured_owned_total': 161096,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
