@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -22,7 +23,7 @@ def _plain_ref(ref: Any) -> dict[str, Any] | None:
 
 
 def _fields(before: Any, after: Any, path: str = "") -> list[dict[str, Any]]:
-    if before == after:
+    if json.dumps(before, sort_keys=True) == json.dumps(after, sort_keys=True):
         return []
     if isinstance(before, Mapping) and isinstance(after, Mapping):
         rows = []
@@ -49,13 +50,21 @@ def _fields(before: Any, after: Any, path: str = "") -> list[dict[str, Any]]:
     return [_field(path or "/", before, after)]
 
 
+def _project_change(value: Any) -> dict:
+    if isinstance(value, Mapping) and value.get("type") in {"filter", "map", "len", "diff"}:
+        return project_value(value)
+    return project_value({"type": "literal", "value": value})
+
+
 def _field(path: str, before: Any, after: Any) -> dict[str, Any]:
     parts = [part for part in path.split("/") if part]
     executable = not bool(parts and (parts[0] in _PRESENTATION_ROOTS or parts[-1] == "label"))
     return {
         "path": path,
-        "before": project_value({"type": "literal", "value": before}) if before is not None else None,
-        "after": project_value({"type": "literal", "value": after}) if after is not None else None,
+        "before": _project_change(before)
+        if before is not None
+        else None,
+        "after": _project_change(after) if after is not None else None,
         "executable": executable,
     }
 
@@ -98,7 +107,9 @@ def _rule_rows(base: PlaybookDefinition | None, target: PlaybookDefinition) -> l
         else:
             changes = _fields(before.model_dump(mode="json"), after.model_dump(mode="json"))
             change = "modified" if changes else "unchanged"
-        old_steps = {key for key, value in base.steps.items() if value.rule == rule_id} if base else set()
+        old_steps = (
+            {key for key, value in base.steps.items() if value.rule == rule_id} if base else set()
+        )
         new_steps = {key for key, value in target.steps.items() if value.rule == rule_id}
         rows.append(
             {
@@ -111,6 +122,45 @@ def _rule_rows(base: PlaybookDefinition | None, target: PlaybookDefinition) -> l
                 "field_changes": changes,
             }
         )
+    before_policy = base.integration_policy if base else None
+    after_policy = target.integration_policy
+    changes = _fields(
+        before_policy.model_dump(mode="json", exclude_none=True) if before_policy else None,
+        after_policy.model_dump(mode="json", exclude_none=True) if after_policy else None,
+        "/integration_policy",
+    )
+    if changes:
+        # The current review DTO has rule field changes. Present the optional
+        # subject rule there so a table-only change is visible and requires
+        # executable review without changing any API contract.
+        rows.append(
+            {
+                "rule_id": "integration-policy",
+                "change": "added"
+                if before_policy is None
+                else "removed"
+                if after_policy is None
+                else "modified",
+                "event_type_before": "integration.subject_due" if before_policy else None,
+                "event_type_after": "integration.subject_due" if after_policy else None,
+                "step_ids_added": [],
+                "step_ids_removed": [],
+                "field_changes": changes,
+            }
+        )
+    # As with integration policy, project artifact-level execution changes onto
+    # the existing review field rows so API and dashboard reviewers see the pins.
+    before_metadata = base.model_dump(mode="json", exclude_none=True) if base else {}
+    after_metadata = target.model_dump(mode="json", exclude_none=True)
+    changes = [change for name in ("required_features", "trusted_execution")
+               for change in _fields(before_metadata.get(name), after_metadata.get(name),
+                                     f"/{name}")]
+    if changes:
+        rows.append({
+            "rule_id": "execution-metadata", "change": "modified",
+            "event_type_before": None, "event_type_after": None,
+            "step_ids_added": [], "step_ids_removed": [], "field_changes": changes,
+        })
     return rows
 
 
@@ -242,6 +292,13 @@ def diff_artifacts(
                     "source": None,
                 }
             )
+    from src.playbooks.features import unsupported_feature_message, unsupported_features
+
+    diagnostics.extend({
+        "severity": "error", "code": "unsupported_feature",
+        "message": unsupported_feature_message(feature),
+        "rule_id": None, "step_id": None, "source": None,
+    } for feature in unsupported_features(target, contracts=contracts))
     blockers = [item["message"] for item in diagnostics]
     response = {
         "success": True,

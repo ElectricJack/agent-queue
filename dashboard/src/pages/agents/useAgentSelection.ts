@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { POOL_PREFIX, poolAddress } from "./pools";
+import { canFocusTerminal } from "../../components/terminalFocus";
 
 export const MAX_AGENT_VIEWS = 4;
 
@@ -97,23 +98,29 @@ export function useAgentSelection() {
 
   const adding = location.pathname === "/agents" ? parseCreateMode(params.get("add")) : null;
 
-  const navigateTo = (ids: string[], replaceSelection = false, add: CreateMode | null = null) => {
+  const navigateTo = (ids: string[], replaceSelection = false, add: CreateMode | null = null, focusKey?: string) => {
     const search = new URLSearchParams();
     ids.forEach((id) => search.append("agent", id));
     if (add) search.set("add", add === "choice" ? "1" : add);
     navigate(
       { pathname: "/agents", search: search.toString() },
-      { state: replaceSelection ? { agentSelection: "replace" } : null },
+      { state: replaceSelection || focusKey ? {
+        ...(replaceSelection ? { agentSelection: "replace" } : {}),
+        ...(focusKey && canFocusTerminal() ? { terminalFocus: focusKey } : {}),
+      } : null },
     );
   };
 
   const select = (id: string, additive = false): boolean => {
     if (additive) {
-      if (selectedIds.some((selected) => selectionAddress(selected) === selectionAddress(id))) return true;
+      if (selectedIds.some((selected) => selectionAddress(selected) === selectionAddress(id))) {
+        navigateTo(selectedIds, false, null, id);
+        return true;
+      }
       if (selectedIds.length >= MAX_AGENT_VIEWS) return false;
-      navigateTo([...selectedIds, id]);
+      navigateTo([...selectedIds, id], false, null, id);
     } else {
-      navigateTo([id], true);
+      navigateTo([id], true, null, id);
     }
     return true;
   };
@@ -132,7 +139,7 @@ export function useAgentSelection() {
       if (selection.kind !== "pool") return;
       navigateTo(latest.current.selectedIds.map((selected) => selectionAddress(selected) === address
         ? poolSelectionKey(selection.profileId, instanceId)
-        : selected));
+        : selected), false, null, address);
     },
     /**
      * The create flow is URL state so the left rail can open it from any page.
@@ -149,6 +156,8 @@ export function useAgentSelection() {
       navigateTo(latest.current.selectedIds.filter((selected) => selectionAddress(selected) !== address));
     },
     resetToken: location.state?.agentSelection === "replace" ? location.key : null,
+    focusSelection: typeof location.state?.terminalFocus === "string"
+      ? { key: selectionAddress(location.state.terminalFocus), request: location.key } : null,
     locationKey: location.key,
   };
 }

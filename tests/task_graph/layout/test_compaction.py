@@ -229,9 +229,13 @@ def test_a_scope_that_was_not_loaded_in_full_keeps_its_persisted_interior():
     assert (boxes["c1"].x, boxes["c1"].y) == (rows["c1"].abs_x, rows["c1"].abs_y)
 
 
+#: Children of the fixture's epic. Enough to wrap at its widened row target.
+_EPIC_CARDS = 12
+
+
 async def _seed_real_project(db):
     """An epic with a wrapping rank, a nested package, a long serial chain and
-    two root cards below — enough shapes that a naive re-flow would drift."""
+    two loose root cards — enough shapes that a naive re-flow would drift."""
     from src.models import Project, Task
 
     await db.create_project(Project(id="p1", name="P1"))
@@ -243,7 +247,9 @@ async def _seed_real_project(db):
                 await db.set_parent(tid, parent, conn=conn)
 
     await mk("e")
-    for i in range(7):  # wraps: 7 cards do not fit one comfortable line
+    # Wraps: 12 cards do not fit one line even at the epic's aspect-balanced
+    # row target (reorganisation design §3.1), which is 11.8 units here.
+    for i in range(_EPIC_CARDS):
         await mk(f"c{i}", "e")
     await mk("pkg", "e")
     chain = [f"s{i}" for i in range(8)]  # long enough to serpentine
@@ -275,7 +281,7 @@ async def test_compaction_of_a_real_layout_is_the_identity_when_nothing_is_colla
         )
         # The fixture must actually exercise both folds, or this test would
         # pass on a layout with nothing interesting in it.
-        assert len({rows[f"c{i}"].rel_y for i in range(7)}) > 1  # rank wrapped
+        assert len({rows[f"c{i}"].rel_y for i in range(_EPIC_CARDS)}) > 1  # rank wrapped
         assert len({rows[f"s{i}"].rel_y for i in range(8)}) > 1  # chain folded
         assert set(boxes) == set(rows)
         for tid, r in rows.items():
@@ -302,9 +308,13 @@ async def test_collapsing_the_epic_of_a_real_layout_reclaims_the_space(tmp_path)
 
         delta = before["e"].h - COLLAPSED_SIZE[1]
         assert delta > 0
-        for tid in ("y", "z"):
-            assert after[tid].y == pytest.approx(before[tid].y - delta)
-            assert after[tid].x == pytest.approx(before[tid].x)
+        # ``y`` shares the epic's root line — the widened root target fits a
+        # 12-unit epic and its line-mates on one line (§3.1) — so it keeps
+        # its place; ``z``, on the rank below, moves up by the whole delta.
+        assert after["y"].y == pytest.approx(before["y"].y)
+        assert after["y"].x == pytest.approx(before["y"].x)
+        assert after["z"].y == pytest.approx(before["z"].y - delta)
+        assert after["z"].x == pytest.approx(before["z"].x)
 
         # The whole canvas is shorter by exactly the epic's collapsed delta.
         def height(boxes):

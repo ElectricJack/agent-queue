@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/waits/loops.py::prepare_progress": {
+      "fingerprint": "9ebfdfc3f91fd354485fca22ee05380631e41c9d551ea39593d743191862fed9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

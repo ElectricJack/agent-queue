@@ -111,6 +111,18 @@ format or its coverage guarantee.
 | **Owner** | `communications` for the messaging page; whoever fixes the skill file and `CLAUDE.md`. Recorded by `cli`. |
 | **Resolved** | Both passages in `src/skills/aq-comms/SKILL.md` now say the `UserPromptSubmit` hook was removed on 2026-08-27, that pending messages arrive through `aq prime` and the cascade's nudge, and that `aq inbox --inject` is an on-demand command. `CLAUDE.md`'s Messages bullet carries the same correction. Existing installs are re-seeded with `aq doctor --check skills.installed_drift --fix`. |
 
+## 10. Findings the `legacy` ticket could not fix, because it does not own the file
+
+Recorded while reconciling existing documentation. Each is a small, mechanical
+repair in a page another ticket owns.
+
+| Finding | Detail | Owner |
+|---|---|---|
+| Three broken relative links remain | `docs/contributing/scripts.md` and `docs/reference/modules/contributing.md` both link `scripts/register-merge-conflict-hook.py`, which is not tracked (the hook installer is `scripts/check-merge-conflicts.sh`). `docs/reference/modules/database.md` links `src/schema.sql`, which does not exist — the schema is `src/database/tables.py`. These are the only three broken relative links left in the repository; the other 552 were repaired. | `contributing`, `database` |
+| Wiki links survive in shipped prompt content | `src/sessions/default_harnesses/claude.md:104` and `tests/fixtures/harnesses/claude-pre-pr212.md:100` both contain `[[design/trust-and-ops]]`, which renders as literal brackets. The 799 wiki links in `docs/`, `notes/` and `reports/` were converted to relative Markdown links; these two were left alone because the first is prompt content a session loads at run time and the second is a frozen fixture of that file's pre-PR212 state. | `sessions` for the harness file; the fixture must stay byte-identical |
+| The disposition check is not in the local-checks table | `docs/history/check_dispositions.py` is the disposition half of the documentation pair (`refresh_inventory.py --check` being the coverage half). The row in [local checks](../../contributing/checks.md#by-what-you-changed) for "Any page under `docs/`" names only the coverage half. | `contributing` |
+| The MkDocs Pages deploy outlives its config's retirement | `mkdocs.yml` now carries a header recording that GitHub-rendered Markdown is the publication format and that the MkDocs site is unmaintained — 49 of the 77 pages in its `nav:` do not exist. `.github/workflows/docs.yml` still builds and deploys it to GitHub Pages on every push to `main` touching `docs/**`, and `pyproject.toml`'s `docs` extra still pins `mkdocs`, `mkdocs-material` and `mkdocstrings`. Removing the deploy is an infrastructure change in files the `legacy` ticket does not own. | `contributing` |
+
 ## How to use this ledger
 
 * **Do not fix a page you do not own.** Add findings here instead; the map

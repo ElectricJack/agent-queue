@@ -15,6 +15,12 @@ related:
 
 # Release Roadmap — Tier 1 through Ongoing
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 This document captures the release task list as of 2026-09-06 and grounds each
 item in the current state of the repository. Each area has three parts: **Where
 we are** (verified against the checkout, with file paths), **What "done" means**
