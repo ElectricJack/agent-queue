@@ -1,0 +1,323 @@
+[
+  {
+    "name": "building-then-final",
+    "responses": [
+      {
+        "state": "building"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:pause",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed",
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "failed-then-final",
+    "responses": [
+      {
+        "state": "failed"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:pause",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed",
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "ready-then-final",
+    "responses": [
+      {
+        "state": "ready"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:pause",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed",
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "authoring-then-final",
+    "responses": [
+      {
+        "state": "authoring"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:pause",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed",
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "final-settles",
+    "responses": [
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "suppressed-settles",
+    "responses": [
+      {
+        "state": "suppressed"
+      }
+    ],
+    "checkpoints": [
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "skipped-settles",
+    "responses": [
+      {
+        "state": "skipped"
+      }
+    ],
+    "checkpoints": [
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "disabled-settles",
+    "responses": [
+      {
+        "state": "disabled"
+      }
+    ],
+    "checkpoints": [
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "waiting-settles",
+    "responses": [
+      {
+        "state": "waiting"
+      }
+    ],
+    "checkpoints": [
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "timezone-guard",
+    "responses": [
+      {
+        "state": "waiting",
+        "report_id": null,
+        "reason": "timezone_guard"
+      }
+    ],
+    "checkpoints": [
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "another-day-pending",
+    "responses": [
+      {
+        "state": "authoring",
+        "report_id": "morning-2026-09-28"
+      }
+    ],
+    "checkpoints": [
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "pending-then-rollover",
+    "responses": [
+      {
+        "state": "authoring"
+      },
+      {
+        "state": "waiting",
+        "report_id": null
+      }
+    ],
+    "checkpoints": [
+      "paused:pause",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:completed",
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "rejected-then-final",
+    "responses": [
+      {
+        "failure": "rejected"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:backoff",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:rejected",
+      "retry:completed"
+    ]
+  },
+  {
+    "name": "rejected-then-pending",
+    "responses": [
+      {
+        "failure": "rejected"
+      },
+      {
+        "state": "authoring"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:backoff",
+      "paused:pause",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:rejected",
+      "retry:completed",
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "rejected-twice",
+    "responses": [
+      {
+        "failure": "rejected"
+      },
+      {
+        "failure": "rejected"
+      }
+    ],
+    "checkpoints": [
+      "paused:backoff",
+      "failed:failed"
+    ],
+    "outcomes": [
+      "tick:rejected",
+      "retry:rejected"
+    ]
+  },
+  {
+    "name": "runtime_error-then-final",
+    "responses": [
+      {
+        "failure": "runtime_error"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:backoff",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:runtime_error",
+      "retry:completed"
+    ]
+  },
+  {
+    "name": "runtime_error-then-pending",
+    "responses": [
+      {
+        "failure": "runtime_error"
+      },
+      {
+        "state": "authoring"
+      },
+      {
+        "state": "final"
+      }
+    ],
+    "checkpoints": [
+      "paused:backoff",
+      "paused:pause",
+      "completed:done"
+    ],
+    "outcomes": [
+      "tick:runtime_error",
+      "retry:completed",
+      "tick:completed"
+    ]
+  },
+  {
+    "name": "runtime_error-twice",
+    "responses": [
+      {
+        "failure": "runtime_error"
+      },
+      {
+        "failure": "runtime_error"
+      }
+    ],
+    "checkpoints": [
+      "paused:backoff",
+      "failed:failed"
+    ],
+    "outcomes": [
+      "tick:runtime_error",
+      "retry:runtime_error"
+    ]
+  }
+]
