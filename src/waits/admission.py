@@ -13,8 +13,8 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from src.database.tables import (
-    integration_batch_members, integration_batches, integration_branch_owners,
-    integration_repair_stages, projects, sessions, tasks, token_ledger,
+    continuations, integration_batch_members, integration_batches, integration_branch_owners,
+    integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records,
 )
 from src.waits.conditions import Condition, NodeKey, Observation, Snapshot
 
@@ -87,9 +87,11 @@ class AdmissionReader:
         self.orchestrator = orchestrator
         self.clock = clock
 
-    async def observe_task(self, conn, task_id):
+    async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False):
         from src.database.queries.claim_queries import (
-            _pool_profiles_predicate, claim_frontier_predicates, route_claimable,
+            _pool_profiles_predicate,
+            claim_frontier_predicates,
+            route_claimable,
         )
         from src.database.queries.hierarchy_queries import ProjectIntegrationMode
         from src.routing.readiness import orchestrator_router_ready
@@ -98,8 +100,25 @@ class AdmissionReader:
         config = o.config
         config_revision = digest(asdict(config))
         task = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().first()
-        if not task or task["status"] != "READY" or task["assigned_agent_id"] is not None:
+        expected_statuses = ({"RESUME_PENDING"} if continuation_id else
+                             {"READY", "DEFINED", "PAUSED"} if migration_audit else {"READY"})
+        if not task or task["status"] not in expected_statuses or task["assigned_agent_id"] is not None:
             return None
+        if continuation_id:
+            intent = (await conn.execute(select(continuations).where(
+                continuations.c.id == continuation_id, continuations.c.task_id == task_id,
+                continuations.c.resume_state == 'queued', continuations.c.hold_reason.is_(None),
+            ))).mappings().first()
+            if not intent:
+                return None
+            if intent['stopped_at'] is None:
+                from src.wait_runtime.legacy_parking import legacy_parked
+
+                wait = (await conn.execute(select(wait_records).where(
+                    wait_records.c.id == intent['wait_id'],
+                ))).mappings().one()
+                if not await legacy_parked(conn, task, wait, intent):
+                    return None
         task = dict(task)
         project = (await conn.execute(select(projects).where(
             projects.c.id == task["project_id"],
@@ -110,6 +129,20 @@ class AdmissionReader:
         # separately re-observed below; an old cached verdict never clears a hold.
         project_model = await o.db.get_project(task["project_id"])
         mode = ProjectIntegrationMode.of(project_model)
+        from src.integration.admission import observe_admission
+        from src.integration.development import DevelopmentPrimitives
+
+        service = getattr(o, "development_integration", None)
+        if service is None:
+            service = DevelopmentPrimitives(o.db, data_dir=config.data_dir,
+                                            git=getattr(o, "git", None))
+        admission = await observe_admission(
+            o.db, [task_id], service, cached_only=True,
+            default_mode=config.integration.default_mode,
+            hierarchy_conn=conn,
+            router_ready_projects={task["project_id"]} if ready else set(),
+        )
+        mode = admission.hierarchy_modes.get(task["project_id"], mode)
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:
@@ -120,19 +153,24 @@ class AdmissionReader:
         from src.pool_claims import idle_pool_claim_loop_stalled, pool_claim_loop_stall_seconds
         from src.waits.occupancy import continuation_occupancy
 
+        resuming, reserved = await continuation_occupancy(o.db, config)
         live = [dict(row) for row in (await conn.execute(select(sessions).where(
-            sessions.c.lifecycle == "pool", sessions.c.state.in_(("starting", "running")),
-            sessions.c.desired_state == "running",
+            (sessions.c.lifecycle == "pool") | sessions.c.id.in_(resuming),
+            sessions.c.state.in_(("starting", "running", "draining")),
         ))).mappings()]
         current = [s for s in live if s["project_id"] == task["project_id"]]
         idle = [s for s in current if s["profile_id"] == task["profile_id"]
+                and s['desired_state'] == 'running'
                 and s["state"] == "running" and not s["task_id"] and not s["claim_phase"]
                 and not idle_pool_claim_loop_stalled(SimpleNamespace(**s), now=self.clock(),
                     stall_seconds=pool_claim_loop_stall_seconds(config.swarm))]
+        # Resumes start a new task session; an idle pool process cannot be
+        # reused as that fresh process and still occupies its configured seat.
+        if continuation_id:
+            idle = []
         compatible = [s for s in live if s["profile_id"] == task["profile_id"]]
         pending = [launch for launch in getattr(o, "_pool_launches", {}).values()
                    if launch.session_id not in {s["id"] for s in live}]
-        _, reserved = await continuation_occupancy(o.db, config)
         fleet_count = len(live) + len(pending) + sum(reserved.values())
         project_count = len(current) + sum(launch.project_id == task["project_id"] for launch in pending)
         project_count += sum(n for (pid, _), n in reserved.items() if pid == task["project_id"])
@@ -181,19 +219,22 @@ class AdmissionReader:
             tasks.c.id == task_id, tasks.c.id.in_(select(branch_holders().subquery().c.task_id)),
         )))
         batch_reasons = []
-        if project["hierarchical_integration_mode"] == "development":
-            admission = await o._delivery_admission([task_id])
-            if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
-                batch_reasons.append("delivery_not_verified")
+        if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
+            batch_reasons.append("delivery_not_verified")
         batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
                        "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
         batch_reasons.extend(name for name in batch_names if checks.get(name) is False)
         policy_reasons = [name for name, ok in checks.items() if not ok and name not in batch_names
                           and name not in {"claim_prepare_backoff", "workspace_requirement"}]
+        if not continuation_id and task["status"] != "READY":
+            # Historical audit rows describe holds; they never admit paused or
+            # undefined work. The ordinary claim path still requires READY.
+            policy_reasons.append(f"status:{task['status']}")
         if not profile or not profile.enabled or project["status"] != "ACTIVE":
             policy_reasons.append("disabled_project_or_profile")
         constraints = {
-            "slot": {"blocked": bool(slot or owns), "awaiting_branch_admission": owns,
+            "slot": {"blocked": bool(slot or owns and not continuation_id),
+                     "awaiting_branch_admission": owns and not continuation_id,
                      "fleet": fleet_count, "project": project_count, "idle": len(idle)},
             "workspace": {"blocked": not idle and capacity <= 0
                           or not checks.get("workspace_requirement", True), "capacity": capacity},
@@ -227,7 +268,10 @@ class AdmissionReader:
         context = condition.context
         if context.get("owner_kind") != "scheduler" or context.get("session_id") is not None:
             return None
-        observed = await self.observe_task(conn, context.get("owner_id"))
+        # Resource snapshots describe constraints, never grant admission. This
+        # path can re-observe migration projections of held tasks; direct
+        # admission callers retain the default READY-only observation.
+        observed = await self.observe_task(conn, context.get("owner_id"), migration_audit=True)
         blocker = condition.parameters["blocker"]
         if (not observed or observed.task["project_id"] != context.get("project_id")
                 or observed.task["claim_epoch"] != context.get("claim_epoch")

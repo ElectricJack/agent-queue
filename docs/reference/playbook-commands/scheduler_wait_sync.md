@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:aa4621013d818d06ef84ad58bd247a452f54842e5bab51f1f2b2ba7f1dd97d05` |
+| Contract fingerprint | `sha256:52b699c4f9b10f03231c79a63294320c5350f0a2d703aecf10e3e9ab13f4d0b6` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `initial_audit` | `boolean` | no | `false` | — |
 | `project_id` | `string` | yes | — | — |
 | `blockers` | `object[]` | yes | — | — |
 | `cycle_id` | `string` | yes | — | — |
@@ -44,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id, blockers, cycle_id, now | — | always |
+| Composite using initial_audit, project_id, blockers, cycle_id, now | — | always |
 
 <!-- aq:generated:end -->
 

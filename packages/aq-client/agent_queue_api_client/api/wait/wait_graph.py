@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitGraphArgs,
 ) -> Response[WaitGraphResponse | WaitGraphResponse422]:
-    """Wait graph.
+    """Inspect the dependency graph of verified waits.
 
-     Wait graph.
+     Inspect the dependency graph of verified waits.
 
     Args:
         body (WaitGraphArgs):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitGraphArgs,
 ) -> WaitGraphResponse | WaitGraphResponse422 | None:
-    """Wait graph.
+    """Inspect the dependency graph of verified waits.
 
-     Wait graph.
+     Inspect the dependency graph of verified waits.
 
     Args:
         body (WaitGraphArgs):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitGraphArgs,
 ) -> Response[WaitGraphResponse | WaitGraphResponse422]:
-    """Wait graph.
+    """Inspect the dependency graph of verified waits.
 
-     Wait graph.
+     Inspect the dependency graph of verified waits.
 
     Args:
         body (WaitGraphArgs):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitGraphArgs,
 ) -> WaitGraphResponse | WaitGraphResponse422 | None:
-    """Wait graph.
+    """Inspect the dependency graph of verified waits.
 
-     Wait graph.
+     Inspect the dependency graph of verified waits.
 
     Args:
         body (WaitGraphArgs):

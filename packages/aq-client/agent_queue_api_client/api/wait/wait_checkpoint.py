@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitCheckpointArgs,
 ) -> Response[WaitCheckpointResponse | WaitCheckpointResponse422]:
-    """Wait checkpoint.
+    """Save a continuation checkpoint for the held claim's verified wait.
 
-     Wait checkpoint.
+     Save a continuation checkpoint for the held claim's verified wait.
 
     Args:
         body (WaitCheckpointArgs):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitCheckpointArgs,
 ) -> WaitCheckpointResponse | WaitCheckpointResponse422 | None:
-    """Wait checkpoint.
+    """Save a continuation checkpoint for the held claim's verified wait.
 
-     Wait checkpoint.
+     Save a continuation checkpoint for the held claim's verified wait.
 
     Args:
         body (WaitCheckpointArgs):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitCheckpointArgs,
 ) -> Response[WaitCheckpointResponse | WaitCheckpointResponse422]:
-    """Wait checkpoint.
+    """Save a continuation checkpoint for the held claim's verified wait.
 
-     Wait checkpoint.
+     Save a continuation checkpoint for the held claim's verified wait.
 
     Args:
         body (WaitCheckpointArgs):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitCheckpointArgs,
 ) -> WaitCheckpointResponse | WaitCheckpointResponse422 | None:
-    """Wait checkpoint.
+    """Save a continuation checkpoint for the held claim's verified wait.
 
-     Wait checkpoint.
+     Save a continuation checkpoint for the held claim's verified wait.
 
     Args:
         body (WaitCheckpointArgs):

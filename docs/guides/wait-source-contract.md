@@ -109,18 +109,70 @@ a floor after all old rows are purged and a reader restarts with a fresh pool.
 The wait-schema prerequisite replaced the frontier indexes' base `priority` keys
 with `effective_priority`. The inactive claim selector still orders by base priority;
 that mismatch sorted every probe, including the urgent-repair and affinity probes,
-and scanned the full ordinary frontier. Revision `a00000000098` adds the original
+and scanned the full ordinary frontier. Revision `a00000000111` adds the original
 base-priority index shapes under `idx_tasks_base_claim_frontier*`, retaining the
 effective-priority indexes. This preserves current claim ordering, repair priority
 and all admission predicates without activating priority propagation or reservations.
 The priority/admission owner can retire these compatibility indexes only after its
 runtime adopts and maintains effective priority and verifies the same strict guards.
 
+## Listener and deadline consumer composition
+
+`WaitService` in `src/wait_runtime/service.py` is installed next to the review notifier in
+`main.py`, cancelled on shutdown, and recovery-ticked by the orchestrator. Flags
+gate new admissions per project. Existing registered waits and
+continuations continue dispatch and recovery when flags are disabled; an empty
+disabled service opens no listener connection. See the
+[cutover runbook](hibernation-cutover-runbook.md) for rollback ordering.
+
+The dedicated asyncpg listener subscribes to both channels before taking the fenced
+watermark. The `source` cursor's 30-second lease elects **both** source and timer
+work, renewed every ten seconds. Each batch locks that cursor, commits dispatch and
+progress together, and checks the unexpired lease before commit. A competing daemon
+cannot take over a locked batch; a failed or expired batch rolls back. A sixty-second
+safety drain and recovery tick recover missing notifications. Disconnects rebuild the
+connection with exponential backoff capped at thirty seconds. Releasing a lease is
+conditional on its unique owner, so a retiring instance cannot release its replacement.
+Source retention keeps the persisted cursor floor even after every old row is purged.
+
+The dispatcher owner installs `orch.wait_dispatcher`, whose async
+`commit(conn, wait_row, committed_event, *, evidence=None)` returns a success dictionary
+for both a committed outcome and an unsatisfied no-op. It must use the supplied batch
+transaction, repeat owner/source fences and fresh predicate observation, and own outcome
+CAS and delivery. A refusal or exception rolls back the batch; missing dispatchers leave
+matching rows unread. Resource invalidations use the canonical paged bridge and fresh
+`registry.verify` with the configured admission reader. The resource generation remains
+zero and revisions remain opaque; producer events never establish satisfaction.
+
+`WaitTimerDriver` rebuilds its heap from unfired, uncancelled rows on startup, notification
+and recovery. It invokes the contracted, service-only `wait_deadline_fire` command.
+The command locks the leader cursor, graph, task, wait, continuation, reservation and
+deadline, and rejects fired,
+cancelled, resolved, not-yet-due or superseded generations. Firing a `due` deadline writes
+its timer source event in the same transaction. Only the dispatcher can resolve/wake it.
+Registration emits `aq_wait_deadline` transactionally after inserting each deadline;
+future deadline writers must do the same (a missed hint is recovered by heap rebuild).
+
+The downstream lifecycle owners supply `orch.wait_deadline_handlers[deadline_type]`
+for `escalation`, `ceiling`, `transition` and `reservation`. Each async callback receives
+`(conn, deadline_row, wait_row, *, now, handler)` and returns a success dictionary;
+all effects must use that transaction. The callback implements the approved effect:
+escalate without a wake; invoke the sleep decision with ceiling reason; hold an overdue
+stop/launch; or mark a reservation overdue. It must fence its continuation/reservation
+and owner before mutation. Escalation callbacks must reobserve the authoritative source
+first: completion at or before the deadline, even when processed late, takes precedence
+over escalation. The driver marks `fired_at` only after the effect succeeds.
+Missing handlers leave deadlines unfired; failed effects roll back their writes and the
+fire together. These seams enable the downstream leaves without activating unfinished
+hibernation, escalation, admission or delivery behavior. The absence of a `CANCELLED`
+task status is unchanged; downstream handlers must use actual settlement states.
 ## Admission service and consumer dispatch
 
 `SchedulerWaitService` installs `scheduler_wait_sync` at the existing wait-reconciler
-cycle site. Both `v2_enabled` and `scheduler_waits_enabled` must be true; defaults
-remain false. Its candidate list carries no trusted verdict: every task and typed
+cycle site. Both `v2_enabled` and `scheduler_waits_enabled` must be true for
+new admissions in the resolved project policy; shipped defaults are true.
+Disabling retracts scheduler waits and reservations. Its candidate list carries
+no trusted verdict: every task and typed
 constraint is read again. `AdmissionReader` is the resource reader supplied to
 `build_registry(resource_reader=...)` for listener and dispatcher verification.
 It binds the actual task/project, repository, route/class/profile, configuration,
@@ -148,7 +200,43 @@ adds no claim round trips. Resume owns the continuation reservation scope (inclu
 `profile_id`) and `new_session_id`; occupancy counts its reservation before launch,
 then the live new session once, never the stopped origin session.
 
-The service does not discover deadlines, dispatch source outcomes, launch continuations
-or evict sessions. Those listener/dispatcher/resume/eviction integration checks remain
-required in their owning leaves before activation. No installed policy is changed by
-this implementation.
+The admission reader does not discover deadlines, dispatch source outcomes, launch
+continuations or evict sessions. The runtime composition below owns those operations
+and their integration checks. No installed policy is changed by this implementation.
+
+## Continuation runtime composition
+
+`src/wait_runtime/service.py` now composes the listener, dispatcher, scheduler
+admission deadlines, hibernation transaction, resume transaction and pool eviction.
+The database-only condition, graph and receipt code remains in `src/waits`; it does
+not import command, session or orchestrator packages. Cutover defaults enable
+all three feature flags and refuse raw version 1 registration bodies.
+
+A task suspension retains its claim, token and workspace until the exact provider
+instance is stopped, the task branch is published, and the checkout is detached.
+The database park transaction then advances the claim epoch and retains the branch
+owner's reservation. An uncertain stop, publication or detach preserves ownership
+and records an operational hold. A source outcome during suspension is committed
+once and becomes resumable only after park.
+
+Resume uses `AdmissionReader` and a continuation-scoped reservation. It retires an
+unused pool process when a fresh session needs its seat, and counts that process
+until it actually stops. The resumed checkout has a new path; the saved head must
+remain an ancestor of the current branch. A new session receives an immutable
+outcome envelope and held-message snapshot. Rendering prime records delivery;
+only the exact session/instance/claim/generation ACK consumes that snapshot and
+returns the task to `IN_PROGRESS`. A failed launch retries once, then waits for a
+new, current provider recovery event.
+
+Sleep decisions record server-observed duration, resume cost, pressure and ceiling
+inputs. Thirty-day medians require the configured minimum sample count; otherwise
+configured defaults apply. `aq wait graph --costs` exposes aggregate measurements.
+Teardown runs from registration through workspace release, setup covers the new
+checkout, and rebuild runs from fresh-session start through the first successful
+prime. Token totals come from completed turns in the exact session transcript,
+including all calls and streamed counter revisions. Missing usage stays null;
+recent acknowledged continuations retry late first-turn accounting every 30 seconds.
+An eviction request selects the newest in-place wait, then less urgent priority,
+then lower resume cost. It sends one checkpoint request while keeping the source
+condition registered. Pool arbitration runs again immediately after proved park;
+a checkpoint request alone never authorizes a replacement process.

@@ -276,12 +276,31 @@ def generated_block(name: str, contract: Any) -> str:
         "## Parameters",
         "",
     ]
-    lines += _parameter_table(args_schema, presentation.arg_labels)
+    if execution.argument_mode == "json_object" and not fields(args_schema):
+        lines += ["Arguments are a JSON object validated against the descriptor's full schema."]
+    else:
+        lines += _parameter_table(args_schema, presentation.arg_labels)
+    if execution.argument_mode == "json_object":
+        metadata = execution.descriptor_metadata
+        lines += [
+            "", "This generated contract exposes the **playbook** input-schema view. "
+            "MCP/CLI/API retain their legacy **transport** view.",
+            f"Schema source: {code(metadata['schema_source'])}; "
+            f"quality: {code(metadata['schema_quality'])}; "
+            f"coarse effect: {code(metadata['effect_class'])}.",
+            "", "**Live invocation is disabled** pending the authorization, result-protocol "
+            "and private-value release gates. Discovery does not grant authority. "
+            "Dry-run/shadow have no live fallback.",
+        ]
     if execution.sensitive_args:
         redacted = ", ".join(code(field) for field in sorted(execution.sensitive_args))
         lines += ["", f"Redacted in receipts and explanations: {redacted}."]
     lines += ["", "## Result", ""]
-    lines += _result_table(result_schema, presentation.result_labels)
+    if execution.result_mode == "typed":
+        lines += _result_table(result_schema, presentation.result_labels)
+    if execution.result_mode == "json_object":
+        lines += ["", "The result model is a JSON object. It preserves the original keys "
+                  "without a `root` or `payload` wrapper; its execution protocol is gated."]
     if execution.receipt_projection:
         projected = ", ".join(code(field) for field in execution.receipt_projection)
         lines += ["", f"Projected into the run receipt: {projected}."]
@@ -417,9 +436,13 @@ def _rendered(path: Path, render) -> str:
 
 def render_all(output: Path) -> dict[Path, str]:
     """The full desired content of the section, keyed by path."""
-    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.registry import ContractRegistry
 
-    contracts = {name: CONTRACTS.require(name).contract for name in sorted(CONTRACTS.names())}
+    # Committed documentation describes the shipped offline inventory. The
+    # process-wide registry can contain installation-specific plugin commands
+    # after a live handler provider is installed.
+    registry = ContractRegistry(autoload=True)
+    contracts = {name: registry.require(name).contract for name in sorted(registry.names())}
     pages: dict[Path, str] = {}
     for name, contract in contracts.items():
         path = output / f"{name}.md"

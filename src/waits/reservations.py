@@ -3,7 +3,19 @@
 from sqlalchemy import Text, cast, select, update
 
 from src.database.tables import admission_reservations as reservations, projects, tasks
-from src.waits.scheduler import enabled
+
+from src.waits.policy import enabled as policy_enabled
+
+
+def enabled(config, project_id=None):
+    return policy_enabled(config, project_id, scheduler=True)
+
+
+class SchedulerPolicy:
+    in_place_ceiling_seconds = 1800
+
+    def escalation_seconds(self, kind):
+        return None  # Only branch-holder reservations have scheduler deadlines.
 
 
 def reserved_statement(candidate, project_id, profile_id):
@@ -27,11 +39,12 @@ def reserved_statement(candidate, project_id, profile_id):
 
 
 async def claim_candidate(handler, conn, **kwargs):
-    active = enabled(handler.config)
+    active = enabled(handler.config, kwargs.get("project_id"))
     if active and kwargs.get("task_id") is None:
-        reserved = await handler.db.select_reserved_for_profile(conn, **kwargs)
-        if reserved:
-            return reserved["task_id"], reserved["reservation_id"]
+        selected = await handler.db.select_ready_for_profile(
+            conn, **kwargs, reservation_first=True, effective_priority=True,
+        )
+        return (selected["task_id"], selected["reservation_id"]) if selected else (None, None)
     return await handler.db.select_ready_for_profile(
         conn, **kwargs, **({"effective_priority": True} if active else {}),
     ), None
