@@ -31,7 +31,7 @@ def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
 
 @cli.group("integration")
 def integration() -> None:
-    """Inspect integration Subjects and apply current recovery proofs."""
+    """Inspect Git-first train delivery and apply recovery controls."""
 
 
 @integration.command("continue-close")
@@ -261,7 +261,7 @@ def integration_eject(ctx, batch_id, task_id, reason, apply):
 
 @integration.command("seal-now")
 @click.option("--project", "project_id", required=True, help="Project whose root target to seal.")
-@click.option("--apply/--dry-run", default=False, help="Bypass cadence once; default is preview.")
+@click.option("--apply/--dry-run", default=False, help="Freeze eligible inputs now; default is preview.")
 @click.pass_context
 @_handle_errors
 def integration_seal_now(ctx, project_id, apply):
@@ -495,7 +495,7 @@ def integration_engine_transfer(
 @click.pass_context
 @_handle_errors
 def integration_status(ctx: click.Context, project_id: str, control_only: bool) -> None:
-    """Show current Subjects, configuration and Git delivery for PROJECT_ID."""
+    """Show train batches, checks, blockers and Git delivery for PROJECT_ID."""
     args: dict[str, Any] = {"project_id": project_id}
     if control_only:
         args["control_only"] = True
@@ -725,6 +725,33 @@ def integration_close_delivered_pr(
     _execute(ctx, "integration_close_delivered_pr", args)
 
 
+@integration.command("fast-forward-pr")
+@click.option("--task-id", required=True, help="Completed repair task whose head to adopt.")
+@click.option("--pr", "pr_number", required=True, type=click.IntRange(min=1), help="Root PR.")
+@click.option("--apply", is_flag=True, help="Push the repair head; default is a dry run.")
+@click.option("--head", "expected_head_sha", help="Exact PR head reported by the dry run.")
+@click.option("--reason", help="Audit reason required when applying.")
+@click.pass_context
+@_handle_errors
+def integration_fast_forward_pr(
+    ctx: click.Context, task_id: str, pr_number: int, apply: bool,
+    expected_head_sha: str | None, reason: str | None,
+) -> None:
+    """Fast-forward a root PR's branch to a separately filed repair's published head.
+
+    The dry run reports `would_publish` or `already_published` with the PR head
+    (`previous_oid`) and the repair's passing head (`published_oid`). `--apply`
+    needs that PR head and a reason; it pushes under a server-acquired branch
+    lease. Protected targets, live writers, moved heads and non-descendants refuse.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "pr_number": pr_number, "dry_run": not apply}
+    args.update({k: v for k, v in (("expected_head_sha", expected_head_sha),
+                                   ("reason", reason)) if v is not None})
+    _execute(ctx, "integration_fast_forward_pr", args)
+
+
 @integration.command("redrive-root")
 @click.argument("task_id")
 @click.option("--apply", is_flag=True, help="Open the missing PR; default is a dry run.")
@@ -804,6 +831,10 @@ def integration_authorize_root(
 @click.argument("task_id")
 @click.option("--adopt-source", is_flag=True,
               help="Retain a missing completion source after verifying its published head.")
+@click.option("--dispose-obsolete", is_flag=True,
+              help="Merge an obsolete child's ancestry with the parent's unchanged tree.")
+@click.option("--superseded-by", help="Parent commit that removed the child's changed paths.")
+@click.option("--parent-head", "expected_parent_head_sha", help="Exact previewed parent head.")
 @click.option(
     "--apply", is_flag=True, help="Advance the child into assembly; default is a dry run."
 )
@@ -819,6 +850,9 @@ def integration_redrive_child(
     ctx: click.Context,
     task_id: str,
     adopt_source: bool,
+    dispose_obsolete: bool,
+    superseded_by: str | None,
+    expected_parent_head_sha: str | None,
     apply: bool,
     expected_head_sha: str | None,
     reason: str | None,
@@ -834,13 +868,25 @@ def integration_redrive_child(
     and queues the parent's collection. In Git-first mode delivery belongs to
     the train. Use --adopt-source to preview retaining an older leaf's missing
     completion source; --apply --head and --reason retain that exact generation
-    without granting review or declaring delivery.
+    without granting review or declaring delivery. --dispose-obsolete requires
+    --superseded-by and creates an audited unchanged-tree merge; applying also
+    pins --parent-head. Local operators and named supervisors may apply it.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")
+    if dispose_obsolete and (adopt_source or not superseded_by):
+        raise click.UsageError("--dispose-obsolete requires --superseded-by and excludes --adopt-source")
+    if dispose_obsolete and apply and not expected_parent_head_sha:
+        raise click.UsageError("--dispose-obsolete --apply requires --parent-head")
     args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
     if adopt_source:
         args["adopt_source"] = True
+    if dispose_obsolete:
+        args["dispose_obsolete"] = True
+    if superseded_by is not None:
+        args["superseded_by"] = superseded_by
+    if expected_parent_head_sha is not None:
+        args["expected_parent_head_sha"] = expected_parent_head_sha
     if expected_head_sha is not None:
         args["expected_head_sha"] = expected_head_sha
     if reason is not None:
