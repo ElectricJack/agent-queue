@@ -2,7 +2,7 @@
 
 ``git.stale_branches`` is the branch policy's backlog view, and what the
 supervisor's stall sweep runs.  New development deliveries clean up after
-themselves (``DevelopmentIntegration.collect_delivered_branches``); this check
+themselves (``DevelopmentPrimitives.collect_delivered_branches``); this check
 finds everything else, for each development project's origin:
 
 * ``aq/`` branches whose work is on the default branch;
@@ -44,11 +44,11 @@ def _development_publisher(ctx: DoctorContext):
     factory = getattr(ctx.handler, "_development_integration", None)
     if factory is not None:
         return factory()
-    from src.integration.development import DevelopmentIntegration
+    from src.integration.development import DevelopmentPrimitives
 
     integration = getattr(ctx.config, "integration", None)
     access = GitHubAccess.from_config(getattr(integration, "github_app", None))
-    return DevelopmentIntegration(
+    return DevelopmentPrimitives(
         ctx.db,
         data_dir=ctx.config.data_dir,
         git=GitManager(github_access=access),
@@ -56,7 +56,7 @@ def _development_publisher(ctx: DoctorContext):
 
 
 async def _scan(ctx: DoctorContext, *, delete: bool = False):
-    """One :meth:`DevelopmentIntegration.stale_branches` report per project.
+    """One :meth:`DevelopmentPrimitives.stale_branches` report per project.
 
     Development projects only: their publisher keeps the clone this needs,
     and they are the projects whose delivery leaves branches behind.  A
@@ -209,8 +209,54 @@ async def _fix_stale_branches(ctx: DoctorContext) -> CheckResult:
     )
 
 
+IDENTITY_CHECK_ID = "git.identity_unset"
+
+
+async def _check_identity_unset(ctx: DoctorContext) -> CheckResult:
+    """Is an installation Git identity chosen?  (docs/specs/git-identity.md)
+
+    Unset is a supported state -- AQ commits as the documented fallback --
+    but it is the state an install should leave, so it is reported, with the
+    command that ends it.  Projects that override the default are counted.
+    """
+    from src.git.identity import FALLBACK_IDENTITY, installation_identity
+
+    installation = installation_identity(ctx.config)
+    projects = await ctx.db.list_projects() if ctx.db is not None else []
+    overrides = sorted(p.id for p in projects if p.git_identity_name and p.git_identity_email)
+    data = {
+        "configured": installation is not None,
+        "installation": installation.as_dict() if installation else None,
+        "project_overrides": overrides,
+    }
+    if installation is not None:
+        return CheckResult(
+            id=IDENTITY_CHECK_ID,
+            severity=Severity.OK,
+            detail=f"AQ commits as {installation.formatted()} unless a project overrides it"
+            + (f" ({len(overrides)} do)" if overrides else ""),
+            data=data,
+        )
+    inheriting = len(projects) - len(overrides)
+    return CheckResult(
+        id=IDENTITY_CHECK_ID,
+        severity=Severity.WARN if inheriting else Severity.INFO,
+        detail=(
+            "No installation Git identity is configured: "
+            f"{inheriting} project(s) commit as the fallback {FALLBACK_IDENTITY.formatted()}. "
+            "Choose one with `aq system config git-identity` (suggests your gh account)."
+        ),
+        data=data,
+    )
+
+
 def git_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id=IDENTITY_CHECK_ID,
+            run=_check_identity_unset,
+            owner=OWNER,
+        ),
         # Fixable, and the fix deletes remote branches — but only ``aq/``
         # ones the branch policy lets go of and that nothing in
         # ``live_branch_references`` holds, each backed up (when unmerged),

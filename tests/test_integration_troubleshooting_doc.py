@@ -35,10 +35,11 @@ def test_guide_mentions_release_owner_command_and_dry_run():
     assert "--dry-run" in section
 
 
-def test_guide_mentions_the_sweep_switch_and_that_it_ships_off():
+def test_guide_mentions_the_sweep_switch_and_that_it_ships_on():
     section = _owner_section(_guide())
     assert "integration.owner_recovery_sweep" in section
-    assert "off by default" in section or "ships off" in section
+    assert "ships on by default" in section
+    assert "explicit `false` always stays off" in section
 
 
 def test_guide_names_every_refusal_reason_and_its_fix():
@@ -59,10 +60,11 @@ def test_guide_says_where_preserved_work_lands():
     assert "aq/preserved/" in section
 
 
-def test_guide_points_at_the_stranded_fences_doctor_fix():
-    section = _owner_section(_guide())
-    assert "integration.stranded_fences" in section
-    assert "--fix" in section
+def test_guide_points_at_subject_diagnostics_and_owner_preview():
+    text = _guide()
+    assert "integration.subjects_overdue" in text
+    assert "integration.subjects_held" in text
+    assert "release-owner --task-id TASK_ID --dry-run" in text
 
 
 def test_guide_shows_the_audit_table_and_a_psql_query():

@@ -11,6 +11,7 @@ hold at the SQL level, and mocking would not observe them.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import pytest
 
 from src.config import DatabaseConfig, AppConfig
 from src.database import Database
+from src.git.identity import FALLBACK_IDENTITY
 from src.models import (
     Agent,
     AgentOutput,
@@ -338,9 +340,15 @@ async def test_slot_state_survives_database_reopen(tmp_path):
 
 
 def _git(args: list[str], cwd) -> str:
+    # Commits here stand for a worker's, so they carry what a worker session
+    # carries: the project's resolved Git identity (the unset install's
+    # fallback), which the delivery push checks.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(FALLBACK_IDENTITY.env())
     r = subprocess.run(
-        ["git", "-c", "user.name=T", "-c", "user.email=t@t.com", *args],
+        ["git", *args],
         cwd=str(cwd),
+        env=env,
         capture_output=True,
         text=True,
         check=True,

@@ -11,23 +11,90 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
+from src.waits.sources import insert_message_with_source_event
+from src.dashboard_paths import escalation_path
 from src.database.tables import (
     digest_windows,
     escalation_actions,
     escalation_deliveries,
     escalation_messages,
     escalations,
+    human_communication_modes,
     messages,
+    projects,
     supervisor_report_requests,
+    wait_escalations,
+    wait_records,
 )
+
+
+def _wait_human_delivery_authorized():
+    """Operational incidents need an explicit, committed supervisor decision."""
+    return exists().where(
+        wait_escalations.c.escalation_id == escalations.c.id,
+        wait_escalations.c.wait_id == wait_records.c.id,
+        wait_records.c.project_id == escalations.c.project_id,
+        wait_escalations.c.decision == "escalate_to_human",
+        wait_escalations.c.decided_at.is_not(None),
+    ).correlate(escalations).label("human_delivery_authorized")
+
+
+def _project_paused():
+    return exists().where(
+        projects.c.id == escalations.c.project_id,
+        projects.c.status == "PAUSED",
+    )
+
+
+def _human_requested():
+    # The wait conversion is the durable authorization, including conversions
+    # made before this routing fence shipped. Delivery retries are not authority.
+    return exists().where(
+        wait_escalations.c.escalation_id == escalations.c.id,
+        wait_records.c.id == wait_escalations.c.wait_id,
+        wait_records.c.project_id == escalations.c.project_id,
+        wait_records.c.decision_inputs["human_escalation_id"].astext == escalations.c.id,
+    ).label("human_requested")
+
+
+def _delivery_project_paused():
+    return exists().where(
+        escalations.c.id == escalation_deliveries.c.escalation_id,
+        or_(_project_paused(), exists().where(
+            human_communication_modes.c.project_id == escalations.c.project_id,
+            human_communication_modes.c.mode.in_(("transferring", "channel", "delivery_disabled")),
+        )),
+    )
+
 
 OPEN_ESCALATION_STATES = frozenset({"needs_human", "reply_received", "resolving"})
 TERMINAL_ESCALATION_STATES = frozenset({"resolved", "cancelled", "stale"})
+#: Which closed reasons an incident may record.  Duplicated from
+#: :data:`src.database.tables.ESCALATION_OUTCOMES` so the query layer validates
+#: before the database's check constraint does, and names the vocabulary in the
+#: error a command surface prints.
+ESCALATION_OUTCOMES = frozenset(
+    {
+        "human",
+        "gate_resolved",
+        "notice_delivered",
+        "supervisor_started",
+        "task_terminal",
+        "stale_expired",
+        "sweep",
+    }
+)
+#: Who may author a row in an incident's thread.  ``system`` is the daemon's
+#: own audit note (spec §5.6's sweep trail): neither a human reply nor a
+#: supervisor answer, so it is neither acknowledged nor relayed into the channel.
+ESCALATION_MESSAGE_DIRECTIONS = frozenset({"inbound", "outbound", "system"})
 ESCALATION_TRANSITIONS = {
     # ``reply_received`` is intentionally absent as a generic transition
     # target: only accept_escalation_reply may claim that state, because the
@@ -44,6 +111,8 @@ DELIVERY_FINAL_STATES = frozenset({"sent", "retry", "unknown"})
 #: Duplicated from :mod:`src.escalations.facts` so the query layer stays
 #: free of a dependency on the transport package.
 KIND_ROOT_DELIVERY = "root"
+#: Same receipt as facts.INTERNAL_DELIVERY_ERROR; keep this layer transport-free.
+INTERNAL_DELIVERY_ERROR = "supervisor delivery incident is internal-only; nothing was sent"
 
 _ESCALATION_CREATE_REQUIRED = frozenset(
     {
@@ -82,7 +151,11 @@ def _row_dict(row: Any) -> dict[str, Any] | None:
 
 
 def _require_nonempty(values: Mapping[str, Any], names: Sequence[str]) -> None:
-    empty = [name for name in names if values.get(name) is None or values.get(name) == ""]
+    empty = [
+        name
+        for name in names
+        if not isinstance(values.get(name), str) or not values[name].strip()
+    ]
     if empty:
         raise ValueError("required non-empty fields: " + ", ".join(sorted(empty)))
 
@@ -96,17 +169,33 @@ def _assert_identity(row: Mapping[str, Any], values: Mapping[str, Any], fields: 
 class EscalationQueriesMixin:
     """Persistence API shared by command, supervisor, and transport services."""
 
-    async def create_escalation(self, **values: Any) -> tuple[dict[str, Any], bool]:
+    async def create_escalation(
+        self, *, conn=None, supervisor_delivery_body_kind: str | None = None, **values: Any
+    ) -> tuple[dict[str, Any], bool]:
         """Create an incident or return its existing row.
 
         The incident key is unique within a project.  Replaying the same
         source returns ``(row, False)``; reusing that key for another source is
         rejected instead of silently hiding a later incident.
+
+        The delivery watchdog may coalesce its operational notices by body
+        kind. The group lock, incident and supervisor inbox notice share one
+        transaction, so parallel ticks and restarts cannot duplicate them.
         """
         missing = _ESCALATION_CREATE_REQUIRED - values.keys()
         if missing:
             raise ValueError("escalation missing: " + ", ".join(sorted(missing)))
         _require_nonempty(values, tuple(_ESCALATION_CREATE_REQUIRED))
+        if values["source_kind"] != "supervisor_delivery":
+            _require_nonempty(values, ("task_title",))
+        if supervisor_delivery_body_kind is not None:
+            if (
+                values["source_kind"] != "supervisor_delivery"
+                or not supervisor_delivery_body_kind
+                or not values["source_identity"].startswith(supervisor_delivery_body_kind + ":")
+            ):
+                raise ValueError("coalescing requires a supervisor delivery source and body kind")
+            values["severity"] = "low"
         now = float(values.pop("now", time.time()))
         row_values = dict(values)
         row_values.setdefault("task_id", None)
@@ -138,7 +227,9 @@ class EscalationQueriesMixin:
             if row_values.get(name) is not None and len(str(row_values[name])) > maximum
         ]
         if oversized:
-            raise ValueError("escalation fields exceed bounded snapshot limits: " + ", ".join(oversized))
+            raise ValueError(
+                "escalation fields exceed bounded snapshot limits: " + ", ".join(oversized)
+            )
 
         statement = (
             pg_insert(escalations)
@@ -146,10 +237,62 @@ class EscalationQueriesMixin:
             .on_conflict_do_nothing()
             .returning(escalations)
         )
-        async with self.immediate() as conn:
+        async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
+            if supervisor_delivery_body_kind is not None:
+                group = (
+                    f"supervisor_delivery:{row_values['project_id']}:"
+                    f"{supervisor_delivery_body_kind}"
+                )
+                await conn.execute(
+                    select(func.pg_advisory_xact_lock(func.hashtextextended(group, 0)))
+                )
+                existing = (
+                    (
+                        await conn.execute(
+                            select(escalations)
+                            .where(
+                                escalations.c.project_id == row_values["project_id"],
+                                escalations.c.source_kind == "supervisor_delivery",
+                                escalations.c.source_identity.startswith(
+                                    supervisor_delivery_body_kind + ":", autoescape=True
+                                ),
+                                escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
+                            )
+                            .order_by(escalations.c.created_at, escalations.c.id)
+                            .limit(1)
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing is not None:
+                    return {**existing, "deep_link": escalation_path(existing["id"])}, False
             inserted = (await conn.execute(statement)).mappings().one_or_none()
             if inserted is not None:
-                return dict(inserted), True
+                await self._enqueue_initial_escalation_on(conn, inserted, now=now)
+                if supervisor_delivery_body_kind is not None:
+                    await insert_message_with_source_event(conn,
+                        pg_insert(messages)
+                        .values(
+                            id="msg-" + inserted["id"],
+                            project_id=inserted["project_id"],
+                            from_kind="system",
+                            from_id="supervisor-delivery-watchdog",
+                            to_kind="session",
+                            to_id=inserted["supervisor_owner"],
+                            subject=inserted["summary"],
+                            body=(
+                                f"{inserted['summary']}\n{inserted['investigation']}\n"
+                                f"{inserted['decision_requested']}\nIncident: {inserted['id']}"
+                            ),
+                            thread_id=inserted["id"],
+                            priority=100,
+                            created_at=now,
+                            body_kind="supervisor_delivery",
+                        )
+                        .on_conflict_do_nothing(index_elements=["id"])
+                    )
+                return {**inserted, "deep_link": escalation_path(inserted["id"])}, True
             matches = (
                 (
                     await conn.execute(
@@ -171,21 +314,94 @@ class EscalationQueriesMixin:
             if len(matches) != 1:
                 raise EscalationConflict("incident and source identities resolve differently")
             existing = matches[0]
-            _assert_identity(existing, row_values, _ESCALATION_IDENTITY)
-            return dict(existing), False
+            fields = _ESCALATION_IDENTITY
+            if supervisor_delivery_body_kind is not None:
+                # Older watchdog snapshots attached a single task to the
+                # notice. A closed notice stays closed after the cutover to
+                # project-level incidents; its historical snapshot is kept.
+                fields = tuple(name for name in fields if name != "task_id")
+            _assert_identity(existing, row_values, fields)
+            if (
+                existing["source_kind"] == "gate"
+                and existing["task_title"] is None
+                and existing["investigation"] == "Migrated from a pending legacy Discord gate card."
+                and existing["state"] in OPEN_ESCALATION_STATES
+            ):
+                # The old gate migrator supplied provenance in place of
+                # decision context. Repair that known snapshot before its
+                # missing root becomes visible, without changing other replays.
+                repaired = (await execute_escalation_mutation(conn, update(escalations).where(
+                    escalations.c.id == existing["id"],
+                    escalations.c.revision == existing["revision"],
+                    escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
+                ).values(
+                    task_title=row_values["task_title"], summary=row_values["summary"],
+                    investigation=row_values["investigation"],
+                    decision_requested=row_values["decision_requested"],
+                    revision=escalations.c.revision + 1, updated_at=now,
+                ).returning(escalations))).mappings().one_or_none()
+                existing = repaired or (await conn.execute(select(escalations).where(
+                    escalations.c.id == existing["id"],
+                ))).mappings().one()
+            await self._enqueue_initial_escalation_on(conn, existing, now=now)
+            return {**existing, "deep_link": escalation_path(existing["id"])}, False
+
+    async def _enqueue_initial_escalation_on(self, conn, incident, *, now: float) -> None:
+        """Creation and its first human delivery share the caller's transaction.
+
+        Replays also repair legacy incidents without a root. Never replace a
+        confirmed/ambiguous delivery, or reopen an already terminal incident.
+        Internal supervisor-delivery notices belong only to the supervisor inbox.
+        """
+        if (
+            incident["source_kind"] == "supervisor_delivery"
+            or incident["state"] not in OPEN_ESCALATION_STATES
+        ):
+            return
+        if incident["source_kind"] in {"integration_train_stall", "integration_delivery_stuck"}:
+            # These producers already write a supervisor notice in this transaction.
+            return
+        if incident["source_kind"] in {"wait", "continuation"}:
+            # Operational deadlines and infrastructure holds go to the supervisor.
+            # Only an explicit escalate_to_human decision creates a human delivery.
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id="msg-" + incident["id"], project_id=incident["project_id"],
+                from_kind="system", from_id="wait-dispatcher", to_kind="session",
+                to_id=incident["supervisor_owner"], subject=incident["summary"],
+                body=(f"{incident['summary']}\n{incident['investigation']}\n"
+                      f"{incident['decision_requested']}\nIncident: {incident['id']}"),
+                thread_id=incident["id"], body_kind="wait_escalation", created_at=now,
+            ).on_conflict_do_nothing(index_elements=["id"]))
+            return
+        has_root = await conn.scalar(select(exists().where(
+            escalation_deliveries.c.escalation_id == incident["id"],
+            escalation_deliveries.c.kind == KIND_ROOT_DELIVERY,
+        )))
+        if not has_root:
+            await self.enqueue_escalation_delivery(
+                incident["id"], conn=conn, dedup_key=f"{incident['id']}:root:0",
+                kind=KIND_ROOT_DELIVERY, payload={"replacement": False},
+                available_at=now, priority=0, now=now,
+            )
 
     async def get_escalation(self, escalation_id: str) -> dict[str, Any] | None:
         async with self._engine.connect() as conn:
             row = (
                 (
                     await conn.execute(
-                        select(escalations).where(escalations.c.id == escalation_id)
+                        select(
+                            escalations,
+                            _wait_human_delivery_authorized(),
+                            and_(
+                                _project_paused(), escalations.c.state.in_(OPEN_ESCALATION_STATES)
+                            ).label("held_while_paused"),
+                        ).where(escalations.c.id == escalation_id)
                     )
                 )
                 .mappings()
                 .one_or_none()
             )
-        return _row_dict(row)
+        return {**row, "deep_link": escalation_path(row["id"])} if row is not None else None
 
     async def list_escalations(
         self,
@@ -195,7 +411,7 @@ class EscalationQueriesMixin:
         states: Sequence[str] | None = None,
         task_id: str | None = None,
         source_kind: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[dict[str, Any]]:
         """Incidents, optionally narrowed to one project or a set of them.
 
@@ -205,9 +421,15 @@ class EscalationQueriesMixin:
         caller is unrestricted.  ``source_kind`` lets a core producer find its
         own incidents wherever they were filed.
         """
-        if limit <= 0:
+        if limit is not None and limit <= 0:
             return []
-        statement = select(escalations)
+        statement = select(
+            escalations,
+            _wait_human_delivery_authorized(),
+            and_(
+                _project_paused(), escalations.c.state.in_(OPEN_ESCALATION_STATES)
+            ).label("held_while_paused"),
+        )
         if project_id is not None:
             statement = statement.where(escalations.c.project_id == project_id)
         if project_ids is not None:
@@ -221,7 +443,32 @@ class EscalationQueriesMixin:
         statement = statement.order_by(escalations.c.updated_at.desc(), escalations.c.id).limit(limit)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(statement)).mappings().all()
-        return [dict(row) for row in rows]
+        return [{**row, "deep_link": escalation_path(row["id"])} for row in rows]
+
+    async def count_escalations(
+        self,
+        *,
+        project_id: str | None = None,
+        states: Sequence[str] | None = None,
+        source_kind: str | None = None,
+    ) -> int:
+        """How many incidents match, with no ``limit`` in the way.
+
+        ``list_escalations`` answers "which ones" and is bounded on purpose, so
+        it cannot answer "how big is the pile" -- which is exactly the number
+        the §5.6 sweep reports before and after it runs, and what
+        ``doctor --check escalations.pile`` judges against the spec's
+        ten-open-items target.
+        """
+        statement = select(func.count()).select_from(escalations)
+        if project_id is not None:
+            statement = statement.where(escalations.c.project_id == project_id)
+        if states is not None:
+            statement = statement.where(escalations.c.state.in_(tuple(states)))
+        if source_kind is not None:
+            statement = statement.where(escalations.c.source_kind == source_kind)
+        async with self._engine.connect() as conn:
+            return int((await conn.execute(statement)).scalar_one())
 
     async def transition_escalation(
         self,
@@ -237,6 +484,7 @@ class EscalationQueriesMixin:
         severity: str | None = None,
         terminal_outcome: str | None = None,
         terminal_evidence: Mapping[str, Any] | None = None,
+        outcome: str | None = None,
     ) -> dict[str, Any] | None:
         """Apply one legal state transition with a revision compare-and-set.
 
@@ -244,6 +492,10 @@ class EscalationQueriesMixin:
         race.  An invalid transition raises before writing.  This distinction
         lets command surfaces report a normal stale-revision conflict without
         conflating it with a malformed requested transition.
+
+        ``outcome`` is the §5.5 rule that closed the incident, written only on
+        a terminal transition and only for a rule this code owns; it is what the
+        collapsed post names and what the sweep's audit trail reads back.
         """
         if new_state not in ESCALATION_TRANSITIONS:
             raise EscalationStateError(f"unknown escalation state: {new_state}")
@@ -264,6 +516,8 @@ class EscalationQueriesMixin:
             raise EscalationStateError("terminal escalation state requires an outcome")
         if not terminal and (terminal_outcome is not None or terminal_evidence is not None):
             raise EscalationStateError("open escalation state cannot record terminal evidence")
+        if outcome is not None and outcome not in ESCALATION_OUTCOMES:
+            raise EscalationStateError(f"unknown escalation outcome: {outcome}")
 
         changed: dict[str, Any] = {
             "state": new_state,
@@ -272,6 +526,7 @@ class EscalationQueriesMixin:
             "terminal_at": float(now if now is not None else time.time()) if terminal else None,
             "terminal_outcome": terminal_outcome if terminal else None,
             "terminal_evidence": dict(terminal_evidence) if terminal_evidence is not None else None,
+            "outcome": outcome if terminal else None,
         }
         for name, value in (
             ("summary", summary),
@@ -286,7 +541,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -398,7 +653,7 @@ class EscalationQueriesMixin:
             recipient = supervisor_recipient or incident["supervisor_owner"]
             if not terminal:
                 _require_nonempty({"supervisor_recipient": recipient}, ("supervisor_recipient",))
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages).values(
                         id=supervisor_message_id,
                         project_id=incident["project_id"],
@@ -436,12 +691,29 @@ class EscalationQueriesMixin:
                 "created_at": now,
             }
             await conn.execute(pg_insert(escalation_messages).values(**reply_values))
+            if not terminal and incident["source_kind"] == "wait":
+                # Only an explicitly converted human wait consumes this verified
+                # transport reply. Operational supervisor discussion is not proof.
+                human_wait = (await conn.execute(select(wait_records).where(
+                    wait_records.c.project_id == incident["project_id"],
+                    wait_records.c.condition_kind == "human",
+                    wait_records.c.outcome == "pending",
+                    wait_records.c.decision_inputs["human_escalation_id"].astext == escalation_id,
+                ))).mappings().first()
+                if human_wait:
+                    await insert_message_with_source_event(conn, pg_insert(messages).values(
+                        id=f"msg-wait-human-{reply_id}", project_id=incident["project_id"],
+                        from_kind="user", from_id=verified_actor,
+                        to_kind=human_wait["owner_kind"], to_id=human_wait["owner_id"],
+                        thread_id=escalation_id, body=text, body_kind="escalation_reply",
+                        created_at=now,
+                    ))
             updated = dict(incident)
             if not terminal:
                 next_revision = int(incident["revision"]) + 1
                 changed = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == escalation_id,
@@ -467,6 +739,106 @@ class EscalationQueriesMixin:
                 "terminal": terminal,
             }
 
+    async def queue_escalation_owner_reminder(
+        self, escalation_id: str, *, now: float, interval_seconds: float
+    ) -> bool:
+        """Remind an answered incident's owner, never its human correspondent.
+
+        Lock the incident alongside reply/terminal transitions and derive the
+        interval from durable inbox rows. Restarted or concurrent watchdogs
+        cannot duplicate a reminder or queue over a newly resolved incident.
+        An undelivered notice already owes the owner this work; don't stack it.
+        """
+        if interval_seconds <= 0:
+            return False
+        async with self.immediate() as conn:
+            incident = (
+                (
+                    await conn.execute(
+                        select(escalations)
+                        .where(
+                            escalations.c.id == escalation_id,
+                            escalations.c.state.in_(("reply_received", "resolving")),
+                            ~_project_paused(),
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if incident is None or incident["source_kind"] == "supervisor_delivery":
+                return False
+            reply = (
+                (
+                    await conn.execute(
+                        select(escalation_messages)
+                        .where(
+                            escalation_messages.c.escalation_id == escalation_id,
+                            escalation_messages.c.direction == "inbound",
+                            escalation_messages.c.supervisor_message_id.is_not(None),
+                        )
+                        .order_by(
+                            escalation_messages.c.received_at.desc(),
+                            escalation_messages.c.created_at.desc(),
+                            escalation_messages.c.id.desc(),
+                        )
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if reply is None or now - reply["received_at"] < interval_seconds:
+                return False
+            notices = select(messages).where(
+                messages.c.thread_id == escalation_id,
+                messages.c.to_kind == "session",
+                messages.c.to_id == incident["supervisor_owner"],
+                messages.c.body_kind.in_(("escalation_reply", "escalation_owner_reminder")),
+            )
+            pending = await conn.scalar(
+                select(
+                    exists(
+                        notices.where(
+                            messages.c.delivered_at.is_(None), messages.c.archived_at.is_(None)
+                        )
+                    )
+                )
+            )
+            if pending:
+                return False
+            last_notice = await conn.scalar(
+                notices.with_only_columns(func.max(messages.c.created_at))
+            )
+            if last_notice is not None and now - last_notice < interval_seconds:
+                return False
+            await insert_message_with_source_event(conn,
+                pg_insert(messages).values(
+                    id=f"msg-escalation-owner-reminder-{uuid.uuid4()}",
+                    project_id=incident["project_id"],
+                    from_kind="system",
+                    from_id="escalation-owner-watchdog",
+                    to_kind="session",
+                    to_id=incident["supervisor_owner"],
+                    thread_id=escalation_id,
+                    subject=f"Answered escalation awaiting action: {escalation_id}",
+                    body=(
+                        f"A verified human answer is recorded on escalation {escalation_id} "
+                        f"(reply {reply['id']}); it remains {incident['state']} after at least "
+                        f"{interval_seconds / 60:g} minutes. Reload the escalation and its "
+                        "current source, apply the recorded decision through guarded commands, "
+                        "and resolve or cancel with an outcome. This is supervisor follow-up; "
+                        "do not ask or notify the human again merely because it remains open."
+                    ),
+                    priority=10,
+                    created_at=now,
+                    archive_after_inject=1,
+                    body_kind="escalation_owner_reminder",
+                )
+            )
+            return True
+
     async def resolve_legacy_accepted_escalation(
         self,
         escalation_id: str,
@@ -474,6 +846,7 @@ class EscalationQueriesMixin:
         expected_revision: int,
         terminal_evidence: Mapping[str, Any],
         now: float,
+        conn=None,
     ) -> dict[str, Any] | None:
         """Close an incident whose human answer was accepted before cutover.
 
@@ -482,10 +855,10 @@ class EscalationQueriesMixin:
         must be appended first; replay then either completes this CAS or sees
         the already-terminal row, without enqueueing a supervisor message.
         """
-        async with self.immediate() as conn:
+        async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -499,6 +872,7 @@ class EscalationQueriesMixin:
                             terminal_at=now,
                             terminal_outcome="Answer was accepted before the Discord cutover.",
                             terminal_evidence=dict(terminal_evidence),
+                            outcome="human",
                         )
                         .returning(escalations)
                     )
@@ -506,6 +880,16 @@ class EscalationQueriesMixin:
                 .mappings()
                 .one_or_none()
             )
+            if row is not None:
+                # A migrated answer was already accepted. Retire only work
+                # that has never been attempted; preserve every external receipt.
+                await conn.execute(delete(escalation_deliveries).where(
+                    escalation_deliveries.c.escalation_id == escalation_id,
+                    escalation_deliveries.c.kind == KIND_ROOT_DELIVERY,
+                    escalation_deliveries.c.status == "pending",
+                    escalation_deliveries.c.attempt_count == 0,
+                    escalation_deliveries.c.root_message_id.is_(None),
+                ))
         return _row_dict(row)
 
     async def resolve_escalation_on_recovery(
@@ -516,6 +900,7 @@ class EscalationQueriesMixin:
         source_kind: str,
         terminal_outcome: str,
         terminal_evidence: Mapping[str, Any],
+        outcome: str | None = None,
         now: float | None = None,
     ) -> dict[str, Any] | None:
         """Close an open incident whose source condition cleared on its own.
@@ -528,14 +913,19 @@ class EscalationQueriesMixin:
         the source kind, so it can never close another producer's incident,
         and ``None`` when the row changed underneath (a human reply, a
         supervisor turn) so the caller re-reads rather than overwrites.
+
+        ``outcome`` names the §5.5 rule that fired, so a post closed by
+        recovery reads differently from one a person closed.
         """
         if not terminal_outcome:
             raise EscalationStateError("terminal escalation state requires an outcome")
+        if outcome is not None and outcome not in ESCALATION_OUTCOMES:
+            raise EscalationStateError(f"unknown escalation outcome: {outcome}")
         at = float(now if now is not None else time.time())
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -550,6 +940,7 @@ class EscalationQueriesMixin:
                             terminal_at=at,
                             terminal_outcome=terminal_outcome[:4000],
                             terminal_evidence=dict(terminal_evidence),
+                            outcome=outcome,
                         )
                         .returning(escalations)
                     )
@@ -558,6 +949,40 @@ class EscalationQueriesMixin:
                 .one_or_none()
             )
         return _row_dict(row)
+
+    async def record_escalation_collapse(
+        self, escalation_id: str, *, now: float | None = None
+    ) -> dict[str, Any] | None:
+        """Stamp the incident's collapsed post the first time it is edited.
+
+        Write-once on purpose.  A closed incident is immutable, so its post can
+        only ever enter the collapsed form once, and stamping it durably is what
+        lets a replayed delivery, a second daemon or the §5.6 sweep all read
+        "this post is already the one-line form" instead of editing it again.
+        The where-clause keeps a NULL ``collapsed_at`` in the CAS, so a
+        concurrent retry is a no-op rather than a second stamp.
+        """
+        at = float(now if now is not None else time.time())
+        async with self.immediate() as conn:
+            row = (
+                (
+                    await execute_escalation_mutation(conn,
+                        update(escalations)
+                        .where(
+                            escalations.c.id == escalation_id,
+                            escalations.c.collapsed_at.is_(None),
+                            escalations.c.state.in_(tuple(TERMINAL_ESCALATION_STATES)),
+                        )
+                        .values(collapsed_at=at)
+                        .returning(escalations)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return await self.get_escalation(escalation_id)
+        return dict(row)
 
     async def append_escalation_message(
         self,
@@ -571,10 +996,11 @@ class EscalationQueriesMixin:
         received_sequence: int | None = None,
         received_at: float | None = None,
         message_id: str | None = None,
+        conn=None,
     ) -> tuple[dict[str, Any], bool]:
         """Append a non-reply conversation fact, idempotently when externally identified."""
-        if direction not in {"inbound", "outbound"}:
-            raise ValueError("direction must be inbound or outbound")
+        if direction not in ESCALATION_MESSAGE_DIRECTIONS:
+            raise ValueError("direction must be inbound, outbound or system")
         _require_nonempty(
             {"transport": transport, "verified_actor": verified_actor, "text": text},
             ("transport", "verified_actor", "text"),
@@ -598,7 +1024,7 @@ class EscalationQueriesMixin:
             statement = statement.on_conflict_do_nothing(
                 index_elements=["transport", "external_message_id"]
             )
-        async with self.immediate() as conn:
+        async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
             inserted = (
                 (await conn.execute(statement.returning(escalation_messages)))
                 .mappings()
@@ -763,7 +1189,7 @@ class EscalationQueriesMixin:
             next_revision = expected_revision + 1
             changed = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -906,7 +1332,7 @@ class EscalationQueriesMixin:
                     )
                 incident = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == action["escalation_id"],
@@ -949,12 +1375,14 @@ class EscalationQueriesMixin:
         priority: int = 10,
         generation: int = 0,
         delivery_id: str | None = None,
+        conn=None,
+        now: float | None = None,
     ) -> tuple[dict[str, Any], bool]:
         _require_nonempty(
             {"escalation_id": escalation_id, "dedup_key": dedup_key, "kind": kind},
             ("escalation_id", "dedup_key", "kind"),
         )
-        now = time.time()
+        now = time.time() if now is None else now
         values = {
             "id": delivery_id or f"escalation-delivery-{uuid.uuid4()}",
             "escalation_id": escalation_id,
@@ -976,7 +1404,7 @@ class EscalationQueriesMixin:
             .on_conflict_do_nothing(index_elements=["dedup_key"])
             .returning(escalation_deliveries)
         )
-        async with self.immediate() as conn:
+        async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
             inserted = (await conn.execute(statement)).mappings().one_or_none()
             if inserted is not None:
                 return dict(inserted), True
@@ -999,6 +1427,25 @@ class EscalationQueriesMixin:
             if dict(existing["payload"]) != dict(payload):
                 raise EscalationConflict("delivery identity reused with different payload")
             return dict(existing), False
+
+    async def retry_suppressed_escalation_root(self, escalation_id: str, *, now: float, conn=None):
+        """Retry only roots whose receipt proves no external delivery occurred.
+
+        Called after an explicit human decision, including by reconciliation if
+        suppression of an older queued delivery raced that decision.
+        """
+        async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
+            await conn.execute(update(escalation_deliveries).where(
+                escalation_deliveries.c.escalation_id == escalation_id,
+                escalation_deliveries.c.dedup_key == f"{escalation_id}:root:0",
+                escalation_deliveries.c.status == "unknown",
+                escalation_deliveries.c.last_error == INTERNAL_DELIVERY_ERROR,
+                escalation_deliveries.c.channel_id.is_(None),
+                escalation_deliveries.c.root_message_id.is_(None),
+                escalation_deliveries.c.thread_id.is_(None),
+                escalation_deliveries.c.external_receipt_id.is_(None),
+                escalation_deliveries.c.receipt_confirmed_at.is_(None),
+            ).values(status="pending", last_error=None, next_attempt_at=now, updated_at=now))
 
     async def seed_legacy_escalation_root(
         self,
@@ -1079,7 +1526,9 @@ class EscalationQueriesMixin:
             if current is None:
                 raise EscalationConflict("legacy root disappeared while it was adopted")
             return current, False
-        return dict(seeded), created
+        # An atomically queued root already exists before adoption. Binding
+        # that unsent row is still a newly adopted legacy card.
+        return dict(seeded), True
 
     async def claim_escalation_deliveries(
         self,
@@ -1107,7 +1556,11 @@ class EscalationQueriesMixin:
                 (
                     await conn.execute(
                         select(escalation_deliveries.c.id, escalation_deliveries.c.status)
-                        .where(due)
+                        .where(due, ~_delivery_project_paused(),
+                               ~select(escalations.c.id).where(
+                                   escalations.c.id == escalation_deliveries.c.escalation_id,
+                                   escalations.c.terminal_outcome == "legacy_discarded",
+                               ).exists())
                         .order_by(
                             escalation_deliveries.c.priority,
                             escalation_deliveries.c.next_attempt_at,
@@ -1147,6 +1600,40 @@ class EscalationQueriesMixin:
             )
         by_id = {row["id"]: {**dict(row), "reclaimed": reclaimed[row["id"]]} for row in rows}
         return [by_id[item_id] for item_id in ids]
+
+    async def defer_escalation_delivery(
+        self,
+        delivery_id: str,
+        *,
+        lease_owner: str,
+        now: float,
+        reclaimed: bool = False,
+        attempted: bool = False,
+    ) -> None:
+        """Release a paused attempt; restore the budget if no write started.
+
+        Keep bindings and any ambiguity from an earlier attempt. A reclaimed
+        lease may have sent before its owner died; persist that uncertainty so
+        the first post after resume still requires marker reconciliation.
+        """
+        values = {
+            "status": "retry",
+            "lease_owner": None,
+            "lease_expires_at": None,
+            "next_attempt_at": now,
+            "updated_at": now,
+            "attempt_count": escalation_deliveries.c.attempt_count - int(not attempted),
+        }
+        if reclaimed:
+            values["last_error"] = "TransportAmbiguous: reclaimed attempt held while paused"
+        async with self.immediate() as conn:
+            await conn.execute(
+                update(escalation_deliveries).where(
+                    escalation_deliveries.c.id == delivery_id,
+                    escalation_deliveries.c.status == "sending",
+                    escalation_deliveries.c.lease_owner == lease_owner,
+                ).values(**values)
+            )
 
     async def note_escalation_delivery_binding(
         self,
@@ -1306,7 +1793,9 @@ class EscalationQueriesMixin:
         )
         async with self._engine.connect() as conn:
             total = await conn.scalar(
-                select(func.count()).select_from(escalation_deliveries).where(due)
+                select(func.count()).select_from(escalation_deliveries).where(
+                    due, ~_delivery_project_paused()
+                )
             )
         return int(total or 0)
 
@@ -1433,9 +1922,18 @@ class EscalationQueriesMixin:
         payload: Mapping[str, Any] | None,
         suppression_reason: str | None,
         report_candidate: Mapping[str, Any] | None = None,
+        author_candidate: Mapping[str, Any] | None = None,
         now: float | None = None,
     ) -> dict[str, Any] | None:
-        """Persist either sendable output or a durable silent-window result."""
+        """Persist either sendable output or a durable silent-window result.
+
+        ``report_candidate`` is the hourly narrative author and
+        ``author_candidate`` the supervisor-authored digest (2026-10-03 §4.2).
+        Both reserve their author request *inside* this transaction, so a window
+        can never be held for an author that does not exist, and both set
+        ``due_at`` to that author's deadline -- the moment the deterministic
+        fallback becomes owed.
+        """
         suppressed = suppression_reason is not None
         if suppressed == (payload is not None):
             raise ValueError("digest evaluation requires either payload or suppression_reason")
@@ -1467,6 +1965,24 @@ class EscalationQueriesMixin:
                 .mappings()
                 .one_or_none()
             )
+            if row is not None and author_candidate is not None:
+                request_id = await self.reserve_digest_request_in_transaction(
+                    conn, candidate=author_candidate
+                )
+                if request_id is not None:
+                    held_payload = dict(payload or {})
+                    held_payload["author_request_id"] = request_id
+                    row = (
+                        await conn.execute(
+                            update(digest_windows)
+                            .where(digest_windows.c.id == window_id)
+                            .values(
+                                due_at=author_candidate["deadline"],
+                                payload=held_payload,
+                            )
+                            .returning(digest_windows)
+                        )
+                    ).mappings().one()
             if row is not None and report_candidate is not None:
                 request_id, skip_reason = await self.reserve_hourly_report_in_transaction(
                     conn, candidate=report_candidate
@@ -1561,7 +2077,10 @@ class EscalationQueriesMixin:
             await conn.execute(
                 update(supervisor_report_requests)
                 .where(
-                    supervisor_report_requests.c.kind == "hourly",
+                    # A claimed window is spoken for: the hourly author lost
+                    # its turn, and so has the supervisor-authored digest author
+                    # (2026-10-03 §4.2) whose deadline is this claim.
+                    supervisor_report_requests.c.kind.in_(("hourly", "digest")),
                     supervisor_report_requests.c.owner_ref.in_(ids),
                     supervisor_report_requests.c.state.in_(("reserved", "requested")),
                 )
