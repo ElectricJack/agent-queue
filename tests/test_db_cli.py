@@ -521,12 +521,16 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         Table("projects", restored_metadata, Column("id", Text, primary_key=True))
         Table("messages", restored_metadata, Column("id", Text, primary_key=True))
         for name in (
-            "task_proposals",
+            "task_proposals", "integration_check_evidence",
             "doc_reviews", "doc_review_revisions", "doc_review_comments",
             "escalations", "escalation_messages", "escalation_actions",
             "supervisor_conversations", "conversation_inputs", "outbound_deliveries",
         ):
             absent = {column.name for column in ADDITIONS.get(name, ())}
+            if name == "integration_check_evidence":
+                # The check cache predates revision 84; only reconciliation
+                # bookkeeping is new in revision 120.
+                absent.add("check_reconciliation")
             if name == "conversation_inputs":
                 absent |= {
                     "ask_id", "project_id", "routing_state", "routing_evidence", "receipt",
@@ -543,6 +547,12 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
                 column._copy() for column in metadata.tables[name].c if column.name not in absent
             ))
         await conn.run_sync(restored_metadata.create_all)
+        await conn.execute(restored_metadata.tables["integration_check_evidence"].insert().values(
+            id="historical-check", producer_id="trusted-ci", workflow_id="workflow", run_id="run-1",
+            attempt=1, required_check_version="v1", checks={}, conclusion="success",
+            classification="ordinary", observed_at=1.0, repository_id="repo", sha="a" * 40,
+            check_name="Tests",
+        ))
     dump = tmp_path / "older.dump"
     assert (await invoke("db", "backup", str(dump))).exit_code == 0
     clients = await backup.postgres_clients(config.database.url)
@@ -551,6 +561,11 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("CREATE TABLE later_table (id text REFERENCES tasks(id))"))
         await conn.execute(text("INSERT INTO later_table VALUES ('original')"))
         await conn.execute(text("ALTER TABLE tasks ADD COLUMN later_column text"))
+        await conn.execute(text(
+            "ALTER TABLE integration_check_evidence ADD COLUMN check_reconciliation jsonb"))
+        await conn.execute(text(
+            "UPDATE integration_check_evidence SET check_reconciliation = CAST(:state AS jsonb)"
+        ), {"state": '{"attempt": 1}'})
         await conn.execute(
             text("UPDATE alembic_version SET version_num = :rev"),
             {"rev": alembic_head_revisions()[0]},
@@ -562,6 +577,13 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == older
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
         assert await conn.scalar(text("SELECT priority FROM tasks")) == 23
+        assert await conn.scalar(text(
+            "SELECT conclusion FROM integration_check_evidence WHERE id='historical-check'"
+        )) == "success"
+        assert await conn.scalar(text(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name='integration_check_evidence' AND column_name='check_reconciliation'"
+        )) == 0
         assert (
             await conn.scalar(
                 text(
@@ -596,6 +618,14 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         assert (await conn.execute(text(
             "SELECT priority, effective_priority FROM tasks WHERE id='original'"
         ))).one() == (23, 23)
+        assert (await conn.execute(text(
+            "SELECT conclusion, check_reconciliation FROM integration_check_evidence "
+            "WHERE id='historical-check'"
+        ))).one() == ("success", None)
+        assert await conn.scalar(text(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name='integration_check_evidence' AND column_name='check_reconciliation'"
+        )) == "jsonb"
         from sqlalchemy import inspect
 
         indexes = await conn.run_sync(lambda bind: {

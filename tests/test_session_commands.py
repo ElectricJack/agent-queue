@@ -1674,6 +1674,8 @@ class TestEndToEndOnFakeProvider:
         from sqlalchemy import insert
         from src.database.tables import task_branch_origins
         from src.integration.batches import BatchService, BatchStore
+        from src.integration.delivery_observer import DeliveryObserver
+        from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
         from src.integration.git_truth import GitTruth
         from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -1684,6 +1686,10 @@ class TestEndToEndOnFakeProvider:
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
         real_orch.config.integration.git_first = "active"
+        db.set_prerequisite_observer(DeliveryObserver(
+            db, git=git, data_dir=tmp_path / "observer",
+            truth=GitTruth(git, contract_version=CONTAINMENT_CONTRACT_VERSION),
+        ))
         await db.update_project("p1", hierarchical_integration_mode=mode)
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_branch_origins).values(
@@ -2884,39 +2890,47 @@ class TestEndToEndOnFakeProvider:
         )
         assert await db.get_workspace_for_task("t1") == before_workspace
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_verification_reopen_returns_ready_and_releases_resources(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """A verification retry must return READY and release its old worker."""
         await self._assert_verification_reopen(
-            db, real_orch, real_handler, tmp_path, monkeypatch
+            db, real_orch, real_handler, tmp_path, monkeypatch, cancel_caller=cancel_caller
         )
 
     @pytest.mark.perf
     async def test_verification_reopen_latency_budget(
         self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
     ):
-        """Retain the two-second reopen budget on an opted-in quiet box."""
+        """Keep the two-second close budget on an opted-in quiet box."""
         await self._assert_verification_reopen(
-            db, real_orch, real_handler, tmp_path, monkeypatch, close_timeout=2
+            db, real_orch, real_handler, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
         )
 
     async def _assert_verification_reopen(
-        self, db, real_orch, real_handler, tmp_path, monkeypatch, *, close_timeout=120
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
     ):
-        # Always exercise the real close and database resource release. The
-        # default timeout is a hang backstop; the perf_strict arm keeps the
-        # original latency budget independently of concurrent CI load.
-
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        attempts = []
+        if not synchronize:
+            release.set()
 
         async def reopen(ctx):
+            attempts.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
             await db.transition_task(
                 ctx.task.id,
                 TaskStatus.READY,
                 context="verification_reopen",
                 assigned_agent_id=None,
+                accepted_close=ctx.accepted_close,
             )
             ctx.verification_reopened = True
             return None, False
@@ -2935,11 +2949,33 @@ class TestEndToEndOnFakeProvider:
             )
         )
         try:
-            close = await asyncio.wait_for(asyncio.shield(caller), timeout=close_timeout)
+            if synchronize:
+                # Observe the close before verification reopens the task. The
+                # default arm checks state and cancellation, while the perf arm
+                # retains the cold-close latency budget on a quiet box.
+                await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                assert not caller.done()
+                assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+                assert (await db.get_agent("a1")).state is AgentState.BUSY
+                assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+                assert await db.get_task_meta("t1", "pending_completion") is not None
+                assert await db.get_task_meta("t1", "accepted_close") is None
+                if cancel_caller:
+                    caller.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await caller
+                    assert not attempts[0].done(), "the shielded close must survive"
+                release.set()
+            close = await asyncio.wait_for(
+                asyncio.shield(attempts[0] if cancel_caller else caller), timeout=close_timeout
+            )
         finally:
-            # A budget failure must not leave the shielded close running
-            # against a database that its fixture has already torn down.
-            await asyncio.wait_for(caller, timeout=120)
+            # Drain the shielded close even if a checkpoint assertion fails,
+            # before the database fixture is torn down.
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+            )
 
         assert close["success"] is True and close["status"] == "READY"
         task = await db.get_task("t1")

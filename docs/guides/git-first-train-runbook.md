@@ -265,20 +265,15 @@ its exact candidate before publishing. Sources:
 [root_pull_requests.py](../../src/integration/root_pull_requests.py) and
 [reviews.py](../../src/integration/reviews.py).
 
-Root batching uses the policy's optional `train` block:
-
-```yaml
-train:
-  cadence_seconds: 300
-  settling_cap_seconds: 1800
-```
-
-These are shipped defaults. The next automatic seal is the earlier of
-`latest_admission + cadence_seconds` and `first_admission + settling_cap_seconds`.
-A new eligible input extends the quiet period, but never the cap. Epic targets
-freeze immediately. `seal-now` bypasses only cadence, once; it preserves PR,
-check and publication requirements. Sources:
-[src/integration/models.py](../../src/integration/models.py) and
+Root batching follows lane occupancy, not a timer: an idle lane dispatches at
+once and a busy lane batches what becomes eligible meanwhile. The `train`
+block's `cadence_seconds` and `settling_cap_seconds` are deprecated. They stay
+parseable for stored policy snapshots and are ignored by dispatch;
+`settling_cap_seconds` survives only as the `aq doctor` no-progress alert
+threshold. Epic targets freeze immediately. Sealing now is the normal path;
+`seal-now` remains for operators and preserves PR, check and publication
+requirements. Sources:
+[src/integration/models.py](../../src/integration/models.py) (`IntegrationTrainPolicy`) and
 [train_sources.py](../../src/integration/train_sources.py) (`DatabaseBatches.open_batch`).
 
 After Git proves promotion, cleanup is tracked separately. It retires private
