@@ -131,6 +131,20 @@ def unused_port(host: str = "127.0.0.1") -> int:
     return port
 
 
+@contextlib.contextmanager
+def unreachable_url(host: str = "127.0.0.1") -> Iterator[str]:
+    """Reserve a TCP port without listening, so connections stay refused.
+
+    A released ``unused_port`` can be reused by the test's proxy or another
+    worker before the client connects. Keep the socket bound for the whole
+    request, without SO_REUSEADDR or listen(), to exclude that race.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        yield base_url(host, sock.getsockname()[1])
+
+
 # ---------------------------------------------------------------------------
 # The fake daemon
 # ---------------------------------------------------------------------------

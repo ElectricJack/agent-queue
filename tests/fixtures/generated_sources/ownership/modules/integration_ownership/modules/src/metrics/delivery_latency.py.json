@@ -1,0 +1,7 @@
+{
+  "exclusions": {
+    "src/metrics/delivery_latency.py::aggregate": "Read-only delivery latency report (spec section 10); classifies observed telemetry, holds no fence and writes nothing.",
+    "src/metrics/delivery_latency.py::import from src.database.tables import archived_tasks, ask_decisions, doc_reviews, events, ingest_batch_members, ingest_batches, integration_batch_members, integration_batches, integration_repair_operations as repair_operations, projects, repos, task_completion_records as completions, tasks, wait_measurements as measurements, wait_records as waits": "Read-only delivery latency report imports; the report reads integration tables but never writes them.",
+    "src/metrics/delivery_latency.py::load_inputs": "Read-only delivery latency report loader; SELECTs only, no integration fence, source or decision."
+  }
+}
