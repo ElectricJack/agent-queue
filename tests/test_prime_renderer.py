@@ -18,9 +18,10 @@ import pytest
 from tests.db_fixtures import lease_dsn
 
 from src.config import AppConfig, DatabaseConfig
-from src.models import AgentProfile, Project, SessionRecord, Task, TaskType
+from src.models import AgentProfile, Project, ProjectStatus, SessionRecord, Task, TaskType
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
+from src.prime.sections import build_role_section
 from src.profiles.parser import parse_profile
 
 pytestmark = pytest.mark.asyncio
@@ -32,13 +33,9 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def db():
-    from src.database import Database
-
-    adapter = Database(lease_dsn("prime"))
-    await adapter.initialize()
+async def db(reuse_database):
+    adapter = await reuse_database("prime")
     yield adapter
-    await adapter.close()
 
 
 @pytest.fixture
@@ -67,12 +64,41 @@ def _write(path, content: str) -> None:
         f.write(content)
 
 
+@pytest.mark.parametrize("override", [False, True])
+async def test_paused_project_instruction_survives_local_override(db, config, task, tmp_path, override):
+    await db.update_project(task.project_id, status=ProjectStatus.PAUSED)
+    if override:
+        _write(str(tmp_path / ".aq" / "PRIME.md"), "Local task instructions.")
+    renderer = PrimeRenderer(db, config)
+    markdown = (await renderer.render_for_task(task.id, work_dir=str(tmp_path))).to_markdown()
+    assert "## Project paused" in markdown
+    assert "next safe point" in markdown
+    assert "pending wait completing" in markdown
+    await db.update_project(task.project_id, status=ProjectStatus.ACTIVE)
+    resumed = (await renderer.render_for_task(task.id, work_dir=str(tmp_path))).to_markdown()
+    assert "## Project paused" not in resumed
+
+
 # ---------------------------------------------------------------------------
 # Golden: full default assembly
 # ---------------------------------------------------------------------------
 
 
 class TestGoldenAssembly:
+    @pytest.mark.parametrize("profile_id", ["supervisor", "coder"])
+    async def test_installed_supervisor_receives_infrastructure_policy(self, config, profile_id):
+        path = Path(config.vault_agent_types) / profile_id / "profile.md"
+        _write(path, "## Role\nOperator-customized role.\n")
+
+        section = await build_role_section(config, profile_id)
+
+        assert "Operator-customized role." in section.body
+        assert ("Never mass-pause" in section.body) == (profile_id == "supervisor")
+        assert ("with the train off, train controls" in section.body) == (
+            profile_id == "supervisor"
+        )
+        assert path.read_text() == "## Role\nOperator-customized role.\n"
+
     async def test_an_unrouted_task_takes_no_role_sections(self, db, config):
         """An unrouted task takes no role from any profile (mandatory routing §8)."""
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
@@ -213,6 +239,23 @@ class TestGoldenAssembly:
         assert "## Deliverables" not in body
         assert "aq review submit" not in body
 
+    @pytest.mark.parametrize("bounded", [False, True])
+    async def test_revision_task_gets_publication_guidance_without_a_document_type(
+        self, db, config, task, bounded
+    ):
+        await db.set_task_meta(task.id, "review_response", {"review_id": "rev-assigned", "revision": 2})
+        await db.update_task(task.id, description="Long context. " * 2000)
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=bounded)
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Review revision publication" in body
+        assert "newer than revision 2 before a passing close" in body
+        assert "aq review show --review-id rev-assigned --comments" in body
+        assert "aq review submit --review-id rev-assigned --file <draft.md>" in body
+        assert "do not edit the vault mirror" in body
+        assert "--resolves" in body
+        assert "content hash" in body
+        assert "Do not wait for approval" in body
+
     async def test_task_section_omits_subtasks_block_when_none_exist(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["task"]
@@ -303,6 +346,212 @@ class TestGoldenAssembly:
 
 
 class TestTaskContextSection:
+    @pytest.mark.parametrize("override", [False, True])
+    async def test_aggregate_budget_pages_salvage_without_cutting_inline_rules(
+        self, db, config, task, tmp_path, override,
+    ):
+        from src.knowledge.budget import ContextBudget
+
+        # Exercise the supported legacy operator cap, independently of auto sizing.
+        config.knowledge.context.input_max_tokens = 32768
+        description = "Required acceptance αβ.\n" * 3000 + "FINAL ACCEPTANCE"
+        salvage = "diff --git a/work.py b/work.py\n" + "+retained αβ\n" * 10000 + "FINAL DIFF"
+        await db.update_task(task.id, description=description, deliverables=json.dumps([
+            {"kind": "file", "id": "code", "target": "src/work.py"},
+        ]))
+        await db.add_task_context(task.id, type="worktree_salvage", label="Saved work", content=salvage)
+        await db.add_task_context(task.id, type="handoff", label="handoff", content=json.dumps({
+            "constraints": ["Keep the human acceptance gate."],
+            "next_step": "Verify the checkout before reusing work.",
+            "detail": "Earlier observations. " * 400,
+        }))
+        await db.update_project(task.project_id, status=ProjectStatus.PAUSED)
+        if override:
+            _write(str(tmp_path / ".aq" / "PRIME.md"),
+                   "{{role}}\n{{task}}\n{{task_context}}\n{{task_context}}\n"
+                   "{{messages}}\n{{workspaces}}\n{{tool_guidance}}\n{{completion_protocol}}")
+        renderer = PrimeRenderer(db, config)
+        before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        # Use the explicit configured limit and make only inline policy large
+        # enough to reproduce aggregate overflow from independently bounded prose.
+        role = "Must preserve this exact policy. " + "r" * max(
+            0, 34000 - len(before.to_markdown().encode("utf-8")),
+        )
+        _write(os.path.join(config.vault_agent_types, "coder", "profile.md"), "## Role\n" + role)
+        before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        budget = ContextBudget.from_config(config)
+        assert budget.account(before.to_markdown())["diagnostic"] == "context.required_over_budget"
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        after = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        budget.enforce(after.to_markdown())
+        assert role.strip() in after.to_markdown()
+        assert "code" in next(s.body for s in after.sections if s.key == "task")
+        assert "Keep the human acceptance gate." in after.to_markdown()
+        assert "Verify the checkout before reusing work." in after.to_markdown()
+        assert "--field context --offset 0 --limit 4096" in after.to_markdown()
+        assert "Project paused" in after.to_markdown()
+        assert "aq task close" in after.to_markdown()
+        assert "--field prime_context" in after.to_markdown()
+        assert "--field description" in after.to_markdown()
+        full = await renderer.render_for_task(task.id, work_dir=str(tmp_path), bounded_worker=False)
+        full_context = next(s.body for s in full.sections if s.key == "task_context")
+        assert salvage in full_context and "Historical recovery snapshot" in full_context
+        assert (await db.get_task(task.id)).description == description
+        assert "FINAL ACCEPTANCE" in full.to_markdown()
+        assert not budget.account(full.to_markdown())["fits"]
+
+    async def test_handoff_paging_keeps_complete_comments_messages_and_current_facts(
+        self, db, config, task, tmp_path, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock
+        from types import SimpleNamespace
+        from src.knowledge.budget import ContextBudget
+        from src.prime.budgets import field_page
+
+        # No ordinary context and a small description: only the historical
+        # handoff can pay for this overflow. Comments and messages stay inline.
+        comment = "Keep this complete human decision. αβ\n" * 60 + "FINAL DECISION"
+        await db.add_task_comment(task.id, comment, author_kind="agent", author_id="worker")
+        stored_note = json.dumps({"detail": "Prior observation αβ. " * 500 + "FINAL NOTE"})
+        row_id = await db.add_task_context(task.id, type="handoff", label="handoff", content=stored_note)
+        message = SimpleNamespace(id="msg-current", from_kind="session", from_id="supervisor",
+                                  subject=None, body="Current instruction stays inline.",
+                                  priority=0, created_at=1)
+        config.messages.enabled = True
+        monkeypatch.setattr(db, "get_pending_messages", AsyncMock(return_value=[message]))
+        marked = AsyncMock()
+        monkeypatch.setattr(db, "mark_delivered", marked)
+        renderer = PrimeRenderer(db, config)
+        before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        before_message = next(s.body for s in before.sections if s.key == "messages")
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        config.knowledge.context.input_max_tokens = (
+            ContextBudget.from_config(config).account(before.to_markdown())["total_tokens"] - 1200
+        )
+        after = await renderer.render_for_task(task.id, work_dir=str(tmp_path), mark_messages_delivered=True)
+        ContextBudget.from_config(config).enforce(after.to_markdown())
+        message_section = next(s.body for s in after.sections if s.key == "messages")
+        assert len(message_section.encode()) < len(before_message.encode())
+        assert "--field context --offset 0 --limit 4096" in message_section
+        assert str(row_id) in message_section
+        assert "Current instruction stays inline." in message_section
+        assert "Current daemon facts (observed now)" in message_section
+        assert "work_dir:" in message_section
+        assert "Do the thing, carefully." in after.to_markdown()  # cheaper than a pointer
+        assert "\n".join("> " + line for line in comment.split("\n")) in after.to_markdown()
+        marked.assert_awaited_once_with(message.id, via="prime")
+        # Follow the exact task-show paging implementation to recover the note.
+        info = {"id": task.id, "context": await db.get_task_contexts(task.id)}
+        chunks, offset = [], 0
+        while True:
+            page = field_page(info, "context", offset, 4096)
+            chunks.append(page["content"])
+            offset = page["next_offset"]
+            if offset is None:
+                break
+        rows = json.loads("".join(chunks))
+        assert next(r["content"] for r in rows if r["id"] == row_id) == stored_note
+
+    async def test_unpageable_inline_policy_still_refuses_delivery(self, db, config, task):
+        from src.knowledge.budget import ContextBudget
+        from src.records.models import RecordError
+
+        config.knowledge.context.input_max_tokens = 32768
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        role = "MANDATORY POLICY " * 3000
+        _write(os.path.join(config.vault_agent_types, "coder", "profile.md"), "## Role\n" + role)
+        await db.add_task_context(task.id, type="note", label="Context", content="c" * 20000)
+        doc = await PrimeRenderer(db, config).render_for_task(task.id)
+        assert role.strip() in doc.to_markdown()
+        assert "--field prime_context" in doc.to_markdown()
+        with pytest.raises(RecordError, match="context.required_over_budget"):
+            ContextBudget.from_config(config).enforce(doc.to_markdown())
+
+    async def test_preview_fitting_uses_the_observed_model_window(
+        self, db, config, task, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock
+        from src.knowledge.budget import ContextBudget
+
+        await db.add_task_context(task.id, type="note", label="Context", content="c" * 6000)
+        renderer = PrimeRenderer(db, config)
+        before = await renderer.render_for_task(task.id)
+        window = ContextBudget.from_config(config).account(before.to_markdown())["total_tokens"] - 1000
+        monkeypatch.setattr("src.sessions.context.read_context", AsyncMock(return_value={
+            "model_context_window": window,
+        }))
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        after = await renderer.render_for_task(task.id)
+        ContextBudget.from_config(config, model_context_window=window).enforce(after.to_markdown())
+        assert "--field prime_context" in after.to_markdown()
+        assert len(after.to_markdown()) < len(before.to_markdown())
+        assert "aq task close" in after.to_markdown()
+
+    async def test_worker_previews_bound_description_and_context_but_keep_protocol(
+        self, db, config, task
+    ):
+        from src.prime.budgets import CONTEXT_BYTES, DESCRIPTION_BYTES
+        from src.sessions.worker_recovery import CONTINUATION_KEY
+
+        description = "Requested work.\n" + "big brief " * 5000 + "EXACT ACCEPTANCE AT END"
+        await db.update_task(task.id, description=description)
+        await db.add_task_context(task.id, type="note", label="huge", content="context " * 10000)
+        await db.set_task_meta(task.id, CONTINUATION_KEY, {"cause": "context_thrash",
+            "count": 1, "progress": [{"body": "parser implemented; verify next"}]})
+        doc = await PrimeRenderer(db, config).render_for_task(task.id)
+        sections = {s.key: s.body for s in doc.sections}
+        assert len(sections["task_context"].encode()) <= CONTEXT_BYTES
+        assert "parser implemented" in sections["task_context"]
+        assert "--field prime_context" in sections["task_context"]
+        assert "--field description" in sections["task"]
+        assert len(sections["task"].encode()) < DESCRIPTION_BYTES + 500
+        assert "aq task close" in sections["completion_protocol"]
+        assert (await db.get_task(task.id)).description == description
+        full = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=False)
+        assert "EXACT ACCEPTANCE AT END" in full.to_markdown()
+
+    async def test_oversized_spec_context_keeps_current_repair_authority(
+        self, db, config, task, monkeypatch
+    ):
+        from dataclasses import replace
+        from unittest.mock import AsyncMock
+        from src.prime.sections import build_task_context_section
+        from src.prime.budgets import CONTEXT_BYTES
+
+        spec_rel = "projects/proj-1/specs/large.md"
+        _write(os.path.join(config.vault_root, spec_rel), "## Contract\n" + "schema " * 10000)
+        await db.add_task_context(task.id, type="spec_ref", label="contract",
+                                  content=json.dumps({"path": spec_rel, "section": "Contract"}))
+        snapshot = {"intent_id": "live-intent", "operation_id": "live-operation", "fence": 7}
+        monkeypatch.setattr(db, "get_parent_repair_prime_context", AsyncMock(return_value=snapshot))
+        section = await build_task_context_section(
+            db, config, replace(task, created_by_kind="integration_repair"),
+            session_id="worker", bounded_worker=True,
+        )
+        assert '"intent_id": "live-intent"' in section.body
+        assert '"fence": 7' in section.body
+        assert "--field prime_context" in section.body
+        assert len(section.body.encode()) < CONTEXT_BYTES + 1000
+        # Aggregate shrinking must keep the live authority outside the
+        # pageable spec body, even when the excerpt becomes a pointer only.
+        from datetime import datetime, timezone
+        from src.knowledge.budget import ContextBudget
+        from src.prime.renderer import _fit_worker_previews
+
+        doc = PrimeDocument(task_id=task.id, session_id="worker", source="default",
+                            rendered_at=datetime.now(timezone.utc), sections=(section,))
+        budget = ContextBudget(input_tokens=1800, output_tokens=0, wrapper_tokens=0)
+        fitted = _fit_worker_previews(doc, budget, None, None)
+        budget.enforce(fitted.to_markdown())
+        assert '"intent_id": "live-intent"' in fitted.to_markdown()
+        assert '"operation_id": "live-operation"' in fitted.to_markdown()
+        assert '"fence": 7' in fitted.to_markdown()
+        assert "--field prime_context" in fitted.to_markdown()
+
     async def test_note_context_row_is_inlined(self, db, config, task):
         await db.add_task_context("task-1", type="note", label="note", content="hello there")
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
@@ -533,11 +782,11 @@ class TestMemoryPausedSlots:
 
 
 class TestStaticSections:
-    async def test_tool_guidance_mentions_cli_and_nine_tools(self, db, config, task):
+    async def test_tool_guidance_mentions_cli_and_canonical_tools(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["tool_guidance"]
         assert "aq " in body
-        for name in ("task_show", "task_set", "memory_search"):
+        for name in ("task_show", "task_set", "aq knowledge", "aq record", "aq-knowledge"):
             assert name in body
 
     async def test_tool_guidance_authorizes_local_commits_and_guards_publication(
@@ -642,6 +891,46 @@ class TestStaticSections:
         assert "aq task close task-1" in body
         assert "aq session drain-ack" in body
         assert "--deliverable-unmet 'id: reason'" in body
+
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    @pytest.mark.parametrize("delivery_mode", ["disabled", "development"])
+    async def test_worker_brief_merges_dev_before_submission(
+        self, db, config, task, lifecycle, delivery_mode
+    ):
+        await db.update_project(task.project_id, hierarchical_integration_mode=delivery_mode)
+        await db.create_session(
+            SessionRecord(
+                id="sync-session",
+                project_id=task.project_id,
+                profile_id="coder",
+                harness="codex",
+                provider="fake",
+                name="sync-session",
+                lifecycle=lifecycle,
+                work_dir="/tmp/sync-session",
+                epoch="test",
+                instance_token="test-only",
+                started_at=time.time(),
+                task_id=task.id,
+                state="running",
+            )
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, session_id="sync-session")
+        body = " ".join({s.key: s.body for s in doc.sections}["completion_protocol"].split())
+        submission = body.split("## Never close over unpushed commits", 1)[1]
+        steps = (
+            "final submission step for every code task",
+            "`git merge origin/dev` (merge, not rebase)",
+            "Resolve any conflicts with full context",
+            "run only targeted tests for the touched files",
+            "do not run a full CI pass",
+            "Commit the result",
+            "push with guarded `aq git push`",
+            "then publish/close the task",
+        )
+        positions = [submission.index(step) for step in steps]
+        assert positions == sorted(positions)
 
     @pytest.mark.parametrize("harness", ["claude", "codex"])
     @pytest.mark.parametrize("delivery_mode", ["disabled", "development"])
@@ -1057,6 +1346,12 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq message inbox": "message_inbox",
     "aq message reply": "message_reply",
     "aq message send": "message_send",
+    "aq knowledge create": "knowledge_create",
+    "aq knowledge show": "knowledge_show",
+    "aq knowledge update": "knowledge_update",
+    "aq record capabilities": "record_capabilities",
+    "aq record search": "record_search",
+    "aq file read": "read_file",
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
@@ -1064,6 +1359,9 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq job submit": "job_submit",
     "aq wait register": "wait_register",
     "aq wait show": "wait_get",
+    "aq wait checkpoint": "wait_checkpoint",
+    "aq wait decide": "wait_decide",
+    "aq wait lift": "wait_lift",
 }
 
 
@@ -1264,7 +1562,7 @@ async def test_compact_protocol_preserves_shared_rules_and_role_specific_close(l
         "held-1", lifecycle=lifecycle, development=development,
     ).body
     assert body.count("aq task close held-1") == 1
-    assert ("aq session drain-ack" in body) == (lifecycle == "task")
+    assert "aq session drain-ack" in body
     assert "aq task heartbeat held-1" in body
     assert "aq task comment held-1" in body
     assert "--expected-description" in body
@@ -1272,7 +1570,8 @@ async def test_compact_protocol_preserves_shared_rules_and_role_specific_close(l
         assert rule in body
     if lifecycle == "pool":
         for rule in ("--claim-next", ".aq/claim.json", "stale_claim", "daemon_unreachable",
-                     "ambiguous close", "drain_requested/session_exhausted"):
+                     "ambiguous close", "drain_requested/session_exhausted", "retry_after",
+                     "report the blocker ONCE", "If preparation is retained, preserve it"):
             assert rule in body
     guidance = build_tool_guidance_section().body
     for rule in ("AGENTS.md/CLAUDE.md", "directory instructions", "SKILL.md", "catalogue",
@@ -1301,3 +1600,35 @@ def test_primed_context_guidance_tracks_what_the_harness_reports(harness, readab
             harness, config=config, session=session,
             observation={"input_tokens": 130000}).body
         assert "Latest measured request input: 130000 tokens." in measured
+
+
+@pytest.mark.parametrize("global_enabled,override,expected", [
+    (False, None, False), (True, None, True), (True, False, False), (False, True, True),
+])
+async def test_prime_wait_guidance_matches_project_activation(
+    db, config, task, global_enabled, override, expected
+):
+    from src.config_wait_policy import WaitProjectOverrides
+
+    config.wait_policy.v2_enabled = global_enabled
+    if override is not None:
+        config.wait_policy.projects[task.project_id] = WaitProjectOverrides(v2_enabled=override)
+    doc = await PrimeRenderer(db, config).render_for_task(task.id)
+    sections = {section.key: section.body for section in doc.sections}
+    guidance = sections["tool_guidance"]
+    completion = sections["completion_protocol"]
+    assert ("aq wait register" in guidance) == expected
+    assert ("--aq-wait" in completion) == expected
+    if not expected:
+        assert "awaiting inbox delivery" in guidance
+        assert "registration is disabled" in completion
+    assert "aq file read --path projects/<project>/plans/<file>" in guidance
+
+
+async def test_pool_completion_does_not_prescribe_disabled_message_wait():
+    from src.prime.sections import build_completion_protocol_section
+
+    body = build_completion_protocol_section("held", lifecycle="pool", waits_enabled=False).body
+    assert "use ONE durable message wait" not in body
+    assert "preserve it and end the turn awaiting the supervisor's inbox delivery" in body
+    assert "--aq-wait" not in body

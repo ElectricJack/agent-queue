@@ -1,0 +1,63 @@
+{
+  "reconciliation_definitions": {
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.register_in_transaction": {
+      "fingerprint": "130acc2381e0a07feb2c3e9f1f3685d0f0b636d0b3180392f0e01fbd93ed9708",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/lifecycle.py::import from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS, HibernationTransaction, begin_suspension": {
+      "fingerprint": "b42e28da72745e04a4a74aac271e0998c86c2bb58aeb7d53c6e264fbd7bf5a66",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.acknowledge": {
+      "landing_span": [
+        170,
+        183
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.register": {
+      "landing_span": [
+        28,
+        86
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.sleep_decide": {
+      "landing_span": [
+        87,
+        124
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend": {
+      "landing_span": [
+        130,
+        166
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/lifecycle.py::import from src.database.queries.continuation_queries import measurement_medians": {
+      "landing_span": [
+        13,
+        13
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/lifecycle.py::import from src.wait_runtime.hibernate import HibernationTransaction, begin_suspension": {
+      "landing_span": [
+        14,
+        14
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/lifecycle.py::import from src.waits.decision import ceiling_anchor, decide_sleep, measured_inputs, project_policy": {
+      "landing_span": [
+        11,
+        11
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}

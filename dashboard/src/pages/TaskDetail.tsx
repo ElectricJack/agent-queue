@@ -1,10 +1,12 @@
 import TaskKnowledgeSection from "./knowledge/TaskKnowledgeSection";
 import { useState } from "react";
-import { useParams, Link, useLocation } from "react-router-dom";
+import { useParams, Link, useLocation, useSearchParams } from "react-router-dom";
 import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import { EpicDeliveryPanel, EpicStatus } from "../components/EpicDelivery";
+import TaskDisplayStatus, { EpicActivitySummary } from "../components/TaskDisplayStatus";
+import { rolledState } from "../components/epicActivityFormat";
 import TaskActions from "../components/TaskActions";
 import TaskCollaboration from "../components/TaskCollaboration";
 import TaskComments from "../components/TaskComments";
@@ -16,6 +18,7 @@ import TaskDescription from "../components/TaskDescription";
 import TaskFieldsEditor, { ReadField, type EditableTask } from "../components/TaskFieldsEditor";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
 import { workspaceHref } from "../shell/projectNavigation";
+import { isIngestHeld } from "./command-center/statusPillModel";
 
 export default function TaskDetail() {
   const { taskId } = useParams<{ taskId: string }>();
@@ -26,7 +29,11 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
   const location = useLocation();
   const { data: task, isLoading } = useTask(taskId ?? "");
 
-  const [activeTab, setActiveTab] = useState<"details" | "explain" | "graph">("details");
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"details" | "explain" | "graph">(
+    requestedTab === "explain" || requestedTab === "graph" ? requestedTab : "details",
+  );
 
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
   if (!task) return <p className="p-6 text-sm text-gray-500">Task not found.</p>;
@@ -48,9 +55,9 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
         <div className="min-w-0 flex-1">
           <h1 className="text-2xl font-bold">{task.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            {task.delivery_status
+            {!isIngestHeld(task.held_batch) && task.delivery_status && !rolledState(task, task.delivery_status)
               ? <EpicStatus delivery={task.delivery_status} status={task.status} />
-              : <StatusBadge status={task.status} />}
+              : <TaskDisplayStatus task={task} />}
             {task.project_id && (
               <Link to={workspaceHref(task.project_id, "tasks-knowledge")} className="text-sm text-indigo-400 hover:underline">{task.project_id}</Link>
             )}
@@ -71,6 +78,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
               </span>
             )}
           </div>
+          <EpicActivitySummary task={task} />
         </div>
       </div>
 

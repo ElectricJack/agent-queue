@@ -14,10 +14,8 @@ SIBLING_GAP = 0.15
 LINE_GAP = 0.22
 PADDING = 0.1
 HEADER_H = 0.35
-# The row-wrap targets are FLOORS, not constants: ``flow.row_target`` widens
-# them for a large scope so its aspect ratio stays landscape-ish instead of
-# degrading linearly with the child count (reorganisation design §3.1). A
-# scope whose ideal target is below its floor keeps today's geometry exactly.
+# Task containers keep dependency rows at four cards wide. The project root
+# uses ``flow.row_target`` to widen its floor for a landscape aspect ratio.
 TARGET_ROW_WIDTH = 4.5
 TARGET_ROW_WIDTH_ROOT = 7.0
 ROW_ASPECT = 1.3
@@ -31,7 +29,7 @@ _GROWTH_HUNDREDTH = Decimal("0.01")
 GROWTH_BANDS = tuple(float(band) for band in _GROWTH_BAND_DECIMALS)
 CELL_SIZE = 8.0
 
-ENGINE_RULES_VERSION = 3
+ENGINE_RULES_VERSION = 4
 """The generation of the engine's *geometry and ordering* rules.
 
 Bump this by hand in any change to ``flow.py``, to ordinal assignment in

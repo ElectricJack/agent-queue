@@ -23,7 +23,6 @@ from src.commands.ci_commands import (
 from src.commands.contracts.builtin import _outcome_of
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
@@ -54,12 +53,10 @@ FAILED_TESTS = ["tests/test_a.py::test_one", "tests/test_b.py::TestX::test_two"]
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("ci.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("ci.db")
     await database.create_project(Project(id=PROJECT, name="CI", repo_url=REPO))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -270,7 +267,7 @@ async def test_two_spent_attempts_escalate_instead_of_filing_a_third(handler, db
     first = await _attempt(db, f"{REPAIR_KEY_PREFIX}:{signature}:1", TaskStatus.COMPLETED)
     second = await _attempt(db, f"{REPAIR_KEY_PREFIX}:{signature}:2", TaskStatus.BLOCKED)
 
-    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT, "max_attempts": 2})
 
     assert result["state"] == "red" and result["escalated"] is True
     assert result["prior_attempts"] == [first, second]
@@ -284,9 +281,11 @@ async def test_max_attempts_is_honoured(handler, db):
     await _attempt(db, f"{REPAIR_KEY_PREFIX}:{signature}:1", TaskStatus.BLOCKED)
     result = await handler._cmd_ci_baseline_status({"project_id": PROJECT, "max_attempts": 1})
     assert result["escalated"] is True
-    assert (await handler._cmd_ci_baseline_status({"project_id": PROJECT, "max_attempts": 0}))[
+    unlimited = await handler._cmd_ci_baseline_status({"project_id": PROJECT, "max_attempts": 0})
+    assert unlimited["escalated"] is False and unlimited["attempt"] == 2
+    assert (await handler._cmd_ci_baseline_status({"project_id": PROJECT, "max_attempts": -1}))[
         "error"
-    ] == "max_attempts must be at least 1"
+    ] == "max_attempts must be non-negative"
 
 
 async def test_a_different_failure_does_not_share_attempts(handler, db, git):
@@ -454,7 +453,7 @@ async def test_spent_repairs_that_owned_a_shrunken_failure_still_escalate_it(han
     await _recorded(handler, db, [THIRD], TaskStatus.COMPLETED)  # never owned what is red now
     git.ajob_failed_tests.return_value = FAILED_TESTS[:1]
 
-    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT, "max_attempts": 2})
 
     assert result["in_flight"] == []
     assert result["prior_attempts"] == [first, second]
@@ -562,3 +561,15 @@ async def test_task_meta_bulk_reads_one_key_for_a_set_of_tasks(db):
         first: {"ref": "main"}
     }
     assert await db.get_task_meta_bulk([], REPAIR_RECORD_META) == {}
+
+
+@pytest.mark.parametrize("max_args", [{}, {"max_attempts": 0}, {"max_attempts": None}])
+async def test_sentinel_attempts_are_unlimited_by_default(handler, db, max_args):
+    signature = failure_signature(FAILED_TESTS, ["Tests (default)"])
+    for attempt in range(1, 5):
+        await _attempt(db, f"{REPAIR_KEY_PREFIX}:{signature}:{attempt}", TaskStatus.BLOCKED)
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT, **max_args})
+    assert result["success"] and not result["escalated"]
+    assert result["attempt"] == 5
+    assert result["dedup_key"] == f"{REPAIR_KEY_PREFIX}:{signature}:5"
+    assert _outcome_of("ci_baseline_status", result) == "red"

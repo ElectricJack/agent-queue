@@ -6,6 +6,7 @@ import { PoolBadge, PoolOutsidePools, PoolPlacementRow, PoolQuarantine, PoolSupp
 import PoolProjects from "./PoolProjects";
 import PoolScaleFields from "./PoolScaleFields";
 import PoolNameFields from "./PoolNameFields";
+import DeletePool from "./DeletePool";
 import { formatIdle, poolDisplayName, type PoolEntry } from "./pools";
 import TerminalPane, { TerminalTabs } from "../../components/TerminalPane";
 
@@ -77,7 +78,7 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
 
   return (
     <section aria-label={title + " agent window"}
-      className="flex min-h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
+      className="flex min-h-96 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
       <TerminalPane title={title} status={instance?.stalled ? "Stalled" : instance?.state || "Idle"} onClose={onClose} titleId={id + "-title"}
         primary={instances.length > 1 ? <InstancePicker entry={entry} instance={instance} onChange={onInstanceChange} compact /> : undefined}
         tabs={<TerminalTabs label={title + " view"} idPrefix={id} tabs={tabs} value={tab} onChange={setTab} />}
@@ -124,6 +125,7 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
             </p>
             <PoolScaleFields pool={pool} />
             <PoolProjects projects={projects} />
+            <DeletePool entry={entry} />
           </div>
         )}
       </div>
