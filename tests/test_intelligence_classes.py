@@ -8,11 +8,27 @@ from src.intelligence_classes import (
 from src.vault import ensure_default_intelligence_classes
 
 
-# 12-class matrix: 3 capability tiers × 4 thinking levels. Explicit names
-# only; no legacy aliases. Every class covers anthropic + openai + google.
-TIERS = {"fast", "standard", "deep"}
-THINKING = {"off", "low", "medium", "high"}
-DEFAULTS = {f"{tier}-{level}" for tier in TIERS for level in THINKING}
+# The shipped set is seven classes, not a full tier x level matrix: a class
+# exists to be *chosen*, and rungs that differed only by a reasoning step were
+# never chosen deliberately.  Every ``-high`` class buys the provider's
+# extra-high effort.
+DEFAULTS = {
+    "fast-low", "fast-high", "standard-high", "deep-low", "deep-high",
+    "astra-low", "astra-high",
+}
+
+#: Classes from the deep tier upward carry no ``google`` slice — no Gemini
+#: model belongs in that bracket, and a missing slice resolves to *no model*
+#: rather than a quiet downgrade.  ``astra-*`` is OpenAI-only.
+PROVIDERS_BY_CLASS = {
+    "fast-low": {"anthropic", "openai", "codex", "google"},
+    "fast-high": {"anthropic", "openai", "codex", "google"},
+    "standard-high": {"anthropic", "openai", "codex", "google"},
+    "deep-low": {"anthropic", "openai", "codex"},
+    "deep-high": {"anthropic", "openai", "codex"},
+    "astra-low": {"openai", "codex"},
+    "astra-high": {"openai", "codex"},
+}
 
 
 def test_defaults_shipped(tmp_path):
@@ -25,26 +41,48 @@ def test_load_parses_frontmatter_and_mapping(tmp_path):
     ensure_default_intelligence_classes(str(tmp_path))
     classes = load_intelligence_classes(str(tmp_path))
     assert set(classes) == DEFAULTS
-    fast = classes["fast-medium"]
+    fast = classes["fast-low"]
     assert isinstance(fast, IntelligenceClass)
     assert fast.mapping["anthropic"]["model"]
-    # Every class must cover all three providers.
     for cid, cls in classes.items():
-        assert set(cls.mapping.keys()) >= {"anthropic", "openai", "google"}, cid
-        for provider in ("anthropic", "openai", "google"):
-            assert cls.mapping[provider].get("model"), f"{cid}/{provider} missing model"
+        assert set(cls.mapping.keys()) == PROVIDERS_BY_CLASS[cid], cid
+        for provider, slice_ in cls.mapping.items():
+            assert slice_.get("model"), f"{cid}/{provider} missing model"
+
+
+def test_astra_is_openai_only_and_names_the_astra_model(tmp_path):
+    """A claude-harness profile on astra must resolve nothing, not a stand-in."""
+    ensure_default_intelligence_classes(str(tmp_path))
+    classes = load_intelligence_classes(str(tmp_path))
+    for class_id in ("astra-low", "astra-high"):
+        cls = classes[class_id]
+        assert resolve_class(cls, "anthropic") == {}
+        assert resolve_class(cls, "google") == {}
+        assert resolve_class(cls, "openai")["model"] == "gpt-6-astra"
+        assert resolve_class(cls, "codex")["model"] == "gpt-6-astra"
+
+
+def test_high_classes_buy_the_providers_extra_high_effort(tmp_path):
+    ensure_default_intelligence_classes(str(tmp_path))
+    classes = load_intelligence_classes(str(tmp_path))
+    for class_id in ("fast-high", "standard-high", "deep-high", "astra-high"):
+        mapping = classes[class_id].mapping
+        if "anthropic" in mapping:
+            assert mapping["anthropic"]["thinking"] == "xhigh", class_id
+        for provider in ("openai", "codex"):
+            assert mapping[provider]["reasoning_effort"] == "xhigh", class_id
 
 
 def test_resolve_class_returns_provider_slice(tmp_path):
     ensure_default_intelligence_classes(str(tmp_path))
-    cls = load_intelligence_classes(str(tmp_path))["standard-medium"]
+    cls = load_intelligence_classes(str(tmp_path))["standard-high"]
     slice_ = resolve_class(cls, "anthropic")
     assert "model" in slice_
 
 
 def test_resolve_class_unknown_provider_returns_empty(tmp_path):
     ensure_default_intelligence_classes(str(tmp_path))
-    cls = load_intelligence_classes(str(tmp_path))["standard-medium"]
+    cls = load_intelligence_classes(str(tmp_path))["standard-high"]
     assert resolve_class(cls, "unicorn") == {}
 
 
@@ -134,10 +172,10 @@ def test_legacy_upgrade_is_provider_specific_and_customized_class_is_unchanged(t
     # onto the custom API slice.
     _write_class(
         data_dir,
-        "standard-medium.md",
-        "---\nid: standard-medium\n---\n\n```json\n"
-        '{"anthropic": {"model": "claude-sonnet-5", "thinking": "medium"},\n'
-        ' "openai": {"model": "my-own-model", "reasoning_effort": "medium"}}\n```\n',
+        "standard-high.md",
+        "---\nid: standard-high\n---\n\n```json\n"
+        '{"anthropic": {"model": "claude-sonnet-5", "thinking": "high"},\n'
+        ' "openai": {"model": "my-own-model", "reasoning_effort": "high"}}\n```\n',
     )
     # Historical openai slice + a hand-edited anthropic slice: the mirror
     # image, and here codex *is* inferred from the bundled defaults.
@@ -167,10 +205,10 @@ def test_legacy_upgrade_is_provider_specific_and_customized_class_is_unchanged(t
     classes = load_intelligence_classes(str(data_dir))
     bundled = load_intelligence_classes(str(_bundled_data_dir(tmp_path)))
 
-    standard = classes["standard-medium"]
-    assert standard.mapping["anthropic"] == bundled["standard-medium"].mapping["anthropic"]
+    standard = classes["standard-high"]
+    assert standard.mapping["anthropic"] == bundled["standard-high"].mapping["anthropic"]
     assert standard.mapping["anthropic"]["model"] != "claude-sonnet-5"
-    assert standard.mapping["openai"] == {"model": "my-own-model", "reasoning_effort": "medium"}
+    assert standard.mapping["openai"] == {"model": "my-own-model", "reasoning_effort": "high"}
     assert "codex" not in standard.mapping
 
     deep = classes["deep-high"]

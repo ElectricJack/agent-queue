@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import CreateTaskModal from "../CreateTaskModal";
 
 const mutate = vi.hoisted(() => vi.fn());
@@ -20,6 +20,8 @@ vi.mock("../../api/hooks", () => ({
   }),
 }));
 
+beforeEach(() => mutate.mockReset());
+
 describe("CreateTaskModal", () => {
   it("requires an intelligence class and sends it with the task", async () => {
     render(<CreateTaskModal open onClose={vi.fn()} defaultProjectId="agent-queue" />);
@@ -38,5 +40,28 @@ describe("CreateTaskModal", () => {
       project_id: "agent-queue",
       intelligence_class: "fast-low",
     });
+  });
+
+  it("offers no profile or pin: the router picks the route from the hints", async () => {
+    render(<CreateTaskModal open onClose={vi.fn()} defaultProjectId="agent-queue" />);
+    expect(screen.queryByLabelText("Profile")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Pin to this provider" })).toBeNull();
+    expect(screen.getByText(/hint to the project's router/)).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Title *"), "Hinted work");
+    await userEvent.selectOptions(screen.getByLabelText("Intelligence class *"), "deep-high");
+    await userEvent.selectOptions(screen.getByLabelText("Type"), "design");
+    await userEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+    const body = mutate.mock.calls[0]![0];
+    expect(body).toEqual({
+      title: "Hinted work",
+      project_id: "agent-queue",
+      intelligence_class: "deep-high",
+      task_type: "design",
+    });
+    for (const refused of ["profile_id", "pin", "provider_intent"]) {
+      expect(body).not.toHaveProperty(refused);
+    }
   });
 });

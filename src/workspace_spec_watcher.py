@@ -404,6 +404,9 @@ class WorkspaceSpecWatcher:
 
         # Timestamp of last full scan
         self._last_check: float = 0.0
+        self._check_lock = asyncio.Lock()
+        self._check_task: asyncio.Task | None = None
+        self._stopping = False
 
         # Statistics
         self._total_stubs_written: int = 0
@@ -441,7 +444,37 @@ class WorkspaceSpecWatcher:
     # Main entry point (called from orchestrator tick)
     # ------------------------------------------------------------------
 
+    def schedule_check(self) -> None:
+        """Start at most one scan without holding up the scheduler cascade."""
+        if self._stopping or not self._enabled:
+            return
+        if self._check_task is not None and not self._check_task.done():
+            return
+        self._check_task = asyncio.create_task(
+            self._run_background_check(), name="workspace-spec-scan"
+        )
+
+    async def _run_background_check(self) -> None:
+        try:
+            await self.check()
+        except Exception:
+            logger.exception("WorkspaceSpecWatcher background check failed")
+
+    async def stop(self) -> None:
+        """Finish the current scan and its events before database shutdown."""
+        self._stopping = True
+        if self._check_task is not None:
+            # Cancelling to_thread does not stop its filesystem writer. Keep
+            # ownership until the scan and its resulting events have settled.
+            await asyncio.shield(self._check_task)
+
     async def check(self) -> list[SpecChange]:
+        # Direct callers share serialization with the scheduled scan so the
+        # per-project snapshots cannot be mutated by overlapping threads.
+        async with self._check_lock:
+            return await self._check_once()
+
+    async def _check_once(self) -> list[SpecChange]:
         """Poll all project workspaces for spec/doc changes.
 
         Called every orchestrator cycle but internally rate-limited to
