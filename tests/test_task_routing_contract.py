@@ -2,8 +2,8 @@
 
 Filing carries hints, never routes (mandatory-routing spec 2026-09-28 §5.1): a
 profile named at any filing surface is refused with ``routing.choice_forbidden``,
-and the filer's class travels as ``class_hint`` until the router (or the
-manual ``task_route``) writes the route.
+and the filer's class travels as ``class_hint`` until the router (or an
+operator's audited ``task_route_override``) writes the route.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -148,11 +148,12 @@ async def test_class_hint_survives_typed_api_and_reads_until_routed(setup):
     detail = await handler._cmd_get_task({"task_id": task.id})
     assert GetTaskResponse(**detail).class_hint == "deep-high"
 
-    # Once routed, the class reads back through every surface.
-    routed = await handler._cmd_task_route(
-        {"task_id": task.id, "profile_id": "coder", "intelligence_class": "deep-high"}
+    # Once routed, the class reads back through every surface.  The route is
+    # written as the router's apply writes it.
+    assert await db.update_task_routing(
+        task.id, profile_id="coder", intelligence_class="deep-high", route_source="router",
+        preferred_workspace_id=None,
     )
-    assert routed["success"], routed
     detail = await handler._cmd_get_task({"task_id": task.id})
     assert GetTaskResponse(**detail).intelligence_class == "deep-high"
     listed = await handler._cmd_list_tasks({"project_id": "p"})
@@ -180,7 +181,6 @@ async def test_supervisor_omission_is_unrouted_not_the_project_default(setup):
         id="worker", name="Worker", harness="claude", lifecycle="task",
         needs_workspace=False, harness_tools=[], aq_commands=[], plugin_tools=[],
     ))
-    await db.update_project("p", default_profile_id="worker")
     handler._caller_profile_id = "supervisor"
     try:
         result = await handler._cmd_create_task({"project_id": "p", "title": "Delegated"})
@@ -207,9 +207,12 @@ async def test_supervisor_profile_is_rejected_on_creation_edit_route_and_graph(s
     edited = await handler._cmd_edit_task({"task_id": "legacy", "profile_id": "supervisor"})
     assert edited["code"] == "routing.choice_forbidden"
 
-    # The manual route still names a profile, and still refuses the supervisor.
+    # The one manual route, the audited override, refuses the supervisor too.
     await db.update_task("legacy", intelligence_class="standard-medium")
-    routed = await handler._cmd_task_route({"task_id": "legacy", "profile_id": "supervisor"})
+    routed = await handler._cmd_task_route_override({
+        "task_id": "legacy", "profile_id": "supervisor",
+        "reason": "the operator tries the supervisor",
+    })
     assert "supervisor control-plane" in routed["error"]
 
     graph = await handler._cmd_create_task_graph({
@@ -222,16 +225,17 @@ async def test_supervisor_profile_is_rejected_on_creation_edit_route_and_graph(s
     assert [t.id for t in await db.list_tasks(project_id="p")] == ["legacy"]
 
 
-async def test_project_default_rejects_supervisor_profile(setup):
+async def test_a_project_takes_no_default_profile(setup):
     handler, db = setup
     await db.create_profile(AgentProfile(id="supervisor", name="Supervisor", lifecycle="named"))
-    result = await handler._cmd_edit_project({"project_id": "p", "default_profile_id": "supervisor"})
-    assert "project default is invalid" in result["error"]
+    # Mandatory routing §5.1, §8: a project has no default profile to set.
+    result = await handler.execute(
+        "edit_project", {"project_id": "p", "default_profile_id": "supervisor"}
+    )
+    assert result["code"] == "routing.choice_forbidden"
+    assert not hasattr(await db.get_project("p"), "default_profile_id")
 
-    # Creation no longer reads the project default (mandatory-routing spec
-    # §1): a stale value cannot become a task's route.
-    await db.update_project("p", default_profile_id="supervisor")
-    created = await handler._cmd_create_task({"project_id": "p", "title": "No stale default"})
+    created = await handler._cmd_create_task({"project_id": "p", "title": "No default"})
     assert "error" not in created, created
     task = await db.get_task(created["created"])
     assert (task.profile_id, task.route_source) == (None, "unrouted")
@@ -343,13 +347,14 @@ def test_graph_class_defaults_are_preserved():
     assert graph.nodes[0].to_dict()["intelligence_class"] == "deep-high"
 
 
-async def test_route_omission_keeps_existing_class(setup):
+async def test_route_omission_keeps_the_class_hint(setup):
+    """``aq task route`` re-runs the router with the hints it is not given."""
     handler, db = setup
     await db.create_task(Task(id="t", project_id="p", title="T", description="",
-                              intelligence_class="deep-high"))
-    result = await handler._cmd_task_route({"task_id": "t", "profile_id": "coder"})
+                              class_hint="deep-high"))
+    result = await handler._cmd_task_route({"task_id": "t"})
     assert result["success"]
-    assert (await db.get_task("t")).intelligence_class == "deep-high"
+    assert (await db.get_task("t")).class_hint == "deep-high"
 
 
 @pytest.mark.parametrize("status,assigned", [(TaskStatus.IN_PROGRESS, False),
@@ -395,17 +400,18 @@ def test_cli_graph_preserves_the_class_hint(graph_flag):
 async def test_routing_update_rechecks_claim_after_command_read(setup):
     handler, db = setup
     await db.create_agent(Agent(id="held", name="Held", profile_id="coder"))
-    await db.create_task(Task(id="t", project_id="p", title="T", description=""))
-    update = db.update_task_routing
+    await db.create_task(Task(id="t", project_id="p", title="T", description="",
+                              profile_id="coder", route_source="legacy"))
+    reset = db.reset_task_route
 
     async def claim_first(*args, **kwargs):
         await db.update_task("t", status=TaskStatus.IN_PROGRESS, assigned_agent_id="held")
-        return await update(*args, **kwargs)
+        return await reset(*args, **kwargs)
 
-    with patch.object(db, "update_task_routing", side_effect=claim_first):
-        result = await handler._cmd_task_route({"task_id": "t", "profile_id": "coder"})
+    with patch.object(db, "reset_task_route", side_effect=claim_first):
+        result = await handler._cmd_task_route({"task_id": "t"})
     assert result["success"] is False
-    assert (await db.get_task("t")).profile_id is None
+    assert (await db.get_task("t")).profile_id == "coder"
 
 
 async def test_edit_class_validates_and_persists_as_a_hint(setup):
@@ -505,8 +511,7 @@ def test_cli_single_task_preserves_class():
 @pytest.mark.parametrize(
     ("command", "args", "field"),
     [
-        ("_cmd_task_route", {"profile_id": "coder", "intelligence_class": "deep-high"},
-         "intelligence_class"),
+        ("_cmd_task_route", {"intelligence_class": "deep-high"}, "class_hint"),
         ("_cmd_edit_task", {"intelligence_class": "deep-high"}, "class_hint"),
     ],
 )

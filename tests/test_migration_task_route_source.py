@@ -93,7 +93,9 @@ def bindings(conn) -> dict[str, str | None]:
 
 def test_single_head():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == [HEAD_REVISION]
+    # Revision 3 (a00000000043, tests/test_migration_project_router_binding.py)
+    # chains onto revision 2.
+    assert previous_revision("a00000000043") == HEAD_REVISION
     assert script.get_revision(PROFILE_CHECK_REVISION).down_revision == DISPATCH_REVISION
     assert script.get_revision(DISPATCH_REVISION).down_revision == JSONB_REVISION
     assert script.get_revision(JSONB_REVISION).down_revision == REVISION
@@ -193,6 +195,12 @@ async def test_upgrade_backfills_is_idempotent_and_downgrade_reverses(existing):
             # from before this revision, "fresh" keeps the baseline's columns.
             # Either way revision 2's check is not there yet.
             drop_profile_check(conn)
+            # Revision 3 made the binding NOT NULL; before it a project could
+            # be unbound.
+            Operations(MigrationContext.configure(conn)).alter_column(
+                "projects", "assignment_playbook_id",
+                existing_type=sa.Text(), nullable=True, server_default=None,
+            )
             if existing == "legacy":
                 op = Operations(MigrationContext.configure(conn))
                 op.drop_constraint(CHECK, "tasks", type_="check")

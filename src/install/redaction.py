@@ -68,6 +68,7 @@ SAFE_KEY_NAMES: frozenset[str] = frozenset(
         "credential_store",
         "keychain",
         "keyring",
+        "stale_credential_store",
     }
 )
 

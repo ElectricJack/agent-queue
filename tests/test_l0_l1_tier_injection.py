@@ -199,7 +199,7 @@ class TestL0RoleFromProfile:
     async def test_l0_role_from_the_routed_profile_not_the_project_default(self, session_orch):
         """L0 follows the task's route; a project default routes nothing (§8)."""
         orch = session_orch
-        await create_session_project(orch, default_profile_id="coding")
+        await create_session_project(orch, profile_id="coding")
         write_vault_profile(orch.config, "coding", "## Role\nYou are a full-stack developer.\n")
 
         task = await _dispatch(orch, profile_id=None)

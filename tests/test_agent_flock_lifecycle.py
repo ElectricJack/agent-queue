@@ -33,7 +33,7 @@ async def db(tmp_path):
 
 async def seed_project(db, pid="p1", *, routed=True):
     await db.create_profile(AgentProfile(id=pid, name=pid, harness="claude"))
-    await db.create_project(Project(id=pid, name=pid, default_profile_id=pid))
+    await db.create_project(Project(id=pid, name=pid))
     await db.create_workspace(
         Workspace(
             id=f"ws-{pid}",
@@ -120,6 +120,12 @@ async def test_reconciler_reuses_global_worker_without_reprofiling(db):
 
 async def test_reconciler_does_not_reuse_live_session_worker(db):
     await seed_project(db)
+    # The live worker retains /tmp/p1 even when its lock columns are empty.
+    # Supply capacity for another worker so this tests identity reuse.
+    await db.create_workspace(Workspace(
+        id="ws-spare", project_id="p1", workspace_path="/tmp/p1-spare",
+        source_type=RepoSourceType.LINK,
+    ))
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="p1"))
     await db.create_session(session(agent_id="a1", state="running"))
     await AgentReconciler(db).reconcile()
@@ -197,13 +203,11 @@ async def test_existing_worker_supplies_its_default_without_project_reprofile(db
     from src.orchestrator import Orchestrator
 
     await seed_project(db, routed=False)
-    await db.update_project("p1", default_profile_id=None)
     await db.create_profile(
         AgentProfile(id="personal", name="Personal", harness="claude", allowed_tools=["Read"])
     )
     await db.create_agent(Agent(id="a1", name="Alice", profile_id="personal"))
     await AgentReconciler(db).reconcile()
-    assert (await db.get_project("p1")).default_profile_id is None
     assert await db.assign_task_to_agent("t-p1", "a1")
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),

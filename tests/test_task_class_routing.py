@@ -66,7 +66,6 @@ async def setup(tmp_path):
         _worker("spec-ingest", "claude", "deep-high", lifecycle="task"),
     ):
         await db.create_profile(profile)
-    await db.update_project("p", default_profile_id="fast-high-claude")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(data_dir=data_dir, database=DatabaseConfig(url=lease_dsn("class_route.db")))

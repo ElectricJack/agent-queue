@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import LeftRail from "../../../shell/LeftRail";
 import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
+import type { FlockSession } from "../../../api/client";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
 import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
 
@@ -14,10 +15,12 @@ vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../../tes
 const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(),
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(), listIntelligenceClasses: vi.fn(),
-  sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
+  sessionInput: vi.fn(), sessionPrune: vi.fn(), startAgentTerminal: vi.fn(), supervisorRestart: vi.fn(),
   poolStatus: vi.fn(), poolScale: vi.fn(), sessionList: vi.fn(),
+  getSessionMessagesApiSessionsNameMessagesGet: vi.fn(), postSessionMessageApiSessionsNameMessagePost: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
+vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn(), close: vi.fn() }) }));
 function agent(id: string, name: string): FlockAgent {
   return {
     id, name, profile_id: "implementer", role: "worker", enabled: true,
@@ -110,6 +113,10 @@ beforeEach(() => {
     return { data: { deleted: deleted.id, name: deleted.name } };
   });
   api.sessionInput.mockResolvedValue({ data: { success: true, session_id: "session-b", accepted: true } });
+  api.supervisorRestart.mockImplementation(async ({ body }: { body: { resume?: boolean } }) => {
+    roster = roster.map((row) => row.role === "supervisor" ? { ...row, session_id: "restarted-supervisor" } : row);
+    return { data: { success: true, name: "supervisor-global", session_id: "restarted-supervisor", state: "running", mode: body.resume ? "resume" : "fresh" } };
+  });
   api.startAgentTerminal.mockImplementation(async ({ body }: { body: { agent_id: string; project_id?: string } }) => {
     roster = roster.map((row) => row.id === body.agent_id
       ? { ...row, session_id: "started-" + row.id, session_state: "running", session_provider: "tmux",
@@ -135,6 +142,73 @@ afterEach(() => {
 });
 
 describe("Agent flock sidebar", () => {
+
+  it("lists every running session the rows above do not already show", async () => {
+    const base: FlockSession = { session_id: "s", name: "s", role: "supervisor", scope: "project-one",
+      project_id: "project-one", agent_id: null, provider: "openai", harness: "codex", model: "gpt-6-astra",
+      intelligence_class: "deep-low", profile_id: "supervisor", task_id: null,
+      state: "running", desired_state: "running", started_at: 1, last_activity: 2,
+      uptime_seconds: 90, lifecycle: "named" };
+    const sessions: FlockSession[] = [
+      { ...base, session_id: "proj-sup", name: "n-supervisor--project-one" },
+      { ...base, session_id: "asleep", name: "n-supervisor--sleepy", state: "sleeping", desired_state: "sleeping" },
+    ];
+    api.listAgents.mockImplementation(async () => ({ data: { agents: roster, count: roster.length, sessions } }));
+    renderFlock("/");
+    const group = await screen.findByRole("group", { name: "Other running sessions" });
+    expect(within(group).getByRole("link", { name: /n-supervisor--project-one/ })).toHaveAttribute("href", "/sessions/proj-sup");
+    expect(within(group).getByText("codex · gpt-6-astra · deep-low")).toBeInTheDocument();
+    expect(within(group).queryByText("n-supervisor--sleepy")).not.toBeInTheDocument();
+  });
+
+  it("shows unlinked supervisors and every session, with history on demand", async () => {
+    const sessions: FlockSession[] = [
+      { session_id: "global", name: "Global supervisor", role: "supervisor", scope: "global",
+        project_id: null, agent_id: null, provider: "openai", harness: "codex", model: "gpt-5",
+        intelligence_class: "standard-high", profile_id: "supervisor", task_id: null,
+        state: "running", desired_state: "running", started_at: 1, last_activity: 2,
+        uptime_seconds: 90, lifecycle: "named" },
+      { session_id: "sleeping", name: "Sleeping supervisor", role: "supervisor", scope: "project-one",
+        project_id: "project-one", agent_id: null, provider: "anthropic", harness: "claude", model: "sonnet",
+        intelligence_class: "standard-high", profile_id: "supervisor", task_id: null,
+        state: "sleeping", desired_state: "sleeping", started_at: 1, last_activity: 2,
+        uptime_seconds: 120, lifecycle: "named" },
+    ];
+    api.listAgents.mockImplementation(async ({ body }: { body: { include_stopped?: boolean } }) => ({
+      data: { agents: roster, count: roster.length, sessions: body.include_stopped
+        ? [...sessions, { ...sessions[0]!, session_id: "old", name: "Old supervisor", state: "stopped" }]
+        : sessions },
+    }));
+    renderFlock("/agents", true);
+    const directory = await screen.findByRole("region", { name: "All flock sessions" });
+    expect(await within(directory).findByRole("link", { name: "Global supervisor" })).toHaveAttribute("href", "/sessions/global");
+    expect(within(directory).getByText("project-one")).toBeInTheDocument();
+    expect(within(directory).getByText("openai / gpt-5 / standard-high")).toBeInTheDocument();
+    expect(within(directory).queryByText("Old supervisor")).not.toBeInTheDocument();
+    fireEvent.click(within(directory).getByLabelText("Show stopped history"));
+    expect(await within(directory).findByText("Old supervisor")).toBeInTheDocument();
+    expect(api.listAgents).toHaveBeenCalledWith(expect.objectContaining({ body: { include_stopped: true } }));
+    fireEvent.change(within(directory).getByLabelText("Session state"), { target: { value: "sleeping" } });
+    expect(within(directory).getByText("Sleeping supervisor")).toBeInTheDocument();
+    expect(within(directory).queryByText("Global supervisor")).not.toBeInTheDocument();
+  });
+
+  it("cleans up an inactive supervisor and refreshes the session roster", async () => {
+    let sessions = [{ session_id: "sleeping", name: "Stale supervisor", role: "supervisor", scope: "global",
+      project_id: null, agent_id: null, provider: "openai", harness: "codex", model: "gpt-5",
+      intelligence_class: "standard-high", profile_id: "supervisor", task_id: null,
+      state: "sleeping", desired_state: "sleeping", started_at: 1, last_activity: 2,
+      uptime_seconds: 90, lifecycle: "named" }];
+    api.listAgents.mockImplementation(async () => ({ data: { agents: roster, count: roster.length, sessions } }));
+    api.sessionPrune.mockImplementation(async () => {
+      sessions = [];
+      return { data: { success: true, session_id: "sleeping" } };
+    });
+    renderFlock("/agents", true);
+    fireEvent.click(await screen.findByRole("button", { name: "Clean up Stale supervisor" }));
+    await waitFor(() => expect(api.sessionPrune).toHaveBeenCalledWith({ body: { session_id: "sleeping" }, throwOnError: true }));
+    await waitFor(() => expect(screen.queryByText("Stale supervisor")).not.toBeInTheDocument());
+  });
 
   it("focuses the selected terminal after ready, then moves focus when switching and re-selecting", async () => {
     renderFlock("/agents", true);
@@ -221,7 +295,7 @@ describe("Agent flock sidebar", () => {
 
 
   it.each([
-    ["/tasks/task-1", "/projects/first/tasks?q=worktree&completed=1", "/projects/second/tasks?q=worktree&completed=1"],
+    ["/tasks/task-1", "/projects/first/tasks-knowledge?q=worktree&completed=1", "/projects/second/tasks-knowledge?q=worktree&completed=1"],
     ["/tasks/task-1/files", "/projects/first/graph?status=READY", "/projects/second/graph?status=READY"],
     ["/sessions/session-1", "/projects/first/sessions?q=triage", "/projects/second/sessions?q=triage"],
     ["/playbooks/audit", "/projects/first/playbooks?completed=1", "/projects/second/playbooks?completed=1"],
@@ -337,7 +411,13 @@ describe("Tiled agent workspace", () => {
   it("opens the exact live session in the main Terminal tab by default", async () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
-    expect(within(window).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+    // The Terminal | Settings switch is in the header, before any disclosure.
+    const header = window.querySelector("header")!;
+    expect(within(window).queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(header).getByRole("tablist", { name: "Supervisor view" })).toBeVisible();
+    expect(within(header).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(header).getByRole("button", { name: /^Details for / }));
+    expect(within(header).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(TerminalSocketMock.instances.map((source) => new URL(source.url).pathname)).toEqual(["/ws/terminal/session-a"]);
     act(() => {
@@ -403,13 +483,21 @@ describe("Tiled agent workspace", () => {
   it("stops streaming while Settings is visible and resumes on Terminal", async () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
+    // The view switch rides the header, so changing views opens no disclosure.
+    const header = window.querySelector("header")!;
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     act(() => TerminalSocketMock.instances[0]!.open());
-    fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
+    fireEvent.click(within(header).getByRole("tab", { name: "Settings" }));
     expect(TerminalSocketMock.instances[0]!.closed).toBe(true);
-    expect(within(window).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.click(within(window).getByRole("tab", { name: "Terminal" }));
+    expect(within(header).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    expect(within(window).queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(within(header).getByRole("tab", { name: "Terminal" }));
     await waitFor(() => expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1));
+    // The disclosure carries the pane's details, not a second copy of the switch.
+    fireEvent.click(within(header).getByRole("button", { name: /^Details for / }));
+    const dialog = within(window).getByRole("dialog");
+    expect(within(dialog).queryByRole("tab")).toBeNull();
+    expect(within(dialog).getByText(/Profile:/)).toBeVisible();
   });
 
   it("disables a non-pooled agent from its flock row and shows what stays running", async () => {
@@ -456,6 +544,7 @@ describe("Tiled agent workspace", () => {
   it("saves only individual configured overrides and refreshes the roster", async () => {
     renderFlock("/agents?agent=b", true);
     const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     expect(within(window).getByLabelText("Model override")).toHaveValue("");
     fireEvent.change(within(window).getByLabelText("Name"), { target: { value: "New Builder" } });
@@ -475,6 +564,7 @@ describe("Tiled agent workspace", () => {
     roster[1]!.settings.model = "existing-override";
     renderFlock("/agents?agent=b", true);
     const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     fireEvent.change(within(window).getByLabelText("Model override"), { target: { value: "" } });
     api.editAgent.mockRejectedValueOnce(new Error("Agent settings are read-only for this caller"));
@@ -489,6 +579,7 @@ describe("Tiled agent workspace", () => {
     roster[0]!.settings.model = "configured-for-next-run";
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     expect(within(window).getByText(/model unknown/i)).toBeInTheDocument();
     expect(within(window).queryByText(/configured-for-next-run/)).not.toBeInTheDocument();
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
@@ -567,6 +658,7 @@ describe("Agents finishing current work", () => {
     renderFlock("/agents?agent=a", true);
     const sidebar = await screen.findByRole("button", { name: "Open Supervisor" });
     const window = screen.getByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(within(sidebar).getByText("busy")).toBeInTheDocument();
     expect(within(sidebar).getByText("New work disabled")).toBeInTheDocument();
@@ -584,6 +676,7 @@ describe("Deleting a defined worker", () => {
   async function builderSettings(initial = "/agents?agent=b") {
     renderFlock(initial, true);
     const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     return window;
   }
@@ -661,6 +754,7 @@ describe("Deleting a defined worker", () => {
   it("protects the supervisor from deletion", async () => {
     renderFlock("/agents?agent=a", true);
     const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(supervisor).getByRole("tab", { name: "Settings" }));
     expect(within(supervisor).queryByRole("button", { name: "Delete agent" })).not.toBeInTheDocument();
     expect(within(supervisor).getByText(/supervisor agents cannot be deleted/i)).toBeInTheDocument();
@@ -681,6 +775,24 @@ describe("Deleting a defined worker", () => {
 });
 
 describe("Starting and using agent terminals", () => {
+  it("reconnects Oracle Owl to the same global session without a project picker", async () => {
+    roster[0] = { ...roster[0]!, id: "supervisor-global", name: "Oracle Owl", state: "running",
+      current_task_id: null, current_task_title: null, session_id: "global-session" };
+    renderFlock("/agents?agent=supervisor-global", true);
+    const window = await screen.findByRole("region", { name: "Oracle Owl agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
+    expect(within(window).getByText("Task: Supervises all AQ projects")).toBeInTheDocument();
+    expect(within(window).queryByText("Task: Idle — no assigned task")).not.toBeInTheDocument();
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    act(() => { TerminalSocketMock.instances[0]!.ready(); TerminalSocketMock.instances[0]!.serverClose(); });
+    fireEvent.click(within(window).getByRole("button", { name: "Reconnect now" }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2));
+    expect(TerminalSocketMock.instances.map((socket) => new URL(socket.url).pathname))
+      .toEqual(["/ws/terminal/global-session", "/ws/terminal/global-session"]);
+    expect(within(window).queryByRole("combobox", { name: "Project for Oracle Owl terminal" })).not.toBeInTheDocument();
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+  });
+
   it("offers direct terminal input for workers and the supervisor without a Chat tab", async () => {
     renderFlock("/agents?agent=a&agent=b", true);
     await screen.findByRole("region", { name: "Supervisor agent window" });
@@ -728,7 +840,28 @@ describe("Starting and using agent terminals", () => {
     await waitFor(() => expect(api.startAgentTerminal).toHaveBeenCalledWith({
       body: { agent_id: "b", project_id: "active" }, throwOnError: true,
     }));
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     expect(await within(window).findByText("Attached project: active")).toBeInTheDocument();
+  });
+
+  it.each([null, "sleeping"])("starts or resumes the %s supervisor across all projects without a picker", async (state) => {
+    roster[0] = { ...roster[0]!, id: "supervisor-global", name: "Oracle Owl", state: "idle",
+      current_task_id: null, current_task_title: null, session_state: state,
+      session_id: state ? "sleeping-supervisor" : null };
+    api.listProjects.mockResolvedValue({ data: { projects: [
+      { id: "active", name: "Active project", status: "ACTIVE" },
+    ] } });
+    renderFlock("/agents?agent=supervisor-global", true);
+    const window = await screen.findByRole("region", { name: "Oracle Owl agent window" });
+    expect(within(window).queryByRole("combobox", { name: "Project for Oracle Owl terminal" })).not.toBeInTheDocument();
+    expect(within(window).getByText("Supervisor access: all projects.")).toBeInTheDocument();
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+    fireEvent.click(within(window).getByRole("button", { name: state ? "Resume terminal" : "Start terminal" }));
+    await waitFor(() => expect(api.startAgentTerminal).toHaveBeenCalledWith({
+      body: { agent_id: "supervisor-global" }, throwOnError: true,
+    }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    expect(new URL(TerminalSocketMock.instances[0]!.url).pathname).toBe("/ws/terminal/started-supervisor-global");
   });
 
   it.each(["disabled", "busy", "starting", "subprocess"])("does not offer to launch an unavailable %s agent", async (reason) => {
@@ -809,5 +942,135 @@ describe("Task-lifecycle sessions running on a pool's route", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open opencode-b (outside pool)" }), { shiftKey: true });
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=oc-1&agent=oc-2");
     expect(await screen.findByRole("region", { name: "opencode-b agent window" })).toBeInTheDocument();
+  });
+});
+
+
+describe("supervisor restart", () => {
+  it("restarts fresh by default and reconnects the terminal to its replacement", async () => {
+    renderFlock("/agents?agent=a", true);
+    const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
+    expect(within(supervisor).getByRole("combobox", { name: "Restart conversation" })).toHaveValue("fresh");
+    fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(api.supervisorRestart).toHaveBeenCalledWith({
+      body: { name: "supervisor-global", resume: false, session_id: "session-a" }, throwOnError: true,
+    }));
+    await within(supervisor).findByText("Supervisor restarted with a fresh conversation.");
+    await waitFor(() => expect(TerminalSocketMock.instances.some((socket) => socket.url.includes("/restarted-supervisor"))).toBe(true));
+  });
+
+  it("lets the user resume the prior conversation", async () => {
+    renderFlock("/agents?agent=a", true);
+    const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
+    fireEvent.change(within(supervisor).getByRole("combobox", { name: "Restart conversation" }), { target: { value: "resume" } });
+    fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(api.supervisorRestart).toHaveBeenCalledWith({
+      body: { name: "supervisor-global", resume: true, session_id: "session-a" }, throwOnError: true,
+    }));
+    await within(supervisor).findByText("Supervisor restarted with the prior conversation.");
+  });
+
+  it("prevents repeated clicks during restart and shows a launch failure", async () => {
+    let reject!: (error: Error) => void;
+    api.supervisorRestart.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
+    renderFlock("/agents?agent=a", true);
+    const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
+    fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
+    expect(await within(supervisor).findByRole("button", { name: "Restarting…" })).toBeDisabled();
+    expect(within(supervisor).getByRole("combobox", { name: "Restart conversation" })).toBeDisabled();
+    act(() => reject(new Error("Supervisor stopped but relaunch failed")));
+    expect(await within(supervisor).findByRole("alert")).toHaveTextContent("relaunch failed");
+    expect(api.supervisorRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not offer supervisor restart in a worker window", async () => {
+    renderFlock("/agents?agent=b", true);
+    const worker = await screen.findByRole("region", { name: "Builder agent window" });
+    expect(within(worker).queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+  });
+});
+
+describe("project supervisor messages", () => {
+  it("lists all 13 unlinked supervisors with their project, activity and auth health", async () => {
+    roster = [...roster, ...Array.from({ length: 13 }, (_, index) => ({
+      ...agent("session:sup-" + index, "Supervisor · project-" + index),
+      profile_id: "supervisor", role: "supervisor", state: "running", project_id: "project-" + index,
+      session_id: "sup-" + index, session_backed: true, session_address: "supervisor-project-" + index,
+      idle_seconds: 90, last_activity: 100, auth_health: { state: index === 3 ? "failed" : "unknown", status_code: index === 3 ? 401 : null },
+    }))];
+    renderFlock();
+    for (let index = 0; index < 13; index++) {
+      const row = await screen.findByRole("button", { name: "Open Supervisor · project-" + index });
+      expect(within(row).getByText("Supervises project-" + index)).toBeInTheDocument();
+      expect(within(row).getByText(/Idle: 1m · Last activity:/)).toBeInTheDocument();
+      expect(within(row).getByText("Harness: claude")).toBeInTheDocument();
+    }
+    const failed = screen.getByRole("button", { name: "Open Supervisor · project-3" });
+    expect(within(failed).getByText("Auth: failed (HTTP 401)")).toHaveClass("text-red-400");
+    expect(screen.queryByRole("switch", { name: /Supervisor · project-3/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the exact terminal, sends via the project relay, and shows delivered, read and replied states", async () => {
+    HTMLElement.prototype.scrollTo = vi.fn();
+    const { __dispatchEventForTests } = await import("../../../ws/useEventStream");
+    let messages: Record<string, unknown>[] = [{
+      id: "cli-message", from_kind: "user", from_id: "cli", to_kind: "session", to_id: "supervisor-project-one",
+      body: "Unread CLI request", thread_id: "cli-thread", project_id: "project-one", created_at: 10,
+      delivered_at: null, read_at: null,
+    }];
+    let failure: { at: number; reason: string; deferred: boolean } | null = {
+      at: 11, reason: "nudge transport failed", deferred: false,
+    };
+    api.getSessionMessagesApiSessionsNameMessagesGet.mockImplementation(async () => ({ data: {
+      success: true, session: "supervisor-project-one", project_id: "project-one", count: messages.length,
+      messages, delivery_failure: failure,
+    } }));
+    api.postSessionMessageApiSessionsNameMessagePost.mockImplementation(async ({ body }) => {
+      messages = [...messages, { id: "sent", ...body, from_kind: "user", from_id: "dashboard",
+        to_kind: "session", to_id: "supervisor-project-one", project_id: "project-one", created_at: Date.now() / 1000 }];
+      return { data: { success: true, message_id: "sent", state: "queued" } };
+    });
+    roster.push({ ...agent("session:sup-one", "Supervisor · project-one"), profile_id: "supervisor",
+      role: "supervisor", project_id: "project-one", session_id: "sup-one", session_backed: true,
+      session_address: "supervisor-project-one" });
+    renderFlock("/agents", true);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Supervisor · project-one" }));
+    const window = await screen.findByRole("region", { name: "Supervisor · project-one agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    expect(new URL(TerminalSocketMock.instances[0]!.url).pathname).toBe("/ws/terminal/sup-one");
+    expect(within(window).queryByRole("tab", { name: "Settings" })).not.toBeInTheDocument();
+    fireEvent.click(within(window).getByRole("tab", { name: "Messages" }));
+    expect(await within(window).findByText("Unread CLI request")).toBeInTheDocument();
+    expect(within(window).getByRole("alert")).toHaveTextContent("nudge transport failed");
+    expect(within(window).getByText("Delivery failed · awaiting retry")).toBeInTheDocument();
+    expect(api.getSessionMessagesApiSessionsNameMessagesGet).toHaveBeenCalledWith({
+      path: { name: "supervisor-project-one" }, query: { since: undefined, limit: 200, thread_id: undefined, supervisor_only: true }, throwOnError: true,
+    });
+    fireEvent.change(within(window).getByRole("textbox", { name: "Message the supervisor" }), { target: { value: "Status please" } });
+    fireEvent.click(within(window).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.postSessionMessageApiSessionsNameMessagePost).toHaveBeenCalledWith({
+      path: { name: "supervisor-project-one" }, body: { body: "Status please", from: "dashboard", from_kind: "user", thread_id: "dashboard:project-one" }, throwOnError: true,
+    }));
+    await waitFor(() => expect(within(window).getByText("Queued · unread")).toBeInTheDocument());
+    failure = null;
+    messages = messages.map((msg) => msg.id === "sent" ? { ...msg, delivered_at: 20 } : msg);
+    act(() => __dispatchEventForTests({ _event_type: "message.delivered", event_type: "message.delivered",
+      message_id: "sent", project_id: "project-one", method: "nudge" }));
+    expect(await within(window).findByText("Delivered · unread")).toBeInTheDocument();
+    messages = messages.map((msg) => msg.id === "sent" ? { ...msg, read_at: 21 } : msg);
+    act(() => __dispatchEventForTests({ _event_type: "message.delivered", event_type: "message.delivered",
+      message_id: "sent", project_id: "project-one", method: "inject" }));
+    expect(await within(window).findByText("Read")).toBeInTheDocument();
+    messages = [...messages, { id: "reply", from_kind: "session", from_id: "supervisor-project-one",
+      to_kind: "user", to_id: "dashboard", body: "Everything is running", project_id: "project-one",
+      thread_id: "dashboard:project-one", reply_to_id: "sent", created_at: Date.now() / 1000 + 1 }];
+    act(() => __dispatchEventForTests({ _event_type: "message.replied", event_type: "message.replied",
+      message_id: "sent", reply_id: "reply", project_id: "project-one" }));
+    expect(await within(window).findByText("Everything is running")).toBeInTheDocument();
+    expect(within(window).getByText("Replied")).toBeInTheDocument();
+    expect(within(window).queryByRole("alert")).not.toBeInTheDocument();
   });
 });

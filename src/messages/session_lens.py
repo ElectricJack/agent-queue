@@ -30,17 +30,17 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
+from copy import copy
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
-
 
 from src.models import SessionRecord, TaskStatus
 from src.sessions.provider import (
     CapabilityUnsupported,
     NotSubmitted,
     NudgeDeferred,
-    SessionHandle,
     SessionExecutableNotFound,
+    SessionHandle,
 )
 from src.sessions.spec import named_session_name
 from src.sessions.transcripts.base import TranscriptEntry
@@ -50,12 +50,15 @@ logger = logging.getLogger(__name__)
 __all__ = ["Activity", "SessionManagerProto", "SessionLens"]
 
 
+class SupervisorRestartError(ValueError):
+    """A supervisor restart was refused or could not complete safely."""
+
+
 #: Coarse activity signal reported to the delivery engine.
 #:
 #: * ``idle``     — live and quiet; safe to nudge.
 #: * ``busy``     — live and mid-turn; delivery engine skips this pass and
-#:                  lets the ``UserPromptSubmit`` inject hook catch the
-#:                  message at the next prompt boundary.
+#:                  retries at the next idle observation.
 #: * ``sleeping`` — a wake-able target (supervisor) with no live session.
 #: * ``absent``   — no live session and the messenger must not spawn one
 #:                  (task sessions are launched by the task lifecycle).
@@ -153,8 +156,14 @@ class SessionManagerProto(Protocol):
         target_id: str,
         project_id: str | None,
         since: float,
+        until: float | None = None,
     ) -> str | None:
-        """Last assistant turn newer than *since*, or ``None``."""
+        """First assistant prose turn in ``(since, until]``, or ``None``.
+
+        *until* closes the window so a caller can insist the turn answered
+        one specific delivery rather than being whatever the session said
+        much later (the first turn after a resume, say).
+        """
         ...
 
 
@@ -181,6 +190,8 @@ class SessionLens:
         profiles_loader,
         epoch: str = "",
         token_store=None,
+        bus=None,
+        availability=None,
     ):
         self._db = db
         self._providers = providers
@@ -199,18 +210,23 @@ class SessionLens:
         #: forwards it to the harness via ``AQ_API_TOKEN``.  Tests may
         #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
         self._token_store = token_store
+        self._bus = bus
+        self._availability = availability
         self._start_locks: dict[str, asyncio.Lock] = {}
         self._activity_cursors: dict[str, _ActivityCursor] = {}
         #: Latest refused nudge per session id, cleared by the next success.
         #: Doctor reads it to say *why* a live idle worker still has mail.
         self._nudge_failures: dict[str, dict] = {}
+        #: Supervisor addresses already reported as aliased or undeliverable,
+        #: so a pending row logs once per daemon, not once per delivery pass.
+        self._reported_addresses: set[tuple[str, str | None]] = set()
 
     # -- SessionManagerProto ------------------------------------------------
 
     async def activity(self, *, kind: str, target_id: str, project_id: str | None) -> Activity:
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is None or handle is None:
-            return self._absent_signal(kind=kind, target_id=target_id)
+            return await self._absent_signal(kind=kind, target_id=target_id, project_id=project_id)
 
         provider = self._providers.create(row.provider)
         try:
@@ -219,7 +235,7 @@ class SessionLens:
             logger.debug("is_running failed for %s", row.name, exc_info=True)
             running = False
         if not running:
-            return self._absent_signal(kind=kind, target_id=target_id)
+            return await self._absent_signal(kind=kind, target_id=target_id, project_id=project_id)
 
         activity = await self._transcript_activity(row)
         if activity is not None:
@@ -280,6 +296,11 @@ class SessionLens:
         raise_start_error: bool = False,
     ) -> bool:
         """Wake on demand; explicit terminal callers may request safe launch errors."""
+        if kind == "session" and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
+            address = await self._supervisor_address(target_id, project_id)
+            if address is None:
+                return False
+            target_id = address
         # All message, button and reconciler wakes share this lock. Key it by
         # runtime name so aliases cannot launch a second copy of the supervisor.
         name = _resolve_runtime_session_name(kind, target_id)
@@ -292,6 +313,10 @@ class SessionLens:
     async def _ensure_started_locked(
         self, *, kind: str, target_id: str, project_id: str | None,
         raise_start_error: bool = False,
+        wake: str | None = None,
+        resume_key: str | None = None,
+        recovery_harness: str | None = None,
+        recovery_health: dict | None = None,
     ) -> bool:
         # Only supervisor-named sessions are wake-on-demand. Task sessions
         # are launched by the task lifecycle; spawning one from the message
@@ -299,7 +324,43 @@ class SessionLens:
         if kind != "session" or not target_id.startswith(_SUPERVISOR_NAME_PREFIX):
             return False
 
+        from src.models import ProjectStatus
+
+        suffix = target_id[len(_SUPERVISOR_NAME_PREFIX):]
+        if suffix != _GLOBAL_SUPERVISOR_SUFFIX:
+            project = await self._db.get_project(suffix)
+            if project is not None and not project.supervisor_enabled:
+                logger.info("Project supervisor %s is disabled; refusing start/wake", suffix)
+                return False
+            if project is not None and project.status == ProjectStatus.PAUSED:
+                logger.info("Project %s is paused; refusing supervisor start/wake", suffix)
+                return False
+            # A message after re-enabling may arrive while the previous turn
+            # is still draining. Reuse that running instance on this explicit
+            # wake rather than spawning a second terminal with the same name.
+            current = await self._db.get_session_by_name(
+                _resolve_runtime_session_name(kind, target_id)
+            )
+            if (current is not None and current.state == "running"
+                    and current.desired_state == "stopped"):
+                await self._db.update_session_instance(
+                    current.id, current.instance_token, require_desired_state="stopped",
+                    desired_state="running",
+                )
+
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
+        recovery_row = row or await self._db.get_session_by_name(
+            _resolve_runtime_session_name(kind, target_id),
+        )
+        if (wake is None and recovery_row is not None
+                and (recovery_row.supervisor_health or {}).get("attempts")):
+            saved = recovery_row.supervisor_health
+            if recovery_row.state not in {"starting", "running"}:
+                if time.time() < saved.get("next_retry_at", 0):
+                    return False
+                recovery_health = saved
+                recovery_harness = saved.get("recovery_harness")
+                wake = "fresh"
         if row is not None and handle is not None:
             provider = self._providers.create(row.provider)
             try:
@@ -330,6 +391,16 @@ class SessionLens:
                 target_id,
             )
             return False
+        if not is_global and await self._db.get_project(derived_project) is None:
+            # Validate before spawning: the launch precedes the sessions row,
+            # so a missing project would start a harness, fail
+            # ``sessions_project_id_fkey`` and repeat on every wake.
+            self._report_address(
+                target_id, project_id,
+                "supervisor %r: project %r does not exist; refusing to start a session",
+                target_id, derived_project,
+            )
+            return False
 
         profile = await self._profiles_loader("supervisor")
         if profile is None:
@@ -337,13 +408,22 @@ class SessionLens:
             return False
 
         from src.agents.configuration import (
-            apply_agent_overrides, ensure_supervisor_agent, resolve_launch_settings,
+            apply_agent_overrides,
+            ensure_supervisor_agent,
+            resolve_launch_settings,
         )
         agent = await ensure_supervisor_agent(self._db) if is_global else None
         if agent is not None:
             if not agent.enabled:
                 return False
             profile = apply_agent_overrides(profile, agent)
+
+        if recovery_harness or recovery_health:
+            profile = copy(profile)
+            if recovery_harness:
+                profile.harness = recovery_harness
+            if recovery_health and recovery_health.get("recovery_class"):
+                profile.default_class = recovery_health["recovery_class"]
 
         harness_name = getattr(profile, "harness", None) or "claude"
         # For the global supervisor there is no per-project harness
@@ -354,6 +434,13 @@ class SessionLens:
         if harness is None:
             logger.warning("harness %r not registered; cannot start supervisor", harness_name)
             return False
+        if self._availability is not None:
+            provider_key = self._availability.provider_for_profile(
+                profile, agent=agent, project_id=harness_project,
+            )
+            if self._availability.suppresses(provider_key):
+                logger.info("Provider %s is unavailable; refusing supervisor start", provider_key)
+                return False
 
         # Match the reconciler exactly: use the operator's configured
         # provider. Tests must register the fake under that same name (or
@@ -455,12 +542,16 @@ class SessionLens:
              and (agent is None or s.agent_id in {None, agent.id})),
             key=lambda s: s.started_at or 0, default=None,
         )
-        resume_key = (
-            previous.session_key if previous is not None
-            and getattr(profile, "wake_mode", None) == "resume"
-            and harness.resume.style != "none" else None
-        )
+        if wake is None:
+            resume_key = (
+                previous.session_key if previous is not None
+                and getattr(profile, "wake_mode", None) == "resume"
+                and harness.resume.style != "none" else None
+            )
+        elif wake == "fresh":
+            resume_key = None
         handle = None
+        context_service = bundle = bootstrap = None
         try:
             spec = self._spec_builder.build_named_spec(
                 profile=profile,
@@ -474,12 +565,51 @@ class SessionLens:
                 wake="resume" if resume_key else "fresh",
                 resume_key=resume_key,
             )
+            from src.knowledge.context import (
+                ContextService,
+                context_enabled,
+                supervisor_bootstrap_principal,
+            )
+            if context_enabled(self._config) and (
+                harness_project is None
+                or harness_project in self._config.knowledge.enabled_projects
+            ):
+                context_service = ContextService(self._db, self._config)
+                bootstrap = supervisor_bootstrap_principal(
+                    profile, project_id=harness_project, session_id=session_id,
+                    instance_token=instance_token,
+                )
+                # The default global bootstrap selects no private projects.
+                # A project bootstrap uses the same selector as worker prime.
+                required = spec.prompt or ""
+                bundle = await context_service.prepare(
+                    principal=bootstrap, required=required,
+                    query=self._config.knowledge.context.supervisor_query,
+                    project_ids=([harness_project] if harness_project else
+                                 self._config.knowledge.context.supervisor_project_ids),
+                    global_scope=(self._config.knowledge.context.supervisor_global_scope
+                                  if harness_project is None else False),
+                )
+                from src.knowledge.budget import ContextBudget
+
+                ContextBudget(**bundle.budget["requested"]).enforce(
+                    required, bundle.to_markdown(),
+                )
+                if bundle.items:
+                    spec = self._spec_builder.build_named_spec(
+                        profile=profile, harness=harness, project_id=harness_project,
+                        work_dir=work_dir, session_id=session_id, instance_token=instance_token,
+                        epoch=self._epoch, api_token=api_token,
+                        wake="resume" if resume_key else "fresh", resume_key=resume_key,
+                        prompt=required + "\n\n" + bundle.to_markdown(),
+                    )
             # Precompute our fenced handle so partial starts can also be cleaned up.
             handle = SessionHandle(spec.session_name, provider_name, instance_token)
             launched_at = time.time()
-            await provider.start(spec)
-            await self._db.create_session(
-                SessionRecord(
+            from src.sessions.launch import launch_session
+
+            await launch_session(
+                self._db, provider, spec, SessionRecord(
                     id=session_id,
                     agent_id=agent.id if agent is not None else None,
                     **resolve_launch_settings(profile, harness, self._spec_builder),
@@ -496,18 +626,30 @@ class SessionLens:
                     session_key=resume_key or (session_id if harness.session_id_flag else None),
                     state="running",
                     desired_state="running",
+                    supervisor_health=recovery_health,
                     hooks_provisioned=spec.hooks_provisioned,
-                )
+                ), bus=self._bus,
             )
+            if bundle is not None and spec.prompt is not None:
+                from src.knowledge.context import live_bootstrap_principal
+
+                await context_service.observe_delivery(
+                    bundle_id=bundle.bundle_id, principal=live_bootstrap_principal(bootstrap),
+                    transport="session_start", transport_key=f"session-start:{session_id}",
+                    rendered_sha256=bundle.content_sha256,
+                )
         except BaseException as exc:
             # Adoption can publish our exact row during a slow launch. A
             # different instance is never ours to keep, stop, or overwrite.
             own = await self._db.get_session(session_id)
-            if own is not None and own.instance_token == instance_token:
+            if (own is not None and own.instance_token == instance_token
+                    and own.state == "running"):
                 if isinstance(exc, asyncio.CancelledError):
                     raise
+                logger.warning("supervisor %s started; post-start acknowledgement failed",
+                               target_id, exc_info=True)
                 return True
-            if handle is not None:
+            if handle is not None and own is not None and own.state != "stopped":
                 try:
                     await provider.stop(handle)
                 except Exception:
@@ -521,6 +663,158 @@ class SessionLens:
                 raise
             return False
         return True
+
+    async def restart_supervisor(
+        self, *, target_id: str, project_id: str | None,
+        resume: bool = False, expected_session_id: str | None = None,
+        recovery_harness: str | None = None, recovery_health: dict | None = None,
+        restart_reason: str = "operator_restart",
+    ) -> SessionRecord:
+        """Retire one fenced instance and relaunch through the named spec builder.
+
+        Share the cold-start lock with message delivery and reconciliation so
+        neither can start a replacement between stop and launch.
+        """
+        if not target_id.startswith(_SUPERVISOR_NAME_PREFIX) or target_id == "supervisor-":
+            raise SupervisorRestartError("name must be a supervisor messaging address")
+        name = _resolve_runtime_session_name("session", target_id)
+        async with self._start_locks.setdefault(name, asyncio.Lock()):
+            row, handle = await self._resolve(
+                kind="session", target_id=target_id, project_id=project_id
+            )
+            if (row is None or row.lifecycle != "named" or row.task_id
+                    or row.profile_id != "supervisor" or row.project_id != project_id):
+                raise SupervisorRestartError("No named supervisor session to restart")
+            if expected_session_id is not None and row.id != expected_session_id:
+                raise SupervisorRestartError("Supervisor session changed; refresh before restarting")
+            if not getattr(self._config.sessions, "enabled", False):
+                raise SupervisorRestartError("Session runtime is disabled")
+            if self._token_store is None:
+                raise SupervisorRestartError("Supervisor token service is unavailable")
+            profile = await self._profiles_loader("supervisor")
+            if profile is None:
+                raise SupervisorRestartError("Supervisor profile is unavailable")
+            if row.project_id is None:
+                from src.agents.configuration import apply_agent_overrides, ensure_supervisor_agent
+
+                agent = await ensure_supervisor_agent(self._db)
+                if not agent.enabled:
+                    raise SupervisorRestartError("Supervisor is disabled; enable it before restarting")
+                profile = apply_agent_overrides(profile, agent)
+            harness = self._harnesses.get(
+                recovery_harness or getattr(profile, "harness", None) or "claude",
+                project_id=row.project_id,
+            )
+            if harness is None:
+                raise SupervisorRestartError("Supervisor harness is not registered")
+            resume_key = row.session_key if resume else None
+            if resume and (
+                not resume_key or harness.resume.style == "none"
+                or harness.id != row.harness
+                or row.work_dir != self._supervisor_work_dir(row.project_id)
+            ):
+                raise SupervisorRestartError("The prior supervisor conversation cannot be resumed")
+            try:
+                provider = self._providers.create(row.provider)
+                # Persist intent before signalling; a concurrent observer must
+                # treat this death as requested instead of spending crash budget.
+                changed = await self._db.update_session_instance(
+                    row.id, row.instance_token, desired_state="stopped"
+                )
+                if not changed:
+                    raise SupervisorRestartError("Supervisor session changed; refresh before restarting")
+                await provider.stop(handle)
+                if not await provider.confirm_stopped(handle):
+                    raise SupervisorRestartError("Could not confirm the supervisor stopped")
+            except SupervisorRestartError:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running",
+                    )
+                raise
+            except Exception as exc:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running",
+                    )
+                raise SupervisorRestartError("Could not stop the supervisor; check session logs") from exc
+            fields = dict(desired_state="stopped", ended_at=time.time(), end_reason=restart_reason)
+            # Keep quarantine evidence on a terminal row; it cannot transition
+            # back to stopped, and the successor has its own fresh row.
+            if row.state != "quarantined":
+                fields["state"] = "stopped"
+            await self._db.update_session_instance(row.id, row.instance_token, **fields)
+            await self._token_store.revoke_session(row.id)
+            self._activity_cursors.pop(row.id, None)
+            try:
+                started = await self._ensure_started_locked(
+                    kind="session", target_id=target_id, project_id=row.project_id,
+                    raise_start_error=True,
+                    wake="resume" if resume else "fresh", resume_key=resume_key,
+                    recovery_harness=recovery_harness, recovery_health=recovery_health,
+                )
+            except SessionExecutableNotFound as exc:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running", last_activity=time.time(),
+                    )
+                raise SupervisorRestartError(str(exc)) from exc
+            if not started:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running", last_activity=time.time(),
+                    )
+                raise SupervisorRestartError("Supervisor stopped but relaunch failed; check session logs")
+            successor = await self._db.get_session_by_name(name)
+            if successor is None or successor.id == row.id:
+                raise SupervisorRestartError("Supervisor relaunch did not publish a new session")
+            return successor
+
+    async def supervisor_recovery_route(self, row) -> str | None:
+        """Choose another installed harness within the same intelligence class.
+
+        Explicit individual model pins remain authoritative. Class mappings
+        authorize models; unavailable providers and missing executables cannot
+        receive recovery traffic. No profile or operator settings are edited.
+        """
+        import shutil
+
+        profile = await self._profiles_loader("supervisor")
+        if profile is None:
+            return None
+        if row.project_id is None:
+            from src.agents.configuration import apply_agent_overrides, ensure_supervisor_agent
+
+            profile = apply_agent_overrides(profile, await ensure_supervisor_agent(self._db))
+        if getattr(profile, "_agent_model_override", None):
+            return None
+        class_id = row.intelligence_class or getattr(profile, "default_class", None)
+        if not class_id:
+            return None
+        policy = self._config.provider_failover
+        if not policy.enforcing or policy.classes.get(class_id, policy.default_policy) != "same_class":
+            return None
+        profile = copy(profile)
+        profile.default_class = class_id
+        tried = set((row.supervisor_health or {}).get("tried_harnesses", [])) | {row.harness}
+        from src.providers.availability import provider_key
+
+        order = policy.order or ["claude", "codex"]
+        candidates = self._harnesses.list_for_scope(row.project_id)
+        candidates.sort(key=lambda h: (
+            order.index(provider_key(h)) if provider_key(h) in order else len(order), h.id,
+        ))
+        for candidate in candidates:
+            candidate = self._harnesses.get(candidate.id, project_id=row.project_id)
+            if candidate is None or candidate.id in tried:
+                continue
+            if self._availability is not None and self._availability.suppresses(provider_key(candidate)):
+                continue
+            if not await asyncio.to_thread(shutil.which, candidate.command):
+                continue
+            if self._spec_builder._resolve_model(profile, candidate, class_id):
+                return candidate.id
+        return None
 
     async def nudge(
         self,
@@ -552,10 +846,12 @@ class SessionLens:
                 "; AQ text remains in the composer" if exc.composer_dirty else "",
             )
             return False
-        except CapabilityUnsupported:
-            # Row stays pending. The delivery engine retries with backoff.
+        except CapabilityUnsupported as exc:
+            self._record_nudge_failure(row.id, exc)
+            logger.warning("message nudge to %s (%s): %s", row.name, row.id, exc)
             return False
-        except Exception:
+        except Exception as exc:
+            self._record_nudge_failure(row.id, exc)
             logger.exception("nudge failed for %s", row.name)
             return False
         self._nudge_failures.pop(row.id, None)
@@ -572,14 +868,20 @@ class SessionLens:
         """The latest refused nudge for *session_id* since its last success."""
         return self._nudge_failures.get(session_id)
 
-    def _record_nudge_failure(self, session_id: str, exc: NotSubmitted) -> None:
+    def _record_nudge_failure(self, session_id: str, exc: Exception) -> None:
         if session_id not in self._nudge_failures and len(self._nudge_failures) >= 256:
             self._nudge_failures.pop(next(iter(self._nudge_failures)))
         self._nudge_failures[session_id] = {
             "at": time.time(),
             "reason": str(exc),
             "deferred": isinstance(exc, NudgeDeferred),
-            "composer_dirty": exc.composer_dirty,
+            # The structured reason behind the prose: which refusals hold the
+            # stall ladder (a person is there) and which only hold message
+            # delivery is not something to re-derive from the message.
+            "reason_kind": (
+                str(exc.reason) if isinstance(exc, NudgeDeferred) else None
+            ),
+            "composer_dirty": getattr(exc, "composer_dirty", False),
         }
 
     async def tail_assistant_turn(
@@ -589,8 +891,15 @@ class SessionLens:
         target_id: str,
         project_id: str | None,
         since: float,
+        until: float | None = None,
     ) -> str | None:
-        """Last assistant turn on the target's transcript newer than *since*.
+        """First assistant prose turn in ``(since, until]``, or ``None``.
+
+        The window is the point of the method: the caller delivers a
+        message, waits ``reply_timeout``, and may only claim the turn that
+        answered *that* delivery.  Unbounded, a resumed long-lived session
+        "answered" every delivered-but-unreplied message in its backlog with
+        whatever it happened to say next (2026-10-05).
 
         The watcher (:class:`~src.sessions.transcripts.watcher.TranscriptWatcher`)
         is streaming-only — it holds byte offsets, not entries — so this
@@ -598,7 +907,7 @@ class SessionLens:
         this cadence: the delivery engine only reaches for the fallback
         after ``reply_timeout`` (default 120 s), one recipient at a time.
         """
-        from src.sessions.transcripts import resolve_reader
+        from src.sessions.transcripts import is_model_prose, resolve_reader
 
         row, _handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is None:
@@ -614,20 +923,90 @@ class SessionLens:
         except Exception:
             logger.debug("tail read failed for %s", row.name, exc_info=True)
             return None
-        for entry in reversed(entries):
-            if entry.type == "assistant" and entry.ts and entry.ts > since:
-                return entry.text or None
+        for entry in entries:
+            if entry.type != "assistant" or not entry.ts or entry.ts <= since:
+                continue
+            if until is not None and entry.ts > until:
+                # Transcripts are chronological; nothing later can qualify.
+                return None
+            # A tool call is not an answer. Skipping it here (rather than
+            # rejecting the tail in the caller) keeps a later prose turn in
+            # the window reachable.
+            if is_model_prose(entry.text):
+                return entry.text.strip()
         return None
 
     # -- internals ----------------------------------------------------------
 
-    @staticmethod
-    def _absent_signal(*, kind: str, target_id: str) -> Activity:
+    async def _absent_signal(
+        self, *, kind: str, target_id: str, project_id: str | None
+    ) -> Activity:
         """ "absent" for tasks and plain session names; "sleeping" only for
-        supervisor-named sessions (wake-able by design)."""
-        if kind == "session" and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
-            return "sleeping"
+        supervisor addresses that resolve to a supervisor (wake-able by
+        design). An undeliverable supervisor address is "absent": nothing may
+        be spawned for it, and the delivery engine parks its stale rows."""
+        if (
+            kind == "session"
+            and target_id.startswith(_SUPERVISOR_NAME_PREFIX)
+        ):
+            address = await self._supervisor_address(target_id, project_id)
+            if address is not None:
+                suffix = address[len(_SUPERVISOR_NAME_PREFIX):]
+                if suffix == _GLOBAL_SUPERVISOR_SUFFIX:
+                    return "sleeping"
+                project = await self._db.get_project(suffix)
+                if project is not None and project.supervisor_enabled:
+                    return "sleeping"
         return "absent"
+
+    async def _supervisor_address(self, target_id: str, project_id: str | None) -> str | None:
+        """The supervisor address *target_id* reaches, or None if undeliverable.
+
+        The suffix of ``supervisor-<pid>`` is authoritative whenever it names
+        a project, even against a different caller ``project_id`` (CHAT-1).
+        ``supervisor-global`` is the global supervisor, which has no project
+        by design. A suffix naming no project (agents wrote ``supervisor-aq``
+        for ``agent-queue``) resolves to the supervisor of *project_id* — the
+        message's own project, validated when it was sent — when that project
+        exists; the recipient is fenced to that same project. Without such a
+        project there is no supervisor to wake and none may be spawned.
+        """
+        suffix = target_id[len(_SUPERVISOR_NAME_PREFIX) :]
+        if suffix == _GLOBAL_SUPERVISOR_SUFFIX:
+            return target_id
+        if suffix and await self._db.get_project(suffix) is not None:
+            return target_id
+        if project_id and project_id != suffix and await self._db.get_project(project_id):
+            address = _SUPERVISOR_NAME_PREFIX + project_id
+            if suffix:
+                self._report_address(
+                    target_id, project_id,
+                    "supervisor address %r names no project; delivering to %r, "
+                    "the supervisor of the message's project",
+                    target_id, address, level=logging.INFO,
+                )
+            return address
+        self._report_address(
+            target_id, project_id,
+            "supervisor address %r names no project and message project %r names "
+            "no supervisor; not starting a session. Its messages park to their "
+            "sender once stale; re-send to supervisor-<project-id> or supervisor-global",
+            target_id, project_id,
+        )
+        return None
+
+    def _report_address(
+        self, target_id: str, project_id: str | None, msg: str, *args,
+        level: int = logging.WARNING,
+    ) -> None:
+        """Log an aliased or undeliverable supervisor address once per daemon."""
+        key = (target_id, project_id)
+        if key in self._reported_addresses:
+            return
+        if len(self._reported_addresses) >= 256:
+            self._reported_addresses.pop()
+        self._reported_addresses.add(key)
+        logger.log(level, msg, *args)
 
     async def _resolve(
         self, *, kind: str, target_id: str, project_id: str | None
@@ -652,7 +1031,9 @@ class SessionLens:
                 if (
                     task is None
                     or task.project_id != row.project_id
-                    or task.status not in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}
+                    or task.status not in {
+                        TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING,
+                    }
                     or row.claim_phase != "active"
                     or row.last_claim_epoch != task.claim_epoch
                     or row.agent_id != task.assigned_agent_id
@@ -672,10 +1053,28 @@ class SessionLens:
             if row is None:
                 runtime_name = _resolve_runtime_session_name(kind, target_id)
                 row = await self._db.get_session_by_name(runtime_name)
+            if row is None and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
+                # Only an address with no session of its own can be an alias.
+                address = await self._supervisor_address(target_id, project_id)
+                if address is not None and address != target_id:
+                    row = await self._db.get_session_by_name(
+                        _resolve_runtime_session_name(kind, address)
+                    )
         else:
             return None, None
 
         if row is None:
+            return None, None
+        if (row.lifecycle == "named" and row.project_id is not None
+                and row.name == "n-supervisor--" + row.project_id):
+            project = await self._db.get_project(row.project_id)
+            if project is None or not project.supervisor_enabled:
+                return None, None
+        if kind == "session" and (
+            row.state not in {"starting", "running"} or row.desired_state != "running"
+        ):
+            # An immutable UUID must never fall through to a successor with
+            # the same runtime name. Named addresses may wake separately.
             return None, None
         handle = SessionHandle(
             name=row.name,

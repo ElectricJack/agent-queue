@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> Response[ReviewDecideResponse | ReviewDecideResponse422]:
-    """Approve, request changes, or reject a current review revision.
+    """Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
-     Approve, request changes, or reject a current review revision.
+     Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
     Args:
         body (ReviewDecideRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> ReviewDecideResponse | ReviewDecideResponse422 | None:
-    """Approve, request changes, or reject a current review revision.
+    """Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
-     Approve, request changes, or reject a current review revision.
+     Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
     Args:
         body (ReviewDecideRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> Response[ReviewDecideResponse | ReviewDecideResponse422]:
-    """Approve, request changes, or reject a current review revision.
+    """Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
-     Approve, request changes, or reject a current review revision.
+     Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
     Args:
         body (ReviewDecideRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> ReviewDecideResponse | ReviewDecideResponse422 | None:
-    """Approve, request changes, or reject a current review revision.
+    """Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
-     Approve, request changes, or reject a current review revision.
+     Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise
+    behavior; decline holds work without creating a revision task.
 
     Args:
         body (ReviewDecideRequest):
