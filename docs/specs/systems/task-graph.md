@@ -438,6 +438,13 @@ For work no worker will close, the operator and supervisor have one-shot disposi
 `--no-change` (passing, `no-op`) and `--done` (passing, `shipped`). Each completes the
 task through its disposition-specific proof and hierarchy guards; the disposition
 itself performs no new source publication.
+Before an operator close creates a manual pause, it checks attached integration
+ownership in the same transaction. An owner that requires guarded handoff refuses
+the close without changing task status, claim epoch, or pause metadata. Explicit
+Pause still stops the writer and retains its resources when handoff is required.
+Pause, Resume and close report these safety fences as `task.pause_fence`, with
+`aq integration release-owner --task-id <id>` guidance for ownership refusals;
+the release command retains its stop and checkout proofs.
 See [superseded completion](../../guides/superseded-completion.md).
 
 #### 3.3.6 Containers settle themselves
