@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/cancelled_collection_recovery.py::CancelledCollectionRecovery._apply_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 988,
+      "owner": "CancelledCollectionRecovery._apply_on",
+      "owner_fingerprint": "93ffecf3a6a1cd57402c9d5f4e9ea4e7b268c8025673c156d87f165dc60a4799",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

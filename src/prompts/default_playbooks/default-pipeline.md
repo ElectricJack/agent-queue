@@ -3,6 +3,12 @@ id: default-pipeline
 kind: pipeline
 role: default-pipeline
 scope: system
+required_capabilities:
+  - ensure_fidelity_review
+  - ensure_spec_ingest
+  - gate_create
+  - task_batch_commit
+  - task_batch_release
 triggers:
   - spec.approved
   - proposal.ready
@@ -119,7 +125,7 @@ Trigger: `batch.receipt_recorded`. No guard.
    the holds. The result is saved as `release`. `released` and
    `already_released` end the rule `completed`; a replayed receipt gets the
    original release receipt.
-2. A refusal whose `error_code` is `needs_scope` ends the rule `completed`
+2. A refusal whose `error_code` compares `eq` to `needs_scope` ends the rule `completed`
    without release: the reviewer raised a scope question, the batch waits on
    its one ask, and the answer returns it to review, never to release. A
    `batch.needs_scope` event dispatches no rule here for the same reason. Any
@@ -152,3 +158,26 @@ makes them claimable; `task_batch_commit` on a held batch answers
 spec-ingest role, never from an arbitrary caller's source or payload. They only
 create work: edits, edge removals and comments on existing tasks need an
 ordinary, human-approved change set.
+
+## Reusable building blocks and compatibility
+
+The five rules use typed `command` steps, with a decision for release refusals. Follow the declared business outcomes
+above, not a generic `success` field or an inferred result shape. The source's
+`required_capabilities` declares exactly these five commands for review; it does
+not grant authority. Compilation checks their argument schemas and pins their
+contracts and the spec-ingest role. Keep the existing event references, gate
+question text, guard, transitions and lack of automatic retries unchanged.
+
+Decision receipts in `ensure_spec_ingest`, proposal identity in `gate_create`,
+and the approved graph receipt in `task_batch_commit` own durable deduplication.
+Do not duplicate them in playbook state or substitute notification suppression
+for a human approval gate. There is no cross-run notification episode here, so
+no `state_schema_version` or state commands are needed.
+
+Each rule consumes one event and invokes one command; the release rule also classifies refusals. There is no collection,
+diagnostic scan or program to port to foreach, observations, snapshot pages,
+the doctor catalogue or a script runner; no scripts are declared. Retain the
+pipeline source form and deterministic graph, including the spec-ingest role
+for judgment about approved work. Replacing that role with a script would lose
+its feedback and supersession obligations. Assignment routing and delivery
+remain owned by their existing policies.

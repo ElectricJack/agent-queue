@@ -598,6 +598,63 @@ class WorktreeSlotManager:
 
     # ─────────────────────────────── per-task ────────────────────────────
 
+    @contextlib.asynccontextmanager
+    async def _record_branch_assignment(self, slot_ws, task, branch, previous):
+        """Keep provenance in step with Git even when branch preparation fails.
+
+        A merge conflict can leave the incoming branch checked out before
+        preparation returns. Record that assignment before setup or further
+        awaits. Unknown writer cleanup and cancellation retain all evidence.
+        """
+        try:
+            yield
+        except ProcessCleanupError:
+            raise
+        except Exception:
+            await self._record_observed_assignment(slot_ws, task, branch, previous)
+            raise
+        else:
+            await self._record_observed_assignment(slot_ws, task, branch, previous)
+
+    async def _record_observed_assignment(self, slot_ws, task, branch, previous):
+        checkout = slot_ws.workspace_path
+        actual = await self.git._arun_unlocked(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout,
+        )
+        if actual.strip() != branch:
+            return
+        now = time.time()
+        self.write_sentinel(checkout, WorktreeSentinel(
+            slot=slot_name(slot_ws.slot_index or 0), slot_index=slot_ws.slot_index or 0,
+            base_workspace_id=slot_ws.base_workspace_id or "", project_id=slot_ws.project_id,
+            workspace_id=slot_ws.id, task_id=task.id, branch=branch,
+            created_at=previous.created_at if previous else now,
+            assigned_at=now, daemon_epoch=self.daemon_epoch,
+            setup_hash=previous.setup_hash if previous else "",
+        ))
+
+    @guard_workspace("slot_ws")
+    async def prefetch_slot_for_task(
+        self, slot_ws: Workspace, *, base_branch: str, preserve_branch: bool = False,
+    ) -> None:
+        """Refresh reset inputs before acquiring the branch mutation fence.
+
+        Exact available origins need no refresh. A preserved child's mutable
+        remote tip does; its later reset resolves and mutates only local refs.
+        Repository serialization still protects the shared object store.
+        """
+        _validate_ref(base_branch, field="base branch")
+        slot_dir = slot_ws.workspace_path
+        if (not preserve_branch and is_valid_git_oid(base_branch)
+                and await self._ref_exists(slot_dir, base_branch)):
+            return
+        base_ws = await self._base_of(slot_ws)
+        await self.git.afetch_origin(
+            base_ws.workspace_path if base_ws else slot_dir,
+            repository_url=await self._repository_url(slot_ws.project_id),
+            all_heads=preserve_branch,
+        )
+
     @guard_workspace("slot_ws")
     @_slot_reset_timeout
     async def ensure_slot_checkout(
@@ -671,10 +728,11 @@ class WorktreeSlotManager:
                         await self._ref_exists(str(slot_dir), default_ref)
                         and head == await self.git.arev_parse(str(slot_dir), default_ref)
                     )
-                if actual == "HEAD" and not detached_predecessor:
+                if actual != sentinel.branch and not detached_predecessor:
                     # A finished predecessor's branch may be gone (delivered
-                    # and deleted) and origin/<default> may have moved on;
-                    # neither proof above can then hold for its clean slot.
+                    # and deleted), or an interrupted reset may have switched
+                    # branches before updating its sentinel. Git is the branch
+                    # authority once the clean predecessor has let go.
                     detached_predecessor = await self._finished_predecessor(
                         slot_ws, sentinel, task,
                     )
@@ -891,7 +949,7 @@ class WorktreeSlotManager:
     async def _finished_predecessor(
         self, slot_ws: Workspace, sentinel: WorktreeSentinel, task,
     ) -> bool:
-        """Whether a detached slot's sentinel names a predecessor that is over.
+        """Whether a clean slot's sentinel names a predecessor that is over.
 
         The caller has already proved the slot carries no foreign lock or
         claim file.  The predecessor must be terminal, hold no integration
@@ -905,7 +963,19 @@ class WorktreeSlotManager:
             return False
         predecessor = await self.db.get_task(sentinel.task_id)
         status = getattr(predecessor, "status", None)
-        if getattr(status, "value", status) not in TERMINAL_TASK_STATUSES:
+        if predecessor is not None and getattr(status, "value", status) not in TERMINAL_TASK_STATUSES:
+            return False
+        preparing_holder = False
+        for session in await self.db.list_sessions(live_only=True):
+            if not session.work_dir or _norm_path(session.work_dir) != _norm_path(slot_ws.workspace_path):
+                continue
+            if (getattr(session, "task_id", None) != task.id
+                    or getattr(session, "claim_phase", None) != "preparing"
+                    or getattr(session, "agent_id", None) != slot_ws.locked_by_agent_id):
+                return False
+            preparing_holder = True
+        if (slot_ws.locked_by_agent_id and not preparing_holder
+                and slot_ws.locked_by_agent_id != getattr(task, "assigned_agent_id", None)):
             return False
         # The claimant's own owner row is attached to the slot before the
         # reset re-runs this preflight; only a foreign binding retains it.
@@ -1094,6 +1164,7 @@ class WorktreeSlotManager:
         kind: WorkspaceKind | None = None,
         operator_handoff: bool = False,
         preserve_branch: bool = False,
+        fetch_origin: bool = True,
     ) -> str:
         """Bring a slot to a pristine per-task state.  Returns the branch.
 
@@ -1102,6 +1173,8 @@ class WorktreeSlotManager:
         ``aq/<task_id>`` (or *resume_branch*) → sentinel → ``worktree.reset``.
         ``preserve_branch`` merges the proven parent into the exact owned
         target, keeping existing child commits instead of resetting its tip.
+        Fenced callers prefetch first and pass ``fetch_origin=False`` so
+        origin acquisition cannot consume the local mutation deadline.
         """
         # ``base_branch`` arrives from task metadata — untrusted text by
         # trust-and-ops §2.2.  Validate here rather than letting an
@@ -1137,7 +1210,7 @@ class WorktreeSlotManager:
             target_branch or resume_branch or getattr(task, "branch_name", None)
             or task_branch_name(task.id)
         )
-        if preserve_branch:
+        if preserve_branch and fetch_origin:
             # A paused child may have only a published owned ref. Refresh it
             # before planning restoration, while the checkout is still intact.
             await self.git.afetch_origin(
@@ -1168,20 +1241,15 @@ class WorktreeSlotManager:
             await self.salvage_dirty(slot_ws, prev.task_id if prev else None, incoming_task_id=task.id)
             await self.git._arun(["reset", "--hard"], cwd=str(slot_dir))
             await self.git._arun(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir))
-            branch = await restore_checkpoint(
-                self.db, self.git, task.id, str(slot_dir), saved=checkpoint,
-                expected_branch=checkpoint_branch,
-            )
-            if preserve_branch:
-                await self.git.aprepare_child_branch(str(slot_dir), branch, base_branch)
-            self.write_sentinel(slot_dir, WorktreeSentinel(
-                slot=slot_name(slot_ws.slot_index or 0), slot_index=slot_ws.slot_index or 0,
-                base_workspace_id=slot_ws.base_workspace_id or "", project_id=slot_ws.project_id,
-                workspace_id=slot_ws.id, task_id=task.id, branch=branch,
-                created_at=prev.created_at if prev else time.time(),
-                assigned_at=time.time(), daemon_epoch=self.daemon_epoch,
-                setup_hash=prev.setup_hash if prev else "",
-            ))
+            async with self._record_branch_assignment(
+                slot_ws, task, checkpoint["branch"], prev,
+            ):
+                branch = await restore_checkpoint(
+                    self.db, self.git, task.id, str(slot_dir), saved=checkpoint,
+                    expected_branch=checkpoint_branch,
+                )
+                if preserve_branch:
+                    await self.git.aprepare_child_branch(str(slot_dir), branch, base_branch)
             return branch
         base_ws = await self._base_of(slot_ws)
         base_path = base_ws.workspace_path if base_ws else str(slot_dir)
@@ -1216,6 +1284,7 @@ class WorktreeSlotManager:
                 base_path, start_point, required=preserve_branch, cwd=str(slot_dir),
                 project_id=slot_ws.project_id,
                 refresh_refs=preserve_branch or target_branch is None,
+                fetch_origin=fetch_origin,
             )
 
             # Hard reset + clean.  The sentinel is exempted so a reset never
@@ -1239,21 +1308,22 @@ class WorktreeSlotManager:
                 )
             if target_branch is not None:
                 await self._detach_stale_branch_holders(slot_dir, branch, incoming_task_id=task.id)
-            if preserve_branch:
-                await self._prepare_slot_branch(slot_dir, branch, base_branch)
-            elif target_branch is not None:
-                await self.git._arun_unlocked(
-                    ["switch", "-C", branch, start_ref], cwd=str(slot_dir)
-                )
-                actual = (await self.git._arun_unlocked(
-                    ["rev-parse", "HEAD"], cwd=str(slot_dir)
-                )).strip()
-                if actual != base_branch:
-                    raise GitError("owned branch did not resolve to its proved commit")
-            else:
-                await self._switch_to_branch(
-                    slot_dir, branch, start_ref, resume=bool(resume_branch), incoming_task_id=task.id,
-                )
+            async with self._record_branch_assignment(slot_ws, task, branch, prev):
+                if preserve_branch:
+                    await self._prepare_slot_branch(slot_dir, branch, base_branch)
+                elif target_branch is not None:
+                    await self.git._arun_unlocked(
+                        ["switch", "-C", branch, start_ref], cwd=str(slot_dir)
+                    )
+                    actual = (await self.git._arun_unlocked(
+                        ["rev-parse", "HEAD"], cwd=str(slot_dir)
+                    )).strip()
+                    if actual != base_branch:
+                        raise GitError("owned branch did not resolve to its proved commit")
+                else:
+                    await self._switch_to_branch(
+                        slot_dir, branch, start_ref, resume=bool(resume_branch), incoming_task_id=task.id,
+                    )
 
         finally:
             repository_lock.release()
@@ -1265,23 +1335,10 @@ class WorktreeSlotManager:
         else:
             desired = prev.setup_hash if prev else ""
 
-        now = time.time()
-        self.write_sentinel(
-            slot_dir,
-            WorktreeSentinel(
-                slot=slot_name(slot_ws.slot_index or 0),
-                slot_index=slot_ws.slot_index if slot_ws.slot_index is not None else 0,
-                base_workspace_id=slot_ws.base_workspace_id or "",
-                project_id=slot_ws.project_id,
-                workspace_id=slot_ws.id,
-                task_id=task.id,
-                branch=branch,
-                created_at=prev.created_at if prev else now,
-                assigned_at=now,
-                daemon_epoch=self.daemon_epoch,
-                setup_hash=desired,
-            ),
-        )
+        assignment = self.read_sentinel(slot_dir)
+        if assignment is None or (assignment.task_id, assignment.branch) != (task.id, branch):
+            raise SlotSourceDisagreement("slot assignment changed during setup")
+        self.write_sentinel(slot_dir, replace(assignment, setup_hash=desired))
 
         await self._emit(
             "worktree.reset",
@@ -1663,6 +1720,7 @@ class WorktreeSlotManager:
         cwd: str | None = None,
         project_id: str | None = None,
         refresh_refs: bool = False,
+        fetch_origin: bool = True,
     ) -> str:
         """Fetch in the base and return the ref new work should start from.
 
@@ -1680,7 +1738,7 @@ class WorktreeSlotManager:
             return branch
         fetch_failed = False
         try:
-            if await self.git.ahas_remote(base_path):
+            if fetch_origin and await self.git.ahas_remote(base_path):
                 await self.git.afetch_origin(
                     base_path,
                     repository_url=await self._repository_url(project_id),
@@ -1819,8 +1877,32 @@ class WorktreeSlotManager:
                 await self._recover_abandoned_merge(holder, incoming_task_id=incoming_task_id)
                 await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
 
+    @guard_workspace("slot_ws")
+    async def detach_idle_slot_branch(self, slot_ws: Workspace) -> bool:
+        """Free a stopped pool's clean branch without moving or discarding its tip.
+
+        Teardown calls this after releasing ownership and recording process
+        exit. Recheck acquisition fences under the repository mutex: a new
+        holder wins over this best-effort cleanup. Local branch refs retain
+        unpublished commits, and the sentinel retains their attribution.
+        """
+        if not slot_ws.is_slot:
+            return False
+        base = await self._base_of(slot_ws)
+        if base is None:
+            return False
+        async with self._git_mutex(base.workspace_path):
+            async with self._idle_branch_holder(slot_ws, allow_disabled=True):
+                path = slot_ws.workspace_path
+                if await self.git.ahas_uncommitted_changes(path, strict=True) is not False:
+                    return False
+                if await self.git.aget_current_branch(path) == "HEAD":
+                    return False
+                await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+        return True
+
     @contextlib.asynccontextmanager
-    async def _idle_branch_holder(self, holder):
+    async def _idle_branch_holder(self, holder, *, allow_disabled=False):
         """Fence branch detachment against concurrent registered acquisition."""
         if not hasattr(self.db, "_engine"):
             yield  # lightweight doubles have no concurrent row mutation
@@ -1834,7 +1916,7 @@ class WorktreeSlotManager:
             row = (await conn.execute(select(workspaces).where(
                 workspaces.c.id == holder.id,
             ).with_for_update(nowait=True))).mappings().one_or_none()
-            if (row is None or not row["enabled"]
+            if (row is None or (not row["enabled"] and not allow_disabled)
                     or row["locked_by_agent_id"] or row["locked_by_task_id"]
                     or row["generation"] != holder.generation
                     or row["workspace_path"] != holder.workspace_path
