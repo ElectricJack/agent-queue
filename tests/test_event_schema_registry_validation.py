@@ -786,6 +786,23 @@ _CANONICAL_PAYLOADS["integration.resolution_push_observed"][
 # ``cleanup_requested``) and the cascade's ``route_needed.py``.
 _CANONICAL_PAYLOADS.update(
     {
+        "integration.publication_verified": {
+            "project_id": "proj-1",
+            "batch_id": "batch-1",
+            "revision": 1,
+            "repository_id": "repo-1",
+            "target_ref": "refs/heads/main",
+            "head_sha": "a" * 40,
+            "candidate_sha": "a" * 40,
+            "publication_verified": True,
+        },
+        # TrainLaneFactory._checks_changed invalidates exact-head readiness.
+        "integration.readiness_changed": {
+            "project_id": "proj-1",
+            "repository_id": "repo-1",
+            "head_sha": "a" * 40,
+            "reason": "checks_changed",
+        },
         "integration.completed_container_checkpoint_recovered": {
             "id": "recovery-1", "operator_id": "human:local-operator",
             "reason": "repair accepted final source", "task_id": "container-1",
@@ -1034,6 +1051,12 @@ _CANONICAL_PAYLOADS["pool.renamed"] = {
     "old_name": "Worker",
     "name": "Space Bunny",
     "backup_path": "/vault/agent-types/worker/profile.md.bak-1",
+}
+_CANONICAL_PAYLOADS["pool.deleted"] = {
+    "profile_id": "worker",
+    "depth": "profile",
+    "sessions": ["session-1"],
+    "warnings": [],
 }
 # This switch event is also the wake-up contract for already-parked pool claims.
 # Global worker pools §6.3 / §4 — emitted by ``_emit_placement_starved`` and
