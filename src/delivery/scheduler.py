@@ -5,6 +5,7 @@ import time
 from src.delivery.dispatch import LEASE_SECONDS, OutboundAdapter, dispatch_batch
 from src.delivery.message import MessageDelivery
 from src.digest.dispatch import DigestTickReport
+from src.escalations.plan import MAX_ATTEMPTS
 
 
 class DeliveryScheduler:
@@ -23,13 +24,14 @@ class DeliveryScheduler:
         rate_guard=None,
         escalation_priority=None,
         include_outbound=True,
+        max_attempts=MAX_ATTEMPTS,
     ):
         self.db, self.transport, self.config = db, transport, config
         self.lease_owner, self.digest, self.conversation = lease_owner, digest, conversation_adapter
         self.asks, self.links, self.clock = ask_adapter, links, clock
         self.rate_guard, self.escalation_priority = rate_guard, escalation_priority
         self.include_outbound = include_outbound
-        self.delivery = MessageDelivery(transport, clock=clock)
+        self.delivery = MessageDelivery(transport, clock=clock, max_attempts=max_attempts)
         self._priority_streak = 0
 
     async def tick(self, *, limit=5):

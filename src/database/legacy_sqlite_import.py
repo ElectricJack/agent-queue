@@ -64,7 +64,6 @@ from src.database.tables import (
     integration_history_waiver_consumptions,
     integration_history_waivers,
     integration_legacy_deliveries,
-    integration_legacy_gate_applicability,
     integration_legacy_suppression,
     integration_operation_artifact_pins,
     integration_outbox,
@@ -191,11 +190,18 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Reconciler subjects and their journal shipped in revision 57.
         "integration_subjects",
         "integration_subject_journal",
+        # Author-assisted close attempts shipped in PostgreSQL revision 117.
+        "integration_close_attempts",
         # Shared operator decisions shipped in PostgreSQL revision 77.
         "operator_decisions",
         # Session-owned recurring prompts shipped in PostgreSQL revision 86;
         # legacy SQLite files predate schedules and their delivery diagnostics.
         "agent_cron",
+        # Verified waits and continuation admission shipped in PostgreSQL
+        # revisions 97/103 and later; legacy SQLite has no lifecycle to import.
+        "admission_reservations", "continuations", "wait_bridge_progress",
+        "wait_deadlines", "wait_edges", "wait_escalations", "wait_listener_cursors",
+        "wait_measurements", "wait_priority_projection", "wait_records", "wait_source_events",
         # Branch deletion audits (revision 88) and explicit branch retirement
         # requests (revision 89) shipped after SQLite removal.
         "branch_deletion_audit",
@@ -205,6 +211,12 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "human_asks", "ask_source_aliases", "ask_decision_previews",
         "approved_document_snapshots", "ask_decisions",
         "review_feedback_obligations", "ask_reconciliation_cases",
+        # External ask bindings, action tokens and destination modes were
+        # introduced in PostgreSQL transport revision 93, never in SQLite.
+        "human_communication_modes", "ask_external_bindings", "ask_action_tokens",
+        # Held ingestion batches and review receipts arrived in PostgreSQL
+        # revision 100; no legacy SQLite source can contain these ledgers.
+        "ingest_batches", "ingest_batch_members", "ingest_batch_receipts",
         # Durable record/knowledge tables shipped after SQLite removal in
         # revision 55. Legacy files have no record identities, revisions,
         # informational links or outbox state; backfill/import is explicit.
@@ -255,14 +267,27 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # K14 compatibility attempt counters shipped in PostgreSQL revision
         # 67, after SQLite removal; legacy files have no managed-source usage.
         "record_compatibility_usage",
-        # Per-API-call transcript usage maxima shipped in revision 56.
-        "transcript_usage_calls",
+        # Per-API-call transcript usage maxima (revision 56) and replay fences (121).
+        "transcript_usage_calls", "transcript_usage_fences",
+        # Encrypted playbook private values (revision 95), protected
+        # observation snapshots (revision 97) and durable playbook state
+        # namespaces and journals (revision 98) shipped after SQLite removal;
+        # legacy files have none of them.
+        "playbook_private_values",
+        "observation_snapshots",
+        "observation_snapshot_pages",
+        "playbook_state_namespaces",
+        "playbook_state_entries",
+        "playbook_state_operations",
+        # Script input retention pins shipped in PostgreSQL revision 100.
+        "job_input_pins",
     }
 )
 
 # Nullable columns added after the legacy source format was retired. Missing
 # provenance stays unknown; all other missing source columns still fail closed.
 _POSTGRES_ONLY_COLUMNS = {
+    "tasks": frozenset({"held_batch_id"}),
     "archived_tasks": frozenset({"route"}),
     "token_ledger": frozenset({"session_id", "attempt_id", "call_id", "model_source"}),
     "doc_reviews": frozenset({"pending_decision_id"}),
@@ -277,6 +302,10 @@ _POSTGRES_ONLY_COLUMNS = {
     "conversation_inputs": frozenset({
         "ask_id", "project_id", "guild_id", "reference_message_id", "external_thread_id",
         "source_version", "retention_entry_id",
+    }),
+    "outbound_deliveries": frozenset({
+        "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+        "mode_generation", "root_generation", "send_kind", "write_started_at", "attempt_token",
     }),
 }
 
@@ -347,13 +376,13 @@ _ORDERED_TABLES = [
     morning_report_facts,
     # Frozen outbound payloads and delivery receipts; owner references are soft.
     outbound_deliveries,
-    # Durable managed job contracts/results; owner/workspace references are soft.
-    jobs,
-    # FK → jobs; terminal receipt intents survive until delivery.
-    job_outbox,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
+    # Managed script jobs now reference playbook_v2_runs.
+    jobs,
+    # FK → jobs; terminal receipt intents survive until delivery.
+    job_outbox,
     # FK → playbook_v2_runs
     playbook_step_receipts,
     playbook_waits,
@@ -465,8 +494,6 @@ _ORDERED_TABLES = [
     integration_child_dispositions,
     # FK → integration_history_waivers, integration_rollout_transitions, projects
     integration_history_waiver_consumptions,
-    # FK → gates, integration_history_waivers, integration_rollout_transitions, projects
-    integration_legacy_gate_applicability,
     # FK → integration_repair_operations, playbook_artifacts
     integration_operation_artifact_pins,
     # FK → integration_parent_episodes, integration_repair_operations, tasks
