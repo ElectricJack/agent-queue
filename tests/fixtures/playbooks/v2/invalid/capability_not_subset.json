@@ -124,7 +124,7 @@
       "type": "agent_task",
       "rule": "r1",
       "title": "Delegate",
-      "profile_id": "wide",
+      "profile_id": "final-reviewer",
       "objective": {
         "type": "literal",
         "value": "do the thing"

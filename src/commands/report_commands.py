@@ -10,11 +10,15 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.commands.principal import PrincipalKind, current_principal
+from src.agents.configuration import SUPERVISOR_AGENT_ID
+from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
 from src.digest.dispatch import marker_for
 from src.digest.render import MAX_CHARS, sanitise
 from src.digest.schedule import schedule_for
+from src.sessions.spec import named_session_name
 
+_GLOBAL_SUPERVISOR_SESSION = named_session_name("supervisor", "global")
+_LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
 _SHIP_ASSERTION = re.compile(r"\b(?:shipped|landed|released to main)\b", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
@@ -99,6 +103,7 @@ class ReportCommandsMixin:
                             self.db,
                             self.orchestrator.git,
                             window=context["window"],
+                            channel_id=str(self.orchestrator.config.discord.channel_id),
                             now=claimed["created_at"],
                             project_ids=tuple(claimed["config_snapshot"]["project_ids"]) or None,
                             previous_heads=context["previous_heads"],
@@ -260,7 +265,8 @@ class ReportCommandsMixin:
             since = float(args["since"]) if args.get("since") is not None else None
             window = report_window(since, until, int(args.get("max_lookback_hours", 72)))
             result = await collect_morning_evidence(
-                self.db, self.orchestrator.git, window=window, now=now, project_ids=scope
+                self.db, self.orchestrator.git, window=window, now=now, project_ids=scope,
+                channel_id=str(self.orchestrator.config.discord.channel_id)
             )
         except (TypeError, ValueError, OverflowError):
             return _error("report.invalid", "invalid UTC window or report settings")
@@ -274,17 +280,27 @@ class ReportCommandsMixin:
         principal = current_principal()
         if principal is None or principal.kind == PrincipalKind.LOCAL:
             return True
+        # ``author_session_id`` is the global supervisor's messaging address,
+        # never a session id: each launch is its own row (a UUID) named
+        # ``n-supervisor--global``, adopted with its token across restarts.
+        # The live launch holding that row's instance token is the author.
         if (
             principal.kind != PrincipalKind.SESSION
-            or principal.session_id != row["author_session_id"]
+            or not principal.elevated
+            or principal.project_id is not None
+            or row["author_session_id"] != SUPERVISOR_AGENT_ID
         ):
             return False
         session = await self.db.get_session(principal.session_id)
         return bool(
             session is not None
-            and session.instance_token == principal.session_instance_token
-            and session.id == "supervisor-global"
+            and session.id == principal.session_id
+            and session.name == _GLOBAL_SUPERVISOR_SESSION
+            and session.profile_id == "supervisor"
             and session.lifecycle == "named"
+            and session.project_id is None
+            and session.state in _LIVE_SESSION_STATES
+            and matches_session_instance(principal, session.instance_token)
         )
 
     def _report_service_allowed(self) -> bool:

@@ -478,9 +478,58 @@ failure, or if the reconciler finds `claim_phase = 'preparing'` with
 `now − claim_phase_at > swarm.prepare_timeout` (default 120 s, e.g. daemon crash
 mid-reset): `release_claim` (§11.2) runs with context `slot_reset_failed`,
 `task_metadata.needs_attention = slot_reset_failed`, and the response is `prepare_failed`.
+A cleanly aborted child/parent merge conflict without a managed train origin
+(including ordinary `pull_request` and manual projects) instead releases the claim
+to `BLOCKED` with `needs_attention = child_preparation_conflict`. The metadata of
+the same name retains the child, parent and merge heads, conflicting files and
+scrubbed reason. The checkout and published branches are preserved. No train
+repair or slot-reset retry ladder applies; the supervisor resolves the conflict
+before resuming the task. The response remains `prepare_failed`, with the normal
+reason, retry delay and session claim phase. Managed train origins retain their
+existing isolated repair path.
+Every permanent preparation failure (slot reset, attached integration writer, unpublished
+repair target, branch fence) is described once by `src/preparation_failure.py` and that one
+description is what every surface carries: the response `reason`, the session's
+`claim_failure_reason` (and therefore the identical-refusal count and drain message), the
+`pool.prepare_failed` event, the `prepare_failure` task-metadata record (plus
+`slot_reset_failure` / `branch_fenced` where those apply) and the daemon log line. Logs use
+the scrubbed causal description, never an additional raw exception traceback that could
+reintroduce credentials. The reason is `<stage>: <ExceptionType>: <message>`, followed by the
+exception's `__cause__`/`__context__` chain (at most three links). `<stage>` names the
+preparation step that was running (`workspace_lookup`, `integration_origin`,
+`repair_start`, `integration_attach`, `stack_fetch`, `slot_reset`, `claim_file`,
+`activate_claim`, `workspace_binding`, `claim_file_check`, `ensure_slot_checkout`, ...).
+Messages are secret-scrubbed (URL user-info, token literals,
+`Authorization` values, private-key blocks), whitespace-collapsed and bounded (500 characters
+each, 2000 in total). An exception with no text is never recorded as an empty reason: it
+reads `<stage>: <Type> (no message)` and names the deepest `src/` frame each link was raised
+at, which is the interrupted operation for a `TimeoutError` raised by `asyncio.timeout`. The
+record includes the task id and bounded, scrubbed workspace path in addition to workspace
+id; context stays structured instead of creating a competing failure formatter/record.
+It says only what was observed; it never infers a missing directory or a lock owner from
+an empty message. The description changes no retry, backoff, attempt, stage, token or project
+budget, and no release/retention decision: an attached writer that cannot be released keeps
+every binding and only gains the record. The record carries the session, its instance token,
+claim epoch, workspace and the disposition that was taken, so a late or stale completion is
+attributable; `record_pool_claim_failure` still ignores a refusal whose claim has moved on.
+The branch-fence critical section (`BranchLock.exclusion`, 30 s) names its own expiry
+(`BranchLockTimeout`, a `TimeoutError`) with the bound and branch, rather than surfacing
+asyncio's empty `TimeoutError`.
 `claims` is untouched, so a capped worker is not exhausted by failures it did not cause;
-three consecutive `prepare_failed` on one session quarantine it via the existing ladder,
-which is the bound on a slot that cannot be reset.
+Task preparation keeps its existing failure ladder. Independently, each pool session
+persists `claim_refusal` (nullable JSONB: result, reason, count, retry_at) so repeated
+identical `prepare_failed` or `not_admissible` responses cannot drive a claim hot loop,
+including across daemon restarts. The first refusal delays new attempts for 60 seconds;
+identical refusals after that deadline back off to 300, 600, 1200, then 1800 seconds.
+Requests during the cooldown replay the refusal with remaining `retry_after` seconds
+and `refusal_count`, without preparing work or advancing the count/deadline. `--wait`
+parks on the daemon for up to its bounded wait window. A changed admission reason or
+successful activation clears the old streak. Profile/provider drains take precedence.
+On the second identical refusal an **idle** session is marked for drain and receives
+`drain_requested`, with the blocker and retry evidence. A retained preparation claim
+is never released by this mechanism: its worker reports the blocker once and ends
+the turn awaiting supervisor inbox delivery. Durable message waits require an active
+claim. This preserves attached integration writers.
 
 **Per-claim fence — the epoch travels in a session-local file, not the environment.** A
 running process cannot receive a new environment variable, so `AQ_CLAIM_EPOCH` is only
@@ -505,9 +554,9 @@ stale shell in a reset slot finds no file and gets `stale_claim` too. Ownership 
 | `claimed` | task is yours (`claim_epoch` returned; idempotent repeat returns the same) | `aq prime --task <id>`, work |
 | `no_ready_work` | frontier empty (after `wait`) | pool: claim again or drain-ack |
 | `claim_conflict` | explicit `task_id` was taken | try `--next` |
-| `prepare_failed` | claimed but the slot reset failed; task released | claim again; after 3 the ladder quarantines |
+| `prepare_failed` | preparation failed; consult `.aq/claim.json` for retained ownership | respect `retry_after`; on repetition report once and wait for guidance, or drain-ack if idle |
 | `claim_in_progress` | this session's attempt is still `preparing` and `wait` elapsed (`task_id`, `claim_epoch`, `claim_phase_at` returned) | claim again with `--wait` |
-| `not_admissible` | project paused / budget exhausted (`reason` given) | wait (`--wait`) or drain-ack |
+| `not_admissible` | project paused / budget exhausted (`reason` given) | respect `retry_after`; on repetition report once and wait or drain-ack if idle |
 | `session_exhausted` | `max_claims_per_session` reached | `aq session drain-ack` |
 | `drain_requested` | pool scaled down, or the profile was disabled (`reason: pool is disabled`) | `aq session drain-ack` |
 | `stale_claim` | (on mutations) epoch mismatch | stop; the task is no longer yours |
@@ -530,7 +579,47 @@ is the contract). When the phase resolves:
   transcript never claimed;
 - session terminated → `out_of_scope`;
 - `wait` elapsed → `claim_in_progress` `{task_id, claim_epoch, claim_phase,
-  claim_phase_at}`; the caller retries. `wait = 0` returns this immediately.
+  claim_phase_at}`; the caller retries. `wait = 0` uses the bounded preparation
+  allowance below.
+
+**Preparation latency and diagnostics (2026-10-13).** Selection commits its
+holder transaction before starting a daemon-owned asynchronous preparation task.
+A warm preparation may finish within a 0.5 second response allowance; otherwise
+`wait=0` returns `claim_in_progress`, and a long poll waits only through its
+remaining deadline. Request cancellation never cancels the owned reset. The
+existing preparation registry remains the liveness fence used by recovery;
+daemon/session teardown can explicitly cancel the registered task. Concurrent
+callers join the same generation and observe its actual failure or success.
+A notification cannot restart a still-live preparation. Deferred responses are
+fenced to their session instance and claim binding, and one failed preparation
+records one refusal even when several callers await its result.
+
+A completed refusal is observable before new-work drain/disable admission checks:
+the preparation itself may have stopped the session after refusing a foreign
+claim. Its original diagnostic is consumed once, without charging the refusal
+budget again. This exception never serves a cached success or admits new work.
+The response must still match the session launch, project, agent, task creation,
+claim epoch and retained preparation start. Mismatched polls leave the cached
+response untouched; ordinary drain responses remain unchanged when no matching
+refusal is pending.
+
+Each attempt logs monotonic phase start/completion and total timing, including
+frontier selection, owner/lease checks, fetch, checkout, reset, setup and shared
+repository lock waits. Command arguments and credentials are omitted. The claim
+response carries `claim_timing`; task explain and its dashboard show live progress
+and the last completed timing saved in task metadata. Nested totals are inclusive,
+not additive. Diagnostics cannot change a claim outcome if their persistence fails.
+The ordinary claim keeps its existing end-to-end statement and checkout budgets:
+the reserved holder's session write feeds its workspace update in one statement,
+and completed timing uses the activation checkout after the activation transaction
+commits. Timing has its own transaction, so a SQL error rolls back only diagnostics.
+The checkout is acquired after the filesystem reset and released after timing is saved.
+A locally available exact origin SHA needs no full origin fetch when resetting
+an exact target to that immutable commit. Child preservation, retry/continuation
+branches, branch-valued origins and missing origins still refresh remote refs. All origin, owner, retained-source,
+checkpoint and activation guards apply. The warm-slot p50 target is under 15s;
+measure requests with already-ready work. Idle long polls are separate samples;
+their request total includes waiting for the frontier.
 
 **Long-poll — subscribe first, then check.** With `wait > 0`, two waits share the budget:
 
@@ -644,10 +733,11 @@ You are a {profile} pool worker for project {project} in {work_dir}.
 Loop:
   1. `aq task claim --next --wait 60`
      - claimed        → `aq prime --task <id>`, then do the work
-     - no_ready_work / not_admissible → run the claim again (the wait is cheap);
-                        after three empty waits run `aq session drain-ack`
-     - prepare_failed → run the claim again immediately (the daemon released the
-                        task; a third failure in a row will quarantine this session)
+     - no_ready_work / claim_conflict → claim again with --wait 60
+     - prepare_failed / not_admissible → respect retry_after; on a repeated
+                        identical refusal, report the blocker once to the supervisor.
+                        With no held claim, drain-ack and exit. With a retained claim,
+                        end the turn awaiting supervisor inbox delivery.
      - session_exhausted / drain_requested → `aq session drain-ack`
   2. Before anything quiet for more than a few minutes: `aq task heartbeat <id>`
   3. When done: `aq task close <id> --outcome pass --work-outcome shipped --summary "..." --claim-next`
@@ -825,11 +915,16 @@ close is skipped for pools; the token is revoked at drain.
   :held AND filed_count < :max` (`tasks.filed_count INTEGER NOT NULL DEFAULT 0`, §9);
   `rowcount = 0` → quota exceeded, nothing created. Concurrent creates cannot overshoot;
 - initial status **`DEFINED`** regardless of edges;
-- **root-level worker-filed tasks get a `routing` gate in the same transaction**
+- **root-level worker-filed tasks without a profile get a `routing` gate in the same transaction**
   (`create_gate(gate_type='routing', await_id=<task_id>)` + `task_gates` row, via the
   existing routing-gate code path that `task-created-routing` uses today). The task is
   therefore blocked by a durable record from the instant it exists; nothing about its
-  safety depends on a playbook running. Parented filings — subtasks of the held task
+  safety depends on a playbook running. A root filing with an explicit profile gets
+  no routing gate, using the same `unrouted_only` rule as `gate_create` and a move
+  to root: an already-routed filing has no assignment resolver to release that gate
+  (amber-orbit). It still starts DEFINED and waits for its blocking dependencies.
+  This rule applies in ordinary and hierarchical integration modes alike.
+  Parented filings — subtasks of the held task
   and sibling filings under its parent alike — get no born-with gate: they sit inside a
   container the assignment router already routes, inherit `profile_id` from the filing
   session's own profile when the delegation bound resolves one (never wider), and
@@ -1058,6 +1153,14 @@ Three budgets are kept apart, because they measure different things and cannot a
 | worker-filed root `create_task` | + 2 (gate, task_gates) | 1 | — |
 | `aq prime` per claim | — | — | ≤ 2,000 tokens, logged |
 | push-vs-pull A/B (same 50-task set, `lifecycle: task` vs `pool` cap 5) | — | — | report wall-clock, tokens, cold starts; no threshold — the measurement D4 asks for |
+
+The executable PostgreSQL budgets in `tests/perf/test_claim_statements.py` cap
+the whole claim at 20 statements and the selection/holder portion at 10,
+including persisted claim diagnostics. The current project is joined to the
+preparation fence after admission, so long polls cannot reuse stale integration
+settings. Holder recording chains the session and workspace writes through
+`UPDATE ... RETURNING`; metadata insertion and replacement use a single upsert.
+Diagnostic additions must fit these bounds rather than raise them.
 
 `tests/perf/` seeds this scale (fixture reused by all perf tests), runs on a Postgres
 service in CI, and asserts the table. SQLite runs the same suite with timing relaxed 4×,

@@ -99,6 +99,121 @@ def worker_graph(*keys: str, parent: bool = False) -> dict:
 
 
 class TestFiling:
+    @pytest.mark.parametrize("mode", [None, "hierarchy", "train"])
+    @pytest.mark.parametrize("placement", [{"root": True}, {"parent_id": None}])
+    @pytest.mark.parametrize("routed", [False, True])
+    async def test_root_filing_only_gates_unrouted_work(
+        self, handler, db, tmp_path, monkeypatch, mode, placement, routed
+    ):
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.models import RepoConfig, RepoSourceType
+        from src.vault import ensure_default_intelligence_classes
+
+        sid = await holding_session(db)
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker", harness="claude", lifecycle="pool",
+            default_class="standard-high", needs_workspace=False,
+        ))
+        handler._caller_profile_id = "worker"
+        ensure_default_intelligence_classes(handler.config.data_dir)
+        handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+        if mode:
+            await db.create_repo(RepoConfig(
+                id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path),
+            ))
+            await db.update_project(
+                PROJECT_ID, hierarchical_integration_mode=mode,
+                integration_repository_id="repo",
+            )
+            service = HierarchyIntegration(
+                db, default_head_resolver=lambda _repo, _branch: "a" * 40
+            )
+            monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: service)
+
+        tasks_before = len(await db.list_tasks(PROJECT_ID))
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "Root finding", "description": "d", "reason": "held exposed it",
+            "intelligence_class": "standard-high", **placement,
+            **({"profile_id": "worker"} if routed else {}),
+        })
+
+        if routed:
+            # A worker files hints, never a route (mandatory routing §5.2):
+            # the named profile is refused and nothing is written.
+            assert result.get("success") is False, result
+            assert result["code"] == "routing.choice_forbidden"
+            assert result["refused"] == ["profile_id"]
+            assert len(await db.list_tasks(PROJECT_ID)) == tasks_before
+            assert (await db.get_task("held")).filed_count == 0
+            return
+        assert result.get("success") is True, result
+        task = await db.get_task(result["task_id"])
+        assert task.parent_task_id is None
+        assert task.status == TaskStatus.DEFINED
+        # Unrouted, the class is only the filer's hint (mandatory routing §5.3).
+        assert task.class_hint == "standard-high"
+        assert task.intelligence_class is None
+        assert await db.get_typed_dependencies(task.id) == [("held", "discovered-from")]
+        gates = await db.get_gates_for_task(task.id)
+        gate_events = [c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
+                       if c.args[0] == "gate.created"]
+        assert task.profile_id is None
+        assert task.is_blocked is True
+        assert [g["gate_type"] for g in gates] == ["routing"]
+        assert result["gate_id"] == gates[0]["id"]
+        assert [event["gate_id"] for event in gate_events] == [result["gate_id"]]
+        event = created_events(handler)[0]
+        assert (event["parent_task_id"], event["discovered_from"]) == (None, "held")
+        assert (await db.get_task("held")).filed_count == 1
+
+    async def test_routed_root_filing_releases_when_its_dependency_clears(self, handler, db):
+        from src.vault import ensure_default_intelligence_classes
+
+        sid = await holding_session(db)
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker", harness="claude", lifecycle="pool",
+            default_class="standard-high", needs_workspace=False,
+        ))
+        handler._caller_profile_id = "worker"
+        ensure_default_intelligence_classes(handler.config.data_dir)
+        handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+        # A worker's held task is never a valid gating need (work-graph §11;
+        # test_a_single_filing_that_depends_on_the_held_task_is_refused), so
+        # gate the routed filing on an unrelated prerequisite instead — the
+        # routing-release behaviour this test pins does not need the held task.
+        await db.create_task(Task(
+            id="prereq", project_id=PROJECT_ID, title="prereq", description="p",
+        ))
+        # A worker files hints only (mandatory routing §5.2); the route comes
+        # later, here from the operator's audited override (§7), which, like
+        # the router's apply, resolves the filing's routing gate.
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "Follow-up", "description": "d", "root": True,
+            "reason": "held exposed it", "depends_on": "prereq",
+            "intelligence_class": "standard-high",
+        })
+        assert result.get("success") is True, result
+        task_id = result["task_id"]
+        handler._current_scope = None
+        handler.config.swarm.enabled = True  # a pool has slots only while the swarm runs
+        routed = await handler._cmd_task_route_override({
+            "task_id": task_id, "profile_id": "worker", "intelligence_class": "standard-high",
+            "reason": "operator routes the filing by hand in this test",
+        })
+        assert routed.get("success") is True, routed
+        await handler.orchestrator._check_defined_tasks()
+        assert (await db.get_task(task_id)).status == TaskStatus.DEFINED
+
+        removed = await handler._cmd_remove_dependency({"task_id": task_id, "depends_on": "prereq"})
+        assert removed.get("ok") is True, removed
+        await handler.orchestrator._check_defined_tasks()
+
+        task = await db.get_task(task_id)
+        assert task.status == TaskStatus.READY
+        assert task.is_blocked is False
+        assert all(gate["status"] == "resolved" for gate in await db.get_gates_for_task(task_id))
+
     async def test_legacy_null_instance_claim_keeps_unmanaged_worker_filing_compatible(
         self, handler, db
     ):
@@ -433,6 +548,20 @@ async def test_local_task_creation_does_not_accept_spoofed_session_provenance(ha
     })
     created = await db.get_task(result["task_id"])
     assert created.created_by_kind is None and created.created_by_id is None
+
+
+async def test_worker_ensure_task_cannot_claim_an_internal_origin(handler, db):
+    # ``ensure_task`` forwards an internal filer's origin (source-CI repair) to
+    # ``create_task``, whose worker guard still owns provenance.
+    sid = await holding_session(db)
+    result = await scoped(handler, sid)._cmd_ensure_task({
+        "project_id": PROJECT_ID, "dedup_key": "claimed-origin", "title": "Claimed",
+        "reason": "found it",
+        "_created_by_kind": "source_ci_repair", "_created_by_id": "source-ci:x",
+    })
+    assert result["success"] is True, result
+    created = await db.get_task(result["task_id"])
+    assert (created.created_by_kind, created.created_by_id) == ("session", sid)
 
 
 class TestWorkerGraphContainer:
@@ -1325,13 +1454,14 @@ class TestRootFilingCLI:
 
 
 async def route(db, task_id):
-    """Route *task_id* as ``task_route`` would: a profile and a class on the row."""
+    """Put a legacy route on *task_id*: a profile and a class on the row."""
     if await db.get_profile("standard-high-claude") is None:
         await db.create_profile(
             AgentProfile(id="standard-high-claude", name="standard-high-claude", harness="claude")
         )
     assert await db.update_task_routing(
-        task_id, profile_id="standard-high-claude", intelligence_class="standard-high",
+        task_id, profile_id="standard-high-claude",
+        route_source="legacy", intelligence_class="standard-high",
         preferred_workspace_id=None,
     )
 

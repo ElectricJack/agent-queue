@@ -35,12 +35,15 @@ checking that the automatic part is actually switched on.
 * **Hold** — a queued task whose provider is unavailable. It keeps its status
   (`READY` stays `READY`); the hold is derived, never stored, and says *why* the
   task is not moving (its `kind`).
-* **Provider intent** — whether anyone meant the provider a task's profile
-  names: `pinned` (hold during an outage), `preferred` or `class_only` (fail
-  over). See [scheduling](../concepts/scheduling.md#provider-availability-and-failover).
-* **Re-route** — changing a queued task's profile to the same class on another
-  provider. Every automatic move of one outage shares a **batch** id
-  `prb-<provider>-<generation>`; operator moves get their own `prf-…` batch.
+* **Provider intent** — whether the provider a task's profile names binds it:
+  `pinned` (hold during an outage — an emergency override, or a hold lane such
+  as art design) or `class_only` (fail over); `preferred` (fail over) is left
+  only on role tasks and routes written before mandatory routing. See
+  [scheduling](../concepts/scheduling.md#provider-availability-and-failover).
+* **Re-route** — changing a queued task's profile to another of the candidates
+  its router recorded: the same class on another provider. Every automatic move
+  of one outage shares a **batch** id `prb-<provider>-<generation>`; operator
+  moves get their own `prf-…` batch.
 * **Probation** — the way back: an unavailable provider becomes `degraded`
   with reason code `recovering`, and one launch (the canary) must succeed
   before it is `available` again.
@@ -61,8 +64,8 @@ aq provider reroute --dry-run            # what the next sweep would do — writ
 time Codex itself reported), `Held` and `Moved` counts, and the reason — for
 example `secondary window at 100%` (Codex's longer window). `held-tasks`
 lists each held task with its hold kind: `awaiting_failover_capacity (3 ahead)` for work
-trickling across to Claude, `provider_pinned` for a task a human tied to
-Codex, `no_equivalent_rung` for an `astra-high` task that only Codex can run.
+trickling across to Claude, `provider_pinned` for an art-design task (its lane
+holds for Codex), `no_equivalent_rung` for an `astra-high` task that only Codex can run.
 
 That is usually the whole incident: the Claude pool picks up a pool-width of
 moved work at a time, the pinned and Astra tasks wait, and at the reset the
@@ -107,7 +110,7 @@ What each state means and what normally ends it:
 |---|---|---|---|
 | `available` | — | Healthy. | — |
 | `degraded` | `usage_high`, `model_scope_exhausted`, `suspect_usage`, `suspect_auth`, `probe_not_authenticated`, `rate_limit_exit`, `launch_failures_unattributed`, `recovering` | Still launched against, but **not a failover target**. Usually one signal awaiting corroboration, or usage at or above `provider_failover.usage.degraded_percent` (85 %). `recovering` is probation. | The signal clears, or it trips. |
-| `exhausted` | `usage_exhausted`, `usage_dialog`, `rate_limited`, `llm_quota`, `canary_failed` | Out of usage: a usage window at or above `usage.exhausted_percent` (99 %), two launches dying on the usage-limit dialog, or two sessions exiting on a rate limit inside `launch.window_seconds`. | The reset time passing (plus `recovery.reset_grace_seconds`), a fresh usage reading below the degraded threshold, or a successful call. |
+| `exhausted` | `usage_exhausted`, `usage_dialog`, `rate_limited`, `llm_quota`, `canary_failed` | Out of usage: a usage window at or above `usage.exhausted_percent` (99 %), two launches dying on the usage-limit dialog, or two sessions exiting on a rate limit inside `launch.window_seconds`. | The reset time passing (plus `recovery.reset_grace_seconds`), a fresh usage reading below the degraded threshold, or a successful call. While a fresh account-wide reading still stands at or above `usage.exhausted_percent`, only that reading's reset, a fresher lower reading or its going stale ends it: neither a session's call nor the clock does, and a session adopted across a daemon restart is never counted as a launch. |
 | `unauthenticated` | `login_required`, `probe_not_authenticated`, `llm_auth_rejected` | The CLI is logged out: a launch died on its login dialog and the login probe agrees, two launches in a row died on it, or the probe said *not signed in* twice. | A login probe answering *signed in* — every `recovery.auth_probe_interval_seconds` (120 s), or now with `aq provider recheck`. |
 | `failing` | `launch_failures`, `canary_failed` | `launch.generic_failures_to_trip` (5) launches in a row died during startup for a reason AQ cannot name, across two projects or in one where another provider launched fine. | The backoff passing (300 s, doubling on each failed canary up to 3600 s), or a successful call. |
 | `disabled` | `operator_disabled` | An operator took it out of service. | The override expiring, or `set-state --state auto`. |
@@ -140,15 +143,20 @@ Under `provider_failover.mode: enforce` (the default):
    [troubleshooting](#common-failures-and-recovery)).
 4. **The `provider-failover` playbook moves waiting work.** On every state
    change and every five minutes it calls `provider_reroute`, which moves each
-   eligible queued task to the **same class on the next available provider**,
-   a pool-width at a time, and records the move on the task (a comment,
-   `rerouted_from`, a `task_reroutes` row). What it will not move, it holds with
-   a reason. See the
+   eligible queued task to the **next of its route candidates on an available
+   provider** — the same class on another provider, in the order the router
+   recorded — a pool-width at a time, and records the move on the task (a
+   comment, `rerouted_from`, a `task_reroutes` row). What it will not move, it
+   holds with a reason. See the
    [fallback rule](../concepts/scheduling.md#the-fallback-rule).
-5. **Unrouted tasks follow the project default's twin.** A task with no
-   profile of its own runs on the project default; while that default's
-   provider is down, it resolves to the same class on an available provider.
-   This is derived per decision and never written, so recovery needs no undo.
+   Stopped `BLOCKED` tasks are also eligible once their writer is gone. A move
+   preserves their status, stop marker, retries and graph blockers; restart the
+   task explicitly when it should run again.
+5. **Unrouted tasks wait for the router.** There is no project default to
+   fall back to. The router leaves out candidates on a provider that cannot
+   launch; when every candidate is down it holds the task unrouted
+   (`aq task explain` says `route_held`) and routes it once a provider is back.
+   Nothing is written, so recovery needs no undo.
 6. **It tells people.** One message per half change, one notice per batch per
    project, and an escalation when a human has to act.
 7. **It recovers on its own.** At the reset time, or when the login probe says
@@ -175,8 +183,9 @@ returns exactly the plan the sweep would apply — `moved`, `held` (with
 | `unauthenticated` | [Log in again, then recheck](#log-in-again). |
 | You want a provider out of service for a while | [Disable it with an expiry](#take-a-provider-out-of-service). |
 | AQ thinks it is down but it is not | [Force it available](#a-false-alarm). |
-| A pinned task must run now | [Force-move it](#move-a-task-by-hand). |
+| A pinned task must run now | [Force-move it](#move-a-task-by-hand) among its route candidates; an override has none to move to, so `aq task route` sends it back to the router. |
 | Tasks paused before failover existed are stuck on a dead provider | [Include them in a sweep](#move-tasks-that-were-paused-before-failover). |
+| A stopped `BLOCKED` task needs a new route | `aq task route --task-id <id>` sends it back to the router. A successful `aq task stop` confirms its session has terminated before releasing ownership. If stop reports unproven termination, follow its recovery instructions first. Rerouting keeps it stopped; use `aq task restart <id>` when ready to run it. |
 | A move was wrong | [Undo it](#undo-a-re-route). |
 
 ### Log in again
@@ -238,7 +247,11 @@ is healthy, this is also how you re-admit it.
 
 Naming tasks makes the move explicit. `--to-profile` picks the target (same
 class, on an available provider); `--force` also lets it move a **pinned**
-task, target a **degraded** provider, or change the class:
+task, target a **degraded** provider, or change the class. For a task the
+router routed, the target must be one of the candidates it recorded, even with
+`--force`: a move outside them is an emergency override
+(`aq task route-override`, local operator or supervisor only, with a reason),
+not a re-route.
 
 ```bash
 aq provider reroute --task-id demo.42 --to-profile standard-high-claude --dry-run
@@ -248,7 +261,9 @@ aq provider reroute --task-id demo.42 --to-profile standard-high-claude --force
 `--task-id` takes one id or a comma-separated list. A move with `--to-profile`
 or `--force` lands in its own `prf-…` batch, is recorded `operator_forced`, and
 leaves the task's intent alone — a pinned task moved by hand is still pinned,
-now to its new provider. `--force` also skips the trickle and the per-task
+now to its new provider. An override's only candidate is its own profile, so it
+cannot be moved by hand; `aq task route` sends it back to the router instead.
+`--force` also skips the trickle and the per-task
 limits, and without `--to-profile` lets the sweep pick the target. With neither
 flag a named task follows the automatic rules, so a pin still holds. Check
 `aq task explain --task-id demo.42` and `aq provider status` first: a task held
@@ -314,7 +329,7 @@ reason `recovering`. At most one launch is admitted — the canary — until one
 succeeds; a canary that neither succeeds nor fails within ten minutes is
 presumed lost and the next launch may try. The first successful launch makes
 the provider `available`, its pools size back up, held work launches at once
-and the project default resolves to itself again.
+and the router routes the tasks it held.
 
 A canary that fails sends the provider straight back to the state it came
 from with the backoff doubled (`level + 1`), capped at
@@ -371,8 +386,8 @@ re-routed tasks, `provider.state_changed` / `provider.reroute_batch` /
 | Tasks hold `failover_inactive` and nothing ever moves | `aq doctor --check providers.failover_playbook` | Activate or resume the playbook ([above](#check-the-failover-playbook-is-active)), or check `mode`/`reroute.enabled`. |
 | Tasks hold `awaiting_failover_capacity` for a long time | `aq provider held-tasks` (the `ahead` count), `aq pool status` for the target rung | Expected while the target pool works through moved work: the trickle keeps at most `ceil(reroute.target_backlog_factor × max_active)` moved-and-waiting tasks per target rung. Raise that pool's `max_active` if you want more throughput; failover never raises a bound itself. |
 | Tasks hold `no_available_target` | `aq provider status` | Every other provider with that class is unavailable or `degraded` — degraded providers are never targets unless `reroute.allow_degraded_target` is true. Wait, or force a move. |
-| Tasks hold `no_equivalent_rung` | `aq agent list-profiles` | No other provider runs that class — expected for `astra-*`, which only Codex has — or the task's profile is a role profile, not a worker rung. It waits for its provider. |
-| Tasks hold `provider_pinned` | `aq task show` (intent) | A human pinned it. Wait, or [force-move it](#move-a-task-by-hand). |
+| Tasks hold `no_equivalent_rung` | `aq agent list-profiles`, `aq task show` (route candidates) | No other provider runs that class — expected for `astra-*`, which only Codex has — the router recorded no candidate on another provider, or the task's profile is a role profile, not a worker rung. It waits for its provider. |
+| Tasks hold `provider_pinned` | `aq task show` (route source, lane, intent) | An emergency override, or a hold lane such as art design, pinned it to this provider. Wait, [force-move it](#move-a-task-by-hand) among its route candidates, or send it back to the router with `aq task route`. |
 | Tasks hold `class_policy_hold` or `priority_policy_hold` | `provider_failover.classes`, `reroute.max_priority_value` | Your configured policy says wait. |
 | Tasks hold `reroute_limit_reached` | `aq task show` (re-route comments) | Moved automatically `reroute.max_auto_per_task` times, or once within `reroute.task_cooldown_seconds`. A human decides now: force-move or wait. |
 | Everything holds `all_providers_unavailable` | `aq doctor --check providers.availability` (ERROR) | Nothing can launch anywhere. Fix a login, or force a provider you know is healthy `available`. |

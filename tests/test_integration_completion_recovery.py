@@ -1,11 +1,31 @@
 from types import SimpleNamespace
 import pytest
 from sqlalchemy import insert, update
-from src.database.tables import integration_branch_owners, task_session_attempts, tasks
+from src.database.tables import integration_branch_owners, projects, task_session_attempts, tasks
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.integration.ownership import BranchKey, BranchOwnership
 from src.models import TaskStatus, Workspace, RepoSourceType
 from tests.test_integration_review_evidence import review_case, _git  # noqa: F401
+
+
+async def test_drain_reconciles_finished_owner_handoffs(review_case, monkeypatch):  # noqa: F811
+    from unittest.mock import AsyncMock
+    from src.integration import completion_recovery
+
+    db = review_case["db"]
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="train",
+            hierarchical_integration_desired_mode="disabled",
+            hierarchical_integration_draining=True,
+        ))
+    reconcile = AsyncMock(return_value=[])
+    monkeypatch.setattr(completion_recovery, "reconcile_closed_integration_owners", reconcile)
+    orch = SimpleNamespace(db=db, _integration_owner_reconcile_after=0)
+
+    await completion_recovery.reconcile_ready_integration_owners(orch)
+
+    reconcile.assert_awaited_once_with(orch, "p", ready_only=False)
 
 @pytest.mark.parametrize("safe", [True, False, "missing_attempt"])
 @pytest.mark.parametrize("pool", [True, False])
