@@ -12,9 +12,9 @@
 | Idempotency | natural |
 | Retry safe | yes |
 | Timeout | none |
-| Preview | not supported |
+| Preview | supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:2f86c737c51a7db836beb7f6062cdcf73401233bd61871fca5834e1e80c7ea23` |
+| Contract fingerprint | `sha256:244792295355d927220b3eea9932d364e9eded69f24ab29af4e9368557c887c2` |
 
 ## Parameters
 
@@ -40,8 +40,11 @@ Redacted in receipts and explanations: `reason`.
 | `target_sha` | `string \| null` | — |
 | `intent` | `string \| null` | — |
 | `dry_run` | `boolean \| null` | — |
+| `replacement_batch_id` | `string \| null` | — |
+| `members` | `string[]` | — |
+| `blockers` | `object[]` | — |
 
-Projected into the run receipt: `project_id`, `batch_id`, `task_id`, `origin_id`, `target_ref`, `candidate_sha`, `target_sha`, `intent`, `dry_run`.
+Projected into the run receipt: `project_id`, `batch_id`, `task_id`, `origin_id`, `target_ref`, `candidate_sha`, `target_sha`, `intent`, `dry_run`, `replacement_batch_id`, `members`, `blockers`.
 
 ## Outcomes
 
