@@ -142,30 +142,6 @@ def rejection_evidence_id(observation: SourceAncestryObservation) -> str:
     return f"review-{uuid.uuid5(_ANCESTRY_NAMESPACE, identity)}"
 
 
-async def prove_member_identity(git, store: str, member: dict[str, Any]):
-    """Return ``(reason, merge_base, tree)`` for one frozen batch member.
-
-    ``reason`` is ``None`` when the identity holds.  ``source_base_missing``,
-    ``reviewed_head_missing`` and a failed probe (``ancestry_unknown``) are not
-    proof; the others are in :data:`PROVEN_REASONS`.
-    """
-    base, head = member["source_base_sha"], member["reviewed_head_sha"]
-    for label, oid in (("source_base_missing", base), ("reviewed_head_missing", head)):
-        exists = await git.arun_git_result(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=store)
-        if exists.returncode != 0:
-            return label, None, None
-    tree_result = await git.arun_git_result(["rev-parse", f"{head}^{{tree}}"], cwd=store)
-    tree = tree_result.stdout.strip() if tree_result.returncode == 0 else None
-    ancestor = await git.ais_ancestor(store, base, head, strict=True)
-    if ancestor is None:
-        return "ancestry_unknown", None, tree
-    if not ancestor:
-        return "source_base_not_ancestor", await merge_base_of(git, store, base, head), tree
-    if tree != member["reviewed_tree_sha"]:
-        return "reviewed_tree_mismatch", None, tree
-    return None, None, tree
-
-
 async def merge_base_of(git, store: str, base: str, head: str) -> str | None:
     result = await git.arun_git_result(["merge-base", base, head], cwd=store)
     value = result.stdout.strip()
