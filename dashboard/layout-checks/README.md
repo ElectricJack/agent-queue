@@ -15,6 +15,10 @@ momentum, typing goes over the attach, and its colours match the desktop
 terminal's. `session-detail` also covers a refused attach: the same terminal
 shows the refusal and keeps input disabled.
 
+`full-dashboard` checks task, inbox, session, report and conversation pages at
+390px and desktop, including legacy links, process restart acknowledgement and
+conversation replies. `human-asks` checks discussion and prepared decisions.
+
 The `terminal-parity` check runs at the same four sizes and opens the **host
 shell page** and the phone's agent terminal in turn, because they are the same
 terminal: it `deepEqual`s their computed palettes (font, foreground, every

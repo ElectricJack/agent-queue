@@ -134,6 +134,7 @@ try {
       await page.locator(`${HOST} .xterm-rows`).filter({ hasText: "ansi-red" }).waitFor();
       const viewer = stub.terminalViewers.filter((row) => row.sessionId === sessionId).at(-1);
       assert.ok(viewer, `no attach for ${path}`);
+      await page.locator(HOST).scrollIntoViewIfNeeded();
       await fitted(page, viewer);
       assert.equal(await page.locator('[aria-label="Watch only"], [data-phone-terminal], [data-terminal-input-bar]').count(), 0);
       assert.equal(await page.getByRole("button", { name: /^Focus .+ terminal$/ }).count(), 1);
@@ -162,6 +163,7 @@ try {
       await page.setViewportSize(viewport);
       await until(() => sizeOf(viewer), (size) => Math.abs(size.cols - initial.cols) <= 1 && size.rows === initial.rows,
         "rotation back did not restore rows and columns");
+      await page.locator(HOST).scrollIntoViewIfNeeded();
       const covered = Math.round(viewport.height * 0.4);
       await keyboard(page, covered);
       await until(() => sizeOf(viewer), (size) => size.rows < initial.rows, "the keyboard did not resize the PTY");

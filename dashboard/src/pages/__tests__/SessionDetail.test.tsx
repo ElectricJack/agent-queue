@@ -24,8 +24,7 @@ function page(initial: string | { pathname: string; state: unknown } = "/session
   </Routes></MemoryRouter>;
 }
 beforeEach(() => {
-  state.session.started_at = 100;
-  state.session.state = "running"; state.session.provider = "tmux";
+  state.session.started_at = 100; state.session.state = "running"; state.session.provider = "tmux";
   TerminalMock.instances = []; TerminalSocketMock.instances = []; FitAddonMock.instances = []; ResizeObserverMock.instances = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
@@ -108,9 +107,15 @@ describe("Session terminal", () => {
 
 describe("The session terminal is one window at every width", () => {
   const original = window.matchMedia;
-  afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
+  const originalWidth = window.innerWidth;
+  afterEach(() => {
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original });
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: originalWidth });
+  });
 
-  it.each(["(max-width: 767.98px)", "(min-width: 768px)"])("opens the host shell page's terminal at %s", async (query) => {
+  it.each([390, 1440])("opens the shared terminal at %ipx", async (width) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width });
+    const query = width < 768 ? "(max-width: 767.98px)" : "(min-width: 768px)";
     Object.defineProperty(window, "matchMedia", {
       configurable: true, writable: true,
       value: (asked: string) => ({ matches: asked === query, media: asked,
@@ -124,20 +129,22 @@ describe("The session terminal is one window at every width", () => {
   });
 });
 
-it("requires an explicit choice before attaching to a restarted process", async () => {
-  render(page("/sessions/session-a?started=50"));
-  expect(screen.getByRole("status")).toHaveTextContent("This session restarted");
-  expect(TerminalSocketMock.instances).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Watch the new process" }));
-  await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
-});
-it("disconnects when the process changes after first loading", async () => {
-  const view = render(page());
-  await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
-  const socket = TerminalSocketMock.instances[0]!;
-  act(() => socket.open());
-  state.session.started_at = 200;
-  view.rerender(page());
-  expect(screen.getByRole("status")).toHaveTextContent("This session restarted");
-  expect(socket.closed).toBe(true);
+describe("Process pin", () => {
+  it("holds an old deep link until the new process is acknowledged", async () => {
+    render(page("/sessions/session-a?started=50"));
+    expect(screen.getByText(/This session restarted/)).toBeInTheDocument();
+    expect(TerminalSocketMock.instances).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Watch the new process" }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+  });
+  it("disconnects when a live query reports a restarted process", async () => {
+    const view = render(page());
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    const socket = TerminalSocketMock.instances[0]!;
+    act(() => socket.open());
+    state.session.started_at = 200;
+    view.rerender(page());
+    expect(screen.getByText(/This session restarted/)).toBeInTheDocument();
+    expect(socket.closed).toBe(true);
+  });
 });
