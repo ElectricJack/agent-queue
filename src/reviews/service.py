@@ -217,11 +217,13 @@ class ReviewService:
         hooks: ReviewHooks,
         *,
         clock: Callable[[], float] = time.time,
+        input_config=None,
     ) -> None:
         self.db = db
         self.vault_root = Path(vault_root)
         self.hooks = hooks
         self._clock = clock
+        self.input_config = input_config
 
     # -- submit ------------------------------------------------------------
 
@@ -532,7 +534,8 @@ class ReviewService:
                             return {"review_id": review_id, "state": review["state"],
                                     "application_state": "not_started",
                                     "error_code": "ask.preview_required",
-                                    "error": "Review this packet, then accept with ask_decide",
+                                    "error": "Run aq ask show, then aq ask prepare with its expected version; "
+                                             "review the full packet and pass its preview_id to aq ask decide",
                                     "ask_id": publication.ask["id"],
                                     "expected": asdict(intent.expected), "preview": preview}
                         preview_id = preview["id"]
@@ -563,6 +566,7 @@ class ReviewService:
         heading_path: list[str],
         body: str,
         author: str,
+        source_discussion_id: str | None = None,
     ) -> dict:
         """Anchor a comment to *quote* (or a whole section) of one revision."""
         async with self.db.immediate() as conn:
@@ -575,6 +579,21 @@ class ReviewService:
                 raise ReviewError("too_large", f"a comment is at most {MAX_COMMENT_CHARS} characters")
             if not 1 <= revision <= review["current_revision"]:
                 raise ReviewError("not_found", f"review {review_id} has no revision {revision}")
+            if source_discussion_id:
+                from sqlalchemy import select
+                from src.database.tables import escalation_messages, human_asks
+                from src.asks.authority import visible
+                entry = (await conn.execute(select(escalation_messages).where(
+                    escalation_messages.c.id == source_discussion_id,
+                    escalation_messages.c.entry_kind == "discussion",
+                ))).mappings().first()
+                ask = (await conn.execute(select(human_asks).where(
+                    human_asks.c.id == entry["ask_id"],
+                ))).mappings().first() if entry else None
+                if not (ask and visible(ask) and ask["source_kind"] == "review"
+                        and ask["source_key"] == review_id
+                        and entry["source_version"].get("revision") == revision):
+                    raise ReviewError("not_found", "Discussion was not found on this revision")
             comment_id = f"cmt-{uuid.uuid4().hex[:12]}"
             await self.db.insert_review_comment(
                 {
@@ -585,6 +604,7 @@ class ReviewService:
                     "heading_path": [str(h) for h in heading_path or []],
                     "body": body,
                     "author": author,
+                    "source_discussion_id": source_discussion_id,
                     "resolved_in_revision": None,
                     "created_at": self._clock(),
                 }, conn=conn

@@ -1049,3 +1049,40 @@ class TestAgentAffinity:
         assert "context" in caplog.text
         assert "t-branch" in caplog.text
         assert "a-1" in caplog.text
+
+
+async def test_schedule_skips_held(reuse_database):
+    """Push scheduling never offers or binds an ingestion-held task."""
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+    from src.models import AgentProfile
+
+    db = await reuse_database("test.db")
+    await db.create_project(make_project())
+    await db.create_profile(
+        AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
+    )
+    await db.create_agent(Agent(id="a-1", name="a-1", profile_id="worker", state=AgentState.IDLE))
+    # Held outranks free, so only the hold can explain the scheduler skipping it.
+    for tid, priority in (("held", 1), ("free", 100)):
+        await db.create_task(make_task(
+            id=tid, priority=priority, profile_id="worker", route_source="legacy",
+        ))
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "held").values(held_batch_id="b"))
+
+    active = await db.list_active_tasks(exclude_held_ready=True)
+    state = SchedulerState(
+        projects=await db.list_projects(),
+        tasks=active,
+        agents=await db.list_agents(),
+        project_token_usage={},
+        project_active_agent_counts={},
+        tasks_completed_in_window={},
+        hierarchy_runnable_task_ids=await db.hierarchy_runnable_task_ids(["held", "free"]),
+    )
+
+    assert [action.task_id for action in Scheduler.schedule(state)] == ["free"]
+    assert await db.assign_task_to_agent("held", "a-1") is False
+    assert (await db.get_task("held")).status == TaskStatus.READY
