@@ -12,7 +12,7 @@ import { useShortcut } from "../../shell/hotkeys/useShortcuts";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { useGraphState } from "./useGraphHierarchy";
 import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
-import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
+import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_FILTER_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar({ onCreated }: { onCreated?: (taskId: string) => void }) {
   const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters, goToRunningWork } = useTaskWorkspace();
@@ -28,6 +28,7 @@ export default function TaskToolbar({ onCreated }: { onCreated?: (taskId: string
   // one is: on the Tasks tab the control would do nothing, so it is not shown
   // and the `locate` request is never issued.
   const onGraph = useLocation().pathname.endsWith("/graph");
+  const statusOptions = onGraph ? TASK_STATUSES : TASK_FILTER_STATUSES;
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
     onGraph ? projectId : undefined, variant, filters, focusId);
   const { density, setDensity } = useGraphState();
@@ -75,8 +76,8 @@ export default function TaskToolbar({ onCreated }: { onCreated?: (taskId: string
         <select aria-label="Task status" value={filters.status} onChange={(e) => setStatus(e.target.value)}
           data-primary-control className="h-11 min-w-0 flex-1 rounded-md md:h-9 md:max-w-48 md:flex-none border border-gray-700 bg-gray-900 px-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none">
           <option value="">All statuses</option>
-          {filters.status && !TASK_STATUSES.includes(filters.status) && <option value={filters.status}>{taskStatusLabel(filters.status)}</option>}
-          {TASK_STATUSES.map((status) => <option key={status} value={status}>{taskStatusLabel(status)}</option>)}
+          {filters.status && !statusOptions.includes(filters.status) && <option value={filters.status}>{taskStatusLabel(filters.status)}</option>}
+          {statusOptions.map((status) => <option key={status} value={status}>{taskStatusLabel(status)}</option>)}
         </select>
         <button type="button" data-primary-control aria-expanded={filtersOpen} aria-controls={filtersId}
           aria-label={secondaryFilters ? `Filters (${secondaryFilters} active)` : "Filters"}

@@ -1,21 +1,10 @@
-"""The App-mode trust manifest: one pure builder, its canonical text and a comparison.
+"""Pure App-mode trust-manifest building, canonical text and comparison.
 
-``.github/agent-queue-integration.json`` (schema ``aq.integration-trust.v1``,
-:class:`src.integration.ci.IntegrationTrustManifest`) is how a repository names
-the identities the daemon trusts in App credential mode.  Its callers build
-it and must agree byte for byte, so the rules live here once:
-
-* ``aq integration trust-manifest`` (``integration_trust_manifest`` in
-  ``src/commands/integration_commands.py``) renders it from the policy, the
-  authenticated binding and the daemon's App, and compares it with the
-  default-branch copy;
-* the App-mode preflight compares a committed copy on the same fields.
-
-Nothing here reads Git, GitHub or the database.  Fields fall in two groups
-(App-mode integration train spec §5): the **identity** fields are compared
-exactly wherever a manifest is read, and the **check set** is informational in
-the tree -- the frozen policy snapshot is the runtime authority -- so a
-check-set difference is a warning, never a refusal.
+The command and preflight share these rules for the repository's
+``.github/agent-queue-integration.json`` (schema ``aq.integration-trust.v1``).
+Identities come from the authenticated repository binding and daemon App;
+identity differences refuse trust, while check-set differences warn because
+the frozen policy snapshot owns the checks (App-mode train spec §5).
 """
 
 from __future__ import annotations
@@ -33,6 +22,7 @@ from src.integration.ci import (
     IntegrationTrustManifest,
     is_numeric_producer_id,
 )
+from src.integration.models import HostedCheckPolicy
 
 SCHEMA = "aq.integration-trust.v1"
 ATTESTATION_NAME = "Agent Queue Integration Attestation"
@@ -79,15 +69,11 @@ def build_trust_manifest(
     promotion_attestation_names: Sequence[str] | None = None,
     check_sets: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
-    """The manifest object, validated by :class:`IntegrationTrustManifest`.
+    """Build a validated manifest, preserving exact check order.
 
-    ``checks`` keeps its order: the runtime compares check names as an
-    ordered sequence, so the manifest lists them exactly as the policy does.
-
-    ``ci_producer_app_id=None`` is a comparison template for a policy whose
-    producer is itself at fault (``ci_producer_not_numeric``): the field is
-    ``None``, nothing is validated, and :func:`compare` is told to ignore it.
-    It is never a manifest to commit.
+    ``ci_producer_app_id=None`` creates an unvalidated comparison template for
+    ``ci_producer_not_numeric``; :func:`compare` must ignore that field.
+    Never commit this template.
     """
     manifest = {
         "schema": SCHEMA,
@@ -121,12 +107,10 @@ def _required_checks(policy: Any, boundary: str) -> Mapping[str, Any]:
 
 
 def policy_producer_app_id(policy: Any) -> int:
-    """The numeric CI producer both policy boundaries name.
+    """Resolve matching numeric CI producer App IDs on both boundaries (spec §4).
 
-    App credential mode compares the producer with the manifest's numeric
-    ``ci_producer_app_id``, so a slug is ``ci_producer_not_numeric`` (spec §4)
-    and two different numeric producers are ``ci_producer_mismatch``: one
-    manifest cannot name both.
+    Refuse slugs as ``ci_producer_not_numeric`` and mismatches as
+    ``ci_producer_mismatch``; one manifest trusts one producer.
     """
     producers = {
         boundary: _required_checks(policy, boundary).get("producer_id")
@@ -162,13 +146,16 @@ def manifest_for_policy(
     promotion_flow: Sequence[Mapping[str, Any]] = (),
     check_sets: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
-    """The manifest a bound (or candidate) policy implies for one repository.
+    """Build from a hierarchical policy or validated hosted checks.
 
-    The producer comes from the policy, the check set from its ``root``
-    boundary: only root candidates are attested (spec §6.1, §7.1).
+    Hierarchical inputs use the root checks and matching boundary producers
+    (spec §6.1, §7.1); hosted inputs need no routing boundaries.
     """
-    producer = policy_producer_app_id(policy)
-    required = _required_checks(policy, "root")
+    if isinstance(policy, HostedCheckPolicy):
+        producer, required = int(policy.producer_id), policy.model_dump()
+        check_sets = policy.check_sets
+    else:
+        producer, required = policy_producer_app_id(policy), _required_checks(policy, "root")
     try:
         return build_trust_manifest(
             canonical_repository_id=canonical_repository_id,
@@ -182,8 +169,7 @@ def manifest_for_policy(
             check_sets=check_sets,
         )
     except ValidationError as exc:
-        # The identities come from the binding and the App: a failure here is
-        # the policy's (an empty check set) or an App that is its own producer.
+        # Refuse invalid policy checks or an App that is its own CI producer.
         raise TrustManifestRefusal(
             "trust_manifest_invalid", f"the manifest would not validate: {exc}"
         ) from exc
