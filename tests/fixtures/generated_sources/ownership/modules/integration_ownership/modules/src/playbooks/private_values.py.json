@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/playbooks/private_values.py::REFERENCE_KEY": "Generic protected-value reference key; same-shaped constant AST is not relocated integration logic."
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "task_split": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_split_commands.py:TaskSplitCommandsMixin._cmd_task_split",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'split.not_found', 'error': 'source task not found'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'unauthorized', 'error': 'caller cannot split this task'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'split.invalid', 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': exc.code, 'error': exc.detail, **exc.context}"
+      }
+    ],
+    "review_notes": " Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:706cec7dd4656f2d08fd62edd27a24434de90ff9b61ad7c7548a5aaa1c8c8449",
+    "tests": [
+      "tests/test_task_split.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  }
+}
