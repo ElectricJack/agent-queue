@@ -296,6 +296,10 @@ class WaitLifecycle:
             await self.orch._command_handler.wait_service_resume_stalls(self)
         except Exception:
             logger.exception("Could not report stalled wait resumes")
+        try:
+            await self.orch._command_handler.wait_service_expire_resume_grants(self)
+        except Exception:
+            logger.exception("Could not expire held resume grants")
         async with self.db._engine.connect() as conn:
             ready = [dict(row) for row in (await conn.execute(select(continuations).join(
                 tasks, tasks.c.id == continuations.c.task_id,
@@ -304,7 +308,13 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
-            if intent['facts'].get('workspace_retry', {}).get('due_at', 0) > self.clock():
+            # A refused reservation or a full worktree pool backs off durably:
+            # retrying it each tick would retake the graph lock only to observe
+            # the same blocker.
+            facts = intent['facts']
+            if max((facts.get(key) or {}).get('due_at', 0)
+                   for key in ('workspace_retry', 'workspace_capacity', 'reserve_retry')
+                   ) > self.clock():
                 continue
             key = (intent["id"], intent["suspension_generation"])
             pending = self._resume_tasks.get(key)
@@ -374,6 +384,7 @@ class WaitLifecycle:
                           f"for {int(age)} seconds after wait {row['wait_id']} resolved. "
                           f"Continuation {row['id']}, generation {row['suspension_generation']}, "
                           f"state {row['resume_state']}, hold {row['hold_reason']}. "
+                          f"Workspace capacity: {row['facts'].get('workspace_capacity', {})}. "
                           "Automatic retries remain subject to existing holds and admission. "
                           "Inspect provider, "
                           "workspace and fresh-session acknowledgement; preserve the outcome "

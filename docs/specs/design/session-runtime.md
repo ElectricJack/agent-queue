@@ -183,6 +183,14 @@ while those probes await; an earlier live-session snapshot must not turn that re
 stop into a rapid crash. A session already stopped or removed, or replaced by another
 instance during the probes, is not classified from that stale observation.
 
+A task recovery guard may reject failure recording because the task was paused,
+closed, reassigned, or deliberately stopped. That guard must not leave a confirmed
+dead process recorded as running. Within the same tick, stop its remaining provider
+artifact and mark only that exact session instance stopped, with its exit timestamp
+and reason. Retain the task decision, claim binding and workspace ownership for
+their existing recovery paths. A replacement instance or failed stop prevents this
+session-only retirement.
+
 ### 4.2 Named sessions
 
 The global supervisor's terminal always has system scope (`project_id = NULL`),

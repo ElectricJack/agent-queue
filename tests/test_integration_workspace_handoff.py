@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-
+import contextlib
+import subprocess
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,7 +21,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.git.manager import GitError
+from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, BranchOwnershipError
 from src.models import (
@@ -34,6 +35,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from src.orchestrator.workspace_attachments import _probe_workspace_checkout
 
 pytestmark = pytest.mark.asyncio
 
@@ -2939,3 +2941,35 @@ async def test_reopen_settles_drained_pool_predecessor_before_ready(
         assert (await db.get_session("session")).task_id == "task"
         assert (await db.get_workspace("slot")).locked_by_task_id == "task"
         assert "detach" not in events
+
+
+def _run_git(cwd, *args) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("case", ["published", "unpublished", "other_branch"])
+async def test_probe_treats_a_never_created_task_branch_as_already_detached(tmp_path, case):
+    # A preparation that failed before checkout leaves no local task branch.
+    origin, slot = tmp_path / "origin.git", tmp_path / "slot"
+    _run_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    _run_git(tmp_path, "clone", "-q", str(origin), str(slot))
+    for key, value in (("user.email", "t@example.com"), ("user.name", "t")):
+        _run_git(slot, "config", key, value)
+    _run_git(slot, "commit", "-q", "--allow-empty", "-m", "base")
+    _run_git(slot, "push", "-q", "origin", "main")
+    if case == "other_branch":
+        _run_git(slot, "switch", "-q", "-c", "aq/other")
+    else:
+        _run_git(slot, "switch", "-q", "--detach")
+    if case == "unpublished":
+        _run_git(slot, "commit", "-q", "--allow-empty", "-m", "local only")
+    head = _run_git(slot, "rev-parse", "HEAD")
+
+    proof = await _probe_workspace_checkout(
+        GitManager(), lambda _path: contextlib.nullcontext(),
+        SimpleNamespace(workspace_path=str(slot)), expected_branch="aq/never-created",
+    )
+
+    assert proof == (head if case == "published" else None)
