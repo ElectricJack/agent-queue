@@ -8,13 +8,11 @@ from src.api.auth import RequestScope
 from src.api.middleware import TokenAuthMiddleware
 from src.api.pull_requests import PendingPullRequestInbox, build_pull_requests_router
 from src.commands.review_commands import ReviewCommandsMixin
-from src.database import Database
 from src.database.queries.pull_request_queries import (
     list_known_pull_requests, read_pull_request_snapshot, write_pull_request_snapshot,
 )
 from src.database.tables import archived_tasks, projects, tasks
 from src.git.github_contracts import GitHubRepositoryBinding
-from tests.db_fixtures import lease_dsn
 
 SHA = "a" * 40
 MOVED = "b" * 40
@@ -22,11 +20,9 @@ BASE = "https://github.com/acme/repo/pull/"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("pending-prs"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("pending-prs")
     yield database
-    await database.close()
 
 
 async def seed(db):

@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:c266ac8909fdc5ede066eb95f59453975da4b004c504ce3152490b2bc4aa0177` |
+| Contract fingerprint | `sha256:422bba7cd577e8c25d0917a4ff04f2e4115ec5efb04de708c26001cf531dbeff` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `task_id` | `string` | yes | — | Task ID to resume |
+| `recover_stale_pause` | `boolean` | no | — | Operator/supervisor recovery of a stale pause on an unchanged retained source; still requires writer stop proof and ordinary checkpoint cleanup. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
@@ -45,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id | — | always |
+| Composite using task_id, recover_stale_pause | — | always |
 
 <!-- aq:generated:end -->
 

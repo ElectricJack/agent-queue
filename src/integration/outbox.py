@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -27,11 +29,22 @@ PROMOTION_EVENT_TYPES = frozenset({
     "promotion.intent_due", "promotion.delivered",
 })
 
+# Held and receipt wakeups must retain delivery intent until policy accepts
+# them. Scope/release notifications are observable but have no required action.
+BATCH_EVENT_TYPES = frozenset({
+    "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+    "integration.publication_verified",
+})
+ACTIVE_OUTBOX_EVENT_TYPES = PROMOTION_EVENT_TYPES | BATCH_EVENT_TYPES
+
 # Optional notifications may settle only after proving no enabled consumer;
 # always offer them to reviewed and operator-installed consumers before sinking.
 UNSUBSCRIBED_EVENT_TYPES = frozenset({
     *PROMOTION_EVENT_TYPES,
+    "batch.needs_scope",
+    "batch.released",
     "integration.root_delivered",
+    "integration.publication_verified",
     "integration.human_blocked",
     "integration.cleanup_pending",
     "task.integration_configuration_blocked",
@@ -150,6 +163,49 @@ async def enqueue_integration_event(
     if identity != (event_id, dedup_key, project_id, event_type) or dict(row["payload"]) != body:
         raise ValueError("integration event identity was reused with different content")
 
+    if batch_id := body.get("batch_id"):
+        from src.waits.sources import record_batch_event
+
+        await record_batch_event(conn, batch_id)
+
+
+async def enqueue_batch_event(
+    conn: AsyncConnection, batch: dict, event_type: str, *,
+    generation: str | int = 0, now: float | None = None,
+) -> str:
+    """Persist a batch wakeup on the transaction that records its domain state.
+
+    A generation is a durable retry token, not caller authority. Replays keep
+    the same identity and payload, including after reviewer reassignment.
+    Released notifications attest the frozen release rather than later edits.
+    """
+    if event_type not in BATCH_EVENT_TYPES:
+        raise ValueError(f"not a batch event: {event_type}")
+    released = event_type == "batch.released"
+    revision = batch["release_revision"] if released else batch["structure_revision"]
+    digest = batch["release_digest"] if released else batch["structure_digest"]
+    if revision is None or digest is None:
+        raise ValueError("a batch event requires its recorded revision and digest")
+    token = hashlib.sha256(json.dumps([
+        event_type, batch["project_id"], batch["batch_id"], revision, digest, generation,
+    ]).encode()).hexdigest()
+    event_id = f"batch-event-{token}"
+    # The first enqueue owns the immutable payload. Reviewer assignment may
+    # change without a structure revision, but retrying an intent cannot.
+    if (await conn.execute(select(integration_outbox.c.id).where(
+        integration_outbox.c.id == event_id,
+    ))).first():
+        return event_id
+    await enqueue_integration_event(
+        conn, event_id=event_id, dedup_key=f"batch:{token}",
+        project_id=batch["project_id"], event_type=event_type,
+        payload={"project_id": batch["project_id"], "batch_id": batch["batch_id"],
+                 "structure_revision": revision, "structure_digest": digest,
+                 "reviewer_task_id": batch["reviewer_task_id"]},
+        available_at=time.time() if now is None else now,
+    )
+    return event_id
+
 
 class IntegrationOutbox:
     """Deliver one bounded page, acknowledging only durable consumer acceptance."""
@@ -166,6 +222,7 @@ class IntegrationOutbox:
         before_dispatch: Callable[[str], Awaitable[None]] | None = None,
         max_wait_seconds: float = DEFAULT_MAX_WAIT_SECONDS,
         project_max_wait: ProjectMaxWait | None = None,
+        publication_wake: Callable[[str, dict], Awaitable[None]] | None = None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("page_size must be positive")
@@ -178,6 +235,7 @@ class IntegrationOutbox:
         self._clock = clock
         self._before_dispatch = before_dispatch
         self._max_wait_seconds, self._project_max_wait = max_wait_seconds, project_max_wait
+        self._publication_wake = publication_wake
         self._cursor: tuple[float, str] | None = None
         self._cycle_end: tuple[float, str] | None = None
 
@@ -193,6 +251,11 @@ class IntegrationOutbox:
             try:
                 if self._before_dispatch is not None:
                     await self._before_dispatch(row["project_id"])
+                if (row["event_type"] == "integration.publication_verified"
+                        and self._publication_wake is not None):
+                    # At least once across retries/restarts, with the durable
+                    # event ID for observers and external deployment owners.
+                    await self._publication_wake(row["event_type"], dict(row["payload"]))
                 accepted = await self._accept_event(
                     row["event_type"], dict(row["payload"]), row["id"])
                 if not accepted:
