@@ -3109,12 +3109,14 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:335d2cc74562e83b4fc4d81f74fdcf94bbe07236c63d3e0df923268e3408f486",
+      "digest": "sha256:b9cd025686d96f8949d986fcf72e2de315e6ba71a54c85ac270f91628d8ff032",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.asks.delivery",
+        "src.asks.ingestion",
         "src.asks.intake",
+        "src.asks.operations",
         "src.asks.reconcile",
         "src.asks.reset_policy",
         "src.database",
@@ -18052,9 +18054,11 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:3557adf497a6c785a96b58cda8e3aa470d87427dcaddf03bb9050425367a4493",
+      "digest": "sha256:9bde0ee23070c86f16be39f38a07bfeef4b3a2daa46be0b62b66c04abecad5e6",
       "imports": [
+        "src.api.auth",
         "src.api.models.supervisor_inbox",
+        "src.api.scope",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",

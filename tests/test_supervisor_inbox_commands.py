@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import func, select, update
 
+from src.api.auth import RequestScope
+from src.api.scope import check_request_scope
 from src.commands.handler import CommandHandler
 from src.commands.principal import (
     TRUSTED_LOCAL,
@@ -519,18 +521,18 @@ def reply_args(first, **overrides):
 LAUNCH_UUID = "22f503aa-d483-47bc-aeb2-a867e800a529"
 
 
-async def live_supervisor(db, **overrides):
+async def live_supervisor(db, *, project_id=None, session_id=LAUNCH_UUID, **overrides):
     from src.models import SessionRecord
     from src.profiles.capabilities import CapabilityPolicy
 
     await db.create_session(
         SessionRecord(
-            id=LAUNCH_UUID,
-            project_id=None,
+            id=session_id,
+            project_id=project_id,
             profile_id="supervisor",
             harness="codex",
             provider="openai",
-            name="n-supervisor--global",
+            name=f"n-supervisor--{project_id or 'global'}",
             lifecycle="named",
             work_dir="/tmp",
             epoch="epoch",
@@ -542,7 +544,8 @@ async def live_supervisor(db, **overrides):
     return ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=CapabilityPolicy.from_namespaces(aq_commands=["supervisor_inbox_reply"]),
-        session_id=LAUNCH_UUID,
+        session_id=session_id,
+        project_id=project_id,
         session_instance_token="live-token",
         elevated=True,
         **overrides,
@@ -552,6 +555,70 @@ async def live_supervisor(db, **overrides):
 async def reply(handler, values, principal=TRUSTED_LOCAL):
     with principal_context(principal):
         return await handler.execute("supervisor_inbox_reply", values)
+
+
+@pytest.mark.parametrize("queued_first", [False, True])
+async def test_project_supervisor_reply_passes_request_scope_and_dispatch(env, queued_first):
+    from src.models import Project
+
+    handler, db = env
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_project(Project(id="other", name="Other project"))
+    handler.config.discord.project_id = "p"
+    if queued_first:
+        first = await post(handler)
+    principal = await live_supervisor(db, project_id="p")
+    if queued_first:
+        assert await db.route_queued_conversation_inputs("p") == 1
+    else:
+        first = await post(handler)
+    item = await db.get_conversation_input(first["input_id"])
+    assert item["project_id"] is None
+    notice = await db.get_message(first["supervisor_message_id"])
+    assert (notice.project_id, notice.to_id) == ("p", "supervisor-p")
+
+    values = reply_args(first)
+    scope = RequestScope(kind="session", session_id=principal.session_id,
+                         project_id="p", elevated=True)
+    assert await check_request_scope("supervisor_inbox_reply", values, scope, db=db) is None
+    assert "project_id" not in values
+    result = await reply(handler, values, principal)
+    assert result["success"], result
+    assert (await db.get_conversation_input(first["input_id"]))["state"] == "answered"
+    assert (await db.get_message(result["reply_message_id"])).from_id == "supervisor-p"
+    assert queued(handler.orchestrator.conversation_outbox, "reply")[-1]["payload"][
+        "reply_message_id"
+    ] == result["reply_message_id"]
+
+
+@pytest.mark.parametrize("target", ["foreign_project", "wrong_conversation", "global"])
+async def test_project_reply_scope_refuses_foreign_or_unbound_targets(env, target):
+    from src.models import Project
+
+    handler, db = env
+    for project_id in ("p", "other"):
+        await db.create_project(Project(id=project_id, name=project_id))
+    principal = await live_supervisor(db, project_id="p")
+    handler.config.discord.project_id = "p"
+    own = await post(handler)
+    if target == "foreign_project":
+        await live_supervisor(db, project_id="other", session_id="other-supervisor")
+        handler.config.discord.project_id = "other"
+    elif target == "global":
+        await live_supervisor(db, session_id="global-supervisor")
+        handler.config.discord.project_id = "other"
+    second = await post(handler, args(1))
+    values = reply_args(second)
+    if target == "wrong_conversation":
+        values["input_id"] = own["input_id"]
+    scope = RequestScope(kind="session", session_id=principal.session_id,
+                         project_id="p", elevated=True)
+    error = await check_request_scope("supervisor_inbox_reply", values, scope, db=db)
+    assert error is not None and "out of scope" in error
+    result = await reply(handler, values, principal)
+    assert not result["success"], result
+    assert not queued(handler.orchestrator.conversation_outbox, "reply")
+    assert (await db.get_conversation_input(second["input_id"]))["state"] == "accepted"
 
 
 async def test_reply_live_global_supervisor_is_durable_and_idempotent(env):

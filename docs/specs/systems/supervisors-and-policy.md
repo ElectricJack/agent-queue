@@ -428,7 +428,10 @@ Discord is a chat extension of the supervisor
 - `supervisor_inbox_post` is accepted only from the discord-gateway service;
 - status and history are read-only;
 - `supervisor_inbox_reply` is accepted only from the exact live supervisor
-  launch.
+  launch. Project scope resolves both the input and its conversation through
+  the input's addressed supervisor notice, which carries the routing project
+  even when the input itself has no project. An input from another conversation
+  or a notice routed outside that project cannot authorize a reply.
 
 Conversations are opt-in (`discord.conversation.enabled`). See
 [discord-conversations.md](../../guides/discord-conversations.md).
