@@ -44,6 +44,48 @@ def ctx(tmp_path):
     return DoctorContext(config=config, db=None, handler=None)
 
 
+@pytest.mark.parametrize("material", [None, "bad", "eA==", "valid"])
+async def test_private_value_key_diagnostic(ctx, monkeypatch, material):
+    import base64
+
+    variable = "AQ_DOCTOR_TEST_PRIVATE_KEY"
+    monkeypatch.delenv(variable, raising=False)
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": variable}
+    encoded = base64.b64encode(b"x" * 32).decode() if material == "valid" else material
+    if encoded is not None:
+        monkeypatch.setenv(variable, encoded)
+    check = default_registry().get("playbooks.private_value_key")
+
+    result = await check.run(ctx)
+
+    assert result.severity is (Severity.OK if material == "valid" else Severity.ERROR)
+    assert check.fix is None
+    if material != "valid":
+        assert "private_storage_key_unavailable" in result.detail
+        assert "Restore the original key" in result.detail
+    if encoded:
+        assert encoded not in json.dumps(result.to_dict())
+
+
+async def test_private_value_key_diagnostic_uses_live_service(ctx, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+
+    from src.playbooks.private_values import PrivateValueService
+
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": "AQ_DOCTOR_TEST_PRIVATE_KEY"}
+    monkeypatch.setenv("AQ_DOCTOR_TEST_PRIVATE_KEY", base64.b64encode(b"x" * 32).decode())
+    ctx.db = SimpleNamespace(playbook_private_values=lambda: PrivateValueService(object()))
+    check = default_registry().get("playbooks.private_value_key")
+    assert (await check.run(ctx)).severity is Severity.ERROR
+    ctx.config.playbooks.enabled = False
+    assert (await check.run(ctx)).severity is Severity.INFO
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -72,6 +114,7 @@ class TestRegistry:
         assert reg.unregister("x.y") is False
 
     def test_default_registry_has_all_builtins(self):
+        from src.doctor.ask_checks import ask_checks
         from src.doctor.capability_checks import capability_checks
         from src.doctor.dashboard_server_checks import dashboard_server_checks
         from src.doctor.dashboard_state_checks import dashboard_state_checks
@@ -99,10 +142,12 @@ class TestRegistry:
         from src.doctor.stall_checks import stall_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
+        from src.doctor.wait_checks import wait_checks
 
         reg = default_registry()
         expected = (
             {c.id for c in builtin_checks()}
+            | {c.id for c in ask_checks()}
             | {c.id for c in hierarchy_checks()}
             | {c.id for c in pool_checks()}
             | {c.id for c in task_checks()}
@@ -130,6 +175,7 @@ class TestRegistry:
             | {c.id for c in routing_checks()}
             | {c.id for c in service_checks()}
             | {c.id for c in record_checks()}
+            | {c.id for c in wait_checks()}
         )
         assert set(reg.ids()) == expected
 
@@ -962,6 +1008,53 @@ class TestPluginRegistration:
 
 
 class TestCliExitCodes:
+    @pytest.mark.parametrize("checks", [[], ["--check", "db.connect"],
+                                        ["--check", "db.alembic_orphan", "--check", "db.connect"]])
+    def test_offline_requires_only_the_orphan_check(self, checks):
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        result = CliRunner().invoke(cli, ["doctor", "--offline", *checks])
+        assert result.exit_code == 2
+        assert "--offline requires --check db.alembic_orphan exclusively" in result.output
+
+    @pytest.mark.parametrize("scope,token", [("worker", ""), ("cli", "agent-token")])
+    def test_offline_refuses_agent_sessions_before_loading_config(self, monkeypatch, scope, token):
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: scope)
+        monkeypatch.setenv("AQ_API_TOKEN", token)
+        monkeypatch.setattr("src.cli.db._load_config", lambda: pytest.fail("must refuse first"))
+        result = CliRunner().invoke(cli, ["doctor", "--offline", "--check", "db.alembic_orphan"])
+        assert result.exit_code == 4
+        assert "local operator workflow" in " ".join(result.output.split())
+
+    def test_offline_connection_failure_is_not_healthy_and_disposes_engine(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        engine = MagicMock()
+        engine.connect.return_value.__aenter__.side_effect = RuntimeError("database unreachable")
+        engine.dispose = AsyncMock()
+        monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: "cli")
+        monkeypatch.delenv("AQ_API_TOKEN", raising=False)
+        monkeypatch.setattr("src.cli.db._load_config", lambda: SimpleNamespace())
+        monkeypatch.setattr("src.cli.db._make_engine", lambda config: (engine, "scratch"))
+        result = CliRunner().invoke(
+            cli, ["doctor", "--offline", "--check", "db.alembic_orphan", "--json"]
+        )
+        assert result.exit_code == 3, result.output
+        assert json.loads(result.output)["error"]["code"] == "doctor_failed"
+        engine.dispose.assert_awaited_once()
+
     @pytest.mark.parametrize("exit_code", [0, 1, 2])
     def test_doctor_exits_with_runner_code(self, exit_code, monkeypatch):
         from click.testing import CliRunner

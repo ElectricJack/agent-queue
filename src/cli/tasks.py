@@ -113,7 +113,7 @@ def task_batch_propose(ctx, change_file, project_id, source, dry_run, **operatio
         args["project_id"] = project_id
 
     async def run():
-        async with _get_client(ctx) as client:
+        async with _get_client(ctx.obj.get("api_url") if ctx.obj else None) as client:
             return await client.execute("task_batch_propose", args)
 
     result = _run(run())
@@ -608,11 +608,17 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
 @task.command("restart")
 @click.argument("task_id")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
+@click.option("--override-hold", is_flag=True, help="Explicitly release a recovery hold")
+@click.option("--reason", default=None, help="Required explanation for a hold override")
 @click.pass_context
 @_handle_errors
-def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
+def task_restart(
+    ctx: click.Context, task_id: str, yes: bool, override_hold: bool, reason: str | None,
+) -> None:
     """Restart a failed or stopped task."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if override_hold and (not reason or not reason.strip()):
+        raise click.UsageError("--override-hold requires --reason")
 
     if not yes:
         from .menus import confirm
@@ -623,7 +629,10 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     async def _restart():
         async with _get_client(api_url) as client:
-            return await client.execute("restart_task", {"task_id": task_id})
+            args = {"task_id": task_id}
+            if override_hold:
+                args.update(override_hold=True, reason=reason)
+            return await client.execute("restart_task", args)
 
     result = _run(_restart())
     emit(
@@ -881,6 +890,7 @@ def task_details_alias(ctx: click.Context, task_id: str) -> None:
 @task.command("set")
 @click.argument("task_id")
 @click.option("--branch", default=None, help="Set the task's branch name")
+@click.option("--repair-batch", default=None, help="Supervisor/operator: assign this task to repair an open batch")
 @click.option("--pr-url", default=None, help="Set the task's PR URL")
 @click.option("--work-dir", default=None, help="Record the task's working directory")
 @click.option("--note", default=None, help="Append a legacy note to task context")
@@ -907,6 +917,7 @@ def task_set(
     ctx: click.Context,
     task_id: str,
     branch: str | None,
+    repair_batch: str | None,
     pr_url: str | None,
     work_dir: str | None,
     note: str | None,
@@ -942,6 +953,8 @@ def task_set(
     args: dict[str, Any] = {"task_id": task_id}
     if branch is not None:
         args["branch"] = branch
+    if repair_batch is not None:
+        args["repair_batch"] = repair_batch
     if pr_url is not None:
         args["pr_url"] = pr_url
     if work_dir is not None:
@@ -993,7 +1006,11 @@ def task_set(
 def task_comment(
     ctx: click.Context, task_id: str, body: str, kind: str, claim_epoch: int | None
 ) -> None:
-    """Append an attributed comment to a task's durable history."""
+    """Append an attributed comment to a task's durable history.
+
+    Keep comments concise: state what changed, decisions, and blockers.
+    Link evidence files; do not paste logs or repeat status.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {"task_id": task_id, "body": body, "kind": kind}
     epoch = resolve_claim_epoch(claim_epoch)
@@ -1233,28 +1250,144 @@ task_subtask_start = _subtask_update_command("subtask-start", "in_progress")
 task_subtask_skip = _subtask_update_command("subtask-skip", "skipped", note_required=True)
 
 
-@task.command("remove")
-@click.argument("task_id")
-@click.option("--reason", required=True, help="Why this task or epic is being removed.")
-@click.option("--yes", "confirmed", is_flag=True, help="Confirm removal without an interactive prompt.")
-@click.pass_context
-@_handle_errors
-def remove_task(ctx, task_id, reason, confirmed):
-    """Remove a task and its descendants, preserving branches and audit history."""
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-    if not reason.strip():
-        raise click.UsageError("--reason must not be blank")
-    if not confirmed:
-        click.confirm(
-            f"Remove {task_id} and all descendants? Sessions will stop, open batches will abort, "
-            "and audit history and branches will be kept",
-            abort=True,
+def _render_delete_preview(data: dict) -> None:
+    console.print("Tasks to delete:", markup=False)
+    for row in data.get("tasks", []):
+        console.print(f"  {row['id']} — {row['title']} ({row['status']})", markup=False)
+    if data.get("reparented_tasks"):
+        console.print("Children kept: " + ", ".join(data["reparented_tasks"]), markup=False)
+    for entry in data.get("branch_details", []):
+        console.print(
+            f"  {entry['action'].upper()} branch {entry['branch']} "
+            f"(remote: {entry.get('remote_sha') or entry['remote_state']})",
+            markup=False,
         )
+        for local in entry.get("local_refs", []):
+            console.print(
+                f"    {local['path']}: {local.get('sha') or 'tracking ref only'}", markup=False
+            )
+        for checkout in entry.get("worktrees", []):
+            console.print(f"    worktree: {checkout['path']}", markup=False)
+    for session in data.get("sessions", []):
+        console.print(
+            f"  STOP session {session['session_id']} ({session['task_id']})", markup=False
+        )
+    for notice in data.get("warnings", []):
+        console.print(f"Warning: {notice['message']}", markup=False)
+
+
+def _delete_cli(
+    ctx,
+    task_id,
+    recursive,
+    cascade,
+    branches,
+    stop_running,
+    reason,
+    confirmed,
+    preview,
+    legacy_task_id=None,
+):
+    if task_id and legacy_task_id and task_id != legacy_task_id:
+        raise click.UsageError("Choose one task id.")
+    task_id = task_id or legacy_task_id
+    if not task_id:
+        raise click.UsageError("A task id is required.")
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if cascade:
+        recursive = True
+    if not confirmed and not preview:
+        if recursive is None:
+            recursive = (
+                click.prompt("Scope", type=click.Choice(["task", "recursive"]), default="task")
+                == "recursive"
+            )
+        if branches is None:
+            branches = click.prompt(
+                "Branches", type=click.Choice(["keep", "delete"]), default="keep"
+            )
+        if reason is None:
+            reason = click.prompt("Reason (optional)", default="", show_default=False)
+    args = {
+        "task_id": task_id,
+        "recursive": bool(recursive),
+        "branches": branches or "keep",
+        "stop_running": stop_running,
+        "reason": reason or "",
+    }
 
     async def _inner():
         async with _get_client(api_url) as client:
-            result = await client.execute("remove_task", {
-                "task_id": task_id, "reason": reason, "confirmed": True,
-            })
-            emit(ctx, result)
+            plan = await client.execute("delete_task", {**args, "confirmed": False})
+            if preview:
+                emit(ctx, plan, entity="delete_task", render=_render_delete_preview)
+                return
+            if not confirmed:
+                _render_delete_preview(plan)
+                click.confirm(
+                    "Delete these tasks? Running work will stop. Audit history will remain",
+                    abort=True,
+                )
+            result = await client.execute("delete_task", {**args, "confirmed": True})
+
+            def render(data):
+                console.print(
+                    f"Deleted {', '.join(data.get('task_ids', [task_id]))}. "
+                    f"Audit: {data.get('audit_id')}",
+                    markup=False,
+                )
+                for notice in data.get("warnings", []):
+                    console.print(f"Warning: {notice['message']}", markup=False)
+
+            emit(ctx, result, entity="delete_task", render=render)
+
     _run(_inner())
+
+
+def _delete_options(fn):
+    for decorator in reversed(
+        [
+            click.argument("task_id", required=False),
+            click.option(
+                "--task-id", "legacy_task_id", help="Compatibility spelling for the task id."
+            ),
+            click.option(
+                "--recursive/--task-only", default=None, help="Delete descendants or keep them."
+            ),
+            click.option("--cascade", is_flag=True, help="Deprecated alias for --recursive."),
+            click.option(
+                "--branches",
+                type=click.Choice(["keep", "delete"]),
+                default=None,
+                help="Keep branches or delete local/remote branches and associated worktrees.",
+            ),
+            click.option(
+                "--stop-running",
+                is_flag=True,
+                help="Acknowledge stopping selected sessions and claims.",
+            ),
+            click.option("--reason", help="Optional reason retained in the audit."),
+            click.option(
+                "--yes", "confirmed", is_flag=True, help="Confirm without interactive prompts."
+            ),
+            click.option("--preview", is_flag=True, help="Show the read-only deletion preview."),
+            click.pass_context,
+            _handle_errors,
+        ]
+    ):
+        fn = decorator(fn)
+    return fn
+
+
+@task.command("delete")
+@_delete_options
+def delete_task(ctx, **kwargs):
+    """Delete a task after choosing scope and branch cleanup in one confirmation."""
+    _delete_cli(ctx, **kwargs)
+
+
+@task.command("remove", deprecated=True)
+@_delete_options
+def remove_task(ctx, **kwargs):
+    """Deprecated alias for delete, with identical choices and cleanup."""
+    _delete_cli(ctx, **kwargs)

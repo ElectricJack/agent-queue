@@ -294,6 +294,12 @@ def api_checked(command: str, args: dict) -> dict | list:
     return result
 
 
+def supervisor_recipient() -> str:
+    """Read the fixture project's opted-in supervisor destination."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    return f"supervisor-{PROJECT}" if project["supervisor_enabled"] else "supervisor-global"
+
+
 def wait_for(
     predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = POLL_INTERVAL,
     extend_if=None, diagnostic=None,
@@ -447,7 +453,10 @@ def session_token(session_id: str) -> str:
 
 
 #: The stage profiles a role task keeps (mandatory routing §4, D3): never routed.
-ROLE_PROFILES = frozenset({"triage", "spec-ingest", "reviewer", "final-reviewer"})
+# S4 and S19 deliberately dispatch dedicated stages, outside ordinary worker selection.
+ROLE_PROFILES = frozenset({
+    "triage", "spec-ingest", "reviewer", "final-reviewer", "coding", "planner",
+})
 #: Why the operator overrides a route in this kit; the override needs 10-400 chars.
 OVERRIDE_REASON = "e2e Tier 1: the operator routes this task by hand"
 
@@ -568,8 +577,8 @@ class Worker:
     def aq(self, *args: str, check_ok: bool = True) -> dict:
         return aq(*args, token=self.token, session_id=self.session_id, check_ok=check_ok)
 
-    def claim_next(self, *, check_ok: bool = True) -> dict:
-        out = self.aq("task", "claim", "--next", check_ok=check_ok)
+    def claim_next(self, *, check_ok: bool = True, wait: int = 0) -> dict:
+        out = self.aq("task", "claim", "--next", "--wait", str(wait), check_ok=check_ok)
         if isinstance(out, dict) and out.get("result") == "claimed":
             self.task_id = out["task"]["id"]
             self.claim_epoch = out["claim_epoch"]
@@ -617,11 +626,16 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
 
     def claim():
         nonlocal last_claim
-        last_claim = worker.claim_next()
-        # READY and routed does not imply available to this single attempt:
-        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
-        # Releasing that lock emits no task.ready event, so retry explicitly.
+        # SKIP LOCKED can skip a READY fixture; releasing its row lock emits
+        # no task.ready event to wake a long poll. Leave time for retries.
+        # Preparation can outlive this short observation; the next call
+        # resumes the session's existing attempt.
+        last_claim = worker.claim_next(wait=1)
         if last_claim.get("result") == "no_ready_work":
+            return None
+        if last_claim.get("result") == "claim_in_progress":
+            check(last_claim.get("task_id") in fixtures,
+                  f"{what}: expected fixture {task_ids}, preparing {last_claim.get('task_id')}")
             return None
         check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
         check(worker.task_id in fixtures,
@@ -698,7 +712,7 @@ def fresh_workers(
         project_id=project_id,
     )
     for task_id in fillers:
-        api_checked("delete_task", {"task_id": task_id, "cascade": True, "branches": "delete"})
+        api_checked("delete_task", {"task_id": task_id, "recursive": True, "branches": "delete", "confirmed": True})
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
@@ -723,7 +737,7 @@ def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     This is fixture cleanup; S9 asserts task deletion through the real CLI.
     """
     for task in _open_pool_tasks(project_id):
-        api("delete_task", {"task_id": task["id"], "cascade": True, "branches": "delete"})
+        api("delete_task", {"task_id": task["id"], "recursive": True, "branches": "delete", "confirmed": True})
 
 
 def idle_worker() -> Worker:
@@ -1006,6 +1020,20 @@ def s3_worker_filed_work(state: dict) -> str:
 
 def s4_formulas(state: dict) -> str:
     """A formula resolves, cooks, renders back as-cooked, and settles."""
+    # S1 leaves two live idle pool sessions at the project's cap of two.
+    # Formula role tasks run in their own task sessions, so provision one
+    # additional seat while exercising their sequential execution. Idle
+    # pool sessions consume real capacity even without current task pins.
+    project = api_checked("get_project", {"project_id": PROJECT})
+    cap = project["max_concurrent_agents"]
+    api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap + 1})
+    try:
+        return _s4_formulas(state)
+    finally:
+        api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap})
+
+
+def _s4_formulas(state: dict) -> str:
     names = {f["name"] for f in aq("formula", "list", "--project-id", PROJECT)["formulas"]}
     check({"base-review", "review-and-fix"} <= names, f"formula fixtures missing: {names}")
 
@@ -1152,7 +1180,7 @@ def s5_fence_and_scope(state: dict) -> str:
     # Pool bounds are global. Remove this scope-only fixture before closing
     # the holder frees capacity, or OTHER_PROJECT starts a worker that consumes
     # one of S7's two required slots for the entire scale-down grace period.
-    aq("task", "delete", "--task-id", foreign)
+    aq("task", "delete", foreign, "--recursive", "--branches", "delete", "--yes")
     state.pop("s5_foreign", None)
     holder.close(summary="S5 held task")
     return f"cross-session heartbeat and cross-project prime both refused ({foreign})"
@@ -1239,26 +1267,55 @@ def s7_claim_race(state: dict) -> str:
     # Let the task land in the frontier before both callers ask for it.
     wait_for(lambda: task_show(task_id)["status"] == "READY", what=f"{task_id} to be READY")
 
-    procs = []
-    for sid, token in tokens:
-        env = dict(os.environ)
-        env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
-        procs.append(
-            subprocess.Popen(
-                [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-        )
     outcomes = []
-    for p in procs:
-        out, _err = p.communicate(timeout=120)
-        payload = json.loads(out.strip() or "{}")
-        data = payload.get("data") or {}
-        details = (payload.get("error") or {}).get("details") or {}
-        outcomes.append(data.get("result") or details.get("result") or "unknown")
+
+    def race():
+        nonlocal outcomes
+        procs = []
+        for sid, token in tokens:
+            env = dict(os.environ)
+            env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
+            procs.append(
+                subprocess.Popen(
+                    [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+            )
+        outcomes = []
+        for worker, p in zip(workers, procs, strict=True):
+            out, _err = p.communicate(timeout=120)
+            payload = json.loads(out.strip() or "{}")
+            data = payload.get("data") or {}
+            details = (payload.get("error") or {}).get("details") or {}
+            result = data.get("result") or details.get("result") or "unknown"
+            if result == "claim_in_progress":
+                check(data.get("task_id") == task_id,
+                      f"race is preparing a different task: {data}")
+                preparing_epoch = data.get("claim_epoch")
+                check(isinstance(preparing_epoch, int) and preparing_epoch > 0,
+                      f"race preparation omitted its generation: {data}")
+                # Keep selection concurrent and immediate, then join the
+                # winning generation once before asserting final ownership.
+                data = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
+                result = data.get("result") or "unknown"
+                check(data.get("claim_epoch") == preparing_epoch,
+                      f"race preparation changed generation: {data}")
+            if result == "claimed":
+                check(data.get("task", {}).get("id") == task_id,
+                      f"race claimed a different task: {data}")
+            outcomes.append(result)
+        # READY does not mean unlocked: both SKIP LOCKED queries can miss
+        # the task during a scheduler transaction. Race both callers again
+        # only when neither claimed; all other results retain the assertions.
+        return None if outcomes == ["no_ready_work", "no_ready_work"] else outcomes
+
+    wait_for(
+        race, what=f"one concurrent claim of {task_id}", timeout=CONVERGE_TIMEOUT,
+        diagnostic=lambda: f"outcomes={outcomes}; fixture={task_show(task_id)}",
+    )
 
     winners = [o for o in outcomes if o == "claimed"]
     check(
@@ -1475,7 +1532,7 @@ def s9_task_lifecycle(state: dict) -> str:
         )
     finally:
         for task_id in created:
-            aq("task", "delete", "--task-id", task_id, check_ok=False)
+            aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes", check_ok=False)
 
     for task_id in created:
         gone = run_aq("task", "show", task_id)
@@ -1874,15 +1931,41 @@ def set_provider_state(key: str, state: str, reason: str = "e2e S16") -> dict:
 
 
 def set_failover_policy_enabled(enabled: bool) -> None:
-    """Keep S16's operator-driven sweeps isolated from the automatic policy."""
-    result = aq(
-        "playbook",
-        "set-enabled",
-        "--playbook-id",
-        FAILOVER_PLAYBOOK,
-        "--enabled" if enabled else "--no-enabled",
-    )
-    check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
+    """Isolate manual sweeps from failover and unavailable-route recovery."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    for playbook in (FAILOVER_PLAYBOOK, project["assignment_playbook_id"]):
+        result = aq(
+            "playbook", "set-enabled", "--playbook-id", playbook,
+            "--enabled" if enabled else "--no-enabled",
+        )
+        check(result.get("enabled") is enabled, f"could not set {playbook}: {result}")
+    if not enabled:
+        # Router readiness is cached until the cascade observes the activation.
+        observe_scheduler_cycles(lambda: None)
+
+
+def wait_for_restored_readiness() -> None:
+    """Wait for the health snapshot to observe an explicitly restored policy.
+
+    S16 temporarily disables a required policy. Re-enabling its activation is
+    synchronous, but the cached /ready verdict is collected independently. Do
+    not pass that disabled snapshot on to the next scenario's preflight.
+    """
+    from scripts.e2e.probe import READY, fetch
+
+    last = None
+    deadline = time.monotonic() + 15
+
+    def restored():
+        nonlocal last
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        last = fetch(API_URL, timeout=min(2, remaining))
+        return last[0] == READY
+
+    wait_for(restored, what="readiness after restoring the failover policy", timeout=15,
+             diagnostic=lambda: f"last readiness probe={last!r}")
 
 
 def held_tasks() -> dict[str, dict]:
@@ -2008,15 +2091,18 @@ def _run_failover_phase(state: dict, phase) -> str:
     # shipped provider-failover playbook would otherwise consume S16's state
     # change and move the first task before this scenario can inspect the full
     # held set and exercise the operator's dry-run/live commands itself.
+    # The ready router's unavailable-route recovery would also clear those
+    # deliberately stranded routes, so pause its activation for this phase.
     try:
         set_failover_policy_enabled(False)
-        note("paused the automatic provider-failover playbook for manual sweep coverage")
+        note("paused automatic failover and routing recovery for manual sweep coverage")
         return phase(state)
     finally:
         try:
             _restore_providers()
         finally:
             set_failover_policy_enabled(True)
+            wait_for_restored_readiness()
 
 
 def _s16(state: dict) -> str:
@@ -2162,18 +2248,20 @@ def _s16_outage(state: dict) -> dict:
         m for m in global_notes if m.get("subject") == f"Provider {PROVA}: unauthenticated"
     ]
     check(len(prova_notes) == 1, f"expected one prova outage notice to the human: {prova_notes}")
+    supervisor = supervisor_recipient()
     project_notes = [
         m for m in collection_rows(
             aq(
-                "message", "list", "--to-kind", "session", "--to-id", f"supervisor-{PROJECT}",
+                "message", "list", "--to-kind", "session", "--to-id", supervisor,
                 "--since", str(t0),
             ),
             "messages",
         )
-        if batch in (m.get("body") or "")
+        if m.get("thread_id") == f"reroute:{batch}:{PROJECT}"
     ]
     check(len(project_notes) == 1, f"expected one batch notice for {PROJECT}: {project_notes}")
-    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to supervisor-{PROJECT} for {batch}")
+    check(project_notes[0].get("project_id") == PROJECT, "batch notice lost its project context")
+    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to {supervisor} for {batch}")
     incidents = [e for e in provider_escalations() if e.get("source_identity", "").startswith(f"{PROVA}:")]
     open_incidents = [e for e in incidents if e.get("terminal_at") is None]
     check(len(open_incidents) == 1, f"expected one open prova escalation: {incidents}")
@@ -2313,7 +2401,7 @@ def _s16_recovery(outage: dict) -> str:
     [check_row] = [c for c in doctor.get("checks", []) if c["id"] == "providers.availability"]
     check(check_row["severity"] == "error", f"doctor with every provider down: {check_row}")
     note(f"doctor providers.availability: {check_row['severity']} — {check_row['detail'][:120]}")
-    aq("task", "delete", "--task-id", filler, check_ok=False)
+    aq("task", "delete", filler, "--recursive", "--branches", "delete", "--yes", check_ok=False)
     TIMINGS["provider_recovery_seconds"] = time.monotonic() - started
     return (
         "recheck→probation→available; "
@@ -2441,10 +2529,17 @@ def _pin_train_validation(project_id: str, home: Path) -> dict:
     settings = DevelopmentPolicy(validation="none", commands=[], interval_seconds=86400)
     source = render_development_policy(project_id, settings)
     definition = load_definition_json(Path(
-        REPO_ROOT, "src/prompts/reviewed_playbooks/root-train/artifact.json",
+        REPO_ROOT, "docs/history/legacy-train-policies/root-train/artifact.json",
     ).read_text()).model_copy(update={
         "id": f"{project_id}-development", "scope": ProjectScope(project_id=project_id),
         "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
+    })
+    # Only the retained cleanup command remains activatable. The active train
+    # reads this pin for its frozen validation settings, never for publication.
+    definition = definition.model_copy(update={
+        "rules": [rule for rule in definition.rules if rule.id == "cleanup-promoted"],
+        "steps": {name: step for name, step in definition.steps.items()
+                  if name.startswith("cleanup-promoted--")},
     })
     digest = artifact_sha256(definition)
     bundle = home / "vault" / "e2e-bundles" / definition.id
@@ -2689,7 +2784,7 @@ def s17_phased_graph(state: dict) -> str:
         fixture_ready,
         what="the first phase-1 task to reach the claim frontier",
     )
-    first_claim = first_worker.claim_next()
+    first_claim = first_worker.claim_next(wait=int(CONVERGE_TIMEOUT))
     check(first_claim.get("result") == "claimed", f"first phase-1 claim: {first_claim}")
     check(first_worker.task_id in phase_one_nodes, f"withheld runner was claimed: {first_worker.task_id}")
 
@@ -2718,7 +2813,7 @@ def s17_phased_graph(state: dict) -> str:
             project_id=project_id,
         )
         worker = Worker.adopt(session["id"])
-        claim = worker.claim_next()
+        claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
         check(claim.get("result") == "claimed", f"{what} claim: {claim}")
         check(worker.task_id == expected_task_id, f"{what} claimed {worker.task_id}")
         return worker
@@ -2829,7 +2924,7 @@ def s17_phased_graph(state: dict) -> str:
         return row if row["status"] in ("COMPLETED", "DONE") else None
 
     wait_for(epic_settled, what=f"phased epic {epic} to settle")
-    aq("task", "delete", "--task-id", epic, "--cascade")
+    aq("task", "delete", epic, "--recursive", "--yes")
     gone = run_aq("task", "show", epic)
     check(gone.returncode != 0, f"S17 cleanup left epic {epic}: {gone}")
     return (
@@ -2846,6 +2941,15 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     task_id = create_task("S18 supervisor failure triage", profile=POOL_PROFILE)
     claim_fixture(worker, task_id, what=f"S18 worker to claim fixture {task_id}")
 
+    def triage_runs() -> list[dict]:
+        return collection_rows(
+            api_checked("list_playbook_runs", {
+                "playbook_id": "supervisor-failure-triage", "limit": 10,
+            }),
+            "runs",
+        )
+
+    previous_runs = {row["run_id"] for row in triage_runs()}
     failed = worker.aq(
         "task",
         "close",
@@ -2865,32 +2969,34 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     worker.drain_ack()
 
     def triage_run() -> dict | None:
-        rows = collection_rows(
-            api_checked("list_playbook_runs", {
-                "playbook_id": "supervisor-failure-triage", "limit": 10,
-            }),
-            "runs",
-        )
+        # This isolated world emits one failure here. Event inputs are private;
+        # correlate by the new public run id, then verify the task-specific notice.
+        rows = [row for row in triage_runs() if row["run_id"] not in previous_runs]
+        check(len(rows) <= 1, f"S18 expected one new triage run: {rows}")
         for row in rows:
             detail = api_checked("inspect_playbook_run", {"run_id": row["run_id"]})["run"]
-            if detail.get("event", {}).get("task_id") == task_id:
+            # The run row appears as soon as dispatch starts it; judge it only
+            # once it has left ``running`` (its command steps take a moment).
+            if detail.get("lifecycle") not in ("running", "cancelling"):
                 return detail
         return None
 
-    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run")
+    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run to finish")
     check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
+    supervisor = supervisor_recipient()
 
     def supervisor_notice() -> dict | None:
         rows = collection_rows(
             api_checked("message_list", {
-                "to_kind": "session", "to_id": f"supervisor-{PROJECT}", "since": started_at,
+                "to_kind": "session", "to_id": supervisor, "since": started_at,
             }),
             "messages",
         )
         return next((row for row in rows if task_id in (row.get("body") or "")), None)
 
     notice = wait_for(supervisor_notice, what="the S18 durable supervisor notice")
-    aq("task", "delete", "--task-id", task_id)
+    check(notice.get("project_id") == PROJECT, "triage notice lost its project context")
+    aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes")
     return (
         f"task.failed completed triage run {run['run_id']} and queued one durable supervisor "
         f"notice {notice['id']}"
@@ -3067,8 +3173,8 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
 
     for node in successful[0]["nodes"]:
-        api_checked("delete_task", {"task_id": node["task_id"]})
-    api_checked("delete_task", {"task_id": foreign_parent})
+        api_checked("delete_task", {"task_id": node["task_id"], "confirmed": True})
+    api_checked("delete_task", {"task_id": foreign_parent, "confirmed": True})
     closed_planner = planner.close(summary="S19 scoped planner graph acceptance")
     check(closed_planner.get("success") is not False, f"S19 planner close: {closed_planner}")
     planner.drain_ack()
