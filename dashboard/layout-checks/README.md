@@ -12,8 +12,32 @@ three phones plus an Android 412×915): the phone attaches like the desktop and
 asks for history and its size back, the screen fills its host, rotation and the
 on-screen keyboard resize tmux, a touch drag scrolls the scrollback with
 momentum, typing goes over the attach, and its colours match the desktop
-terminal's. `focus-session` covers a viewer the daemon refuses an attach, who
-watches the pane stream in the same terminal.
+terminal's. `focus-session` also covers a refused attach: the same terminal
+shows the refusal and keeps input disabled.
+
+The `terminal-parity` check runs at the same four sizes and opens the **host
+shell page** and the phone's agent terminal in turn, because they are the same
+terminal: it `deepEqual`s their computed palettes (font, foreground, every
+background xterm paints and the 16-colour, 256-colour, truecolor and background
+samples), asserts neither offers a watch/type mode, checks both attach at a size
+fitted to the phone and that a touch drag reaches earlier output on both, then
+follows rotation and the on-screen keyboard through the agent terminal. Its
+screenshots are the side-by-side evidence in
+`docs/reports/mobile-terminal-host-shell-parity-2026-10-09/`.
+
+`check:terminal-parity` runs Playwright against the same isolated production
+bundle at iPhone 14, iPhone SE and Android Pixel 7 viewports. It compares the
+host shell with the focus session, flock agent, pool instance, full session's
+Pane tab and session-peek drawer. It verifies raw keyboard input, rotation,
+visualViewport keyboard coverage, fitted PTY rows/columns and touch scrolling
+back through all 300 fixture history lines. It writes a JSON report and exact
+side-by-side screenshots. Chromium emulation does not replace the guide's
+real iOS Safari and Android Chrome checks.
+
+```bash
+npm -w dashboard run build
+npm -w dashboard run check:terminal-parity -- --out /tmp/terminal-parity
+```
 
 The `graph-theme` check verifies the task canvas background, grid and controls
 in both themes, including changes to the system theme without a page reload.
