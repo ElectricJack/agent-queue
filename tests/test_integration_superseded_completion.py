@@ -55,7 +55,9 @@ async def case(reuse_database, tmp_path):
     identity = CompletionIdentity("p", "r", "root", "close-1")
     await provenance.write_completion(CompletedSource(identity, head))
     truth = GitTruth(git)
-    async def snapshot(target):
+    async def snapshot(target, *, max_age=0.0, cached_only=False):
+        assert max_age == 0.0
+        assert not cached_only
         return await truth.snapshot(str(checkout), project_id="p", repository_id="r",
                                     repository_url=str(remote), target_ref=target.target_ref)
     db._delivery_observer = SimpleNamespace(snapshot=snapshot, truth=truth)
@@ -202,8 +204,8 @@ async def test_proof_changes_between_preview_and_apply_refuse(case, mutation):
 
 async def test_cas_detects_change_during_remote_probe(case):
     preview = await case.service.run(case.request, principal="human:local-operator")
-    async def racing(target):
-        observed = await case.snapshot(target)
+    async def racing(target, **options):
+        observed = await case.snapshot(target, **options)
         async with case.db._engine.begin() as conn:
             await conn.execute(update(t.integration_branch_owners).values(fence_token=4))
         return observed
@@ -279,8 +281,8 @@ async def test_supervisor_stopping_during_probe_refuses(case):
                                    session_id="caller", project_id="p", elevated=True)
     with principal_context(principal):
         preview = await case.service.run(case.request, principal="supervisor session:caller")
-        async def racing(target):
-            observed = await case.snapshot(target)
+        async def racing(target, **options):
+            observed = await case.snapshot(target, **options)
             async with case.db._engine.begin() as conn:
                 await conn.execute(update(t.sessions).values(state="stopped", desired_state="stopped"))
             return observed

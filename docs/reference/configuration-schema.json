@@ -781,7 +781,7 @@
       "additionalProperties": false,
       "default": {
         "default_mode": "pull_request",
-        "git_first": "shadow",
+        "git_first": "active",
         "github_app": null,
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
@@ -801,13 +801,21 @@
           "type": "string"
         },
         "git_first": {
-          "default": "shadow",
+          "default": "active",
           "type": "string"
         },
         "github_app": {
           "additionalProperties": false,
           "default": null,
           "properties": {
+            "actions_permission": {
+              "default": "read",
+              "enum": [
+                "read",
+                "write"
+              ],
+              "type": "string"
+            },
             "app_id": {
               "minimum": 1,
               "type": "integer"
@@ -3344,11 +3352,21 @@
     "supervisor": {
       "additionalProperties": false,
       "default": {
+        "context_ceiling_tokens": 160000,
         "global_": {
           "idle_timeout_seconds": 2700
-        }
+        },
+        "max_session_age_seconds": 86400,
+        "max_turn_retries": 2,
+        "question_timeout_seconds": 900,
+        "retry_backoff_seconds": 60,
+        "turn_timeout_seconds": 900
       },
       "properties": {
+        "context_ceiling_tokens": {
+          "default": 160000,
+          "type": "integer"
+        },
         "global_": {
           "additionalProperties": false,
           "default": {
@@ -3361,6 +3379,26 @@
             }
           },
           "type": "object"
+        },
+        "max_session_age_seconds": {
+          "default": 86400,
+          "type": "integer"
+        },
+        "max_turn_retries": {
+          "default": 2,
+          "type": "integer"
+        },
+        "question_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
+        },
+        "retry_backoff_seconds": {
+          "default": 60,
+          "type": "integer"
+        },
+        "turn_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
         }
       },
       "type": "object",
@@ -3935,6 +3973,56 @@
       "type": "string",
       "x-reload": "restart"
     },
+    "workspaces": {
+      "additionalProperties": false,
+      "default": {
+        "build_cache": null,
+        "projects": {}
+      },
+      "properties": {
+        "build_cache": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "dir": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "ccache",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "ccache",
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "worktrees": {
       "additionalProperties": false,
       "default": {
@@ -4033,7 +4121,8 @@
       "swarm",
       "test_selection",
       "wait_policy",
-      "work_graph"
+      "work_graph",
+      "workspaces"
     ],
     "other": [],
     "restart_required": [

@@ -28,6 +28,14 @@ export interface PoolRenamedEvent extends BaseEvent {
   backup_path: string;
 }
 
+export interface PoolDeletedEvent extends BaseEvent {
+  event_type: "pool.deleted";
+  profile_id: string;
+  depth: "profile" | "directory";
+  sessions: string[];
+  warnings: string[];
+}
+
 export interface ProjectPauseChangedEvent extends BaseEvent {
   event_type: "project.paused" | "project.resumed";
   project_id: string;
@@ -528,4 +536,5 @@ export type NotifyEvent =
   | MetricsTickEvent
   | DashboardStateChangedEvent
   | ProjectPauseChangedEvent
-  | PoolRenamedEvent;
+  | PoolRenamedEvent
+  | PoolDeletedEvent;
