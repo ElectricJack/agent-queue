@@ -4,9 +4,17 @@ tags: [design, memory, plugin, milvus, memsearch]
 
 # Memory Plugin v2
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft
-**Principles:** [[guiding-design-principles]] (#8 plugins own their dependencies, #10 fewer moving parts)
-**Related:** [[vault]], [[memory-scoping]], [[self-improvement]], [[specs/plugin-system]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#8 plugins own their dependencies, #10 fewer moving parts)
+**Related:** [vault](vault.md), [memory-scoping](memory-scoping.md), [self-improvement](self-improvement.md), [specs/plugin-system](../plugin-system.md)
 
 ---
 
@@ -131,7 +139,7 @@ fields = [
 
 **`document`** — Memory files with embeddings for semantic search. The `content`
 field holds a summary (optimized for retrieval); `original` holds the full text.
-`topic` enables pre-filtering before vector search (see [[memory-scoping]] Section 3).
+`topic` enables pre-filtering before vector search (see [memory-scoping](memory-scoping.md) Section 3).
 
 **`kv`** — Key-value pairs for exact lookup. No embedding needed. Queried via
 scalar filters on `kv_namespace` and `kv_key`.
@@ -218,7 +226,7 @@ retained.
 
 ### Fact Files (KV Source of Truth)
 
-Each scope can have a `facts.md` in the [[vault]] — a human-readable file of structured
+Each scope can have a `facts.md` in the [vault](vault.md) — a human-readable file of structured
 key-value data that gets synced to Milvus KV entries:
 
 ```markdown

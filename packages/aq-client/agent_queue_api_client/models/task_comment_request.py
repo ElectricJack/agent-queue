@@ -17,11 +17,15 @@ class TaskCommentRequest:
     Attributes:
         task_id (str): Task id to comment on.
         body (str): Comment text (not blank; at most 16000 characters).
+        kind (str | Unset): 'progress' records that work actually advanced (a milestone, a green test run, a pushed PR)
+            and is the only comment kind the hourly digest reports; 'note' is ordinary history — a question, a plan,
+            chatter. Default: 'note'.
         claim_epoch (int | None | Unset): Current claim epoch; required for pool workers.
     """
 
     task_id: str
     body: str
+    kind: str | Unset = "note"
     claim_epoch: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -29,6 +33,8 @@ class TaskCommentRequest:
         task_id = self.task_id
 
         body = self.body
+
+        kind = self.kind
 
         claim_epoch: int | None | Unset
         if isinstance(self.claim_epoch, Unset):
@@ -44,6 +50,8 @@ class TaskCommentRequest:
                 "body": body,
             }
         )
+        if kind is not UNSET:
+            field_dict["kind"] = kind
         if claim_epoch is not UNSET:
             field_dict["claim_epoch"] = claim_epoch
 
@@ -55,6 +63,8 @@ class TaskCommentRequest:
         task_id = d.pop("task_id")
 
         body = d.pop("body")
+
+        kind = d.pop("kind", UNSET)
 
         def _parse_claim_epoch(data: object) -> int | None | Unset:
             if data is None:
@@ -68,6 +78,7 @@ class TaskCommentRequest:
         task_comment_request = cls(
             task_id=task_id,
             body=body,
+            kind=kind,
             claim_epoch=claim_epoch,
         )
 
