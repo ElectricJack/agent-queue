@@ -1,0 +1,43 @@
+{
+  "playbook_script_run": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/playbook_script_commands.py:PlaybookScriptCommandsMixin._cmd_playbook_script_run",
+    "resource_gates": [
+      "pinned_script_invocation"
+    ],
+    "result_policy": "metadata only; protected output references",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error_code': 'unauthorized', 'error': 'unauthorized'}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': True, 'job': public_job(job)}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error_code': str(exc), 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error_code': 'jobs.script_input_invalid', 'error': 'jobs.script_input_invalid'}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error_code': 'jobs.storage_unavailable', 'error': 'jobs.storage_unavailable'}"
+      }
+    ],
+    "schema_quality": "declared",
+    "source_digest": "sha256:18cdc651469f34b021530cd7ba2a5758ad58d1b552adda8ed690edb6ee4e8bc0",
+    "tests": [
+      "tests/test_playbook_script_recovery.py"
+    ]
+  }
+}
