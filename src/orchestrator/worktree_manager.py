@@ -69,6 +69,7 @@ from src.git.manager import (
 from src.git.process import ProcessCleanupError, run_owned_process
 from src.git.repository_lock import repository_lock_wait_limit
 from src.models import (
+    AgentState,
     RepoSourceType,
     WORKTREE_SENTINEL_NAME,
     Workspace,
@@ -1942,6 +1943,94 @@ class WorktreeSlotManager:
                     # stop asserting that the detached checkout tracks it.
                     sentinel = self.read_sentinel(path)
                     self.write_sentinel(path, replace(sentinel, branch=None))
+
+    @guard_workspace("slot_ws")
+    @_slot_reset_timeout
+    async def normalize_pool_slot(self, slot_ws: Workspace) -> bool:
+        """Detach a merged orphan before a taskless pool process starts.
+
+        Acquisition has reserved the agent and workspace, but no session has
+        launched yet. Preserve dirty files and all branch refs; only a clean
+        HEAD already contained in the refreshed default can be normalized.
+        """
+        from sqlalchemy import or_, select
+        from src.database.tables import agents, archived_tasks, sessions, tasks, workspaces
+
+        path = slot_ws.workspace_path
+        if (not slot_ws.is_slot or slot_ws.locked_by_task_id
+                or not slot_ws.locked_by_agent_id or not hasattr(self.db, "_engine")
+                or await self.git.aget_current_branch(path) == "HEAD"):
+            return False
+        base = await self._base_of(slot_ws)
+        if base is None or base.project_id != slot_ws.project_id:
+            return False
+        slot_repository = await self.git.aworktree_base_path(path)
+        base_repository = await self.git.aworktree_base_path(base.workspace_path)
+        if (not slot_repository or not base_repository
+                or Path(slot_repository).resolve() != Path(base_repository).resolve()):
+            return False
+        await self.git.afetch_origin(
+            base.workspace_path, repository_url=await self._repository_url(slot_ws.project_id),
+            all_heads=True,
+        )
+        async with self._git_mutex(base.workspace_path), self.db._engine.begin() as conn:
+            # Never wait on a claimant that may itself need the repository
+            # mutex. Re-prove the acquisition after the authenticated fetch.
+            row = (await conn.execute(select(workspaces).where(
+                workspaces.c.id == slot_ws.id,
+            ).with_for_update(nowait=True))).mappings().one_or_none()
+            if (row is None or not row["enabled"]
+                    or row["locked_by_task_id"] is not None
+                    or row["locked_by_agent_id"] != slot_ws.locked_by_agent_id
+                    or row["generation"] != slot_ws.generation
+                    or row["workspace_path"] != path
+                    or row["project_id"] != slot_ws.project_id
+                    or row["base_workspace_id"] != slot_ws.base_workspace_id):
+                return False
+            agent = (await conn.execute(select(agents).where(
+                agents.c.id == slot_ws.locked_by_agent_id,
+            ).with_for_update(nowait=True))).mappings().one_or_none()
+            if (agent is None or agent["state"] != AgentState.BUSY.value or agent["current_task_id"]
+                    or await conn.scalar(select(sessions.c.id).where(
+                        or_(sessions.c.work_dir == path,
+                            sessions.c.agent_id == slot_ws.locked_by_agent_id),
+                        sessions.c.state.in_(("starting", "running", "draining", "sleeping")),
+                    ).limit(1))
+                    or await self._slot_has_retained_binding(slot_ws.id)
+                    or Path(path, ".aq", "claim.json").exists()
+                    or await self._slot_is_live(slot_ws)):
+                return False
+            sentinel = self.read_sentinel(path)
+            branch = await self.git.aget_current_branch(path)
+            if (sentinel is None or sentinel.workspace_id != slot_ws.id
+                    or sentinel.project_id != slot_ws.project_id
+                    or sentinel.base_workspace_id != slot_ws.base_workspace_id
+                    or sentinel.branch not in (None, branch)
+                    or not branch.startswith(BRANCH_PREFIX)
+                    or await self.git.ahas_uncommitted_changes(path, strict=True) is not False):
+                return False
+            for table in (tasks, archived_tasks):
+                if await conn.scalar(select(table.c.id).where(
+                    table.c.project_id == slot_ws.project_id,
+                    or_(table.c.branch_name.in_((branch, f"refs/heads/{branch}")),
+                        table.c.id == branch.removeprefix(BRANCH_PREFIX),
+                        table.c.id == sentinel.task_id if sentinel.task_id else False),
+                ).limit(1)):
+                    return False
+            entries = await self.git.aworktree_list(base.workspace_path)
+            if any(_norm_path(entry["path"]) == _norm_path(path) and entry.get("locked")
+                   for entry in entries):
+                return False
+            default = await self._default_branch(base.workspace_path, project_id=slot_ws.project_id)
+            ahead = await self.git._arun_unlocked(
+                ["rev-list", "--count", f"refs/remotes/origin/{default}..HEAD"], cwd=path,
+            )
+            if ahead.strip() != "0":
+                return False
+            await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+            self.write_sentinel(path, replace(sentinel, task_id=None, branch=None))
+            logger.info("Detached merged orphan branch %s in pool slot %s", branch, slot_ws.id)
+        return True
 
     @guard_workspace("slot_ws")
     async def detach_idle_slot_branch(self, slot_ws: Workspace) -> bool:
