@@ -43,8 +43,18 @@ def _import_repo_client():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("args", "expected_request"),
+    [
+        ({"task_id": "t1"}, {"task_id": "t1", "offset": 0, "limit": 4096}),
+        (
+            {"task_id": "t1", "field": "description", "offset": 4096, "limit": 1000},
+            {"task_id": "t1", "field": "description", "offset": 4096, "limit": 1000},
+        ),
+    ],
+)
 async def test_typed_dispatch_discovers_shipped_client_and_falls_back_on_unparseable_response(
-    monkeypatch,
+    monkeypatch, args, expected_request,
 ):
     """Plan 11 / API-3: discovery works; unparseable typed responses fall back."""
     _import_repo_client()
@@ -84,16 +94,19 @@ async def test_typed_dispatch_discovers_shipped_client_and_falls_back_on_unparse
     generic_http.post.return_value = fallback_resp
     client._http = generic_http
 
-    result = await client._execute_typed("task_show", {"task_id": "t1"}, dispatch["task_show"])
+    result = await client._execute_typed("task_show", args, dispatch["task_show"])
 
     # Typed parsing was attempted against the real generated operation...
     assert typed_http.request.await_count == 1
     request_kwargs = typed_http.request.await_args.kwargs
     assert request_kwargs["url"] == "/api/task/show"
-    assert request_kwargs["json"] == {"task_id": "t1"}
+    assert request_kwargs["json"] == expected_request
     # ...and the generic fallback delivered the command result.
     assert generic_http.post.await_count == 1
     assert generic_http.post.await_args.args[0] == "/api/execute"
+    assert generic_http.post.await_args.kwargs["json"] == {
+        "command": "task_show", "args": args,
+    }
     assert result == {"id": "t1", "title": "T"}
 
 
