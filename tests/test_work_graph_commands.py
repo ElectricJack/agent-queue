@@ -24,12 +24,10 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -61,6 +59,82 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
 
 
 class TestAddDependency:
+    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks"])
+    @pytest.mark.parametrize("container_kind", ["declared", "children", "missing_flag"])
+    async def test_worker_rejects_container_targets(self, handler, db, dep_type, container_kind):
+        await mktask(db, "container", TaskStatus.IN_PROGRESS)
+        await mktask(db, "worker", TaskStatus.IN_PROGRESS)
+        if container_kind == "declared":
+            async with db._engine.begin() as conn:
+                await db.declare_container("container", conn=conn)
+        else:
+            await mktask(db, "leaf")
+            await db.add_dependency("leaf", "container", "parent-child")
+            if container_kind == "missing_flag":
+                await db.delete_task_meta("container", "container")
+        handler._current_scope = {"kind": "session", "elevated": False}
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "worker", "depends_on": "container", "dep_type": dep_type,
+            })
+        finally:
+            handler._current_scope = None
+        assert result["code"] == "hierarchy.dependency_on_container"
+        assert "container" in result["error"] and "leaf task" in result["error"]
+        assert await db.get_typed_dependencies("worker") == []
+        assert not (await db.get_task("worker")).is_blocked
+
+    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks"])
+    async def test_worker_accepts_leaf_targets(self, handler, db, dep_type):
+        await mktask(db, "leaf")
+        await mktask(db, "worker")
+        await db.set_task_meta("leaf", "container", False)
+        handler._current_scope = {"kind": "session", "elevated": False}
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "worker", "depends_on": "leaf", "dep_type": dep_type,
+            })
+        finally:
+            handler._current_scope = None
+        assert result["ok"] is True
+        assert await db.get_typed_dependencies("worker") == [("leaf", dep_type)]
+
+    @pytest.mark.parametrize("scope", [None, {"kind": "session", "elevated": True}])
+    async def test_operator_and_supervisor_keep_container_fan_in(self, handler, db, scope):
+        await mktask(db, "container", TaskStatus.IN_PROGRESS)
+        await mktask(db, "leaf")
+        await mktask(db, "finalize")
+        await db.add_dependency("leaf", "container", "parent-child")
+        handler._current_scope = scope
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "finalize", "depends_on": "container", "dep_type": "waits-for",
+            })
+        finally:
+            handler._current_scope = None
+        assert result["ok"] is True
+        assert (await db.get_task("finalize")).is_blocked
+
+    @pytest.mark.parametrize("dep_type", [
+        "parent-child", "related", "discovered-from", "duplicates", "supersedes",
+    ])
+    async def test_worker_membership_and_provenance_still_accept_containers(
+        self, handler, db, dep_type,
+    ):
+        await mktask(db, "container", TaskStatus.IN_PROGRESS)
+        await mktask(db, "worker")
+        async with db._engine.begin() as conn:
+            await db.declare_container("container", conn=conn)
+        handler._current_scope = {"kind": "session", "elevated": False}
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "worker", "depends_on": "container", "dep_type": dep_type,
+            })
+        finally:
+            handler._current_scope = None
+        assert result["ok"] is True
+        assert await db.get_typed_dependencies("worker") == [("container", dep_type)]
+
     async def test_defaults_to_blocks(self, handler, db):
         await mktask(db, "a")
         await mktask(db, "b")
@@ -355,6 +429,19 @@ class TestTaskSetLabelEvents:
 # ── gate commands (WG-3) ─────────────────────────────────────────────────
 
 
+
+async def gate_decision(handler, gate_id):
+    shown = await handler._cmd_gate_show({"gate_id": gate_id})
+    ask = shown["gate"]["ask"]
+    intent = {"ask_id": ask["id"], "option_key": "approve", "expected": {
+        key: ask[key] for key in ("decision_generation", "source_fingerprint", "feedback_version")
+    }}
+    prepared = await handler._cmd_ask_prepare_decision(intent)
+    assert prepared["success"], prepared
+    return {"gate_id": gate_id, "option_key": "approve", "expected": intent["expected"],
+            "preview_id": prepared["preview"]["id"], "idempotency_key": f"approve:{gate_id}"}
+
+
 class TestGateCommands:
     async def test_gate_create_happy(self, handler, db):
         await mktask(db, "t1")
@@ -410,11 +497,15 @@ class TestGateCommands:
                 "project_id": PROJECT_ID,
                 "gate_type": "human",
                 "title": "r",
+                "question": "Approve this task?",
+                "human_request": {"policy": "approval_hold_v1", "context": {
+                    "waiting_effect": "The waiter remains blocked until approval.",
+                }},
                 "waiter_task_ids": ["t1"],
             }
         )
         gid = create["gate_id"]
-        res = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "jack"})
+        res = await handler._cmd_gate_resolve(await gate_decision(handler, gid))
         assert res["success"] is True
         assert "t1" in res["unblocked_task_ids"]
         assert (await db.get_task("t1")).is_blocked is False
@@ -426,15 +517,22 @@ class TestGateCommands:
                 "project_id": PROJECT_ID,
                 "gate_type": "human",
                 "title": "r",
+                "question": "Approve this task?",
+                "human_request": {"policy": "approval_hold_v1", "context": {
+                    "waiting_effect": "The waiter remains blocked until approval.",
+                }},
                 "waiter_task_ids": ["t1"],
             }
         )
         gid = create["gate_id"]
-        first = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "a"})
-        second = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "b"})
+        args = await gate_decision(handler, gid)
+        first = await handler._cmd_gate_resolve(args)
+        second = await handler._cmd_gate_resolve(args)
         assert first["success"] is True
         assert second["success"] is True
-        assert second["unblocked_task_ids"] == []
+        assert second["decision_id"] == first["decision_id"]
+        assert second["unblocked_task_ids"] == first["unblocked_task_ids"]
+        assert second["created"] is False
 
     async def test_gate_resolve_emits_task_unblocked_on_bus(self, handler, db):
         """The operator resolve path must emit ``task.unblocked`` on the
@@ -448,6 +546,10 @@ class TestGateCommands:
                 "project_id": PROJECT_ID,
                 "gate_type": "human",
                 "title": "r",
+                "question": "Approve this task?",
+                "human_request": {"policy": "approval_hold_v1", "context": {
+                    "waiting_effect": "The waiter remains blocked until approval.",
+                }},
                 "waiter_task_ids": ["t1"],
             }
         )
@@ -460,7 +562,7 @@ class TestGateCommands:
 
         handler.orchestrator.bus.subscribe("task.unblocked", _spy)
 
-        res = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "op"})
+        res = await handler._cmd_gate_resolve(await gate_decision(handler, gid))
         assert res["success"] is True
         assert "t1" in res["unblocked_task_ids"]
         # The command path fires task.unblocked just like _sweep_gates does.
@@ -667,7 +769,6 @@ class TestParentKey:
         from unittest.mock import MagicMock
 
         from src.commands.handler import CommandHandler
-        from src.database import Database
         from src.models import Project
         from src.orchestrator import Orchestrator
         from tests.db_fixtures import lease_dsn

@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/pr_repair_publication.py::PRRepairPublication._run::992177544a1b767d268d9e2ea582b2d44f2246aaf18d692a71860e6dd0290e38": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 139,
+      "owner": "PRRepairPublication._run",
+      "owner_fingerprint": "72b7604390614747d64dc0fe33e355884e4b8d64534449a4bc71933cf45109bb",
+      "reason": "Reviewed hand-integration reconciliation smart-nexus-83, size-cap-delegation-2026-10-23: charged integration adapter, source authority, policy or storage observation; no new storage category."
+    }
+  }
+}
