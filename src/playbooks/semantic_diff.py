@@ -56,6 +56,7 @@ class DefinitionDiff:
     semantic_change_count: int
     presentation_change_count: int
     integration_policy: list[FieldChange] = dataclass_field(default_factory=list)
+    execution_metadata: list[FieldChange] = dataclass_field(default_factory=list)
 
 
 def _flat(value: Any, pointer: str = "") -> dict[str, Any]:
@@ -176,6 +177,13 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
                 or json.dumps(left[pointer], sort_keys=True) != json.dumps(right[pointer], sort_keys=True)
     ]
     exec_count += len(policy_changes)
+    metadata_changes = []
+    for name in ("required_features", "trusted_execution"):
+        before = base.model_dump(mode="json", exclude_none=True).get(name) if base else None
+        after = target.model_dump(mode="json", exclude_none=True).get(name)
+        if before != after:
+            metadata_changes.append(FieldChange(f"/{name}", before, after, True))
+    exec_count += len(metadata_changes)
     return DefinitionDiff(
         rules,
         step_changes,
@@ -185,4 +193,5 @@ def diff_definitions(base: PlaybookDefinition | None, target: PlaybookDefinition
         exec_count + present_count,
         present_count,
         policy_changes,
+        metadata_changes,
     )
