@@ -190,6 +190,7 @@ class WaitService:
 
     async def tick(self):
         if await self.processing_enabled():
+            await self.observe_sources_once()
             if self.enabled:
                 await self._bounded_bridge()
             await self.lifecycle.tick()
@@ -206,10 +207,12 @@ class WaitService:
         try:
             async with asyncio.TaskGroup() as group:
                 maintenance = group.create_task(self.maintain())
+                observations = group.create_task(self.observe_sources())
                 try:
                     await self.listener.run()
                 finally:
                     maintenance.cancel()
+                    observations.cancel()
         finally:
             await self.lifecycle.stop()
 
@@ -223,11 +226,29 @@ class WaitService:
                 logger.exception("Wait continuation maintenance failed")
             await asyncio.sleep(self.listener.renewal_seconds)
 
+    async def observe_sources_once(self):
+        """Keep remote observations moving even when a train visit is paused."""
+        watcher = getattr(self.orch, "wait_ci_watcher", None)
+        if watcher is not None:
+            await watcher.tick()
+
+    async def observe_sources(self):
+        # Separate from continuation maintenance: slow GitHub calls must not
+        # delay checkpoint/stop/resume recovery. CheckWatcher serializes ticks.
+        while True:
+            try:
+                if await self.processing_enabled():
+                    await self.observe_sources_once()
+            except Exception:
+                logger.exception("Wait source observation failed")
+            await asyncio.sleep(self.listener.renewal_seconds)
+
     async def _bounded_bridge(self):
         """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
         task = getattr(self, "_bridge_task", None)
-        if task is None or task.done():
-            self._bridge_task = asyncio.create_task(self._run_bridge())
+        if (task is not None and not task.done()) or self._bridge_lock.locked():
+            return
+        self._bridge_task = asyncio.create_task(self._run_bridge())
         # A slow pass keeps running; the scheduler continues after the budget.
         await asyncio.wait({self._bridge_task}, timeout=BRIDGE_TICK_BUDGET_SECONDS)
 
@@ -244,6 +265,13 @@ class WaitService:
         from src.waits.decision import project_policy
 
         async with self._bridge_lock:
+            # Held migrations used to rerun their complete project scan every
+            # scheduler cycle. Retry once a minute; explicit operator bridge
+            # commands still run immediately, and completed receipts stay durable.
+            now = time.monotonic()
+            if now - getattr(self, "_last_bridge_attempt", float("-inf")) < 60:
+                return
+            self._last_bridge_attempt = now
             async with self.orch.db._engine.connect() as conn:
                 pids = list((await conn.execute(select(projects.c.id).where(~exists(
                     select(wait_bridge_progress.c.identity).where(
@@ -253,11 +281,17 @@ class WaitService:
                         wait_bridge_progress.c.state == 'complete',
                     ),
                 )))).scalars())
+            bridge = self.legacy_bridge
             for pid in pids:
+                if bridge.retry_at.get(pid, 0) > bridge.clock():
+                    continue
                 if project_policy(self.orch.config.wait_policy, pid).v2_enabled:
                     result = await self.command('wait_legacy_bridge', {
                         'project_id': pid, 'mode': 'agent-waits', 'apply': True,
                     })
+                    report = (result.get('result') or {}).get('projects', {}).get(pid, {})
+                    if not result.get('success') or report.get('state') == 'held':
+                        bridge.retry_at[pid] = bridge.clock() + bridge.RETRY_SECONDS
                     if not result.get('success'):
                         return
 

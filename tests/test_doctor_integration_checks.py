@@ -16,7 +16,7 @@ from tests.test_promotion_steps import promotion as promotion, setup as setup
     ("active", False, "development", False),
     ("active", False, "hierarchy", False),
     ("active", False, "train", False),
-    ("shadow", True, "development", False),
+    ("shadow", True, "development", True),
     ("shadow", False, "development", True),
     ("shadow", False, "hierarchy", True),
     ("shadow", False, "train", True),
@@ -41,7 +41,7 @@ async def test_delivery_engine_matches_startup_selection(git_first, reconciler, 
     if broken:
         assert result.data["projects"][0]["mode"] == mode
         assert "no delivery engine for this project" in result.detail
-        assert "delivery visits are paused" in result.detail
+        assert "trial (shadow) mode has been removed" in result.detail
     if mode in {"disabled", "observe"} or broken:
         db.get_repo.assert_not_awaited()
 

@@ -35,6 +35,17 @@ from src.database.tables import (
 )
 
 
+def _wait_human_delivery_authorized():
+    """Operational incidents need an explicit, committed supervisor decision."""
+    return exists().where(
+        wait_escalations.c.escalation_id == escalations.c.id,
+        wait_escalations.c.wait_id == wait_records.c.id,
+        wait_records.c.project_id == escalations.c.project_id,
+        wait_escalations.c.decision == "escalate_to_human",
+        wait_escalations.c.decided_at.is_not(None),
+    ).correlate(escalations).label("human_delivery_authorized")
+
+
 def _project_paused():
     return exists().where(
         projects.c.id == escalations.c.project_id,
@@ -100,6 +111,8 @@ DELIVERY_FINAL_STATES = frozenset({"sent", "retry", "unknown"})
 #: Duplicated from :mod:`src.escalations.facts` so the query layer stays
 #: free of a dependency on the transport package.
 KIND_ROOT_DELIVERY = "root"
+#: Same receipt as facts.INTERNAL_DELIVERY_ERROR; keep this layer transport-free.
+INTERNAL_DELIVERY_ERROR = "supervisor delivery incident is internal-only; nothing was sent"
 
 _ESCALATION_CREATE_REQUIRED = frozenset(
     {
@@ -378,7 +391,7 @@ class EscalationQueriesMixin:
                     await conn.execute(
                         select(
                             escalations,
-                            _human_requested(),
+                            _wait_human_delivery_authorized(),
                             and_(
                                 _project_paused(), escalations.c.state.in_(OPEN_ESCALATION_STATES)
                             ).label("held_while_paused"),
@@ -412,7 +425,7 @@ class EscalationQueriesMixin:
             return []
         statement = select(
             escalations,
-            _human_requested(),
+            _wait_human_delivery_authorized(),
             and_(
                 _project_paused(), escalations.c.state.in_(OPEN_ESCALATION_STATES)
             ).label("held_while_paused"),
@@ -1414,6 +1427,25 @@ class EscalationQueriesMixin:
             if dict(existing["payload"]) != dict(payload):
                 raise EscalationConflict("delivery identity reused with different payload")
             return dict(existing), False
+
+    async def retry_suppressed_escalation_root(self, escalation_id: str, *, now: float, conn=None):
+        """Retry only roots whose receipt proves no external delivery occurred.
+
+        Called after an explicit human decision, including by reconciliation if
+        suppression of an older queued delivery raced that decision.
+        """
+        async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
+            await conn.execute(update(escalation_deliveries).where(
+                escalation_deliveries.c.escalation_id == escalation_id,
+                escalation_deliveries.c.dedup_key == f"{escalation_id}:root:0",
+                escalation_deliveries.c.status == "unknown",
+                escalation_deliveries.c.last_error == INTERNAL_DELIVERY_ERROR,
+                escalation_deliveries.c.channel_id.is_(None),
+                escalation_deliveries.c.root_message_id.is_(None),
+                escalation_deliveries.c.thread_id.is_(None),
+                escalation_deliveries.c.external_receipt_id.is_(None),
+                escalation_deliveries.c.receipt_confirmed_at.is_(None),
+            ).values(status="pending", last_error=None, next_attempt_at=now, updated_at=now))
 
     async def seed_legacy_escalation_root(
         self,
