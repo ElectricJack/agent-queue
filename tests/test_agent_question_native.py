@@ -23,6 +23,8 @@ from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStat
 from src.sessions import SessionProviderRegistry
 from src.sessions import questions as questions_module
 from src.sessions.fake import FakeProvider
+from src.sessions.harness_parser import Harness
+from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.native_questions import (
     OpenCodeQuestionStore,
     parse_native_turn_id,
@@ -257,7 +259,7 @@ async def env(tmp_path, monkeypatch):
 
 
 def service(env):
-    def sources(harness):
+    def sources(harness, project_id=None):
         return OpenCodeQuestionStore(env.data_dir) if harness == "opencode" else None
 
     return AgentQuestionService(env.db, env.bus, env.registry, env.config, native_sources=sources)
@@ -383,6 +385,121 @@ def test_unreadable_store_is_unknown_not_empty(tmp_path):
     assert isinstance(resolve_native_question_source("opencode"), OpenCodeQuestionStore)
 
 
+def test_a_second_harness_on_the_opencode_cli_shares_its_store():
+    # ``opencode-zen`` runs the same executable against OpenCode Zen, so its
+    # question dialogs land in the same store and must be read (noble-delta-40).
+    registry = HarnessRegistry()
+    registry.upsert(Harness(
+        id="opencode-zen", command="/home/u/.agent-queue/harness-bin/opencode",
+        provider="opencode",
+    ))
+    registry.upsert(Harness(id="claude-alt", command="claude"))
+
+    def store(harness):
+        return resolve_native_question_source(harness, registry=registry)
+
+    assert isinstance(store("opencode-zen"), OpenCodeQuestionStore)
+    assert isinstance(store("opencode"), OpenCodeQuestionStore)
+    assert store("claude-alt") is None
+    assert resolve_native_question_source("opencode-zen") is None  # no registry: id only
+    # The service's default resolver is the registry-aware one.
+    db = type("NoDb", (), {})()  # the lock table holds it weakly
+    service = AgentQuestionService(db, None, None, None, harness_registry=registry)
+    assert isinstance(service._native_source("opencode-zen"), OpenCodeQuestionStore)
+    assert service._native_source("claude-alt") is None
+
+
+#: The ``opencode`` executable, as the hosted-pool harness of
+#: ``noble-delta-40`` names it.
+ZEN = "/home/u/.agent-queue/harness-bin/opencode"
+
+
+def _zen_registry(system_command, *, project_command=None):
+    """``opencode-zen`` at system scope, optionally shadowed in ``p1``."""
+    registry = HarnessRegistry()
+    registry.upsert(Harness(
+        id="opencode-zen", command=system_command, provider="opencode",
+    ))
+    if project_command is not None:
+        registry.upsert(Harness(
+            id="opencode-zen", command=project_command, provider="opencode",
+            project_id="p1",
+        ))
+    return registry
+
+
+def test_a_project_override_moves_the_store_with_the_executable():
+    # The launch path reads the project's harness file
+    # (``orchestrator/execution.py`` resolves with ``task.project_id``), so p1
+    # is running claude and has no OpenCode store to read. Reading the system
+    # file instead would never see a dialog -- nobody told, session stuck.
+    registry = _zen_registry(ZEN, project_command="claude")
+
+    def store(project_id=None):
+        return resolve_native_question_source(
+            "opencode-zen", registry=registry, project_id=project_id
+        )
+
+    assert store("p1") is None
+    assert isinstance(store("p2"), OpenCodeQuestionStore)  # untouched project
+    assert isinstance(store(), OpenCodeQuestionStore)  # system scope
+    assert resolve_native_question_source("opencode", registry=registry, project_id="p1")
+
+
+def test_the_reverse_project_override_grants_the_store_to_one_project():
+    registry = _zen_registry("/opt/bin/codex", project_command=ZEN)
+
+    def store(project_id=None):
+        return resolve_native_question_source(
+            "opencode-zen", registry=registry, project_id=project_id
+        )
+
+    assert isinstance(store("p1"), OpenCodeQuestionStore)
+    assert store("p2") is None
+    assert store() is None
+
+
+def test_an_override_that_keeps_the_command_keeps_the_store():
+    registry = _zen_registry(ZEN, project_command="C:/bin/opencode.EXE")
+
+    for project_id in ("p1", "p2", None):
+        assert resolve_native_question_source(
+            "opencode-zen", registry=registry, project_id=project_id
+        ) is not None
+
+
+def test_the_question_service_resolves_the_store_in_the_session_project():
+    # The service resolves through ``_native_source`` per session row, so it
+    # must carry that row's project: the same harness id, one project with the
+    # store and one without.
+    registry = _zen_registry(ZEN, project_command="claude")
+    db = type("NoDb", (), {})()  # the lock table holds it weakly
+    service = AgentQuestionService(db, None, None, None, harness_registry=registry)
+
+    assert service._native_source("opencode-zen", "p1") is None
+    assert isinstance(service._native_source("opencode-zen", "p2"), OpenCodeQuestionStore)
+    # System scope (no project on the call) still answers from the system file.
+    assert isinstance(service._native_source("opencode-zen"), OpenCodeQuestionStore)
+
+
+async def test_the_scan_resolves_each_session_in_its_own_project(env):
+    # The scan walks live session rows, so the project has to travel from the
+    # row into the resolver: a session whose project shadows the harness id
+    # must not be resolved as if it were on the system file.
+    asked = []
+
+    def sources(harness, project_id=None):
+        asked.append((harness, project_id))
+        # No store: only the resolution this scan asks for is under test.
+
+    svc = AgentQuestionService(
+        env.db, env.bus, env.registry, env.config, native_sources=sources
+    )
+    await svc.scan_native(now=env.now)
+
+    assert asked == [("opencode", "p")]
+
+
 @pytest.mark.parametrize(
     ("text", "human"),
     [
@@ -491,6 +608,48 @@ async def test_supervisor_answer_closes_the_exact_dialog_and_resumes_that_sessio
     assert (await handler.execute("question_list", {"_scope": scope}))["questions"] == []
     assert env.provider.keys == [("p-worker", "original", "Escape")]
     assert env.escalations == []
+
+
+async def test_delivery_re_reads_the_store_in_the_session_project(env):
+    # The scan resolves per session row (see
+    # ``test_the_scan_resolves_each_session_in_its_own_project``), but delivery
+    # re-reads the store itself: ``_native_plan``, ``_press_escape`` and
+    # ``_native_cleared`` each call ``_native_snapshot(row)`` with no source,
+    # so the row's project has to travel from there too.  Reverse override --
+    # the system ``opencode-zen`` runs codex, and project ``p`` alone
+    # overrides it back to the ``opencode`` executable.  Resolved at system
+    # scope the scan still finds the dialog (it resolves through the row) but
+    # delivery then finds no store at all: the accepted answer stays
+    # ``answered``, no Escape reaches the pane, and the worker stays blocked
+    # on the dialog it cannot close.
+    registry = HarnessRegistry()
+    registry.upsert(Harness(id="opencode-zen", command="/opt/bin/codex", provider="opencode"))
+    registry.upsert(Harness(
+        id="opencode-zen", command="/usr/bin/opencode", provider="opencode", project_id="p",
+    ))
+    await env.db.update_session("s", harness="opencode-zen")
+    svc = AgentQuestionService(
+        env.db, env.bus, env.registry, env.config,
+        native_sources=lambda h, project_id=None: resolve_native_question_source(
+            h, env.data_dir, registry=registry, project_id=project_id
+        ),
+    )
+
+    env.store.ask(ROOT, "call_1", at=env.now - 100)
+    await svc.tick(now=env.now)
+    rows = await env.db.list_agent_questions(session_id="s")
+    assert len(rows) == 1
+    q = rows[0]
+    assert parse_native_turn_id(q["turn_id"]) == ("opencode", ROOT, "call_1")
+    env.provider.on_key = lambda key: env.store.settle(ROOT, "call_1", "error")
+
+    result = await handler_for(env, svc).execute(
+        "question_answer",
+        {"question_id": q["id"], "body": "Both", "_scope": await global_supervisor(env)},
+    )
+
+    assert result["state"] == "delivered", result
+    assert env.provider.keys == [("p-worker", "original", "Escape")]
 
 
 @pytest.mark.parametrize("change", ["claim", "instance"])
@@ -717,37 +876,16 @@ async def test_a_dismissed_human_gate_stays_open_when_the_worker_moves_on(env):
     assert await svc.is_waiting(env.row)
 
 
-async def test_human_answer_through_the_escalation_closes_the_dialog(env):
+async def test_versioned_human_answer_closes_the_escalated_dialog(env):
     gate = [{"header": "Delivery", "question": "Push the branch and merge it?",
              "options": [{"label": "Yes"}, {"label": "No"}]}]
     svc, q = await asked(env, gate)
-    escalated = await svc.escalate(q["id"], "Delivery is a human decision")
-    accepted = await env.db.accept_escalation_reply(
-        escalated["escalation_id"],
-        transport="dashboard",
-        external_message_id="test-reply:" + q["id"],
-        verified_actor="human:dashboard:test",
-        text="No: leave delivery to the integration owner",
-    )
-    await env.db.begin_escalation_action(
-        escalated["escalation_id"],
-        reply_id=accepted["reply"]["id"],
-        expected_revision=accepted["escalation"]["revision"],
-        idempotency_key="test-action:" + q["id"],
-        action_kind="question_answer",
-        target_id=q["id"],
-        parameters={},
-        executor="session:test-supervisor",
-    )
+    await svc.escalate(q["id"], "Delivery is a human decision")
     env.provider.on_key = lambda key: env.store.settle(ROOT, "call_1", "error")
 
-    result = await svc.answer(
-        q["id"],
-        "No: leave delivery to the integration owner",
-        actor="human:dashboard:test",
-        human=True,
-        verified_escalation_id=escalated["escalation_id"],
-    )
+    from tests.test_agent_questions import versioned_answer
+
+    result = await versioned_answer(svc, q["id"], "No: leave delivery to the integration owner")
 
     assert result["state"] == "delivered", result
     assert env.provider.keys == [("p-worker", "original", "Escape")]
