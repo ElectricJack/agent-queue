@@ -1,8 +1,14 @@
-"""Dormant composition root for the listener, timer and downstream lifecycle owners."""
+"""Composition root for verified waits and restart-safe continuation draining."""
 
 from __future__ import annotations
 
 import time
+import asyncio
+import logging
+
+from sqlalchemy import select
+
+from src.waits.conditions import WaitError
 
 from src.waits.listener import WaitSourceListener
 from src.waits.registry import build_registry
@@ -11,8 +17,11 @@ from src.waits.dispatcher import WakeDispatcher
 from src.waits.graph import recompute_from
 from src.waits.source_locking import lock_database_source
 from src.waits.decisions import WaitDecisions
+from src.waits.human import HumanWaits
 from src.wait_runtime.lifecycle import WaitLifecycle
 from src.wait_runtime.scheduler import SchedulerWaitService
+
+logger = logging.getLogger(__name__)
 
 
 class WaitService:
@@ -23,11 +32,17 @@ class WaitService:
         self.registry = getattr(orch, "wait_registry", None) or build_registry(
             clock=clock, resource_reader=getattr(orch, "wait_resource_reader", None)
             or self.scheduler.reader,
+            ci_reader=getattr(orch, "wait_ci_reader", None),
         )
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
         self.decisions = WaitDecisions(self, clock=clock)
+        self.human = HumanWaits(self, clock=clock)
         self.lifecycle = WaitLifecycle(self, clock=clock)
+        from src.wait_runtime.legacy_bridge import LegacyWaitBridge
+
+        self.legacy_bridge = LegacyWaitBridge(self, clock=clock)
+        self._bridge_lock = asyncio.Lock()
         self.registry.loop_handler = self.loop_escalation
         self._dispatcher = WakeDispatcher(
             self.registry, clock=clock,
@@ -40,10 +55,14 @@ class WaitService:
         if handlers is None:
             handlers = orch.wait_v2_handlers = {}
         for name, callback in (("wait_deadline_fire", self.timers.fire),
+                               ("wait_legacy_bridge", self.legacy_bridge.run),
                                ("wait_source_commit", self.source_commit),
                                ("wait_decide", self.decisions.decide),
+                               ("wait_lift", self.human.lift),
                                ("wait_register", self.lifecycle.register),
                                ("wait_graph", self.graph),
+                               ("wait_explain", self.explain),
+                               ("wait_cancel", self.decisions.cancel),
                                ("wait_ack", self.lifecycle.acknowledge),
                                ("wait_resume_dispatch", self.lifecycle.resume.dispatch),
                                ("wait_evict", self.lifecycle.evict),
@@ -51,6 +70,7 @@ class WaitService:
             if name in handlers:
                 raise ValueError(f"duplicate wait lifecycle owner: {name}")
             handlers[name] = callback
+        require_wait_handlers(handlers, self.scheduler.sync)
         deadlines = getattr(orch, "wait_deadline_handlers", None)
         if deadlines is None:
             deadlines = orch.wait_deadline_handlers = {}
@@ -66,6 +86,10 @@ class WaitService:
             # AdmissionReader observes current typed constraints under the
             # dispatcher's graph/owner lock. Events never supply its verdict.
             return
+        if condition.kind in {"ci_check", "ci_run"}:
+            callback = getattr(self.orch, "wait_ci_lock_source", None)
+            if callback is not None:
+                return await callback(conn, condition)
         await lock_database_source(conn, condition)
 
     async def graph(self, args, *, principal, scope, handler):
@@ -79,6 +103,29 @@ class WaitService:
             )
         return {'success': True, 'graph': result}
 
+    async def explain(self, args, *, principal, scope, handler):
+        from src.database.queries.wait_queries import wait_explain
+        from src.database.tables import tasks, wait_records
+
+        async with self.orch.db._engine.connect() as conn:
+            project_id = (scope or {}).get("project_id")
+            if project_id is None:
+                # A local operator names no project; the target row carries it.
+                table, key = ((wait_records, args["wait_id"]) if args.get("wait_id")
+                              else (tasks, args["task_id"]))
+                project_id = await conn.scalar(
+                    select(table.c.project_id).where(table.c.id == key))
+                if project_id is None:
+                    raise WaitError("wait.not_found", "wait or task not found")
+            result = await wait_explain(
+                conn, project_id=project_id, wait_id=args.get("wait_id"),
+                task_id=args.get("task_id"), history=args.get("history", False),
+                now=self.lifecycle.clock(),
+            )
+        if args.get("wait_id") and result["waits"]:
+            result["explanation"] = result["waits"][0]
+        return result
+
     async def escalation_deadline(self, conn, deadline, wait, *, now, handler):
         callback = (self.scheduler.deadline_locked if wait["origin"] == "scheduler"
                     else self.decisions.raise_escalation)
@@ -86,7 +133,23 @@ class WaitService:
 
     @property
     def enabled(self):
-        return getattr(getattr(self.orch.config, "wait_policy", None), "v2_enabled", False) is True
+        from src.waits.policy import enabled
+
+        return enabled(self.orch.config)
+
+    async def processing_enabled(self):
+        """Flags gate new work, never abandon registered waits on rollback."""
+        if self.enabled:
+            return True
+        from sqlalchemy import exists, or_, select
+        from src.database.tables import continuations, wait_records
+
+        async with self.orch.db._engine.connect() as conn:
+            return bool(await conn.scalar(select(or_(
+                exists(select(wait_records.c.id).where(wait_records.c.cleared_at.is_(None))),
+                exists(select(continuations.c.id).where(continuations.c.resume_state.not_in(
+                    ("acknowledged", "failed", "cancelled")))),
+            ))))
 
     @property
     def dispatcher(self):
@@ -100,6 +163,11 @@ class WaitService:
 
     async def drain(self, watermark):
         return await self.orch._command_handler.wait_service_drain(self.listener, watermark)
+
+    async def quarantine_deadline(self, deadline, refusal):
+        return await self.orch._command_handler.wait_service_quarantine_deadline(
+            self.timers, deadline, refusal,
+        )
 
     async def source_commit(self, args, *, principal, scope, handler):
         seq = await self.orch.db.wait_source_commit(**args)
@@ -118,11 +186,74 @@ class WaitService:
         ).values(fired_at=now))
 
     async def tick(self):
-        if self.enabled:
+        if await self.processing_enabled():
+            if self.enabled:
+                await self.startup_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
         return False
 
     async def run(self):
+        # Configuration is hot reloadable. Stay dormant without opening a
+        # listener, but retain the service task for a later project canary.
+        while not await self.processing_enabled():
+            await asyncio.sleep(self.listener.renewal_seconds)
         if self.enabled:
-            await self.listener.run()
+            await self.startup_bridge()
+        try:
+            async with asyncio.TaskGroup() as group:
+                maintenance = group.create_task(self.maintain())
+                try:
+                    await self.listener.run()
+                finally:
+                    maintenance.cancel()
+        finally:
+            await self.lifecycle.stop()
+
+    async def maintain(self):
+        """Continue parked work even while source draining or orchestration is slow."""
+        while True:
+            try:
+                if await self.processing_enabled():
+                    await self.lifecycle.tick()
+            except Exception:
+                logger.exception("Wait continuation maintenance failed")
+            await asyncio.sleep(self.listener.renewal_seconds)
+
+    async def startup_bridge(self):
+        """Durable project receipts permit restart and newly enabled canary recovery."""
+        from sqlalchemy import exists, select
+        from src.database.tables import projects, wait_bridge_progress
+        from src.waits.decision import project_policy
+
+        async with self._bridge_lock:
+            async with self.orch.db._engine.connect() as conn:
+                pids = list((await conn.execute(select(projects.c.id).where(~exists(
+                    select(wait_bridge_progress.c.identity).where(
+                        wait_bridge_progress.c.project_id == projects.c.id,
+                        wait_bridge_progress.c.phase == 'agent-waits',
+                        wait_bridge_progress.c.identity == '*',
+                        wait_bridge_progress.c.state == 'complete',
+                    ),
+                )))).scalars())
+            for pid in pids:
+                if project_policy(self.orch.config.wait_policy, pid).v2_enabled:
+                    result = await self.command('wait_legacy_bridge', {
+                        'project_id': pid, 'mode': 'agent-waits', 'apply': True,
+                    })
+                    if not result.get('success'):
+                        return
+
+
+def require_wait_handlers(handlers, scheduler_sync):
+    """Fail startup when a verified-wait command would answer "not installed"."""
+    from src.commands.contracts.wait_v2 import WAIT_V2_ARGS
+
+    # scheduler_tick installs the same owner lazily; claim it here so the
+    # check below sees it.
+    handlers.setdefault("scheduler_wait_sync", scheduler_sync)
+    # wait_checkpoint falls back to src.waits.checkpoint inside the command.
+    expected = (set(WAIT_V2_ARGS) | {"wait_register", "wait_cancel"}) - {"wait_checkpoint"}
+    missing = sorted(expected - set(handlers))
+    if missing:
+        raise RuntimeError(f"verified wait commands have no handler: {', '.join(missing)}")

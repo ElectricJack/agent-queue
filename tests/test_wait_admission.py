@@ -16,6 +16,7 @@ from src.database.tables import (
     wait_escalations, wait_records,
 )
 from src.models import Agent, AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.integration.admission import observe_admission
 from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
 from src.waits.registry import build_registry
@@ -50,6 +51,10 @@ async def env():
     o = SimpleNamespace(db=db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
                         _worktrees_enabled=lambda: False,
                         _pool_quarantine_state=lambda *a: (None, None))
+    async def admission(ids):
+        return await observe_admission(db, ids, None)
+
+    o._delivery_admission = admission
     service = SchedulerWaitService(o, clock=lambda: NOW)
     yield SimpleNamespace(db=db, o=o, service=service)
     await db.close()
@@ -146,17 +151,61 @@ async def test_reserved_task_still_obeys_frontier_and_claim_consumes_atomically(
     assert reservation["state"] == "consumed" and reservation["consumed_by_session_id"] == "session"
 
 
-async def test_disabled_service_does_not_mutate(env):
+async def test_disabled_service_admits_no_new_waits(env):
     env.o.config.wait_policy.scheduler_waits_enabled = False
-    with pytest.raises(WaitError, match="disabled"):
-        await sync(env)
+    await sync(env)
     assert not await rows(env, wait_records)
     assert not await rows(env, wait_deadlines)
 
 
-def test_policy_defaults_are_dormant_and_string_flags_refused():
+async def test_scheduler_rollback_retracts_branch_reservations_but_preserves_resume(env):
+    from src.database.tables import continuations
+
+    await sync(env)
+    await fire(env, (await rows(env, wait_deadlines))[0], NOW + 1800)
+    wait = (await rows(env, wait_records))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(continuations).values(
+            id="resume", task_id="holder", wait_id=wait["id"], suspension_generation=1,
+            facts={}, branch="aq/holder", prior_status="IN_PROGRESS", held_cursor_seq=0,
+            resume_state="queued", created_at=NOW,
+        ))
+        await conn.execute(insert(admission_reservations).values(
+            id="resume-seat", continuation_id="resume", project_id="p", scope={},
+            effective_priority=100, provenance="resume", deadline_at=NOW + 3000,
+            state="pending", created_at=NOW,
+        ))
+    env.o.config.wait_policy.scheduler_waits_enabled = False
+    await sync(env, NOW + 1801)
+    reservations = {r["id"]: r for r in await rows(env, admission_reservations)}
+    assert reservations.pop("resume-seat")["state"] == "pending"
+    assert all(r["state"] == "cancelled" for r in reservations.values())
+    assert all(r["cleared_at"] is not None for r in await rows(env, wait_records))
+
+
+async def test_admission_reader_preserves_ingestion_hold(env):
+    reader = AdmissionReader(env.o, clock=lambda: NOW)
+    async with env.db._engine.begin() as conn:
+        free = await reader.observe_task(conn, "holder")
+        assert not free.constraints["policy_hold"]["blocked"]
+        await conn.execute(update(tasks).where(tasks.c.id == "holder").values(
+            held_batch_id="awaiting-fidelity-review",
+        ))
+        held = await reader.observe_task(conn, "holder")
+        assert held.constraints["policy_hold"]["blocked"]
+        assert "ingest_held" in held.constraints["policy_hold"]["reasons"]
+        assert held.snapshot("policy_hold").observation.state == "unsatisfied"
+        assert "policy_hold" in {condition.parameters["blocker"] for condition in held.conditions()}
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.held_batch_id).where(
+            tasks.c.id == "holder",
+        )) == "awaiting-fidelity-review"
+
+
+def test_policy_defaults_enable_cutover_and_string_flags_refused():
     policy = AppConfig().wait_policy
-    assert not policy.v2_enabled and not policy.hibernation_enabled and not policy.scheduler_waits_enabled
+    assert policy.v2_enabled and policy.hibernation_enabled and policy.scheduler_waits_enabled
+    assert policy.v1_bodies == "refuse"
     assert policy.branch_admission_deadline_seconds == 1800
     assert not policy.validate()
     assert parse_wait_policy({"v2_enabled": "false"}).validate()
@@ -348,6 +397,32 @@ async def test_equal_priority_reservations_use_fifo_even_when_task_ids_sort_othe
         assert selected["task_id"] == "holder"
 
 
+async def test_combined_claim_skips_locked_reservation_and_preserves_allowlist(env):
+    from src.waits.reservations import claim_candidate
+
+    await env.db.create_task(Task(
+        id="ordinary", project_id="p", title="Ordinary", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    await sync(env)
+    await fire(env, (await rows(env, wait_deadlines))[0], NOW + 1800)
+    handler = SimpleNamespace(db=env.db, config=env.o.config)
+    args = dict(project_id="p", profile_id="worker", agent_id="worker-agent")
+    async with env.db._engine.begin() as locked:
+        await locked.execute(select(tasks.c.id).where(
+            tasks.c.id == "holder",
+        ).with_for_update())
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(handler, claimant, **args) == ("ordinary", None)
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(
+                handler, claimant, **args, allowed_task_ids={"holder"},
+            ) == (None, None)
+    async with env.db._engine.begin() as claimant:
+        task_id, reservation_id = await claim_candidate(handler, claimant, **args)
+        assert task_id == "holder" and reservation_id
+
+
 async def test_released_branch_owner_retracts_scheduler_priority_donation(env):
     await env.db.create_task(Task(id="urgent", project_id="p", title="Urgent", description="",
                                   priority=10, status=TaskStatus.READY, branch_name="aq/holder",
@@ -360,3 +435,61 @@ async def test_released_branch_owner_retracts_scheduler_priority_donation(env):
         ).values(handoff_state="released"))
     await sync(env, NOW + 1)
     assert next(r["effective_priority"] for r in await rows(env, tasks) if r["id"] == "holder") == 100
+
+
+@pytest.mark.parametrize('status', ['READY', 'DEFINED', 'PAUSED'])
+async def test_initial_audit_unknown_age_is_due_without_admitting_paused_tasks(env, status):
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'holder').values(status=status))
+    await env.service.sync({'project_id': 'p', 'cycle_id': 'bridge', 'blockers': [],
+                            'initial_audit': True, 'now': NOW}, principal=SERVICE)
+    records = await rows(env, wait_records)
+    assert records and all(row['decision_inputs']['age_unknown'] for row in records)
+    deadlines = await rows(env, wait_deadlines)
+    assert all(row['due_at'] <= NOW for row in deadlines if row['deadline_type'] == 'reservation')
+    if status != 'READY':
+        assert not deadlines
+        holds = [row for row in records if row['condition']['blocker'] == 'policy_hold']
+        assert holds
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.status).where(tasks.c.id == 'holder')) == status
+        if status != 'READY':
+            assert await env.service.reader.observe_task(conn, 'holder') is None
+
+
+async def test_bridge_project_pass_records_completed_audit_and_replays(env):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import wait_bridge_progress
+    from src.wait_runtime.service import WaitService
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    args = {'project_id': 'p', 'mode': 'project', 'apply': True}
+    first = await service.legacy_bridge.run(args, principal=TRUSTED_LOCAL)
+    assert first['result']['projects']['p']['state'] == 'complete'
+    deadlines = await rows(env, wait_deadlines)
+    await service.legacy_bridge.run(args, principal=TRUSTED_LOCAL)
+    assert await rows(env, wait_deadlines) == deadlines
+    marker = await rows(env, wait_bridge_progress)
+    assert len(marker) == 1 and marker[0]['state'] == 'complete'
+
+
+async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import wait_bridge_progress
+    from src.wait_runtime.service import WaitService
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    async def command(name, args):
+        assert name == 'wait_legacy_bridge'
+        return await service.legacy_bridge.run(args, principal=TRUSTED_LOCAL)
+    service.command = AsyncMock(side_effect=command)
+    await service.startup_bridge()
+    await service.startup_bridge()
+    assert service.command.await_count == 1
+    assert any(r['phase'] == 'agent-waits' and r['identity'] == '*' and r['state'] == 'complete'
+               for r in await rows(env, wait_bridge_progress))
+    # A new composition root relies on the durable receipt, not process memory.
+    service = WaitService(SimpleNamespace(db=env.db, config=env.o.config), clock=lambda: NOW)
+    service.command = AsyncMock(side_effect=command)
+    await service.startup_bridge()
+    service.command.assert_not_awaited()

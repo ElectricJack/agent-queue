@@ -48,8 +48,6 @@ class SchedulerWaitService:
     def authorize(self, principal):
         if principal is None or principal.kind != PrincipalKind.SERVICE:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
-        if not enabled(self.orchestrator.config):
-            raise WaitError("wait.disabled", "scheduler waits are disabled")
 
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
@@ -63,7 +61,8 @@ class SchedulerWaitService:
             await lock_graph(conn)
             candidates = (await conn.execute(select(tasks).where(
                 tasks.c.project_id == project_id,
-                or_(tasks.c.status == "READY", exists(select(wait_records.c.id).where(
+                or_(tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
+                    if args.get("initial_audit") else tasks.c.status == "READY", exists(select(wait_records.c.id).where(
                     wait_records.c.origin == "scheduler", wait_records.c.owner_id == tasks.c.id,
                     wait_records.c.outcome == "pending",
                 )), exists(select(admission_reservations.c.id).where(
@@ -78,6 +77,7 @@ class SchedulerWaitService:
             reservations = {r["task_id"]: dict(r) for r in (await conn.execute(
                 select(admission_reservations).where(
                     admission_reservations.c.project_id == project_id,
+                    admission_reservations.c.task_id.is_not(None),
                     admission_reservations.c.state.in_(("pending", "overdue", "granted")),
                 ).order_by(admission_reservations.c.id).with_for_update()
             )).mappings()}
@@ -86,8 +86,19 @@ class SchedulerWaitService:
                 wait_deadlines.c.deadline_type == "reservation",
             ))).mappings()]
             desired = set()
+            if not enabled(self.orchestrator.config, project_id):
+                for reservation in reservations.values():
+                    await conn.execute(update(admission_reservations).where(
+                        admission_reservations.c.id == reservation["id"],
+                    ).values(state="cancelled"))
             for task in candidates:
-                observation = await self.reader.observe_task(conn, task["id"])
+                if not enabled(self.orchestrator.config, project_id):
+                    continue
+                audit = bool(args.get('initial_audit') or any(
+                    r['owner_id'] == task['id'] and
+                    (r['decision_inputs'] or {}).get('legacy_audit') for r in previous))
+                observation = await self.reader.observe_task(
+                    conn, task["id"], migration_audit=audit)
                 reservation = reservations.get(task["id"])
                 if reservation and (observation is None
                         or reservation["scope"] != observation.binding["scope"]
@@ -153,6 +164,9 @@ class SchedulerWaitService:
                             continue
                     changed.add(f"task:{task['id']}")
                     if (row["outcome"] == "pending" and observation.owns_branch
+                            and (not audit or (task['status'] == 'READY'
+                                and not any(observation.constraints[key]['blocked'] for key in (
+                                    'policy_hold', 'batch_hold', 'backoff', 'budget', 'provider'))))
                             and condition.parameters["blocker"] == "slot"):
                         first_due = min([
                             d["due_at"] for d in prior_deadlines
@@ -177,6 +191,11 @@ class SchedulerWaitService:
                                     outcome="satisfied" if observed.state == "satisfied"
                                     else "source_unavailable", result_ref=observed.result_ref))
                     changed.add(f"task:{row['owner_id']}")
+            if args.get("initial_audit"):
+                from src.wait_runtime.legacy_audit import audit_scheduler_age
+
+                await audit_scheduler_age(conn, project_id, now=now,
+                    deadline_seconds=self.orchestrator.config.wait_policy.branch_admission_deadline_seconds)
             if changed:
                 await recompute_from(conn, changed, now=now)
         return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}
@@ -217,8 +236,8 @@ class SchedulerWaitService:
 
     async def deadline_locked(self, conn, due, row, *, now, handler):
         """Compose with the listener's lease/task/wait/deadline transaction."""
-        if not enabled(self.orchestrator.config):
-            raise WaitError("wait.disabled", "scheduler waits are disabled")
+        if not enabled(self.orchestrator.config, row["project_id"]):
+            return {"success": True, "fired": False, "reason": "disabled"}
         task = (await conn.execute(select(tasks).where(
             tasks.c.id == row["owner_id"],
         ).with_for_update())).mappings().first()
@@ -294,7 +313,7 @@ class SchedulerWaitService:
 
 async def scheduler_tick(handler):
     o = getattr(handler, "orchestrator", None)
-    if o is None or not enabled(getattr(o, "config", None)):
+    if o is None:
         return
     service = getattr(o, "wait_scheduler_service", None) or SchedulerWaitService(o)
     handlers = getattr(o, "wait_v2_handlers", None)
