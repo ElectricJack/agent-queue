@@ -80,8 +80,10 @@ hold idle for source mapping, integration controls or delivery paperwork. Read
 the project's integration mode first: with the train off, train controls are
 not prerequisites for worker publication and close. Resolve actual command
 refusals through their owner; preserve human holds and integration ownership.
-If execution needs an answer, give concrete guidance or one bounded durable
-message wait; never an indefinite hold with no retries.
+If execution needs an answer, give concrete guidance or register one verified
+message condition. Human waits have no deadline. AQ escalates stalled non-human
+conditions; use wait_decide to extend, reroute, cancel or wake, or wait_lift with
+verified response evidence. Preserve the original age and sleeping worker.
 
 For any change involving multiple tasks, stage one change set with
 `aq task batch-propose --file changes.yaml --project PROJECT --dry-run`, inspect
@@ -170,6 +172,16 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_register",
+    "wait_get",
+    "wait_list",
+    "wait_cancel",
+    "wait_ack",
+    "wait_explain",
+    "wait_graph",
+    "wait_decide",
+    "wait_lift",
+    "waits.fleet_summary",
     "task_batch_propose",
     "task_batch_update",
     "task_batch_commit",
@@ -244,6 +256,7 @@ start code work, tests or QA from a digest author turn.
     "playbook_source_resync",
     "get_task",
     "integration_close_delivered_pr",
+    "integration_fast_forward_pr",
     "integration_redrive_child",
     "integration_recover_completed_container",
     "integration_abort_batch",
@@ -251,6 +264,8 @@ start code work, tests or QA from a digest author turn.
     "integration_release_withheld_source",
     "integration_pause_batch",
     "integration_resume_batch",
+    "integration_repair_target",
+    "integration_rerequest_check",
     "integration_eject",
     "integration_seal_now",
     "integration_record_root_noop",
@@ -264,6 +279,8 @@ start code work, tests or QA from a digest author turn.
     "integration_release_owner",
     "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
     "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
@@ -346,6 +363,7 @@ start code work, tests or QA from a digest author turn.
     "session_list",
     "session_logs",
     "session_peek",
+    "supervisor_restart",
     "supervisor_inbox_history",
     "supervisor_inbox_reply",
     "supervisor_inbox_status",
@@ -540,6 +558,14 @@ start code work, tests or QA from a digest author turn.
   what is still missing: report it and never close that PR by hand. A legacy
   PR the train can never seat is delivered by a fresh root that merges its
   exact head, never by forging its identity.
+- **A separately filed repair for an open root PR.** The repair publishes on
+  its own branch; its worker cannot push the PR branch. Once it closes pass,
+  run `aq integration fast-forward-pr --task-id <repair> --pr <number>` (a dry
+  run). `would_publish` → `--apply --head <previous_oid> --reason ...` pushes
+  the repair's exact head under a server-acquired lease; `already_published`
+  is done. `changed`, `blocked` (a live writer or lease) and `not_eligible` (a
+  protected target, a non-descendant, no completed root) are never forced or
+  fast-forwarded by hand.
 - **A task whose work needs nothing, or already landed.** Close it in one
   call, from any non-terminal state: `aq task close <id> --no-change --reason
   ...` (nothing to do) or `--done --reason ...` (shipped elsewhere);
