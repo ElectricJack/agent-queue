@@ -1,0 +1,242 @@
+{
+  "generic_dependencies": {
+    "src/commands/claim_commands.py::ClaimCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._attempt_claim": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._await_attempt": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._complete_claim_preparation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._completed_preparation_response": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._foreign_slot_claim_prepare_failed": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._pool_context_claim_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_claim_refusal": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._run_claim_preparation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._session_block": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.claim_preparation import CompletedClaimPreparation, same_session_launch": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.claim_timing import ClaimTiming, claim_phase, claim_selection, current_claim_timing, timed_claim_phase": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.pool_claims import pool_claim_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.workspace_disable import CLAIM_FAILURES, disable_fields": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/commands/claim_commands.py::ClaimCommandsMixin._attempt_claim_once": {
+      "baseline_span": [
+        534,
+        782
+      ],
+      "landing_span": [
+        534,
+        782
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
+      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._claim_request": {
+      "reason": "Refreshes development-mode long-poll eligibility on bounded intervals because Git can move without daemon events; charges the complete claim request body."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._cmd_task_claim": {
+      "baseline_span": [
+        228,
+        393
+      ],
+      "landing_span": [
+        228,
+        393
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._delivered_source_repairs": {
+      "baseline_span": [
+        505,
+        533
+      ],
+      "landing_span": [
+        505,
+        533
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked": {
+      "baseline_span": [
+        905,
+        1150
+      ],
+      "landing_span": [
+        905,
+        1150
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::_retryable_preparation_error": {
+      "reason": "Treats integration BranchLockTimeout as retryable alongside serialization and deadlock conflicts; its integration lock handling makes the full helper owned."
+    },
+    "src/commands/claim_commands.py::_task_block": {
+      "baseline_span": [
+        50,
+        95
+      ],
+      "landing_span": [
+        50,
+        95
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/claim_commands.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode": {
+      "baseline_span": [
+        19,
+        19
+      ],
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1036,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1094,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "owner_fingerprint": "5320f339dd4403a0b643d4cd1d80c453fcd0e62e4f25d3ae07da6ef69c3a5f35",
+      "reason": "Branch-fence refusal diagnostics retain a nonblank reason and task/workspace/session identity before ordinary claim release and backoff. Metadata key: branch_fenced_prepare_failed; cleared on successful activation, with no publication intent, authoritative ref OIDs or replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::dafd2c39585871bc43eee31fe328d25d78b2fe580fe7377a7af483d0e3dd123a": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1424,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "owner_fingerprint": "fcc2a7b6bfc832aa185cf15be06fc4934c9d4f44e0ab4b6d7fb4d398bfa71e60",
+      "reason": "Records branch-fence refusal diagnostics under branch_fenced_prepare_failed before returning the claim to READY; stores the reason and selected workspace, not a ref mutation plan."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._complete_claim_preparation::27d2c7227cac1efde9305e4e5792e2b634594c79d3c0000acdecba5067fcd697": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1271,
+      "owner": "ClaimCommandsMixin._complete_claim_preparation",
+      "owner_fingerprint": "9bf1e567448a83f6fa0b24ab7786eef2815879a154637dabe36e74b31ce1a47c",
+      "reason": "Persists claim_timing after preparation as an elapsed-phase snapshot outside the timing transaction; this is latency telemetry, not admission or publication authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._complete_claim_preparation::62d546a66dd5a56bab9700432793a30f89d23563495a44f8d593d3b44d01e89b": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1274,
+      "owner": "ClaimCommandsMixin._complete_claim_preparation",
+      "owner_fingerprint": "9bf1e567448a83f6fa0b24ab7786eef2815879a154637dabe36e74b31ce1a47c",
+      "reason": "Persists the same claim_timing snapshot on the supplied persistence connection; the connection choice does not turn timing metrics into integration state."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1376,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2030,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "c487233b9972d062f606b5fc425473881f2b523bab7732fb525e6adeae056a34",
+      "reason": "Sets needs_attention to the typed preparation exception code when the attached writer cannot safely be released; the existing owner fence controls recovery."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::47e4081469e519ba1ff4517fb4e3b8ec7bda6f9adecd25f10447a5341f89d18a": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1928,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "c487233b9972d062f606b5fc425473881f2b523bab7732fb525e6adeae056a34",
+      "reason": "Sets needs_attention=ingest_held when a selected task is held by ingestion; the marker explains refusal and does not release the batch or publish code."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1354,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "reason": "Ordinary preparation-failure diagnostics retain the nonblank reason, exception type, workspace path/id, session and claim epoch for supervisor recovery. Metadata key: claim_preparation_failure; diagnostic evidence only, with no integration lifecycle or ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1473,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "reason": "Ordinary slot-reset failure reason, attempt count and automatic/manual retry guidance after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: slot_reset_failure; no publication intent, authoritative ref OIDs or replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2133,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "c487233b9972d062f606b5fc425473881f2b523bab7732fb525e6adeae056a34",
+      "reason": "Marks integration_prepare_failed_attached for manual attention after failed detachment; it preserves the writer reservation rather than supplying handoff authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2089,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "c487233b9972d062f606b5fc425473881f2b523bab7732fb525e6adeae056a34",
+      "reason": "Marks repair_target_unpublished when the target is absent and the managed fence cannot be released; no remote OID or replay instruction is written."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2167,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "owner_fingerprint": "c487233b9972d062f606b5fc425473881f2b523bab7732fb525e6adeae056a34",
+      "reason": "Stores slot_reset_failure stage, error type, attempt and retry diagnostics; these describe preparation backoff and do not prove branch delivery."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_prepare_failure::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1210,
+      "owner": "ClaimCommandsMixin._record_prepare_failure",
+      "owner_fingerprint": "abce8c8dfb430e868e2b24a5b1bbda0633b8a6254c4e671778ad5f661bbec68b",
+      "reason": "One bounded, scrubbed canonical prepare_failure diagnostic attributes a permanent failure to the observing session instance and task claim epoch. A task row lock checks that epoch and holds it through this insert-or-update; a late completion cannot replace a newer claim diagnostic. It grants no release/reset authority, consumes no retry budget and stores no Git ref replay or duplicate integration lifecycle. Also records PREPARE_CLEANUP_HOLD when subprocess quiescence is unproved; this bounded identity/diagnostic hold prevents release or reset and is never ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_prepare_failure::9a6c34a59da72b0a5f8d49ff08edadf3828cf7b641054abd4cf2ff7f3a44b73c": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1495,
+      "owner": "ClaimCommandsMixin._record_prepare_failure",
+      "owner_fingerprint": "1dd1e2cdd2ecc4efe42a17188b8f509919a34ca44a557c2d7a50ecdadab0a54f",
+      "reason": "Ordinary PREPARE_FAILURE diagnostic snapshot: one bounded secret-scrubbed stage/type/cause description plus task, observing session instance, claim epoch, workspace id and safe_text-scrubbed bounded workspace path, timestamp, attempt and the caller's already-selected disposition. Replaces the prior diagnostic call fingerprint after task/path identity was added. Cleared by the next activation; grants no retry, budget reset, ownership change, publication intent or ref replay authority and creates no duplicate integration lifecycle."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1152,
+      "owner": "ClaimCommandsMixin._recover_stale_binding",
+      "owner_fingerprint": "059a89bc609555b8fcf761d64d2899dcffeca5cb43ff74354b0b8c12da99c4d7",
+      "reason": "Marks claim_binding_stale for operator diagnosis when task/session binding cannot be reconciled safely; it grants no recovery or branch-write permission."
+    }
+  }
+}

@@ -24,8 +24,8 @@ class MessageSendRequest:
         project_id (None | str | Unset): Owning project id
         to_kind (None | str | Unset): Recipient kind; omit for collaboration fanout
         to_id (None | str | Unset): Recipient id
-        from_id (str | Unset): Sender id Default: 'cli'.
-        from_kind (str | Unset): Sender kind Default: 'user'.
+        from_id (None | str | Unset): Authorized sender id; omit for server default
+        from_kind (None | str | Unset): Authorized sender kind; omit for server default
         subject (None | str | Unset):
         thread_id (None | str | Unset):
         client_key (None | str | Unset):
@@ -40,8 +40,8 @@ class MessageSendRequest:
     project_id: None | str | Unset = UNSET
     to_kind: None | str | Unset = UNSET
     to_id: None | str | Unset = UNSET
-    from_id: str | Unset = "cli"
-    from_kind: str | Unset = "user"
+    from_id: None | str | Unset = UNSET
+    from_kind: None | str | Unset = UNSET
     subject: None | str | Unset = UNSET
     thread_id: None | str | Unset = UNSET
     client_key: None | str | Unset = UNSET
@@ -75,9 +75,17 @@ class MessageSendRequest:
         else:
             to_id = self.to_id
 
-        from_id = self.from_id
+        from_id: None | str | Unset
+        if isinstance(self.from_id, Unset):
+            from_id = UNSET
+        else:
+            from_id = self.from_id
 
-        from_kind = self.from_kind
+        from_kind: None | str | Unset
+        if isinstance(self.from_kind, Unset):
+            from_kind = UNSET
+        else:
+            from_kind = self.from_kind
 
         subject: None | str | Unset
         if isinstance(self.subject, Unset):
@@ -187,9 +195,23 @@ class MessageSendRequest:
 
         to_id = _parse_to_id(d.pop("to_id", UNSET))
 
-        from_id = d.pop("from_id", UNSET)
+        def _parse_from_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
 
-        from_kind = d.pop("from_kind", UNSET)
+        from_id = _parse_from_id(d.pop("from_id", UNSET))
+
+        def _parse_from_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        from_kind = _parse_from_kind(d.pop("from_kind", UNSET))
 
         def _parse_subject(data: object) -> None | str | Unset:
             if data is None:
