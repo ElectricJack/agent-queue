@@ -36,8 +36,8 @@ from src.commands.principal import (
 from src.config import AppConfig
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import (
-    continuations, doc_reviews, events, messages, sessions, tasks, wait_deadlines,
-    wait_records, wait_source_events,
+    admission_reservations, continuations, doc_reviews, events, messages, sessions,
+    tasks, wait_deadlines, wait_edges, wait_records, wait_source_events,
 )
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.models import SessionRecord
@@ -949,6 +949,72 @@ async def test_installed_wait_explain_reads_by_wait_and_by_task(env, principal):
     assert not missing["success"]
 
 
+async def _named_supervisor(env, project):
+    await env.db.create_session(SessionRecord(
+        id="sup", project_id=project, profile_id="supervisor", harness="codex",
+        provider="fake", name=f"n-supervisor--{project or 'global'}", lifecycle="named",
+        state="running", desired_state="running", instance_token="sup-token", epoch="boot",
+        work_dir="/tmp/supervisor", started_at=NOW))
+    return replace(WORKER, session_id="sup", session_instance_token="sup-token",
+                   task_id=None, project_id=project, profile_id="supervisor", elevated=True)
+
+
+async def test_project_supervisor_explains_task_waits_in_its_own_project_only(env):
+    """The delivery watchdog and stall checks hand supervisors `aq wait explain --task`."""
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["error_code"] == "wait.out_of_scope"
+    assert "Private title" not in str(foreign)
+    nominated = await execute(
+        handler, "wait_explain", {"task_id": "foreign", "project_id": "q"}, principal
+    )
+    assert nominated["error_code"] == "wait.out_of_scope"
+
+
+async def test_global_supervisor_explains_task_waits_in_any_project(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, None)
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["success"] and foreign["waits"] == [], foreign
+
+
+async def test_supervisor_read_scope_never_registers_or_mutates_for_a_task(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    registered = await execute(handler, "wait_register", {
+        "schema_version": 2, "condition": {"kind": "task", "task_id": "source"},
+        "idempotency_key": "sup-k", "task_id": "owner"}, principal)
+    assert registered["error_code"] in {"wait.out_of_scope", "out_of_scope"}
+    assert "owner task cannot be nominated" in registered["error"]
+    legacy = await execute(handler, "wait_register", {
+        "kind": "task", "ref": "source", "idempotency_key": "sup-legacy", "task_id": "owner"},
+        principal)
+    assert legacy["success"] is False
+    for name, args in (
+        ("wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1, "task_id": "owner"}),
+        ("wait_checkpoint", {"wait_id": receipt["wait_id"], "claim_epoch": 1,
+                             "summary": "Resume the source task.", "task_id": "owner"}),
+    ):
+        refused = await execute(handler, name, args, principal)
+        assert refused["success"] is False, (name, refused)
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(wait_records)) == 1
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+    # A pool worker still cannot read another task's waits.
+    worker = await execute(handler, "wait_explain", {"task_id": "source"})
+    assert worker["error_code"] == "wait.out_of_scope"
+
+
 async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
     receipt = await register(env)
     async with env.db._engine.begin() as conn:
@@ -972,6 +1038,68 @@ async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
     ack = await execute(handler, "wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1})
     assert ack["success"] and ack["outcome"] == "cancelled", ack
     assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+@pytest.mark.parametrize("lost_owner", ["terminal", "session", "claim"])
+@pytest.mark.parametrize("caller", ["supervisor", "local"])
+async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
+    env, lost_owner, caller,
+):
+    receipt = await register(env)
+    service, handler = await wait_service(env)
+    source_lock = AsyncMock(side_effect=AssertionError("orphan cancellation needs no source"))
+    service.dispatcher.lock_source = source_lock
+    await env.db.create_session(SessionRecord(
+        id="sup", project_id="p", profile_id="supervisor", harness="codex", provider="fake",
+        name="n-supervisor--p", lifecycle="named", state="running", desired_state="running",
+        instance_token="sup-token", epoch="boot", work_dir="/tmp/sup", started_at=NOW,
+    ))
+    principal = replace(WORKER, session_id="sup", session_instance_token="sup-token",
+                        task_id=None, profile_id="supervisor", elevated=True)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(continuations).values(
+            id="old-intent", task_id="owner", wait_id=receipt["wait_id"], suspension_generation=1,
+            summary="Preserved checkpoint", facts={}, branch="aq/owner", saved_head="a" * 40,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="held", created_at=NOW,
+        ))
+        for rid, subject in (("old-reservation", {"continuation_id": "old-intent"}),
+                             ("replacement-reservation", {"task_id": "owner"})):
+            await conn.execute(insert(admission_reservations).values(
+                id=rid, project_id="p", scope={}, effective_priority=50, provenance="resume",
+                deadline_at=NOW + 60, state="pending", created_at=NOW, **subject,
+            ))
+        if lost_owner == "terminal":
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+                status="COMPLETED", assigned_agent_id=None,
+            ))
+        elif lost_owner == "session":
+            await conn.execute(update(sessions).where(sessions.c.id == "s").values(state="stopped"))
+        else:
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+    before = await env.db.get_task("owner")
+    # Neither a stale worker nor a supervisor of another project may do this.
+    assert not (await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}))["success"]
+    denied = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]},
+                           replace(principal, project_id="q"))
+    assert not denied["success"]
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]},
+                           principal if caller == "supervisor" else TRUSTED_LOCAL)
+    assert result["success"], result
+    wait = result["wait"]
+    assert wait["outcome"] == "cancelled" and wait["cleared_at"] == NOW
+    assert not wait["blocking"] and wait["decision_inputs"]["registration_receipt"] == receipt
+    assert await env.db.get_task("owner") == before
+    async with env.db._engine.connect() as conn:
+        assert not (await conn.execute(select(messages))).all()
+        assert not (await conn.execute(select(wait_edges).where(wait_edges.c.active.is_(True)))).all()
+        assert all(r.cancelled_at == NOW for r in (await conn.execute(select(wait_deadlines))).all())
+        intent = (await conn.execute(select(continuations))).mappings().one()
+        assert intent["resume_state"] == "cancelled" and intent["summary"] == "Preserved checkpoint"
+        reservations = {r.id: r.state for r in (await conn.execute(select(admission_reservations)))}
+        assert reservations == {"old-reservation": "cancelled", "replacement-reservation": "pending"}
+    replay = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, principal)
+    assert replay["success"] and replay["warnings"] == ["wait already resolved: cancelled"]
+    source_lock.assert_not_awaited()
 
 
 @pytest.mark.parametrize("consume", [False, True], ids=["ack", "show-consume"])
@@ -1142,3 +1270,79 @@ async def test_holder_cancel_refuses_once_the_hibernation_stop_began(env):
     async with env.db._engine.connect() as conn:
         assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
         assert await conn.scalar(select(continuations.c.resume_state)) == "sleeping"
+
+
+@pytest.mark.parametrize("legacy_id", [None, "old-wait"])
+async def test_concrete_cancel_and_explain_clear_graph_once_and_deliver_one_outcome(env, legacy_id):
+    from src.database.tables import wait_edges
+
+    _, handler = await wait_service(env)
+    receipt = await register(env)
+    if legacy_id:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(legacy_id=legacy_id))
+    pointer = dict(schema_version=2, wait_id=legacy_id or receipt["wait_id"], claim_epoch=1)
+    explained = await execute(handler, "wait_explain", dict(wait_id=receipt["wait_id"]))
+    assert explained["success"] and explained["total"] == 1
+    assert (await execute(handler, "wait_cancel", pointer))["changed"] is True
+    assert (await execute(handler, "wait_cancel", pointer))["changed"] is False
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait["outcome"] == "cancelled"
+        assert not await conn.scalar(select(func.count()).select_from(wait_edges).where(
+            wait_edges.c.active.is_(True)))
+        assert not await conn.scalar(select(func.count()).select_from(wait_deadlines).where(
+            wait_deadlines.c.cancelled_at.is_(None), wait_deadlines.c.fired_at.is_(None)))
+        assert await conn.scalar(select(func.count()).select_from(messages).where(
+            messages.c.body_kind == "wait_outcome")) == 1
+        assert await conn.scalar(select(func.count()).select_from(events).where(
+            events.c.event_type == "wait.cancelled")) == 1
+
+
+async def test_concrete_service_cancel_is_owner_scoped_and_cannot_be_nominated_by_worker(env):
+    _, handler = await wait_service(env)
+    receipt = await handler.wait_service_command("wait_register", dict(
+        schema_version=2, project_id="p", owner_kind="integration", owner_id="train:one",
+        condition={"kind": "task", "task_id": "source"}, idempotency_key="integration"))
+    assert receipt["success"], receipt
+    args = dict(schema_version=2, wait_id=receipt["wait_id"], project_id="p",
+                owner_kind="integration", owner_id="train:other")
+    assert (await handler.wait_service_command("wait_cancel", args))["error_code"] == (
+        "wait.out_of_scope")
+    args["owner_id"] = "train:one"
+    assert (await execute(handler, "wait_cancel", args))["error_code"] == "wait.out_of_scope"
+    cancelled = await handler.wait_service_command("wait_cancel", args)
+    assert cancelled.get("changed") is True, cancelled
+    assert (await handler.wait_service_command("wait_cancel", args))["changed"] is False
+
+
+async def test_concrete_cancel_refuses_a_stale_claim_and_foreign_supervisor(env):
+    _, handler = await wait_service(env)
+    receipt = await register(env)
+    args = dict(schema_version=2, wait_id=receipt["wait_id"], claim_epoch=0)
+    assert (await execute(handler, "wait_cancel", args))["success"] is False
+    principal = await supervisor(env, project="q")
+    assert (await execute(handler, "wait_cancel", dict(wait_id=receipt["wait_id"]),
+                          principal))["error_code"] == "wait.out_of_scope"
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+
+
+@pytest.mark.parametrize('missing', ['continuation_id', 'expected_generation'])
+def test_requeue_requires_explicit_continuation_generation(missing):
+    args = dict(wait_id='w', decision='requeue', continuation_id='c',
+                expected_generation=1, note='Infrastructure repaired')
+    args.pop(missing)
+    with pytest.raises(ValidationError, match='requeue requires'):
+        WaitDecideArgs.model_validate(args)
+
+
+def test_cli_requeue_sends_continuation_and_generation(cli_transport):
+    group, calls = cli_transport
+    result = CliRunner().invoke(group, ['decide', '--wait-id', 'w', '--decision', 'requeue',
+        '--continuation-id', 'c', '--expected-generation', '2', '--note', 'Infrastructure repaired'])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == ('wait_decide', dict(wait_id='w', decision='requeue', continuation_id='c',
+        expected_generation=2, note='Infrastructure repaired'))

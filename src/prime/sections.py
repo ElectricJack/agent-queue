@@ -1047,7 +1047,7 @@ def build_completion_protocol_section(
             if regenerate else ""
         )
         body = body[:start] + ("## Development delivery\n\n"
-            "Commit locally and publish your task branch with `aq git push`, run focused local checks, "
+            "Commit locally, follow the final submission steps below, "
             "and close with actual evidence. "
             "Ordinary commits and merges are accepted; no squash, PR, hosted CI, or parent verifier is required. "
             "The daemon collects completed source branches and publishes validated batches to main. "
@@ -1077,6 +1077,13 @@ def build_completion_protocol_section(
             # task-session close followed by drain-ack.
             shared = body[body.index("## Deliverable self-check"):]
             body = f"{pool_body}\n\n{shared}"
+    body += (
+        "\n\nIf close returns `close_in_progress`, keep the source branch frozen. "
+        "Resolve and commit in `close_merge.candidate_path`, then run "
+        "`aq integration continue-close --operation-id <id>`. Never push the parent. "
+        "Follow a returned check wait's next_step; after delivery continue the same "
+        "operation. Author-budget escalation goes only to the supervisor."
+    )
     # A profile whose policy denies ``create_task`` must not be told to file
     # emergent work — the instruction would land as a capability denial.
     emergent_work = _load_template("emergent_work.md") if allow_emergent_work else ""
