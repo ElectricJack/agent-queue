@@ -132,6 +132,14 @@ does not release integration ownership or resolve gates and dependencies.
 > and answered by exact `question_id` through `aq question`. For an explicit
 > one-way blocker notification, use `aq message send --to user:dashboard`.
 
+Worker file reads admit `read_file` through the shared command surface. In addition
+to registered repositories and workspaces belonging to the session's project,
+workers may read `vault/projects/<project_id>/plans/` and `specs/` through
+`aq file read`, using either an absolute path or a `projects/...` vault-relative
+path. Resolve traversal and symlinks against these document roots before reading;
+foreign projects, other vault areas and write access remain outside this grant.
+Project document reads do not depend on knowledge-record activation.
+
 ### 3.2 Human surface
 
 | Command | Args | Aud. | Output (`data`) |
@@ -308,6 +316,23 @@ before terminating its own launched instance. Child-handle polling and signaling
 must not target a reused PID, and cleanup removes `daemon.pid` only while it still
 names that child. A daemon that becomes healthy during diagnostics proceeds through
 the usual post-start readiness checks.
+
+HTTP requests and command dispatches emit timing diagnostics: DEBUG for fast
+completion and WARNING at one second or more. HTTP logs use registered route
+templates and the request ID, include authentication/dispatch time, and measure
+only the handshake for SSE and WebSocket streams. Timing logs remain available
+when performance metric collection is disabled. Command logs separate dispatch
+from the awaited `command.invoked` event delivery, so a completed handler followed
+by a slow subscriber is visible. Slow database query and pool-checkout logs carry
+the current request/command context and duration; pool logs also report occupancy.
+They never include SQL text, bind values, request bodies or credentials. Failed
+queries are observed as well as successful queries.
+
+Task detail and dependency reads batch related task rows in groups of up to 900
+IDs rather than acquiring a connection per edge. Edge types, reasons, provenance,
+and live task statuses retain their existing meanings. A single READY task
+read scopes prerequisite observation to that task, avoiding a project-wide Git
+evidence pass while retaining the same cached-evidence eligibility rules.
 
 ### 4.2 `--brief` lite projections
 
@@ -577,6 +602,14 @@ path for network exposure is [trust-and-ops](trust-and-ops.md) scope, with a `re
 reserved here as the enforcement hook.
 
 ### 7.3 Elevated scopes, and the commands that carry no `project_id`
+
+Project supervisors with the `pool_status` capability may read pools serving their
+own project. An omitted `project_id` inherits their token's project; a foreign
+project is refused. The response filters project breakdowns, pool instances and
+sessions outside pools to that project, omitting pools with no standing there.
+Shared pool bounds and aggregate counters remain fleet-wide, as in the operator's
+filtered view. This read does not authorize pool mutations, ordinary workers or
+project-scoped playbooks. Global supervisors and local operators retain the full view.
 
 Two elevated scopes exist: `supervisor-global` (`project_id = None`, the global admin) and a
 per-project supervisor (`project_id = <its own>`). Both skip the agent-surface allowlist;
