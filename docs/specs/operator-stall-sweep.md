@@ -6,6 +6,29 @@ project. Every daemon read uses the same envelope, authorization and completenes
 checks. An authorization denial stops the sweep; failed or partial evidence never
 proves either an orphan or a healthy queue.
 
+Both `aq doctor --check stall.sweep` and the unscoped operator script report
+every non-ready playbook activation as `playbook_activation_unhealthy` and
+`PLAYBOOK-NOT-READY`, respectively, even with no queued tasks or pending events.
+Health is recomputed against live command and profile contracts on each sweep.
+Findings include playbook and scope identity, enabled state, artifact hash,
+health reasons naming offending commands/profiles, and elapsed time since
+activation (unknown when no activation timestamp exists). This age is not a
+claim about when drift began. Recompiling and reactivating through the existing
+reviewed path clears the finding once health is ready. The sweep never refreshes
+fingerprints, recompiles policy, or activates automatically: a changed contract
+does not by itself prove backward compatibility. Failed health reads remain
+incomplete evidence. The script skips this system-only read in `--project`
+patrols rather than widening their authority; the system doctor sweep covers all
+activation scopes, including paused projects.
+
+Paused train-mode projects are also checked through control-only integration
+status. A `project_paused` blocker produces a `PAUSED-PROJECT` line, including in
+scoped patrols where project enumeration is unavailable. The blocker names
+completed live-origin sources still awaiting delivery or delivery proof. Cached
+Git evidence suppresses sources already proven satisfied; unavailable evidence is
+reported as unknown, never as a confirmed delivery backlog. The diagnostic does
+not resume projects or change target discovery, which visits ACTIVE projects only.
+
 For stale IN_PROGRESS worker tasks, read fresh `task show` claim identity and
 match its session, agent, task and project together. Containers do not require
 workers. A complete inventory with no holder or a stopped holder can report an
@@ -27,6 +50,47 @@ an aggregate discrepancy and cannot identify excluded task IDs. Existing task
 explanations retain explicit dependency, gate and hold reasons; capacity-only
 explanations do not establish exclusion.
 
+Stale READY tasks whose `route_source` is `unrouted` receive an
+`UNROUTED-READY` diagnostic when their canonical explanation confirms a routing
+wait or failure. It includes the router's explanation even when a moving
+dependency also explains the wait. This uses the existing 20-minute READY
+threshold and scoped reads; it excludes containers through canonical routing
+explanations. The sweep only reports the observation. Explicit re-runs request
+routing immediately as specified in [task re-routing recovery](task-reroute-recovery.md).
+
+Stale READY or DEFINED children whose canonical explanation includes
+`frontier_epic_refresh_pending` receive a distinct epic-refresh-needed finding,
+including the owning epic, blocking refresh batch ids when present, and
+`aq integration refresh-epic --task EPIC_ID --apply`. Doctor's `stall.sweep`
+reports the same condition as `epic_refresh_needed`. Use the explanation's
+`blocking_task_ids` or the child's parent identity, never the generic frontier
+reason's child `ref`, to name the epic. Missing epic identity remains explicit
+uncertainty. These observations reuse task explanations without fetching Git or
+changing admission. Refresh apply advances the existing immutable refresh batch;
+a merge conflict uses the ordinary bounded train repair path, and the child
+remains withheld until checks, attestation and publication finish. The diagnostic
+does not authorize bypassing holds or open human gates.
+
+## Auto-deploy stalls
+
+`scripts/operator-checks/aq-auto-deploy.sh` is the canonical copy of the cron job
+that fast-forwards the daemon's checkout to `origin/dev` every 5 minutes. It
+refuses a dirty tree, a branch other than dev and a non-fast-forward. A refusal
+used to be one log line, so on 2026-10-14 uncommitted edits in the live checkout
+skipped every run for about 17 hours, unnoticed. The script now counts consecutive
+skips in `~/.agent-queue/aq-auto-deploy.skips`. After six runs (30 minutes) it
+messages `session:supervisor-agent-queue` once per stall, naming the reason, the
+dirty files and how far `origin/dev` is ahead. A failed send retries on the next
+run. A deploy, or a clean tree with nothing to deploy, resets the count.
+
+The development checks report `AUTO-DEPLOY-STALLED` when the checkout is behind
+`origin/dev` and either the log's trailing run of skips is older than 30 minutes or
+the tree is dirty with no recent skip to explain it. A deploy or rollback line
+ends a run, and so does a gap of more than 15 minutes between skips. The remedy
+saves the edits on a rescue branch and in `~/.agent-queue/backups/`, then restores
+a clean tree on dev. It never discards them. Agents never edit the live checkout:
+they work in a worktree.
+
 ## Operator reconciliation
 
 Branch publication does not update `~/.agent-queue/operator-checks/stall-sweep.py`.
@@ -46,3 +110,9 @@ file. Run the reviewed checkout's focused check:
 patrol invocation to verify classifications. Authorization failures require the
 reported scope/token recovery, never token removal or a retry with broader scope.
 No daemon restart, capacity/grant/config change or database migration is needed.
+
+The cron entry runs `~/.agent-queue/operator-checks/aq-auto-deploy.sh`, so the
+auto-deploy escalation also takes effect only after the same diff, backup and
+`install -m 755` of `scripts/operator-checks/aq-auto-deploy.sh`. Its paths,
+threshold and recipient default to this box and can be overridden with
+`AQ_AUTO_DEPLOY_*` variables.
