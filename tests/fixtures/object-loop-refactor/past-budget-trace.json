@@ -1,0 +1,97 @@
+{
+  "method": "Real command contract adapters and disposable PostgreSQL; exact argument/result replay through write-free V2 previews. Synthetic capture receipts, no renderer or model calls. Repeated identical sweeps deduplicated. Review audiences recorded from the same database.",
+  "trace": {
+    "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+    "commands": [
+      {
+        "name": "object_loop_inputs",
+        "outcome": "completed"
+      },
+      {
+        "name": "object_score_record",
+        "outcome": "rejected"
+      },
+      {
+        "name": "object_score_record",
+        "outcome": "completed"
+      },
+      {
+        "name": "object_loop_reconcile",
+        "outcome": "completed"
+      }
+    ],
+    "dry_completed": true,
+    "dry_nodes": [
+      {
+        "outcome": "completed",
+        "step": "recover--read",
+        "target": "recover--starts"
+      },
+      {
+        "outcome": "completed",
+        "step": "recover--starts",
+        "target": "recover--loops"
+      },
+      {
+        "outcome": "iterating",
+        "step": "recover--loops",
+        "target": "recover--policy"
+      },
+      {
+        "outcome": "matched",
+        "step": "recover--policy",
+        "target": "recover--choose"
+      },
+      {
+        "outcome": "matched",
+        "step": "recover--choose",
+        "target": "recover--score"
+      },
+      {
+        "outcome": "rejected",
+        "step": "recover--score",
+        "target": "recover--score-refused"
+      },
+      {
+        "outcome": "matched",
+        "step": "recover--score-refused",
+        "target": "recover--score-stop"
+      },
+      {
+        "outcome": "completed",
+        "step": "recover--score-stop",
+        "target": "recover--reconcile"
+      },
+      {
+        "outcome": "completed",
+        "step": "recover--reconcile",
+        "target": "recover--loops"
+      },
+      {
+        "outcome": "completed",
+        "step": "recover--loops",
+        "target": "recover--done"
+      },
+      {
+        "outcome": "completed",
+        "step": "recover--done",
+        "target": null
+      }
+    ],
+    "live_outcome": "completed",
+    "review_audiences": [
+      {
+        "decider": "user",
+        "kind": "other",
+        "title": "brief-review"
+      },
+      {
+        "decider": "user",
+        "kind": "spec",
+        "title": "rev-amber-zenith"
+      }
+    ],
+    "rule": "recover",
+    "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-budget]"
+  }
+}

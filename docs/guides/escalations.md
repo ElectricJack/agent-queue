@@ -9,26 +9,32 @@ explains what an escalation *is*. This page is the operator's procedure.
 
 ## What you are setting up
 
-AQ posts two things and nothing else:
+The default channel carries an **activity digest**, silent when nothing durable
+happened, and **legacy escalation posts and threads**. Both can be disabled
+independently; their durable records remain in the dashboard.
 
-* an **activity digest**, once an interval, summarising what actually
-  happened. It is silent when nothing did;
-* an **escalation**: one post plus one thread, each time a project supervisor
-  decides it needs a human to choose something. You answer by typing in the
-  thread.
+Canonical **human asks** unify decisions from reviews, gates, questions, recoveries
+and other sources. In ask channel mode, roots and decisions stay in the channel
+without creating threads; legacy writers and replies are fenced after transfer.
+The dashboard's **Needs you** view is the canonical decision inbox. Inspect it with:
 
-Both are optional. Turning either off, or running with no Discord bot at all,
-changes nothing about how AQ works — escalations are still recorded, the
-supervisor loop still runs, and the dashboard still shows everything. Only the
-channel goes quiet.
+```bash
+aq ask list --project-id PROJECT --view needs_you --json
+aq ask show --ask-id ASK_ID --json
+aq ask cutover-status --project-id PROJECT --json
+```
 
-> **Discord cannot control AQ.** The slash commands, task controls, approval
-> buttons and per-project channels were removed in the single-channel cutover.
-> By default, a reply inside an escalation thread is the only inbound route.
-> An operator can explicitly opt into [supervisor conversations](discord-conversations.md)
-> with `discord.conversation.enabled`; allowlisted identities then correspond
-> with the elevated global supervisor. See
-> [what Discord no longer does](../concepts/messaging.md#what-discord-no-longer-does).
+These reads describe the current state; they do not enable a destination. Follow
+[Human asks: operator rollout and rollback](human-asks-rollout.md) for mode
+transitions, prerequisites and production receipts. H09 cleanup remains separate
+from enabling the shipped ask path; legacy domain tables still exist.
+
+Discord also supports opt-in [supervisor conversations](discord-conversations.md),
+[authored hourly and morning reports](supervisor-hourly-reports.md), decision
+buttons and the authenticated `/delete-task` operator action. The six former slash
+commands, general task controls and per-project channels remain retired.
+Conversation input reaches an elevated supervisor; enabling it is an explicit
+trust decision. Ask channel intake takes precedence over conversations.
 
 ## Configure the channel
 
@@ -62,9 +68,10 @@ discord:
 | `authorized_users` | empty | Accounts allowed to reply in an escalation thread. Empty means every account the gateway sees. |
 | `digest.interval_minutes` | `60` | Window length, 15–1440. Changing it starts a new schedule generation rather than re-evaluating old windows. |
 | `digest.project_ids` | empty (all) | The destination's visibility. Applied before any activity row is read. |
-| `digest.categories` | all four | `work`, `vcs`, `budget`, `system`. `budget` and `system` have no producer yet — they exist so the filter has a stable vocabulary. |
+| `digest.categories` | all four | `work`, `vcs`, `budget`, `system`. Provider availability contributes `system` facts and reroutes contribute `vcs`; `budget` has no producer yet. |
 | `digest.catchup_hours` | `24` | How far back one labelled catch-up window may reach after an outage, 1–168. A window older than this is dropped rather than posted as stale news. |
 | `escalation.mention_user_ids` / `mention_role_ids` | empty | The **only** source of a ping. Applied to the first post of an incident and nowhere else. |
+| `escalations.stateful` | `false` | Separate plural setting: enables state edits, auto-resolve and sweep behavior; enabling `escalation.enabled` alone does not enable these. |
 | `escalation.reminder_minutes` | `0` (off) | Optional nag interval for an unanswered incident, 5–1440 when set. |
 | `escalation.supervisor_delivery_timeout_minutes` | `15` | How long an internal supervisor notice may stay undelivered before the watchdog raises an operational incident. Also the interval for reminding the owner about an answered, unresolved escalation. |
 
@@ -208,16 +215,37 @@ both surface:
 | `all_filtered` | Work happened, but not in a project or category this destination may see | Check `digest.project_ids` and `digest.categories` |
 | `already_reported` | Everything in the window was already said in an earlier one | Yes; a re-evaluated window never repeats itself |
 
-Four things count as evidence, and nothing else does: a task completion, an
-attempt that started, a task comment explicitly recorded as *progress*, and a
-`pr_url` becoming available. Heartbeats, `updated_at` churn, layout rebuilds,
+Work facts include a task completion, an attempt that started, a task comment
+explicitly recorded as *progress* and a `pr_url` becoming available. Provider
+availability and provider reroutes are additional durable facts. Human waits
+remain attention facts rather than progress. Heartbeats, `updated_at` churn, layout rebuilds,
 periodic metrics and repeated notifications are not progress. "Active" means a
 task with a live, non-stale attempt right now — not a status column, so an
 `IN_PROGRESS` container with no running session, a stalled session and a
 worker parked on a human answer are all correctly counted as *not* active
 ([`src/database/queries/digest_queries.py`](../../src/database/queries/digest_queries.py)).
 
+### Optional supervisor-authored digest
+
+`discord.digest.supervisor_authored` defaults to false. When enabled, P3 uses
+`cadence_minutes` (120 by default), quiet hours 22:00–07:00 in `reports.timezone`,
+and a frozen fact snapshot for each held window. `aq digest request` queues the
+supervisor author turn; `aq digest facts` reads that snapshot and `aq digest post`
+submits its body. Each command's help supplies the required window identity.
+If the supervisor misses `author_fallback_minutes` (10), deterministic rendering
+speaks instead. Three consecutive unchanged skips earn at most one quiet line
+per local day. Changed facts and needs-you items affect eligibility; routine
+heartbeats do not. This is separate from `reports.hourly` authoring; avoid treating
+the two switches as aliases. See [configuration](../specs/config.md).
+
 ## Answering an escalation
+
+This section describes the retained legacy route. Once a destination transfers
+from legacy ownership, `legacy_human_delivery_blocked` refuses legacy replies and
+buttons; use the canonical ask context and prepare/decide flow instead. Human
+input must be verified, the source version current, and the prepared preview bound
+to the exact choice and idempotency key. Worker/supervisor prose is never human
+authority. An unknown application requires reconciliation, not a blind retry.
 
 New human escalations require a subject title, a project, and a plain-language
 explanation of why a person must decide. `escalation_create` uses the task's title
@@ -271,24 +299,37 @@ with people, and answering every unrelated line would make it a chatbot.
 
 ### From the CLI or the dashboard instead
 
-The same six commands back the CLI, the HTTP API and the MCP surface. All are
+Eight escalation commands back the CLI, HTTP API and MCP surface. All are
 operator- or supervisor-scoped; a worker session's token is refused.
 
 | CLI | HTTP operation | Who may call it |
 |---|---|---|
 | `aq escalation create` | `escalation_create` | The owning supervisor or a trusted core source; a replayed source/incident returns the same row |
 | `aq escalation list` | `escalation_list` | Anyone in scope; shows current external-delivery status |
-| `aq escalation get` | `escalation_get` | Anyone in scope; the authoritative incident, its immutable message history, deliveries and action receipts |
+| `aq escalation get` | `escalation_get` | Anyone in scope; legacy incident diagnostics, history, deliveries and action receipts, plus canonical ask alias/context when available |
 | `aq escalation reply` | `escalation_reply` | A dashboard human or a trusted external adapter only — never a supervisor, so supervisor text can never become human evidence |
 | `aq escalation update` | `escalation_update` | The owning supervisor, with `--expected-revision` as the compare-and-set fence |
 | `aq escalation resolve` | `escalation_resolve` | The owning supervisor; closes an *answered* incident with `--outcome`, the one sentence the collapsed channel post shows |
-| `aq escalation apply-reply` | `escalation_apply_reply` | The owning supervisor, applying one verified reply through its bound question, gate or recovery target |
+| `aq escalation apply-reply` | `escalation_apply_reply` | The owning supervisor; compatibility path requiring exact declared choice and current ask preview/source context |
+| `aq escalation sweep` | `escalation_sweep` | Operator; dry-run by default, `--apply` performs the stateful-gated cleanup |
 
 ```bash
 aq escalation list --states '["needs_human"]'
 aq escalation get --escalation-id escalation-abc123
 aq escalation resolve --escalation-id escalation-abc123 --outcome "Shipped from main."
 ```
+
+To clear a false delivery-watchdog alarm, the owning supervisor cancels its
+incident with an explanation and the revision from `aq escalation get`:
+
+```bash
+aq escalation update --escalation-id INCIDENT --expected-revision REVISION --state cancelled --terminal-outcome 'False alarm: work was hand landed'
+```
+
+The next watchdog scan cancels that generation's wait projection and stops
+redriving or paging it. The decision survives restart and applies only to that
+completion generation; it does not assert Git containment. The inventory also
+recognizes equal trees and content already on the target after hand landing.
 
 Pausing a project holds its escalation and review notifications silently, including
 human gate pings. The dashboard labels open requests **held while paused**. Existing
@@ -323,12 +364,14 @@ derives the stored actor and transport from it.
 escalation, that it arrived through the human boundary, and that the target is
 the original question, gate or recovery incident. It reserves an action
 receipt before invoking the guarded service, so reusing an idempotency key
-returns the receipt and never repeats the action.
+returns the receipt and never repeats the action. These binding fields alone
+are insufficient: compatibility calls also require current source-version and
+prepared-preview context and an exact stored declared choice. Otherwise the
+command directs the caller to the canonical ask prepare/decide path.
 
 ## Where escalations come from
 
-Three sources, all of them a supervisor's judgement rather than an automatic
-reflex:
+Sources include supervisor judgment and deterministic operational watchdogs:
 
 * **A failed task.** The shipped system playbook
   [`supervisor-failure-triage`](../../src/prompts/default_playbooks/supervisor-failure-triage.md)
@@ -487,11 +530,13 @@ is never permission to repeat an external send or a recovery.
 
 [`DiscordEscalationIntake`](../../src/discord/escalation_intake.py) is the
 only path a Discord message takes into an escalation.
-[`DiscordInboundRouter`](../../src/discord/inbound.py) runs it first: consumed
+[`DiscordInboundRouter`](../../src/discord/inbound.py) first checks durable ask
+channel ownership. In channel mode, ask intake exclusively owns the message, even
+when it refuses. Otherwise legacy escalation intake runs first: consumed
 or failed escalation intake stops routing, and a known escalation binding
 remains exclusive even when intake refuses. Only then may the deliberately
-opt-in conversation route accept an allowlisted bot mention or a bound
-conversation-thread follow-up. The retired general channel chat and task-thread
+opt-in conversation route accept an allowlisted channel message (subject to
+`require_mention`), permitted DM or bound conversation-thread follow-up. The retired general channel chat and task-thread
 worker routing remain removed; see [Discord supervisor conversations](discord-conversations.md).
 The gateway also ignores every
 message until the startup cutover pass reports `complete`, so a pre-cutover
@@ -546,7 +591,7 @@ Two rules, both enforced in the renderer rather than trusted to callers
 | A digest window is `unknown` | `aq digest status` → `delivery_health` | The send was ambiguous and could not be reconciled, or the window aged past `catchup_hours`. AQ deliberately does not repost stale news |
 | An escalation shows a delivery as `unknown` | `aq escalation get --escalation-id <id>` | Check the channel for the post; if it is genuinely missing, resolve or re-raise the incident deliberately rather than expecting a retry |
 | A reply in the thread does nothing | Check `authorized_users`, and that the thread's parent is `channel_id` | Refusals are silent by design; the reason is in the daemon log |
-| My mention vanished | Read `aq supervisor-inbox status` → `preconditions`, `diagnostics` and `backfill.gaps`; search the log for `discord intake ignored` and `discord conversation refused`; `aq digest status` → `intake` shows ignore counts | Conversations are off by default. When explicitly enabled, a real bot-user mention from an allowlisted operator in the configured channel opens a global-supervisor conversation; `not_in_thread` describes escalation intake alone. See [Discord supervisor conversations](discord-conversations.md) |
+| My mention vanished | Read `aq supervisor-inbox status` → `preconditions`, `diagnostics` and `backfill.gaps`; search the log for `discord intake ignored` and `discord conversation refused`; `aq digest status` → `intake` shows ignore counts | Conversations are off by default. When explicitly enabled, an allowlisted channel message subject to `require_mention` reaches the project supervisor or falls back to global; ask channel mode takes precedence; `not_in_thread` describes escalation intake alone. See [Discord supervisor conversations](discord-conversations.md) |
 | The channel is posting but the supervisor never acts | `aq message list --to-kind session --to-id supervisor-<project>` | The reply was persisted but its supervisor message is undelivered; the watchdog raises an incident about that after `supervisor_delivery_timeout_minutes` |
 | An unanswered incident got a second post | Compare `generation` on the deliveries in `escalation_get` | Someone deleted the original post; a replacement generation is the intended response, and only one may be pending |
 
@@ -567,7 +612,8 @@ Two rules, both enforced in the renderer rather than trusted to callers
 [`src/digest/`](../../src/digest/), [`src/escalations/`](../../src/escalations/)
 and [`src/discord/`](../../src/discord/), configured by the `discord:` section
 of [`src/config.py`](../../src/config.py). The spec is
-[the Discord simplification implementation spec](../superpowers/specs/2026-09-08-discord-simplification-implementation.md).
+[the current messaging-and-human-asks system spec](../specs/systems/messaging-and-human-asks.md).
+The Discord simplification spec remains a historical design record.
 
 ```bash
 aq test tests/test_digest.py tests/test_digest_dispatch.py tests/test_digest_commands.py \

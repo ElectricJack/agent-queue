@@ -46,6 +46,7 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.dialects import postgresql
 
+from src.claim_file import remove_claim_file_if_matches
 from src.models import (
     Agent,
     AgentProfile,
@@ -60,6 +61,7 @@ from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 from tests.db_fixtures import lease_dsn
 from src.config import DatabaseConfig
+from src.database.tables import task_completion_records, task_session_attempts, tasks
 
 pytestmark = pytest.mark.perf
 
@@ -223,7 +225,7 @@ class _Plan:
 
 
 class _ExplainingConn:
-    """Connection proxy that ``EXPLAIN``s every statement, then runs it.
+    """Connection proxy that runs each statement, then explains its steady state.
 
     Wrapping the connection rather than reconstructing the SQL is what makes
     ``test_work_query_is_an_index_ordered_scan`` an assertion about the
@@ -236,12 +238,19 @@ class _ExplainingConn:
         self.plans: list[_Plan] = []
 
     async def execute(self, statement, *args, **kwargs):
+        # PostgreSQL can charge first-use catalog/function initialization to
+        # executor nodes (even an empty activation index scan). Run the same
+        # read first so the buffer budget measures frontier access, independent
+        # of which earlier tests happened to warm this backend. These SELECTs
+        # only lock rows; repeating them in the same transaction keeps the
+        # candidate set and SKIP LOCKED behavior unchanged.
+        result = await self._conn.execute(statement, *args, **kwargs)
         compiled = statement.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
         explained = await self._conn.execute(text(f"EXPLAIN (ANALYZE, BUFFERS) {compiled}"))
         self.plans.append(_Plan("\n".join(row[0] for row in explained)))
-        return await self._conn.execute(statement, *args, **kwargs)
+        return result
 
 
 class TestClaimStatementBudgets:
@@ -367,7 +376,8 @@ class TestClaimStatementBudgets:
         print(f"\nno_ready_work: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
-    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path):
+    @pytest.mark.parametrize("recovery_hold", ["none", "stale", "current"])
+    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path, recovery_hold):
         """Both halves of the §10 work query stop at the first row.
 
         The statement budgets above count statements; this counts what one
@@ -385,7 +395,7 @@ class TestClaimStatementBudgets:
         * **no ``Sort`` node.**  A sort means the planner could not get
           ``priority, created_at`` from an index and had to read the whole
           frontier first.  That is the regression, exactly.
-        * **a shared-buffer bound.**  Measured on PostgreSQL 18 at this
+        * **a steady-state shared-buffer bound.** Measured on PostgreSQL 18 at this
           fixture's scale: 1-2 buffers for the affinity half (a partial
           index holding only pinned tasks) and 11-13 for the other, so
           13-15 for the pair against ~10,100 before.  The budget is 64:
@@ -395,15 +405,51 @@ class TestClaimStatementBudgets:
 
         The plans are taken from the statements ``select_ready_for_profile``
         actually builds -- ``_ExplainingConn`` runs each through ``EXPLAIN
-        (ANALYZE, BUFFERS)`` on the way past -- so a rewrite that keeps the
-        budget by moving work into a sub-plan is still caught.
+        (ANALYZE, BUFFERS)`` after executing that same read once -- so a rewrite
+        that keeps the budget by moving work into a sub-plan is still caught.
         """
+        # Reproduce statistics collected before the recovery history exists,
+        # rather than relying on when autovacuum happens to analyze this lease.
+        async with any_db._engine.begin() as conn:
+            await conn.execute(text("ANALYZE task_session_attempts"))
         await _seed_worker_scale(any_db)
+        # Every arm gets real history, including the arm without a hold.
+        # An empty attempt table can legitimately use a cheap scan/sort in
+        # an unexecuted subplan; history exercises the ordered index lookup.
+        started = time.time() + 1
+        async with any_db._engine.begin() as conn:
+            await conn.execute(task_session_attempts.insert(), [{
+                "id": f"attempt-{i:03}", "session_id": f"session-{i}",
+                "task_id": "seed-1", "project_id": PROJECT_ID,
+                "profile_id": "worker", "name": "worker", "lifecycle": "task",
+                "harness": "codex", "provider": "fake", "state": "stopped",
+                "work_dir": "/unused", "started_at": started,
+                "session_started_at": started, "ended_at": started + 1,
+            } for i in range(128)])
+            # The stack-repair predicate also reads latest completion history.
+            # Give its ordered lookup real rows: an empty table can legitimately
+            # get a scan/sort in an unexecuted subplan after a fixture reset.
+            await conn.execute(task_completion_records.insert(), [{
+                "id": f"completion-{i:03}", "task_id": "seed-0", "outcome": "pass",
+                "completed_at": started + i,
+            } for i in range(128)])
+        if recovery_hold != "none":
+            # Exercise the recovery subplan, including its deterministic ID
+            # tie-break, instead of only explaining an empty attempt table.
+            async with any_db._engine.begin() as conn:
+                await conn.execute(tasks.update().where(tasks.c.id == "seed-1").values(priority=-1))
+            await any_db.set_task_meta("seed-1", "supervisor_recovery_incident", {
+                "decision": "hold", "claim_epoch": 0,
+                "attempt_id": "attempt-000" if recovery_hold == "stale" else "attempt-127",
+            })
         # Measure the seeded queue, independently of when autovacuum runs or
         # which earlier fixture occupied this leased database. Statistics
         # collection is fixture setup, outside the explained claim queries.
         async with any_db._engine.begin() as conn:
-            await conn.execute(text("ANALYZE tasks, task_dependencies"))
+            await conn.execute(text(
+                "ANALYZE tasks, task_dependencies, task_session_attempts, task_metadata, "
+                "task_completion_records"
+            ))
         # The route filter differs with the project's router readiness
         # (mandatory routing §9.1): ``route_source IN (router, override,
         # role)``, widened by ``legacy`` while the router is not ready.
@@ -419,6 +465,10 @@ class TestClaimStatementBudgets:
                     router_ready=router_ready,
                 )
             assert tid is not None
+            if recovery_hold == "stale":
+                assert tid == "seed-1"
+            elif recovery_hold == "current":
+                assert tid != "seed-1"
             budget = 64
             total = sum(plan.buffers for plan in explaining.plans)
             print(
@@ -787,10 +837,17 @@ class TestClaimLatency:
             started = time.perf_counter()
             res = await h._cmd_task_claim({"next": True})
             assert res["result"] == "claimed"
-            await any_db.release_claim(
+            released = await any_db.release_claim(
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
+            # The command layer normally retires the exact released marker.
+            # This benchmark calls the database transition directly.
+            assert released.released
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
             times.append(time.perf_counter() - started)
+            # The benchmark calls the database release directly, so it must
+            # also perform the CLI's claim-file cleanup before reusing the slot.
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
         after = await measure_wire_floor(any_db)
 
         transaction_s = (before[0] + after[0]) / 2
