@@ -1,0 +1,25 @@
+{
+  "shared_definitions": {
+    "src/wait_runtime/eviction.py::candidate": {
+      "landing_span": [
+        9,
+        18
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/eviction.py::import from src.waits.holding import execution_waits": {
+      "landing_span": [
+        8,
+        8
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/eviction.py::request_evictions": {
+      "landing_span": [
+        44,
+        63
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}
