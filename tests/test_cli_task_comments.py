@@ -39,6 +39,17 @@ def test_description_update_preserves_multiline_and_expected_value():
     assert json.loads(result.output)["data"]["fields_changed"] == ["description"]
 
 
+def test_task_set_forwards_explicit_batch_repair_assignment():
+    client = client_for({"task_id": "t-1", "fields_changed": ["repair_batch"]})
+    with patch("src.cli.tasks._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["--json", "task", "set", "t-1",
+                                          "--repair-batch", "batch-1"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("task_set", {
+        "task_id": "t-1", "repair_batch": "batch-1",
+    })
+
+
 def test_comment_uses_claim_file_and_does_not_supply_author(tmp_path):
     (tmp_path / ".aq").mkdir()
     (tmp_path / ".aq" / "claim.json").write_text('{"claim_epoch": 7}')
