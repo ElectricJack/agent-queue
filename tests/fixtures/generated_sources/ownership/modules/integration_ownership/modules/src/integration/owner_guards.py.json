@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/owner_guards.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 212,
+      "owner": "ParentEngineOwnership.transfer",
+      "owner_fingerprint": "b6b3d0dc80940ff4d6fbbb6a9cb1c6bea3df3e863a92b759cb4871b7178d6086",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

@@ -127,13 +127,21 @@ class PoolCapacity:
     projects: Mapping[str, PoolProjectCapacity] = field(default_factory=dict)
     #: Projects whose ``(project, profile)`` key is inside its launch backoff.
     quarantined: frozenset[str] = frozenset()
+    #: Local supply/demand split by the primary repository workspace kind.
+    workspace_projects: Mapping[tuple[str, str], PoolProjectCapacity] = field(default_factory=dict)
 
-    def project(self, project_id: str) -> PoolProjectCapacity:
-        return self.projects.get(project_id) or PoolProjectCapacity()
+    def project(self, project_id: str, workspace_kind: str = "project-repo") -> PoolProjectCapacity:
+        if self.workspace_projects:
+            return self.workspace_projects.get((project_id, workspace_kind)) or PoolProjectCapacity()
+        if workspace_kind == "project-repo":
+            return self.projects.get(project_id) or PoolProjectCapacity()
+        return PoolProjectCapacity()
 
     @property
     def unserved(self) -> int:
         """Fleet READY work this pool's idle and booting workers will not take."""
+        if self.workspace_projects:
+            return sum(max(0, local.unserved) for local in self.workspace_projects.values())
         return max(0, self.ready - self.idle - self.starting)
 
 
@@ -148,6 +156,16 @@ class CapacityView:
     project_room: Mapping[str, int] = field(default_factory=dict)
     #: Global pool cap less every live pool session; ``None`` is unbounded.
     global_headroom: int | None = None
+    workspace_room: Mapping[tuple[str, str], int] = field(default_factory=dict)
+    #: Remaining project worker seats, shared across workspace kinds.
+    project_slots: Mapping[str, int | None] = field(default_factory=dict)
+
+    def room_for(self, project_id: str, workspace_kind: str) -> int:
+        if self.workspace_room:
+            room = self.workspace_room.get((project_id, workspace_kind), 0)
+            slots = self.project_slots.get(project_id)
+            return min(room, slots) if slots is not None else room
+        return self.project_room.get(project_id, 0) if workspace_kind == "project-repo" else 0
 
 
 def capacity_view_from_measurement(
@@ -172,6 +190,8 @@ def capacity_view_from_measurement(
     placement = getattr(measurement, "candidates", None) or {}
     pools: dict[str, PoolCapacity] = {}
     room: dict[str, int] = {}
+    workspace_room: dict[tuple[str, str], int] = {}
+    project_slots: dict[str, int | None] = {}
     used = sum(s.running_idle + s.running_busy + s.starting for s in supply.values())
     for key, profile in (getattr(measurement, "profiles", None) or {}).items():
         pid = key.profile_id
@@ -181,23 +201,47 @@ def capacity_view_from_measurement(
             idle, starting = sup.running_idle, sup.starting
             live = sup.running_idle + sup.running_busy + sup.starting
         projects: dict[str, PoolProjectCapacity] = {}
+        workspace_projects: dict[tuple[str, str], PoolProjectCapacity] = {}
+        rows = placement.get(key, [])
+        project_counts: dict[str, int] = {}
+        for cand in rows:
+            project_counts[cand.project_id] = project_counts.get(cand.project_id, 0) + 1
         quarantined: set[str] = set()
-        for cand in placement.get(key, []):
-            local = sup.by_project.get(cand.project_id) if sup is not None else None
+        for cand in rows:
+            # by_project aggregates every kind. Only older, single-kind
+            # measurements can use it as local supply.
+            local = (
+                sup.by_project.get(cand.project_id)
+                if sup is not None and project_counts[cand.project_id] == 1 else None
+            )
             p_idle = local.running_idle if local is not None else len(cand.idle_session_ids)
             p_busy = local.running_busy if local is not None else max(
                 0, cand.live - p_idle - cand.starting
             )
-            projects[cand.project_id] = PoolProjectCapacity(
+            current = PoolProjectCapacity(
                 idle=p_idle, busy=p_busy, starting=cand.starting, ready=cand.ready
+            )
+            workspace_projects[(cand.project_id, cand.workspace_kind)] = current
+            aggregate = projects.get(cand.project_id) or PoolProjectCapacity()
+            projects[cand.project_id] = PoolProjectCapacity(
+                idle=aggregate.idle + current.idle,
+                busy=aggregate.busy + current.busy,
+                starting=aggregate.starting + current.starting,
+                ready=aggregate.ready + current.ready,
             )
             if cand.quarantined:
                 quarantined.add(cand.project_id)
-            if cand.project_id not in room:
-                free = cand.workspace_capacity
-                if cand.project_cap is not None:
-                    free = min(free, cand.project_cap - cand.project_live_total)
-                room[cand.project_id] = max(0, free)
+            slots = (
+                max(0, cand.project_cap - cand.project_live_total)
+                if cand.project_cap is not None else None
+            )
+            project_slots[cand.project_id] = slots
+            workspace_room[(cand.project_id, cand.workspace_kind)] = max(0, cand.workspace_capacity)
+            if cand.workspace_kind == "project-repo":
+                room[cand.project_id] = (
+                    min(workspace_room[(cand.project_id, cand.workspace_kind)], slots)
+                    if slots is not None else workspace_room[(cand.project_id, cand.workspace_kind)]
+                )
         lifecycle = str(getattr(profile, "lifecycle", "pool") or "pool")
         route = worker_route(
             pid,
@@ -221,9 +265,13 @@ def capacity_view_from_measurement(
             ready=int(demand.get(key, 0)),
             projects=projects,
             quarantined=frozenset(quarantined),
+            workspace_projects=workspace_projects,
         )
     headroom = None if global_cap is None else max(0, int(global_cap) - used)
-    return CapacityView(pools=pools, project_room=room, global_headroom=headroom)
+    return CapacityView(
+        pools=pools, project_room=room, global_headroom=headroom,
+        workspace_room=workspace_room, project_slots=project_slots,
+    )
 
 
 def with_incoming_moves(view: CapacityView, decisions: Iterable[Decision]) -> CapacityView:
@@ -235,24 +283,30 @@ def with_incoming_moves(view: CapacityView, decisions: Iterable[Decision]) -> Ca
     from offering the same capacity twice (S5) and makes a ``dry_run`` plan
     the live one.  Returns *view* itself when nothing moves in.
     """
-    incoming: dict[str, dict[str, int]] = {}
+    incoming: dict[str, dict[tuple[str, str], int]] = {}
     for decision in decisions:
         target = decision.to_profile_id
         if decision.action != "move" or not target or target not in view.pools:
             continue
         per_project = incoming.setdefault(target, {})
-        per_project[decision.project_id] = per_project.get(decision.project_id, 0) + 1
+        key = (decision.project_id, decision.workspace_kind)
+        per_project[key] = per_project.get(key, 0) + 1
     if not incoming:
         return view
     pools = dict(view.pools)
     for profile_id, per_project in incoming.items():
         pool = pools[profile_id]
         projects = dict(pool.projects)
-        for project_id, count in per_project.items():
-            local = pool.project(project_id)
-            projects[project_id] = replace(local, ready=local.ready + count)
+        workspace_projects = dict(pool.workspace_projects)
+        for (project_id, kind), count in per_project.items():
+            local = pool.project(project_id, kind)
+            if workspace_projects:
+                workspace_projects[(project_id, kind)] = replace(local, ready=local.ready + count)
+            aggregate = projects.get(project_id) or PoolProjectCapacity()
+            projects[project_id] = replace(aggregate, ready=aggregate.ready + count)
         pools[profile_id] = replace(
-            pool, ready=pool.ready + sum(per_project.values()), projects=projects
+            pool, ready=pool.ready + sum(per_project.values()), projects=projects,
+            workspace_projects=workspace_projects,
         )
     return replace(view, pools=pools)
 
@@ -268,7 +322,9 @@ class SpillCandidate(Candidate):
     updated_at: float = 0.0
 
 
-def _cannot_start(pool: PoolCapacity, project_id: str, view: CapacityView) -> str:
+def _cannot_start(
+    pool: PoolCapacity, project_id: str, view: CapacityView, workspace_kind: str,
+) -> str:
     """Why *pool* cannot start another worker for *project_id* (S4), or ``""``.
 
     Reads the view as measured: this sweep's own planned starts never make a
@@ -280,8 +336,8 @@ def _cannot_start(pool: PoolCapacity, project_id: str, view: CapacityView) -> st
         return "the fleet is at its global pool cap"
     if project_id in pool.quarantined:
         return f"quarantined in {project_id}"
-    if view.project_room.get(project_id, 0) <= 0:
-        return f"{project_id} has no room for another worker"
+    if view.room_for(project_id, workspace_kind) <= 0:
+        return f"{project_id} has no room for another {workspace_kind} worker"
     return ""
 
 
@@ -292,18 +348,26 @@ class _Headroom:
         self.view = view
         self.global_left = view.global_headroom
         self.room = dict(view.project_room)
+        self.workspace_room = dict(view.workspace_room)
+        self.project_slots = dict(view.project_slots)
         self.starts: dict[str, int] = {}
-        self.idle_taken: dict[tuple[str, str], int] = {}
+        self.idle_taken: dict[tuple[str, str, str], int] = {}
 
-    def free_now(self, pool: PoolCapacity, project_id: str) -> int:
+    def free_now(self, pool: PoolCapacity, project_id: str, kind: str) -> int:
         """Idle workers in the project with no READY work of their own."""
-        proj = pool.project(project_id)
-        taken = self.idle_taken.get((pool.profile_id, project_id), 0)
+        proj = pool.project(project_id, kind)
+        taken = self.idle_taken.get((pool.profile_id, project_id, kind), 0)
         return max(0, proj.idle - proj.ready) - taken
 
-    def free_starts(self, pool: PoolCapacity, project_id: str) -> int:
+    def free_starts(self, pool: PoolCapacity, project_id: str, kind: str) -> int:
         """Starts the pool can still make for the project, net of its own demand."""
-        if self.room.get(project_id, 0) <= 0:
+        room = self.workspace_room.get((project_id, kind), 0) if self.workspace_room else (
+            self.room.get(project_id, 0) if kind == "project-repo" else 0
+        )
+        slots = self.project_slots.get(project_id)
+        if slots is not None:
+            room = min(room, slots)
+        if room <= 0:
             return 0
         limits: list[int] = []
         if pool.max_active is not None:
@@ -311,21 +375,25 @@ class _Headroom:
         if self.global_left is not None:
             limits.append(self.global_left)
         if not limits:
-            return self.room[project_id]
-        return max(0, min(limits) - pool.unserved)
+            return room
+        return min(room, max(0, min(limits) - pool.unserved))
 
-    def available(self, pool: PoolCapacity, project_id: str) -> int:
-        return self.free_now(pool, project_id) + self.free_starts(pool, project_id)
+    def available(self, pool: PoolCapacity, project_id: str, kind: str) -> int:
+        return self.free_now(pool, project_id, kind) + self.free_starts(pool, project_id, kind)
 
-    def take(self, pool: PoolCapacity, project_id: str) -> None:
-        if self.free_now(pool, project_id) > 0:
-            key = (pool.profile_id, project_id)
+    def take(self, pool: PoolCapacity, project_id: str, kind: str) -> None:
+        if self.free_now(pool, project_id, kind) > 0:
+            key = (pool.profile_id, project_id, kind)
             self.idle_taken[key] = self.idle_taken.get(key, 0) + 1
             return
         self.starts[pool.profile_id] = self.starts.get(pool.profile_id, 0) + 1
         if self.global_left is not None:
             self.global_left -= 1
         self.room[project_id] = self.room.get(project_id, 0) - 1
+        if self.workspace_room:
+            self.workspace_room[(project_id, kind)] -= 1
+        if self.project_slots.get(project_id) is not None:
+            self.project_slots[project_id] -= 1
 
 
 def _target_rungs(
@@ -424,12 +492,13 @@ def plan_capacity_spill(
     max_auto = int(getattr(reroute, "max_auto_per_task", 2) or 2)
     preferred_by_project = preferred_providers or {}
     headroom = _Headroom(view)
-    planned: dict[tuple[str, str], int] = {}
+    planned: dict[tuple[str, str, str], int] = {}
     waiting: dict[str, int] = {}
     moves = 0
     decisions: list[Decision] = []
     for cand in sorted(candidates, key=lambda c: (c.priority, c.created_at, c.task_id)):
         source_id, project_id = cand.profile_id, cand.project_id
+        workspace_kind = cand.workspace_kind
         rung = ctx.rungs.get(source_id)
         pool = view.pools.get(source_id)
         provider = (
@@ -452,6 +521,7 @@ def plan_capacity_spill(
             title=cand.title,
             status=cand.status,
             provider_generation=ctx.generations.get(provider),
+            workspace_kind=workspace_kind,
         )
         decisions.append(decision)
 
@@ -471,7 +541,7 @@ def plan_capacity_spill(
         if not (rung.enabled and pool.enabled):
             why = "disabled"
         else:
-            proj = pool.project(project_id)
+            proj = pool.project(project_id, workspace_kind)
             served = (
                 f"{source_id} serves it in {project_id}: {proj.idle} idle and "
                 f"{proj.starting} starting for {proj.ready} ready"
@@ -479,13 +549,13 @@ def plan_capacity_spill(
             if proj.unserved <= 0:
                 decision.detail = served
                 continue
-            why = _cannot_start(pool, project_id, view)
+            why = _cannot_start(pool, project_id, view, workspace_kind)
             if not why:
                 decision.detail = f"{source_id} can start another worker in {project_id}"
                 continue
             # The first ``unserved`` in claim order are planned; the rest are
             # what the idle and booting workers here will take.
-            key = (source_id, project_id)
+            key = (source_id, project_id, workspace_kind)
             if planned.get(key, 0) >= proj.unserved:
                 decision.detail = served
                 continue
@@ -535,7 +605,7 @@ def plan_capacity_spill(
             project_id=project_id, providers=order,
             route_candidates=cand.route_candidates,
         ):
-            if headroom.available(view.pools[option.profile_id], project_id) > 0:
+            if headroom.available(view.pools[option.profile_id], project_id, workspace_kind) > 0:
                 target = option
                 break
         if target is None:
@@ -569,7 +639,7 @@ def plan_capacity_spill(
             decision.to_profile_id = target.profile_id
             decision.to_provider = target.provider
             continue
-        headroom.take(view.pools[target.profile_id], project_id)
+        headroom.take(view.pools[target.profile_id], project_id, workspace_kind)
         moves += 1
         decision.action = "move"
         decision.kind = None
