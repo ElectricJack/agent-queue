@@ -92,8 +92,10 @@ prefer a keyed command when one exists.
    ([`src/commands/contracts/builtin.py:540`](../../../src/commands/contracts/builtin.py))
    merges `exclude_none` with `exclude_unset`, which is what makes the model's
    `from_kind: "system"` default reach the handler — the handler's own fallback
-   is `user`, so dropping declared defaults would silently change the sender
-   kind.
+   depends on the execution principal (`user:cli` for a local operator,
+   the authenticated session UUID for a session). Dropping declared playbook
+   defaults would silently change the sender kind. Playbook system attribution
+   remains explicit and distinct from ordinary session send defaults.
 2. The adapter re-enters `CommandHandler.execute`
    ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
    dispatches `_cmd_message_send`.
