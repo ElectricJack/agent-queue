@@ -135,6 +135,36 @@ async def test_pool_start_grows_the_roster_rather_than_using_triage(pool_routing
     assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id
 
 
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("reuse", [False, True], ids=["new-agent", "saved-agent"])
+async def test_operator_pool_starts_without_reusing_ordinary_workers(pool_routing, harness, reuse):
+    orch, db = pool_routing
+    # Role identity comes from the capability, not a profile-id prefix.
+    profile = AgentProfile(
+        id="setup-pool", name="Setup", lifecycle="pool", harness=harness,
+        default_class="deep-high", max_active=1, aq_commands=["operator_execute"],
+    )
+    await db.create_profile(profile)
+    await db.create_agent(Agent(id="ordinary", name="Worker", profile_id=f"saved-{harness}"))
+    ordinary = await db.get_agent("ordinary")
+    if reuse:
+        await db.create_agent(Agent(id="setup-agent", name="Setup", profile_id=profile.id))
+
+    session_id = await launch(orch, db, profile.id)
+
+    assert session_id is not None
+    row = await db.get_session(session_id)
+    assert (row.profile_id, row.harness, row.intelligence_class) == (
+        profile.id, harness, "deep-high",
+    )
+    assert row.agent_id != ordinary.id
+    if reuse:
+        assert row.agent_id == "setup-agent"
+    assert (await db.get_agent(row.agent_id)).profile_id == profile.id
+    assert await db.get_agent(ordinary.id) == ordinary
+    assert await db.get_workspace_for_agent(ordinary.id) is None
+
+
 async def test_pool_start_preserves_class_compatible_named_role_definition(pool_routing):
     orch, db = pool_routing
     await db.create_profile(AgentProfile(

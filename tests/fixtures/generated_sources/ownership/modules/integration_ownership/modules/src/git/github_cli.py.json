@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/git/github_cli.py::ExistingLoginCredentials": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/github_cli.py::GhRunner": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/playbooks/private_values.py::private_value_key_health": {
+      "fingerprint": "522dc6e1b744399c79e301987747b6a1cfd12b3553e9fefbe7128737394e193b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/models.py::GraphError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/models.py::TaskGraph": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

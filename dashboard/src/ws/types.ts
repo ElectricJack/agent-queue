@@ -28,6 +28,14 @@ export interface PoolRenamedEvent extends BaseEvent {
   backup_path: string;
 }
 
+export interface PoolDeletedEvent extends BaseEvent {
+  event_type: "pool.deleted";
+  profile_id: string;
+  depth: "profile" | "directory";
+  sessions: string[];
+  warnings: string[];
+}
+
 export interface ProjectPauseChangedEvent extends BaseEvent {
   event_type: "project.paused" | "project.resumed";
   project_id: string;
@@ -349,6 +357,7 @@ export interface TaskGraphChangedEvent extends BaseEvent {
   event_type: "task.created" | "task.reparented" | "task.updated" | "task.deleted" | "task.archived" | "task.ready" | "task.claimed";
   task_id: string;
   title?: string;
+  status?: string;
   old_parent?: string | null;
   new_parent?: string | null;
 }
@@ -397,7 +406,16 @@ export interface ProposalStatusChangedEvent extends BaseEvent {
   event_type: "proposal.status_changed";
   project_id: string;
   proposal_id: string;
-  status: "committed" | "discarded";
+  status: "held" | "committed" | "discarded";
+}
+
+export interface BatchEvent extends BaseEvent {
+  event_type: "batch.held" | "batch.receipt_recorded" | "batch.needs_scope" | "batch.released";
+  project_id: string;
+  batch_id: string;
+  structure_revision: number;
+  structure_digest: string;
+  reviewer_task_id: string | null;
 }
 
 // --- Document review lifecycle ---
@@ -454,6 +472,8 @@ export interface ReviewCommentedEvent extends BaseEvent {
  */
 export interface MetricsTickEvent extends BaseEvent, MetricsSample {
   event_type: "metrics.tick";
+  /** Null before wait schema migration; shares the generated history shape. */
+  waits?: MetricsSample["waits"];
 }
 
 // --- Durable dashboard state ---
@@ -517,6 +537,7 @@ export type NotifyEvent =
   | AgentWaitingQuestionEvent
   | CommandInvokedEvent
   | ProposalStatusChangedEvent
+  | BatchEvent
   | ReviewSubmittedEvent
   | ReviewRevisedEvent
   | ReviewDecidedEvent
@@ -525,4 +546,5 @@ export type NotifyEvent =
   | MetricsTickEvent
   | DashboardStateChangedEvent
   | ProjectPauseChangedEvent
-  | PoolRenamedEvent;
+  | PoolRenamedEvent
+  | PoolDeletedEvent;
