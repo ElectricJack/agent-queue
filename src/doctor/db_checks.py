@@ -233,6 +233,31 @@ async def _check_alembic_orphan(ctx: DoctorContext) -> CheckResult:
             data={"stamped": stamped, "heads": heads},
         )
 
+    if ctx.config.database.schema_ahead_migrations:
+        from src.database.migration_guard import SchemaAheadCode, SchemaAheadPolicy
+
+        policy = SchemaAheadPolicy(
+            ctx.config.database.schema_ahead_migrations,
+            ctx.config.database.schema_ahead_max_revisions,
+        )
+        try:
+            accepted = await asyncio.to_thread(policy.accepts, tuple(stamped), _VERSIONS_DIR)
+            detail = (
+                "retained migrations prove an additive schema ahead of code; "
+                "leave the schema and Alembic stamp unchanged"
+                if accepted
+                else "retained migrations do not prove this schema; deploy matching code"
+            )
+            severity = Severity.OK if accepted else Severity.ERROR
+        except SchemaAheadCode as exc:
+            detail, severity = str(exc), Severity.ERROR
+        return CheckResult(
+            id=CHECK_ID,
+            severity=severity,
+            detail=detail,
+            data={"stamped": stamped, "heads": heads, "retained_migrations": True},
+        )
+
     sources = {rev: await find_revision_source(rev) for rev in orphans}
     parts: list[str] = []
     for rev in orphans:
@@ -344,23 +369,21 @@ def _stamp(ctx_db_url: str, target: str) -> None:
 def _alembic_url(ctx: DoctorContext) -> str:
     """The daemon's database as a DSN ``migrations/env.py`` can drive.
 
-    That env builds an *async* engine unconditionally, so the driver has to
-    be spelled out — a bare ``sqlite:///`` DSN fails with "the loaded
-    'pysqlite' is not async".
+    That env builds an *async* engine unconditionally, so the driver has to be
+    spelled out: a bare ``postgresql://`` DSN fails with "the loaded 'psycopg2'
+    is not async".
     """
-    url = ctx.config.database.url or ctx.config.database_path
-    if getattr(ctx.config.database, "backend", "sqlite") == "postgresql":
-        if "+" in url.split("://", 1)[0]:
-            return url
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return f"sqlite+aiosqlite:///{os.path.expanduser(url)}"
+    url = ctx.config.database.url
+    if "+" in url.split("://", 1)[0]:
+        return url
+    return url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
 async def _fix_alembic_orphan(ctx: DoctorContext) -> CheckResult:
     """Repair one orphaned ``alembic_version`` row.  Never runs unattended."""
     before = await _check_alembic_orphan(ctx)
     orphans: list[str] = before.data.get("orphans", [])
-    if not orphans:
+    if not orphans or ctx.config.database.schema_ahead_migrations:
         return before
 
     url = _alembic_url(ctx)

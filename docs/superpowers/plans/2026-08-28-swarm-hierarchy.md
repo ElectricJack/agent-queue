@@ -1,5 +1,12 @@
 # Swarm Work Model — Plan 1: Hierarchy Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the `parent-child` edge the single authority for task hierarchy, mint dotted child ids everywhere (including the graph creator), settle containers event-driven instead of by a per-tick scan, and expose `children` / `progress` / `reparent` — with the schema for Plans 2 and 3 landed in the same migration.
