@@ -1,8 +1,9 @@
 # HTTP API
 
 The AQ daemon serves one local HTTP API. Everything that is not the daemon
-itself — the `aq` command line, the web dashboard, an MCP client, an agent
-running inside a worker session — reaches AQ through it.
+itself — the `aq` command line, the web dashboard and an agent running inside
+a worker session — reaches AQ through it. MCP shares the HTTP server but
+dispatches tools to `CommandHandler` in-process; it does not call the REST routes.
 
 This page is the entry point for that surface: what it is, how to reach it,
 what the three families of routes are, and where the schema everything else is
@@ -48,7 +49,8 @@ server, on the `mcp_server` host and port — `127.0.0.1:8081` by default
 ([`src/config.py`](../../../src/config.py), `McpServerConfig`). It binds
 loopback by default and has no TLS: it is a local service, not a public one.
 
-Clients resolve the base URL in this order
+The `aq` CLI resolves the base URL in this order (an explicit `--api-url`
+overrides it)
 ([`src/cli/client.py`](../../../src/cli/client.py)):
 
 1. `AQ_API_URL` — set automatically inside every agent session.
@@ -159,10 +161,14 @@ curl -s http://127.0.0.1:8081/ready
 {"ready":true,"timestamp":"2026-09-09T20:08:44.920291+00:00","checks":{"messaging":{"ok":true,"platform":"discord","connected":true},"database":{"ok":true},"required_playbooks":{"ok":true,"required":{"default-assignment-routing":{"ok":true,"artifact_sha256":"sha256:c016bd…"}}}}}
 ```
 
-`/api/health` is a bare liveness answer. `/ready` runs the real checks and is
-`503` when any of them fails, so it is the one to poll before deciding the
-daemon is usable. `/health` (no `/api`) returns the full check detail with the
-same 200/503 rule.
+`/api/health` is a bare liveness answer. `/ready` reads the background health
+snapshot and checks messaging, the database, required playbooks, the playbook
+private-value key and snapshot freshness. It returns `503` when any fails.
+`/health` (no `/api`) returns all collected checks, also with a 200/503 rule;
+its status is `busy` while the snapshot is initializing, stale or timed out.
+[`HealthMonitor`](../../../src/api/health_monitor.py) collects every five seconds
+with a two-second timeout and marks snapshots stale after ten seconds, so
+production probes do not wait for database work on the request path.
 
 ## The three families of routes
 
@@ -189,47 +195,42 @@ becoming hyphens in the path: `task_show` → `POST /api/task/show`,
 `operationId` is the command name itself, which is what makes the generated
 clients readable. Generation happens at startup in
 [`src/api/codegen.py`](../../../src/api/codegen.py); the request model is built
-from the command's JSON input schema and the response model is looked up in
+from an explicit request model or the command descriptor's JSON input schema;
+the response model is looked up in
 [`src/api/models/`](../../../src/api/models/) (see [models](models.md)).
 
-Four commands are deliberately unreachable over HTTP (`API_EXCLUDED` in
-`src/api/codegen.py`): `load_tools` and `reply_to_user` are internal,
-`message_send` is served by its own route below, and `run_command` — which
-would run a string through a shell on the daemon host — is refused by both
-command surfaces.
+`API_EXCLUDED` in `src/api/codegen.py` excludes internal commands such as
+wait/job/cron reconcilers, authenticated ask intake, `run_command`, and
+`message_send`. Both generated routes and `/api/execute` enforce that set;
+message sending uses the dedicated routes below. The MCP exclusion list is
+separate. Route generation reads the shared command descriptor snapshot in
+[`src/commands/command_inventory.py`](../../../src/commands/command_inventory.py),
+including internal plugin definitions; a dedicated request model takes precedence
+over a model generated from the descriptor's JSON schema.
 
-Counts by category, from the committed schema:
-
-| Category | Routes | Category | Routes |
-|---|---|---|---|
-| `task` | 51 | `mcp` | 7 |
-| `system` | 39 | `message` | 7 |
-| `project` | 28 | `notes` | 7 |
-| `playbook` | 27 | `escalation` | 6 |
-| `agent` | 23 | `pool` | 4 |
-| `git` | 21 | `formula` | 3 |
-| `files` | 11 | `digest` | 2 |
-| `plugin` | 11 | `graph` | 2 |
-| | | `memory` | 2 |
-| | | `discord` | 1 |
-
-The `sessions` tag (3 operations) and the 33 untagged operations in that
-schema are **not** generated command routes — they are the hand-written routes
-below.
-
-Regenerate that count rather than trusting it:
+Read current category counts from the committed schema:
 
 ```bash
-python3 -c "import json,collections; s=json.load(open('openapi.json')); \
-c=collections.Counter(t for p in s['paths'].values() for o in p.values() for t in o.get('tags',['(untagged)'])); \
-print(sorted(c.items()))"
+python3 - <<'PYAPI'
+import collections, json
+schema = json.load(open("openapi.json"))
+counts = collections.Counter(
+    tag
+    for path in schema["paths"].values()
+    for method, operation in path.items()
+    if method in {"get", "post", "put", "patch", "delete", "head", "options"}
+    for tag in operation.get("tags", ["(untagged)"])
+)
+print(sorted(counts.items()))
+PYAPI
 ```
 
 ### 2. Hand-written resource and stream routes
 
-Routes whose shape is not a command: a path parameter, a file body, an
-aggregate read, or a stream. They carry no category tag, and appear in the
-generated Python client under `api/default/`.
+Routes whose shape is not a generated command: a path parameter, a file body,
+an aggregate read, or a stream. Most have no category tag and appear in the
+Python client under `api/default/`; the named-session messaging routes use
+`api/sessions/`. These resource handlers apply their own authorization checks.
 
 | Route | Purpose | Module |
 |---|---|---|
@@ -240,14 +241,18 @@ generated Python client under `api/default/`.
 | `POST /api/messages/send`, `POST /api/sessions/{name}/message`, `GET /api/sessions/{name}/messages` | Send to and poll a named session's conversation. | [`messages.py`](../../../src/api/messages.py) |
 | `GET /api/projects/{project_id}/graph` | The whole task graph of one project in a single read. | [`graph.py`](../../../src/api/graph.py) |
 | `GET/POST /api/projects/{project_id}/graph/{extent,tiles,list,node,locate,tidy,jobs}` | Viewport-bounded spatial layout. | [`graph_layout.py`](../../../src/api/graph_layout.py) |
-| `GET /api/metrics/series` | Fleet metrics history for the Metrics tab. | [`metrics.py`](../../../src/api/metrics.py) |
+| `GET /api/metrics/series`, `GET /api/metrics/delivery-latency` | Fleet metrics history and computed delivery latency reports. | [`metrics.py`](../../../src/api/metrics.py) |
 | `GET /api/providers/usage` | Each provider's own quota, as the provider reports it. | [`providers.py`](../../../src/api/providers.py) |
-| `GET /api/proposals/{proposal_id}` | A proposed task graph, for the ghost overlay. | [`routers/proposals.py`](../../../src/api/routers/proposals.py) |
+| `GET /api/proposals/{proposal_id}`, `GET /api/projects/{project_id}/batches/{batch_id}` | A proposed task graph and a held-ingestion batch detail. | [`routers/proposals.py`](../../../src/api/routers/proposals.py) |
 | `GET /api/tasks/{task_id}/files`, `GET /api/tasks/{task_id}/file` | Browse and read files in a task's worktree. | [`task_files.py`](../../../src/api/task_files.py) |
 | `POST/GET/DELETE /api/tasks/{task_id}/attachments…` | Image attachments on a task. | [`task_attachments.py`](../../../src/api/task_attachments.py) |
+| `GET /api/reviews/{review_id}/revisions/{revision}/attachments/{attachment_id}` | Revision-owned screenshot evidence. | [`review_attachments.py`](../../../src/api/review_attachments.py) |
+| `GET /api/reviews/pull-requests`, `/summary`, `POST /api/reviews/pull-requests/{task_id}/approve` | Cached PR inbox and per-project counts; approval requires the operator viewer and the current head SHA. | [`pull_requests.py`](../../../src/api/pull_requests.py) |
+| `GET /ws/terminal/{session_id}` | HTTP access probe for the terminal; returns a status and close-code information without attaching. | [`terminal_stream.py`](../../../src/api/terminal_stream.py) |
+| `GET/POST /api/host-shell`, `POST /api/host-shell/{name}/close` | Operator host-shell list/open/close, when enabled. | [`host_shell.py`](../../../src/api/host_shell.py) |
 | `GET /api/tasks/{task_id}/sessions` | Execution history of a task, archived tasks included. | [`task_sessions.py`](../../../src/api/task_sessions.py) |
 | `GET /api/workspaces/{workspace_id}/browse`, `GET /api/workspaces/{workspace_id}/file` | Browse and read files in a workspace. | [`workspace_files.py`](../../../src/api/workspace_files.py) |
-| `POST /api/streams`, `GET /api/streams/{id}`, `/subscribe`, `/tail`, `POST /api/streams/{id}/kill` | Run a command and watch its output in the console pane. | [`streams.py`](../../../src/api/streams.py) |
+| `POST /api/streams`, `GET /api/streams/{id}`, `/subscribe`, `/tail`, `POST /api/streams/{id}/kill` | Submit a finite managed job and view or cancel it; the stream id is the job id. | [`streams.py`](../../../src/api/streams.py) |
 
 Both file-reading routes go through one helper,
 [`file_serving.py`](../../../src/api/file_serving.py), which caps reads at
@@ -257,13 +262,12 @@ file.
 
 ### 3. Streaming
 
-`GET /ws/events` (the fleet event stream), `GET /ws/terminal/{session_id}`
-(raw terminal attach), and three server-sent-event endpoints
-(`/api/sessions/{id}/stream`, `/api/sessions/{id}/pane`,
-`/api/streams/{id}/subscribe`). These do not appear in `openapi.json` —
-OpenAPI describes request/response operations, not sockets — so no client is
-generated for them and both the dashboard and this documentation describe them
-by hand. See [streaming](events.md).
+WebSockets at `/ws/events`, `/ws/terminal/{session_id}` and
+`/ws/terminal/{session_id}/input` are outside OpenAPI. The HTTP terminal probe
+and the SSE routes (`/api/sessions/{id}/stream`, `/api/sessions/{id}/pane`,
+`/api/streams/{id}/subscribe`, `/api/jobs/{job_id}/output`) do appear in the
+schema. Generated SSE operations do not implement incremental event parsing;
+consumers handle the stream frames themselves. See [streaming](events.md).
 
 ## Reading the schema
 
@@ -319,13 +323,15 @@ other components own:
 | State | Written by | Lives in |
 |---|---|---|
 | Tasks, projects, sessions, gates, messages | `CommandHandler` via the command's implementation | PostgreSQL |
-| Session API tokens | [`src/api/auth.py`](../../../src/api/auth.py) (`SessionTokenStore`) — minted at session start, revoked at session close | `api_tokens` table, plus a per-process cache |
+| Session API tokens | [`src/api/auth.py`](../../../src/api/auth.py) (`SessionTokenStore`) — minted at session start, revoked at session close | `api_session_tokens` table, plus a per-process cache |
 | Per-request identity (`request.state.scope`) | [`src/api/middleware.py`](../../../src/api/middleware.py) | Memory, for one request |
-| Console streams started via `POST /api/streams` | [`src/api/streams.py`](../../../src/api/streams.py) | Memory, evicted after `streams.retention_seconds` |
+| Console streams started via `POST /api/streams` | [`src/api/streams.py`](../../../src/api/streams.py) | Durable managed jobs and retained output; in-memory viewers are evicted after `streams.retention_seconds` |
 | WebSocket client registry and per-client queues | [`src/api/websocket.py`](../../../src/api/websocket.py) | Memory, dropped on disconnect |
 | The published schema | `create_app()` | `openapi.json`, committed |
 
-Nothing in `src/api/` writes to the database except through a command.
+Command-backed mutations dispatch through `CommandHandler`. Transport services
+also maintain token records, stream audit events and the cached PR inbox;
+these are not separate command routes.
 
 ## Common failures and recovery
 
@@ -337,8 +343,6 @@ Nothing in `src/api/` writes to the database except through a command.
 | `403 Command 'run_command' is not available over the API` | An `API_EXCLUDED` command was attempted through `/api/execute`. | There is no HTTP path to these; this is deliberate. |
 | `422 {"error": "…"}` from a typed route | The command ran and returned an error. | The message is the command's own; the same call over `/api/execute` returns it as `{"ok": false, "error": …}` with a `details` object. |
 | `422 {"detail": [{"loc": ["body", "title"], …}]}` | Request-body validation failed before the command ran. | Fix the body; `loc` names the field. |
-| `500` from `/api/metrics/series?step=1m` | Known defect: a rolled-up sample's `agents.total` is fractional and the response model types it as an integer. | Tracked as a repository task; `step=1s` is unaffected. |
-| `400 {"error": "invalid task id"}` from `/plans/{task_id}` | The plan viewer's id pattern rejects the `.` in a hierarchical task id. | Known defect, tracked as a repository task. |
 
 ## Related pages
 

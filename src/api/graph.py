@@ -26,6 +26,7 @@ from src.api.models.graph import (
     ProjectGraphResponse,
 )
 from src.task_graph.activity import load_activity
+from src.task_graph.ingestion import load_ingestion
 from src.task_graph.readiness import load_readiness
 
 __all__ = ["build_graph_router", "router"]
@@ -97,6 +98,7 @@ def build_graph_router(*, db) -> APIRouter:
         # Containers' displayed activity, rolled up from their descendants.
         activity = await load_activity(db, {r.get("parent_task_id") for r in rows} - {None})
         readiness = await load_readiness(db, [{**r, "project_id": project_id} for r in rows])
+        ingestion = await load_ingestion(db, rows)
 
         def _run_id(dedup_key: str | None) -> str | None:
             if dedup_key and dedup_key.startswith("playbook-run:"):
@@ -120,6 +122,7 @@ def build_graph_router(*, db) -> APIRouter:
                     parent_task_id=r.get("parent_task_id"),
                     **activity.get(r["id"], {}),
                     **readiness.get(r["id"], {}),
+                    **ingestion.get(r["id"], {}),
                 )
                 for r in rows
             ],

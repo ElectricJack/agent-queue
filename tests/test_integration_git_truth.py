@@ -1094,7 +1094,7 @@ async def test_overlapping_train_targets_share_two_fetches_but_next_visit_is_fre
     assert snapshots[0].target_oid == repo.base
     for i, snapshot in enumerate(snapshots[1:]):
         assert snapshot.target_oid == (head if i % 2 else None)
-        assert snapshot.error == (None if i % 2 else "missing_target")
+        assert snapshot.error == (None if i % 2 else "target_ref_missing")
     assert not truth._fetches
 
     await repo.publish()
@@ -1473,3 +1473,59 @@ async def test_strict_verified_parent_identity_and_source_are_fenced(repository)
             ).reason == "invalid_parent_completion"
     await repo.publish()
     assert (await (await repo.snapshot()).delivered(request)).state is DeliveryState.CONTAINED
+
+
+async def test_deleted_target_is_missing_after_pruning_stale_tracking_ref(repository):
+    repo = repository
+    target = "refs/heads/epic"
+    await repo.run("push", "origin", "HEAD:" + target)
+    assert (await repo.snapshot(target=target)).target_oid == repo.base
+    await repo.run("push", "origin", ":" + target)
+    observed = await repo.snapshot(target=target)
+    assert observed.error == "target_ref_missing"
+    assert observed.target_oid is None
+    assert "refs/remotes/origin/epic" not in observed.observation.source_heads
+    assert observed.for_target("refs/heads/main").target_oid == repo.base
+    assert observed.for_target("refs/heads/main").error is None
+    assert observed.retry_at is None
+
+
+@pytest.mark.parametrize("target_present", [False, True])
+async def test_integrity_refusal_distinguishes_remote_absence_without_lending_inventory(
+    repository, target_present,
+):
+    repo = repository
+    target = "refs/heads/epic"
+    if target_present:
+        await repo.run("push", "origin", "HEAD:" + target)
+    failure = "retained Git object integrity is unavailable"
+    repo.git.afetch_origin = AsyncMock(side_effect=GitError(failure))
+    observed = await repo.snapshot(target=target)
+    assert observed.error == ("snapshot_git_error: " + failure if target_present
+                              else "target_ref_missing")
+    assert observed.target_oid is None
+    if not target_present:
+        assert observed.observation.acquisition_error == "snapshot_git_error: " + failure
+        assert not observed.observation.source_heads
+        peer = observed.for_target("refs/heads/main")
+        assert peer.error == "snapshot_git_error: " + failure
+        assert peer.target_oid is None
+        assert peer.for_target(target).error == "target_ref_missing"
+
+
+@pytest.mark.parametrize("remote_exception", [False, True])
+async def test_integrity_refusal_with_failed_remote_read_remains_unknown(repository, remote_exception):
+    repo = repository
+    failure = "retained Git object integrity is unavailable"
+    repo.git.afetch_origin = AsyncMock(side_effect=GitError(failure))
+    # A rejected remote read is an error result, never proof of absence.
+    remote = await repo.git.als_remote_ref(str(repo.path), "main")
+    repo.git.als_remote_ref = AsyncMock(return_value=replace(
+        remote, state=type(remote.state).ERROR, oid=None, error="remote unavailable",
+    ))
+    if remote_exception:
+        repo.git.als_remote_ref.side_effect = GitError("remote unavailable")
+    observed = await repo.snapshot(target="refs/heads/epic")
+    assert observed.error == "snapshot_git_error: " + failure
+    assert observed.target_oid is None
+    assert not observed.observation.absent_target_refs
