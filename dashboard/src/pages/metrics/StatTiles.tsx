@@ -8,6 +8,7 @@
 
 import {
   ArrowsRightLeftIcon,
+  ClockIcon,
   CpuChipIcon,
   RectangleStackIcon,
   ServerStackIcon,
@@ -53,6 +54,11 @@ export default function StatTiles({ sample }: { sample: MetricsSample | null }) 
   const slotsCap = pick(row, "slots.cap");
   const load = pick(row, "machine.load1");
   const cores = pick(row, "machine.cpu_count");
+  const releasedCondition = pick(row, "waits.released_slot_seconds_24h.condition");
+  const releasedCapacity = pick(row, "waits.released_slot_seconds_24h.capacity");
+  const releasedHours = releasedCondition == null || releasedCapacity == null
+    ? null : (releasedCondition + releasedCapacity) / 3600;
+  const savings = sample?.waits?.tokens_saved_counterfactual;
   const subagentsComplete =
     (sample?.subagents as { complete?: boolean } | undefined)?.complete !== false;
 
@@ -99,6 +105,25 @@ export default function StatTiles({ sample }: { sample: MetricsSample | null }) 
         value={format(load, 2)}
         hint={cores == null ? undefined : `${format(cores)} cores`}
       />
+      <Tile
+        icon={<ClockIcon className="h-4 w-4" />}
+        label="Waiting: in place / hibernated"
+        value={`${format(pick(row, "waits.pending_in_place"))} / ${format(pick(row, "waits.pending_hibernated"))}`}
+        hint={`${format(pick(row, "waits.human_pending"))} waiting on a human`}
+      />
+      <Tile
+        icon={<RectangleStackIcon className="h-4 w-4" />}
+        label="Slot-hours released (24h)"
+        value={format(releasedHours, 2)}
+        hint={releasedCondition == null || releasedCapacity == null ? undefined
+          : `${format(releasedCondition / 3600, 2)} condition · ${format(releasedCapacity / 3600, 2)} capacity`}
+      />
+      {savings && <Tile
+        icon={<ServerStackIcon className="h-4 w-4" />}
+        label="Tokens saved (counterfactual)"
+        value={format(savings.tokens ?? null)}
+        hint={`Cohort: ${savings.cohort} · baseline window: ${savings.window}`}
+      />}
     </div>
   );
 }

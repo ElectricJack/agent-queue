@@ -490,8 +490,7 @@ async def test_the_sweep_still_names_a_child_reworked_onto_an_undelivered_head(d
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("git_first", ["shadow", "active"])
-async def test_a_child_close_reaches_the_stranded_child_leg(tmp_path, monkeypatch, git_first):
+async def test_a_child_close_leaves_delivery_to_the_train_by_default(tmp_path, monkeypatch):
     """The service alone is not the fix: the session close has to call it.
 
     Under ``git_first: active`` the train is the child's collector, so the
@@ -507,7 +506,6 @@ async def test_a_child_close_reaches_the_stranded_child_leg(tmp_path, monkeypatc
     )
 
     orch = await make_session_orch(tmp_path)
-    orch.config.integration.git_first = git_first
     try:
         await create_session_project(orch)
         await orch.db.create_repo(
@@ -550,18 +548,17 @@ async def test_a_child_close_reaches_the_stranded_child_leg(tmp_path, monkeypatc
         orch.git.aremote_branch_head = AsyncMock(return_value=HEAD)
         orch.git.acommits_ahead_of_base = AsyncMock(return_value=1)
         orch.git.acreate_pr = AsyncMock(return_value=PR)
+        # This test isolates the stranded-child PR leg. Real immutable source
+        # publication is covered by the train-mode session-close regression.
+        record_completion = AsyncMock(return_value=HEAD)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
 
         result = await orch.complete_session_task(child, outcome="pass", notes="done")
 
         assert result["status"] == TaskStatus.COMPLETED.value
-        if git_first == "active":
-            orch.git.acreate_pr.assert_not_awaited()
-            assert await _pr_url(orch.db, "container.1") is None
-            return
-        orch.git.acreate_pr.assert_awaited_once()
-        assert orch.git.acreate_pr.await_args.kwargs["base"] == "main"
-        assert orch.git.acreate_pr.await_args.kwargs["branch"] == "aq/container.1"
-        assert await _pr_url(orch.db, "container.1") == PR
+        record_completion.assert_awaited_once()
+        orch.git.acreate_pr.assert_not_awaited()
+        assert await _pr_url(orch.db, "container.1") is None
     finally:
         await drain_running_tasks(orch)
         await orch.shutdown()

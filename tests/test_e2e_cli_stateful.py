@@ -29,8 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 E2E_TEST_TIMEOUT_SECONDS = 540
 SCENARIO_GROUPS = {
     "claims": ("S1", "S2", "S3", "S7", "S19"),
-    "cli": ("S5", "S8", "S9", "S12", "S17"),
-    "graphs": ("S10", "S16b", "S18", "S6"),
+    "cli": ("S5", "S8", "S9", "S12", "S17", "S20"),
+    "graphs": ("S10", "S16b", "S18", "S6", "S21"),
     "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
 }
 PREREQUISITES = {"S2": ("S1",), "S3": ("S1", "S2")}
@@ -126,7 +126,10 @@ class World:
                     }), "tasks")
                     for task in rows:
                         if not task.get("parent_task_id"):
-                            smoke.api("delete_task", {"task_id": task["id"], "cascade": True})
+                            smoke.api_checked("delete_task", {
+                                "task_id": task["id"], "recursive": True, "branches": "delete",
+                                "confirmed": True,
+                            })
                     remaining.extend(smoke.collection_rows(smoke.api_checked("list_tasks", {
                         "project_id": project["id"], "include_completed": True,
                     }), "tasks"))
@@ -143,6 +146,7 @@ class World:
                 smoke.api_checked("set_playbook_enabled", {
                     "playbook_id": smoke.FAILOVER_PLAYBOOK, "enabled": True,
                 })
+                smoke.wait_for_restored_readiness()
             except BaseException:
                 self.poisoned = True
                 raise
@@ -152,11 +156,13 @@ class World:
         scenarios = [p for p in PREREQUISITES.get(key, ()) if p not in self.completed] + [key]
         succeeded = False
         started = time.monotonic()
+        # S20 includes the production root settling cadence before publication.
+        timeout = max(270, self.smoke.train_delivery_timeout() + 60) if key == "S20" else 270
         try:
             result = subprocess.run(
                 [str(REPO_ROOT / "scripts/e2e-smoke.sh"), *scenarios],
                 cwd=REPO_ROOT, env=self.env, capture_output=True, text=True,
-                check=False, timeout=270,
+                check=False, timeout=timeout,
             )
             print(result.stdout, flush=True)
             for line in result.stdout.splitlines():
@@ -173,7 +179,7 @@ class World:
         except subprocess.TimeoutExpired as exc:
             for output in (exc.stdout, exc.stderr):
                 print(output.decode(errors="replace") if isinstance(output, bytes) else output or "")
-            raise AssertionError(f"scenario {key} exceeded its 270s budget") from None
+            raise AssertionError(f"scenario {key} exceeded its {timeout:g}s budget") from None
         finally:
             # Preserve only the explicitly declared S1-S3 chain, and only on
             # success. An assertion failure never carries state into another item.
@@ -203,6 +209,12 @@ def start_cli_server(world):
 
 @contextmanager
 def disposable_world(group, env):
+    if group == "cli":
+        # S20 must prove publication by the active train. Keep the selector
+        # in this shard's isolated config, never the operator's install.
+        fragment = Path(env["AQ_E2E_HOME"]).with_suffix(".yaml")
+        fragment.write_text("integration:\n  git_first: active\n")
+        env["AQ_E2E_EXTRA_CONFIG"] = str(fragment)
     world = World(group, env)
     try:
         for stage, script, args in (
