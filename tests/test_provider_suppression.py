@@ -19,11 +19,11 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.intelligence_classes import IntelligenceClass
 from src.models import AgentProfile, Project, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
 from src.providers.availability import DEGRADED, UNAUTHENTICATED
+from src.scheduler import AssignAction
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
 from tests.session_dispatch_helpers import (
@@ -76,6 +76,12 @@ async def _startup_exits(orch: Orchestrator) -> int:
 @pytest.fixture
 async def push_orch(tmp_path):
     orch = await make_session_orch(tmp_path)
+    # Outage notices can launch a global supervisor once message delivery is
+    # due. Keep this fixture's launches scoped to provider suppression.
+    orch.config.messages.enabled = False
+    # State-change notices run in detached tasks; these suppression tests do
+    # not exercise notice delivery. Keep them from outliving the database lease.
+    orch.provider_availability.on_half_change = None
     orch.session_spec_builder._intelligence_classes = dict(BOTH_VENDORS)
     orch.harness_registry.upsert(codex_harness())
     orch.provider_availability._probe_impl = Probe("cannot_tell")
@@ -89,7 +95,7 @@ async def push_orch(tmp_path):
                 title=f"fix {i}",
                 description="d",
                 status=TaskStatus.READY,
-                profile_id="std-codex",
+                profile_id="std-codex", route_source="legacy",
                 intelligence_class="standard-medium",
             )
         )
@@ -104,7 +110,10 @@ async def test_login_required_on_every_codex_launch_trips_within_two_and_stops(p
     fake = fake_provider(orch)
     fake.script_startup_dialog("codex", "login-required")  # no signal: name-map fallback
 
+    # Make message delivery due on every cycle, even on a fast machine: outage
+    # notices must not launch an unrelated supervisor in this isolated fixture.
     for _ in range(8):
+        orch._last_delivery_pass = 0
         await _cycle(orch)
 
     availability = orch.provider_availability
@@ -114,6 +123,7 @@ async def test_login_required_on_every_codex_launch_trips_within_two_and_stops(p
     assert len(fake.dialog_deaths) <= 2
     assert await _startup_exits(orch) == len(fake.dialog_deaths)
     for _ in range(3):
+        orch._last_delivery_pass = 0
         await _cycle(orch)
     assert await _startup_exits(orch) == len(fake.dialog_deaths)
     assert fake.starts == []
@@ -181,7 +191,7 @@ async def test_a_pre_launch_refusal_does_not_notify_a_launch_failure(push_orch):
     )
     orch._emit_text_notify = AsyncMock()
     task = await orch.db.get_task("t0")
-    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    action = AssignAction(task_id="t0", agent_id="a-x", project_id="p-1")
     await orch._fail_session_launch(action, task, "refused", backoff=30, notify=False)
     orch._emit_text_notify.assert_not_awaited()
     paused = await orch.db.get_task("t0")
@@ -261,9 +271,8 @@ POOL_PROJECT = "proj"
 
 
 @pytest.fixture
-async def pool_db(tmp_path):
-    database = Database(lease_dsn("pool.db"))
-    await database.initialize()
+async def pool_db(tmp_path, reuse_database):
+    database = await reuse_database("pool.db")
     kind = await database.resolve_workspace_kind("__system__", "project-repo")
     await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await database.create_project(Project(id=POOL_PROJECT, name="p"))
@@ -287,11 +296,11 @@ async def pool_db(tmp_path):
         await database.create_task(
             Task(
                 id=f"t{i}", project_id=POOL_PROJECT, title="t", description="d",
-                status=TaskStatus.READY, profile_id="worker",
+                status=TaskStatus.READY, profile_id="worker", route_source="legacy",
+                intelligence_class="standard-medium",
             )
         )
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -316,6 +325,9 @@ async def pool_orch(pool_db, tmp_path):
     o.bus.emit = AsyncMock()
     o.harness_registry.upsert(codex_harness())
     o.provider_availability._probe_impl = Probe("cannot_tell")
+    # Notification behavior has its own tests; detached sends must not escape
+    # this fixture and write into the next test's pooled database.
+    o.provider_availability.on_half_change = None
     yield o
     await o.wait_for_pool_launches(cancel=True)
     await o.provider_availability.close()

@@ -65,9 +65,17 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewSubmitRequest,
 ) -> Response[ReviewSubmitResponse | ReviewSubmitResponse422]:
-    """Submit markdown for review, or submit a revision to an open review.
+    """Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
-     Submit markdown for review, or submit a revision to an open review.
+     Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
     Args:
         body (ReviewSubmitRequest):
@@ -96,9 +104,17 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReviewSubmitRequest,
 ) -> ReviewSubmitResponse | ReviewSubmitResponse422 | None:
-    """Submit markdown for review, or submit a revision to an open review.
+    """Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
-     Submit markdown for review, or submit a revision to an open review.
+     Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
     Args:
         body (ReviewSubmitRequest):
@@ -122,9 +138,17 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewSubmitRequest,
 ) -> Response[ReviewSubmitResponse | ReviewSubmitResponse422]:
-    """Submit markdown for review, or submit a revision to an open review.
+    """Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
-     Submit markdown for review, or submit a revision to an open review.
+     Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
     Args:
         body (ReviewSubmitRequest):
@@ -151,9 +175,17 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReviewSubmitRequest,
 ) -> ReviewSubmitResponse | ReviewSubmitResponse422 | None:
-    """Submit markdown for review, or submit a revision to an open review.
+    """Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
-     Submit markdown for review, or submit a revision to an open review.
+     Submit markdown for review, or submit a revision to an open review. A playbook review (kind other)
+    also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the
+    submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision.
+    Approval stores that artifact (and activates it when activate_on_approval is set); a revision
+    recompiles it.
 
     Args:
         body (ReviewSubmitRequest):
