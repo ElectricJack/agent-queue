@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.agent_summary import AgentSummary
+    from ..models.flock_session import FlockSession
     from ..models.profile_subagent_rollup import ProfileSubagentRollup
     from ..models.subagent_rollup import SubagentRollup
 
@@ -23,6 +24,8 @@ class ListAgentsResponse:
     Attributes:
         agents (list[AgentSummary] | Unset):
         count (int | Unset):  Default: 0.
+        sessions (list[FlockSession] | Unset):
+        session_count (int | Unset):  Default: 0.
         project_id (None | str | Unset):
         subagents (None | SubagentRollup | Unset):
         subagents_by_profile (list[ProfileSubagentRollup] | Unset):
@@ -30,6 +33,8 @@ class ListAgentsResponse:
 
     agents: list[AgentSummary] | Unset = UNSET
     count: int | Unset = 0
+    sessions: list[FlockSession] | Unset = UNSET
+    session_count: int | Unset = 0
     project_id: None | str | Unset = UNSET
     subagents: None | SubagentRollup | Unset = UNSET
     subagents_by_profile: list[ProfileSubagentRollup] | Unset = UNSET
@@ -46,6 +51,15 @@ class ListAgentsResponse:
                 agents.append(agents_item)
 
         count = self.count
+
+        sessions: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.sessions, Unset):
+            sessions = []
+            for sessions_item_data in self.sessions:
+                sessions_item = sessions_item_data.to_dict()
+                sessions.append(sessions_item)
+
+        session_count = self.session_count
 
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
@@ -75,6 +89,10 @@ class ListAgentsResponse:
             field_dict["agents"] = agents
         if count is not UNSET:
             field_dict["count"] = count
+        if sessions is not UNSET:
+            field_dict["sessions"] = sessions
+        if session_count is not UNSET:
+            field_dict["session_count"] = session_count
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
         if subagents is not UNSET:
@@ -87,6 +105,7 @@ class ListAgentsResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.agent_summary import AgentSummary
+        from ..models.flock_session import FlockSession
         from ..models.profile_subagent_rollup import ProfileSubagentRollup
         from ..models.subagent_rollup import SubagentRollup
 
@@ -101,6 +120,17 @@ class ListAgentsResponse:
                 agents.append(agents_item)
 
         count = d.pop("count", UNSET)
+
+        _sessions = d.pop("sessions", UNSET)
+        sessions: list[FlockSession] | Unset = UNSET
+        if _sessions is not UNSET:
+            sessions = []
+            for sessions_item_data in _sessions:
+                sessions_item = FlockSession.from_dict(sessions_item_data)
+
+                sessions.append(sessions_item)
+
+        session_count = d.pop("session_count", UNSET)
 
         def _parse_project_id(data: object) -> None | str | Unset:
             if data is None:
@@ -140,6 +170,8 @@ class ListAgentsResponse:
         list_agents_response = cls(
             agents=agents,
             count=count,
+            sessions=sessions,
+            session_count=session_count,
             project_id=project_id,
             subagents=subagents,
             subagents_by_profile=subagents_by_profile,
