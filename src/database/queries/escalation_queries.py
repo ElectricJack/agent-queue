@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
 from src.waits.sources import insert_message_with_source_event
 from src.dashboard_paths import escalation_path
 from src.database.tables import (
@@ -304,7 +305,7 @@ class EscalationQueriesMixin:
                 # The old gate migrator supplied provenance in place of
                 # decision context. Repair that known snapshot before its
                 # missing root becomes visible, without changing other replays.
-                repaired = (await conn.execute(update(escalations).where(
+                repaired = (await execute_escalation_mutation(conn, update(escalations).where(
                     escalations.c.id == existing["id"],
                     escalations.c.revision == existing["revision"],
                     escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
@@ -332,9 +333,9 @@ class EscalationQueriesMixin:
             or incident["state"] not in OPEN_ESCALATION_STATES
         ):
             return
-        if incident["source_kind"] == "wait":
-            # Operational deadlines go to the supervisor. Only an explicit
-            # escalate_to_human decision creates a human delivery for this source.
+        if incident["source_kind"] in {"wait", "continuation"}:
+            # Operational deadlines and infrastructure holds go to the supervisor.
+            # Only an explicit escalate_to_human decision creates a human delivery.
             await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id="msg-" + incident["id"], project_id=incident["project_id"],
                 from_kind="system", from_id="wait-dispatcher", to_kind="session",
@@ -510,7 +511,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -682,7 +683,7 @@ class EscalationQueriesMixin:
                 next_revision = int(incident["revision"]) + 1
                 changed = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == escalation_id,
@@ -827,7 +828,7 @@ class EscalationQueriesMixin:
         async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -894,7 +895,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -935,7 +936,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -1158,7 +1159,7 @@ class EscalationQueriesMixin:
             next_revision = expected_revision + 1
             changed = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -1301,7 +1302,7 @@ class EscalationQueriesMixin:
                     )
                 incident = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == action["escalation_id"],
@@ -1506,7 +1507,11 @@ class EscalationQueriesMixin:
                 (
                     await conn.execute(
                         select(escalation_deliveries.c.id, escalation_deliveries.c.status)
-                        .where(due, ~_delivery_project_paused())
+                        .where(due, ~_delivery_project_paused(),
+                               ~select(escalations.c.id).where(
+                                   escalations.c.id == escalation_deliveries.c.escalation_id,
+                                   escalations.c.terminal_outcome == "legacy_discarded",
+                               ).exists())
                         .order_by(
                             escalation_deliveries.c.priority,
                             escalation_deliveries.c.next_attempt_at,

@@ -96,7 +96,7 @@ export function RowActions({ task }: { task: Task }) {
 }
 
 export function InlineStatus({ task }: { task: Task }) {
-  if (task.display_state) return <TaskDisplayStatus task={task} />;
+  if (task.display_state || (task.claim_readiness && !task.claim_readiness.claimable)) return <TaskDisplayStatus task={task} />;
   return <LifecycleStatus task={task} />;
 }
 
