@@ -1,5 +1,22 @@
 # Wait outcome integration contract
 
+## Supervisor delivery and CI observation correction — 2026-10-23
+
+Operational wait and continuation incidents remain internal during initial
+delivery, reconciliation and retries. Only a committed `escalate_to_human` wait
+decision authorizes human delivery; `needs_human` alone does not. Unread project
+supervisor notices use the existing global-supervisor fallback. A previously
+suppressed, unbound root may be retried after that explicit decision, while an
+ambiguous transport attempt retains its reconciliation state.
+
+CI source observation runs independently of integration-train visits and
+continuation maintenance, including while new V2 admissions are disabled.
+Provider quota responses preserve pending waits and defer observation until the
+repository backoff expires. Each remote observation has a five-second budget,
+including reads under the graph fence, so stalled CI calls release supervisor
+controls. This narrows the remote-read budget without changing the source
+listener's lease or transaction fences.
+
 ## Terminal owners and refused deadlines — 2026-10-22
 
 Terminal task source events retire the owner's waits through the shared
@@ -114,6 +131,19 @@ using saved/observed Git heads, comments and explicit task edits as progress.
 Lifecycle-only status events do not reset the window. Missing Git evidence cannot
 establish a loop. The loop event identifies the wait and registration history;
 checkpoint creates the actual continuation id and generation later.
+
+## Scheduler maintenance lock scope — 2026-10-22
+
+Scheduler sync discovers candidate owner identities without the graph lock, then
+reconciles each owner in a separate transaction. Fresh admission observations,
+wait receipts, deadline preservation, stale-row cleanup, initial age audit and
+priority retraction commit together for that owner. The graph fence is released
+between owners so slow per-item authorization cannot serialize an entire bridge
+or scheduler pass against unrelated wait mutations. New candidates are picked up
+on a later scan; cleanup always re-reads the current owner's rows under the fence.
+An interrupted pass resumes from committed receipts without renewing deadlines.
+The startup bridge retains its project and identity receipts and its local
+single-flight lock; it does not acquire a project-wide database fence.
 
 ## Transaction and graph ownership
 

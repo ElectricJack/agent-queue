@@ -53,6 +53,12 @@ async def generation(db, tid):
         )
 
 
+async def test_child_conflict_without_origin_keeps_plain_feedback(stack, monkeypatch):
+    branches = StackedBranches(stack.db)
+    monkeypatch.setattr(branches, "_origin", AsyncMock(return_value=None))
+    assert await branches.reserve_child_conflict("child", None, "unused") is None
+
+
 async def checkpoint(db, tid, head):
     row = pg_insert(task_integration_checkpoints).values(
         task_id=tid,
