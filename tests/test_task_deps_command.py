@@ -557,3 +557,35 @@ async def test_task_deps_provenance_excludes_blocking_edges(handler, db):
     assert [d["id"] for d in result["depends_on"]] == ["upstream"]
     assert result["depends_on"][0]["reason"] is None
     assert result["provenance"] == []
+
+
+@pytest.mark.parametrize("command", ["task_deps", "get_task_dependencies", "get_task"])
+async def test_related_task_reads_do_not_scale_with_dependency_fanout(handler, db, monkeypatch, command):
+    """Large fan-out should cost a batch, preserving edge reasons and provenance."""
+    from unittest.mock import AsyncMock
+
+    await db.create_task(_task("hub"))
+    for i in range(24):
+        await db.create_task(_task(f"up-{i:02}", title=f"Upstream {i}"))
+        await db.add_dependency("hub", f"up-{i:02}", description=f"Needs {i}")
+    for i in range(12):
+        await db.create_task(_task(f"down-{i:02}"))
+        await db.add_dependency(f"down-{i:02}", "hub")
+    await db.create_task(_task("origin"))
+    await db.add_dependency("hub", "origin", "discovered-from", description="Found here")
+    get_one = AsyncMock(wraps=db.get_task)
+    get_batch = AsyncMock(wraps=db.list_tasks)
+    monkeypatch.setattr(db, "get_task", get_one)
+    monkeypatch.setattr(db, "list_tasks", get_batch)
+
+    result = await handler.execute(command, {"task_id": "hub"})
+
+    assert "error" not in result, result
+    assert len(result["depends_on"]) == 24
+    assert result["depends_on"][0]["reason"] == "Needs 0"
+    assert [row["id"] for row in result["blocks"]] == [f"down-{i:02}" for i in range(12)]
+    if command != "get_task":
+        assert result["provenance"][0]["id"] == "origin"
+        assert result["provenance"][0]["reason"] == "Found here"
+    get_one.assert_awaited_once_with("hub")
+    assert get_batch.await_count == 1

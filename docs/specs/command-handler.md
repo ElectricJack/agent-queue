@@ -11,6 +11,9 @@ tags: [spec, command-handler, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -480,6 +483,21 @@ Resets a task back to READY status, clearing retry count and agent assignment.
 
 **Behavior:** Refuses if the task is currently IN_PROGRESS (caller must stop it first). Transitions the task to READY, sets `retry_count=0`, clears `assigned_agent_id`.
 
+A manual pause first goes through Resume with the same scope and termination
+proofs. A refused Resume retains the pause and recovery hold and refuses Restart.
+After a successful Resume, Restart performs its normal cleanup and readmission.
+
+Cold restart shares the task-control lock with resume, including its Git setup.
+For a retained continuation, it first proves its old and resumed writers
+stopped through their providers. Under graph/task/workspace exclusion it checks
+every task reservation and both recorded relocation paths, detaches clean,
+published task checkouts, releases all unpinned reservations, and retires the
+waits, continuation and pending admission requests. Directory contents and saved
+HEADs survive. Live or unknown writers, reused reservations, dirty or unpublished
+work and job pins refuse restart and retain ownership. A failed resume setup must
+record the relocated checkout before setup so cleanup observes its branch holder;
+the persisted relocation intent covers a crash before that path update.
+
 **Returns on success:**
 ```python
 {
@@ -869,7 +887,23 @@ and Checkout columns and a partial-readback footer.
 
 #### `remove_workspace`
 
-Deletes a workspace.
+Deletes a workspace. Both agent and task locks must be released first.
+For a missing non-slot directory, removal atomically cleans matching repository
+registrations in the same project (LINK source path or CLONE checkout base path)
+and records `workspace.registration_removed` with the path and removed repository
+IDs in the event audit log. A repository shared by another workspace is retained.
+Pinned workspaces, live sessions, child slots, designated integration repositories
+and referenced repository identities refuse cleanup; restore or repair their
+ownership/references before retrying. Filesystem contents are never deleted.
+
+`workspace_doctor` reports `missing_workspace_path` independently of the worktree
+rollout flag, with restore/remove instructions; a locked row requires owner
+verification and release first. Missing paths do not also produce misleading
+managed-exclude findings. The daily branch backstop reports missing non-slot
+workspaces and missing LINK sources once per registration/path until restored
+or changed, persisting notice state only after supervisor delivery succeeds.
+These are inventory notices rather than Git sweep failures. Repository identity
+and live branch holds remain available to sweeps of other healthy checkouts.
 
 **Parameters:**
 - `workspace_id` (required)
@@ -878,10 +912,25 @@ Deletes a workspace.
 
 #### `release_workspace`
 
-Admin force-release a stuck workspace lock.
+Release a stuck workspace lock after re-reading ownership under a row lock.
+Refuse if a claim marker, live or preparing session, attached integration owner,
+agent launch reservation or job pin still protects the checkout. A stale listing is never release authority.
+`force=true` requires `task_id` matching every protected task; ambiguous or
+taskless protections and job pins cannot be overridden. Forced release changes
+only the lock row, preserving claim markers and integration ownership, and is audited.
 
 **Parameters:**
 - `workspace_id` (required)
+- `force` (optional, default false), `task_id` (required with force)
+
+#### `rebind_workspace`
+
+Repair missing lock columns for an existing active pool claim, without starting
+or stopping a session or changing task state. Require `workspace_id`, `task_id`
+and `session_id`; verify project, path, agent assignment, active claim phase and
+epoch against the claim marker. Conflicting locks, sessions or attached owners
+refuse the repair. The command restores only the lock binding and audits it;
+it does not enable a quarantined workspace or rewrite a claim marker.
 
 ---
 
@@ -2193,3 +2242,57 @@ request ID. Completed requests replay without repeated side effects.
 `integration_app_verify(repository_access_only=true)` verifies access without
 requiring an integration policy or enabling integration. `project_doctor` reports
 a primary local repository missing authorization and offers `bind-repository`.
+
+### Stale repository checkout registrations
+
+`repair_repository_checkout` (`aq project repair-repository-checkout`) repoints a
+confirmed missing checkout path in a project's repository registration. It takes
+`project_id`, `repository_id`, `expected_path`, `replacement_path`, and an audit
+`reason`. The default is a read-only preview with complete `before`/`after`
+repository configuration; `apply=true` performs the same validation and commits
+the path change and an attributed `project.repository_checkout_repaired` event
+atomically. Only the local operator or a live global supervisor may invoke it.
+The supervisor template grants this command and the read-only `project_doctor`.
+
+Only `source_path` and `checkout_base_path` equal to `expected_path` change.
+Require an absolute, confirmed missing old path, an existing replacement Git
+checkout whose origin matches the registered nonempty URL, and unchanged repository
+configuration at commit time. Refuse stale expectations, inaccessible or existing
+old paths, unknown repository identity, mismatched origins, and cross-project IDs.
+Preserve repository IDs, URLs, source types, workspaces, locks, tasks, integration
+records and all filesystem contents. The command does not remove repository rows.
+
+The daily branch sweep skips absent source and checkout-base registrations and
+reports one actionable warning per repository/path. Persist the warning state
+only after accepted report delivery; suppress it across days/restarts until the
+path is restored or repointed. No Git probe runs against an absent directory.
+
+Clean, detached linked worktrees that are not AQ slots are skipped before
+authenticated Git preparation and noted separately from failures. Skipping one
+does not mark its shared Git repository as swept: a base checkout or AQ slot
+sharing that repository remains eligible. Dirty, attached, managed-slot and
+unreadable worktrees retain the normal sweep/error behavior. No worktree or
+detached HEAD is removed or changed by this classification.
+
+### Base registration points to a different clone
+
+`repair_workspace_checkout` (`aq project repair-workspace-checkout`) repairs a
+base workspace registration whose existing slots belong to another local clone.
+It requires local operator or live global supervisor authority, `project_id`,
+`workspace_id`, `expected_path`, `replacement_path`, and an audit `reason`.
+Preview returns full base `before`/`after`, family and Git identity evidence, and
+a proof digest. Apply requires that digest as `expected_proof`, repeats validation
+under workspace row locks, and atomically changes only the base's path with an
+attributed `project.workspace_checkout_repaired` event. Stale paths or proof refuse.
+
+The replacement must be a real base checkout, have the same origin as the old
+checkout (or the authorized project/kind URL if the old path is confirmed missing),
+and share the resolved Git common directory and objects directory identity with
+every registered slot. Check each slot's project/base/workspace sentinel identity.
+An independent clone with the same origin is insufficient. Require at least one
+slot and a compatible worktree kind. Refuse an occupied replacement registration,
+an active/pinned/claimed base or integration writer, and unverifiable identity.
+Slot locks and retained claims are permitted and preserved because this repair
+only corrects the base's metadata; it moves no source and changes no slot, writer,
+generation, checkpoint, claim, sentinel, branch or filesystem content. The regular
+slot identity preflight remains enforced and must pass after the repair.
