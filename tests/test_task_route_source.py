@@ -80,7 +80,9 @@ def test_the_value_set_matches_the_check_constraint():
     assert str(check.sqltext) == (
         "route_source IN (" + ",".join(f"'{s}'" for s in ROUTE_SOURCES) + ")"
     )
-    assert ROLE_PROFILE_IDS == {"triage", "spec-ingest", "reviewer", "final-reviewer"}
+    assert ROLE_PROFILE_IDS == {
+        "triage", "spec-ingest", "reviewer", "final-reviewer", "fidelity-reviewer",
+    }
 
 
 @pytest.mark.parametrize(
@@ -345,10 +347,13 @@ def test_design_and_art_are_task_kinds():
     assert {"design", "art"} <= TASK_TYPE_VALUES
 
 
-def test_cli_choices_are_every_task_kind():
+def test_cli_choices_cover_user_creatable_task_kinds():
     from src.cli.styles import TASK_TYPES
 
-    assert set(TASK_TYPES) == TASK_TYPE_VALUES
+    # Delivery intents are authored by promote controls, never ordinary task create.
+    assert set(TASK_TYPES) == TASK_TYPE_VALUES - {
+        TaskType.PROMOTION.value, TaskType.BACKMERGE.value,
+    }
 
 
 @pytest.mark.parametrize("kind", ["design", "art"])

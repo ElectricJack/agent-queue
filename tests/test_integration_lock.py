@@ -78,6 +78,48 @@ async def test_expiry_cannot_be_renewed_and_same_holder_gets_new_fence(env):
         await env.lock.renew(old)
 
 
+async def test_expired_lease_can_be_renewed_with_allow_expired_and_matching_session(env):
+    old = await env.lock.acquire(TARGET, "worker", ttl_seconds=10)
+    async with env.db.immediate() as conn:
+        await conn.execute(
+            update(owners).where(owners.c.holder == "worker").values(
+                session_id="sess", workspace_id="ws"
+            )
+        )
+    env.now += 10
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(old)
+    # Wrong session_id should fail
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(old, session_id="other", allow_expired=True)
+    # No session_id should fail
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(old, allow_expired=True)
+    # Correct session_id should succeed
+    renewed = await env.lock.renew(old, session_id="sess", allow_expired=True)
+    assert renewed > env.now
+    assert (await env.lock.get(TARGET)).holder == "worker"
+    assert (await env.lock.get(TARGET)).fence == old.token
+
+
+@pytest.mark.parametrize("allow_expired", [False, True])
+async def test_null_expiry_fails_closed_even_with_matching_session(env, allow_expired, monkeypatch):
+    fence = await env.lock.acquire(TARGET, "worker")
+    async with env.db.immediate() as conn:
+        row = dict((await conn.execute(select(owners))).mappings().one())
+    # PostgreSQL's binding constraint rejects this row. Exercise the defensive
+    # check at the lock-read seam without weakening the database constraint.
+    row.update(session_id="sess", expires_at=None)
+    monkeypatch.setattr(env.lock, "lock_on", AsyncMock(return_value=row))
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(fence, session_id="sess", allow_expired=allow_expired)
+    transport = SimpleNamespace(apush_repository_oid=AsyncMock(return_value=NEW))
+    with pytest.raises(StaleFence, match="expired"):
+        await push(env.lock, fence, transport)
+    transport.apush_repository_oid.assert_not_awaited()
+    assert (await env.lock.get(TARGET)).expires_at is None
+
+
 async def test_acquire_replay_does_not_extend_but_heartbeat_does(env):
     first = await env.lock.acquire(TARGET, "worker", ttl_seconds=10)
     env.now += 5
@@ -402,3 +444,63 @@ async def test_claim_release_releases_managed_authority_without_workspace_proof(
     async with env.db.immediate() as conn:
         await release_session_leases_on(env.db, conn, "s", "task")
     assert (await env.lock.get(TARGET)).grant() == next_grant
+
+
+async def test_expired_exclusion_names_its_bound_and_ref(env, monkeypatch):
+    from src.integration import lock as lock_module
+    from src.integration.lock import BranchLockTimeout
+    from src.preparation_failure import describe_preparation_failure
+
+    fence = await env.lock.acquire(TARGET, "worker")
+    # Only the hanging section runs under the short bound; ``acquire`` and the
+    # re-entry below read the same constant and must not race a loaded box.
+    with monkeypatch.context() as patched:
+        patched.setattr(lock_module, "CRITICAL_SECTION_SECONDS", 0.05)
+        with pytest.raises(BranchLockTimeout) as raised:
+            async with env.lock.exclusion(fence):
+                await asyncio.Event().wait()
+    exc = raised.value
+    assert isinstance(exc, TimeoutError)
+    assert str(exc) == "branch fence critical section exceeded 0.05s on repo:aq/epic"
+    assert type(exc.__cause__) is TimeoutError
+    reason = describe_preparation_failure(exc, "slot_reset").reason
+    assert reason.startswith(
+        "slot_reset: BranchLockTimeout: branch fence critical section exceeded 0.05s"
+        " on repo:aq/epic; caused by TimeoutError (no message) at "
+    )
+    # The section is released: the same holder re-enters at once.
+    async with env.lock.exclusion(fence):
+        pass
+
+
+async def test_body_timeout_inside_exclusion_is_not_relabelled(env):
+    from src.integration.lock import BranchLockTimeout
+
+    fence = await env.lock.acquire(TARGET, "worker")
+    with pytest.raises(TimeoutError) as raised:
+        async with env.lock.exclusion(fence):
+            raise TimeoutError("git fetch timed out")
+    assert not isinstance(raised.value, BranchLockTimeout)
+    assert str(raised.value) == "git fetch timed out"
+
+
+@pytest.mark.parametrize("connection_owned", [False, True])
+async def test_repair_exclusion_budget_is_bounded_by_lease(env, connection_owned):
+    from src.integration.lock import BranchLockTimeout
+
+    fence = await env.lock.acquire(TARGET, "repair", ttl_seconds=0.05, role="repair")
+    ownership = BranchOwnership(env.db, clock=lambda: env.now)
+    with pytest.raises(BranchLockTimeout) as raised:
+        if connection_owned:
+            async with env.db.immediate() as conn:
+                async with ownership.mutation_exclusion_on(
+                    conn, fence, expected_role="repair", timeout_seconds=1,
+                ):
+                    await asyncio.Event().wait()
+        else:
+            async with ownership.mutation_exclusion(
+                fence, expected_role="repair", timeout_seconds=1,
+            ):
+                await asyncio.Event().wait()
+    assert raised.value.seconds < 0.1
+    assert (await env.lock.get(TARGET)).grant() == fence
