@@ -19,8 +19,7 @@
       "needs": [
         "nimble-dune"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -37,8 +36,7 @@
       "needs": [
         "provenance"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -55,8 +53,7 @@
       "needs": [
         "jobs"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -73,8 +70,7 @@
       "needs": [
         "parameters"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -91,8 +87,7 @@
       "needs": [
         "diff"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     },
@@ -110,8 +105,7 @@
       "needs": [
         "automation"
       ],
-      "profile": "deep-high-codex",
-      "intelligence_class": "deep-high",
+      "intelligence_class": "standard-high",
       "task_type": "feature",
       "priority": 40
     }

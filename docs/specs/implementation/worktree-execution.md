@@ -4,9 +4,17 @@ tags: [implementation, workspaces, worktrees, git, merge-slot, alembic]
 
 # Worktree Execution — Implementation Spec
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft — approved direction (2026-08-19)
-**Design:** [[design/worktree-execution]] (model, lifecycle, merge slot, reaping)
-**Related:** [[design/workspaces-v2]], `docs/analysis/framework-overhaul-todo.md` (Workstream W), session-runtime spec, work-graph spec, aq-surface spec
+**Design:** [design/worktree-execution](../design/worktree-execution.md) (model, lifecycle, merge slot, reaping)
+**Related:** [design/workspaces-v2](../design/workspaces-v2.md), `docs/analysis/framework-overhaul-todo.md` (Workstream W), session-runtime spec, work-graph spec, aq-surface spec
 
 ---
 
@@ -202,7 +210,7 @@ The new-agent workspace gate (line 128, `count_available_workspaces`) must count
 
 ### 6.8 `src/commands/agent_commands.py`
 
-- `_cmd_list_workspaces` (line 175): annotate rows with `role`, `slot_index`, `mode`, branch, dirty flag (design §9).
+- `_cmd_list_workspaces` (line 175): annotate rows with `role`, `slot_index`, `mode`, branch, dirty flag (design §9). Since 2026-10-13 the annotations are bounded (`src/workspace_listing.py`, one deadline, four concurrent lock-free `git status` probes, owner facts with claim fence) and an unread checkout reports `branch`/`dirty` as `null`, never clean — see `docs/specs/command-handler.md` `list_workspaces`.
 - New `_cmd_workspace_doctor` and `_cmd_workspace_reap` implementing design §9, registered in `src/tools/definitions.py` and the API response models — surfaced as `aq workspace doctor|reap` by the aq-surface spec.
 
 ### 6.9 Events

@@ -328,7 +328,9 @@ class TestDiscordEmits:
     observer and that emit were removed in the M0 messaging strip -- chat input
     is now enqueued through ``message_send`` instead.  Asserting the old call
     site still exists tested nothing about today's code, so these tests check
-    the emits the package actually makes.
+    the emits the package actually makes.  The later Discord simplification
+    likewise retired the bot's ``notify.system_online`` lifecycle emit; startup
+    now completes the cutover before enabling escalation intake.
     """
 
     def test_discord_emits_use_registered_event_types(self):
@@ -339,20 +341,10 @@ class TestDiscordEmits:
                     f"{path.name} emits unregistered event type '{event_type}'"
                 )
 
-    def test_system_online_emit_has_required_fields(self):
-        """bot.py emits notify.system_online from the event model's dump."""
-        from src.notifications.events import SystemOnlineEvent
-
+    def test_bot_does_not_restore_retired_system_online_emit(self):
+        """The escalation-only gateway must not restore lifecycle notifications."""
         source = (SRC_DIR / "discord" / "bot.py").read_text(encoding="utf-8")
-        assert re.search(
-            r'emit\(\s*"notify\.system_online"\s*,\s*\n\s*SystemOnlineEvent\(\)',
-            source,
-        ), "notify.system_online emit not found in bot.py"
-
-        errors = validate_payload(
-            "notify.system_online", SystemOnlineEvent().model_dump(mode="json")
-        )
-        assert errors == [], f"notify.system_online payload invalid: {errors}"
+        assert '"notify.system_online"' not in source
 
 
 # ---------------------------------------------------------------------------
