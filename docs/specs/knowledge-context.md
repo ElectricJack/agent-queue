@@ -93,7 +93,7 @@ receives no bundle, so it records no delivery receipt. A degraded read is
 invisible in the body by construction, so the daemon log carries one WARNING
 naming the refusal code, the task, the project, the profile and the
 `aq_commands` a bundle costs that profile (`knowledge_show`, plus
-`knowledge_search` where the request reaches lexical discovery) — identities
+`record_search` where the request reaches lexical discovery) — identities
 and grants only, never record content. Every other refusal, including a stale
 claim or an over-budget prompt, still surfaces as an error.
 `context.execution_unavailable` is one of those, deliberately. It means the

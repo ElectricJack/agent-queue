@@ -345,6 +345,7 @@ class SessionReconciler:
             self._step_flock_audit,
             self._step_claim_refusals,
             self._step_drain_ack,
+            self._step_stopped_idle_workspaces,
             self._step_prepare_timeout,
             self._step_exits,
             self._step_abandoned_pool_claim_loop,
@@ -359,6 +360,22 @@ class SessionReconciler:
                 await step(live, now)
             except Exception:
                 logger.exception("Session reconciler step %s failed", step.__name__)
+
+    async def _step_stopped_idle_workspaces(self, live, now: float) -> None:
+        """Recover taskless stopped pool locks, including history across restarts."""
+        if self.orchestrator is None:
+            return
+        from src.workspace_ownership import (
+            release_stopped_idle_workspace, stopped_idle_workspace_sessions,
+        )
+
+        for row in await stopped_idle_workspace_sessions(self.db):
+            if row.task_id or row.claim_phase or not row.agent_id:
+                continue
+            try:
+                await release_stopped_idle_workspace(self.orchestrator, row)
+            except Exception:
+                logger.warning("Stopped pool workspace proof unavailable: %s", row.id, exc_info=True)
 
     async def _step_flock_audit(self, live, now: float) -> None:
         """Report hidden executions at least every thirty seconds."""
@@ -546,8 +563,20 @@ class SessionReconciler:
         with the task still open is a *premature* drain and gets one nudge
         before being treated as an exit.
         """
+        profiles = {}
         for row in live:
             if row.lifecycle == "pool":
+                if row.profile_id not in profiles:
+                    profiles[row.profile_id] = await self.db.get_profile(row.profile_id)
+                if profiles[row.profile_id] is None:
+                    # A launch already in progress may publish its row after
+                    # deletion's fleet snapshot. It has no profile authority
+                    # to close a claim; retry a guarded stop regardless of intent.
+                    if self.orchestrator is not None:
+                        await self.orchestrator._terminate_pool_session(
+                            row, reason="profile_deleted"
+                        )
+                    continue
                 # Pool sessions never send a provider-side drain ack -- an
                 # idle one marked stopped or sleeping is torn down the pool
                 # way. A task pointer left from a released claim can name a

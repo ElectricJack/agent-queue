@@ -3,28 +3,47 @@
 Task: `bright-pinnacle-83`. Extends the Git-first train, exact completion
 provenance and [batch repair contract](batch-conflict-repair-starts.md).
 
-Source admission proves an exact retained completion, an eligible open,
-same-repository, non-draft PR and the configured review authorization. A base
-conflict is candidate integration work. When authenticated observations prove
-that no pull-request workflow exists on the exact source head and GitHub reports
-the exact PR dirty, missing PR CI does not prevent freezing that source alongside
-other compatible completions targeting the same delivery branch. It is never a
-passing check. A running workflow, red required checks, malformed or unavailable
-observations and unknown mergeability keep their existing admission gates.
+Root source admission proves an exact retained completion, an eligible open,
+same-repository, non-draft PR and the configured review authorization. The
+2026-10-23 smart batch selection Phase A supersedes admission of dirty root PRs:
+GitHub `CONFLICTING` / `DIRTY` observations refuse admission as `pr_conflicting`,
+including when PR workflows are suppressed. Before reading GitHub, a local
+`merge-tree --write-tree` probe compares the fetched target and exact source.
+It uses the build's merged-tree `merge=aq-generated` attributes: generated-only
+conflicts proceed to construction and regeneration; source conflicts refuse as
+`pr_conflicting` without a GitHub read. Unavailable local probes remain unknown.
+Conflict refusals refund the selection quantum just like red roots. For both
+leaves and epics, CommandHandler first tries a mechanical merge of the fetched
+default tip into the original branch, using the build's regeneration mechanism.
+A clean result is a fenced bot merge and a new immutable completion; its
+admission checks and approvals still examine the original source head, with no
+new PR CI run required. The combined candidate always owes full batch-tip CI.
+A real source conflict reopens the original task on its branch with the paths
+and default tip, instructing its worker to merge, run targeted tests and close.
+No repair delegate is created. Durable head/default pairs prevent a second
+reopen for the same inputs; original task age is preserved. A prepared bot
+merge resumes after a lost push/provenance response. Infrastructure and
+regeneration failures withhold only that source without reopening an author.
+The hot generated-file fix (Phase A5) must ship before or with this admission
+policy. Still-computing mergeability retains its short retry. Running workflows, red required checks,
+malformed or unavailable observations keep their existing admission gates.
 Historical daemon-bound source CI repairs remain the sole exception for a red source:
 both the source and its independently admitted repair freeze in the same batch,
 source first, with all configured review authorizations intact. A stale binding,
 unavailable repair, red repair or unfinished repair prerequisite keeps the pair
 out of the batch. Required final candidate checks validate the combined result.
 Required human approvals, including approval before trusted local execution,
-remain bound to the exact source head.
+remain bound to the exact authored source head. Only the command-owned bot
+completion may retain that source's admission evidence across a mechanical merge;
+an ordinary worker close, changed policy or unrelated head cannot borrow it.
 
 The train retains all ordinary admission constraints: current completion and
 branch identity, prerequisite closure, source ancestry, explicit holds, and
 aborted or withheld inputs. Reopened or actively claimed work cannot enter the
-batch. Sources are frozen together in dependency order; neither leaf nor epic
-authors must merge the default branch or repeat tests merely to clear a base
-conflict. Existing explicit epic refresh controls remain available.
+batch. Admitted sources are frozen together in dependency order. Conflicts
+between admitted members, or introduced by target movement after freezing,
+remain candidate integration work. Existing explicit epic refresh controls
+remain available.
 
 Construction merges every frozen source onto the fetched target with its merge
 parents intact. Generated overlaps take the current artifact as a temporary
@@ -78,7 +97,7 @@ delivery or authorize an automatic abort.
 
 Acceptance uses real Git and disposable PostgreSQL: multiple sources conflicting
 with main and one another; generated-only overlaps rebuilt once from the full
-union; suppressed PR CI; genuine source red and unavailable CI; explicit review
+union; dirty root refusal with suppressed PR CI; genuine source red and unavailable CI; explicit review
 gates; aborted inputs and prerequisites; an incomplete repair with source
 trailers; one repair across repeat visits; and publication only after final
 candidate checks on the complete ancestry.

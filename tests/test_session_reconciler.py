@@ -26,6 +26,7 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, StaleFence
 from src.models import (
     Agent,
+    AgentProfile,
     AgentState,
     Project,
     RepoConfig,
@@ -272,6 +273,12 @@ async def _session(
         state=overrides.pop("state", "running"),
         **overrides,
     )
+    # Model a launched pool, not a pool whose profile has been deleted.
+    # The reconciler deliberately stops the latter, even during a wait.
+    if row.lifecycle == "pool" and await db.get_profile(row.profile_id) is None:
+        await db.create_profile(AgentProfile(
+            id=row.profile_id, name=row.profile_id, harness=row.harness, lifecycle="pool",
+        ))
     await db.create_session(row)
     return row
 
@@ -515,6 +522,7 @@ class TestWorkerContextRecovery:
     ):
         from src.database.tables import integration_branch_owners
         from src.orchestrator.pools import PoolsMixin
+        from src.orchestrator.workspace import WorkspaceMixin
         from src.sessions.worker_recovery import DISPOSITION_KEY, STREAK_KEY
 
         row = await _claimed_pool_session(db, provider, tmp_path)
@@ -542,7 +550,7 @@ class TestWorkerContextRecovery:
                 "instance_token": "previous-instance", "claim_epoch": row.last_claim_epoch - 1,
             })
 
-        class Orch(PoolsMixin):
+        class Orch(PoolsMixin, WorkspaceMixin):
             def __init__(self):
                 self.db, self.config, self.bus = db, config, bus
                 self.session_providers = registry
@@ -566,6 +574,9 @@ class TestWorkerContextRecovery:
         if handoff_state == "released":
             assert current.status is (TaskStatus.READY if count == 1 else TaskStatus.BLOCKED)
             assert current.assigned_agent_id is None
+            assert (await db.get_session(row.id)).state == "stopped"
+            assert (await db.get_agent(row.agent_id)).state is AgentState.IDLE
+            assert "pool.session_drained" in bus.types()
             receipt = await db.get_task_meta("t1", DISPOSITION_KEY)
             assert receipt["disposition"] == ("retry_ready" if count == 1 else "attention_required")
             assert ("task.restarted" in bus.types()) == (count == 1)
@@ -5269,3 +5280,40 @@ async def test_refusal_reconciliation_revalidates_instance(db, provider, pool_re
     await db.update_session(row.id, **changed)
     await pool_reconciler._step_claim_refusals([row], NOW)
     assert not pool_reconciler.test_orch.terminations
+
+
+async def test_slow_wait_bridge_never_delays_reaping_a_killed_session(
+    db, provider, config, registry, tmp_path, monkeypatch
+):
+    """A wedged legacy bridge runs beside the cycle, never ahead of reaping."""
+    orch = _installed_wait_orchestrator(db, config, registry, tmp_path, monkeypatch)
+    release = asyncio.Event()
+    started = []
+
+    class _WedgedBridge:
+        async def tick(self):
+            started.append(True)
+            await release.wait()
+
+    orch.wait_service = _WedgedBridge()
+    orch.cycle_waits.budget = 0.05
+    await _task(db, status=TaskStatus.COMPLETED)
+    row = await _session(db, provider)
+    provider.script_death(row.name)
+    monkeypatch.setattr("src.orchestrator.core.time.time", lambda: NOW)
+    try:
+        await asyncio.wait_for(orch._reconcile_sessions(), timeout=5)
+        assert (await db.get_session("s1")).state == "stopped"
+        assert started == [True] and not release.is_set()
+        # Later cycles keep reconciling and never queue a second bridge pass.
+        await asyncio.wait_for(orch._reconcile_sessions(), timeout=5)
+        assert started == [True]
+        release.set()
+        await asyncio.wait_for(orch.cycle_waits.task, timeout=5)
+        await orch._reconcile_sessions()
+        # The replacement pass starts asynchronously and first reconciles agent waits.
+        await asyncio.wait_for(orch.cycle_waits.task, timeout=5)
+        assert started == [True, True]
+    finally:
+        release.set()
+        await orch.cycle_waits.stop()
