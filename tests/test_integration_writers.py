@@ -18,7 +18,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitManager
-from src.integration.models import BranchKey, Fence
+from src.integration.models import INTEGRATION_REPAIR_PRIORITY, BranchKey, Fence
 from src.integration.owner_recovery import OwnerRecovery
 from src.integration.ownership import BranchOwnership, StaleFence
 from src.integration.runtime_contracts import (
@@ -237,6 +237,10 @@ async def test_concurrent_filing_and_restart_keep_one_task_and_budget(env, kind,
     assert task.status is TaskStatus.BLOCKED
     assert task.profile_id is None and task.class_hint == "standard-high"
     assert task.branch_name == "candidate" and task.repo_id == "r"
+    # Repair writers hold the subject's branch, so they run ahead of ordinary work.
+    assert task.priority == (
+        100 if role is WriterRole.VERIFIER else INTEGRATION_REPAIR_PRIORITY
+    )
     # The class is a routing hint; retries cannot change it or refresh a clock.
     changed = args.model_copy(update={"budget_seconds": 900})
     assert (await restarted.file(subject, changed)).reason == "ordinal_request_changed"

@@ -181,6 +181,10 @@ import {
 } from "./chat";
 
 // --- Re-exports — call sites should import shared types from here ---
+// Graph and historical activity projections also feed task components and
+// may carry a status introduced by a newer daemon. Keep their fallback reader.
+export type Task = Omit<TaskResponse, "status"> & { status?: string };
+
 export type {
   AgentSummary,
   AgentSummary as Agent,
@@ -202,7 +206,6 @@ export type {
   ProjectResponse as Project,
   ProjectSummary,
   ShowEffectiveProfileResponse,
-  TaskResponse as Task,
   TaskDetail,
   TaskCompletionDetail,
   WorkspaceSummary as Workspace,
@@ -869,6 +872,16 @@ export function useDeleteTask() {
   });
 }
 
+export function useDeleteTaskPreview(input: DeleteTaskRequest) {
+  return useQuery({
+    queryKey: ["task-delete-preview", input.task_id, input.recursive, input.branches],
+    queryFn: async () => (await deleteTask({
+      body: { ...input, confirmed: false }, throwOnError: true,
+    })).data,
+    staleTime: 0,
+  });
+}
+
 export function useArchiveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
@@ -885,7 +898,7 @@ export function useArchiveTask() {
 export function useRemoveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string; confirmed: boolean; reason: string }) =>
+    mutationFn: async (input: DeleteTaskRequest) =>
       (await removeTask({ body: input, throwOnError: true })).data,
     ...cb,
   });
@@ -1590,6 +1603,17 @@ export function useSystemConfig() {
     queryFn: async () => {
       const { data } = await getConfig({ body: {}, throwOnError: true });
       return data as GetConfigResponse;
+    },
+  });
+}
+
+export function useDeploymentHistory() {
+  return useQuery({
+    queryKey: ["deployment-history"],
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const { data } = await getConfig({ body: { section: "deploy" }, throwOnError: true });
+      return (data as GetConfigResponse).deployment_history;
     },
   });
 }
