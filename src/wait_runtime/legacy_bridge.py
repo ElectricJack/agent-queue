@@ -18,7 +18,9 @@ from src.database.queries.continuation_queries import measurement_medians
 from src.database.tables import agent_waits, messages, tasks, wait_deadlines, wait_records
 from src.waits.conditions import NodeKey, Scope, WaitError, canonical
 from src.waits.decision import decide_sleep, measured_inputs, project_policy
-from src.waits.graph import add_edges, lock_graph, recompute_from, would_create_cycle
+from src.waits.graph import (
+    add_edges, background_graph_work, lock_graph, recompute_from, would_create_cycle,
+)
 from src.wait_runtime.hibernate import begin_suspension
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
@@ -46,12 +48,18 @@ def legacy_times(row):
 
 
 class LegacyWaitBridge:
+    # A held project (an unadoptable legacy item, a failed audit) is retried
+    # after this delay by the startup bridge rather than on every cycle tick.
+    RETRY_SECONDS = 300.0
+
     def __init__(self, service, *, clock=time.time):
         self.service = service
         self.orch = service.orch
         self.db = self.orch.db
         self.clock = clock
+        self.retry_at = {}
 
+    @background_graph_work()
     async def run(self, args, *, principal, scope=None, handler=None):
         from src.wait_runtime.legacy_pass import run_pass
 
