@@ -49,7 +49,12 @@ async def test_private_values_upgrade_from_prior_schema_and_current_metadata():
 
 
 async def test_iteration_paths_upgrade_preserves_legacy_rows_and_matches_metadata():
-    from tests.test_playbook_run_repository import ARTIFACT, make_receipt, make_snapshot, seed_artifact
+    from tests.test_playbook_run_repository import (
+        ARTIFACT,
+        make_receipt,
+        make_snapshot,
+        seed_artifact,
+    )
     from tests.test_playbook_wait_repository import make_wait
 
     revision = importlib.import_module("migrations.versions.a00000000104_playbook_iteration_paths")
@@ -132,6 +137,7 @@ async def test_observation_snapshots_upgrade_prior_and_current_metadata():
 
 async def test_playbook_state_upgrade_prior_and_current_preserves_journals():
     from sqlalchemy import insert, select
+
     from src.database import tables as t
 
     revision = importlib.import_module("migrations.versions.a00000000106_playbook_state")
@@ -243,3 +249,132 @@ async def test_playbook_jobs_upgrade_prior_and_current_metadata():
             await conn.run_sync(verify)
     finally:
         await db.close()
+
+
+BUILDING_BLOCK_TABLES = {
+    "playbook_private_values", "playbook_step_receipts", "playbook_waits",
+    "observation_snapshots", "observation_snapshot_pages", "playbook_state_namespaces",
+    "playbook_state_entries", "playbook_state_operations", "messages", "jobs", "job_input_pins",
+}
+# The schema immediately before a00000000103, rebuilt around rows written by older code.
+PRIOR_SCHEMA = (
+    "DROP TABLE job_input_pins",
+    "DROP TABLE playbook_state_operations",
+    "DROP TABLE playbook_state_entries",
+    "DROP TABLE playbook_state_namespaces",
+    "DROP TABLE observation_snapshot_pages",
+    "DROP TABLE observation_snapshots",
+    "DROP TABLE playbook_private_values",
+    "ALTER TABLE playbook_step_receipts DROP COLUMN iteration_path CASCADE",
+    "ALTER TABLE playbook_waits DROP COLUMN iteration_path CASCADE",
+    """ALTER TABLE playbook_step_receipts ADD CONSTRAINT uq_playbook_step_receipts_boundary
+       UNIQUE (run_id, step_id, iteration, attempt, turn_index, receipt_kind)""",
+    """CREATE INDEX idx_playbook_step_receipts_turn
+       ON playbook_step_receipts (run_id, step_id, iteration, attempt, turn_index)""",
+    """CREATE UNIQUE INDEX uq_playbook_waits_active_step
+       ON playbook_waits (run_id, step_id, iteration) WHERE state = 'active'""",
+    "ALTER TABLE messages DROP COLUMN provenance",
+    "ALTER TABLE jobs DROP CONSTRAINT ck_jobs_owner_fields",
+    "ALTER TABLE jobs DROP CONSTRAINT ck_jobs_owner_kind",
+    *(f"ALTER TABLE jobs DROP COLUMN {name} CASCADE" for name in (
+        "playbook_run_id", "playbook_step_id", "iteration_path", "attempt",
+        "artifact_digest", "input_root")),
+    *(f"ALTER TABLE jobs ALTER COLUMN {name} SET NOT NULL" for name in (
+        "project_id", "workspace_id", "workspace_generation")),
+    "ALTER TABLE jobs ADD CONSTRAINT ck_jobs_owner_kind CHECK (owner_kind IN ('task','integration'))",
+)
+
+
+@pytest.mark.integration
+async def test_chain_rehearsal_upgrades_prior_install_and_refuses_binary_rollback(tmp_path):
+    """Upgrade a pre-103 install through the real chain, then rehearse rolling code back.
+
+    Feature rollback is disabling activations on the new code (the disposable-daemon
+    acceptance covers it). Binary rollback to a release before these revisions must be
+    refused by startup, never satisfied by a downgrade or a stamp.
+    """
+    import shutil
+    from pathlib import Path
+
+    import sqlalchemy as sa
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from src.database import tables as t
+    from src.database.additive_migrations import MigrationTree, check_upgrade
+    from src.database.migration_guard import SchemaAheadCode, SchemaAheadPolicy
+    from tests.pg_dsn import create_scratch_database
+    from tests.test_jobs_queries import values
+    from tests.test_wait_migration import ROOT, migrate
+
+    versions = ROOT / "migrations" / "versions"
+    tree = MigrationTree.from_directory(versions)
+    head, = tree.heads
+    engine = create_async_engine(await create_scratch_database("buildingblockschain"))
+    try:
+        await migrate(engine, "a00000000102")
+        async with engine.begin() as conn:
+            await conn.execute(sa.text(
+                "INSERT INTO projects (id,name,created_at) VALUES ('p','P',0)"))
+            await conn.execute(sa.text(
+                "INSERT INTO tasks (id,project_id,title,description,created_at,updated_at) "
+                "VALUES ('t','p','Keep','Keep',0,0)"))
+            await conn.execute(sa.insert(t.messages).values(
+                id="legacy-message", project_id="p", from_kind="system", from_id="legacy",
+                to_kind="user", to_id="dashboard", body="retained", created_at=1))
+            await conn.execute(sa.insert(t.jobs).values(values(id="legacy-job")))
+            for statement in PRIOR_SCHEMA:
+                await conn.execute(sa.text(statement))
+
+        def prior(bind):
+            assert MigrationContext.configure(bind).get_current_heads() == ("a00000000102",)
+            assert not inspect(bind).has_table("playbook_state_entries")
+            assert "provenance" not in {c["name"] for c in inspect(bind).get_columns("messages")}
+
+        async with engine.connect() as conn:
+            await conn.run_sync(prior)
+        await migrate(engine, "head")
+        await migrate(engine, "head")
+
+        def upgraded(bind):
+            context = MigrationContext.configure(bind, opts={
+                "include_object": lambda obj, name, kind, reflected, compare_to: (
+                    name in BUILDING_BLOCK_TABLES if kind == "table" else True),
+            })
+            assert context.get_current_heads() == (head,)
+            assert not compare_metadata(context, metadata)
+            for name in BUILDING_BLOCK_TABLES:
+                assert all(c["name"] for c in inspect(bind).get_check_constraints(name))
+            assert bind.execute(sa.text(
+                "SELECT body, provenance FROM messages WHERE id='legacy-message'"
+            )).one() == ("retained", None)
+            assert bind.execute(sa.text(
+                "SELECT owner_kind, project_id, workspace_id, playbook_run_id "
+                "FROM jobs WHERE id='legacy-job'")).one() == ("task", "p", "w", None)
+            # Relaxed nullability is for playbook owners; task owners keep their fields.
+            with pytest.raises(sa.exc.IntegrityError), bind.begin_nested():
+                bind.execute(sa.insert(t.jobs).values(values(
+                    id="workspace-less", idempotency_key="other", workspace_id=None)))
+
+        async with engine.begin() as conn:
+            await conn.run_sync(upgraded)
+    finally:
+        await engine.dispose()
+
+    def release(revision):
+        path = tmp_path / revision
+        path.mkdir()
+        for ancestor in tree.ancestors(revision):
+            shutil.copy(tree.revisions[ancestor].path, path)
+        return path
+
+    retained = SchemaAheadPolicy(str(versions))
+    # Messages provenance alone is provably additive: older code may run ahead of it.
+    assert retained.accepts(("a00000000107",), release("a00000000106"))
+    assert not check_upgrade(tree.revisions["a00000000103"])
+    # Constraint widening, metadata-driven creates and the job owner rewrite are not
+    # provably additive, so code before them refuses this schema rather than guess.
+    with pytest.raises(SchemaAheadCode, match="a00000000104_playbook_iteration_paths") as refused:
+        retained.accepts((head,), release("a00000000102"))
+    for revision in ("a00000000105", "a00000000106", "a00000000108"):
+        assert Path(tree.revisions[revision].path).name in str(refused.value)
+    assert not SchemaAheadPolicy().accepts((head,), release("a00000000101"))
