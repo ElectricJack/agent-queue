@@ -1372,3 +1372,27 @@ These were originally open questions, now resolved:
    unreachable nodes, missing entry point, cycles without exit conditions,
    transitions referencing nonexistent nodes. Should this be a post-compilation
    check or part of the compilation prompt?
+
+## System source recovery (2026-10-13)
+
+Reviewed bundle import retains the exact Markdown with the immutable artifact.
+Import and activation do not overwrite authored vault sources. Installation is
+one-shot and restart preserves sources, deletions and activation state. Legacy
+explicit seeding must copy Markdown from the reviewed bundle, rather than a
+second packaged source.
+
+When explicit required-playbook repair replaces an activation, it advances an
+existing system source only if its digest still matches the previous artifact.
+Edited or deleted sources remain unchanged. Source write failures are reported
+in daemon logs; the activation continues to serve its immutable artifact.
+
+A supervisor or local operator can restore a drifted system source with
+`aq playbook source-resync --playbook-id ID --artifact-sha256 SHA
+--expected-source-hash HASH`. Read SHA from activation-health and HASH from
+get-playbook-source. The command requires the pinned artifact to be the active
+system artifact, verifies its retained source digest, refuses stale hashes and
+unsafe paths, and atomically replaces the Markdown while preserving the old
+bytes in a unique `.bak-*` sibling. It never compiles, changes activation,
+replays events or reads backups as restoration inputs. Repeating it against
+the restored source makes no further write. Activation-health must then report
+`source_drift=false`, including after installation and restart.

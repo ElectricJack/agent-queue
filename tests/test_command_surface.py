@@ -518,7 +518,7 @@ class TestNoArgumentlessCommandsByAccident:
         expected = {
             "explain_task": {"task_id"},
             "gate_show": {"gate_id"},
-            "gate_resolve": {"gate_id", "resolved_by"},
+            "gate_resolve": {"gate_id"},
             "gate_create": {"project_id", "gate_type", "title"},
         }
         for name, required in expected.items():
@@ -565,3 +565,22 @@ class TestSessionCommandsHaveOneCliSpelling:
         from src.cli.auto_commands import HANDCRAFTED_COVERAGE
 
         assert "session_input" not in HANDCRAFTED_COVERAGE
+
+
+def test_retired_publisher_commands_have_no_handler_contract_or_transport_schema():
+    """Retirement removes every entry point, including daemon-only discovery."""
+    from src.commands.contracts import CONTRACTS
+    from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+    retired = {
+        "delivery_promote", "integration_build_candidate", "integration_promote_main",
+        "integration_parent_action", "integration_push_conflict_resolution",
+        "integration_reconcile_promotion", "integration_resolve_conflict",
+        "integration_resolve_candidate_member", "integration_recover_candidate_member",
+        "integration_rebind_repair", "integration_rebind_detached_repair",
+        "integration_recover_preserved_repair", "integration_recover_parent_head",
+        "integration_recover_unwritten_resolution", "integration_schedule_due", "integration_seal",
+    }
+    assert retired.isdisjoint(_command_names())
+    assert retired.isdisjoint(CONTRACTS.names())
+    assert retired.isdisjoint(_FALLBACK_INPUT_SCHEMAS)

@@ -38,6 +38,8 @@ async def test_pool_termination_retains_specific_reason(orch, db):  # noqa: F811
             work_dir=row.work_dir,
             now=time.time(),
         )
+    # Teardown must observe the active claim, not the pre-claim launch row.
+    row = await db.get_session(row.id)
     await orch._terminate_pool_session(row, reason="rapid_crash")
     session = await db.get_session(row.id)
     (attempt,) = await db.list_task_session_attempts("task")
@@ -64,6 +66,8 @@ async def test_pool_termination_releases_managed_ref_without_workspace_proof(orc
             work_dir=row.work_dir,
             now=time.time(),
         )
+    # Teardown must observe the active claim, not the pre-claim launch row.
+    row = await db.get_session(row.id)
     lock = BranchLock(db)
     target = BranchKey(repository_id="repo", branch="aq/task")
     fence = await lock.acquire(target, "task")
