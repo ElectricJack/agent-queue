@@ -1,0 +1,29 @@
+{
+  "generic_dependencies": {
+    "src/commands/routing_commands.py::RoutingCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/routing_commands.py::validate_route_preference": "Ordinary task routing input validation against installed harnesses and enabled worker profiles; no integration subject, delivery state, ref mutation or storage writes. Integration-specific routing definitions remain charged independently."
+  },
+  "shared": {
+    "src/commands/routing_commands.py::RoutingCommandsMixin._routing_task_facts": {
+      "baseline_span": [
+        347,
+        383
+      ],
+      "landing_span": [
+        341,
+        372
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/routing_commands.py::TRAIN_INTEGRATION_MODES": {
+      "baseline_span": [
+        69,
+        72
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/routing_commands.py::import from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. The router projects a source-CI repair's stored origin to integration_repair in RoutingCommandsMixin._routing_task_facts; no delivery state, ref mutation or storage write."
+    }
+  }
+}

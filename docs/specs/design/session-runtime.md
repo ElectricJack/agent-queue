@@ -217,6 +217,14 @@ The reconciler builds the **desired set** of named sessions each tick from profi
 `lifecycle: named` (per project where project-scoped) and converges: missing+wanted →
 start (or wake), present+unwanted → drain, config drift → recycle via handoff.
 
+Wait maintenance, including the startup legacy bridge and scheduler wait audit, runs
+in one background task. A cycle waits at most five seconds when starting that task;
+later cycles continue without queueing another pass while it runs. Dead-process
+classification, workspace release and pool starts must continue during a slow pass.
+Shutdown cancels and awaits the background task; durable bridge receipts permit
+restart recovery. Held or refused project bridge passes retry after five minutes,
+while completed project receipts suppress repeat migration.
+
 **The state machine is enforced** (2026-08-27). `update_session` validates every write to
 `state` against the transition table in `session_queries.py` and raises
 `InvalidSessionTransition` on an illegal edge; re-writing the state a row already has is a
@@ -329,6 +337,36 @@ holds, pinned jobs and integration-owned delegates are not automatically requeue
 `aq integration release-owner` previews by default; `--apply` explicitly requests
 the same preservation and release. Command callers must pass `dry_run: false` to
 apply. Preview performs no publication, detach, release or audit writes.
+
+Preservation requires a local task ref and its live, materialized
+`task_branch_origins` record. Each candidate must descend from the recorded filing
+base; every unpublished
+commit must have a committer timestamp at or after the writer's task-session
+attempt start (falling back to `claim_phase_at`, or `started_at` for a task
+session, when no attempt exists). A slot snapshot or HEAD additionally requires
+its sentinel to match task, branch, project and workspace, with an assignment
+at or after that claim. A missing local task ref
+is reported as `skip_preserve` in preview and never replaced with a slot HEAD.
+Unproven unpublished work refuses release as `unproven_task_work`, without
+snapshotting, publishing or detaching; an unrelated detached slot is skipped.
+When a detached slot is skipped because its sentinel does not match or its task
+ref is absent, retain its checkout and disable the released workspace, even if
+clean, so allocation cannot reset unknown commits. Preview reports that retention.
+
+`aq integration restore-task-origin` is an operator/live project supervisor
+control for a contaminated task branch. Preview is the default. Apply requires
+the exact task origin id, released owner fence token, expected remote head and
+a reason. Under the project admission lock and repository mutex, revalidate the
+task/origin/ref binding and released fence, exclude live task writers, locked
+workspaces, checked-out branches and reserved publications, then restore only the
+recorded base SHA with an exact remote lease. Never accept a caller-supplied
+destination or replacement commit. Retain the displaced remote head on an
+immutable recovery ref before rewriting; audit the principal, reason, origin,
+before/after OIDs and fresh fence.
+An existing local ref must equal the observed remote or the origin; repair it
+with an exact compare-and-swap so a retry cannot republish the contamination.
+Do not reset or clean any checkout. A moved remote, origin or fence refuses the
+write; preview leaves refs, fence and audit unchanged.
 
 Claim release also clears the exact old assignment when the task has already
 returned to READY: it matches the releasing session's agent and claim epoch,
@@ -528,6 +566,28 @@ Accounting failures leave the byte checkpoint retryable. On adoption, consumed C
 records supply legacy UUIDs: existing ledger rows seed per-call maxima without modifying
 or deleting the original rows. Historical inflation requires a separate evidenced
 correction; it is never repaired implicitly during ingest.
+
+For retention, calls attributed to sessions stopped for more than 30 days may be
+sealed after their counters have also been untouched for more than 30 days. Sealing
+freezes those historical calls: later observations, including higher counters and
+replays under another AQ session, add no usage. Live/recent calls retain exact maxima.
+The permanent anti-replay fence stores bounded batches of exact usage keys in JSONB
+sets with a GIN containment index. This keeps the identity information needed for
+historical hashes (which cannot be reversed into transcript watermarks), without
+keeping a database row and four counters per call. It is not a probabilistic filter.
+Fences have no session/ledger foreign keys and must never expire with those tables.
+
+The unscheduled `archive_transcript_usage_calls` callable archives eligible snapshots
+to `~/.agent-queue/backups/transcript-usage-calls-archive-<UTC-date>.jsonl.gz`.
+Compression, serialization, filesystem locking and fsync run in a worker thread,
+without an open database transaction. Each bounded deletion transaction rechecks
+session eligibility and exact snapshot equality under row locks, then commits the
+fence and deletion atomically. Concurrent ingestion locks the progress row and checks
+the fence before charging; a replay cannot fall between deletion and fence creation.
+Archive failure leaves database rows intact; a crash after archival can leave duplicate
+archive records, never unarchived deletions. Missing original ledger/session evidence
+is conservatively retained. Scheduling this callable belongs to the general retention
+job once available; this change does not register a scheduled job.
 
 Historical reconciliation is read-only and uses a frozen transcript/ledger window.
 Only unambiguous UUID matches with exact counter agreement and complete call coverage
