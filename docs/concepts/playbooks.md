@@ -10,14 +10,14 @@ Some work should happen consistently without putting policy into a daemon branch
 
 * **Source** is the Markdown file in the vault. Its YAML frontmatter states an id, scope and triggers; its body is human-readable policy. See [source parsing](../../src/playbooks/authoring.py).
 * **Semantic body** is the proposed JSON `rules` and `steps` graph. AQ supplies source identity, version and live dependency fingerprints rather than trusting those values from the proposal. See [proposal construction](../../src/playbooks/proposal.py).
-* **Artifact** is the canonical, SHA-256-addressed V2 JSON definition. It has typed rules, seven possible step kinds, and the command/profile contracts it was compiled against. See [the definition model](../../src/playbooks/definition.py).
+* **Artifact** is the canonical, SHA-256-addressed V2 JSON definition. It has typed rules, eight possible step kinds, and the command/profile contracts it was compiled against. See [the definition model](../../src/playbooks/definition.py).
 * **Activation** selects one artifact at a system, project, or agent-type scope and may enable or disable it. An artifact can exist without being active. See [activation health](../../src/playbooks/activation.py).
 * **Run** is one durable execution of one matching rule, pinned to the artifact hash it started with. Its mutable snapshot, receipts and waits are separate from the immutable artifact. See [run state](../../src/playbooks/run_state.py).
 * **Human gate** is a durable, operator-resolved decision checkpoint. It can cause an event or resume a playbook wait; it is not a task dependency. A dependency controls whether a task is ready, whereas a gate waits for a decision and may be attached to several tasks.
 
 ## A realistic example: route a new task
 
-AQ ships a reviewed system bundle for `default-assignment-routing`, the router every project is bound to unless the local operator re-binds it. On a new data directory, the required-playbook reconciler imports and activates that reviewed bundle if the system activation does not already exist. It leaves an operator's existing activation alone, with one exception: a system activation whose artifact does not grant `task_route_apply` — a router from before mandatory routing — is re-pointed to the shipped artifact. The reviewed policy listens for `task.route_needed`, calls `task_route_plan` with its policy block, asks an LLM to classify the task only when the plan needs it, and calls `task_route_apply`, which refuses every caller except the project's bound router. The orchestrator emits that event only for a queued, unassigned task that still owes a route (`route_source` is `unrouted`, or `legacy` once the router is ready). [The current shipped source](../../src/prompts/default_playbooks/default-assignment-routing.md), [reviewed bundle](../../src/prompts/reviewed_playbooks/default-assignment-routing/), and [required reconciler](../../src/playbooks/required.py) are the evidence for those claims.
+AQ ships a reviewed system bundle for `default-assignment-routing`, the router every project is bound to unless the local operator re-binds it. On a first installation, the required-playbook reconciler imports and activates that reviewed bundle under the installation receipt described below. Ordinary restarts observe existing activations; repairs require an explicit operator command. The reviewed policy listens for `task.route_needed`, calls `task_route_plan` with its policy block, asks an LLM to classify the task only when the plan needs it, and calls `task_route_apply`, which refuses every caller except the project's bound router. The orchestrator emits that event only for a queued, unassigned task that still owes a route (`route_source` is `unrouted`, or `legacy` once the router is ready). [The current shipped source](../../src/prompts/default_playbooks/default-assignment-routing.md), [reviewed bundle](../../src/prompts/reviewed_playbooks/default-assignment-routing/), and [required reconciler](../../src/playbooks/required.py) are the evidence for those claims.
 
 ```mermaid
 flowchart LR
@@ -52,7 +52,72 @@ Options:
 
 ## Inputs and outputs
 
+Artifact compatibility is pinned per definition in optional `required_features`.
+Proposal assembly derives the pins from the typed graph and live command
+contracts: generated command contracts, collection expressions, nested foreach
+graphs, and reads of frozen `context.observed_at` or `context.observation_id`
+require `generated_commands_v1`, `collections_v1`, `nested_foreach_v1`, and
+`observation_context_v1`, respectively. Command steps and LLM tool exposure both
+count. Compiler-supplied pins and `trusted_execution` metadata are discarded.
+Command authorization and private-value policy still come from the server's
+execution contracts; feature support grants no capabilities.
+
+`trusted_execution.state_schema_version` is a strict positive integer derived
+from source frontmatter, defaulting to 1 for state command users. The `state_v1`
+and `script_v1` requirements now have executors. Scripts run as ordinary processes
+with timeout/output caps, optional strict JSON parsing and protected output.
+Source `required_capabilities` is pinned for review, never used to manufacture
+caller authority. Source `scripts` manifests include program/dependencies and
+requested execution policy; only the server resolves digest pins.
+See [authoring and rollout](../guides/playbook-building-blocks.md).
+
+Empty feature and execution metadata are omitted without removing any legacy
+defaults: existing canonical artifact bytes and hashes remain unchanged. Unknown
+or unsupported features produce `unsupported_feature` during validation/import,
+activation, and execution (including pinned dispatch, dry-run, shadow, and resume).
+An affected activation is `invalid` with named feature reasons;
+`playbooks.activation_invalid` explains the upgrade remedy. Compatible sibling
+activations stay ready. Inspection can still load the strict definition.
+
+Upgrade every intended executor before deliberately activating a new-feature
+artifact: older engines reject the additive fields under their strict schema.
+Restart does not refresh installed artifacts. Before rollback, disable affected
+activations and settle or pause their runs, then explicitly restore compatible
+reviewed artifacts; retain additive storage and state. Removing feature pins is
+not a compatibility migration.
+
 A rule has one event trigger, an optional typed guard, and an entry step. Triggers can use an equality/membership filter. Within a run, values resolve from the triggering event, the durable run context, prior declared bindings, and a `foreach` item. Validation rejects unavailable names, invalid event paths, incompatible values, unreachable steps, unsafe loops, undeclared outputs, unsupported command outcomes, excessive schemas, and capability violations rather than guessing that they are safe. [Expressions](../../src/playbooks/expressions.py) and [validation](../../src/playbooks/validation.py) implement these checks.
+
+Collection values compose inside inputs, guards, decisions, prompts, and loop
+collections. Each operand must be a list; use `coalesce` with an empty list when
+an absent or null value should mean “no items”.
+
+| Value type | Fields | Result |
+|---|---|---|
+| `filter` | `collection`, `item_binding`, `predicate` | Items whose typed condition is true, in input order. |
+| `map` | `collection`, `item_binding`, `value` | One resolved value per item, in input order. |
+| `len` | `collection` | The nonnegative item count. |
+| `diff` | `left`, `right`, optional `key_path` | First left items whose identities do not occur on the right, deduplicated in left order. |
+
+A `filter` predicate or `map` body reads its item using `loop_ref`. Its binding is
+local to that body and may shadow an outer expression or `foreach` item without
+changing the outer item or any step result. The collection itself resolves in
+the enclosing scope. `loop_ref` with `index: true` reads the local zero-based
+index. Known array schemas carry their item types through these expressions;
+opaque command results are checked against argument types at runtime.
+
+Without `key_path`, `diff` compares canonical JSON identities: object key order
+is irrelevant, equal numbers such as `1` and `1.0` match, and booleans remain
+distinct from numbers. A dotted `key_path` must exist and identify a scalar on
+every item in both operands. Missing paths and non-scalar identities fail.
+
+Evaluation shares a 100,000-visit budget across all inputs of a step or all cases
+of one decision. Expression depth is limited to 10; each intermediate or final
+collection is limited to 10,000 items and 262,144 encoded JSON bytes. Limits are
+checked during construction. Exhaustion produces a named expression diagnostic
+under `input_resolution_failed` before command dispatch. Graph explanations show
+the predicate, mapped value, and diff key; Advanced retains the canonical typed
+expression, subject to the command's redaction policy.
 
 The V2 step vocabulary is deliberately closed:
 
@@ -135,13 +200,15 @@ The default pipeline source illustrates a different use of a human gate: `propos
 
 ## Shipped policy, local policy, and compatibility
 
-**Shipped required defaults.** `default-assignment-routing` and `provider-usage-probe` are the IDs in `REQUIRED_SYSTEM_PLAYBOOK_IDS`. The reconciler creates a missing system activation, keeps a healthy or disabled one exactly as it is, and re-points an *enabled* one that no longer validates at the freshly imported shipped artifact — as it does an enabled `default-assignment-routing` activation whose artifact does not grant `task_route_apply`, however healthy; the shared defaults below get the same repair. Readiness (`/health`, `/ready`) is recomputed from live activation health on every read and after every activation write, not frozen at startup. An inactive required router retains `task.route_needed` events rather than dropping them. [Required policy handling](../../src/playbooks/required.py) is the source of truth.
+**First installation and its receipt.** An absent or empty vault without a receipt installs exactly six system sources and reviewed bundles: `default-assignment-routing`, `provider-usage-probe`, `provider-failover`, `default-pipeline`, `supervisor-failure-triage`, and `morning-report`. The receipt is `<data_dir>/playbook-installation.json`, outside the vault. Its `activation_pending` attempt is consumed before the first import. A failed or interrupted attempt requires explicit repair; restart never retries it. Deleting a source, reviewed bundle, or even the entire vault does not authorize reinstallation while that receipt remains. A pre-existing nonempty vault gets a consumed receipt without installation, activation, or playbook migration. Keep the receipt when backing up or restoring the data directory. [Required policy handling](../../src/playbooks/required.py) is the source of truth.
 
-**Shipped shared defaults.** `blocked-task-escalation` and `default-pipeline` are the IDs in `DEFAULT_SYSTEM_PLAYBOOK_IDS`. They are activated once, on the first start that finds no activation for them, and are never re-enabled after an operator disables one — so unlike the required router they are not a readiness requirement. The default pipeline describes spec approval → spec-ingest task and proposal-ready → human gate → task-batch commit. It is not the retired review/triage workflow.
+**Shipped required defaults.** `default-assignment-routing`, `provider-usage-probe`, and `provider-failover` are the IDs in `REQUIRED_SYSTEM_PLAYBOOK_IDS`. Ordinary startup observes missing, disabled and stale activations without repairing them. Readiness (`/health`, `/ready`) is recomputed from live activation health on every read and after every activation write. An inactive required router retains `task.route_needed` events rather than dropping them. `aq doctor --check playbooks.required` reports the missing guarantees without writing. The explicit `aq doctor --check playbooks.required --fix` restores the three required reviewed bundles and repairs their activations, including re-enabling disabled required rows. Compatible operator artifacts remain active. It does not activate optional defaults or replace authored sources.
+
+**Shipped shared defaults.** `supervisor-failure-triage` and `default-pipeline` are the IDs in `DEFAULT_SYSTEM_PLAYBOOK_IDS`. They activate only during the receipt's initial attempt. Later restart and required-policy repair preserve an operator's removal or disablement. `morning-report` is installed but remains inactive until the operator opts in. Project defaults remain code-owned creation/installer settings. The default pipeline describes spec approval → spec-ingest task and proposal-ready → human gate → task-batch commit.
 
 **Shipped sources, not necessarily active policy.** Integration lifecycle sources and the agent-queue project sources ship as Markdown policies, and `ci-main-sentinel` also ships its reviewed bundle so an operator can import it. Their presence does not prove an installation activated them: a project-scoped policy is always activated per project, by hand.
 
-**Shipped bundles reach an install only through the vault.** `v2-import` refuses every path outside the vault root, so a reviewed bundle is importable only once seeding has written it to `vault/reviewed-playbooks/<id>/`. Seeding copies every directory under [`src/prompts/reviewed_playbooks/`](../../src/prompts/reviewed_playbooks/) on every start and *refreshes* a vault copy that differs from what ships, which is how a bundle rebuilt against a changed command contract or profile grant reaches an existing install. Those directories are daemon-owned for every id AQ ships, because a reviewed artifact freezes the capability fingerprint of every profile it names and a copy seeded by an older release can never validate once those grants move. A refresh moves the old directory aside to `<id>.bak-<epoch>` and renames a staged copy of the shipped recording into place; files the operator kept beside the recording are carried into the new copy. Operator variants belong under their own id, which seeding never touches. `aq doctor --check playbooks.reviewed_bundles` reports a vault copy that is missing or drifted.
+**Explicit reviewed-bundle refresh.** `v2-import` accepts bundles inside the vault root. Ordinary restart never installs or refreshes them. `aq doctor --check playbooks.reviewed_bundles` reports drift among installed shipped bundles without writing. Its explicit `--fix` refreshes those installed copies, preserves superseded bytes in `<id>.bak-<epoch>`, carries operator notes into the replacement, and repairs required activations when a bundle was refreshed. It leaves uninstalled optional bundles absent and preserves optional activation choices. Use the required-policy fix above when required bundles themselves are missing. The [isolated acceptance kit](../guides/e2e-swarm.md#deliberate-policy-installation-and-project-setup) records these boundaries against real PostgreSQL and daemons.
 
 **Configured local policy.** Activations are durable operator state. A project activation, enabled bit, profile availability, integration policy, and a vault copy can differ from repository sources. Ask `aq playbook activation-health`, `aq playbook list`, and `aq playbook artifacts` rather than inferring policy from a checked-out Markdown file.
 
@@ -154,7 +221,7 @@ The default pipeline source illustrates a different use of a human gate: `propos
 | Symptom | Meaning | Recovery |
 |---|---|---|
 | A trigger appears to do nothing | No enabled, healthy artifact could execute it, or its filter/guard did not match. | Run `aq playbook activation-health`, then `aq playbook pending-events`; use `pending-event-action --action dispatch` only after fixing the cause. |
-| Activation is `stale_contract` | A referenced command contract or profile capability fingerprint changed after compilation. The activation stops executing; it does not run the old behaviour. | For a system playbook AQ ships, restart the daemon (or `aq doctor --check playbooks.reviewed_bundles --fix`): the shipped bundle is re-seeded and an enabled system activation is re-pointed at it. If that import fails too, the readiness diagnostic names the contract or profile that moved — usually a vault profile whose grants differ from the shipped one. For a project-scoped bundle AQ ships (`ci-main-sentinel`), which nothing activates automatically, refresh the vault copy the same way, then `aq playbook v2-import --path reviewed-playbooks/<id>` and `aq playbook activate --playbook-id <id> --artifact-sha256 sha256:<64-hex>` — the artifact carries its own scope, and `--enabled` defaults to true. For local policy, re-propose/review/import against current contracts, inspect `artifact-diff`, and activate the compatible artifact. |
+| Activation is `stale_contract` | A referenced command contract or profile capability fingerprint changed after compilation. The activation stops executing. | Restart observes the problem. For required system policy, run `aq doctor --check playbooks.required --fix`. For installed shipped bundles, use `aq doctor --check playbooks.reviewed_bundles --fix` to refresh recorded bytes; optional/project activations still require deliberate import and activation. If import fails, inspect the named contract or profile. For local policy, re-propose/review/import against current contracts, inspect `artifact-diff`, and activate the compatible artifact. |
 | Activation is `invalid` or `question_required` | Validation errors or unresolved compile questions block execution. | Run `v2-validate` on the artifact, correct the source/semantic body, and repeat review/import. |
 | An artifact is `unavailable` | The activated artifact bytes are missing, unreadable, or fail their hash check. | Restore/re-import the exact reviewed bundle; do not replace bytes under the same hash. |
 | A run paused unexpectedly | A `wait` step or child task requires an external event/decision. | Inspect `run-overlay` for the pinned artifact and receipts; resolve the declared gate or use `aq playbook resume` where the policy expects manual input. |

@@ -256,7 +256,7 @@ async def test_private_repository_pr_ci_merge_workflow_has_credential_parity(wor
     with pytest.raises(GitHubAccessError):
         await client.pull_request("https://github.com/foreign/repo/pull/7")
     assert await client.merge_pull_request(
-        PR_URL, method="squash", expected_head_oid=HEAD, expected_base_ref="main"
+        PR_URL, method="merge", expected_head_oid=HEAD, expected_base_ref="main"
     ) == MERGE
     assert await client.exact_head_ref("aq/task") is None
     assert json.loads(state_path.read_text())["heads"]["main"] == MERGE
@@ -328,10 +328,11 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
     if mode == "existing_login":
         pytest.skip("App token expiry/rejection is the subject")
     original_env = dict(env)
+    access._binding_clock = lambda: now[0]
     git = GitManager(github_access=access)
     poller = GitHubReviewPoller(None, None, git)
     url = "https://github.com/acme/widgets.git"
-    first = await poller._repository(url)
+    first = await poller._repository(url, now[0])
     assert first.binding == REPOSITORY
 
     now[0] += 3601
@@ -340,7 +341,7 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
         state["reject_app_generations"] = ["2"]
         state_path.write_text(json.dumps(state))
     poller._repositories.clear()  # A new poll tick binds the repository again.
-    refreshed = await poller._repository(url)
+    refreshed = await poller._repository(url, now[0])
     assert await refreshed.client.exact_head_ref("main") == BASE
 
     # This is the credential-selection path used by guarded worker Git pushes.
@@ -351,7 +352,8 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
     assert provider.calls == [REPOSITORY] * generation
     events = _events(log_path)
     assert [event["generation"] for event in events] == (
-        ["1", "2", "3", "3", "3"] if reject_refreshed else ["1", "2", "2", "2"]
+        # The push-destination rebind is inside the re-verify TTL: no extra call.
+        ["1", "2", "3", "3"] if reject_refreshed else ["1", "2", "2"]
     )
     assert all(event["kind"] == "app" and event["config_isolated"] for event in events)
     assert all(not event["has_secondary_token"] for event in events)

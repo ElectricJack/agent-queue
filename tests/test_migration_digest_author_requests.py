@@ -90,7 +90,8 @@ async def test_upgrade_preserves_reports_and_admits_digest_requests():
 
 async def test_upgrade_is_idempotent_and_downgrade_restores_report_kinds():
     dsn = await legacy_database("digestkindtwice")
-    for command in (("upgrade", REVISION), ("stamp", PRECEDING), ("upgrade", "head")):
+    # Replay this revision without rewinding later human-evidence migrations.
+    for command in (("upgrade", REVISION), ("stamp", PRECEDING), ("upgrade", REVISION)):
         result = alembic(dsn, *command)
         assert result.returncode == 0, result.stderr
     result = alembic(dsn, "downgrade", PRECEDING)
@@ -99,6 +100,10 @@ async def test_upgrade_is_idempotent_and_downgrade_restores_report_kinds():
     await insert_request(dsn, "morning")
     with pytest.raises(asyncpg.CheckViolationError, match=CONSTRAINT):
         await insert_request(dsn, "digest")
+
+    result = alembic(dsn, "upgrade", "head")
+    assert result.returncode == 0, result.stderr
+    await insert_request(dsn, "digest")
 
 
 async def test_downgrade_refuses_to_discard_existing_digest_requests():

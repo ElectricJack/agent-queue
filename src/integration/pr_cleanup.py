@@ -25,9 +25,14 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.delivery_branches import ACTIVE_BATCH_LIFECYCLES, branch_of
+from src.integration.delivery_path import lacks_pull_request_host
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
+from src.logging_config import log_handled
+from src.projects.github import GitHubError
 
 logger = logging.getLogger(__name__)
 SWEEP_PRINCIPAL = "integration-pr-cleanup"
@@ -41,6 +46,9 @@ async def open_aq_pull_requests(db, git, project_id):
     repo_id = getattr(project, "integration_repository_id", None)
     repo = await db.get_repo(repo_id) if repo_id else None
     if repo is None or repo.project_id != project_id or not repo.url:
+        return []
+    if lacks_pull_request_host(repo.url):
+        # A bare remote on disk (a development project) has no PRs to inventory.
         return []
     binding = await git.bind_github_repository(repo.url)
     client = git._github_client(binding)
@@ -125,6 +133,9 @@ class PullRequestReconciler:
             try:
                 async with asyncio.timeout(self.item_timeout_seconds):
                     self.pending.extend(await open_aq_pull_requests(self.db, self.git, project_id))
+            except (GitError, GitHubError, GitHubAccessError) as exc:
+                log_handled(logger, logging.WARNING, "Could not inventory PRs for %s",
+                            project_id, exc=exc)
             except Exception:
                 logger.warning("Could not inventory PRs for %s", project_id, exc_info=True)
             self.projects.popleft()
