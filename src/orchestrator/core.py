@@ -1125,9 +1125,11 @@ class Orchestrator(
 
         return None, unblocked
 
-    async def pause_task(self, task_id: str) -> None:
+    async def pause_task(self, task_id: str, *, require_workspace_release=False) -> None:
         async with self._task_control_lock(task_id):
-            snapshot = await self.db.pause_task(task_id)
+            snapshot = await self.db.pause_task(
+                task_id, require_workspace_release=require_workspace_release,
+            )
             await self._finish_manual_pause(task_id, snapshot)
 
     async def resume_task(
@@ -3412,6 +3414,9 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        maintenance = vars(self).get("_retained_store_maintenance")
+        if maintenance is not None:
+            await maintenance.stop()
         if self._promotion_flow_check is not None and not self._promotion_flow_check.done():
             self._promotion_flow_check.cancel()
             await asyncio.wait({self._promotion_flow_check}, timeout=5.0)
