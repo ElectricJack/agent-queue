@@ -10,6 +10,7 @@ import uuid
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.task_queries import RECOVERY_FAILURE_AT_KEY, STALE_OPEN_ATTENTION
 from src.database.tables import (
@@ -829,8 +830,9 @@ class TaskRecoveryQueryMixin:
 
         Ordinary status projection never releases a decided hold. Restart/reopen
         and resume intentionally retire the old failure, including when a held
-        task was already projected to READY. Preserve its diagnosis and budget instead of deleting
-        the incident, and archive its notification before claim waiters wake.
+        task was already projected to READY. An operator close (--done, --obsolete) retires
+        it the same way. Preserve its diagnosis and budget instead of deleting
+        the incident, and archive its notifications before claim waiters wake.
         Return whether a hold was released so READY-to-READY can announce it too.
         """
         raw = await conn.scalar(select(task_metadata.c.value).where(
@@ -863,9 +865,11 @@ class TaskRecoveryQueryMixin:
             "retry_blocker": reason,
             "next_action": reason,
         }, conn=conn)
-        await conn.execute(update(messages).where(
-            messages.c.id == "msg-" + incident["id"],
-        ).values(archived_at=now))
+        await conn.execute(update(messages).where(messages.c.id.in_([
+            "msg-" + incident["id"],
+            f"msg-{incident['id']}-hold-expired-supervisor-{incident.get('project_id')}",
+            f"msg-{incident['id']}-hold-expired-supervisor-global",
+        ])).values(archived_at=now))
         return held
 
     async def _queue_task_recovery_notification(self, task_id):
@@ -985,6 +989,7 @@ class TaskRecoveryQueryMixin:
                 "title": task["title"],
                 "session_id": attempt["session_id"] if attempt is not None else None,
                 "attempt_id": attempt["id"] if attempt is not None else None,
+                "claim_epoch": task["claim_epoch"],
                 "reason": reason,
                 "end_reason": attempt["end_reason"] if attempt is not None else None,
                 "runtime_seconds": (
@@ -1018,7 +1023,7 @@ class TaskRecoveryQueryMixin:
                 }
             body = _recovery_message_body(facts)
             now = time.time()
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id="msg-" + incident_id,
                     project_id=task["project_id"],
@@ -1210,9 +1215,9 @@ class TaskRecoveryQueryMixin:
             incident = meta.get(INCIDENT_KEY) or {}
             if (ask_decision_id and incident.get("id") == incident_id
                     and incident.get("ask_decision_id") == ask_decision_id):
-                return {"task_id": task_id, "incident_id": incident_id,
+                return {"task_id": task_id, "incident_id": incident_id, "replayed": True,
                         "decision": incident["decision"], "status": task["status"],
-                        "decision_id": ask_decision_id, "replayed": True}
+                        "decided_at": incident["decided_at"], "decision_id": ask_decision_id}
             if ask_decision_id:
                 from src.asks.models import digest
                 owner = await self._recovery_owner(conn, task)
@@ -1220,6 +1225,8 @@ class TaskRecoveryQueryMixin:
                     raise ValueError("Recovery source meaning or owner changed since the human decision")
                 if owner["kind"] in {"integration_operation", "retired"}:
                     raise ValueError("Recovery is no longer owned by this supervisor")
+            if task["status"] == TaskStatus.COMPLETED.value:
+                raise ValueError(f"Task {task_id} is COMPLETED; its recovery incident is closed")
             releasing_hold = (
                 decision in ("retry", "release")
                 and expected_hold_at is not None
@@ -1239,6 +1246,10 @@ class TaskRecoveryQueryMixin:
                     raise ValueError("Hold release requires explicit operator authority and exact hold")
                 if task["status"] not in ("READY", "BLOCKED", "FAILED", "PAUSED"):
                     raise ValueError("Cannot release a hold on an active or completed task")
+                if task["assigned_agent_id"]:
+                    await self._clear_stopped_recovery_assignment_on(
+                        conn, task, meta, attempt, incident, stopped_session,
+                    )
             elif not _incident_is_current(task, meta, attempt, incident):
                 raise ValueError("Task or execution attempt changed; incident is stale")
             elif incident.get("reason") != incident_reason(meta, task):
@@ -1364,11 +1375,68 @@ class TaskRecoveryQueryMixin:
         elif decision == "release" and task["status"] == "READY":
             await self._notify_ready([(task_id, "recovery_hold_released")])
         return {
-            "task_id": task_id,
-            "incident_id": incident_id,
-            "decision": decision,
+            "task_id": task_id, "incident_id": incident_id, "decision": decision,
             "status": "READY" if decision == "retry" else task["status"],
+            # A later release must name this exact hold as expected_hold_at.
+            "decided_at": now,
         }
+
+    async def _clear_stopped_recovery_assignment_on(
+        self, conn, task, meta, attempt, incident, stopped_session,
+    ):
+        """Repair an old assignment without changing status or releasing a checkout.
+
+        The caller holds the task row and the exact recovery hold. Provider
+        evidence was gathered before the transaction; revalidate its instance,
+        attempt and claim generation here before removing any authority.
+        """
+        from src.integration.delegate_release import live_integration_owner
+
+        if await live_integration_owner(conn, [task["id"]]) is not None:
+            return
+        owner = await conn.scalar(select(integration_branch_owners.c.id).where(
+            or_(integration_branch_owners.c.owner_id == task["id"],
+                integration_branch_owners.c.session_id == incident.get("session_id"),
+                integration_branch_owners.c.workspace_id.in_(select(workspaces.c.id).where(
+                    workspaces.c.locked_by_task_id == task["id"],
+                ))),
+            integration_branch_owners.c.handoff_state != "released",
+        ).limit(1))
+        if owner is not None:
+            return
+        if stopped_session and "error" in stopped_session:
+            raise ValueError(stopped_session["error"])
+        row = await _recovery_row(conn, select(sessions).where(
+            sessions.c.id == incident.get("session_id"),
+        ).with_for_update())
+        if (
+            not row or not attempt
+            or stopped_session != {"id": row["id"], "instance_token": row["instance_token"]}
+            or row["state"] != "stopped"
+            or row["desired_state"] != "stopped"
+            or row["agent_id"] != task["assigned_agent_id"]
+            or attempt["agent_id"] != row["agent_id"]
+            or attempt["id"] != incident.get("attempt_id")
+            or attempt["session_started_at"] != row["started_at"]
+            or _incident_id(task, attempt, _identity_reason(incident), meta) != incident["id"]
+            or (row["lifecycle"] == "pool" and row["last_claim_epoch"] != task["claim_epoch"]
+                # The old release bug also erased last_claim_epoch. The task's
+                # own holder record plus the fenced incident can prove that case.
+                and not (row["last_claim_epoch"] is None
+                         and meta.get("claimed_by_session") == row["id"]))
+        ):
+            raise ValueError("The exact stale assignment's stopped worker must be confirmed")
+        if await conn.scalar(select(sessions.c.id).where(
+            or_(sessions.c.task_id == task["id"],
+                sessions.c.agent_id == task["assigned_agent_id"]),
+            or_(sessions.c.state != "stopped", sessions.c.desired_state == "running"),
+        ).limit(1)) is not None:
+            raise ValueError("Task or assigned agent still has a live or retained session")
+        await conn.execute(update(tasks).where(
+            tasks.c.id == task["id"],
+            tasks.c.assigned_agent_id == row["agent_id"],
+            tasks.c.claim_epoch == task["claim_epoch"],
+        ).values(assigned_agent_id=None))
 
     async def _guard_operator_handoff(
         self, conn, task, meta, attempt, incident, stopped_session, *, releasing_hold=False,
