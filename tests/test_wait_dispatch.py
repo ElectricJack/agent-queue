@@ -354,6 +354,40 @@ async def test_slow_batches_commit_only_processed_prefix_and_renew_before_contin
                for row in await records(runtime_env, wait_source_events))
 
 
+async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_event(runtime_env):
+    env = runtime_env
+    for n in range(3):
+        await env.db.wait_source_commit(source_key='test:prefix', generation=0,
+            revision=str(n), outcome_ref=f'test:{n}', payload={})
+    expected = sorted(row['seq'] for row in await records(env, wait_source_events))
+    service = runtime(env)
+    seen = []
+
+    async def dispatch(conn, event):
+        seen.append(event['seq'])
+        if event['seq'] == expected[1]:
+            raise RuntimeError('second event failed')
+
+    service.listener._dispatch = dispatch
+    with pytest.raises(RuntimeError, match='second event failed'):
+        await service.listener.tick()
+    cursor = (await records(env, wait_listener_cursors))[0]
+    assert cursor['last_seq'] == expected[0]
+    rows = sorted(await records(env, wait_source_events), key=lambda row: row['seq'])
+    assert rows[0]['dispatched_at'] is not None
+    assert all(row['dispatched_at'] is None for row in rows[1:])
+    await service.lease(release=True)
+    restarted = runtime(env)
+
+    async def replay(conn, event):
+        seen.append(event['seq'])
+
+    restarted.listener._dispatch = replay
+    assert await restarted.listener.tick()
+    assert seen == [expected[0], expected[1], expected[1], expected[2]]
+    assert (await records(env, wait_listener_cursors))[0]['last_seq'] == expected[-1]
+
+
 async def test_deadline_command_can_exceed_renewal_cadence(runtime_env):
     service = runtime(runtime_env)
     service.listener.renewal_seconds = 0.01

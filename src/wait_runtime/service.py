@@ -202,17 +202,20 @@ class WaitService:
         # listener, but retain the service task for a later project canary.
         while not await self.processing_enabled():
             await asyncio.sleep(self.listener.renewal_seconds)
-        if self.enabled:
-            await self.startup_bridge()
         try:
             async with asyncio.TaskGroup() as group:
                 maintenance = group.create_task(self.maintain())
                 observations = group.create_task(self.observe_sources())
+                # Legacy adoption may wait on graph/owner locks. Persisted
+                # continuations must begin retrying immediately after restart.
+                bridge = group.create_task(self._run_bridge()) if self.enabled else None
                 try:
                     await self.listener.run()
                 finally:
                     maintenance.cancel()
                     observations.cancel()
+                    if bridge is not None:
+                        bridge.cancel()
         finally:
             await self.lifecycle.stop()
 
