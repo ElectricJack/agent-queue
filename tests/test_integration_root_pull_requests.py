@@ -23,10 +23,11 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.git.manager import GitError
 from src.integration.root_pull_requests import (
     REDRIVE_EVENT,
+    EpicPullRequestService,
     RootDeliveryRedrive,
     RootPullRequestReconciler,
 )
@@ -124,6 +125,24 @@ async def test_reconciler_opens_the_pr_a_completed_leaf_root_lacks(db):
     assert await _pr_url(db, "r1") == PR
 
 
+async def test_stored_closed_pr_reports_named_blocker_and_recovers_when_reopened(db):
+    await _root(db, pr_url=PR)
+    git = _git()
+    git.bind_github_repository.return_value = GitHubRepositoryBinding(123, "o/r")
+    client = AsyncMock()
+    client.pull_request.return_value = {"state": "closed"}
+    git._github_client = lambda binding: client
+    service = EpicPullRequestService(db, git_manager=git)
+    for _ in range(2):
+        result = await service.open_for_epic("r1")
+        assert result["outcome"] == "pr_closed" and result["pr_url"] == PR
+    assert await _pr_url(db, "r1") == PR
+    git.acreate_pr.assert_not_awaited()
+    client.pull_request.return_value = {"state": "open"}
+    assert (await service.open_for_epic("r1"))["outcome"] == "already_open"
+    git.acreate_pr.assert_not_awaited()
+
+
 async def test_reconciler_selects_only_pr_ready_train_roots(db):
     await _root(db, "at-base", checkpoint_sha=BASE)
     await _root(db, "running", status="IN_PROGRESS")
@@ -153,6 +172,36 @@ async def test_reconciler_selects_only_pr_ready_train_roots(db):
     await RootPullRequestReconciler(db, git).tick(100.0)
 
     git.acreate_pr.assert_not_awaited()
+
+
+@pytest.mark.parametrize("disposition", ["obsolete", "retire", None])
+async def test_epic_pr_preserves_archived_children_but_only_requires_delivery_archives(
+    db, disposition
+):
+    await _root(db)
+    async with db.immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="r1.1", project_id="p", repo_id="repo", title="obsolete plan",
+            description="", status="BLOCKED", parent_task_id="r1",
+            created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "r1",
+        ).values(verified_sha=HEAD))
+    assert await db.archive_task(
+        "r1.1", abandon_undelivered=disposition is not None, disposition=disposition,
+        abandon_reason="plan no longer applies", archive_reason="plan no longer applies",
+    )
+    git = _git()
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("r1")
+    if disposition is None:
+        assert result["outcome"] == "children_incomplete" and result["pending"] == ["r1.1"]
+        git.acreate_pr.assert_not_awaited()
+    else:
+        assert result["outcome"] == "opened"
+        assert "`r1.1`" in git.acreate_pr.await_args.kwargs["body"]
+    assert (await db.get_archived_task("r1.1"))["status"] == "BLOCKED"
+    assert await db.get_task_completion("r1.1") is None
 
 
 async def test_reconciler_ignores_a_project_outside_train_mode(db):
@@ -334,7 +383,7 @@ async def test_redrive_reports_a_leaf_whose_close_recorded_no_head(db):
     assert "origin base" in result["reason"]
 
 
-async def test_redrive_leaves_an_unverified_epic_to_its_parent_integration(db):
+async def test_redrive_directs_an_unverified_root_to_the_train(db):
     await _root(db, "e1")
     async with db.immediate() as conn:
         await conn.execute(
@@ -350,6 +399,9 @@ async def test_redrive_leaves_an_unverified_epic_to_its_parent_integration(db):
     assert result["outcome"] == "blocked"
     assert result["kind"] == "parent"
     assert "aggregate verification" in result["reason"]
+    assert "integration train" in result["reason"]
+    assert "aq integration reverify-epic e1" in result["reason"]
+    assert "parent integration run" not in result["reason"]
     git.bind_github_repository.assert_not_awaited()
 
 
