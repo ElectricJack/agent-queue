@@ -252,7 +252,10 @@ async def test_active_legacy_session_wins_over_linked_history(handler):
     assert row["current_task_id"] == "task"
 
 
-async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, monkeypatch):
+@pytest.mark.parametrize("active_status", ["ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING"])
+async def test_roster_reads_only_active_tasks_and_keeps_current_work(
+    handler, monkeypatch, active_status
+):
     """A large backlog of idle tasks is not hydrated for the roster (wise-ember.16)."""
     from src.models import AgentState, SessionRecord, Task, TaskStatus
     await handler.db.create_project(Project(id="p", name="Project"))
@@ -260,13 +263,18 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     await handler.db.create_agent(Agent(id="b", name="Bea", profile_id="coder"))
     await handler.db.create_task(Task(
         id="task", project_id="p", title="Current work", description="Work",
-        status=TaskStatus.IN_PROGRESS, assigned_agent_id="a",
+        status=TaskStatus(active_status), assigned_agent_id="a",
     ))
     # Bea's pointer names a finished task: a non-active row reads as no task.
     await handler.db.create_task(Task(
         id="done", project_id="p", title="Finished", description="Work",
         status=TaskStatus.COMPLETED, assigned_agent_id="b",
     ))
+    for status in (TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING):
+        await handler.db.create_task(Task(
+            id=status.value, project_id="p", title="Continuation", description="Work",
+            status=status,
+        ))
     for index in range(5):
         await handler.db.create_task(Task(
             id=f"backlog-{index}", project_id="p", title="Backlog", description="Work",
@@ -294,7 +302,9 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     assert everyone["a"]["current_task_title"] == "Current work"
     assert everyone["b"]["current_task_id"] is None
     assert reads and all(
-        statuses == {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+        statuses == {
+            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+        }
         and ids == ["task"]
         for statuses, ids in reads
     )
@@ -332,6 +342,52 @@ async def test_session_roster_preserves_unlinked_and_multiple_executions(handler
     assert sessions["worker"]["last_activity"] == 2 and sessions["worker"]["uptime_seconds"] > 0
     project = await handler._cmd_list_agents({"project_id": "p", "include_stopped": True})
     assert {row["session_id"] for row in project["sessions"]} == set(sessions) - {"global"} | {"stopped"}
+
+
+async def test_all_running_project_supervisors_are_selectable_without_agent_rows(handler):
+    import time
+
+    from src.api.auth import SessionTokenStore
+    from src.api.models.agent import AgentSummary
+    from src.models import SessionRecord
+
+    store = handler.orchestrator.token_store = SessionTokenStore(handler.db)
+    now = time.time()
+    for number in range(13):
+        project_id = f"project-{number}"
+        await handler.db.create_project(Project(id=project_id, name=project_id))
+        await handler.db.create_session(SessionRecord(
+            id=f"sup-{number}", name=f"n-supervisor--{project_id}", project_id=project_id,
+            profile_id="supervisor", lifecycle="named", harness="codex", provider="tmux",
+            llm_provider="openai", model="launch-model", intelligence_class="standard-high",
+            state="running", work_dir="/tmp", epoch="e", instance_token=f"i-{number}",
+            started_at=now - 300, last_activity=now - 60,
+        ))
+    store.record_auth_result("sup-3", 401)
+    store.record_auth_result("sup-4", 200)
+    result = await handler._cmd_list_agents({})
+    assert len(result["agents"]) == 13
+    rows = {row["project_id"]: AgentSummary.model_validate(row) for row in result["agents"]}
+    assert rows["project-3"].auth_health.state == "failed"
+    assert rows["project-4"].auth_health.state == "healthy"
+    assert rows["project-5"].auth_health.state == "unknown"
+    for project_id, row in rows.items():
+        assert row.session_backed and row.role == "supervisor"
+        assert row.id == f"session:{row.session_id}"
+        assert row.session_address == f"supervisor-{project_id}"
+        assert project_id in row.name
+        assert row.harness == "codex" and row.model == "launch-model"
+        assert row.idle_seconds >= 60 and row.last_activity == now - 60
+    filtered = await handler._cmd_list_agents({"project_id": "project-3"})
+    assert [row["session_id"] for row in filtered["agents"]] == ["sup-3"]
+    assert await handler.db.list_agents() == []
+    # A linked execution is represented once, and stopped supervisors disappear.
+    await handler.db.create_agent(Agent(id="linked", name="Linked supervisor", profile_id="supervisor", role="supervisor"))
+    await handler.db.update_session("sup-3", agent_id="linked")
+    await handler.db.update_session("sup-5", state="stopped")
+    linked = await handler._cmd_list_agents({})
+    assert sum(row["session_id"] == "sup-3" for row in linked["agents"]) == 1
+    assert not any(row["session_id"] == "sup-5" for row in linked["agents"])
 
 
 @pytest.mark.parametrize(("title", "role"), [
@@ -454,7 +510,7 @@ async def test_delete_removes_idle_agent_from_flock_but_retains_identity(handler
     delete = getattr(handler, "_cmd_delete_agent", None)
     assert delete is not None, "the flock needs an explicit delete command"
     result = await delete({"agent_id": "a"})
-    assert result == {"deleted": "a", "name": "Ada"}
+    assert result == {"success": True, "deleted": "a", "name": "Ada"}
     assert (await handler.db.get_agent("a")).deleted_at is not None
     assert (await handler._cmd_list_agents({}))["agents"] == []
     assert "error" in await handler._cmd_get_agent({"agent_id": "a"})

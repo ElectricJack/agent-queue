@@ -225,13 +225,10 @@ OUTCOME_DETAILS: Mapping[tuple[Primitive, str], frozenset[str]] = {
 
 #: The existing command contracts each phase-1 adapter wraps "as they are"
 #: (§6 phase 1).  The ports add no command surface of their own: these
-#: commands, their arguments and their outcomes stay the public contract until
-#: phase 4 consolidates them.
+#: retained commands keep their argument and outcome contracts. Legacy sealing,
+#: candidate construction and publication have been retired.
 PHASE1_ADAPTED_COMMANDS: Mapping[Primitive, tuple[str, ...]] = {
-    Primitive.SEAL: ("integration_seal",),
-    Primitive.GIT_MERGE_MEMBERS: ("integration_build_candidate",),
     Primitive.CI_OBSERVE: ("integration_ci_evidence",),
-    Primitive.GIT_PUBLISH: ("integration_promote_main",),
     Primitive.WRITER_FILE: ("integration_repair_start", "integration_repair_dispatch"),
     Primitive.EJECT: ("integration_eject",),
     Primitive.CLEANUP: ("integration_cleanup",),

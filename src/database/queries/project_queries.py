@@ -31,6 +31,7 @@ from src.database.tables import (
     token_ledger,
     workspaces,
 )
+from src.database.tables import sessions
 from src.models import Project, ProjectConstraint, ProjectStatus
 from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
@@ -150,6 +151,7 @@ class ProjectQueryMixin:
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
                     preferred_provider=project.preferred_provider,
+                    supervisor_enabled=project.supervisor_enabled,
                     # Never unbound (routing spec §8): the command layer passes
                     # ``routing.default_router``; a caller that passes nothing
                     # gets that key's default.
@@ -192,54 +194,63 @@ class ProjectQueryMixin:
     async def list_projects(
         self,
         status: ProjectStatus | None = None,
+        *,
+        include_admission: bool = False,
     ) -> list[Project]:
         """List all projects, optionally filtered by status."""
         stmt = select(projects)
+        if include_admission:
+            from src.integration.admission import project_admission_required
+
+            stmt = stmt.add_columns(project_admission_required(projects).label("source_admission"))
         if status:
             stmt = stmt.where(projects.c.status == status.value)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_project(r) for r in result.mappings().fetchall()]
+            found = []
+            for row in result.mappings().fetchall():
+                project = self._row_to_project(row)
+                if include_admission:
+                    project._source_admission_required = row["source_admission"]
+                found.append(project)
+            return found
 
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""
         control_fields = {
+            "storage_binding",
             "hierarchical_integration_desired_mode",
             "hierarchical_integration_draining",
             "hierarchical_integration_generation",
         }
         if control_fields & kwargs.keys():
             raise ValueError("integration rollout state requires the generation CAS helper")
-        values = {}
-        for key, value in kwargs.items():
-            if isinstance(value, ProjectStatus):
-                value = value.value
-            values[key] = value
+        values = {
+            key: value.value if isinstance(value, ProjectStatus) else value
+            for key, value in kwargs.items()
+        }
         async with self._engine.begin() as conn:
-            if {
-                "hierarchical_integration_mode",
-                "integration_repository_id",
-            } & values.keys():
-                current = (
-                    (await conn.execute(select(projects).where(projects.c.id == project_id)))
-                    .mappings()
-                    .one_or_none()
-                )
+            if {"hierarchical_integration_mode", "integration_repository_id"} & values.keys():
+                result = await conn.execute(select(projects).where(projects.c.id == project_id))
+                current = result.mappings().one_or_none()
                 if current is None:
                     return
+                proposed = {**current, **values}
                 await self._validate_hierarchical_integration_project(
-                    conn,
-                    project_id,
-                    values.get(
-                        "hierarchical_integration_mode",
-                        current["hierarchical_integration_mode"],
-                    ),
-                    values.get(
-                        "integration_repository_id",
-                        current["integration_repository_id"],
-                    ),
+                    conn, project_id,
+                    proposed["hierarchical_integration_mode"],
+                    proposed["integration_repository_id"],
                 )
             await conn.execute(update(projects).where(projects.c.id == project_id).values(**values))
+            if values.get("supervisor_enabled") is False:
+                # Persist intent with the setting. The reconciler owns stopping
+                # the instance and waits for the current turn to finish.
+                await conn.execute(update(sessions).where(
+                    sessions.c.project_id == project_id,
+                    sessions.c.lifecycle == "named",
+                    sessions.c.name == "n-supervisor--" + project_id,
+                ).values(desired_state="stopped"))
+                await self.redirect_disabled_supervisor_messages(conn=conn)
 
     @staticmethod
     async def _validate_hierarchical_integration_project(
@@ -428,9 +439,6 @@ class ProjectQueryMixin:
     @staticmethod
     def _row_to_project(row) -> Project:
         """Convert a database row to a Project model."""
-        channel_id = row.get("discord_channel_id")
-        if not channel_id:
-            channel_id = row.get("discord_control_channel_id")
         return Project(
             id=row["id"],
             name=row["name"],
@@ -439,12 +447,12 @@ class ProjectQueryMixin:
             status=ProjectStatus(row["status"]),
             total_tokens_used=row["total_tokens_used"],
             budget_limit=row["budget_limit"],
-            discord_channel_id=channel_id,
+            discord_channel_id=row.get("discord_channel_id") or row.get("discord_control_channel_id"),
             repo_url=row["repo_url"] if row.get("repo_url") else "",
-            repo_default_branch=row["repo_default_branch"]
-            if row.get("repo_default_branch")
-            else "main",
+            repo_default_branch=row.get("repo_default_branch") or "main",
             preferred_provider=row.get("preferred_provider"),
+            supervisor_enabled=bool(row.get("supervisor_enabled", False)),
+            storage_binding=row.get("storage_binding"),
             # NOT NULL; an empty binding is read as stored, so doctor
             # (``routing.bypassed``) sees the project as unbound.
             assignment_playbook_id=row.get("assignment_playbook_id") or "",

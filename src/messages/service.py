@@ -40,7 +40,9 @@ class MessageDeliveryService:
     def _on_message(self, payload: dict) -> None:
         # User platform delivery itself emits message.sent. Do not feed those
         # completions back into this consumer, or wake for non-live mailboxes.
-        if payload.get("to_kind") in {"session", "task"}:
+        if payload.get("to_kind") in {"session", "task"} or (
+            payload.get("to_kind") == "profile" and payload.get("to_id") == "supervisor"
+        ):
             self._wake.set()
 
     async def stop(self) -> None:
