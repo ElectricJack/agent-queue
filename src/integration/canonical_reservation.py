@@ -40,7 +40,8 @@ async def reserve_ordinary_repair_branch(db, task, repair, original, train) -> d
         return {"outcome": "not_eligible", "reason": "task is not the detached current batch repair"}
     if train is None:
         return {"outcome": "not_eligible", "reason": "the integration train is not active"}
-    target = next((target for target in await train.targets.targets(train.clock())
+    target = next((target for target in await train.targets.targets(
+                       train.clock(), project_id=batch.project_id)
                    if target.key == (batch.project_id, batch.repository_id, batch.target_ref)), None)
     if target is None:
         return {"outcome": "not_eligible", "reason": "batch target is not admitted by the train"}
@@ -73,6 +74,10 @@ async def reserve_canonical_task_branch(db, task_id: str) -> dict:
             return {"outcome": "not_found", "reason": "task changed while reserving"}
         project = await _row(conn, select(projects).where(projects.c.id == identity))
         repository_id, branch = task["repo_id"], task["branch_name"]
+        from src.integration.train_policy import train_policy_on
+
+        if (await train_policy_on(conn, identity)).reason == "train_playbook_disabled":
+            return {"outcome": "not_eligible", "reason": "train playbook is disabled"}
         if (
             project is None
             or project["hierarchical_integration_mode"] not in {"hierarchy", "train"}

@@ -217,6 +217,14 @@ The reconciler builds the **desired set** of named sessions each tick from profi
 `lifecycle: named` (per project where project-scoped) and converges: missing+wanted →
 start (or wake), present+unwanted → drain, config drift → recycle via handoff.
 
+Wait maintenance, including the startup legacy bridge and scheduler wait audit, runs
+in one background task. A cycle waits at most five seconds when starting that task;
+later cycles continue without queueing another pass while it runs. Dead-process
+classification, workspace release and pool starts must continue during a slow pass.
+Shutdown cancels and awaits the background task; durable bridge receipts permit
+restart recovery. Held or refused project bridge passes retry after five minutes,
+while completed project receipts suppress repeat migration.
+
 **The state machine is enforced** (2026-08-27). `update_session` validates every write to
 `state` against the transition table in `session_queries.py` and raises
 `InvalidSessionTransition` on an illegal edge; re-writing the state a row already has is a
@@ -558,6 +566,28 @@ Accounting failures leave the byte checkpoint retryable. On adoption, consumed C
 records supply legacy UUIDs: existing ledger rows seed per-call maxima without modifying
 or deleting the original rows. Historical inflation requires a separate evidenced
 correction; it is never repaired implicitly during ingest.
+
+For retention, calls attributed to sessions stopped for more than 30 days may be
+sealed after their counters have also been untouched for more than 30 days. Sealing
+freezes those historical calls: later observations, including higher counters and
+replays under another AQ session, add no usage. Live/recent calls retain exact maxima.
+The permanent anti-replay fence stores bounded batches of exact usage keys in JSONB
+sets with a GIN containment index. This keeps the identity information needed for
+historical hashes (which cannot be reversed into transcript watermarks), without
+keeping a database row and four counters per call. It is not a probabilistic filter.
+Fences have no session/ledger foreign keys and must never expire with those tables.
+
+The unscheduled `archive_transcript_usage_calls` callable archives eligible snapshots
+to `~/.agent-queue/backups/transcript-usage-calls-archive-<UTC-date>.jsonl.gz`.
+Compression, serialization, filesystem locking and fsync run in a worker thread,
+without an open database transaction. Each bounded deletion transaction rechecks
+session eligibility and exact snapshot equality under row locks, then commits the
+fence and deletion atomically. Concurrent ingestion locks the progress row and checks
+the fence before charging; a replay cannot fall between deletion and fence creation.
+Archive failure leaves database rows intact; a crash after archival can leave duplicate
+archive records, never unarchived deletions. Missing original ledger/session evidence
+is conservatively retained. Scheduling this callable belongs to the general retention
+job once available; this change does not register a scheduled job.
 
 Historical reconciliation is read-only and uses a frozen transcript/ledger window.
 Only unambiguous UUID matches with exact counter agreement and complete call coverage

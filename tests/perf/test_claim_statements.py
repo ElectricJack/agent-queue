@@ -61,7 +61,7 @@ from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 from tests.db_fixtures import lease_dsn
 from src.config import DatabaseConfig
-from src.database.tables import task_session_attempts, tasks
+from src.database.tables import task_completion_records, task_session_attempts, tasks
 
 pytestmark = pytest.mark.perf
 
@@ -225,7 +225,7 @@ class _Plan:
 
 
 class _ExplainingConn:
-    """Connection proxy that ``EXPLAIN``s every statement, then runs it.
+    """Connection proxy that runs each statement, then explains its steady state.
 
     Wrapping the connection rather than reconstructing the SQL is what makes
     ``test_work_query_is_an_index_ordered_scan`` an assertion about the
@@ -238,12 +238,19 @@ class _ExplainingConn:
         self.plans: list[_Plan] = []
 
     async def execute(self, statement, *args, **kwargs):
+        # PostgreSQL can charge first-use catalog/function initialization to
+        # executor nodes (even an empty activation index scan). Run the same
+        # read first so the buffer budget measures frontier access, independent
+        # of which earlier tests happened to warm this backend. These SELECTs
+        # only lock rows; repeating them in the same transaction keeps the
+        # candidate set and SKIP LOCKED behavior unchanged.
+        result = await self._conn.execute(statement, *args, **kwargs)
         compiled = statement.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
         explained = await self._conn.execute(text(f"EXPLAIN (ANALYZE, BUFFERS) {compiled}"))
         self.plans.append(_Plan("\n".join(row[0] for row in explained)))
-        return await self._conn.execute(statement, *args, **kwargs)
+        return result
 
 
 class TestClaimStatementBudgets:
@@ -388,7 +395,7 @@ class TestClaimStatementBudgets:
         * **no ``Sort`` node.**  A sort means the planner could not get
           ``priority, created_at`` from an index and had to read the whole
           frontier first.  That is the regression, exactly.
-        * **a shared-buffer bound.**  Measured on PostgreSQL 18 at this
+        * **a steady-state shared-buffer bound.** Measured on PostgreSQL 18 at this
           fixture's scale: 1-2 buffers for the affinity half (a partial
           index holding only pinned tasks) and 11-13 for the other, so
           13-15 for the pair against ~10,100 before.  The budget is 64:
@@ -398,8 +405,8 @@ class TestClaimStatementBudgets:
 
         The plans are taken from the statements ``select_ready_for_profile``
         actually builds -- ``_ExplainingConn`` runs each through ``EXPLAIN
-        (ANALYZE, BUFFERS)`` on the way past -- so a rewrite that keeps the
-        budget by moving work into a sub-plan is still caught.
+        (ANALYZE, BUFFERS)`` after executing that same read once -- so a rewrite
+        that keeps the budget by moving work into a sub-plan is still caught.
         """
         # Reproduce statistics collected before the recovery history exists,
         # rather than relying on when autovacuum happens to analyze this lease.
@@ -419,6 +426,13 @@ class TestClaimStatementBudgets:
                 "work_dir": "/unused", "started_at": started,
                 "session_started_at": started, "ended_at": started + 1,
             } for i in range(128)])
+            # The stack-repair predicate also reads latest completion history.
+            # Give its ordered lookup real rows: an empty table can legitimately
+            # get a scan/sort in an unexecuted subplan after a fixture reset.
+            await conn.execute(task_completion_records.insert(), [{
+                "id": f"completion-{i:03}", "task_id": "seed-0", "outcome": "pass",
+                "completed_at": started + i,
+            } for i in range(128)])
         if recovery_hold != "none":
             # Exercise the recovery subplan, including its deterministic ID
             # tie-break, instead of only explaining an empty attempt table.
@@ -433,7 +447,8 @@ class TestClaimStatementBudgets:
         # collection is fixture setup, outside the explained claim queries.
         async with any_db._engine.begin() as conn:
             await conn.execute(text(
-                "ANALYZE tasks, task_dependencies, task_session_attempts, task_metadata"
+                "ANALYZE tasks, task_dependencies, task_session_attempts, task_metadata, "
+                "task_completion_records"
             ))
         # The route filter differs with the project's router readiness
         # (mandatory routing §9.1): ``route_source IN (router, override,
