@@ -1,0 +1,22 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/default-pipeline/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/scenarios/default-pipeline/before-wait-grants.artifact.json",
+      "previous_sha256": "04498620587d606388c43e77b5cb492ac98f131aeea594c83041b79d4ec7c1c2",
+      "sha256": "50ae65fc3f77235dc5f32724405b0b3cd219e7b6df9eab4ddbadf66da4273d53"
+    }
+  },
+  "profile_grants": {
+    "spec-ingest": {
+      "added_aq_commands": [
+        "wait_checkpoint",
+        "wait_get",
+        "wait_register"
+      ],
+      "previous_fingerprint": "sha256:bd6f4a3e6f2e0cc2c23aff75ee9a695dd506ffaa3ce1bd8853a86e43dff78180",
+      "fingerprint": "sha256:713f6cd76ae63ed27534f41b2d52b5687f9d40c1bed080010ad8cab98dff52f1"
+    }
+  },
+  "reason": "swift-willow-88 refreshes the compiled spec-ingest capability snapshot after adding the durable wait lifecycle grants. Only compiled_at and compiled_against.profiles.spec-ingest change; executable rules, steps, command contracts, source and trusted execution remain identical. Append after the building-block port evidence and preserve its exact artifact bytes. This recording does not install or activate the playbook.",
+  "source_base": "9fadf0f536a13403868870d16105e877d670fbb6"
+}
