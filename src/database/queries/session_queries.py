@@ -43,7 +43,7 @@ from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from src.database.tables import (
     agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs,
-    projects, sessions, task_branch_origins, task_integration_checkpoints,
+    projects, sessions, subagent_events, task_branch_origins, task_integration_checkpoints,
     task_session_attempts, tasks, workspaces,
 )
 from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
@@ -146,6 +146,7 @@ def _row_to_session(row) -> SessionRecord:
         claim_failure_at=row.get("claim_failure_at"),
         failed_preparation=row.get("failed_preparation"),
         claim_refusal=row.get("claim_refusal"),
+        supervisor_health=row.get("supervisor_health"),
         hooks_provisioned=bool(row.get("hooks_provisioned")),
         git_identity_digest=row.get("git_identity_digest"),
     )
@@ -236,6 +237,7 @@ class SessionQueryMixin:
                 claim_failure_at=session.claim_failure_at,
                 failed_preparation=session.failed_preparation,
                 claim_refusal=session.claim_refusal,
+                supervisor_health=session.supervisor_health,
                 hooks_provisioned=session.hooks_provisioned,
                 git_identity_digest=session.git_identity_digest,
             )
@@ -320,11 +322,55 @@ class SessionQueryMixin:
         rows.sort(key=lambda s: (_STATE_RANK.get(s.state, 9), -(s.started_at or 0.0)))
         return rows[0]
 
+    async def list_flock_sessions(self, *, include_stopped: bool = False) -> list[SessionRecord]:
+        """Only history that can affect the flock's current rows and child counts.
+
+        Keep full history on explicit request. Otherwise retain nonterminal
+        executions, the best historical candidate per agent, legacy unlinked
+        current-task executions, delegation parents and native child history.
+        The latter two are essential: children can outlive their parent session.
+        Filtering only to live sessions would silently corrupt these counts.
+        """
+        if include_stopped:
+            return await self.list_sessions()
+        ranked = select(
+            sessions.c.id,
+            func.row_number().over(
+                partition_by=sessions.c.agent_id,
+                order_by=(
+                    func.coalesce(sessions.c.task_id == agents.c.current_task_id, False).desc(),
+                    sessions.c.started_at.desc(), sessions.c.id.desc(),
+                ),
+            ).label("position"),
+        ).select_from(sessions.outerjoin(agents, sessions.c.agent_id == agents.c.id)).where(
+            sessions.c.agent_id.is_not(None),
+        ).subquery()
+        creators = select(tasks.c.created_by_id).where(
+            tasks.c.created_by_kind == "session",
+            tasks.c.status.in_([
+                TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value,
+                TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
+            ]),
+        )
+        query = select(sessions).where(or_(
+            sessions.c.state.not_in(("stopped", "quarantined")),
+            sessions.c.id.in_(select(ranked.c.id).where(ranked.c.position == 1)),
+            and_(sessions.c.agent_id.is_(None), sessions.c.task_id.in_(
+                select(agents.c.current_task_id).where(agents.c.current_task_id.is_not(None)),
+            )),
+            sessions.c.id.in_(creators),
+            sessions.c.id.in_(select(subagent_events.c.session_id)),
+        )).order_by(sessions.c.started_at.desc(), sessions.c.id.desc())
+        async with self._engine.begin() as conn:
+            result = await conn.execute(query)
+            return [_row_to_session(row) for row in result.mappings()]
+
     async def list_sessions(
         self,
         *,
         state: str | None = None,
         states: list[str] | tuple[str, ...] | None = None,
+        excluded_states: tuple[str, ...] = (),
         desired_state: str | None = None,
         lifecycle: str | None = None,
         project_id: str | None = None,
@@ -344,6 +390,8 @@ class SessionQueryMixin:
         query = select(sessions)
         if state is not None:
             query = query.where(sessions.c.state == state)
+        if excluded_states:
+            query = query.where(sessions.c.state.not_in(excluded_states))
         if live_only:
             query = query.where(sessions.c.state.in_(_LIVE_STATES))
         elif states:
@@ -429,6 +477,7 @@ class SessionQueryMixin:
 
     async def record_claim_refusal(
         self, session_id: str, *, result: str, reason: str, now: float,
+        expected_preparation: SessionRecord | None = None,
     ) -> SessionRecord | None:
         """Count actual identical failures, never cooldown replays or an active claim.
 
@@ -441,6 +490,28 @@ class SessionQueryMixin:
             ).with_for_update())).mappings().one_or_none()
             if row is None:
                 return None
+            if expected_preparation is not None:
+                from src.claim_preparation import same_session_launch
+
+                observed = _row_to_session(row)
+                diagnostic = observed.failed_preparation
+                if (not same_session_launch(expected_preparation, observed)
+                        or observed.last_claim_epoch != expected_preparation.last_claim_epoch
+                        or observed.task_id not in (None, expected_preparation.task_id)
+                        or (observed.claim_phase is not None and (
+                            observed.claim_phase != "preparing"
+                            or observed.claim_phase_at != expected_preparation.claim_phase_at
+                        ))
+                        # A previous failure's unchanged diagnostic may survive
+                        # into a new attempt (e.g. activation returns no row).
+                        # Only a newly published diagnostic can supersede it.
+                        or (diagnostic is not None
+                            and diagnostic != expected_preparation.failed_preparation and (
+                            diagnostic.get("task_id") != expected_preparation.task_id
+                            or diagnostic.get("preparation_started_at")
+                            != expected_preparation.claim_phase_at
+                        ))):
+                    return None
             if row["claim_phase"] == "active" or row["desired_state"] != "running":
                 return _row_to_session(row)
             prior = row["claim_refusal"] or {}
@@ -542,6 +613,48 @@ class SessionQueryMixin:
             ):
                 return 0
             return await self._update_session_on(conn, session_id, fields)
+
+    async def request_session_sleep(
+        self, observed: SessionRecord, *, stopped_confirmed: bool = False,
+    ) -> SessionRecord:
+        """Record sleep intent without reattaching terminal pool history.
+
+        Provider proof is obtained outside the transaction. Lock and compare
+        its instance/claim identity before normalizing a legacy stopped pool;
+        this operation never releases claims, owners or workspace locks.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == observed.id,
+            ).with_for_update())).mappings().one_or_none()
+            identity = (
+                "instance_token", "provider", "name", "lifecycle", "work_dir",
+                "started_at", "last_claim_epoch",
+            )
+            if (row is None or any(row[key] != getattr(observed, key) for key in identity)
+                    or (observed.lifecycle == "pool" and observed.state == "stopped"
+                        and row["state"] != "stopped")):
+                raise ValueError("Session changed before sleep; refresh the session")
+            desired = "sleeping"
+            if row["lifecycle"] == "pool" and row["state"] == "stopped":
+                # A late sleep must never turn stopped/stopped history back
+                # into an attached writer. A concurrent teardown may already
+                # have completed since the command resolved the live row.
+                desired = "stopped"
+                if row["desired_state"] != "stopped" and not (
+                    stopped_confirmed
+                    and observed.state == "stopped"
+                    and observed.desired_state == row["desired_state"] == "sleeping"
+                    and row["task_id"] is None
+                    and row["claim_phase"] is None
+                    and row["failed_preparation"] is None
+                ):
+                    raise ValueError(
+                        "Stopped pool session retains work or lacks inactive-instance proof"
+                    )
+            if desired == "sleeping" or row["desired_state"] != desired:
+                await self._update_session_on(conn, observed.id, {"desired_state": desired})
+            return _row_to_session({**row, "desired_state": desired})
 
     async def _update_session_on(self, conn, session_id: str, fields: dict) -> int:
         row = (await conn.execute(select(sessions).where(
