@@ -176,18 +176,31 @@ class ContractRegistry:
             }
 
     def catalog(self) -> tuple[dict[str, Any], ...]:
-        """Return the read-only metadata catalog for all playbook commands."""
+        """Discovery includes unavailable and denied descriptors without registering them."""
         self._ensure_loaded()
-        return tuple(
-            {
+        descriptors = self._snapshot.commands if self._snapshot else {}
+        rows = []
+        for name in sorted(descriptors.keys() | self._registrations.keys()):
+            descriptor = descriptors.get(name)
+            registration = self._registrations.get(name)
+            presentation = registration.contract.presentation if registration else None
+            row = {
                 "name": name,
-                "title": registration.contract.presentation.title,
-                "summary": registration.contract.presentation.summary,
-                "docs_url": registration.contract.presentation.help_url,
-                "parameters_schema": registration.contract.execution.args_model.model_json_schema(),
+                "title": presentation.title if presentation else name.replace("_", " ").title(),
+                "summary": presentation.summary if presentation else descriptor.description,
+                "docs_url": command_docs_url(self._docs_base_url, name),
+                "parameters_schema": (descriptor.input_schema() if descriptor else
+                                      registration.contract.execution.args_model.model_json_schema()),
             }
-            for name, registration in sorted(self._registrations.items())
-        )
+            if descriptor:
+                row.update(descriptor.execution_metadata())
+                row.update(origin=descriptor.origin, plugin=descriptor.plugin,
+                           available=descriptor.available,
+                           execution_available=bool(descriptor.available and registration
+                                                    and descriptor.result_mode == "typed"),
+                           denied=descriptor.denial_reason is not None)
+            rows.append(row)
+        return tuple(rows)
 
     def get(self, name: str) -> CommandRegistration | None:
         self._ensure_loaded()

@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `find_merge_conflict_workspaces` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:233b11fa5b9e830a941b08c61e7d23fa8cf44e58db29fbcd62defaf42f2e1468` |
+| Contract fingerprint | `sha256:3d30a066391b3924c62d0d2f2ce85bcb0c8a3fff01606941c097111d854c0f81` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `project_id` | `string` | no | — | Project ID to scan workspaces for (optional if active project is set) |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id | — | always |
+| Read using project_id | — | always |
 
 <!-- aq:generated:end -->
 

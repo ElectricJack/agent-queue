@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `review_show` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:4c73bb5ae83c7f9425e7dd07225d5defac7748dbda97ce1a53829d1c9982b80d` |
+| Contract fingerprint | `sha256:aad94467e95074210b9c86c87413bf6c302f5e3a67929e5f750843ee52bf407f` |
 
 ## Parameters
 
@@ -26,7 +26,7 @@
 | `diff_from` | `integer` | no | — | — |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -48,7 +48,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using review_id, revision, comments, diff_from | — | always |
+| Read using review_id, revision, comments, diff_from | — | always |
 
 <!-- aq:generated:end -->
 

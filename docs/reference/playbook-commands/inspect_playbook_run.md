@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `inspect_playbook_run` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:45b370627a12331e31cabbe0693c16b3148f36858cee648ed9c28d88cb945753` |
+| Contract fingerprint | `sha256:f934b9745e85aed8b23c072cb69145e2eaf5eab677477a7c11f68bec7293906f` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `run_id` | `string` | yes | — | The playbook run ID to inspect |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using run_id | — | always |
+| Read using run_id | — | always |
 
 <!-- aq:generated:end -->
 

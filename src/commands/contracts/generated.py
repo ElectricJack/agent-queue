@@ -1,8 +1,7 @@
-"""JSON-object contracts for uncovered commands; live invocation remains gated.
+"""JSON-object contracts with authorization and private-storage release gates.
 
-A2 owns the return-protocol and authorization audit; A3 owns private values and
-safe inspection. This foundation deliberately has no switch that can bypass those
-release gates. Catalogue membership alone can never call a newly discovered verb.
+Only engine invocations with ready protected storage can dispatch uncovered
+commands. The original principal and handler result protocol remain intact.
 """
 
 from __future__ import annotations
@@ -25,7 +24,8 @@ from src.commands.contracts.models import (
     OutcomeSpec,
     SideEffectClass,
 )
-from src.commands.descriptors import CommandDescriptor
+from src.commands.descriptors import PLAYBOOK_DENIALS, CommandDescriptor
+from src.commands.principal import SERVER_OWNED_ARG_KEYS, principal_context
 
 
 def validate_json(value: Any) -> None:
@@ -99,6 +99,8 @@ class JsonObjectArgs(JsonObject):
     @classmethod
     def _validate_schema(cls, value: Any) -> Any:
         validate_json(value)
+        if isinstance(value, dict) and set(value).intersection(SERVER_OWNED_ARG_KEYS):
+            raise ValueError("server_owned_argument")
         if cls._validator is None and cls._schema_error is None:
             # Catalogue/transport discovery needs the document, not a compiled
             # validator for every command. Compile only on first actual input.
@@ -140,20 +142,47 @@ def argument_model(descriptor: CommandDescriptor) -> type[JsonObjectArgs]:
 
 
 class GeneratedInvocationDisabled(RuntimeError):
-    """The generated command audit and confidentiality gates are not complete."""
+    """Direct invocation outside an authorized engine context is disabled."""
+
+
+async def require_generated_execution() -> None:
+    """Generated execution requires an actual engine invocation and storage."""
+    from src.playbooks.invocation import current_invocation
+    from src.playbooks.private_values import PrivateValueError
+
+    invocation = current_invocation()
+    if invocation is None:
+        raise GeneratedInvocationDisabled("generated_invocation_disabled")
+    if invocation.private_values is None:
+        raise PrivateValueError("private_storage_unavailable")
+    await invocation.private_values.check_ready()
 
 
 def generated_registration(descriptor: CommandDescriptor):
     from src.commands.contracts.registry import CommandRegistration
 
     async def invoke(args: JsonObjectArgs, principal: Any):
-        # No handler lookup, dispatch, principal substitution or preview fallback
-        # is permitted before A2/A3 supply and verify the execution boundary.
-        reason = descriptor.denial_reason or (
-            "command_unavailable" if not descriptor.available else
-            "generated_invocation_disabled: authorization and private-value gates required"
-        )
-        raise GeneratedInvocationDisabled(reason)
+        if descriptor.name in PLAYBOOK_DENIALS or descriptor.denial_reason:
+            return {"success": False, "error_code": "playbook_command_denied"}
+        if not descriptor.available:
+            return {"success": False, "error_code": "command_unavailable"}
+        payload = args.model_dump()
+        if set(payload).intersection(SERVER_OWNED_ARG_KEYS):
+            return {"success": False, "error_code": "server_owned_argument"}
+        await require_generated_execution()
+        from src.commands.contracts.builtin import _handler
+
+        # Return the original object. Only the executor's _consume interprets
+        # its protocol; plugins and built-ins have precisely the same boundary.
+        with principal_context(principal):
+            return await _handler().execute(descriptor.name, payload)
+
+    from src.commands.resource_authorization import STATE_PREVIEW_COMMANDS
+
+    async def preview(args, principal):
+        from src.playbooks.state_preview import preview_command
+
+        return await preview_command(descriptor.name, args, principal)
 
     return CommandRegistration(
         descriptor.name,
@@ -167,12 +196,16 @@ def generated_registration(descriptor: CommandDescriptor):
                     OutcomeSpec(name="success", classification=OutcomeClass.SUCCESS),
                     OutcomeSpec(name="failure", classification=OutcomeClass.FAILURE),
                 ),
-                capability=descriptor.capability, side_effect=SideEffectClass.COMPOSITE,
+                capability=descriptor.capability,
+                side_effect=(SideEffectClass.READ if descriptor.effect_class == "read"
+                             else SideEffectClass.COMPOSITE),
                 idempotency=IdempotencySpec(mode="none"), retry_safe=False,
+                supports_preview=descriptor.name in STATE_PREVIEW_COMMANDS,
             ),
             presentation=CommandPresentation(
                 title=descriptor.name.replace("_", " ").title(), summary=descriptor.description,
             ),
         ),
         invoke,
+        preview=preview if descriptor.name in STATE_PREVIEW_COMMANDS else None,
     )

@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `gate_show` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:15f261597a0c6fbcfdeaa3703c390ed1f238288050872c3fd2e5df19da6e6656` |
+| Contract fingerprint | `sha256:413e044d8e8a70b6943d3ac7f169ff7417fa4b670cfde831cdf40ef1ad56c2dd` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `gate_id` | `string` | yes | — | Gate id to fetch |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `fallback`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `fallback`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using gate_id | — | always |
+| Read using gate_id | — | always |
 
 <!-- aq:generated:end -->
 
