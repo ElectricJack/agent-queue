@@ -68,7 +68,7 @@ class EscalationCommandsMixin:
         if principal.kind is PrincipalKind.LOCAL:
             if supervisor_required:
                 return None, _error(
-                    "out_of_scope", "the owning supervisor must execute this escalation action"
+                    "out_of_scope", "a project or global supervisor must execute this action"
                 )
             return principal, None
         if principal.kind is PrincipalKind.SERVICE:
@@ -94,12 +94,20 @@ class EscalationCommandsMixin:
         row, _ = await self.db.get_session_with_profile(principal.session_id, conn=conn)
         if (
             row is None
-            or row.profile_id != "supervisor"
+            or row.profile_id not in {"supervisor", "supervisor-global"}
             or row.lifecycle != "named"
             or row.state not in _LIVE_SESSION_STATES
             or row.desired_state != "running"
         ):
             return None, _error("out_of_scope", "a live supervisor session is required")
+        # The global supervisor's logical address can also be its installed
+        # profile id. Both its authenticated scope and stored session must be
+        # projectless; a project supervisor cannot gain global authority by
+        # dropping a project argument.
+        if row.profile_id == "supervisor-global" and (
+            row.project_id is not None or principal.project_id is not None
+        ):
+            return None, _error("out_of_scope", "a global supervisor must have system scope")
         if principal.project_id is not None and principal.project_id != project_id:
             return None, _error("out_of_scope", "escalation belongs to another project")
         if row.project_id is not None and row.project_id != project_id:
@@ -157,6 +165,10 @@ class EscalationCommandsMixin:
         )
 
     async def _cmd_escalation_create(self, args: dict[str, Any]) -> dict[str, Any]:
+        return await self._create_escalation(args)
+
+    async def _create_escalation(self, args: dict[str, Any], *, conn=None) -> dict[str, Any]:
+        """Shared creation boundary; wait deadlines supply their owned transaction."""
         if error := self._reject_authority_args(args):
             return error
         required = (
@@ -169,11 +181,14 @@ class EscalationCommandsMixin:
             "decision_requested",
             "severity",
         )
-        missing = [name for name in required if not isinstance(args.get(name), str) or not args[name]]
+        missing = [
+            name for name in required
+            if not isinstance(args.get(name), str) or not args[name].strip()
+        ]
         if missing:
             return _error("invalid_request", "required fields: " + ", ".join(missing))
         project_id = args["project_id"]
-        principal, error = await self._authorize_escalation_project(project_id)
+        principal, error = await self._authorize_escalation_project(project_id, conn=conn)
         if error:
             return error
         if args["severity"] not in {"critical", "high", "medium", "low"}:
@@ -185,9 +200,35 @@ class EscalationCommandsMixin:
             or any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in choices)
         ):
             return _error("invalid_request", "choices must be at most 20 non-empty strings")
-        if await self.db.get_project(project_id) is None:
+        if await self.db.get_project(project_id, conn=conn) is None:
             return _error("not_found", "project not found")
         task_id = args.get("task_id")
+        if args["source_kind"] == "continuation":
+            # Infrastructure holds may follow an already satisfied wait. They
+            # belong to the suspension intent, rather than a pending deadline.
+            if conn is None or principal.kind is not PrincipalKind.SERVICE:
+                return _error("invalid_binding", "continuation incidents require the wait transaction")
+            from src.wait_runtime.hibernate import validate_hold_binding
+
+            if not await validate_hold_binding(conn, args):
+                return _error("invalid_binding", "continuation incident does not match its intent")
+        if args["source_kind"] == "wait":
+            # Only the timer/loop command can bind an operational wait incident.
+            # A caller cannot manufacture a wait escalation through the generic API.
+            if conn is None or principal.kind is not PrincipalKind.SERVICE:
+                return _error("invalid_binding", "wait incidents require the wait transaction")
+            from sqlalchemy import select
+            from src.database.tables import wait_records
+
+            wait_id, separator, generation = args["source_identity"].rpartition(":")
+            wait = (await conn.execute(select(wait_records).where(
+                wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
+                wait_records.c.outcome == "pending",
+            ))).mappings().first()
+            if (not separator or not generation.isdecimal() or int(generation) < 1
+                    or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
+                    or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
+                return _error("invalid_binding", "wait incident does not match its generation")
         if args["source_kind"] == "question":
             question = await self.db.get_agent_question(args["source_identity"])
             if question is None or question["project_id"] != project_id:
@@ -203,7 +244,8 @@ class EscalationCommandsMixin:
             return _error("invalid_binding", "task_recovery source requires task_id")
         task = None
         if task_id is not None:
-            task = await self.db.get_task(task_id)
+            task = (await self.db.get_task_on(conn, task_id) if conn is not None
+                    else await self.db.get_task(task_id))
             if task is None or task.project_id != project_id:
                 return _error("out_of_scope", "task does not belong to the escalation project")
         if args["source_kind"] == "task_recovery":
@@ -228,27 +270,41 @@ class EscalationCommandsMixin:
             "choices": choices,
             "severity": args["severity"],
         }
+        if not isinstance(values["task_title"], str) or not values["task_title"].strip():
+            return _error("invalid_request", "task_title is required when no task supplies a title")
         try:
-            incident, created = await self.db.create_escalation(**values)
+            incident, created = await self.db.create_escalation(conn=conn, **values)
         except EscalationConflict as exc:
             return _error("identity_conflict", str(exc))
         except ValueError as exc:
             return _error("invalid_request", str(exc))
-        if created:
+        created_payload = {
+            "version": 1,
+            "escalation_id": incident["id"],
+            "project_id": incident["project_id"],
+            "task_id": incident.get("task_id"),
+            "source_kind": incident["source_kind"],
+            "source_identity": incident["source_identity"],
+            "incident_key": incident["incident_key"],
+            "state": incident["state"],
+            "revision": incident["revision"],
+        }
+        if created and conn is not None:
+            import json
+            import time
+            from sqlalchemy import insert
+            from src.database.tables import events
+
+            await conn.execute(insert(events).values(
+                event_type="escalation.created.v1", project_id=project_id, task_id=task_id,
+                timestamp=time.time(), payload=json.dumps(created_payload),
+            ))
+        elif created:
             await self._emit_escalation(
                 "escalation.created.v1",
-                {
-                    "escalation_id": incident["id"],
-                    "project_id": incident["project_id"],
-                    "task_id": incident.get("task_id"),
-                    "source_kind": incident["source_kind"],
-                    "source_identity": incident["source_identity"],
-                    "incident_key": incident["incident_key"],
-                    "state": incident["state"],
-                    "revision": incident["revision"],
-                },
+                created_payload,
             )
-        if incident["source_kind"] not in {"question", "gate", "task_recovery"}:
+        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait", "continuation"}:
             from src.asks.models import SourceIdentity
             ask = await self._publish_source_ask(SourceIdentity(
                 project_id, "free_text", incident["id"], {"id": incident["id"]},
@@ -310,8 +366,17 @@ class EscalationCommandsMixin:
         incident, _, error = await self._escalation_for_caller(args.get("escalation_id"))
         if error:
             return error
+        canonical = await self._cmd_ask_show({
+            "ask_id": incident["id"], "alias_kind": "escalation",
+        })
+        alias = ({"ask_id": canonical["ask"]["id"],
+                  "ask_url": f"/focus/asks/{canonical['ask']['id']}",
+                  "deprecation": "Use aq ask show/reply/prepare/decide for human decisions; "
+                                 "escalation get remains incident diagnostics"}
+                 if canonical.get("success") else {})
         return {
             "success": True,
+            **alias,
             "escalation": incident,
             "messages": await self.db.list_escalation_messages(incident["id"]),
             "deliveries": await self.db.list_escalation_deliveries(incident["id"]),
@@ -433,7 +498,7 @@ class EscalationCommandsMixin:
 
         Two properties are load-bearing:
 
-        * **Only the owning supervisor may resolve.**  ``supervisor_required``
+        * **The project or global supervisor may resolve.** ``supervisor_required``
           is the same fence ``escalation_update`` and ``escalation_apply_reply``
           use, so a worker or a dashboard session cannot close a question a human
           is still answering.
@@ -457,6 +522,8 @@ class EscalationCommandsMixin:
         if error:
             return error
         outcome = args.get("outcome")
+        if incident["source_kind"] == "wait":
+            return _error("wait.decide_required", "resolve a wait escalation through wait_decide")
         if not isinstance(outcome, str) or not outcome.strip() or len(outcome) > 4000:
             return _error("invalid_request", "outcome must contain 1 to 4000 characters")
         expected = args.get("expected_revision")
@@ -606,7 +673,7 @@ class EscalationCommandsMixin:
             if not args.get("expected"):
                 return {**_error("ask.context_missing",
                     "Review the request effects and pass its expected version; use prepare first"),
-                    "ask_id": ask["id"], "ask_url": f"/asks/{ask['id']}",
+                    "ask_id": ask["id"], "ask_url": f"/focus/asks/{ask['id']}",
                     "expected": {k: ask[k] for k in (
                         "decision_generation", "source_fingerprint", "feedback_version")}}
             # No interpretation of an uncertain reply can become an approval.

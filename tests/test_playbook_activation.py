@@ -5,10 +5,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from src.database import Database
 from src.database.tables import playbook_activations
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 #: Re-activation writes an INSERT that can violate
 #: ``uq_playbook_activations_scope``.  On PostgreSQL a constraint violation
@@ -20,11 +18,9 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("playbook-activation.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("playbook-activation.db")
     yield database
-    await database.close()
 
 
 def _artifact(digest_char: str = "a"):
@@ -1539,10 +1535,15 @@ async def test_artifacts_command_honours_its_gates_and_arguments(db, tmp_path):
     lookups = (StubContracts(), StubProfiles(), None)
     handler = _v2_handler(db, lookups)
 
-    assert await handler._cmd_playbook_artifacts({}) == {"error": "playbook_id is required"}
+    assert await handler._cmd_playbook_artifacts({}) == {
+        "success": False,
+        "error": "playbook_id is required",
+    }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": 0}) == {
+        "success": False,
         "error": "limit must be >= 1"
     }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": "many"}) == {
+        "success": False,
         "error": "limit must be an integer"
     }
