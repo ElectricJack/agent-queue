@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/supervisor_inbox.py`](../../../src/commands/contracts/supervisor_inbox.py) |
-| Contract fingerprint | `sha256:8d9b57c95762f1910c057bb4b735a7048021af99fafe42563339916bcddbcc19` |
+| Contract fingerprint | `sha256:d23d7563f7297544bb7e2305d7be652e7eefbf186ed2ea4d1c80d7e75a5bd28d` |
 
 ## Parameters
 
@@ -53,6 +53,7 @@ Redacted in receipts and explanations: `envelope`.
 | `text` | `string` | — |
 | `received_at` | `number` | — |
 | `mentions_bot` | `boolean` | — |
+| `tag` | `string \| null` | — |
 
 ## Outcomes
 

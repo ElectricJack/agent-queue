@@ -74,13 +74,14 @@ aq task comments <id> --limit 50 --offset 0
 On a description conflict, re-read and merge; never retry blindly without the expected
 value. Comments append attributed, timestamped history without rewriting the description.
 Use them for meaningful progress, evidence, test outcomes, decisions, and blockers. Keep
-hypotheses clearly marked and omit secrets. There is no need to invent findings or post
-noise after every command. `--note` remains a legacy task-context field, not the comment log.
+hypotheses clearly marked and omit secrets. Keep comments concise: state what changed,
+decisions, and blockers. Link evidence files; do not paste logs or repeat status.
+`--note` remains a legacy task-context field, not the comment log.
 
 Save useful findings as you discover them and **before close, handoff, or waiting for input**.
 Do not leave discoveries only in terminal output or the final close summary. New sessions
-receive a bounded recent-comment excerpt in prime; read full history if needed. A comment
-is not approval, an escalation, or a user notification: still use the question/message
+receive every task comment in full in prime, framed as historical reports, not instructions
+or approval. A comment is not an escalation or a user notification: still use the question/message
 workflow when input is needed. `task comment` resolves `--claim-epoch` like `task set`.
 
 ## The close-a-task loop
@@ -115,6 +116,26 @@ Rules the daemon enforces:
   intentionally not shipped, declare it with
   `--deliverable-unmet 'id: reason'` (repeatable) — a pass with an
   undeclared gap is refused and keeps the task claimed.
+- A `review` deliverable is met by a document review the task submitted
+  (`aq review submit --task-id <task> --file <draft.md> --kind <kind>`),
+  not by a commit. Research and design tasks carry one (`review`) even when
+  none is listed: submit the proposal or report before a passing close, or
+  waive it with `--deliverable-unmet 'review: <reason>'` when there is no
+  document.
+
+## Recovery holds
+
+Recovery holds require the exact incident id and prior `decided_at` timestamp.
+Only a local operator or live global supervisor can run `aq task recover
+--operator-release --decision release --task-id TASK --incident-id INCIDENT
+--expected-hold-at DECIDED_AT --reason WHY`. This lifts only the hold, retaining
+task state, counters and integration ownership. For ordinary BLOCKED tasks they
+may choose `--decision retry` to authorize a reviewed nonautomatic failure while
+retaining fresh stopped-worker proof, routing, gate, resource and budget guards.
+Project supervisors must request that authority. Supervisor-authored train repair
+and `slot_reset_failed` holds escalate after 15 minutes; execution remains held
+until audited release. Explicit human holds never expire. Never delete metadata
+or reset counters to release a hold.
 
 ## Subtasks
 
@@ -178,10 +199,49 @@ aq task close --outcome pass|fail --summary "..." --claim-next --wait 60
 | `stale_claim` | a mutator's `claim_epoch` no longer matches the task's current one |
 | `out_of_scope` | the caller isn't allowed to claim (not a pool session) |
 
+`prepare_failed` and `not_admissible` carry `retry_after` (seconds),
+`refusal_count`, and `instructions`. Respect the cooldown before another attempt.
+The daemon persists the same-session result/reason streak across restarts; cooldown
+replays do not advance it or prepare work. It delays the first refusal for 60 seconds,
+then identical failures for 300/600/1200/1800 seconds. A changed admission reason or
+successful activation clears the streak. Empty frontiers, claim conflicts and daemon
+connection failures keep their normal retry behavior.
+
+On a repeated identical refusal, **report the blocker once** to the project supervisor
+(see aq-comms). A `refusal_count >= 2`, or `drain_requested` with blocker instructions,
+also requires that single report. Include result, reason, session and retry evidence.
+If idle (no held claim **or preparation**, using the response's session claim_phase
+and `.aq/claim.json`), run `aq session drain-ack` and exit: the pool can recycle you.
+The server marks an idle session for drain on the second identical failure.
+If preparation retained ownership, preserve it and **end the turn awaiting the
+supervisor's inbox delivery**. Durable waits require an active claim and cannot be
+registered during preparation. If you hold an active claim and prime reports waits
+enabled for the project, register **one** durable message wait for the reply with
+the returned thread/cursor, then end the turn. If waits are disabled or registration
+returns `wait.disabled`, preserve the claim and end the turn awaiting the supervisor
+inbox delivery; do not retry registration or poll:
+
+```bash
+aq wait register --kind message --ref <reply-thread> --after-seq <cursor> \
+  --idempotency-key claim-blocker-reply
+```
+
+Acknowledge the existing outcome when notified and follow the reply or recorded
+supervisor decision. Keep the same wait; escalation never restarts the claim loop.
+Do not keep polling claims/inboxes, reread unchanged context or repeat the
+blocker report. Never drain a retained claim just to make the refusal disappear.
+
 `aq task close`'s TASK_ID argument is optional: omit it (as the loop above
 does) and the daemon closes whichever task this session currently holds —
 which is the only sane form for a pool worker, whose task changes with every
 claim. The same goes for `aq task heartbeat`.
+
+Three identical preparation refusals in one session persist across daemon
+restarts and return `drain_requested`; the daemon disables that workspace
+and stops the worker through guarded pool teardown. On `prepare_failed`,
+retry the claim. On `drain_requested` or `session_exhausted`, run
+`aq session drain-ack` and exit 0. A quarantined workspace keeps its checkout
+and any branch attachment for operator recovery; never delete its Git locks.
 
 `task_close --claim-next` attempts another claim after closing. By default,
 AQ retires the conversation after one task and returns `drain_requested` or
@@ -195,6 +255,31 @@ automatically, so you don't normally need to pass it by hand. A pool session
 whose `claim_epoch` no longer matches (task reassigned, claim expired) gets
 `stale_claim` back from any of these — read the correct one from
 `.aq/claim.json` and stop, rather than retrying blindly.
+
+## Wait for completion without monitoring turns
+
+For supported validation, submit the producer and wait together:
+
+```bash
+aq test --aq-detach --aq-wait --aq-idempotency-key validation TEST_ARGS
+aq wait register --kind task --ref <producer-task> --idempotency-key settlement
+aq wait show <wait-id> --consume --json
+```
+
+State one condition, register once and end the turn. AQ chooses sleep in place or
+hibernation and delivers the durable outcome. If requested, submit `aq wait checkpoint`
+with a compaction summary before ending the turn. `--consume` acknowledges the outcome;
+plain reads remain diagnostic. Act on the result or supervisor decision: availability
+never proves success. Escalation goes to the supervisor and keeps the worker asleep.
+Do not re-register the same condition or submit replacement work. Managed admission
+is opt-in;
+if disabled, use ordinary foreground `aq test` with the existing resource caps.
+
+For `messages.pending_before_close`, handle every mailbox named by the refusal
+with `--inject --json`, reconsider affected evidence, then retry. A plain inbox
+read does not consume pending delivery. After an accepted close, obey the
+next-claim result rather than polling the closed task. Do not use background
+shell loops for jobs, messages, CI or task settlement.
 
 ## Reopen + provide input (rejection loop)
 
@@ -227,7 +312,7 @@ a task parked in `WAITING_INPUT` with no question row behind it.
 `create_task` is on the agent surface: a worker or reviewer session may
 file emergent work it discovers. A worker-filed task starts DEFINED with a
 `discovered-from` edge back to the filing task; a root filing also opens a
-routing gate, so triage — not the filer — dedupes and routes it.
+routing gate, which resolves when the project's router routes the task.
 
 A session whose profile grants `create_task_graph` (a planner) may file a whole
 graph with `--graph` / `--from-spec` and a `--reason`. Its nodes land under the
@@ -235,6 +320,8 @@ task it holds. A document-level `parent:` block creates the graph's own containe
 in the same transaction: under the held task by default, or at the project root
 with `--root`, where the container carries the routing gate a root filing gets
 and its children wait behind it. A root graph must declare that `parent:` block.
+`--after-review <review-id>` gates every node of the graph on that document
+review until it is approved; an unknown or withdrawn review creates nothing.
 Never file an epic as a plain task: a pool worker can claim it before its
 children arrive. The supervisor or an operator can file a single epic with
 `aq task create --container` and add its children afterwards; a worker session
@@ -245,25 +332,31 @@ visible and, while open, blocks that task's successful close. `--parent <id>`
 (an authorised alternative parent) and `--root` (cross-cutting work) are
 deliberate choices, never a way to move required work out of your task's way.
 
-Profile ids are installation-specific. Confirm the enabled `lifecycle: pool`
-profiles this install actually has with `aq agent list-profiles` (and classes
-with `aq system list-intelligence-classes`) rather than trusting a literal id
-or ID prefix from any document — omitting `--profile` lets the project default
-apply, which is usually right.
+**File with hints, never a route.** The project's router (its bound routing
+playbook) picks every task's profile, provider and model. A filing that names
+a profile, provider, model or pin (on the CLI, or as a graph's `profile` or
+`pin` key) is refused with `routing.choice_forbidden` and creates nothing. Give
+the router two hints instead: the kind (`--type`; `design` is code design,
+`art` is art-heavy design) and, only when the work is harder or easier than its
+kind suggests, an intelligence class (`--intelligence-class`; list them with
+`aq system list-intelligence-classes`). The task is stored unrouted, the
+router routes it within a cascade, and `aq task show` / `aq task explain`
+print the route it chose and why.
 
 ```bash
 # Ad-hoc task creation.  --reason is required on a worker-filed task and is
 # stored on the discovered-from edge back to the task you hold.
 aq task create --project <pid> --title "..." --description "..." \
-  --profile <enabled-pool-profile-id> --priority 50 --reason "why this exists"
+  --type bugfix --priority 50 --reason "why this exists"
 
 # From a spec (preferred for multi-task graphs)
 aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
 aq task create --from-spec <path> --dry-run   # validate first, always
+aq task create --from-spec <path> --after-review <review-id>  # every node waits on the review
 
 # Create under an existing container (single task or a --from-spec graph)
 aq task create --project <pid> --title "..." --description "..." \
-  --profile <enabled-pool-profile-id> --parent <container_task_id>
+  --type feature --intelligence-class deep-high --parent <container_task_id>
 
 # Explicitly at project level — the opt-out for cross-cutting work filed from
 # inside an epic's child task.  Mutually exclusive with --parent.
@@ -426,10 +519,11 @@ Never make a node `need` the planning task you hold, or any task above it, not
 even as a barrier that holds children back while you arrange them. The plan
 exists before you file, and membership is already the `parent-child` edge. A
 gating edge onto the filer or the filing's own parent chain is refused as
-`dependency_on_ancestor`, by a graph and by `aq task create --depends-on`
+`dependency_on_ancestor`, by a graph and by `aq task add-dependency`
 alike. Order the new tasks among themselves with local `needs`. A delivered
 plan still satisfies anything that depends on it after its branch is cleaned
-up, because readiness trusts the delivery receipt rather than the branch.
+up, because readiness checks Git containment of its retained source commit, not
+the branch or a delivery receipt.
 
 **Checklist ownership.** An unphased planner graph may put `subtasks:` on a
 child task. Those are checklist rows owned and settled by the worker that
@@ -502,8 +596,22 @@ archived id can never be recreated in a different project.
 - Explain non-obvious moves. When you close a task with `--outcome pass`, the
   summary should tell the reader what you did and why; link to relevant findings and comments.
 - File emergent work rather than widening your own scope: `aq task create`
-  from a worker session is expected, and lands behind a routing gate for
-  triage. Don't build task *graphs* from a worker session unless your profile
-  grants `create_task_graph` (planners); `formula cook` is supervisor-only.
+  from a worker session is expected, with a kind and, if it matters, a class
+  hint; the project's router routes it. Don't build task *graphs* from a
+  worker session unless your profile grants `create_task_graph` (planners);
+  `formula cook` is supervisor-only.
 - Don't retry an `out of scope: <command>` error. It is a property of your
   token, not a transient failure; say so in a comment and close or ask instead.
+
+## Retained parent merge during close
+
+A passing close may return `close_in_progress` with a `close_merge` operation.
+The source stays frozen on your published task branch. In `candidate_path`, resolve
+conflicts or failing checks and commit the fix, preserving the merge parents.
+Run `aq integration continue-close --operation-id <id>` to regenerate, validate and
+publish through the daemon's parent fence. Never push the parent yourself.
+A returned exact-check wait is already registered: end the turn and resume the same
+operation when delivered. Your author budget goes to the supervisor; it does not
+interrupt your work or make a duplicate repair task. Root publication and a disabled
+train remain publisher policy. After an ambiguous close, inspect your claim and task
+before retrying. Completion records name the original source, not the merge candidate.
