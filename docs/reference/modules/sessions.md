@@ -91,7 +91,7 @@ because they are surfaces *onto* sessions rather than the session runtime:
 | Path | Owning shard | Where it is documented |
 |---|---|---|
 | `src/api/terminal_stream.py`, `src/api/pane_stream.py`, `src/api/sessions.py` | `api` | the REST/WebSocket reference; behaviour is summarised in [terminals and claims](../terminals-and-claims.md) |
-| `dashboard/src/components/InteractiveTerminal.tsx`, `dashboard/src/ws/terminalSocket.ts`, `dashboard/src/ws/usePaneStream.ts`, `dashboard/src/api/useTerminalInput.ts` | `dashboard` | the dashboard guide |
+| `dashboard/src/components/InteractiveTerminal.tsx`, `dashboard/src/components/terminalSetup.ts`, `dashboard/src/ws/terminalSocket.ts` | `dashboard` | the dashboard guide |
 | `src/agents/terminals.py` | `routing` | agents and routing |
 | `src/commands/session_commands.py`, `src/commands/claim_commands.py` | `cli` | the CLI reference |
 | `src/doctor/session_checks.py` | `operations` | the operations guide; the checks are used in [troubleshooting](../../guides/session-troubleshooting.md) |

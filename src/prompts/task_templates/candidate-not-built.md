@@ -1,0 +1,1 @@
+Candidate SHA: not built yet (the candidate is still being constructed)
