@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from src.api.models.ask import AskPreview, AskVersion
+
 
 class EscalationRecord(BaseModel):
     model_config = {"extra": "allow"}
@@ -19,6 +21,7 @@ class EscalationRecord(BaseModel):
     supervisor_owner: str
     task_title: str | None = None
     task_status: str | None = None
+    deep_link: str | None = None
     summary: str
     investigation: str
     decision_requested: str
@@ -33,6 +36,7 @@ class EscalationRecord(BaseModel):
     terminal_at: float | None = None
     delivery_statuses: list[str] | None = None
     pending_delivery: bool | None = None
+    held_while_paused: bool = False
 
 
 class EscalationMessage(BaseModel):
@@ -105,6 +109,9 @@ class EscalationListResponse(BaseModel):
 
 
 class EscalationGetResponse(BaseModel):
+    ask_id: str | None = None
+    ask_url: str | None = None
+    deprecation: str | None = None
     success: bool = True
     escalation: EscalationRecord
     messages: list[EscalationMessage]
@@ -126,13 +133,37 @@ class EscalationUpdateResponse(BaseModel):
     escalation: EscalationRecord
 
 
+class EscalationResolveResponse(BaseModel):
+    success: bool = True
+    resolved: bool
+    escalation: EscalationRecord
+
+
 class EscalationApplyReplyResponse(BaseModel):
     success: bool = True
-    applied: bool
-    replayed: bool
-    action: EscalationAction
-    escalation: EscalationRecord
-    action_result: dict[str, Any] | None = None
+    applied: bool = False
+    replayed: bool = False
+    ask_id: str
+    preview: AskPreview | None = None
+    expected: AskVersion | None = None
+    decision_id: str | None = None
+    application_state: str | None = None
+    created: bool | None = None
+    receipt: dict[str, Any] | None = None
+    escalation: EscalationRecord | None = None
+
+
+class EscalationSweepResponse(BaseModel):
+    """One §5.6 sweep pass: the plan, and what the pass did about it."""
+
+    success: bool = True
+    mode: str
+    plan: dict[str, Any]
+    report: dict[str, Any]
+    open_before: int
+    open_after: int
+    target_open_items: int
+    within_target: bool
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
@@ -141,5 +172,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "escalation_get": EscalationGetResponse,
     "escalation_reply": EscalationReplyResponse,
     "escalation_update": EscalationUpdateResponse,
+    "escalation_resolve": EscalationResolveResponse,
     "escalation_apply_reply": EscalationApplyReplyResponse,
+    "escalation_sweep": EscalationSweepResponse,
 }

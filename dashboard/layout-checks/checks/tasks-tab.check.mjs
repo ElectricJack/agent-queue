@@ -11,6 +11,25 @@ export async function run(t) {
   await t.page.goto(t.url(`/projects/${PROJECT}/tasks`), { waitUntil: "networkidle0" });
   await t.page.waitForSelector("[data-task-row]");
   const compact = t.page.viewport().width < 768;
+  await t.shot("initial");
+  const blocked = '[aria-label="Blocked: 30 tasks"]';
+  await t.page.focus(blocked);
+  await t.page.keyboard.press("Enter");
+  await t.page.waitForFunction((selector) => new URL(location.href).searchParams.get("status") === "BLOCKED" && document.querySelector(selector)?.getAttribute("aria-pressed") === "true", {}, blocked);
+  assert.equal(await t.page.$eval(blocked, (el) => el.getAttribute("aria-pressed")), "true");
+  assert.equal(await t.page.$eval('[aria-label="In progress: 30 tasks"]', (el) => el.getAttribute("aria-pressed")), "false");
+  await t.page.keyboard.press("Enter");
+  await t.page.waitForFunction((selector) => !new URL(location.href).searchParams.has("status") && document.querySelector(selector)?.getAttribute("aria-pressed") === "false", {}, blocked);
+  if (compact) {
+    await expectLayout(t, { primary: ['[aria-label="Search tasks"]', '[aria-label="Task status"]', '[aria-label="Filters"]', '[title="Add task (N)"]', blocked] });
+    await t.page.focus('[aria-label="Filters"]');
+    await t.page.keyboard.press("Enter");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Filters"]')?.getAttribute("aria-expanded") === "true");
+    await expectLayout(t, { primary: ['[aria-label="Time range"]'] });
+    await t.shot("filters");
+    await t.page.keyboard.press("Enter");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Filters"]')?.getAttribute("aria-expanded") === "false");
+  }
   if (!compact) {
     assert.ok(await t.page.$("tr[data-task-row]"), "the desktop table is gone");
     await expectLayout(t);
@@ -23,18 +42,19 @@ export async function run(t) {
   const list = '[role=region][aria-label="Task list"]';
   await t.page.$eval(list, (el) => { el.scrollTop = 900; el.dispatchEvent(new Event("scroll")); });
   await t.page.waitForFunction((sel) => document.querySelector(sel).scrollTop > 0, {}, list);
-  const scrolled = await t.page.$eval(list, (el) => el.scrollTop);
   const card = await t.page.$$eval("[data-task-row]", (els) => {
     const top = document.querySelector('[aria-label="Task list"]').getBoundingClientRect().top;
     return els.find((el) => el.getBoundingClientRect().top > top + 40)?.getAttribute("data-task-row");
   });
   assert.ok(card && TASK_IDS.includes(card), `no card below the list's top edge (${card})`);
   await t.page.click(`[data-task-row="${card}"]`);
-  await t.page.waitForSelector('[role=dialog][aria-label="Pane"]');
-  await expectLayout(t, { primary: ['[aria-label="Close pane"]'] });
+  await t.page.waitForSelector('[role=dialog][aria-label="Record detail"]');
+  // Clicking scrolls a partially visible card into view; closing must preserve that position.
+  const scrolled = await t.page.$eval(list, (el) => el.scrollTop);
+  await expectLayout(t, { primary: ['[aria-label="Back to list"]'] });
   await t.shot("pane");
   await t.page.goBack();
-  await t.page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Pane"]'));
+  await t.page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Record detail"]'));
   const after = await t.page.$eval(list, (el) => el.scrollTop);
   assert.ok(Math.abs(after - scrolled) <= 2, `list scroll moved from ${scrolled} to ${after}`);
 
