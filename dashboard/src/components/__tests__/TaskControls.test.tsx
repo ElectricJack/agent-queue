@@ -13,7 +13,7 @@ const data = vi.hoisted(() => ({ task: {
 } }));
 const api = vi.hoisted(() => ({
   pauseTask: vi.fn(), resumeTask: vi.fn(), taskSet: vi.fn(), editTask: vi.fn(),
-  taskComments: vi.fn(), taskComment: vi.fn(),
+  taskComments: vi.fn(), taskComment: vi.fn(), taskSubtasks: vi.fn(),
 }));
 vi.mock("../../api/client", async (load) => ({
   ...await load<typeof import("../../api/client")>(), ...api,
@@ -37,6 +37,7 @@ beforeEach(() => {
   api.taskSet.mockResolvedValue({ data: { id: "t", fields_changed: ["description"] } });
   api.editTask.mockResolvedValue({ data: { updated: "t", fields: ["title"] } });
   api.taskComments.mockResolvedValue({ data: { comments: [], total: 0, limit: 50, offset: 0 } });
+  api.taskSubtasks.mockResolvedValue({ data: { success: true, task_id: "t", subtasks: [], total: 0, settled: 0 } });
 });
 afterEach(() => { cleanup(); client.clear(); });
 const noop = () => {};
@@ -140,4 +141,27 @@ it("does not carry a metadata draft into another task on navigation", () => {
   expect(screen.queryByDisplayValue("Draft for original")).toBeNull();
   expect(screen.getByRole("button", { name: "Edit" })).toBeEnabled();
   expect(api.editTask).not.toHaveBeenCalled();
+});
+
+describe("epic activity in the detail header", () => {
+  it.each(["full", "drawer"] as const)("heads an idle IN_PROGRESS epic with its rolled-up state in %s", async (surface) => {
+    Object.assign(data.task, {
+      status: "IN_PROGRESS", display_state: "waiting", display_reason: "Waiting on t.1",
+      child_state_counts: { completed: 1, waiting: 2 },
+    });
+    mount(surface);
+    expect(await screen.findByText("1 completed · 2 waiting")).toBeInTheDocument();
+    expect(screen.getByText("Waiting on t.1")).toBeInTheDocument();
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+  });
+});
+
+it.each(["WAITING", "HIBERNATED", "RESUME_PENDING"])("prevents status edits on %s while retaining pause", (status) => {
+  data.task.status = status;
+  mount("status");
+  expect(screen.getByRole("combobox", { name: "Status for Task" })).toBeDisabled();
+  cleanup();
+  mount("row");
+  expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Restart" })).toBeNull();
 });

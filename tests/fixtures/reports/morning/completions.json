@@ -1,0 +1,42 @@
+[
+  {
+    "id": "c1",
+    "task_id": "t1",
+    "project_id": "p",
+    "title": "CLI update",
+    "outcome": "pass",
+    "work_outcome": "completed",
+    "failure_class": null,
+    "changes": "Add morning preview",
+    "verification": "focused tests passed",
+    "tests": "[\"aq test tests/test_report_requests.py\"]",
+    "commands": "[]",
+    "branch": "aq/t1",
+    "commits": "[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]",
+    "pr_url": "https://github.com/example/repo/pull/1",
+    "summary": "CLI update",
+    "notes": "",
+    "deliverables": "[]",
+    "completed_at": 90000
+  },
+  {
+    "id": "c2",
+    "task_id": "t2",
+    "project_id": "p",
+    "title": "Pending PR",
+    "outcome": "pass",
+    "work_outcome": null,
+    "failure_class": null,
+    "changes": "Open PR",
+    "verification": "",
+    "tests": "[]",
+    "commands": "[]",
+    "branch": "aq/t2",
+    "commits": "[]",
+    "pr_url": "https://github.com/example/repo/pull/2",
+    "summary": "Pending PR",
+    "notes": "",
+    "deliverables": "[]",
+    "completed_at": 90001
+  }
+]
