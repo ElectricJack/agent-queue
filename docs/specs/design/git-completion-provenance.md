@@ -1,5 +1,10 @@
 # Exact completion provenance in Git
 
+The additive [strict containment shadow contract](strict-git-containment.md)
+defines the revision 2 fast-smooth-integration reader and the current consumer
+inventory. Its explicit contract version rejects equivalent-content delivery;
+the legacy default described below remains active until fenced cutover.
+
 Implements shared-contract items 4–6 of the approved
 `projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md`.
 The development publisher and the train's Git delivery checks share this primitive.
@@ -156,6 +161,13 @@ reports `blocked` and projects the delivery reason, including
 `missing_git_provenance`, with its task and target in integration status. Legacy
 generations still require explicit provenance migration; branch observation is
 never substituted for immutable completion evidence.
+
+An operator or live authorized supervisor may explicitly retain an unlabelled
+completed epic leaf through `integration redrive-child --adopt-source`. This
+dry-run-first recovery binds the existing passing generation to its verified
+published checkpoint source, with an exact-head apply and an audited reason.
+The admission and writer fences are specified in [work-graph](work-graph.md).
+It supplies source identity only; Git containment and train gates still decide delivery.
 
 The git-first evaluator reports an explicit `no_change` state for a passing
 completion whose recorded commit list is empty, whose immutable retained Git

@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/parent_engine.py::ParentEngineOwnership.transfer::8a3ec352bf3080f5b37655dd3c7e831746690c2540cd10fc6be703b8a34c62f9": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 223,
+      "owner": "ParentEngineOwnership.transfer",
+      "owner_fingerprint": "a6300d2feb90d633c932ddffa83649ed9ad94e66cde42d7ce739276fe5effdf2",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    },
+    "src/integration/parent_engine.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 212,
+      "owner": "ParentEngineOwnership.transfer",
+      "owner_fingerprint": "b6b3d0dc80940ff4d6fbbb6a9cb1c6bea3df3e863a92b759cb4871b7178d6086",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}
