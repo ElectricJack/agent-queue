@@ -17,6 +17,10 @@ parent, not a person's decision. Two live examples:
   (`origin_not_materialized`) because repair stage 13, a finished task, still
   owns the branch reservation.
 
+A third, later one had the mirror shape: an epic the publisher had already
+delivered read `Waiting for the next train` forever, because every fact below
+came from the train.
+
 ## Decision
 
 Add one read-only display projection, `src/integration/epic_delivery.py`. It is
@@ -35,9 +39,57 @@ already establish:
 | Operator hold | `manual_pause` metadata, `hold:*` labels |
 | Human approval | open `human` gates on the epic, operation `human_required`, batch `human_blocked` |
 | Active work | a session bound to the worker task, not stopped, with activity inside `sessions.lease_ttl_seconds` |
+| Canonical delivery | `DeliveryObserver` (`src/integration/delivery_observer.py`), asked for each COMPLETED epic and rechecked with `DeliveryView.verified_on` |
 
 The classifier is a pure function from those facts to a result, so every state
 is tested from fixtures without a daemon.
+
+## Canonical delivery
+
+The train tables record what the *train* did. They cannot record a publisher
+sweep, a direct publish or an operator adoption, so an epic delivered by any of
+those read as not delivered until someone replayed a train. The canonical
+answer is the one every other delivery consumer already asks — archive guard,
+settlement, branch cleanup, doctor, status — and this view asks the same
+question of the same observer.
+
+* It is gathered **outside every transaction**: the observer fetches its own
+  isolated stores and opens its own connections, so no publisher lock and no
+  projection read is held across the fetch. Only a read-only surface may
+  reuse a snapshot fetched inside `DeliveryObserver.READ_MAX_AGE`.
+  Interactive graph tiles, lists, node reads and the task inspector **only** reuse such a snapshot:
+  they never fetch or wait for a network Git operation. A cold or expired
+  observer snapshot produces `unknown` / unavailable delivery evidence until
+  another daemon delivery consumer refreshes it. Identity and target rechecks
+  still apply to every reused observation; cached geometry is not delivery proof.
+  `snapshot_unavailable` explains that delivery evidence has not loaded yet,
+  rather than attributing a cold or expired cache to missing Git provenance.
+  A repository fetch warms every target it captures, retaining one fetch timestamp
+  and independent freshness results for each target. An unchecked target must not
+  be marked stale because another target failed its freshness check.
+  Explain reports a display cache miss as `delivery_evidence_unavailable`, with
+  unknown claimability, rather than a frontier exclusion or a delivery failure.
+  Known delivery failures and structural frontier exclusions retain their codes.
+  These display diagnostics never supply evidence to claims, scheduling or pool
+  sizing; those decisions keep their existing Git observations and guards.
+* Each identity it evaluated is then **rechecked on a fresh read**
+  (`DeliveryView.verified_on`). A task reopened, re-completed, re-targeted or
+  rebound since the observation is reported `unknown`/`stale`, never with the
+  answer to a question it was not asked. An epic git never evaluated (no
+  designated repository) makes no canonical claim at all.
+* The answer names the **exact identity** it speaks for: the verified parent
+  completion's generation and immutable source (or the leaf completion's
+  retained source), and the exact target OID it inspected.
+* `contained` and `settled` are `delivered`; `pending` is `Delivery pending`;
+  `unknown` is `Delivery evidence unavailable` (with
+  `aq integration migrate-provenance <project> --task-id <epic> --apply` when no
+  source is retained in git); `no_artifact` says nothing, so an organizational
+  container keeps its ordinary reading.
+* A recorded `operator_accepted` adoption whose manifest accepted a
+  non-ancestor source (`acceptance: operator_equivalent`) is *named* in the
+  reason. It is wording, never the proof: git already established containment,
+  and no recorded operation can turn pending or unknown work into delivered
+  work.
 
 ## Result shape
 
@@ -65,17 +117,19 @@ is tested from fixtures without a daemon.
 
 The first rule that matches wins.
 
-1. **Delivered**: a code receipt binds the epic's current head. For a root
-   epic, the receipt is on the default branch; for a nested epic, it is in its
-   parent's branch. A receipt for another head is `unknown`/`stale`, never
-   delivered.
+1. **Delivered**: git's own answer for the epic's *current* completion says it
+   is on the project's target (`contained`, or `settled` — recorded as not owed
+   there), or a code receipt binds the epic's current head. For a root epic, a
+   receipt is on the default branch; for a nested epic, it is in its parent's
+   branch. A receipt for another head is `unknown`/`stale`, never delivered.
 2. **Paused**: `manual_pause` or a `hold:*` label.
 3. **Awaiting approval**: an open human gate, an operation in `human_required`,
    or a batch in `human_blocked`.
 4. **Implementing**: some direct child is not terminal.
 5. **Not tracked**: the project's integration mode is neither `hierarchy` nor
-   `train`. Implementation progress still shows. A `PAUSED` epic without an
-   operator hold reads as waiting, not paused.
+   `train`, and git has no canonical answer to replace it. Implementation
+   progress still shows. A `PAUSED` epic without an operator hold reads as
+   waiting, not paused.
 6. **Train/hierarchy delivery**:
    * A live writer session on the active stage's repair task is
      `integrating`. A live verifier session is `verifying`. A live session with
@@ -96,14 +150,30 @@ The first rule that matches wins.
    * A completed, verified root waits for the train (`queued`). In an active
      batch, `building`, `testing` and `promoting` are `integrating`, because
      the train is running; `sealing` and `sealed` are `queued`.
-   * An epic that completed outside the train is `not_tracked` (`Completed
-     outside the train`). That covers no checkpoint, a cancelled collection,
-     a root never train-verified, or a parent that finished without
-     collecting it. The train never owed such an epic a receipt, so its
-     silence is not a blocker.
+   * With nothing running on it and no active batch, the canonical answer has
+     the last word: `pending` is `Delivery pending` (the publisher owes it),
+     and `unknown` — or an identity that moved during the observation — is
+     `Delivery evidence unavailable`/`stale` instead of a claim that delivery is
+     settled by the absence of evidence.
+   * A managed completed root with a branch/checkpoint still owes delivery.
+     Without current aggregate verification it is `queued` (`Waiting for
+     aggregate verification`), owned by the integration train, including after
+     a cancelled legacy collection. Missing checkpoint evidence on a root
+     branch is `unknown`. Canonical pending/unknown delivery evidence remains
+     authoritative even without a legacy checkpoint. These roots never read
+     as completed solely because implementation settlement completed them.
+   * An organizational container without a branch/checkpoint, or a nested epic
+     whose parent finished without collecting it, can be `not_tracked`
+     (`Completed outside the train`).
    * Missing evidence for an epic still in flight (no checkpoint, an episode
      with no live operation, an archived verifier, a readiness error) is
      `unknown` with `evidence: unavailable`.
+
+Every rule above a `pending`/`unknown` override is a claim about work *someone
+is doing now* — an operator hold, an open gate, a live session, a running
+batch. The override never speaks over one of those: it applies only where the
+projection would otherwise conclude that delivery is settled by the absence of
+evidence, and only to a COMPLETED epic with nothing working on it.
 
 Readiness is read only for epics whose children are all terminal and that hold
 a live operation, at most 32 per read, so the statements per graph response
@@ -114,6 +184,13 @@ untracked project therefore pays one extra round trip per tiles request
 `hierarchy`/`train` projects is a constant number of batched statements in the
 same transaction. A failure is reported per epic as `unknown` with
 `evidence: unavailable` and never fails a graph or task read.
+
+The canonical answer is asked only for the COMPLETED epics in the read, and only
+when the daemon registered an observer; a reader without one claims nothing
+beyond the train evidence and pays nothing extra. The recheck is one identity
+read per target plus, for a delivered epic, one indexed statement over the
+project's own `development.operation` events — and never for an epic the
+observer had nothing to say about.
 
 ## Surfaces
 
@@ -127,6 +204,42 @@ same transaction. A failure is reported per epic as `unknown` with
   the responsible party, the time since progress, the remedy and links. Task
   controls (pause, resume, stop) are unchanged and still act on the stored
   status.
+
+## Container activity
+
+A container's stored lifecycle stays `IN_PROGRESS` while any child is
+unfinished, even when nothing under it runs. What a card, list row or detail
+header shows is computed on read by `src/task_graph/activity.py`, apart from
+this delivery projection, and is never stored. It changes no scheduling,
+claims, lifecycle transitions or schema.
+
+* Fields, next to the stored `status` on graph nodes, layout nodes,
+  `get_task`, `list_tasks` rows and `task_progress`: `display_state`
+  (`active`, `waiting` or `blocked`), `display_reason`, `child_state_counts`
+  (direct children by rolled-up state, `completed` included) and
+  `descendant_state_counts` (executable leaves by stored status; intermediate
+  containers are skipped so their bookkeeping is not counted twice).
+* Rollup over the complete subtree, hidden grandchildren included. A leaf that
+  is `IN_PROGRESS`, `ASSIGNED` or claimed `READY` is `active`; container
+  lifecycles never imply activity. If every unfinished leaf is `BLOCKED` or
+  `FAILED`, the container is `blocked`. Otherwise DEFINED, unclaimed READY,
+  PAUSED, held and gated work is `waiting`, with a reason such as `Waiting on <task>`,
+  `Paused`, `Needs you: waiting on a decision` or `Waiting for a worker`.
+* `display_state` is set only while the container's own lifecycle is DEFINED,
+  READY, ASSIGNED or IN_PROGRESS and some leaf is unfinished. A paused,
+  blocked or finished container keeps its stored status, though its counts
+  and reason are still returned.
+* Every read surface gathers the subtree facts for all of its containers in
+  one recursive statement.
+* Precedence on a card: while an epic batch is in flight (a delivery `state`
+  other than `implementing` or `not_tracked`), the delivery headline, such as
+  `Collecting child work` or `Integrating to main`, stays and keeps its
+  stripes. Otherwise the rolled-up state replaces the stored status. Waiting
+  cards are quiet, with no stripes or pulse; active cards keep the stripes;
+  blocked cards use the blocked tone. Child counts appear on collapsed cards,
+  container headers, list rows and both detail views. Status filters and the
+  status pills count the displayed state, so an idle epic no longer adds to
+  *In progress*.
 
 ## Coordination
 

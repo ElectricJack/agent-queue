@@ -1,5 +1,56 @@
 # Live context for delegation
 
+## Standard-first bugfix attempts
+
+A kind may declare `escalate: {after_failures: 1, to_class: deep-high}`.
+It then runs at its default `class` until that many substantive attempts at
+that class have failed. Neither a class hint, the classifier's class,
+nor a risk class floor may skip this initial attempt. Risk harness restrictions
+still apply. The target must rank above the default and within `max_class`.
+Narrow lanes cannot substitute another attempt class. Design lanes keep their
+existing class and harness policy.
+
+The shipped bugfix rule starts at `standard-high` and escalates to `deep-high`
+after one substantive failure. The plan and applied route record
+`escalated_after_failure`, including the source and target classes and the
+failed attempt identities, classes, timestamps and reasons. Failed worker
+closes (other than explicitly transient failures) and verification failures
+count. Infrastructure transitions such as session launch/close errors, lost
+workers and provider outages do not. Unknown Git observations, authorization
+failures and failed delivery pushes are infrastructure failures; a blocked
+close alone is not a work verdict. Rework after a passing attempt is not a
+capability failure either: `reopen_with_feedback`, and any reopen of a
+COMPLETED task, re-plans the route at the same class without journaling a
+failure, and the planner ignores journal rows with that reason or a COMPLETED
+`previous_status` (rows written before this rule).
+
+Transitions journal qualifying failures in `routing_failed_attempts` task
+metadata, in the same transaction as the guarded status write. An attempt
+counts once; review feedback after a failure adds nothing. The journal
+survives retry-count resets and infrastructure restarts, so an escalated task
+does not fall back to standard after a later infrastructure incident.
+On retry/reopen, router-owned routes return to `unrouted` before the task can
+be claimed. The original `class_hint` and route constraints survive; the prior
+routing result does not become a new hint. Role routes and emergency overrides
+retain their authority. Unknown historical failures have no journal evidence
+and do not automatically escalate.
+
+Rebuild and import the reviewed bundle before activating its exact artifact
+hash. The installed shared-fleet bundle is another copy of the same system
+playbook id and must receive the same replacement source and artifact. Import,
+activation and live activation-health verification require the operator's
+scope and the deployed mechanism; a worker's compiled fixture is not proof of
+deployment or readiness.
+
+The published bundle paths are
+`src/prompts/reviewed_playbooks/default-assignment-routing` and
+`docs/playbooks/shared-fleet/default-assignment-routing`. Both carry identical
+canonical reviewed bytes and the same playbook id. Reconcile both installed
+copies, then import and activate this system id once. An import directory's
+basename must equal `default-assignment-routing`; the legacy flat
+`default-assignment-routing-shared-fleet` alias is only a mirror, or can contain
+a nested `default-assignment-routing` directory for import.
+
 `task_route_plan` extends the mandatory router's existing `Snapshot` with
 `live_context` and `live_summary`. These describe compatible worker profiles
 and providers without changing policy, provider choice, fleet limits, gates,
@@ -7,6 +58,48 @@ or claim admission. The classifier remains task-only; provider preference belong
 to the reviewed policy and deterministic placement.
 
 ## Routine hosted preference
+
+A lane harness selector is an exact harness id or a prefix with a single
+trailing `*`. Any other glob character makes the policy invalid, so routing
+stops with `routing.invalid_policy` instead of admitting a harness a malformed
+exclusion meant to remove. A design lane's `prefer` names exact harnesses. A
+narrow lane excludes every matching harness from general candidates, using the
+same matcher as lane admission. The route reason and
+`aq doctor --check routing.unmatched_selectors` name any selector in the active
+policy that matches no installed harness. That is a report, not a refusal:
+OpenCode is installed by the operator, so the shipped lanes can match nothing.
+
+The shipped `narrow-hosted` lane selects `opencode-zen*`, including new preview
+variants. Integration and development repair origins keep `narrow: false` even
+when the task kind is `bugfix` or classification reports narrow, test-verified
+work; neither local OpenCode nor a Zen variant is eligible. Changing this policy
+requires activating the rebuilt reviewed routing artifact.
+
+Ordinary train repairs retain `created_by_kind: system` for their ordinary
+claim and managed publication lifecycle. Routing resolves their origin to
+`integration_repair` from the immutable `Repair input`, verified against the
+ordinary filing identity. This projection applies to existing filings as well
+as new ones, without reclassifying them as legacy operation delegates. A
+generic system filing with no ordinary repair input keeps its original origin.
+Source-CI repairs are filed with `created_by_kind: source_ci_repair` and route
+as `integration_repair` too; a repair filed before that origin existed is
+recognised by its source-CI record. Tasks filed with
+`created_by_kind: integration_writer`, including verifier tasks of kind `test`,
+also use the integration repair origin and stay off OpenCode lanes. Replay
+reads the routed origin from the route's rule.
+
+HTTP command callers cannot supply underscore-prefixed private arguments,
+including `_created_by_kind` and `_created_by_id`; elevation does not change
+this boundary. Internal services retain those arguments when they file
+directly through `CommandHandler`.
+
+`aq task route-override` changes the route only; it never changes task status.
+It accepts a task no worker holds and no session is starting, running or
+draining, including a READY task just stopped; stop intent alone does not prove
+the old worker is gone. To run stopped work on the new route, restart a BLOCKED
+task through `task_recover`, or resume a PAUSED
+one with `resume_task`; their recovery holds, retry budget and preserved-work
+handoff all apply.
 
 An optional `prefer_harnesses` list on a kind (overridable by origin) favors a
 compatible hosted harness after eligible local/design lane preferences. The
@@ -24,6 +117,25 @@ labelled evidence only. If no preferred hosted candidate qualifies, select a
 compatible alternative with free observed capacity by the existing pressure
 score. With no free candidate, preserve queued routing by pressure. Headroom is
 an observation used to rank preference, never an admission reservation.
+
+`balance.usage_mode: headroom` optionally weights each candidate's capacity by
+its provider's remaining quota below or at the soft limit. The default,
+`soft_limit`, retains the existing scoring and policy digest. In headroom mode,
+the binding window is the fullest fresh, unreset window for that provider;
+its factor is `1 - used_percent / 100`. Windows whose reset time has passed
+are excluded, as are stale readings. Unknown quota or percentage-only readings
+without freshness evidence have a neutral factor of 1. No reset-time pacing
+or comparison of absolute quotas between providers is inferred.
+
+Above `usage_soft_percent`, the existing soft-limit penalty applies unchanged
+and the additional headroom factor is 1. Class, lane, preference and reserved
+cell rules still apply before pressure selection. With equal slots and steady
+20% / 70% usage, routine work without a harness preference spreads in the
+80:30 ratio of effective capacity as routed backlog grows. Scores, decision
+evidence and the route reason name `usage_headroom_factor` and the binding
+window/scope/reset; `aq task explain` exposes that persisted reason. This is
+an opt-in policy mechanism; enabling it in an installed routing policy still
+requires the normal reviewed artifact activation.
 
 Apply recomputes this selection under the existing route lock. Persisted reasons
 and decision evidence name selected class/profile/provider, load and headroom,
@@ -73,7 +185,11 @@ Quarantine reports `launch_backoff` and expiry, rather than captured stderr.
 
 `task_route_apply` refreshes eligibility and load inside the existing fleet
 advisory-lock transaction, checks provider/harness/lifecycle/class compatibility,
-and reselects on current routed backlog. It stores the bounded apply observation
+and locks the task row before reading its fresh routing inputs. A concurrent
+`task_route --prefer ... --prefer-mode strict` either precedes that read or
+clears the applied route afterwards; an older apply cannot overwrite the new
+preference with a route to another harness.
+It then reselects on current routed backlog. It stores the bounded apply observation
 in the route record. Context supplied by a caller is never trusted for eligibility
 or admission. Concurrent decisions observe previously committed routes; claim
 and guarded route writes continue to protect held tasks.
@@ -82,3 +198,20 @@ Verification lives in `tests/test_routing_router.py` and
 `tests/test_routing_planner.py`: supply states, stale/missing quota, provider
 degradation/disablement, caps/workspaces/quarantine, pending launch accounting,
 bounded/private output and concurrent apply freshness.
+
+
+## OpenCode family admission and private arguments
+
+Every OpenCode CLI family member is excluded from the general worker pool.
+Family recognition uses the installed harness provider and command as well as
+its id, so a custom id or an active narrow selector naming only `opencode-zen`
+cannot admit another family member to general repair, verifier or writer work.
+Explicit narrow lane admission and its task classification requirements remain
+policy controlled. `routing.unmatched_selectors` also warns about installed
+OpenCode family members that no active narrow lane selector covers, using the
+project harness scope and the active artifact's literal policy.
+
+MCP and typed HTTP routes remove every caller argument beginning with `_`
+before dispatch. Typed routes then attach their server-derived authenticated
+scope. Internal origin and routing constraints remain available to trusted
+in-process command callers only.

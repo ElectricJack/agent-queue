@@ -31,12 +31,14 @@ from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_
 from src.profiles.capabilities import CapabilityPolicy
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from src.vault import ensure_default_formulas
+from tests._private_values_helper import private_value_service
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
     artifact_ref_for,
 )
 from tests.test_object_loop import B, C, H, receipt, start_args, variant
+from tests.test_review_commands import decide
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "tests/fixtures/playbooks/v2/object-loop"
@@ -51,14 +53,15 @@ def artifact():
     return load_definition_json((BUNDLE / "artifact.json").read_text())
 
 
-async def review(db, review_id="brief-review", kind="other", revision=1, digest=C):
+async def review(db, review_id="brief-review", kind="other", revision=1, digest=C,
+                 *, decider="user"):
     gate, _ = await db.create_gate(PROJECT, "review", review_id, await_id=review_id)
     await db.resolve_gate(gate, resolved_by="human", resolution="approved")
     async with db.immediate() as conn:
         await conn.execute(insert(doc_reviews).values(
             id=review_id, project_id=PROJECT, kind=kind, title=review_id,
             vault_path=f"projects/{PROJECT}/{review_id}.md", current_revision=revision,
-            state="approved", gate_id=gate, decider="user", decided_by="human",
+            state="approved", gate_id=gate, decider=decider, decided_by="human",
             decided_at=1, created_at=1, updated_at=1,
         ))
         await conn.execute(insert(doc_review_revisions).values(
@@ -86,8 +89,9 @@ async def setup(command_handler_factory, tmp_path, monkeypatch):
     await handler.db.close()
 
 
-def variables():
+def variables(reference_kind="calibrated"):
     request = start_args()
+    request["reference_kind"] = reference_kind
     request.pop("project_id")
     request.pop("epic_task_id")
     request["policy_sha256"] = artifact_ref_for(artifact()).artifact_sha256.removeprefix("sha256:")
@@ -95,9 +99,9 @@ def variables():
     return {"object_id": "rock", "proposal_sha256": H, "start": json.dumps(request)}
 
 
-async def cook(handler):
+async def cook(handler, *, reference_kind="calibrated"):
     result = await handler._cmd_formula_cook({
-        "name": "object", "project_id": PROJECT, "vars": variables(),
+        "name": "object", "project_id": PROJECT, "vars": variables(reference_kind),
     })
     assert result["success"], result
     return result
@@ -125,7 +129,10 @@ async def sweep(handler, *, rule="recover"):
 
         live.register(replace(registration, invoke=invoke))
     engine = PlaybookEngine(
-        services=EngineServices(contracts=live, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=live, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=RecordingRunRepository(),
     )
     event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
@@ -148,7 +155,10 @@ async def sweep(handler, *, rule="recover"):
         })
         previews.register(replace(registration, contract=contract, preview=preview))
     dry_engine = PlaybookEngine(
-        services=EngineServices(contracts=previews, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=previews, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=RecordingRunRepository(),
     )
     tree = await dry_engine.dry_run(ref, event, TRUSTED_LOCAL)
@@ -163,6 +173,7 @@ async def sweep(handler, *, rule="recover"):
     if trace_dir := os.getenv("AQ_OBJECT_LOOP_TRACE_DIR"):
         destination = Path(trace_dir)
         destination.mkdir(parents=True, exist_ok=True)
+        reviews = await handler.db.list_reviews(project_id=PROJECT)
         (destination / f"{uuid.uuid4().hex}.json").write_text(json.dumps({
             "test": os.environ.get("PYTEST_CURRENT_TEST", "").split(" (", 1)[0],
             "rule": rule, "artifact_sha256": ref.artifact_sha256,
@@ -171,6 +182,10 @@ async def sweep(handler, *, rule="recover"):
                          for name, _, result in recordings],
             "dry_nodes": [{"step": n.step_id, "outcome": n.outcome, "target": n.target}
                           for n in tree.paths[0].nodes],
+            "review_audiences": sorted(
+                [{"decider": r["decider"], "kind": r["kind"], "title": r["title"]}
+                 for r in reviews], key=lambda r: (r["decider"], r["kind"], r["title"]),
+            ),
         }, indent=2) + "\n")
     return recordings, tree
 
@@ -209,8 +224,10 @@ async def score_packet(handler, current, *, loss=0.1, invalid=False, action="con
         "next_variants": next_variants if next_variants is not None else [variant("next").model_dump()],
     }
     if action == "checkpoint":
-        await review(handler.db, "checkpoint", digest=B)
+        await review(handler.db, "checkpoint", digest=B, decider="supervisor")
         packet.update(review_id="checkpoint", review_revision=1, review_sha256=B)
+    if action == "stop":
+        packet["stop_reason"] = "The planned work is complete."
     await handler.db.add_task_context(
         loop["score_task_id"], type="note", label="note", content=SCORE_PREFIX + json.dumps(packet),
     )
@@ -218,8 +235,8 @@ async def score_packet(handler, current, *, loss=0.1, invalid=False, action="con
     return packet
 
 
-async def boot(handler):
-    cooked = await cook(handler)
+async def boot(handler, *, reference_kind="calibrated"):
+    cooked = await cook(handler, reference_kind=reference_kind)
     bootstrap = await handler.db.get_task(cooked["task_ids"][0])
     assert bootstrap.is_blocked
     trace, tree = await sweep(handler, rule="on-formula")
@@ -227,6 +244,100 @@ async def boot(handler):
     assert not any(g["status"] == "open" and g["gate_type"] == "event"
                    for g in await handler.db.get_gates_for_task(bootstrap.id))
     return cooked
+
+
+async def test_attempt_live_and_dry_has_only_plain_brief_and_one_final_result(setup):
+    from src.deliverables import resolve_task_deliverables
+    from src.reviews.notifier import ReviewNotifier
+    from tests.test_review_commands import _image_args
+    from tests.test_review_notifier import FakeTransport
+
+    # The policy approval is preparatory, outside this object's attempt.
+    await setup.db.mark_review_notified("rev-amber-zenith", 2)
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "brief-review").values(
+            title="Build a procedural rock",
+        ))
+        await conn.execute(update(doc_review_revisions).where(
+            doc_review_revisions.c.review_id == "brief-review",
+        ).values(content="Build a procedural rock in up to eight rounds with a $30 budget."))
+    await boot(setup)
+    current = await complete_wave(setup)
+    candidate_id = current["state"]["wave"][0]["task_id"]
+    score_id = current["state"]["score_task_id"]
+    for task_id, title in ((candidate_id, "Half-depth chip-scar probe"),
+                           (score_id, "rock · r0 score")):
+        task = await setup.db.get_task(task_id)
+        assert await resolve_task_deliverables(setup.db, task) == []
+        internal = await setup.execute("review_submit", {
+            "task_id": task_id, "kind": "other", "title": title,
+            "content": "Internal capture receipts and continuation details.",
+        })
+        assert internal["success"], internal
+        assert (await setup.db.get_review(internal["review_id"]))["decider"] == "supervisor"
+    await score_packet(setup, current, action="stop", next_variants=[])
+    await sweep(setup)
+    async with setup.db._engine.connect() as conn:
+        finalizer_id = (await conn.execute(select(object_loops.c.finalization_task_id))).scalar_one()
+    finalizer = await setup.db.get_task(finalizer_id)
+    assert not finalizer.is_blocked
+    assert await resolve_task_deliverables(setup.db, finalizer) == [
+        {"id": "result", "kind": "review", "target": "other"},
+    ]
+    evidence = json.loads(finalizer.description.split("Internal evidence (for the worker):\n")[1])
+    assert evidence["baseline_capture_uri"] == "artifact://sha256/" + H
+    assert evidence["best_receipt"]["capture_receipts"][0]["view_id"] == "front"
+    assert "side by side" in finalizer.description
+    result = await setup.execute("review_submit", {
+        "task_id": finalizer_id, "kind": "other", "title": "Rock result",
+        "content": "The rock looks rounder. The exact improvement was not measured. "
+                   "Next time, improve the cracks. Front view images are attached below.",
+    })
+    assert result["success"], result
+    for caption in ("Before", "After"):
+        attached = await setup.execute("review_attachment_add", {
+            **_image_args(result["review_id"]), "candidate_id": caption,
+            "caption": caption, "view_id": "front",
+        })
+        assert attached["success"], attached
+    # Reconcile and report retries keep the same result and do not expose
+    # the worker-only evidence carried in the finalizer's description.
+    await sweep(setup)
+    assert len(await setup.db.list_reviews_submitted_by_task(finalizer_id)) == 1
+    reviews = await setup.db.list_reviews(project_id=PROJECT)
+    human = [r for r in reviews if r["kind"] == "other" and r["decider"] == "user"]
+    assert {r["title"] for r in human} == {"Build a procedural rock", "Rock result"}
+    attachments = await setup.db.list_review_attachments(result["review_id"], 1)
+    assert {(a["view_id"], a["candidate_id"]) for a in attachments} == {
+        ("front", "Before"), ("front", "After"),
+    }
+    transport = FakeTransport()
+    notifier = ReviewNotifier(setup.db, transport, "123", "https://aq.example.test")
+    assert await notifier.tick() == 2
+    notices = "\n".join(content for _, content in transport.posts)
+    assert "Build a procedural rock" in notices and "Rock result" in notices
+    assert "r0" not in notices and "probe" not in notices and "receipts" not in notices
+    assert finalizer_id not in notices
+    assert "other for review: Rock result" not in notices
+
+
+async def test_checkpoint_refuses_a_human_review_without_changing_the_loop(setup):
+    await boot(setup)
+    current = await complete_wave(setup)
+    packet = await score_packet(setup, current, action="checkpoint")
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "checkpoint")
+                           .values(decider="user"))
+    before = await state(setup)
+    rejected = await setup._cmd_object_score_record(packet)
+    assert not rejected["success"]
+    assert "supervisor decider" in rejected["error"]
+    assert (await state(setup))["state"] == before["state"]
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "checkpoint")
+                           .values(decider="supervisor"))
+    await sweep(setup)
+    assert (await state(setup))["state"]["checkpoint"]["review_id"] == "checkpoint"
 
 
 async def test_bootstrap_restart_and_formula_discovery(setup, tmp_path):
@@ -254,9 +365,10 @@ async def test_bootstrap_restart_and_formula_discovery(setup, tmp_path):
     assert (await setup.db.get_task(cooked["container_id"])).status != TaskStatus.COMPLETED
 
 
-@pytest.mark.parametrize("scenario", ["improve", "tie", "invalid", "budget", "plateau", "cap"])
-async def test_scoring_live_and_dry_traces(setup, scenario):
-    await boot(setup)
+@pytest.mark.parametrize("scenario", ["improve", "tie", "invalid", "repair", "budget", "plateau", "cap"])
+@pytest.mark.parametrize("reference_kind", ["calibrated", "self"])
+async def test_scoring_live_and_dry_traces(setup, scenario, reference_kind):
+    await boot(setup, reference_kind=reference_kind)
     current = await complete_wave(setup)
     if scenario in {"tie", "plateau"}:
         async with setup.db.immediate() as conn:
@@ -272,13 +384,23 @@ async def test_scoring_live_and_dry_traces(setup, scenario):
             modified["round_id"] = 7
             await conn.execute(update(object_loops).values(state=modified))
         current = await state(setup)
+    if scenario == "repair":
+        async with setup.db.immediate() as conn:
+            modified = copy.deepcopy(current["state"])
+            modified["repair_count"] = modified["max_repair_rounds"]
+            await conn.execute(update(object_loops).values(state=modified))
+        current = await state(setup)
     next_variants = [variant("next", usd=100 if scenario == "budget" else 1).model_dump()]
-    await score_packet(setup, current, invalid=scenario == "invalid", next_variants=next_variants)
+    await score_packet(setup, current, invalid=scenario in {"invalid", "repair"},
+                       next_variants=next_variants)
     trace, _ = await sweep(setup)
     result = await state(setup)
+    assert result["state"]["reference_kind"] == reference_kind
     assert any(name == "object_score_record" for name, _, _ in trace)
-    assert result["state"]["incumbent_sha256"] == (H if scenario in {"tie", "invalid", "plateau"} else B)
-    if scenario in {"budget", "plateau", "cap"}:
+    assert result["state"]["incumbent_sha256"] == (
+        H if scenario in {"tie", "invalid", "repair", "plateau"} else B
+    )
+    if scenario in {"repair", "budget", "plateau", "cap"}:
         assert result["state"]["status"] == "stopped"
         assert "continuation refused" in result["state"]["stop_reason"]
     else:
@@ -508,7 +630,7 @@ async def test_object_review_approval_stores_pinned_bytes_without_activation(set
     revision = await setup.db.get_review_revision(submitted["review_id"], 1)
     pinned = load_definition_json(revision["playbook_artifact"])
     assert pinned.steps == artifact().steps
-    approved = await setup.execute("review_decide", {
+    approved = await decide(setup, {
         "review_id": submitted["review_id"], "revision": 1, "decision": "approve",
     })
     assert approved["success"] and approved["playbook"]["stored"], approved
@@ -516,3 +638,85 @@ async def test_object_review_approval_stores_pinned_bytes_without_activation(set
     assert await setup.db.get_playbook_artifact_row(digest)
     assert canonical_bytes(pinned) == revision["playbook_artifact"].encode()
     assert await setup.db.list_playbook_activations() == []
+
+
+async def test_revised_brief_start_failure_is_visible_and_notified_once(setup):
+    from types import SimpleNamespace
+
+    from src.database.tables import gates, messages
+    from src.doctor.stall_checks import _object_bootstrap_findings
+
+    handler = setup
+    await cook(handler)
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "brief-review").values(
+            current_revision=2,
+        ))
+        await conn.execute(insert(doc_review_revisions).values(
+            review_id="brief-review", revision=2, content="revised brief", content_sha256=B,
+            submitted_by="agent", submitted_at=2,
+        ))
+    definition = artifact()
+    ref = artifact_ref_for(definition)
+    store = InMemoryArtifactStore()
+    store.put(definition)
+    await handler.db.upsert_playbook_artifact(
+        ref, scope="project", scope_identifier=PROJECT,
+        path=str(BUNDLE / "artifact.json"), size_bytes=(BUNDLE / "artifact.json").stat().st_size,
+    )
+    repository = handler.db
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
+        runs=repository,
+    )
+    failures = []
+    for _ in range(2):
+        result = await engine.run_rule(ref, "recover", {
+            "event_type": "timer.5m", "project_id": PROJECT, "event_id": uuid.uuid4().hex,
+        }, TRUSTED_LOCAL)
+        assert result.outcome == "failed"
+        assert result.snapshot.lifecycle.value == "failed"
+        assert result.snapshot.error in (None, "private_run_error")
+        stored = await repository.load_run(result.run_id)
+        restored = await repository.resolve_private_snapshot(stored, TRUSTED_LOCAL)
+        refusal = restored.bindings["started"]
+        assert refusal["error_code"] == "object_loop.start_refused"
+        assert "pins revision 1" in refusal["error"]
+        assert "current revision is 2 (approved)" in refusal["error"]
+        receipts = await repository.list_receipts(result.run_id)
+        failures.extend(r for r in receipts if r.step_id.endswith("--start")
+                        and r.outcome == "failure")
+        public = json.dumps({
+            "snapshot": result.snapshot.redacted().to_body(), "stored": stored.to_body(),
+            "receipts": [{"inputs": r.inputs, "result": r.result, "error": r.error}
+                         for r in receipts],
+        })
+        for protected in ("pins revision 1", "current revision is 2 (approved)", H, B):
+            assert protected not in public
+    assert len(failures) == 2
+    assert all(set(r.result) == {"__redacted__"} and r.result["__redacted__"] > 0
+               for r in failures)
+    async with handler.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.from_id == "object-loop",
+        ))).mappings().all()
+        assert len(notices) == 1
+        assert notices[0].to_id == f"supervisor-{PROJECT}"
+        assert "current revision is 2 (approved)" in notices[0].body
+        assert not (await conn.execute(select(object_loops))).first()
+        assert not (await conn.execute(select(tasks).where(
+            tasks.c.created_by_kind == "object_loop",
+        ))).first()
+    ctx = SimpleNamespace(db=handler.db)
+    assert await _object_bootstrap_findings(ctx, {PROJECT}, time.time()) == []
+    findings = await _object_bootstrap_findings(ctx, {PROJECT}, time.time() + 901)
+    assert len(findings) == 1
+    assert "pins revision 1" in findings[0]["detail"]
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(gates).where(gates.c.id == findings[0]["gate_id"]).values(
+            status="resolved",
+        ))
+    assert await _object_bootstrap_findings(ctx, {PROJECT}, time.time() + 901) == []
