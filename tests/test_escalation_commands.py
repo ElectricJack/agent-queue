@@ -9,17 +9,15 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.event_bus import EventBus
-from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
+from src.models import Agent, AgentState, AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def env(tmp_path):
-    db = Database(lease_dsn("escalation-commands"))
-    await db.initialize()
+async def env(tmp_path, reuse_database):
+    db = await reuse_database("escalation-commands")
     await db.create_project(Project(id="p", name="Project P"))
     await db.create_project(Project(id="other", name="Other"))
     await db.create_profile(
@@ -68,7 +66,6 @@ async def env(tmp_path):
     orch.git = MagicMock()
     orch.bus = EventBus(env="dev")
     yield CommandHandler(orch, config), db
-    await db.close()
 
 
 def create_args(**overrides):
@@ -158,7 +155,7 @@ async def test_reply_identity_cannot_be_spoofed_and_notice_is_atomic(env):
         "escalation_reply",
         {
             "escalation_id": incident["id"],
-            "text": "Proceed",
+            "text": "approve",
             "external_message_id": "dashboard-1",
             "human": True,
             "actor_id": "admin",
@@ -192,10 +189,22 @@ async def test_reply_identity_cannot_be_spoofed_and_notice_is_atomic(env):
     assert [message.id for message in queued] == [reply["supervisor_message_id"]]
 
 
+async def versioned_apply(handler, args):
+    legacy = await supervisor_execute(handler, "escalation_apply_reply", args)
+    assert legacy["error_code"] == "ask.context_missing", legacy
+    args["expected"] = legacy["expected"]
+    prepared = await supervisor_execute(handler, "escalation_apply_reply", {**args, "prepare": True})
+    if not prepared["success"]:
+        return prepared
+    args["preview_id"] = prepared["preview"]["id"]
+    return await supervisor_execute(handler, "escalation_apply_reply", args)
+
+
 async def test_apply_reply_resolves_only_bound_human_gate_once(env):
     handler, db = env
     gate_id, _ = await db.create_gate(
-        "p", "human", "Approve rollout", question="Proceed?", await_id="rollout-1"
+        "p", "human", "Approve rollout", question="Proceed?", await_id="rollout-1",
+        human_request={"policy": "approval_hold_v1", "context": {"waiting_effect": "Rollout waits."}}
     )
     other_gate_id, _ = await db.create_gate(
         "p", "human", "Other choice", question="Other?", await_id="other-1"
@@ -214,7 +223,7 @@ async def test_apply_reply_resolves_only_bound_human_gate_once(env):
         "escalation_reply",
         {
             "escalation_id": incident["id"],
-            "text": "Proceed",
+            "text": "approve",
             "external_message_id": "dashboard-gate-answer",
         },
     )
@@ -239,15 +248,17 @@ async def test_apply_reply_resolves_only_bound_human_gate_once(env):
         "reply_id": accepted["reply"]["id"],
         "expected_revision": accepted["escalation"]["revision"],
         "idempotency_key": "apply-gate-answer",
+        "option_key": "approve",
         "action_kind": "gate_resolve",
         "target_id": gate_id,
     }
-    applied = await supervisor_execute(handler, "escalation_apply_reply", args)
+    applied = await versioned_apply(handler, args)
     replayed = await supervisor_execute(handler, "escalation_apply_reply", args)
     assert applied["success"] is True and applied["applied"] is True
     assert applied["escalation"]["state"] == "resolved"
     assert replayed["success"] is True and replayed["replayed"] is True
-    assert len(await db.list_escalation_actions(incident["id"])) == 1
+    assert applied["decision_id"] == replayed["decision_id"]
+    assert applied["created"] and not replayed["created"]
     assert (await db.get_gate(gate_id))["status"] == "resolved"
     assert (await db.get_gate(other_gate_id))["status"] == "open"
 
@@ -257,6 +268,21 @@ async def test_required_human_question_uses_verified_reply_not_supervisor_text(e
     await db.create_task(
         Task(id="question-task", project_id="p", title="Question", description="Q")
     )
+    await db.create_agent(Agent(id="worker-agent", name="Worker", profile_id="worker", state=AgentState.BUSY))
+    await db.update_task("question-task", status=TaskStatus.IN_PROGRESS, assigned_agent_id="worker-agent", claim_epoch=4)
+    await db.update_agent("worker-agent", current_task_id="question-task")
+    await db.create_session(SessionRecord(id="worker-session", project_id="p", profile_id="worker",
+        harness="codex", provider="fake", name="worker", lifecycle="task", work_dir="/workspace",
+        epoch="test", instance_token="worker-token", started_at=time.time(), task_id="question-task",
+        state="running", agent_id="worker-agent", last_claim_epoch=4))
+    handler.orchestrator.agent_questions.db = db
+    handler.config.messages.enabled = True
+    terminal = MagicMock()
+    terminal.supports.return_value = True
+    terminal.is_running = AsyncMock(return_value=True)
+    terminal.nudge = AsyncMock()
+    handler.orchestrator.agent_questions.providers = MagicMock()
+    handler.orchestrator.agent_questions.providers.create.return_value = terminal
     await db.create_agent_question(
         id="question-1",
         session_id="worker-session",
@@ -292,11 +318,10 @@ async def test_required_human_question_uses_verified_reply_not_supervisor_text(e
             "external_message_id": "question-human-answer",
         },
     )
-    answer = AsyncMock(return_value={"id": "question-1", "state": "delivered"})
-    handler.orchestrator.agent_questions.answer = answer
-    result = await supervisor_execute(
+    answer = AsyncMock(wraps=handler.orchestrator.agent_questions.answer_on)
+    handler.orchestrator.agent_questions.answer_on = answer
+    result = await versioned_apply(
         handler,
-        "escalation_apply_reply",
         {
             "escalation_id": incident["id"],
             "reply_id": accepted["reply"]["id"],
@@ -306,14 +331,15 @@ async def test_required_human_question_uses_verified_reply_not_supervisor_text(e
             "target_id": "question-1",
         },
     )
-    assert result["success"] is True
-    answer.assert_awaited_once_with(
-        "question-1",
-        "Use the non-destructive option",
-        actor="human:local-operator",
-        human=True,
-        verified_escalation_id=incident["id"],
-    )
+    assert result["success"] is True, result
+    answer.assert_awaited_once()
+    packet = answer.await_args.args[1]
+    assert packet["overall_note"] == "Use the non-destructive option"
+    assert packet["actor_id"] == "human:local-operator"
+    assert packet["packet"]["actor"]["input_id"] == accepted["reply"]["id"]
+    assert (await db.get_agent_question("question-1"))["submission_state"] == "delivered"
+    terminal.nudge.assert_awaited_once()
+
 
 
 async def test_failed_question_recovery_stays_open_with_same_conversation_followup(env):
@@ -358,9 +384,8 @@ async def test_failed_question_recovery_stays_open_with_same_conversation_follow
     handler.orchestrator.agent_questions.answer = AsyncMock(
         return_value={"error": "original worker claim is stale"}
     )
-    result = await supervisor_execute(
+    result = await versioned_apply(
         handler,
-        "escalation_apply_reply",
         {
             "escalation_id": incident["id"],
             "reply_id": accepted["reply"]["id"],
@@ -370,14 +395,14 @@ async def test_failed_question_recovery_stays_open_with_same_conversation_follow
             "target_id": "q-failed",
         },
     )
-    assert result["error_code"] == "action_failed"
-    assert result["escalation"]["state"] == "reply_received"
+    assert result["error_code"] == "ask.stale_source"
+    assert (await db.get_escalation(incident["id"]))["state"] == "reply_received"
     history = await db.list_escalation_messages(incident["id"])
-    assert [entry["direction"] for entry in history] == ["inbound", "outbound"]
-    assert "original worker claim is stale" in history[-1]["text"]
+    assert [entry["direction"] for entry in history] == ["inbound"]
+    handler.orchestrator.agent_questions.answer.assert_not_awaited()
 
 
-async def test_task_recovery_delegates_exact_incident_decision_and_reply(env):
+async def test_task_recovery_refuses_ambiguous_reply_without_source_action(env):
     handler, db = env
     await db.create_task(
         Task(
@@ -419,9 +444,8 @@ async def test_task_recovery_delegates_exact_incident_decision_and_reply(env):
         }
     )
     handler._cmd_task_recover = recover
-    result = await supervisor_execute(
+    result = await versioned_apply(
         handler,
-        "escalation_apply_reply",
         {
             "escalation_id": incident["id"],
             "reply_id": accepted["reply"]["id"],
@@ -432,15 +456,10 @@ async def test_task_recovery_delegates_exact_incident_decision_and_reply(env):
             "decision": "retry",
         },
     )
-    assert result["success"] is True
-    recover.assert_awaited_once_with(
-        {
-            "task_id": "blocked-task",
-            "incident_id": "recovery-incident",
-            "decision": "retry",
-            "reason": "Retry after preserving the current evidence",
-        }
-    )
+    assert result["error_code"] == "ask.input_ambiguous"
+    recover.assert_not_awaited()
+    assert (await db.get_task("blocked-task")).status == TaskStatus.BLOCKED
+
 
 
 # ======================================================================

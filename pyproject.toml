@@ -178,7 +178,7 @@ dev = [
     "pytest-xdist>=3.5",
     # Property-based tests (random lifecycle sequences and invariants); see
     # tests/test_task_lifecycle_properties.py.
-    "hypothesis>=6.0.0",
+    "hypothesis>=6.100",
     # Keep shard selection reproducible across CI runners and timing refreshes.
     "pytest-split==0.11.0",
     "ruff>=0.4.0",
