@@ -1,0 +1,9 @@
+{
+  "exclusions": {
+    "src/waits/explain.py::owner_key": "Pure mapping from a wait owner category to a graph node key; integration is a category label, not delivery state or authority."
+  },
+  "generic_dependencies": {
+    "src/waits/explain.py::graph_paths": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
+    "src/waits/explain.py::owner_key": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority."
+  }
+}
