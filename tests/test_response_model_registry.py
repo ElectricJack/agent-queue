@@ -22,7 +22,6 @@ _UNSTRUCTURED_EXEMPT: set[str] = {
     # Leaving them exempt keeps the guard useful for new additions (any new
     # categorized command without a model still fails) without demanding a
     # cleanup pass that isn't part of this lane.
-    "ask_human",
     "create_task_graph",
     "db_preflight_hierarchy",
     "doctor",
@@ -55,6 +54,20 @@ def test_every_categorized_command_has_response_model(cmd_name: str) -> None:
         "but has no entry in any src/api/models/*.py RESPONSE_MODELS dict. "
         "Add one so the generated TS client has a concrete type."
     )
+
+
+@pytest.mark.parametrize("payload", [
+    {"success": True, "proposal_id": "legacy-1", "left_gated": True},
+    {
+        "success": True, "proposal_id": "legacy-1", "batch_id": "legacy-1",
+        "state": "held", "structure_revision": 1, "structure_digest": "digest",
+        "task_ids": ["task-1"], "members": {"leaf": "task-1"}, "replayed": True,
+        "reviewer_task_id": "review-1",
+    },
+])
+def test_legacy_adopt_response_preserves_gated_and_replayed_receipts(payload):
+    model = get_all_response_models()["spec_ingest_legacy_adopt"]
+    assert model.model_validate(payload).model_dump(exclude_unset=True) == payload
 
 
 def test_message_model_from_alias_round_trips() -> None:
@@ -101,7 +114,7 @@ _REQUIRED_FIELDS_BY_COMMAND: dict[str, set[str]] = {
     "gate_create": {"project_id", "gate_type", "title"},
     "gate_list": set(),
     "gate_show": {"gate_id"},
-    "gate_resolve": {"gate_id", "resolved_by"},
+    "gate_resolve": {"gate_id"},
     # session operator surface — identifier args are optional at the schema
     # layer because ``_resolve_session`` accepts any of session_id/id/name/
     # task_id; the presence of the property is what matters for silent-drop.

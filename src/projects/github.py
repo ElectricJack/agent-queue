@@ -1,10 +1,10 @@
-"""GitHub repository identity normalisation and an async ``gh`` CLI wrapper.
+"""GitHub repository identity normalisation and onboarding adapter.
 
 Project-onboarding design §4.5 (identity normalisation), §5.2 (discovery
 commands) and §7 (security).  The dashboard lets an operator paste a GitHub
-URL or pick a repository through the daemon host's ``gh`` session; this module
-is the single place that turns those inputs into a validated identity and
-talks to the ``gh`` executable.
+URL or pick a repository through the daemon host's GitHub access service. This
+module turns onboarding inputs into validated repository identities and
+adapts results from the shared ``GhRunner`` for the command and UI contracts.
 
 Contract
 --------
@@ -17,11 +17,10 @@ Contract
   built.  Anything on another host, with embedded credentials, or with
   invalid owner/name characters raises :class:`GitHubError` with
   ``github_repository_inaccessible``.
-* :class:`GhClient` runs ``gh`` through :func:`asyncio.create_subprocess_exec`
-  with argument arrays only.  User-controlled values (query, cursor, owner,
-  name) travel as single arguments, never through a shell string.  A missing
-  binary is ``github_cli_missing``; a logged-out session is
-  ``github_auth_required``; any other non-zero exit is ``github_cli_failed``.
+* :class:`GhClient` delegates every GitHub command to the shared
+  :class:`~src.git.github_cli.GhRunner`. GraphQL data travels as bounded JSON
+  on stdin, never as command arguments. App mode validates explicitly named
+  repositories and refuses account operations before process launch.
 * :func:`scrub_secrets` removes credential-bearing URLs, GitHub token
   literals, ``Authorization`` headers, ``GH_TOKEN=`` style assignments and
   ``gh auth status`` / ``gh auth token`` output before any subprocess text is
@@ -29,22 +28,26 @@ Contract
   details, so every error raised here is safe to return to the dashboard.
 
 The module never reads a token itself, never runs ``gh auth token``, and does
-not import ``src.config`` or the database.
+not import the database.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 import re
-import shutil
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Literal
 from urllib.parse import urlsplit
+
+from src.git.github import GitHubAccess
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialMode,
+    GitHubRepositoryBinding,
+)
 
 __all__ = [
     "DEFAULT_SEARCH_LIMIT",
@@ -108,6 +111,7 @@ class GitHubErrorCode(StrEnum):
     REPOSITORY_CONFLICT = "github_repository_conflict"
     CLI_FAILED = "github_cli_failed"
     INVALID_INPUT = "github_invalid_input"
+    OPERATION_UNSUPPORTED = "github_operation_unsupported"
 
 
 class GitHubError(ValueError):
@@ -330,6 +334,12 @@ class GitHubAuthStatus:
     authenticated: bool
     login: str | None
     hostname: str = GITHUB_HOST
+    credential_mode: str = "existing_login"
+    repository_access: bool | None = None
+    account_operations_available: bool = True
+    configuration_changes_require_restart: bool = True
+    app_id: int | None = None
+    installation_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -423,15 +433,7 @@ query($q: String!, $first: Int!, $after: String) {
 
 
 class GhClient:
-    """Async wrapper around the ``gh`` executable (design §5.2, §7).
-
-    ``executable`` is a bare name resolved on ``PATH`` at call time (so a
-    freshly installed ``gh`` is picked up without a restart) or an explicit
-    path.  ``env`` replaces the inherited environment; prompt-disabling
-    variables are always layered on top.  ``timeout`` bounds each invocation
-    in seconds; a hung ``gh`` (an interactive prompt that slipped through) is
-    killed and reported as ``github_cli_failed``.
-    """
+    """Onboarding responses over the startup-selected GitHub access service."""
 
     #: Applied on top of the environment for every invocation.
     NO_PROMPT_ENV: Mapping[str, str] = {
@@ -452,74 +454,57 @@ class GhClient:
         env: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         create_timeout: float = 60.0,
+        access: GitHubAccess | None = None,
     ) -> None:
-        self.executable = executable
         self.hostname = hostname
-        self._env = dict(env) if env is not None else None
-        self.timeout = timeout
+        self.access = access or GitHubAccess.from_config(
+            executable=executable, env=env, timeout=timeout
+        )
         self.create_timeout = create_timeout
 
     # -- plumbing ---------------------------------------------------------
 
     def subprocess_env(self) -> dict[str, str]:
-        base = dict(os.environ if self._env is None else self._env)
-        base.update(self.NO_PROMPT_ENV)
-        return base
+        return dict(self.access.runner._base_env, **self.NO_PROMPT_ENV)
 
     def resolve_executable(self) -> str | None:
-        """Absolute path of ``gh`` or ``None`` when it is not installed."""
-        env = self.subprocess_env()
-        if os.sep in self.executable:
-            return self.executable if os.access(self.executable, os.X_OK) else None
-        return shutil.which(self.executable, path=env.get("PATH"))
-
-    async def _run(self, args: list[str], *, timeout: float | None = None) -> _Completed:
-        """Run ``gh <args>``; raise ``github_cli_missing`` when it is absent.
-
-        Never raises for a non-zero exit — callers classify that — but the
-        returned ``stderr`` / ``stdout`` are already scrubbed.
-        """
-        path = self.resolve_executable()
-        if path is None:
-            raise GitHubError(
-                GitHubErrorCode.CLI_MISSING,
-                "the GitHub CLI (gh) is not installed on the daemon host; "
-                "install it and run 'gh auth login'",
-            )
-        effective_timeout = self.timeout if timeout is None else timeout
+        """Absolute path of ``gh`` or ``None`` when it is unavailable."""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                path,
-                *args,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self.subprocess_env(),
-            )
-        except FileNotFoundError:
-            raise GitHubError(
-                GitHubErrorCode.CLI_MISSING,
-                "the GitHub CLI (gh) is not installed on the daemon host; "
-                "install it and run 'gh auth login'",
-            ) from None
+            return self.access.runner._resolve_executable()
+        except GitHubAccessError as exc:
+            if exc.category == "cli_missing":
+                return None
+            raise
+
+    async def _run(
+        self, args: list[str], *, timeout: float | None = None, stdin: str | None = None
+    ) -> _Completed:
+        """Adapt the shared bounded runner's result to onboarding errors."""
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=effective_timeout)
-        except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
-            logger.warning("gh %s timed out after %.1fs", self._describe(args), effective_timeout)
-            raise GitHubError(
-                GitHubErrorCode.CLI_FAILED,
-                f"gh {self._describe(args)} timed out after {effective_timeout:.0f}s "
-                "(possible interactive prompt)",
-            ) from None
+            result = await self.access.runner.run(
+                args, hostname=self.hostname, stdin=stdin, timeout=timeout, check=False
+            )
+        except GitHubAccessError as exc:
+            code = (
+                GitHubErrorCode.CLI_MISSING
+                if exc.category == "cli_missing"
+                else GitHubErrorCode.CLI_FAILED
+            )
+            message = (
+                "the GitHub CLI (gh) is not installed on the daemon host; install it"
+                + (
+                    " and run 'gh auth login'"
+                    if self.access.credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN
+                    else ""
+                )
+                if code is GitHubErrorCode.CLI_MISSING
+                else str(exc)
+            )
+            raise GitHubError(code, message) from None
         completed = _Completed(
-            returncode=proc.returncode if proc.returncode is not None else -1,
-            stdout=scrub_secrets(out.decode("utf-8", "replace")),
-            stderr=scrub_secrets(err.decode("utf-8", "replace")),
+            result.returncode,
+            scrub_secrets(result.stdout.decode("utf-8", "replace")),
+            scrub_secrets(result.stderr),
         )
         if completed.returncode != 0:
             logger.warning(
@@ -556,16 +541,44 @@ class GhClient:
             details=completed.stderr.strip() or completed.stdout.strip() or None,
         )
 
+    def _require_account_operation(self) -> None:
+        if self.access.credential_identity.mode is GitHubCredentialMode.APP:
+            raise GitHubError(
+                GitHubErrorCode.OPERATION_UNSUPPORTED,
+                "This GitHub App cannot search accounts or create repositories; paste an existing repository URL instead",
+            )
+
+    async def validate_repository(self, reference: str) -> GitHubRepositoryBinding:
+        """Verify access and immutable identity before onboarding an explicit URL."""
+        try:
+            return await self.access.bind_repository(reference)
+        except GitHubAccessError as exc:
+            app_mode = self.access.credential_identity.mode is GitHubCredentialMode.APP
+            code = (
+                GitHubErrorCode.CLI_MISSING
+                if exc.category == "cli_missing"
+                else GitHubErrorCode.AUTH_REQUIRED
+                if exc.category == "credentials" and not app_mode
+                else GitHubErrorCode.REPOSITORY_INACCESSIBLE
+            )
+            message = (
+                "Install GitHub CLI (gh) on the daemon host and retry"
+                if code is GitHubErrorCode.CLI_MISSING
+                else "Sign in with gh auth login on the daemon host and retry"
+                if code is GitHubErrorCode.AUTH_REQUIRED
+                else "Check that the GitHub App installation includes this repository and retry"
+                if app_mode
+                else "Check the repository URL and the daemon host's GitHub access, then retry"
+            )
+            raise GitHubError(code, message) from None
+
     async def _graphql(self, query: str, variables: dict[str, str | int]) -> dict[str, Any]:
-        """``gh api graphql`` with every variable passed as its own argument."""
-        args = ["api", "graphql", "--hostname", self.hostname, "-f", f"query={query}"]
-        for key, value in variables.items():
-            # ``-F`` coerces numerals to integers but also reads ``@path`` as a
-            # file and expands ``{owner}``; user-controlled strings must go
-            # through ``-f`` (raw) so ``gh`` never interprets them.
-            flag = "-F" if isinstance(value, int) else "-f"
-            args.extend([flag, f"{key}={value}"])
-        completed = await self._run(args)
+        """``gh api graphql`` with JSON supplied only through bounded stdin."""
+        self._require_account_operation()
+        args = ["api", "graphql", "--input", "-"]
+        completed = await self._run(
+            args, stdin=json.dumps({"query": query, "variables": variables})
+        )
         if completed.returncode != 0:
             raise self._fail(args, completed)
         try:
@@ -586,22 +599,48 @@ class GhClient:
 
     # -- design §5.2 commands ---------------------------------------------
 
-    async def auth_status(self) -> GitHubAuthStatus:
+    async def auth_status(self, repository_url: str | None = None) -> GitHubAuthStatus:
         """Installed? Authenticated? Which login? — never the token.
 
         Not-installed and not-logged-in are *states* here, not errors: the
         dashboard renders them as setup guidance.
         """
+        identity = self.access.credential_identity
+        mode = identity.mode
+        account_operations_available = mode is GitHubCredentialMode.EXISTING_LOGIN
         if self.resolve_executable() is None:
             return GitHubAuthStatus(
-                installed=False, authenticated=False, login=None, hostname=self.hostname
+                installed=False,
+                authenticated=False,
+                login=None,
+                hostname=self.hostname,
+                credential_mode=mode.value,
+                account_operations_available=account_operations_available,
+                app_id=identity.app_id,
+                installation_id=identity.installation_id,
             )
-        status = await self._run(["auth", "status", "--hostname", self.hostname])
+        if mode is GitHubCredentialMode.APP:
+            repository_access = None
+            if repository_url is not None:
+                await self.validate_repository(repository_url)
+                repository_access = True
+            return GitHubAuthStatus(
+                installed=True,
+                authenticated=True,
+                login=None,
+                hostname=self.hostname,
+                credential_mode=mode.value,
+                repository_access=repository_access,
+                account_operations_available=False,
+                app_id=identity.app_id,
+                installation_id=identity.installation_id,
+            )
+        status = await self._run(["auth", "status"])
         if status.returncode != 0:
             return GitHubAuthStatus(
                 installed=True, authenticated=False, login=None, hostname=self.hostname
             )
-        who = await self._run(["api", "user", "--hostname", self.hostname, "--jq", ".login"])
+        who = await self._run(["api", "user", "--jq", ".login"])
         if who.returncode != 0:
             if self._looks_unauthenticated(who):
                 return GitHubAuthStatus(
@@ -609,8 +648,16 @@ class GhClient:
                 )
             raise self._fail(["api", "user"], who)
         login = who.stdout.strip().splitlines()[-1].strip() if who.stdout.strip() else None
+        repository_access = None
+        if repository_url is not None:
+            await self.validate_repository(repository_url)
+            repository_access = True
         return GitHubAuthStatus(
-            installed=True, authenticated=True, login=login or None, hostname=self.hostname
+            installed=True,
+            authenticated=True,
+            login=login or None,
+            hostname=self.hostname,
+            repository_access=repository_access,
         )
 
     async def list_owners(self) -> list[GitHubOwner]:
@@ -708,6 +755,7 @@ class GhClient:
         thing ever passed on is a canonical ``owner/name`` argument.  A name
         that already exists is ``github_repository_conflict``.
         """
+        self._require_account_operation()
         if not isinstance(visibility, str) or visibility not in _VISIBILITIES:
             raise GitHubError(
                 GitHubErrorCode.INVALID_INPUT, "visibility must be 'private' or 'public'"

@@ -18,6 +18,7 @@ from src.sessions.harness_registry import (
     _on_harness_changed,
     derive_harness_id,
     load_from_vault,
+    runs_cli,
     vault_path_for,
 )
 from src.vault_watcher import VaultChange
@@ -69,6 +70,9 @@ class TestBasicParsing:
                   "hook_files": {".aq/hooks/claude.json": "hooks/claude.json"},
                   "instructions_file": "CLAUDE.md",
                   "transcript_paths": ["~/.claude/projects/x/*.jsonl"],
+                  "input_prompts": [
+                    {"name": "continue", "pattern": "press enter to continue"}
+                  ],
                   "env": {"FOO": "bar"},
                   "max_argv_prompt_bytes": 2048
                 }
@@ -83,6 +87,7 @@ class TestBasicParsing:
         assert h.process_names == ("claude", "node")
         assert h.skip_escape_before_enter is False
         assert h.hook_files == ((".aq/hooks/claude.json", "hooks/claude.json"),)
+        assert h.input_prompts[0].name == "continue"
         assert h.env_map == {"FOO": "bar"}
         assert h.max_argv_prompt_bytes == 2048
 
@@ -167,6 +172,22 @@ class TestValidationRefusesRatherThanGuesses:
         )
         assert not parsed.is_valid
         assert any("'pattern'" in e for e in parsed.errors)
+
+    def test_input_prompt_requires_a_valid_named_pattern(self):
+        missing = parse_harness_markdown(
+            _md('{"command": "x", "input_prompts": [{"name": "n"}]}')
+        )
+        assert not missing.is_valid
+        assert any("input_prompts[0]" in error and "pattern" in error for error in missing.errors)
+
+        invalid = parse_harness_markdown(
+            _md(
+                '{"command": "x", "input_prompts": '
+                '[{"name": "n", "pattern": "([", "is_regex": true}]}'
+            )
+        )
+        assert not invalid.is_valid
+        assert any("invalid regex" in error for error in invalid.errors)
 
     def test_unknown_key_is_a_warning_not_an_error(self):
         """A file authored against a newer daemon must still load."""
@@ -288,6 +309,38 @@ class TestRegistry:
         assert fast.command == "claude"
         assert fast.model_flag == "--model"
 
+    def test_runs_cli_matches_the_executable_not_the_id(self, tmp_path):
+        # Two recipes for one CLI: OpenCode on local Ollama and on OpenCode
+        # Zen.  CLI behaviour must follow the executable (noble-delta-40).
+        vault = tmp_path / "vault"
+        self._write(vault, "harnesses/opencode.md", '{"command": "/opt/bin/opencode"}',
+                    hid="opencode")
+        self._write(
+            vault, "harnesses/opencode-zen.md",
+            '{"command": "/home/u/.agent-queue/harness-bin/opencode", "provider": "opencode"}',
+            hid="opencode-zen",
+        )
+        self._write(vault, "harnesses/opencode-win.md", '{"command": "C:/bin/opencode.EXE"}',
+                    hid="opencode-win")
+        self._write(vault, "harnesses/claude.md", '{"command": "claude"}', hid="claude")
+        self._write(vault, "harnesses/oc-npx.md", '{"command": "npx", "args": ["opencode"]}',
+                    hid="oc-npx")
+        registry = HarnessRegistry()
+        load_from_vault(registry, str(vault))
+
+        assert runs_cli("opencode", "opencode-zen", registry)
+        assert runs_cli("opencode", "opencode-win", registry)
+        assert runs_cli("opencode", "opencode", registry)
+        assert not runs_cli("opencode", "claude", registry)
+        # Only the executable is read: a launcher in front of the CLI is not it.
+        assert not runs_cli("opencode", "oc-npx", registry)
+        assert not runs_cli("opencode", "unregistered", registry)
+        assert not runs_cli("opencode", "", registry)
+        assert not runs_cli("opencode", None, registry)
+        # Without a registry only the harness named after the CLI matches.
+        assert runs_cli("opencode", "opencode")
+        assert not runs_cli("opencode", "opencode-zen")
+
     def test_a_malformed_file_is_skipped_and_reported_not_fatal(self, tmp_path):
         vault = tmp_path / "vault"
         self._write(vault, "harnesses/good.md", '{"command": "ok"}', hid="good")
@@ -298,6 +351,128 @@ class TestRegistry:
         assert len(errors) == 1 and "bad.md" in errors[0]
         assert registry.get("good") is not None
         assert registry.get("bad") is None
+
+
+class TestRunsCliProjectScope:
+    """``runs_cli`` resolves the CLI in the harness file that *launches*.
+
+    A project may shadow a harness id with its own file
+    (``vault/projects/<pid>/harnesses/<name>.md``), and the launch path reads
+    it: ``orchestrator/execution.py`` and ``orchestrator/pools.py`` resolve
+    with ``task.project_id``, ``sessions/input_prompts.py`` with
+    ``session.project_id``.  When the shadow names a different executable the
+    CLI-specific behaviour must move with it, and only for that project --
+    the same id on every other project still launches the system file.
+    """
+
+    #: The hosted-pool recipe of ``noble-delta-40``: the ``opencode``
+    #: executable against the OpenCode Zen gateway.
+    _ZEN = '{"command": "/home/u/.agent-queue/harness-bin/opencode", "provider": "opencode"}'
+
+    @staticmethod
+    def _write(root, rel, cfg, hid):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_md(cfg, frontmatter=f"id: {hid}\n"), encoding="utf-8")
+
+    @classmethod
+    def _registry(cls, tmp_path, files):
+        vault = tmp_path / "vault"
+        for rel, (cfg, hid) in files.items():
+            cls._write(vault, rel, cfg, hid)
+        registry = HarnessRegistry()
+        errors = load_from_vault(registry, str(vault))
+        assert errors == []
+        return registry
+
+    def test_a_project_override_to_another_cli_leaves_only_that_project(self, tmp_path):
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+                "projects/p1/harnesses/opencode-zen.md": ('{"command": "claude"}', "opencode-zen"),
+            },
+        )
+
+        # p1 launches claude, so OpenCode's question store and prime addendum
+        # do not apply there -- and the CLI it does run is found instead.
+        assert not runs_cli("opencode", "opencode-zen", registry, "p1")
+        assert runs_cli("claude", "opencode-zen", registry, "p1")
+        # Every other scope still resolves the system file and keeps OpenCode.
+        assert runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert runs_cli("opencode", "opencode-zen", registry)
+        assert runs_cli("opencode", "opencode", registry, "p1")  # unrelated harness id
+
+    def test_the_reverse_override_grants_the_cli_to_one_project_only(self, tmp_path):
+        # A hosted recipe that launches another CLI, with p1 overriding it
+        # back to opencode: OpenCode behaviour is added, not removed.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (
+                    '{"command": "/opt/bin/codex", "provider": "opencode"}',
+                    "opencode-zen",
+                ),
+                "projects/p1/harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode-zen", registry, "p1")
+        assert not runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert not runs_cli("opencode", "opencode-zen", registry)
+        # The CLI the *system* file runs is still reported in every scope that
+        # does not override it -- an override replaces, it does not append.
+        assert runs_cli("codex", "opencode-zen", registry, "p2")
+        assert not runs_cli("codex", "opencode-zen", registry, "p1")
+
+    def test_an_override_that_keeps_the_command_keeps_the_cli(self, tmp_path):
+        # The common override changes launch flags or the provider, not the
+        # executable.  CLI behaviour follows the command, so it must survive.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode-zen.md": (self._ZEN, "opencode-zen"),
+                "projects/p1/harnesses/opencode-zen.md": (
+                    (
+                        '{"command": "C:/bin/opencode.EXE", "provider": "opencode", '
+                        '"args": ["--auto"]}'
+                    ),
+                    "opencode-zen",
+                ),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode-zen", registry, "p1")  # .exe is ignored
+        assert runs_cli("opencode", "opencode-zen", registry, "p2")
+        assert runs_cli("opencode", "opencode-zen", registry)
+
+    def test_a_project_only_harness_id_is_invisible_outside_its_project(self, tmp_path):
+        # No system file at all: p2 has no such harness to resolve, so no
+        # CLI-specific behaviour may be attributed to it there.
+        registry = self._registry(
+            tmp_path, {"projects/p1/harnesses/zen-local.md": (self._ZEN, "zen-local")}
+        )
+
+        assert runs_cli("opencode", "zen-local", registry, "p1")
+        assert not runs_cli("opencode", "zen-local", registry, "p2")
+        assert not runs_cli("opencode", "zen-local", registry)
+
+    def test_a_harness_named_after_the_cli_answers_before_the_registry(self, tmp_path):
+        # Pinned deliberately: the id match is the only answer available
+        # without a registry, so it short-circuits ahead of the registry and a
+        # project file shadowing the ``opencode`` id itself is never consulted.
+        # Renaming the id is a project's only way to opt out.
+        registry = self._registry(
+            tmp_path,
+            {
+                "harnesses/opencode.md": ('{"command": "/opt/bin/opencode"}', "opencode"),
+                "projects/p1/harnesses/opencode.md": ('{"command": "claude"}', "opencode"),
+            },
+        )
+
+        assert runs_cli("opencode", "opencode", registry, "p1")
+        assert runs_cli("opencode", "opencode", registry, "p2")
+        assert runs_cli("opencode", "opencode")
 
 
 class TestRegistryWatcher:
@@ -488,10 +663,26 @@ class TestShippedDialogRulesMatchTheirScreens:
             ),
             ("claude", "mcp-trust", " New MCP server found in .mcp.json: foo\n"),
             ("claude", "rate-limit", " You are approaching your usage limit\n"),
+            # 2026-10-03: an expired Claude login quarantined nothing, so the
+            # pool reported two idle workers and relaunched into the same
+            # "Login expired · Please run /login" pane.
+            ("claude", "login-required", " Login expired · Please run /login\n"),
+            ("claude", "login-required", " OAuth token has expired · Please run /login\n"),
+            ("claude", "login-required", " Invalid API key · Please run /login\n"),
             (
                 "codex",
                 "trust-directory",
                 "  Do you trust the contents of this directory?\n\n› 1. Yes, continue\n",
+            ),
+            (
+                # Codex 0.162 renamed the screen (nimble-harbor-12).
+                "codex",
+                "trust-directory",
+                (
+                    "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+                    "  permission settings.\n\n› 1. Trust and continue\n"
+                    "  2. Back to Agent Command Center\n"
+                ),
             ),
             ("codex", "login-required", "  Sign in with ChatGPT to use Codex\n"),
             ("codex", "login-required", "  Run `codex login` to authenticate\n"),
@@ -525,3 +716,102 @@ class TestShippedDialogRulesMatchTheirScreens:
         harness = self._shipped(harness_id)
         unflagged = [r.name for r in harness.dialogs if "|" in r.pattern and not r.is_regex]
         assert unflagged == []
+
+
+class TestShippedInputPromptSignatures:
+    """Every shipped observation-only prompt signature has a pinned example."""
+
+    @pytest.mark.parametrize(
+        ("harness_id", "signature_name", "screen"),
+        [
+            ("codex", "model-upgrade-menu", "Try new model\nUse existing model\n"),
+            ("codex", "numbered-menu", "› 1. Keep current model\n"),
+            ("codex", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),
+            ("codex", "login-required", "Run codex login to authenticate\n"),
+            ("codex", "usage-limit", "You've hit your usage limit\n"),
+            ("codex", "trust-or-permission", "Hooks need review\n"),
+            ("codex", "trust-or-permission", "Trust this folder? Codex can read, edit, and run\n"),
+            ("codex", "press-enter-to-continue", "Press Enter to continue\n"),
+            ("claude", "numbered-menu", "❯ 1. Continue\n"),
+            ("claude", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),
+            ("claude", "login-required", "Authentication required\n"),
+            ("claude", "usage-limit", "You are approaching your usage limit\n"),
+            ("claude", "trust-or-permission", "Permission required\n"),
+            ("claude", "press-enter-to-continue", "Press Enter to continue\n"),
+            ("gemini", "numbered-menu", "> 1. Authenticate\n"),
+            ("gemini", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),
+            ("gemini", "login-required", "Please sign in to continue\n"),
+            ("gemini", "usage-limit", "Quota exceeded\n"),
+            ("gemini", "trust-or-permission", "Do you trust this workspace?\n"),
+            ("gemini", "press-enter-to-continue", "Press Enter to continue\n"),
+        ],
+    )
+    def test_signature_matches_its_harness_example(
+        self, harness_id, signature_name, screen
+    ):
+        from src.sessions.input_prompts import match_input_prompt
+
+        harness = TestShippedDialogRulesMatchTheirScreens._shipped(harness_id)
+        matched = match_input_prompt(harness.input_prompts, screen)
+        assert matched is not None
+        assert matched.name == signature_name
+
+
+class TestProviderField:
+    """A harness declares the provider key that indexes an intelligence class.
+
+    ``SessionSpecBuilder`` reads ``harness.provider`` before falling back to
+    ``_infer_provider_from_harness``, whose mapping only knows the three
+    shipped CLIs. Without a parsed field the declaration is silently dropped
+    and a non-shipped harness resolves no model at all.
+    """
+
+    def test_declared_provider_is_kept(self):
+        parsed = parse_harness_markdown(
+            _md(
+                '{"command": "opencode", "provider": "ollama"}',
+                frontmatter="id: opencode\nname: OpenCode\n",
+            )
+        )
+        assert parsed.is_valid, parsed.errors
+        assert parsed.harness.provider == "ollama"
+
+    def test_provider_is_a_recognised_key(self):
+        """Declared support, not mere tolerance.
+
+        Unknown keys warn so a file authored against a newer daemon still
+        loads. A shipped key that warns on every parse would make that
+        signal useless noise for the operator reading ``aq doctor``.
+        """
+        parsed = parse_harness_markdown(
+            _md(
+                '{"command": "opencode", "provider": "ollama"}',
+                frontmatter="id: opencode\nname: OpenCode\n",
+            )
+        )
+        assert not [w for w in parsed.warnings if "provider" in w]
+
+    def test_provider_defaults_to_empty(self):
+        parsed = parse_harness_markdown(_md('{"command": "claude"}'))
+        assert parsed.is_valid, parsed.errors
+        assert parsed.harness.provider == ""
+
+    def test_child_inherits_provider_from_base(self):
+        """``provider`` inherits like every other launch-flag string.
+
+        A variant declared with ``base: opencode`` that silently lost the
+        provider would resolve no model, and the only symptom would be a log
+        line -- the same silent-drop this field exists to remove.
+        """
+        parent = parse_harness_markdown(
+            _md(
+                '{"command": "opencode", "provider": "ollama"}',
+                frontmatter="id: opencode\n",
+            )
+        ).harness
+        child = parse_harness_markdown(
+            _md('{"base": "opencode"}', frontmatter="id: opencode-mini\n")
+        ).harness
+        resolved, errors = resolve_base(child, lambda n: parent if n == "opencode" else None)
+        assert errors == []
+        assert resolved.provider == "ollama"

@@ -22,14 +22,12 @@ from src.commands.playbook_v2_commands import (
     PLAYBOOK_V2_IMPORT_COMMANDS,
     PlaybookV2CommandsMixin,
 )
-from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 from src.profiles.capabilities import CapabilityPolicy
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -37,20 +35,18 @@ REVIEWED_FIXTURES = Path("tests/fixtures/playbooks/v2")
 PLAYBOOK_IDS = (
     "default-pipeline",
     "default-assignment-routing",
-    "hierarchical-delivery",
-    "memory-consolidation",
-    "pr-merge-sweep",
     "ci-main-sentinel",
     "blocked-task-escalation",
+    "supervisor-failure-triage",
+    "morning-report",
+    "supervisor-digest",
 )
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("reviewed-import.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("reviewed-import.db")
     yield database
-    await database.close()
 
 
 class _Handler(PlaybookV2CommandsMixin):
@@ -130,6 +126,11 @@ async def test_imports_all_reviewed_fixtures_without_activating(db, tmp_path):
         assert result["artifact_sha256"].startswith("sha256:")
         assert await db.get_playbook_artifact(result["artifact_sha256"]) is not None
         assert handler._store.exists(result["artifact_sha256"])
+        from src.playbooks.definition import source_digest
+        row = await db.get_playbook_artifact_row(result["artifact_sha256"])
+        assert source_digest(handler._store.load_source(result["artifact_sha256"])) == (
+            row["source_digest"]
+        )
     assert await db.list_playbook_activations() == []
 
 
@@ -144,6 +145,33 @@ async def test_import_refuses_a_bundle_outside_the_vault(db, tmp_path):
     assert result["success"] is False
     assert "inside vault root" in result["error"]
     assert await db.list_playbook_artifacts("default-pipeline") == []
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_router_bundle_and_shared_fleet_alias_activate_ready(db, tmp_path):
+    handler = _Handler(tmp_path, db)
+    relative = _copy_bundle(tmp_path, "default-assignment-routing")
+    shared = Path("reviewed/default-assignment-routing-shared-fleet/default-assignment-routing")
+    shutil.copytree(Path("docs/playbooks/shared-fleet/default-assignment-routing"),
+                    tmp_path / "vault" / shared)
+    imported = await _import(handler, relative)
+    shared_import = await _import(handler, shared)
+    assert imported["success"] is True, imported
+    assert shared_import["success"] is True, shared_import
+    assert imported["artifact_sha256"] == shared_import["artifact_sha256"]
+    activated = await handler._cmd_playbook_activate({
+        "playbook_id": "default-assignment-routing",
+        "artifact_sha256": imported["artifact_sha256"],
+    })
+    assert not activated.get("blocked"), activated
+    assert activated["activation"]["health"] == "ready", activated
+    health = await handler._cmd_playbook_activation_health({
+        "playbook_id": "default-assignment-routing", "scope": "system",
+    })
+    assert health["count"] == 1, health
+    assert health["activations"][0]["enabled"] is True
+    assert health["activations"][0]["active_artifact_sha256"] == imported["artifact_sha256"]
+    assert health["activations"][0]["health"] == "ready"
 
 
 @pytest.mark.asyncio
@@ -396,3 +424,96 @@ def test_import_is_exposed_on_every_operator_surface_and_pauses_with_playbooks()
     assert name in get_all_response_models()
     assert name in PAUSED_PLAYBOOK_COMMANDS
     assert hasattr(CommandHandler, f"_cmd_{name}")
+
+
+def test_import_help_matches_the_required_bundle_layout():
+    definition = next(
+        definition
+        for definition in _ALL_TOOL_DEFINITIONS
+        if definition["name"] == "playbook_v2_import"
+    )
+    help_text = definition["input_schema"]["properties"]["path"]["description"]
+
+    assert "artifact.json, artifact.sha256, source.md, and manifest.md" in help_text
+    assert "review.md" not in help_text
+
+
+class _FakeClient:
+    """Records ``aq playbook import``'s daemon calls."""
+
+    def __init__(self, results: dict[str, dict]) -> None:
+        self.results = results
+        self.calls: list[tuple[str, dict]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, command: str, args: dict) -> dict:
+        self.calls.append((command, args))
+        return self.results[command]
+
+
+_IMPORTED = {
+    "success": True,
+    "playbook_id": "morning-report",
+    "artifact_sha256": "sha256:" + "b" * 64,
+    "scope": "system",
+    "scope_identifier": None,
+    "activated": False,
+}
+
+
+def _invoke_import(monkeypatch, client: _FakeClient, *args: str):
+    from click.testing import CliRunner
+
+    from src.cli import playbook
+    from src.cli.app import cli
+
+    monkeypatch.setattr(playbook, "_get_client", lambda _api_url=None: client)
+    return CliRunner().invoke(cli, ["playbook", "import", *args])
+
+
+def test_cli_import_imports_the_reviewed_bundle_without_activating(monkeypatch):
+    client = _FakeClient({"playbook_v2_import": _IMPORTED})
+    result = _invoke_import(monkeypatch, client, "--path", "reviewed-playbooks/morning-report")
+    assert result.exit_code == 0, result.output
+    assert client.calls == [
+        ("playbook_v2_import", {"path": "reviewed-playbooks/morning-report"})
+    ]
+    assert "Not activated" in result.output
+    assert (
+        "aq playbook activate --playbook-id morning-report "
+        f"--artifact-sha256 {_IMPORTED['artifact_sha256']}"
+    ) in result.output.splitlines()[-1]
+
+
+def test_cli_import_activate_activates_the_exact_imported_hash(monkeypatch):
+    client = _FakeClient({
+        "playbook_v2_import": _IMPORTED,
+        "playbook_activate": {"success": True, "blocked": False, "blockers": []},
+    })
+    result = _invoke_import(
+        monkeypatch, client, "--path", "reviewed-playbooks/morning-report", "--activate", "--json"
+    )
+    assert result.exit_code == 0, result.output
+    assert client.calls[1] == (
+        "playbook_activate",
+        {"playbook_id": "morning-report", "artifact_sha256": _IMPORTED["artifact_sha256"]},
+    )
+    assert '"activated": true' in result.output
+
+
+def test_cli_import_activate_exits_non_zero_when_activation_is_blocked(monkeypatch):
+    client = _FakeClient({
+        "playbook_v2_import": _IMPORTED,
+        "playbook_activate": {"success": True, "blocked": True, "blockers": ["stale contract"]},
+    })
+    result = _invoke_import(
+        monkeypatch, client, "--path", "reviewed-playbooks/morning-report", "--activate"
+    )
+    assert result.exit_code == 1
+    assert "Activation refused" in result.output
+    assert "stale contract" in result.output

@@ -1,5 +1,10 @@
 # Platform test-coverage implementation
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](docs/README.md); see [historical material](docs/history/README.md).
+
 ## Tests added
 
 - `RuntimeRegistry` returns daemon-wide singleton runtimes unchanged and

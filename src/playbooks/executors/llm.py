@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
 import hashlib
 import json
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
+from src.commands.descriptors import PLAYBOOK_DENIALS
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.commands.principal import PrincipalKind, check_delegation
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.spec import LLMCallSpec
@@ -25,13 +27,18 @@ from src.playbooks.executors.base import (
     StepControl,
     project_step_receipt,
 )
-from src.playbooks.receipts import idempotency_key
+from src.playbooks.expressions import ValueResolutionError
+from src.playbooks.receipts import idempotency_key, sensitive_handle
+from src.playbooks.invocation import _invocation_context
+from src.playbooks.private_values import PrivateValueError
 from src.profiles.capabilities import capability_policy_for
+from src.routing.filing import routing_choice_refusal
 
 
 def _attempt_key(ctx: StepContext) -> str:
     return idempotency_key(
-        ctx.run_id, ctx.step_id, -1 if ctx.iteration_index is None else ctx.iteration_index, ctx.attempt
+        ctx.run_id, ctx.step_id, -1 if ctx.iteration_index is None else ctx.iteration_index, ctx.attempt,
+        ctx.iteration_path,
     )
 
 
@@ -44,8 +51,12 @@ def _operation(step: LlmStep, ctx: StepContext, spec: LLMCallSpec | None) -> str
     """
     if spec is None:
         return f"llm:{step.profile_id}"
+    if step.transport == "cli":
+        return f"llm:{step.profile_id}/{spec.model}" if spec.model else f"llm:{step.profile_id}"
     try:
-        resolved = ctx.services.llm.resolve(spec)
+        # ``resolve_current``: while ``llm.fallback`` is serving calls, the
+        # model named is the fallback's (provider-failover D13a).
+        resolved = ctx.services.llm.resolve_current(spec)
         return f"llm:{step.profile_id}/{resolved.model}"
     except Exception:  # noqa: BLE001 - a receipt must never expose resolution details
         return f"llm:{step.profile_id}"
@@ -61,8 +72,8 @@ def _spec(step: LlmStep, ctx: StepContext, intelligence_class: str | None) -> LL
     ``None`` means the profile declares no class, which is the config default.
 
     ``provider`` is deliberately left unset, so ``resolve_call`` takes it from
-    ``llm.provider``.  The profile's ``harness`` names the CLI that runs a
-    *session*, and this step is a headless API call with no CLI; more
+    ``llm.provider``.  This helper is for API transport only.  The profile's
+    ``harness`` names the CLI that runs a session; more
     concretely, ``llm:`` carries a single ``api_key`` / ``base_url`` pair bound
     to ``llm.provider``, so honouring the harness here would hand one
     provider's credentials to another's adapter.  The AI card follows this
@@ -109,7 +120,7 @@ def _result(
     diagnostics: tuple[str, ...] = (),
     control: StepControl = StepControl.ADVANCE,
 ) -> ExecutorResult:
-    prompt_digest = hashlib.sha256(_prompt(step, ctx).encode()).hexdigest()
+    prompt_digest = sensitive_handle(ctx.run_id, "prompt", _prompt(step, ctx))
     _ignored_inputs, receipt_result = project_step_receipt(
         {}, value or {}, run_id=ctx.run_id
     )
@@ -117,6 +128,7 @@ def _result(
         control=control,
         outcome=outcome,
         value=value if step.save_result_as else None,
+        private_fields=tuple(value or {}),
         usage=usage,
         llm_calls=llm_calls,
         effective_principal=ctx.principal,
@@ -129,13 +141,23 @@ def _result(
 
 
 def _prompt(step: LlmStep, ctx: StepContext) -> str:
-    """Render only the typed prompt expression; receipt code stores its digest."""
+    """Render the prompt, inputs and the exact output contract the model must meet."""
     from src.playbooks.expressions import resolve_value
 
-    prompt = str(resolve_value(step.prompt, ctx.scope))
-    if not ctx.inputs:
-        return prompt
-    return f"{prompt}\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
+    if "prompt" in ctx.rendered_prompts:
+        return ctx.rendered_prompts["prompt"]
+    prompt = str(resolve_value(step.prompt, ctx.scope, ctx.evaluation_budget))
+    if ctx.inputs:
+        prompt += f"\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
+    # The validator enforces constraints such as maxLength even when the
+    # authored prompt does not mention them. Give the model the same contract
+    # on its first call, including steps with only one allowed call.
+    rendered = (
+        f"{prompt}\n\nReturn one JSON object satisfying this output JSON Schema:\n"
+        f"{json.dumps(step.output_schema, sort_keys=True)}"
+    )
+    ctx.rendered_prompts["prompt"] = rendered
+    return rendered
 
 
 def _resume_state(
@@ -149,6 +171,7 @@ def _resume_state(
             for turn in ctx.llm_turns
             if turn.get("step_id") == ctx.step_id
             and int(turn.get("iteration", -1)) == iteration
+            and turn.get("iteration_path", "") == ctx.iteration_path
             and int(turn.get("attempt", 1)) == ctx.attempt
         ),
         key=lambda turn: int(turn["turn_index"]),
@@ -178,6 +201,8 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     # Namespace separation is an authorization property, not a reason to hide
     # contracted plugin tools from the provider catalogue.
     for name in (*step.tool_use.aq_commands, *step.tool_use.plugin_tools):
+        if name in PLAYBOOK_DENIALS:
+            continue
         registration = ctx.services.contracts.get(name)
         resolver = ctx.services.resolver
         if registration is None or resolver is None:
@@ -214,6 +239,7 @@ class ProfileResolution:
     #: declares none and when there is no profile; read it only alongside a
     #: non-``None`` :attr:`principal`.
     intelligence_class: str | None = None
+    harness: str | None = None
     #: The profile itself could not be read, as opposed to being refused.
     #: §4.4 step 1: a missing profile is ``unavailable`` (it can be
     #: transiently unloaded), a widening one is ``unauthorized``.
@@ -281,7 +307,64 @@ async def resolve_profile_principal(
     return ProfileResolution(
         principal=replace(effective, profile_id=step.profile_id),
         intelligence_class=str(getattr(profile, "default_class", "") or "").strip() or None,
+        harness=str(getattr(profile, "harness", "") or "").strip() or None,
     )
+
+
+async def _execute_cli(step: LlmStep, ctx: StepContext, resolution: ProfileResolution) -> ExecutorResult:
+    """One headless CLI response, parsed by the same schema as an API response."""
+    from src.llm.cli import ask_cli
+
+    if (step.tool_use.enabled or step.tool_use.aq_commands or step.tool_use.plugin_tools
+            or not resolution.harness or not resolution.intelligence_class):
+        return _result(step, ctx, outcome="unavailable", diagnostics=("CLI step needs a tool-free profile",))
+    try:
+        provider, model, effort = ctx.services.llm.cli_settings(
+            resolution.intelligence_class, resolution.harness
+        )
+    except (AttributeError, LookupError):
+        return _result(step, ctx, outcome="unavailable", diagnostics=("CLI model unavailable",))
+    spec = LLMCallSpec(
+        provider=provider, model=model, intelligence_class=resolution.intelligence_class,
+        max_tokens=step.budget.max_output_tokens,
+    )
+    calls = 0
+    usage = TokenUsage()
+    messages, _, _ = _resume_state(_prompt(step, ctx), ctx)
+    try:
+        for _ in range(step.retry.max_attempts if step.retry else 1):
+            if calls >= step.budget.max_calls:
+                return _result(step, ctx, spec=spec, outcome="budget_exceeded", usage=usage, llm_calls=calls)
+            answer = await ask_cli(
+                harness=resolution.harness, model=model, effort=effort,
+                prompt="\n\n".join(str(m.get("content", "")) for m in messages),
+                schema=step.output_schema, timeout_seconds=step.budget.timeout_seconds,
+                cancel_event=ctx.cancel_event,
+            )
+            calls += 1
+            usage = usage + answer.usage if calls > 1 else answer.usage
+            if (step.budget.max_total_tokens is not None and not usage.reported) or _usage_breaches(step, usage):
+                return _result(step, ctx, spec=spec, outcome="budget_exceeded", usage=usage, llm_calls=calls)
+            try:
+                value = _parse_and_validate(answer.text, step)
+            except (ValueError, ValidationError):
+                messages.extend((
+                    {"role": "assistant", "content": answer.text},
+                    {"role": "user", "content": "Return only JSON that validates against the declared schema."},
+                ))
+                continue
+            outcome = value.get(step.outcome_field) if step.outcome_field else "completed"
+            if not isinstance(outcome, str) or outcome not in step.transitions:
+                return _result(step, ctx, spec=spec, outcome="invalid_output", usage=usage, llm_calls=calls)
+            return _result(step, ctx, spec=spec, outcome=outcome, usage=usage, llm_calls=calls, value=value)
+        return _result(step, ctx, spec=spec, outcome="invalid_output", usage=usage, llm_calls=calls)
+    except TimeoutError:
+        return _result(step, ctx, spec=spec, outcome="timed_out", llm_calls=calls)
+    except asyncio.CancelledError:
+        return _result(step, ctx, spec=spec, outcome="cancelled", llm_calls=calls)
+    except Exception as exc:  # noqa: BLE001 - CLI errors are typed playbook outcomes
+        return _result(step, ctx, spec=spec, outcome="provider_error", llm_calls=calls,
+                       diagnostics=(type(exc).__name__,))
 
 
 class LiveLlmExecutor:
@@ -307,9 +390,20 @@ class LiveLlmExecutor:
             )
         ctx = replace(ctx, principal=resolution.principal)
 
+        try:
+            if ctx.services.private_values is None:
+                raise PrivateValueError("private_storage_unavailable")
+            await ctx.services.private_values.check_ready()
+        except PrivateValueError as exc:
+            return _result(step, ctx, outcome="unavailable", diagnostics=(exc.code,))
+
+        if step.transport == "cli":
+            return await _execute_cli(step, ctx, resolution)
+
         spec = _spec(step, ctx, resolution.intelligence_class)
         try:
-            resolved = ctx.services.llm.resolve(spec)
+            # The adapter the call will use, the fallback's during an outage.
+            resolved = ctx.services.llm.resolve_current(spec)
             provider = ctx.services.llm._provider_for(resolved)
         except Exception:  # noqa: BLE001 - profiles/providers may reload between boundaries
             return _result(
@@ -365,6 +459,9 @@ class LiveLlmExecutor:
 
                 async def dispatch_tool(name: str, args: dict[str, Any]) -> Any:
                     nonlocal denied
+                    if name in PLAYBOOK_DENIALS or set(args).intersection(SERVER_OWNED_ARG_KEYS):
+                        denied = True
+                        return {"success": False, "error_code": "playbook_command_denied"}
                     resolver = ctx.services.resolver
                     if resolver is None or not authorize_command(
                         name,
@@ -377,9 +474,34 @@ class LiveLlmExecutor:
                     registration = ctx.services.contracts.get(name)
                     if registration is None:
                         return {"success": False, "error": "tool is not contracted"}
+                    # Ahead of the args model, as in ``CommandHandler.execute``:
+                    # a model-chosen ``provider`` or ``model`` is a routing
+                    # choice, not a validation slip (mandatory-routing §5.1).
+                    refusal = routing_choice_refusal(name, args, ctx.principal)
+                    if refusal is not None:
+                        return refusal
                     try:
                         validated = registration.contract.execution.args_model.model_validate(args)
-                        response = await registration.invoke(validated, ctx.principal)
+                        with _invocation_context(ctx):
+                            response = await registration.invoke(validated, ctx.principal)
+                        if registration.contract.execution.result_mode == "json_object":
+                            from src.playbooks.definition import CommandStep
+                            from src.playbooks.executors.command import _consume
+
+                            consumed = _consume(
+                                response, registration,
+                                CommandStep(
+                                    rule=step.rule, title=step.title, source=step.source,
+                                    command=name, save_result_as="tool_result",
+                                    transitions={"runtime_error": "done"},
+                                ),
+                                ctx, resolved_inputs=args, key="llm_tool",
+                            )
+                            if consumed.outcome == "unauthorized":
+                                denied = True
+                            if consumed.value is None:
+                                return {"success": False, "error_code": consumed.outcome}
+                            return consumed.value
                         return response.value.model_dump()
                     except Exception as exc:  # noqa: BLE001 - tool loop receives a safe error result
                         return {"success": False, "error": type(exc).__name__}
@@ -509,6 +631,11 @@ class LiveLlmExecutor:
                     llm_calls=calls,
                     value=value,
                 )
+        except ValueResolutionError as exc:
+            return ExecutorResult(
+                control=StepControl.ADVANCE, outcome="input_resolution_failed",
+                diagnostics=(exc.reason,),
+            )
         except LLMToolTurnBoundaryError:
             raise
         except TimeoutError:
@@ -516,13 +643,22 @@ class LiveLlmExecutor:
         except asyncio.CancelledError:
             return _result(step, ctx, spec=spec, outcome="cancelled", llm_calls=calls)
         except Exception as exc:  # noqa: BLE001 - provider errors are a typed outcome
+            from src.llm.providers.errors import ProviderUnavailableError
+
+            # A fail-fast refusal (provider-failover D13a) names the reason
+            # a playbook author branches on, not the exception class.
+            diagnostic = (
+                "provider_unavailable"
+                if isinstance(exc, ProviderUnavailableError)
+                else type(exc).__name__
+            )
             return _result(
                 step,
                 ctx,
                 spec=spec,
                 outcome="provider_error",
                 llm_calls=calls,
-                diagnostics=(type(exc).__name__,),
+                diagnostics=(diagnostic,),
             )
 
 

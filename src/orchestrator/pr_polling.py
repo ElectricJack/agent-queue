@@ -34,17 +34,18 @@ class PRPollingMixin:
         open", so a closed-unmerged PR keeps blocking its waiters until an
         operator resolves the gate by hand.
         """
-        checkout_path = await self._pr_checkout_path(project_id)
-        if not checkout_path:
-            # Nothing to poll from — behave as "still open" and retry next
-            # cycle when a workspace shows up.
+        project = await self.db.get_project(project_id) if project_id else None
+        if project is None or not project.repo_url:
             return False
 
         try:
+            repository = await self.git.bind_github_repository(project.repo_url)
             # ``acheck_pr_merged`` returns ``None`` for closed-unmerged —
             # let that propagate so callers can distinguish it from
             # still-open.
-            return await self.git.acheck_pr_merged(checkout_path, pr_url)
+            return await self.git.acheck_pr_merged(
+                "", pr_url, repository=repository
+            )
         except Exception as e:
             logger.warning("Error polling PR %s: %s", pr_url, e)
             # Transient gh failure — retry next cycle rather than resolve.
@@ -79,13 +80,22 @@ class PRPollingMixin:
             * ``False`` — the base is a branch that has not reached the
               default branch yet.  The gate stays open.
         """
+        project = await self.db.get_project(project_id) if project_id else None
+        if project is None or not project.repo_url:
+            return False
+        try:
+            from src.git.github import GitHubAccess
+
+            repository = await self.git.bind_github_repository(project.repo_url)
+            GitHubAccess.validate_pr_url(repository, pr_url)
+        except Exception:
+            return False
+        base = await self.git.apr_base_ref("", pr_url, repository=repository)
+        if not base:
+            return True
         checkout = await self._pr_checkout_path(project_id)
         if not checkout:
             return True
-        base = await self.git.apr_base_ref(checkout, pr_url)
-        if not base:
-            return True
-        project = await self.db.get_project(project_id) if project_id else None
         default_branch = await self._get_default_branch(project, checkout)
         if base == default_branch:
             return True

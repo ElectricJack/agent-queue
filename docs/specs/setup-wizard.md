@@ -4,19 +4,33 @@ tags: [spec, setup, cli]
 
 # Setup Wizard Specification
 
+<!-- aq:historical -->
+> **Retired design record — not current documentation.** This describes the
+> first-run wizard that `src/setup_wizard.py` implemented. That module was
+> deleted: machine setup is now one command, `aq install`, whose steps live in
+> `src/install/` and whose published surface is
+> [the `aq install` reference](../reference/cli/install.md). Two decisions on
+> this page were deliberately reversed — Discord is optional and no longer a
+> required prompt, and the wizard no longer owns configuration writing or
+> daemon launch on its own. Start at [Install AQ](../tutorials/install.md) for
+> what AQ does today, and see [historical material](../history/README.md) for
+> how this material is organised.
+
 ## 1. Overview
 
 The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord, Claude) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
 
 ## Source Files
 
-- `src/setup_wizard.py`
+- `src/setup_wizard.py` — **deleted.** Its successors are `src/install/onboarding.py`
+  (the configuration, Discord, daemon and dashboard steps), `src/install/wizard.py`
+  (the question plan and closing summary) and `src/cli/install.py`.
 
 ---
 
 ## 2. Entry Point
 
-The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates seven sequential steps that produce a [[specs/config]] file:
+The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates seven sequential steps that produce a [specs/config](config.md) file:
 
 1. Load existing configuration (pre-fill defaults)
 2. Step 1: Workspace & Database directories
@@ -28,7 +42,7 @@ The wizard runs via `./setup.sh` (which handles venv and dependencies) or direct
 8. Step 7: Launch daemon
 
 There is no chat-provider step. The wizard writes a fixed `llm:` block
-(`provider: anthropic`, `default_class: fast-medium`) to `config.yaml` — see
+(`provider: anthropic`, `default_class: fast-low`) to `config.yaml` — see
 §9 below — and leaves any further tuning of the direct LLM path (`docs/specs/config.md` §4.6) to manual config editing.
 
 If an existing `~/.agent-queue/config.yaml` or `~/.agent-queue/.env` is found, values are loaded and used as defaults throughout.
@@ -111,42 +125,24 @@ When prompted, values are saved to `.env` immediately via `_save_env_value`.
 - Saves to `.env` immediately
 - Required — exits with `sys.exit(1)` if empty
 
-### Channel Names
-Pre-filled from existing config with defaults:
-- `control` → `"control"`
-- `notifications` → `"notifications"`
-- `agent_questions` → `"agent-questions"`
+### Shared Channel ID
+The wizard reads an existing `discord.channel_id` or asks for the numeric ID
+of the one channel used for digests and escalation roots.
 
 ### Connectivity Test
-`_test_discord(token, guild_id, channels)` verifies the bot can connect:
-
-- Creates a temporary `discord.Client` with `message_content` intent
-- Connects with a 15-second timeout
-- Checks the guild is visible to the bot
-- Verifies all configured channel names exist as text channels in the guild
-- Returns `(success, missing_channel_names)`
-- Handles specific errors: `LoginFailure` (bad token), `PrivilegedIntentsRequired` (missing Message Content Intent), `TimeoutError`
-- If `discord.py` is not installed, returns `(False, [])` with a warning
-
-**Retry loop:** On failure, the wizard offers different recovery paths:
-- If the bot connected but channels are missing: offers to update channel names, then retests
-- If connection-level failure: shows debugging tips, offers to retry
+`_test_discord(token, guild_id, channel_id)` verifies that the bot can connect,
+see the configured guild and resolve the shared channel ID. The retry flow can
+replace the ID but never creates a channel. Required permissions are Send
+Messages, Read Message History, Create Public Threads and Send Messages in
+Threads.
 
 ### Authorized Users
-Optional — prompts for Discord user IDs one per line (empty line to finish).
+Optional Discord user IDs allowed to reply inside bound escalation threads.
+This setting does not grant general bot commands because the simplified bot has
+none.
 
-### Per-Project Channels
-`_step_per_project_channels(existing, discord_ok)` configures automatic channel creation:
-
-- Asks whether to enable auto-creation (default from existing config, or False)
-- If declined: shows manual channel management commands (`/create-channel`, `/set-channel`, `/channel-map`) and returns disabled config
-- If enabled:
-  - Collects naming convention (must contain `{project_id}`, resets to default if missing)
-  - Collects optional Discord category name for organizing project channels
-  - Asks whether channels should be private (default: yes) — private channels are only visible to the bot and users granted access
-  - Shows summary of configured settings
-
-Returns a dict with `auto_create`, `naming_convention`, `category_name`, and `private`.
+The wizard does not configure per-project channels, separate question/control
+channels, slash commands, or automatic channel provisioning.
 
 ---
 
@@ -196,9 +192,9 @@ Prompts for model name with default from existing config or `claude-sonnet-4-202
 > there is no in-process chat agent to configure an LLM for (the Supervisor
 > was deleted; see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`).
 > `step_write_config` (§11 below) writes a fixed `llm:` block
-> (`provider: anthropic`, `default_class: fast-medium`); provider/model/`base_url`
+> (`provider: anthropic`, `default_class: fast-low`); provider/model/`base_url`
 > tuning — including pointing it at Ollama via `openai` + `base_url` — is a
-> manual edit to `config.yaml`, documented in [[specs/config]] §4.6.
+> manual edit to `config.yaml`, documented in [specs/config](config.md) §4.6.
 
 `step_scheduling(existing)` configures token budgets and retry behavior.
 
@@ -227,8 +223,8 @@ Written to `~/.agent-queue/.env` with mode `0o600`:
 ### config.yaml File
 Written to `~/.agent-queue/config.yaml`. Includes:
 - `workspace_dir` and `database_path`
-- `discord` section: bot token as `${DISCORD_BOT_TOKEN}`, guild ID (quoted), channel names, optional authorized users, optional per-project channel config (includes `private` flag)
-- `llm` section: fixed `provider: anthropic`, `default_class: fast-medium` (see note in §9 above)
+- `discord` section: bot token as `${DISCORD_BOT_TOKEN}`, guild ID and one explicit shared `channel_id` (quoted), plus optional authorized users
+- `llm` section: fixed `provider: anthropic`, `default_class: fast-low` (see note in §9 above)
 - `global_token_budget_daily`: only written if set
 - `scheduling` section: rolling window hours, min_task_guarantee always true
 - `pause_retry` section: rate limit backoff, token exhaustion retry
