@@ -57,9 +57,11 @@ LIVE_SESSION_STATES = ("starting", "running", "draining")
 #: The supply counters every profile, project row and provider reports.
 SUPPLY_FIELDS = ("ready", "idle", "busy", "starting", "draining", "unresponsive")
 #: Task statuses in which a pin keeps work on a provider (spec §Backend commands).
-INTENT_TASK_STATUSES = ("READY", "ASSIGNED", "IN_PROGRESS")
+INTENT_TASK_STATUSES = (
+    "READY", "ASSIGNED", "IN_PROGRESS", "WAITING", "HIBERNATED", "RESUME_PENDING",
+)
 #: A manual agent's current task counts only while it is one of these.
-_ACTIVE_TASK_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS", "WAITING_INPUT"})
+_ACTIVE_TASK_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING"})
 #: Stage profiles no generic worker may stand in for (``routing_commands``).
 _CONTROL_PROFILE_IDS = frozenset(
     {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
@@ -80,10 +82,11 @@ def classify_profile(profile: Any, *, provider_known: bool) -> str | None:
 
     Reasons, first match wins: ``retired_project_scoped`` (a ``project:`` id
     that resolves nowhere), ``template``, ``named`` (a resident session),
-    ``role`` (a stage or control profile, or a read-only one), ``malformed``
+    ``role`` (a stage, control or operator profile, or a read-only one), ``malformed``
     (no harness, no class, or an unknown lifecycle -- no worker route at
     all), ``unknown_provider`` (its harness is not registered).
     """
+    from src.commands.operator_authority import is_operator_profile
     from src.profiles.catalog import worker_route
 
     profile_id = str(getattr(profile, "id", "") or "")
@@ -96,6 +99,7 @@ def classify_profile(profile: Any, *, provider_known: bool) -> str | None:
         return "named"
     if (
         profile_id in _role_profile_ids()
+        or is_operator_profile(profile)
         or getattr(profile, "read_only", False)
         or getattr(profile, "runtime", "") == "supervisor"
     ):
@@ -289,7 +293,9 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
             "draining": supply.draining,
             "unresponsive": supply.unresponsive,
         }
-        for candidate in sorted(measurement.candidates.get(key, []), key=lambda c: c.project_id):
+        from src.scheduler import project_pool_candidates
+
+        for candidate in project_pool_candidates(measurement.candidates.get(key, [])):
             local = supply.by_project.get(candidate.project_id)
             row["projects"].append(
                 {
@@ -308,6 +314,12 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
     live_pool_agents = {s.agent_id for s in live if s.agent_id}
     live += await db.list_sessions(lifecycle="task", live_only=True)
     live = [s for s in live if s.profile_id in profiles]
+    statuses = await db.get_task_statuses([s.task_id for s in live if s.task_id])
+    live = [
+        s for s in live
+        if statuses.get(s.task_id) != "HIBERNATED"
+        and (statuses.get(s.task_id) != "RESUME_PENDING" or s.state == "starting")
+    ]
     titles = await db.get_task_titles([s.task_id for s in live if s.task_id])
     task_rows: dict[str, dict[str, dict[str, Any]]] = {}
     for session in sorted(live, key=lambda s: (s.project_id or "", s.id)):

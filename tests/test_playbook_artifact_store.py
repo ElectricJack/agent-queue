@@ -740,3 +740,96 @@ def test_retained_markdown_is_verified_against_immutable_artifact(tmp_path):
     Path(store.path_for(ref.artifact_sha256)).with_suffix(".md").write_text("tampered")
     with pytest.raises(ArtifactVerificationFailed):
         store.load_source(ref.artifact_sha256)
+
+
+@pytest.mark.parametrize("relative", [
+    "system/playbooks/legacy.md",
+    "projects/example/playbooks/legacy.md",
+    "agent-types/worker/playbooks/legacy.md",
+    "reviewed-playbooks/legacy/source.md",
+])
+def test_source_backfill_matches_digest_and_preserves_artifact_and_existing_source(tmp_path, relative):
+    from pathlib import Path
+    from src.playbooks.artifact_store import ArtifactStore, index_playbook_sources
+    from src.playbooks.definition import source_digest
+
+    source = "# Legacy policy with unique source\n"
+    vault = tmp_path / "vault"
+    path = vault / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+    store = ArtifactStore(str(tmp_path / "compiled"))
+    definition = _definition().model_copy(update={"source_hash": source_digest(source)})
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile", compiler_build="test",
+    )
+    artifact_bytes = Path(store.path_for(ref.artifact_sha256)).read_bytes()
+    report = store.backfill_sources(index_playbook_sources(vault))
+    assert report == {"restored": [ref.artifact_sha256], "unavailable": [], "errors": []}
+    assert store.load_source(ref.artifact_sha256) == source
+    assert Path(store.path_for(ref.artifact_sha256)).read_bytes() == artifact_bytes
+    source_path = store.source_path_for(ref.artifact_sha256)
+    before = source_path.stat().st_mtime_ns
+    assert store.backfill_sources(index_playbook_sources(vault))["restored"] == []
+    assert source_path.stat().st_mtime_ns == before
+    source_path.write_text("existing source is never replaced, even if invalid")
+    assert store.backfill_sources(index_playbook_sources(vault))["restored"] == []
+    assert source_path.read_text() == "existing source is never replaced, even if invalid"
+
+
+def test_source_backfill_recovers_shipped_catalogue_sources(tmp_path):
+    from pathlib import Path
+    from src.playbooks.artifact_store import ArtifactStore, index_playbook_sources
+    from src.playbooks.definition import load_definition_json
+
+    catalog = Path("src/prompts/reviewed_playbooks/morning-report")
+    definition = load_definition_json((catalog / "artifact.json").read_text())
+    store = ArtifactStore(str(tmp_path / "compiled"))
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile", compiler_build="test",
+    )
+    report = store.backfill_sources(index_playbook_sources(tmp_path / "absent-vault"))
+    assert report["restored"] == [ref.artifact_sha256]
+    assert store.load_source(ref.artifact_sha256) == (catalog / "source.md").read_text()
+
+
+def test_source_backfill_leaves_unmatched_and_damaged_artifacts_unmodified(tmp_path):
+    from pathlib import Path
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import source_digest
+
+    source = "# Lost original source\n"
+    definition = _definition().model_copy(update={"source_hash": source_digest(source)})
+    store = ArtifactStore(str(tmp_path))
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile", compiler_build="test",
+    )
+    broken_sha = "sha256:" + "f" * 64
+    Path(store.path_for(broken_sha)).write_text("damaged")
+    report = store.backfill_sources({source_digest("changed source"): "changed source"})
+    assert report["restored"] == [] and report["unavailable"] == [ref.artifact_sha256]
+    assert report["errors"][0]["artifact_sha256"] == broken_sha
+    assert not store.source_path_for(ref.artifact_sha256).exists()
+    assert Path(store.path_for(broken_sha)).read_text() == "damaged"
+
+
+def test_source_index_excludes_private_files_and_paths_outside_the_vault(tmp_path):
+    from src.playbooks.artifact_store import index_playbook_sources
+    from src.playbooks.definition import source_digest
+
+    vault = tmp_path / "vault"
+    directory = vault / "system/playbooks"
+    directory.mkdir(parents=True)
+    (vault / "private.md").write_text("private unrelated source")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside source")
+    (directory / "escape.md").symlink_to(outside)
+    sources = index_playbook_sources(vault)
+    assert source_digest("private unrelated source") not in sources
+    assert source_digest("outside source") not in sources
