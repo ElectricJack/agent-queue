@@ -9,6 +9,14 @@
 **Status:** in progress · **Date:** 2026-09-06 · **Supersedes:** the coordinator half of
 `2026-08-31-playbook-intelligence-routing-design.md`
 
+> **Superseded in part by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`, a vault spec):** the
+> `explicit` branch (a filer-supplied class or profile resolved deterministically through
+> `profile_for_class`) and the project-default tie-breaks (ranking candidates by the project
+> default's provider). A filer now gives only hints (`task_type`, an intelligence-class hint),
+> no project has a default profile, and the bound routing playbook plans every route with
+> `task_route_plan` and writes it with `task_route_apply`; `task_route_options` is gone.
+
 ## 1. Why
 
 The orchestration layer should be mechanism, not policy. Routing today is the

@@ -32,7 +32,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from tests.db_fixtures import lease_dsn, seed_task_session_attempt
+from tests.db_fixtures import seed_task_session_attempt
 
 # ``src/doctor/__init__.py`` does ``from src.doctor.pool_checks import
 # pool_checks`` (the factory function) to build ``default_registry()`` --
@@ -50,15 +50,11 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", lifecycle="pool"))
     yield database
-    await database.close()
 
 
 def test_check_names():
@@ -138,7 +134,10 @@ async def test_doctor_default_branch_discovery_uses_recorded_repository(
     )
 
 
-async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db):
+@pytest.mark.parametrize("elapsed", [0.0, 2.1, 2.7])
+async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(
+    db, monkeypatch, elapsed
+):
     """Claimed workers and a pane that is still changing are not findings."""
     from src.sessions.harness_parser import Harness
     from src.sessions.harness_registry import HarnessRegistry
@@ -149,13 +148,13 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db)
     await db.create_task(
         Task(
             id="ready", project_id=PROJECT_ID, title="ready", description="",
-            status=TaskStatus.READY, profile_id="worker",
+            status=TaskStatus.READY, profile_id="worker", route_source="legacy",
         )
     )
     await db.create_task(
         Task(
             id="claimed", project_id=PROJECT_ID, title="claimed", description="",
-            status=TaskStatus.IN_PROGRESS, profile_id="worker",
+            status=TaskStatus.IN_PROGRESS, profile_id="worker", route_source="legacy",
         )
     )
     for session_id, task_id, last_activity in (
@@ -210,6 +209,10 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db)
         )
     )
 
+    # Control only the doctor's clock: database setup may take arbitrary time,
+    # while the recent, claimed and stalled sessions must keep their meanings.
+    monkeypatch.setattr(pool_checks, "time", SimpleNamespace(time=lambda: now + elapsed))
+    unchanged_seconds = round(600 + elapsed, 1)
     finding = await pool_checks.run_check(
         db,
         "pools.session_awaiting_input",
@@ -228,12 +231,12 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db)
                 "profile_id": "worker",
                 "harness": "codex",
                 "signature": "model-upgrade-menu",
-                "unchanged_seconds": pytest.approx(600, abs=2),
+                "unchanged_seconds": unchanged_seconds,
                 "ready_tasks": 1,
             }
         ],
     }
-    assert "unchanged 600s, 1 READY" in finding.detail
+    assert f"unchanged {unchanged_seconds:.0f}s, 1 READY" in finding.detail
     provider.peek.assert_awaited_once()
 
 
@@ -259,7 +262,7 @@ async def test_task_lifecycle_shadow_reports_duplicate_profiles_and_active_tasks
     await db.create_task(
         Task(
             id="shadowed", project_id=PROJECT_ID, title="shadowed", description="",
-            status=TaskStatus.READY, profile_id="legacy-deep-codex",
+            status=TaskStatus.READY, profile_id="legacy-deep-codex", route_source="legacy",
         )
     )
     await db.create_task(
@@ -1218,3 +1221,16 @@ async def test_container_held_skips_an_assigned_task_awaiting_its_session(db):
 def test_container_held_is_fixable():
     check = next(c for c in pool_checks.CHECKS if c.id == "claims.container_held")
     assert check.fix is not None
+
+
+async def test_operator_and_ordinary_workers_are_separate_doctor_routes(db):
+    await db.update_profile("worker", harness="codex", default_class="deep-high")
+    for identifier, lifecycle, commands in (
+        ("operator-push", "task", ["operator_execute"]),
+        ("operator-pool", "pool", ["operator_execute"]),
+    ):
+        await db.create_profile(AgentProfile(id=identifier, name=identifier, harness="codex",
+            default_class="deep-high", lifecycle=lifecycle, aq_commands=commands))
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+    assert finding.data["profiles"] == [{"profile_id": "operator-push", "harness": "codex",
+        "default_class": "deep-high", "pool_profile_ids": ["operator-pool"]}]

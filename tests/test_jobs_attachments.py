@@ -234,3 +234,44 @@ def test_node_presets_use_server_resolved_executables(tmp_path, monkeypatch):
     ]
     with pytest.raises(JobError, match="jobs.preset_denied"):
         validate_args(accepted["npm_ci"], ["--unsafe"], tmp_path, 1)
+
+
+def test_test_preset_folds_xdist_only_when_available(tmp_path):
+    preset = presets(tmp_path)["test"]
+    assert validate_args(preset, ["tests"], tmp_path, 3)[-2:] == ["-n", "3"]
+    assert validate_args(preset, ["tests"], tmp_path, 3, xdist=False)[-1:] == ["tests"]
+    assert "-n" not in validate_args(
+        preset, ["tests", "-p", "no:xdist"], tmp_path, 3
+    )
+
+
+@pytest.mark.parametrize("workers", [
+    ["-n", "0"], ["-n0"], ["--numprocesses", "0"], ["--numprocesses=0"],
+])
+@pytest.mark.parametrize("xdist,plugins", [
+    (True, []), (False, []), (True, ["-p", "no:xdist"]), (True, ["-pno:xdist"]),
+])
+def test_test_preset_accepts_serial_without_requiring_xdist(tmp_path, workers, xdist, plugins):
+    preset = presets(tmp_path)["test"]
+    args = ["tests/test_example.py", *workers, *plugins]
+    expected = [*preset.argv, "tests/test_example.py", *plugins]
+    if xdist and not plugins:
+        expected += ["-n", "0"]
+    assert validate_args(preset, args, tmp_path, 3, xdist=xdist) == expected
+    assert args == ["tests/test_example.py", *workers, *plugins]
+
+
+@pytest.mark.parametrize("workers", [
+    ["-n", "1"], ["-n4"], ["-n", "auto"], ["--numprocesses", "logical"],
+    ["--numprocesses=4"], ["-n"], ["--numprocesses"], ["--numprocesses="],
+    ["-n", "-1"], ["-n0", "-n4"], ["-n4", "-n0"],
+    ["--numprocesses-bad=0"],
+])
+def test_test_preset_still_denies_worker_overrides(tmp_path, workers):
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        validate_args(presets(tmp_path)["test"], ["tests", *workers], tmp_path, 3)
+
+
+def test_serial_option_is_not_accepted_by_lint_preset(tmp_path):
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        validate_args(presets(tmp_path)["lint"], ["src", "-n0"], tmp_path, 3)

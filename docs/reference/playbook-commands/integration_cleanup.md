@@ -120,10 +120,12 @@ batch answers `already_complete`.
    `retryable` rather than losing the item.
 6. Back in the handler, the per-state counts are read directly from
    `integration_cleanup_items` and folded into one outcome (line 700): totals that
-   disagree with the materialized item count are `invariant_error`; any conflicted
-   or failed item is `conflict`; all-complete is `complete` or `already_complete`
-   depending on whether this call advanced anything; a remaining retryable item is
-   `retryable`; progress is `advanced`; otherwise `wait`.
+   disagree with the materialized item count are `invariant_error` unless every
+   persisted item is already complete, which leaves nothing to clean and answers
+   `complete`/`already_complete`; any conflicted or failed item is `conflict`;
+   all-complete is `complete` or `already_complete` depending on whether this call
+   advanced anything; a remaining retryable item is `retryable`; progress is
+   `advanced`; otherwise `wait`.
 
 ## Side effects and persistence
 
@@ -149,14 +151,16 @@ reconciliation that `advance` performs at the end of each pass.
 | `conflict` | An item's external subject no longer matches what was frozen — a PR was retargeted, a ref was rewritten. Needs a human. |
 | `failed` | An item cannot be performed at all (unknown kind, missing repository). |
 | `stale` | The batch does not exist. |
-| `invariant_error` | The batch is not promoted/published, or the item counts disagree with the materialized total. |
+| `invariant_error` | The batch is not promoted/published, or the item counts disagree with the materialized total while work remains. |
 | `unauthorized` | The caller cannot clean up this batch. |
 
 `invariant_error` on a batch that *looks* finished usually means promotion did not
 actually complete — check `lifecycle` and `final_main_sha` with `aq integration
-status PROJECT_ID`. For items stuck in `retryable` or `conflict`, `aq integration
-retry-cleanup BATCH_ID` requeues the safe identities without touching any
-irreversible marker; see
+status PROJECT_ID`. It no longer means a stale materialized count over
+already-complete items: that is reported as `complete`/`already_complete` so it
+cannot hold the project's integration lease behind delivered work. For items
+stuck in `retryable` or `conflict`, `aq integration retry-cleanup BATCH_ID`
+requeues the safe identities without touching any irreversible marker; see
 [integration troubleshooting](../../guides/integration-troubleshooting.md).
 
 ## Example step

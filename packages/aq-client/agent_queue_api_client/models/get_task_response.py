@@ -6,11 +6,17 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.get_task_response_display_state_type_0 import GetTaskResponseDisplayStateType0
+from ..models.get_task_response_status import GetTaskResponseStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.claim_readiness import ClaimReadiness
+    from ..models.epic_delivery_status import EpicDeliveryStatus
+    from ..models.get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
     from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
     from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
+    from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
     from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
     from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
     from ..models.provider_hold_detail import ProviderHoldDetail
@@ -29,8 +35,13 @@ class GetTaskResponse:
         id (str):
         project_id (str):
         title (str):
+        display_state (GetTaskResponseDisplayStateType0 | None | Unset):
+        display_reason (None | str | Unset):
+        child_state_counts (GetTaskResponseChildStateCountsType0 | None | Unset):
+        descendant_state_counts (GetTaskResponseDescendantStateCountsType0 | None | Unset):
+        claim_readiness (ClaimReadiness | None | Unset):
         description (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
+        status (GetTaskResponseStatus | Unset):  Default: GetTaskResponseStatus.VALUE_0.
         priority (int | Unset):  Default: 0.
         assigned_agent (None | str | Unset):
         retry_count (int | Unset):  Default: 0.
@@ -63,14 +74,22 @@ class GetTaskResponse:
         provider_hold (None | ProviderHoldDetail | Unset):
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
+        prefer_target (None | str | Unset):
+        prefer_mode (None | str | Unset):
         route (GetTaskResponseRouteType0 | None | Unset):
+        delivery_status (EpicDeliveryStatus | None | Unset):
     """
 
     id: str
     project_id: str
     title: str
+    display_state: GetTaskResponseDisplayStateType0 | None | Unset = UNSET
+    display_reason: None | str | Unset = UNSET
+    child_state_counts: GetTaskResponseChildStateCountsType0 | None | Unset = UNSET
+    descendant_state_counts: GetTaskResponseDescendantStateCountsType0 | None | Unset = UNSET
+    claim_readiness: ClaimReadiness | None | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: GetTaskResponseStatus | Unset = GetTaskResponseStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -103,11 +122,18 @@ class GetTaskResponse:
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
+    prefer_target: None | str | Unset = UNSET
+    prefer_mode: None | str | Unset = UNSET
     route: GetTaskResponseRouteType0 | None | Unset = UNSET
+    delivery_status: EpicDeliveryStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.claim_readiness import ClaimReadiness
+        from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+        from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
         from ..models.provider_hold_detail import ProviderHoldDetail
@@ -120,9 +146,49 @@ class GetTaskResponse:
 
         title = self.title
 
+        display_state: None | str | Unset
+        if isinstance(self.display_state, Unset):
+            display_state = UNSET
+        elif isinstance(self.display_state, GetTaskResponseDisplayStateType0):
+            display_state = self.display_state.value
+        else:
+            display_state = self.display_state
+
+        display_reason: None | str | Unset
+        if isinstance(self.display_reason, Unset):
+            display_reason = UNSET
+        else:
+            display_reason = self.display_reason
+
+        child_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.child_state_counts, Unset):
+            child_state_counts = UNSET
+        elif isinstance(self.child_state_counts, GetTaskResponseChildStateCountsType0):
+            child_state_counts = self.child_state_counts.to_dict()
+        else:
+            child_state_counts = self.child_state_counts
+
+        descendant_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.descendant_state_counts, Unset):
+            descendant_state_counts = UNSET
+        elif isinstance(self.descendant_state_counts, GetTaskResponseDescendantStateCountsType0):
+            descendant_state_counts = self.descendant_state_counts.to_dict()
+        else:
+            descendant_state_counts = self.descendant_state_counts
+
+        claim_readiness: dict[str, Any] | None | Unset
+        if isinstance(self.claim_readiness, Unset):
+            claim_readiness = UNSET
+        elif isinstance(self.claim_readiness, ClaimReadiness):
+            claim_readiness = self.claim_readiness.to_dict()
+        else:
+            claim_readiness = self.claim_readiness
+
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -292,6 +358,18 @@ class GetTaskResponse:
         else:
             class_hint = self.class_hint
 
+        prefer_target: None | str | Unset
+        if isinstance(self.prefer_target, Unset):
+            prefer_target = UNSET
+        else:
+            prefer_target = self.prefer_target
+
+        prefer_mode: None | str | Unset
+        if isinstance(self.prefer_mode, Unset):
+            prefer_mode = UNSET
+        else:
+            prefer_mode = self.prefer_mode
+
         route: dict[str, Any] | None | Unset
         if isinstance(self.route, Unset):
             route = UNSET
@@ -299,6 +377,14 @@ class GetTaskResponse:
             route = self.route.to_dict()
         else:
             route = self.route
+
+        delivery_status: dict[str, Any] | None | Unset
+        if isinstance(self.delivery_status, Unset):
+            delivery_status = UNSET
+        elif isinstance(self.delivery_status, EpicDeliveryStatus):
+            delivery_status = self.delivery_status.to_dict()
+        else:
+            delivery_status = self.delivery_status
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -309,6 +395,16 @@ class GetTaskResponse:
                 "title": title,
             }
         )
+        if display_state is not UNSET:
+            field_dict["display_state"] = display_state
+        if display_reason is not UNSET:
+            field_dict["display_reason"] = display_reason
+        if child_state_counts is not UNSET:
+            field_dict["child_state_counts"] = child_state_counts
+        if descendant_state_counts is not UNSET:
+            field_dict["descendant_state_counts"] = descendant_state_counts
+        if claim_readiness is not UNSET:
+            field_dict["claim_readiness"] = claim_readiness
         if description is not UNSET:
             field_dict["description"] = description
         if status is not UNSET:
@@ -377,15 +473,25 @@ class GetTaskResponse:
             field_dict["route_source"] = route_source
         if class_hint is not UNSET:
             field_dict["class_hint"] = class_hint
+        if prefer_target is not UNSET:
+            field_dict["prefer_target"] = prefer_target
+        if prefer_mode is not UNSET:
+            field_dict["prefer_mode"] = prefer_mode
         if route is not UNSET:
             field_dict["route"] = route
+        if delivery_status is not UNSET:
+            field_dict["delivery_status"] = delivery_status
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.claim_readiness import ClaimReadiness
+        from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
         from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
         from ..models.get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
+        from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
         from ..models.provider_hold_detail import ProviderHoldDetail
@@ -400,9 +506,91 @@ class GetTaskResponse:
 
         title = d.pop("title")
 
+        def _parse_display_state(data: object) -> GetTaskResponseDisplayStateType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                display_state_type_0 = GetTaskResponseDisplayStateType0(data)
+
+                return display_state_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GetTaskResponseDisplayStateType0 | None | Unset, data)
+
+        display_state = _parse_display_state(d.pop("display_state", UNSET))
+
+        def _parse_display_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        display_reason = _parse_display_reason(d.pop("display_reason", UNSET))
+
+        def _parse_child_state_counts(data: object) -> GetTaskResponseChildStateCountsType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                child_state_counts_type_0 = GetTaskResponseChildStateCountsType0.from_dict(data)
+
+                return child_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GetTaskResponseChildStateCountsType0 | None | Unset, data)
+
+        child_state_counts = _parse_child_state_counts(d.pop("child_state_counts", UNSET))
+
+        def _parse_descendant_state_counts(data: object) -> GetTaskResponseDescendantStateCountsType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                descendant_state_counts_type_0 = GetTaskResponseDescendantStateCountsType0.from_dict(data)
+
+                return descendant_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GetTaskResponseDescendantStateCountsType0 | None | Unset, data)
+
+        descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
+
+        def _parse_claim_readiness(data: object) -> ClaimReadiness | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_readiness_type_0 = ClaimReadiness.from_dict(data)
+
+                return claim_readiness_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimReadiness | None | Unset, data)
+
+        claim_readiness = _parse_claim_readiness(d.pop("claim_readiness", UNSET))
+
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: GetTaskResponseStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = GetTaskResponseStatus(_status)
 
         priority = d.pop("priority", UNSET)
 
@@ -662,6 +850,24 @@ class GetTaskResponse:
 
         class_hint = _parse_class_hint(d.pop("class_hint", UNSET))
 
+        def _parse_prefer_target(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_target = _parse_prefer_target(d.pop("prefer_target", UNSET))
+
+        def _parse_prefer_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        prefer_mode = _parse_prefer_mode(d.pop("prefer_mode", UNSET))
+
         def _parse_route(data: object) -> GetTaskResponseRouteType0 | None | Unset:
             if data is None:
                 return data
@@ -679,10 +885,32 @@ class GetTaskResponse:
 
         route = _parse_route(d.pop("route", UNSET))
 
+        def _parse_delivery_status(data: object) -> EpicDeliveryStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                delivery_status_type_0 = EpicDeliveryStatus.from_dict(data)
+
+                return delivery_status_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EpicDeliveryStatus | None | Unset, data)
+
+        delivery_status = _parse_delivery_status(d.pop("delivery_status", UNSET))
+
         get_task_response = cls(
             id=id,
             project_id=project_id,
             title=title,
+            display_state=display_state,
+            display_reason=display_reason,
+            child_state_counts=child_state_counts,
+            descendant_state_counts=descendant_state_counts,
+            claim_readiness=claim_readiness,
             description=description,
             status=status,
             priority=priority,
@@ -717,7 +945,10 @@ class GetTaskResponse:
             provider_hold=provider_hold,
             route_source=route_source,
             class_hint=class_hint,
+            prefer_target=prefer_target,
+            prefer_mode=prefer_mode,
             route=route,
+            delivery_status=delivery_status,
         )
 
         get_task_response.additional_properties = d
