@@ -14,21 +14,17 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import DepType, Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 PROJECT = "p-wg"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("wg.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("wg.db")
     await database.create_project(Project(id=PROJECT, name="wg"))
     yield database
-    await database.close()
 
 
 async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
@@ -294,3 +290,74 @@ class TestListing:
         await db.resolve_gate(g2, resolved_by="a")
         open_timers = await db.list_open_gates_by_type("timer")
         assert {g["id"] for g in open_timers} == {g1}
+
+
+# ── pull_request completion: pr-merged gate on blocks dependents ─────────
+
+
+PR = "https://github.com/o/r/pull/56"
+
+
+class TestPrMergeGateOnCompletion:
+    """A ``pull_request`` completion holds ``blocks`` dependents until merge."""
+
+    async def test_dependent_stays_blocked_until_pr_merged(self, db):
+        await mktask(db, "pre", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "dep")
+        await db.add_dependency("dep", "pre", DepType.BLOCKS.value)
+        assert (await db.get_task("dep")).is_blocked is True
+
+        await db.transition_task("pre", TaskStatus.COMPLETED, pr_url=PR, pr_merge_gate=PR)
+
+        assert (await db.get_task("pre")).status == TaskStatus.COMPLETED
+        assert (await db.get_task("dep")).is_blocked is True
+        [gate] = await db.get_gates_for_task("dep")
+        assert (gate["gate_type"], gate["await_id"], gate["status"]) == ("pr-merged", PR, "open")
+
+        assert await db.resolve_gate(gate["id"], resolved_by="pr-merged") == {"dep"}
+        assert (await db.get_task("dep")).is_blocked is False
+
+    async def test_reuses_open_gate_for_same_pr(self, db):
+        await mktask(db, "other")
+        existing, _ = await db.create_gate(
+            PROJECT, "pr-merged", "PR", await_id=PR, waiter_task_ids=["other"]
+        )
+        await mktask(db, "pre", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "dep")
+        await db.add_dependency("dep", "pre", DepType.BLOCKS.value)
+
+        await db.transition_task("pre", TaskStatus.COMPLETED, pr_merge_gate=PR)
+
+        assert await db.get_gate_waiters(existing) == {"other", "dep"}
+        assert len(await db.list_gates(project_id=PROJECT)) == 1
+
+    async def test_started_and_non_blocks_dependents_are_not_gated(self, db):
+        await mktask(db, "pre", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "running", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "soft")
+        await db.add_dependency("running", "pre", DepType.BLOCKS.value)
+        await db.add_dependency("soft", "pre", DepType.RELATED.value)
+
+        await db.transition_task("pre", TaskStatus.COMPLETED, pr_merge_gate=PR)
+
+        assert await db.list_gates(project_id=PROJECT) == []
+        assert await db.get_gates_for_task("running") == []
+
+    async def test_without_flag_completion_releases_dependent(self, db):
+        await mktask(db, "pre", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "dep")
+        await db.add_dependency("dep", "pre", DepType.BLOCKS.value)
+
+        await db.transition_task("pre", TaskStatus.COMPLETED, pr_url=PR)
+
+        assert (await db.get_task("dep")).is_blocked is False
+        assert await db.list_gates(project_id=PROJECT) == []
+
+    async def test_non_completed_transition_ignores_flag(self, db):
+        await mktask(db, "pre", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "dep")
+        await db.add_dependency("dep", "pre", DepType.BLOCKS.value)
+
+        await db.transition_task("pre", TaskStatus.FAILED, pr_merge_gate=PR)
+
+        assert await db.list_gates(project_id=PROJECT) == []

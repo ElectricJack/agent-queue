@@ -10,6 +10,7 @@ LLM.  The sweep that gathers the snapshot and applies the plan is tested in
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 import pytest
 import yaml
@@ -552,6 +553,107 @@ def test_work_failover_is_moving_in_consumes_target_headroom():
     assert (d.action, d.kind) == ("hold", "spill_no_target")
     # A hold (even one naming its would-be target) moves nothing in.
     assert with_incoming_moves(view, [incoming("hold")]) is view
+
+
+def _multi_kind_measurement(
+    *, reverse=False, project_cap=8, repo_room=2, other_room=0, claude_idle=1,
+):
+    """Three busy Codex workers and a Claude worker in a different repository."""
+    measurement = PoolMeasurement()
+    for harness, busy, idle in (("codex", 3, 0), ("claude", 0, claude_idle)):
+        pid = f"std-high-{harness}"
+        key = PoolKey(pid)
+        measurement.profiles[key] = _profile(pid, harness, "std-high")
+        measurement.bounds[key] = (0, 3 if harness == "codex" else 4)
+        measurement.demand[key] = int(harness == "codex")
+        measurement.supply[key] = PoolSupply(
+            running_busy=busy, running_idle=idle,
+            by_project={"p": PoolProjectSupply(running_busy=busy, running_idle=idle)},
+        )
+        common = dict(project_id="p", project_live_total=3 + claude_idle, project_cap=project_cap,
+                      quarantined=False, warm_floor=0)
+        rows = [
+            PlacementCandidate(**common, workspace_kind="other-repo", ready=0, live=idle,
+                               workspace_capacity=other_room,
+                               idle_session_ids=("claude-other",) if idle else ()),
+            PlacementCandidate(**common, workspace_kind="project-repo", ready=int(busy > 0),
+                               live=busy, workspace_capacity=repo_room),
+        ]
+        measurement.candidates[key] = rows[::-1] if reverse else rows
+    return measurement
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("claude_idle", [0, 1])
+def test_codex_repair_spills_using_its_repository_capacity_in_any_placement_order(reverse, claude_idle):
+    measurement = _multi_kind_measurement(reverse=reverse, claude_idle=claude_idle)
+    view = capacity_view_from_measurement(measurement, 8)
+    routed = (("std-high-codex", "std-high"), ("std-high-claude", "std-high"))
+    [decision] = _plan([_cand("repair", "std-high-codex", route_candidates=routed)], view)
+    assert (decision.action, decision.to_provider) == ("move", "claude")
+    assert view.pools["std-high-codex"].project("p").ready == 1
+    assert view.pools["std-high-claude"].project("p").idle == 0
+    assert view.pools["std-high-claude"].project("p", "other-repo").idle == claude_idle
+
+
+@pytest.mark.parametrize("constraint", ["workspace", "project", "global"])
+def test_an_idle_claude_worker_in_another_repository_cannot_take_the_repair(constraint):
+    measurement = _multi_kind_measurement(
+        project_cap=4 if constraint == "project" else 8,
+        repo_room=0 if constraint == "workspace" else 2,
+    )
+    view = capacity_view_from_measurement(measurement, 4 if constraint == "global" else 8)
+    [decision] = _plan([_cand("repair", "std-high-codex")], view)
+    assert (decision.action, decision.kind) == ("hold", "spill_no_target")
+
+
+def test_spills_to_different_repositories_share_the_project_worker_limit():
+    measurement = _multi_kind_measurement(project_cap=5, other_room=2)
+    source = PoolKey("std-high-codex")
+    measurement.candidates[source] = [replace(row, ready=1)
+                                      for row in measurement.candidates[source]]
+    measurement.demand[source] = 2
+    target = PoolKey("std-high-claude")
+    # The other repository's idle seat is occupied by its own queued work.
+    measurement.candidates[target][0] = replace(measurement.candidates[target][0], ready=1)
+    measurement.demand[target] = 1
+    view = capacity_view_from_measurement(measurement, 8)
+    decisions = _plan([
+        _cand("repair-1", "std-high-codex"),
+        _cand("repair-2", "std-high-codex", workspace_kind="other-repo"),
+    ], view)
+    assert [(d.action, d.kind) for d in decisions] == [
+        ("move", None), ("hold", "spill_no_target"),
+    ]
+
+
+def test_idle_in_another_repository_does_not_hide_the_targets_own_queued_work():
+    measurement = _multi_kind_measurement()
+    target = PoolKey("std-high-claude")
+    measurement.bounds[target] = (0, 2)
+    measurement.candidates[target][1] = replace(measurement.candidates[target][1], ready=1)
+    measurement.demand[target] = 1
+    view = capacity_view_from_measurement(measurement, 8)
+    assert view.pools[target.profile_id].unserved == 1
+    [decision] = _plan([_cand("repair", "std-high-codex")], view)
+    assert (decision.action, decision.kind) == ("hold", "spill_no_target")
+
+
+def test_incoming_failover_uses_the_same_repository_as_the_spilling_task():
+    from src.providers.reroute import Decision
+
+    measurement = _multi_kind_measurement(repo_room=0)
+    key = PoolKey("std-high-codex")
+    measurement.candidates[key][0] = replace(measurement.candidates[key][0], ready=1)
+    measurement.demand[key] = 2
+    view = capacity_view_from_measurement(measurement, 8)
+    incoming = Decision("failed-over", "p", "std-high-codex", "codex", UNAUTHENTICATED,
+                        "move", to_profile_id="std-high-claude", workspace_kind="other-repo")
+    folded = with_incoming_moves(view, [incoming])
+    assert folded.pools["std-high-claude"].project("p", "other-repo").ready == 1
+    assert folded.pools["std-high-claude"].project("p").ready == 0
+    [decision] = _plan([_cand("repair", "std-high-codex", workspace_kind="other-repo")], folded)
+    assert (decision.action, decision.kind) == ("hold", "spill_no_target")
 
 
 def test_an_empty_measurement_is_an_empty_view():
