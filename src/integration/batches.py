@@ -18,6 +18,7 @@ from typing import Protocol
 
 from sqlalchemy import func, insert, select, tuple_, union_all, update
 
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks, integration_batch_members, integration_batches, projects, tasks,
 )
@@ -85,8 +86,9 @@ def withheld_sources_query(target):
         batch.c.repository_id == target.repository_id,
         batch.c.target_ref == target.target_ref,
         batch.c.intent == "aborted",
-        ~ejection_instruction(batch.c.id),
-        ~withheld_release(batch.c.id, member.c.task_id, member.c.source_sha),
+        ((batch.c.fixer_queue["status"].astext == "deferred") |
+         (~ejection_instruction(batch.c.id) &
+          ~withheld_release(batch.c.id, member.c.task_id, member.c.source_sha))),
     )
 
 
@@ -103,7 +105,8 @@ def withheld_source_blocker(target, task_id, source_sha, row):
                   f" ({row.human_abort_reason or 'no abort reason'}); the train will not"
                   " re-batch this exact source on its own",
         "action": f"preview `aq integration release-withheld-source {batch_id} --task "
-                  f"{task_id}`; an operator applies it with the previewed SHAs and a reason. "
+                  f"{task_id}`; an operator or owning supervisor applies it with the previewed "
+                  "SHAs and a reason. "
                   "A new completion of the task is admitted without a release",
     }
 
@@ -264,6 +267,14 @@ class BatchStore:
                                              promotion=promotion)
 
     async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
+        from src.integration.delivery_truth import load_delivery_requests
+        from src.integration.engine import lock_key
+
+        # Hold the cutover fence through membership commit. Reading the audit
+        # before a later blocked INSERT could otherwise miss a concurrent apply.
+        # Take it before the project lock: cutover apply holds the exclusive
+        # side while it updates the project row.
+        await conn.execute(select(func.pg_advisory_xact_lock_shared(lock_key(batch.repository_id))))
         if self.require_enabled:
             from src.database.tables import projects
 
@@ -276,6 +287,16 @@ class BatchStore:
             ).with_for_update())
             if enabled is None:
                 raise ValueError("automatic integration is off")
+            from src.integration.train_policy import train_policy_on
+
+            if not (await train_policy_on(conn, batch.project_id)).enabled:
+                raise ValueError("train playbook is off")
+        requests = await load_delivery_requests(
+            self.db, [member.task_id for member in members], repository_id=batch.repository_id,
+            target_ref=batch.target_ref, conn=conn, reduced=True,
+        )
+        if any(request.lifecycle_disposition for request in requests.values()):
+            raise ValueError("delivery obligation was retired by containment cutover")
         await self._target_lock(conn, batch)
         if exclusive_target:
             await self._exclusive_target(conn, batch)
@@ -366,7 +387,7 @@ class BatchStore:
             projects.c.id == batch.project_id,
         )) or {}
         retention = (policy.get("cleanup") or {}).get("successful_source_refs", "delete")
-        await conn.execute(insert(integration_batches).values(
+        await execute_batch_mutation(conn, insert(integration_batches).values(
             id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
             target_ref=batch.target_ref, intent=batch.intent,
             repair_attempt_count=batch.repair_attempt_count,
@@ -405,24 +426,34 @@ class BatchStore:
                 source_ref=source_ref,
                 source_ref_retention=retention if source_ref else None,
             ))
-        await conn.execute(update(integration_batches).where(
+        await execute_batch_mutation(conn, update(integration_batches).where(
             integration_batches.c.id == batch.id,
         ).values(lifecycle="sealed"))
         return replace(batch, created_at=batch.created_at or now)
 
     @asynccontextmanager
-    async def publication(self, batch_id: str):
+    async def publication(self, batch_id: str, *, delivered_sha=None, companion_batch_id=None):
         """Serialize explicit batch intent with the bounded managed transport.
 
         Lock order is batch intent, then managed ref. Check refresh/build work
         happens before this section. set_intent shares this row lock.
         """
         async with self.db.immediate() as conn:
-            row = (await conn.execute(select(integration_batches.c.intent).where(
-                integration_batches.c.id == batch_id,
+            ids = {batch_id, companion_batch_id} - {None}
+            rows = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id.in_(ids),
                 integration_batches.c.target_ref.is_not(None),
-            ).with_for_update())).scalar_one_or_none()
+            ).order_by(integration_batches.c.id).with_for_update())).mappings().all()
+            row = next((r["intent"] for r in rows if r["id"] == batch_id), None)
             yield row == "open"
+            if row == "open" and delivered_sha:
+                for bound in rows:
+                    state = bound["fixer_state"]
+                    if state:
+                        await conn.execute(update(integration_batches).where(
+                            integration_batches.c.id == bound["id"],
+                        ).values(fixer_state={**state, "status": "green",
+                                              "green_sha": delivered_sha}))
 
     async def eject(self, batch, task_id, replacement, members, *, trees, authorize,
                     dry_run, operator_id, reason):
@@ -471,7 +502,7 @@ class BatchStore:
                            "task_id": task_id,
                            "replacement_batch_id": replacement.id if replacement else None,
                            "operator_id": operator_id, "reason": reason}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
@@ -577,7 +608,7 @@ class BatchStore:
                            "task_id": task_id,
                            "replacement_batch_id": replacement.id if replacement else None,
                            "operator_id": "service:integration-train", "reason": reason}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
@@ -594,6 +625,57 @@ class BatchStore:
             await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
                 task_id=task_id, payload=json.dumps(instruction),
                 conn=conn)
+        return True
+
+    async def reassemble(self, batch, replacement, members, *, trees, authorize):
+        """Atomically replace an open baseline-blocked batch, retaining every source."""
+        import json
+
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            await conn.execute(select(projects.c.id).where(
+                projects.c.id == batch.project_id).with_for_update())
+            await self._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id).with_for_update())).mappings().one()
+            if (Batch.from_row(row) != batch or row["intent"] != "open"
+                    or row["lifecycle"] == "promoted"):
+                return False
+            frozen = tuple(BatchMember(r.task_id, r.source_sha, r.source_base_sha, r.ordinal)
+                for r in (await conn.execute(select(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == batch.id,
+                ).order_by(integration_batch_members.c.ordinal))).all())
+            sources = {m.task_id: (m.source_sha, m.base_sha) for m in members}
+            if (len(sources) <= len(frozen) or any(
+                    sources.get(m.task_id) != (m.source_sha, m.base_sha) for m in frozen)):
+                raise ValueError("reassembly must retain every exact frozen member")
+            if ((replacement.project_id, replacement.repository_id, replacement.target_ref)
+                    != (batch.project_id, batch.repository_id, batch.target_ref)
+                    or replacement.repair_attempt_count < batch.repair_attempt_count):
+                raise ValueError("reassembly must preserve target and repair history")
+            await self._exclusive_target(conn, replacement, excluding=batch.id)
+            await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(sources))
+                               .order_by(tasks.c.id).with_for_update())
+            if not await authorize(conn, row):
+                return False
+            instruction = {
+                "batch_id": batch.id, "project_id": batch.project_id,
+                "task_id": frozen[0].task_id, "replacement_batch_id": replacement.id,
+                "operator_id": "service:integration-train",
+                "reason": "pre-existing target failures; admit green pending baseline fix",
+            }
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(intent="aborted", lifecycle="aborted", ejection_record=instruction,
+                     human_abort_reason=instruction["reason"], cleanup_state="pending",
+                     updated_at=self.clock()))
+            from src.integration.branch_retirement import request_batch_retirement_on
+
+            await request_batch_retirement_on(conn, row, reason="reassembled batch candidate",
+                                             now=self.clock())
+            await self._freeze_on(conn, replacement, members, trees=trees)
+            await self.db.log_event("integration.batch_reassembled", project_id=batch.project_id,
+                payload=json.dumps(instruction), conn=conn)
         return True
 
     async def set_intent(self, batch_id: str, intent: str, *, dry_run=False,
@@ -621,6 +703,8 @@ class BatchStore:
             if dry_run:
                 return
             values = {"intent": intent, "updated_at": self.clock()}
+            if operator_id is not None and row["fixer_queue"]:
+                values["fixer_queue"] = {**row["fixer_queue"], "status": "operator_decision"}
             if intent == "aborted":
                 # Compatibility guards still read lifecycle. Commit the terminal
                 # projection with intent so members can be revised immediately.
@@ -630,14 +714,17 @@ class BatchStore:
                 )
                 if row["lifecycle"] != "aborted":
                     values["cleanup_state"] = "pending"
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(**values))
             if intent == "aborted":
                 from src.integration.branch_retirement import request_batch_retirement_on
+                from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
 
                 await request_batch_retirement_on(conn, row, reason="aborted batch candidate",
                                                  now=self.clock())
+                await fail_stranded_promotion_tasks_on(  # a promotion task can no longer settle
+                    self.db, conn, now=self.clock(), batch_id=batch_id)
             if operator_id is not None:
                 import json
 
@@ -664,7 +751,7 @@ class BatchStore:
             ids = list((await conn.execute(pending.order_by(integration_batches.c.id)
                 .limit(limit).with_for_update(skip_locked=True))).scalars())
             if ids:
-                await conn.execute(update(integration_batches).where(
+                await execute_batch_mutation(conn, update(integration_batches).where(
                     integration_batches.c.id.in_(ids),
                 ).values(lifecycle="aborted", cleanup_state="pending",
                     human_abort_reason=func.coalesce(
@@ -706,12 +793,14 @@ class BatchService:
         gate: Callable[[Batch, str, str], Awaitable[bool]],
         attest: Callable[[Batch, str], Awaitable[str]] | None = None,
         require_attestation: bool = True,
+        observe_deferred: Callable[[Batch, str], Awaitable[bool]] | None = None,
     ):
         self.store, self.gitops = store, gitops
         self.publish, self.eligible, self.gate = publish, eligible, gate
         # Only hosted targets carry the App attestation ruleset; the local
         # validation lane publishes on its own gate and never attests.
         self.attest, self.require_attestation = attest, require_attestation
+        self.observe_deferred = observe_deferred
 
     async def _authorized(self, batch, members):
         from src.operator_decisions import OperatorDecisions
@@ -781,7 +870,11 @@ class BatchService:
         if (actual or ZERO) != expected:
             return "moved"
         try:
-            async with self.store.publication(batch.id) as opened:
+            retained = await self.store.db.get_integration_batch(batch.id)
+            async with self.store.publication(
+                batch.id, delivered_sha=sha if ref == batch.target_ref else None,
+                companion_batch_id=(retained["fixer_queue"] or {}).get("companion_batch_id"),
+            ) as opened:
                 if not opened:
                     return "held"
                 await self.publish(repo, ref, expected_old_oid=expected, new_oid=sha,
@@ -861,6 +954,17 @@ class BatchService:
         target = snapshot.target_oid
         ref = candidate_ref(batch.id)
         candidate = observed.source_heads.get("refs/remotes/origin/" + branch(ref))
+        retained = await self.store.db.get_integration_batch(batch.id)
+        queue = retained["fixer_queue"] or {}
+        companion = queue.get("companion_sha")
+        if queue.get("companion_batch_id"):
+            companion = observed.source_heads.get(
+                "refs/remotes/origin/" + branch(candidate_ref(queue["companion_batch_id"])),
+                companion,
+            )
+        if candidate and retained["fixer_state"]:
+            if not companion or await self.gitops.is_ancestor(repo, companion, candidate):
+                companion = candidate
         try:
             target_tree = (
                 await self.gitops.git.atree_sha(str(repo.store), target)
@@ -886,7 +990,9 @@ class BatchService:
             # partial merge. Candidate inclusion alone cannot settle members.
             proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
-            if members and all(proof is True for proof in proofs) and not (
+            if members and all(proof is True for proof in proofs) and (
+                not companion or await self.gitops.is_ancestor(repo, companion, target)
+            ) and not (
                 batch.epic_sync or batch.epic_refresh
             ):
                 return BatchObservation("delivered", candidate, target)
@@ -899,17 +1005,56 @@ class BatchService:
             # remain historical delivery evidence, never repair completeness.
             retains_target = bool(candidate and await self.gitops.is_ancestor(repo, target, candidate))
             reusable = retains_target
+            if candidate:
+                marker = await self.gitops.run(repo, "show", "-s", "--format=%s", candidate)
+                if marker.startswith("AQ-Speculative:"):
+                    fields = marker.split()
+                    predecessor = (await self.store.db.get_integration_batch(fields[1])
+                                   if len(fields) == 4 else None)
+                    policy = await self.store.db.get_project(batch.project_id)
+                    enabled = ((policy.hierarchical_integration_policy or {}).get("train")
+                               or {}).get("speculative_ci", False)
+                    valid = bool(predecessor and enabled and
+                        predecessor["lifecycle"] == "promoted" and
+                        predecessor["intent"] == "open" and
+                        str(predecessor["repair_attempt_count"]) == fields[2] and
+                        predecessor["tested_candidate_sha"] == fields[3] == target and
+                        await self.gitops.run(repo, "rev-parse", candidate + "^1") == target)
+                    reusable = reusable and valid
+                    if not valid:
+                        retains_target = False
             if reusable:
                 reusable = all([
                     await self.gitops.is_ancestor(repo, member.source_sha, candidate)
                     for member in members
                 ])
+                if companion:
+                    reusable = reusable and await self.gitops.is_ancestor(repo, companion, candidate)
             if not reusable:
                 # Continue a partial repair from its resolved overlay while the
                 # target is still an ancestor. Rebuilding from the target would
                 # discard the repair of the first conflict before later members.
-                result = await self.gitops.merge_sources(repo, candidate if retains_target else target,
-                                                        members,
+                assembly_base = candidate if retains_target else target
+                assembly_members = members
+                if companion and not retains_target:
+                    # Resume the original candidate, preserving ALL fix commits
+                    # while bringing in the newly delivered healthy subset.
+                    assembly_base = companion
+                    common = await self.gitops.git.amerge_base(str(repo.store), companion, target)
+                    assembly_members = (BatchMember("delivery-tip:" + batch.id,
+                                                     target, common), *members)
+                elif companion and not await self.gitops.is_ancestor(repo, companion, candidate):
+                    common = await self.gitops.git.amerge_base(str(repo.store), companion, candidate)
+                    assembly_members = (*members, BatchMember("fix-companion:" + batch.id,
+                                                               companion, common))
+                elif not candidate and queue.get("delivery_sha"):
+                    assembly_base = queue["delivery_sha"]
+                from src.integration.close_handoff import assembly_inputs
+
+                assembly_members = await assembly_inputs(
+                    self.store.db, self.gitops, repo, batch, assembly_members)
+                result = await self.gitops.merge_sources(repo, assembly_base,
+                                                        assembly_members,
                                                         created_at=batch.created_at)
                 if result["outcome"] != "merged":
                     logger.warning("integration batch %s build %s on %s: %s",
@@ -943,6 +1088,13 @@ class BatchService:
                 return BatchObservation("testing", candidate, target, tree)
 
             async def authorize():
+                if queue.get("companion_batch_id"):
+                    current_companion = await self.gitops.remote(
+                        repo, candidate_ref(queue["companion_batch_id"]))
+                    if not current_companion or not await self.gitops.is_ancestor(
+                        repo, current_companion, candidate,
+                    ):
+                        return False
                 return (await self._authorized(batch, members) and
                         (batch.epic_refresh or
                          await self.gitops.remote(repo, ref) == candidate) and

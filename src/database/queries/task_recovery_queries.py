@@ -10,6 +10,7 @@ import uuid
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.task_queries import RECOVERY_FAILURE_AT_KEY, STALE_OPEN_ATTENTION
 from src.database.tables import (
@@ -829,8 +830,9 @@ class TaskRecoveryQueryMixin:
 
         Ordinary status projection never releases a decided hold. Restart/reopen
         and resume intentionally retire the old failure, including when a held
-        task was already projected to READY. Preserve its diagnosis and budget instead of deleting
-        the incident, and archive its notification before claim waiters wake.
+        task was already projected to READY. An operator close (--done, --obsolete) retires
+        it the same way. Preserve its diagnosis and budget instead of deleting
+        the incident, and archive its notifications before claim waiters wake.
         Return whether a hold was released so READY-to-READY can announce it too.
         """
         raw = await conn.scalar(select(task_metadata.c.value).where(
@@ -863,9 +865,11 @@ class TaskRecoveryQueryMixin:
             "retry_blocker": reason,
             "next_action": reason,
         }, conn=conn)
-        await conn.execute(update(messages).where(
-            messages.c.id == "msg-" + incident["id"],
-        ).values(archived_at=now))
+        await conn.execute(update(messages).where(messages.c.id.in_([
+            "msg-" + incident["id"],
+            f"msg-{incident['id']}-hold-expired-supervisor-{incident.get('project_id')}",
+            f"msg-{incident['id']}-hold-expired-supervisor-global",
+        ])).values(archived_at=now))
         return held
 
     async def _queue_task_recovery_notification(self, task_id):
@@ -1019,7 +1023,7 @@ class TaskRecoveryQueryMixin:
                 }
             body = _recovery_message_body(facts)
             now = time.time()
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id="msg-" + incident_id,
                     project_id=task["project_id"],
@@ -1211,9 +1215,9 @@ class TaskRecoveryQueryMixin:
             incident = meta.get(INCIDENT_KEY) or {}
             if (ask_decision_id and incident.get("id") == incident_id
                     and incident.get("ask_decision_id") == ask_decision_id):
-                return {"task_id": task_id, "incident_id": incident_id,
+                return {"task_id": task_id, "incident_id": incident_id, "replayed": True,
                         "decision": incident["decision"], "status": task["status"],
-                        "decision_id": ask_decision_id, "replayed": True}
+                        "decided_at": incident["decided_at"], "decision_id": ask_decision_id}
             if ask_decision_id:
                 from src.asks.models import digest
                 owner = await self._recovery_owner(conn, task)
@@ -1221,6 +1225,8 @@ class TaskRecoveryQueryMixin:
                     raise ValueError("Recovery source meaning or owner changed since the human decision")
                 if owner["kind"] in {"integration_operation", "retired"}:
                     raise ValueError("Recovery is no longer owned by this supervisor")
+            if task["status"] == TaskStatus.COMPLETED.value:
+                raise ValueError(f"Task {task_id} is COMPLETED; its recovery incident is closed")
             releasing_hold = (
                 decision in ("retry", "release")
                 and expected_hold_at is not None
@@ -1369,10 +1375,10 @@ class TaskRecoveryQueryMixin:
         elif decision == "release" and task["status"] == "READY":
             await self._notify_ready([(task_id, "recovery_hold_released")])
         return {
-            "task_id": task_id,
-            "incident_id": incident_id,
-            "decision": decision,
+            "task_id": task_id, "incident_id": incident_id, "decision": decision,
             "status": "READY" if decision == "retry" else task["status"],
+            # A later release must name this exact hold as expected_hold_at.
+            "decided_at": now,
         }
 
     async def _clear_stopped_recovery_assignment_on(
