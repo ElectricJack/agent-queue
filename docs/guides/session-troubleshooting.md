@@ -16,7 +16,7 @@ epoch, lease, nudge, drain).
 ## Start here: three commands that answer most questions
 
 ```bash
-aq task explain <task-id>     # why isn't this task running?
+aq task explain --task-id <task-id>     # why isn't this task running?
 aq session list --live        # which sessions exist right now
 aq doctor                     # is anything structurally wrong?
 ```
@@ -195,6 +195,9 @@ on every tick:
   agent row below the input. The guard now recognises the idle box as measured
   on OpenCode 1.18.32, reads typed text from inside the box, and never types
   into shell mode (a bare `Shell` in the agent row).
+  With the sidebar open in OpenCode 1.18.35, its worktree path can sit beside
+  the blank input rows. Composer reads stop at the right edge of the bottom
+  border so sidebar text cannot be mistaken for a draft or stale frame.
 - OpenCode runs plugins inside the TUI process, so a plugin that writes to
   stderr paints straight over the composer, and OpenCode never redraws those
   cells. When a detached OpenCode pane shows text in its box, the guard now
@@ -414,7 +417,7 @@ of the diagnosis.
 | Pool session terminated while holding a task | releases the claim, blocks the task | `needs_attention: exited_holding_task` |
 
 ```bash
-aq task explain <task-id>
+aq task explain --task-id <task-id>
 ```
 
 ```text
@@ -433,8 +436,9 @@ aq task resume --task-id <task-id>      # continue a paused task from its checkp
 > **Warning.** A row saying `stopped` is not proof that a process stopped. It
 > means "AQ last observed it stopped". Code that must actually know calls
 > [`confirm_stopped`](../../src/sessions/provider.py) — a fresh, cache-bypassing
-> probe that answers "no" when it cannot tell, and which the `subprocess`
-> provider does not implement at all. When you are about to do something
+> probe that answers "no" when it cannot tell. The `subprocess` provider checks
+> its tracked child and scans for the instance token; it still cannot adopt
+> that child after a daemon restart. When you are about to do something
 > destructive by hand (deleting a worktree, force-pushing a branch a worker may
 > still own), confirm with the operating system, not with a status column:
 >
@@ -497,6 +501,16 @@ nothing; claim again.
 | `prepare_failed` | the workspace could not be prepared | see the next section |
 | `out_of_scope` | the task is not this session's to touch | do not retry |
 
+In a stacked train project `no_ready_work` can name why stacked work was not
+selected. `stack_snapshot_changed` means a pinned stack ref moved while the
+claim was checking it; the claim re-observes up to three times, then refuses,
+and `stack_evidence` names the ref with its expected and observed OIDs.
+`stack_snapshot_unavailable` means Git gave no stack evidence at all (a failed
+or backed-off fetch): stacked dependents are withheld, while roots and work
+whose prerequisites have delivered still claim, and `stack_evidence.reason`
+carries the Git error. A run of `stack_snapshot_unavailable` points at the
+repository fetch, not the task graph.
+
 ## `slot_reset_failed`: the workspace could not be made clean
 
 **Symptom.** A claim comes back `prepare_failed`, and the task carries
@@ -511,13 +525,38 @@ half-held, and the failure is recorded with enough detail to act on
 **Diagnose.**
 
 ```bash
-aq task explain <task-id>
+aq task explain --task-id <task-id>
 ```
 
 ```text
 needs_attention: slot_reset_failed: <reset error> (attempt 2; automatic retry).
 After fixing the cause: aq task resume --task-id <task-id>
 ```
+
+The reset error is `<stage>: <Type>: <message>` plus its causes, for example
+`slot_reset: RuntimeError: branch held by stopped slot`. An exception that
+carried no text reads `<stage>: <Type> (no message) at <file:line function>`:
+the type, the preparation stage and the frame are what was observed, and
+nothing more is known. Do not read a missing directory or a lock owner into it
+— check the slot itself. A reset that outlived the 30 s fenced-branch bound
+reads `slot_reset: BranchLockTimeout: branch fence critical section exceeded
+30s on <repo>:<branch>; caused by TimeoutError (no message) …; caused by
+CancelledError (no message) at <the interrupted frame>`.
+
+Pool preparation refreshes origin before entering that 30 s branch mutation
+section. A preserved child's mutable refs are refreshed once; an immutable
+origin already present locally needs no refresh. A reset fence timeout counts
+toward the preparation failure ladder below. A checkout whose attached ownership
+cannot be safely released keeps its claim and records the failure for supervisor
+recovery instead of silently returning `no_ready_work`.
+
+The authenticated origin fetch log's `elapsed` covers the entire acquisition,
+including lender integrity verification and local imports. It also reports
+`prepare` (isolated-repository setup, tip seeding and integrity verification),
+`network` (authenticated fetch, including negotiation), and `import` (local object
+and ref import plus verification). `received_objects=0` measures download size,
+not network latency. Compare those phases before attributing a long no-op fetch
+to negotiation or pruning refs; the distinct seeded tip inventory is capped at 512.
 
 The attempt counter is the important part. The first two failures release the
 task back to `READY` with an exponential preparation backoff, so AQ retries on
@@ -543,8 +582,85 @@ attention flag together, so a later unrelated failure starts from zero.
 **The related flag** is `integration_prepare_failed`, which means the branch
 fence — not the filesystem — was the problem. That one intentionally retains
 every binding for recovery rather than unlocking a checkout an integration
-fence still names; see
+fence still names. `explain` prints its recorded `prepare_failure` reason, with
+whether the claim was `released` or `retained`; see
 [development integration](development-integration.md).
+
+## `stack_prerequisites_conflict`: child preparation needs a merge repair
+
+An existing child can conflict with its parent even after the prerequisite
+overlay was built successfully. AQ retains the exact child, parent and overlay
+commits, records the conflicting paths, and reserves one isolated ordinary
+repair task. The child remains READY with admission withheld. Repeated claims
+do not consume the slot-reset failure ladder or duplicate the repair. A repair
+must publish a passing descendant containing every retained input before normal
+child preparation resumes. Generated-only overlaps use the canonical generator.
+
+For the existing E3 incident on `vivid-stone-39.3`, deploy this fix through the
+normal integration train first. A supervisor or operator then reads the task's
+existing recovery incident and its diagnosis; a worker must not recover another
+task. Retry that exact incident through the supported recovery command:
+
+```bash
+aq task recover --task-id vivid-stone-39.3 --incident-id <existing-incident-id> \
+  --decision retry --reason "Child/parent preparation repair is deployed; preserve E3 history"
+```
+
+If the incident was held, include `--expected-hold-at <prior-decided-at>` from
+that same hold. The command rechecks ownership and remaining recovery budgets.
+A refusal must remain held with its diagnosis; do not substitute a restart,
+status edit, branch reset, new incident or gate bypass. If an attachment cannot
+be proved released, resolve it through the supported ownership recovery flow
+before retrying, retaining its checkout and commits.
+
+If a reviewed hold cannot pass automatic failure/end-reason checks, the local
+operator or live global supervisor can use `aq task recover --operator-release
+--decision retry --task-id TASK --incident-id INCIDENT --expected-hold-at DECIDED_AT
+--reason WHY`. It retains stop proof, routing, gates, ownership and all remaining
+budgets. For integration-owned repairs, use `--decision release` to lift only
+the hold, then continue through the integration operation's controls. This form
+also clears an exact stale hold on a READY task without resetting counters or
+changing its state. Project supervisors cannot authorize operator release.
+
+Supervisor holds on train repairs and `slot_reset_failed` escalate after
+15 minutes to project and global supervisors. The execution hold stays effective;
+the deadline prevents a silent wait, not an unsafe retry. Explicit human holds
+do not expire. Never delete recovery metadata by hand.
+
+The next normal preparation reserves the repair and withholds E3. Let the
+ordinary router and worker publish and close that repair. AQ verifies its exact
+head and ancestry, then retries E3 with its original review feedback and filing
+history. E4/G2/G3 continue through their existing dependencies and gates.
+
+## `branch_fenced`: the branch is not yours yet
+
+**Symptom.** A claim comes back `prepare_failed`, and the task carries
+`needs_attention: branch_fenced`.
+
+**What it means.** The task's own branch is still owned by a writer that has
+not released it. The owner-recovery sweep releases an `attached` or
+`handoff_pending` row whose writer is gone, so this clears itself.
+
+**What AQ does.** It releases the claim back to `READY` with the normal
+preparation backoff and never blocks the task, because the ladder that ends in
+`BLOCKED` is for a workspace fault only a human can fix. Nothing to repair: the
+next attempt claims it once the owner is released. (With
+`integration.owner_recovery_sweep: false` the sweep will not run, so AQ keeps the
+escalating ladder and asks for a human instead.)
+
+**Diagnose.** The recorded `branch_fenced` metadata names the branch and the
+refusal:
+
+```bash
+aq task explain --task-id <task-id>
+aq integration status          # what still holds the branch
+```
+
+If the writer is gone and the sweep did not clear it:
+
+```bash
+aq integration release-owner --owner-row-id <row> --apply
+```
 
 ## A pool worker that stopped asking for work
 

@@ -11,7 +11,6 @@ from src.config import EventsConfig, load_config
 from src.database import DatabaseBackend, Database
 from src.models import Project, RepoSourceType, Workspace
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -38,11 +37,9 @@ def test_database_protocol_exposes_onboarding_queries():
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("onboarding.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database: Database = await reuse_database("onboarding.db")
     yield database
-    await database.close()
 
 
 async def test_create_replay_phase_ledger_and_terminal_finish(db):
