@@ -3,7 +3,7 @@
 
 # `integration_trust_manifest`
 
-**Integration Trust Manifest.** Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy.
+**Integration Trust Manifest.** Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy.
 
 | Property | Value |
 |---|---|
@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:38a647fed77961a9c89bf281a0e3eaec11a9eae3b18588cb6afa91ca72b91322` |
+| Contract fingerprint | `sha256:5402c2aa7959f39f587cd64fdadb01836790bc4d893fcabf3cfb02facbff8b95` |
 
 ## Parameters
 
@@ -23,6 +23,7 @@
 | `project_id` | `string` | yes | — | — |
 | `policy` | `object \| null` | no | `null` | — |
 | `repository_id` | `string \| null` | no | `null` | — |
+| `hosted_check_policy` | `HostedCheckPolicy \| null` | no | `null` | — |
 
 ## Result
 
@@ -30,7 +31,7 @@
 |---|---|---|
 | `project_id` | `string \| null` | — |
 | `repository_id` | `string \| null` | — |
-| `policy_source` | `"argument" \| "bound" \| null` | — |
+| `policy_source` | `"argument" \| "bound" \| "hosted_check_policy" \| null` | — |
 | `github_repository_id` | `integer \| null` | — |
 | `full_name` | `string \| null` | — |
 | `attestation_app_id` | `integer \| null` | — |
@@ -41,6 +42,17 @@
 | `committed` | `object \| null` | — |
 
 Projected into the run receipt: `project_id`, `repository_id`, `policy_source`, `github_repository_id`, `full_name`, `attestation_app_id`, `path`, `manifest`, `text`, `sha256`, `committed`.
+
+## Nested objects
+
+### `HostedCheckPolicy`
+
+| Field | Type | Description |
+|---|---|---|
+| `version` | `string` | — |
+| `names` | `string[]` | — |
+| `producer_id` | `string` | — |
+| `check_sets` | `object` | — |
 
 ## Outcomes
 
