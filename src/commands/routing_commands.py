@@ -80,7 +80,10 @@ TRAIN_INTEGRATION_MODES = frozenset({"hierarchy", "train", "development"})
 
 #: Stage profiles never offered as an ordinary worker route.
 _CONTROL_PROFILES = frozenset(
-    {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
+    {
+        "supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler",
+        "spec-ingest", "fidelity-reviewer",
+    }
 )
 
 
@@ -946,9 +949,9 @@ class RoutingCommandsMixin:
         intelligence class and a kind; an empty value clears one -- clears
         ``profile_id``, ``intelligence_class`` and the ``route`` record (its
         ``constraints`` and ``legacy`` audit stay), sets
-        ``route_source='unrouted'`` and clears the route-needed throttle, so
-        the next cascade emits ``task.route_needed`` and the project's router
-        plans the task again.  It clears an override the same way.  It also
+        ``route_source='unrouted'`` and emits ``task.route_needed`` immediately,
+        so the project's router plans the task again even if the cascade
+        filters it out. It clears an override the same way. It also
         stores the routing preference it is given (§4): ``--prefer`` names a
         harness or profile the router weighs before scoring and
         ``--prefer-mode`` chooses ``soft`` (the default) or ``strict``; an
@@ -1058,6 +1061,10 @@ class RoutingCommandsMixin:
             )
         await self._announce_route_change(task.id)
         fresh = await self.db.get_task(task.id) or task
+        project = await self.db.get_project(fresh.project_id)
+        await self.orchestrator._emit_route_needed_event(
+            fresh, router=getattr(project, "assignment_playbook_id", None),
+        )
         task_type = getattr(fresh.task_type, "value", fresh.task_type)
         return {
             "success": True,
