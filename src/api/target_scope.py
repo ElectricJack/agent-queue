@@ -305,6 +305,32 @@ async def _message_view_project(db, message_id: str, args: dict) -> Ownership:
     return True, message.project_id
 
 
+async def _reply_conversation_project(db, conversation_id: str, args: dict) -> Ownership:
+    """A reply owns only its input's conversation, through the addressed notice.
+
+    Conversations span projects, and legacy inputs have no project of their
+    own. The notice retains the routing project, including queued delivery.
+    """
+    if await db.get_conversation(conversation_id) is None:
+        return False, None
+    input_id = args.get("input_id")
+    item = await db.get_conversation_input(input_id) if isinstance(input_id, str) else None
+    if item is None or item["conversation_id"] != conversation_id:
+        return True, None
+    notice_id = item["supervisor_message_id"]
+    if notice_id is None:
+        return True, None
+    _, project_id = await _target_project(db, "reply_to_id", notice_id)
+    return True, project_id
+
+
+async def _say_conversation_project(db, conversation_id: str, args: dict) -> Ownership:
+    if await db.get_conversation(conversation_id) is None:
+        return False, None
+    recipient = await db.get_conversation_recipient(conversation_id)
+    return True, recipient["project_id"] if recipient else None
+
+
 # Tagged objects need both arguments; their IDs never gain an untyped resolver.
 def _context_resolver(resolver: Resolver) -> ContextResolver:
     """Limit a row resolver to commands that use this argument's identity."""
@@ -317,6 +343,11 @@ def _context_resolver(resolver: Resolver) -> ContextResolver:
 
 # Tagged objects need both arguments; shared argument names stay command-scoped.
 CONTEXT_TARGET_RESOLVERS: Final[dict[tuple[str, str], ContextResolver]] = {
+    ("supervisor_inbox_say", "conversation_id"): _say_conversation_project,
+    ("supervisor_inbox_reply", "conversation_id"): _reply_conversation_project,
+    ("supervisor_inbox_reply", "input_id"): _context_resolver(_foreign_resolver(
+        conversation_inputs, conversation_inputs.c.supervisor_message_id, "reply_to_id"
+    )),
     ("message_status", "message_id"): _message_view_project,
     ("message_reply", "message_id"): _message_view_project,
     ("decision_record", "object_id"): _decision_object_project,

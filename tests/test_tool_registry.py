@@ -145,6 +145,7 @@ def test_registry_has_categories(registry):
         "report",
         "wait",
         "cron",
+        "schedule",
         "collaboration",
         "job",
         "artifact",

@@ -806,6 +806,10 @@ class MessageCommandsMixin:
         # and this prompt-boundary inject can never both claim a message.
         claimed: list[Message] = []
         for msg in pending:
+            if (msg.body_kind == "conversation_input"
+                    and self._current_scope and self._current_scope.get("kind") == "session"
+                    and not await self._is_message_recipient(msg)):
+                continue
             if not await self.db.mark_delivered(msg.id):
                 continue
             claimed.append(msg)

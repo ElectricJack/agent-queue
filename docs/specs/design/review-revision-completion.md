@@ -1,7 +1,8 @@
 # Review revision completion
 
-Revision tasks created by `review_decide` carry `review_response` metadata:
-the assigned review id and the revision whose feedback they must answer.
+Feedback tasks created by `review_decide` carry `review_response` metadata:
+the assigned review id, revision and `task_kind` (`revision` or `followup`).
+Missing `task_kind` retains the legacy revision-task behavior.
 
 A passing `task_close` must find a persisted revision of that same review,
 newer than the assigned revision, with `submitted_task_id` equal to the
@@ -21,6 +22,20 @@ Keep the original author, gate and vault path, and attribute the new revision
 to the held revision task. Pool tokens resolve the task from the live session
 even when their token has no task id. Project boundaries and the existing
 assigned-revision/state checks still apply.
+
+A post-approval `followup` task submitting without `review_id` creates a new
+amendment review when its predecessor is still approved at the assigned
+revision. The amendment has its own author task, gate, vault path and revision
+1. Its initial revision's `changes_note` records the predecessor review id,
+revision and frozen decision id, together with any submitted changes note.
+The approved predecessor, its gate and comments remain unchanged. Explicit
+review ids follow the usual authorization for a follow-up worker: it may revise
+its own amendment draft, but cannot mutate the approved review or another
+task's review. A revision task cannot use approval to escape its assignment.
+
+Follow-up tasks do not require publication of a newer revision of the approved
+review at passing close, and prime must not tell them to revise it. Their
+feedback obligations and ordinary document deliverables still apply.
 
 Worker prime must expose this requirement from the metadata, independent of
 task type or description truncation. Instruct the worker to read the review

@@ -1,0 +1,38 @@
+{
+  "source_base": "c08d949a113a04b4160100655f70ff907edd04c6",
+  "reason": "eager-vault-56 adds only the initiated supervisor conversation post descriptor and category. Preserve all existing catalogue evidence.",
+  "previous_cli_catalogue_sha256": "484a41f2d4f0bd3b41a436bb3d66d215d2b41d50814fb2888fab1f0e71c1a0cd",
+  "cli_catalogue_sha256": "e688cbb6b101db3bf624cf268b9727727163554a5b7786d3af2afad4f2ad91c9",
+  "command": "supervisor_inbox_say",
+  "explicit_entry": {
+    "name": "supervisor_inbox_say",
+    "description": "Initiate a supervisor message in an existing open Discord conversation.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16000
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "conversation_id",
+        "text",
+        "idempotency_key"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "tool_category": "supervisor_inbox",
+  "contract_fingerprint": "sha256:3f341ce79039b49b5c411746b6c13c59d42b86ce1e8b4c6ad9e4a0d291740646"
+}
