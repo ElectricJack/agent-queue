@@ -180,7 +180,7 @@ class TaskCommentCommandsMixin:
         # ``messages.from_kind`` intentionally has no supervisor value.
         # Preserve the exact commenter in the rendered payload while using a
         # system sender for non-user identities in the durable queue.
-        queued = await self._cmd_message_send(
+        queued = await self._queue_message_notification(
             {
                 "project_id": task.project_id,
                 "to_kind": "task",

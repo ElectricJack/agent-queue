@@ -9,7 +9,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.models import AgentProfile, DepType, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.tools import _ALL_TOOL_DEFINITIONS
@@ -20,12 +19,10 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -421,6 +418,24 @@ class TestHierarchyCommands:
         await mktask(db, "a", status=TaskStatus.IN_PROGRESS)
         res = await handler._cmd_reparent_task({"task_id": "a", "parent_id": "a"})
         assert res["code"] == "hierarchy.self_parent"
+
+    async def test_reparent_runs_dependency_on_ancestor(self, handler, db):
+        """A blocking edge onto the new parent chain would gate the task on itself."""
+        await mktask(db, "g", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await db.add_dependency("p", "g", "parent-child")
+        await mktask(db, "c")
+        await db.add_dependency("c", "g", "blocks")
+
+        res = await handler._cmd_reparent_task({"task_id": "c", "parent_id": "p"})
+
+        assert res["success"] is False
+        assert res["code"] == res["outcome"] == "dependency_on_ancestor", res
+        assert res["edges"] == [{"task_id": "c", "depends_on": "g", "dep_type": "blocks"}]
+        assert (await db.get_task("c")).parent_task_id is None
+        assert await db.get_typed_dependencies("c") == [("g", "blocks")]
+        res = await handler._cmd_get_schema({})
+        assert "dependency_on_ancestor" in res["enums"]["hierarchy_error"]
 
     @pytest.mark.parametrize("state", ["starting", "running", "draining"])
     async def test_reparent_refuses_live_parent_session_without_agent_pointer(

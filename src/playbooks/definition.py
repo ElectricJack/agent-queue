@@ -642,14 +642,16 @@ DELEGATED_PROFILE_INPUT: Final[str] = "profile_id"
 def step_profile_ids(step: Any) -> tuple[str, ...]:
     """Every capability profile one step depends on, in declaration order.
 
-    Two positions carry one, and both are real dependencies of the artifact:
+    These are real dependencies of the artifact:
 
     * the *own* profile of an :class:`LlmStep` or :class:`AgentTaskStep`, which
-      the step runs as; and
+      the step runs as;
     * a *delegated* profile — a literal :data:`DELEGATED_PROFILE_INPUT` input,
-      which is how a command step hands work to another profile.
+      which is how a command step hands work to another profile; and
+    * a server-owned role created by a domain command, whose profile cannot
+      be supplied by the caller.
 
-    Only a literal counts.  A ``profile_id`` computed from an event reference
+    Only a literal delegated input counts. A ``profile_id`` computed from an event reference
     is not knowable at compile time, so there is no fingerprint to record and
     pretending otherwise would freeze a value the run picks.
     """
@@ -661,6 +663,10 @@ def step_profile_ids(step: Any) -> tuple[str, ...]:
     value = delegated.get(DELEGATED_PROFILE_INPUT) if hasattr(delegated, "get") else None
     if isinstance(value, LiteralValue) and isinstance(value.value, str) and value.value:
         found.append(value.value)
+    if isinstance(step, CommandStep) and step.command == "ensure_spec_ingest":
+        found.append("spec-ingest")
+    if isinstance(step, CommandStep) and step.command == "ensure_fidelity_review":
+        found.append("fidelity-reviewer")
     return tuple(dict.fromkeys(found))
 
 
@@ -678,16 +684,29 @@ def referenced_profile_ids(definition: PlaybookDefinition) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+#: Commands whose effect needs another command's authority.  A command step
+#: grants the dependency only when the artifact's pinned source declaration
+#: (``trusted_execution.required_capabilities``) names it, so the reviewed
+#: source shows every authority the step exercises.
+DECLARED_COMMAND_DEPENDENCIES: dict[str, frozenset[str]] = {
+    "playbook_state_notify": frozenset({"message_send"}),
+}
+
+
 def granted_aq_commands(definition: Any) -> frozenset[str]:
-    """Every AQ command the artifact grants: its command steps' commands and
-    the ``aq_commands`` its steps' tool use names.
+    """Every AQ command the artifact grants: its command steps' commands, the
+    ``aq_commands`` its steps' tool use names, and the declared dependencies
+    of those commands (:data:`DECLARED_COMMAND_DEPENDENCIES`).
 
     Derived from the immutable artifact itself, never from a reviewed
-    manifest, so a repository write cannot grant anything.  A command that
+    manifest, so a repository write cannot grant anything.  A declared
+    capability no step depends on grants nothing.  A command that
     must only run from one kind of playbook (``task_route_apply`` runs only
     from the project's bound router) checks it on the live invocation
     (:mod:`src.playbooks.invocation`).
     """
+    metadata = getattr(definition, "trusted_execution", None)
+    declared = frozenset(getattr(metadata, "required_capabilities", None) or ())
     found: set[str] = set()
     for step in getattr(definition, "steps", {}).values():
         if isinstance(step, ScriptStep):
@@ -695,6 +714,7 @@ def granted_aq_commands(definition: Any) -> frozenset[str]:
         command = getattr(step, "command", None)
         if isinstance(command, str) and command:
             found.add(command)
+            found.update(DECLARED_COMMAND_DEPENDENCIES.get(command, frozenset()) & declared)
         tool_use = getattr(step, "tool_use", None)
         if tool_use is not None:
             found.update(getattr(tool_use, "aq_commands", None) or ())

@@ -27,7 +27,7 @@ from src.models import AgentProfile, Project, TaskStatus
 
 
 FIXTURE = Path("tests/fixtures/playbooks/historical-v2/hierarchical-delivery/artifact.json")
-PARENT_FIXTURE = Path("tests/fixtures/playbooks/v2/agent-queue-parent-integration/artifact.json")
+PARENT_FIXTURE = Path("tests/fixtures/playbooks/historical-v2/agent-queue-parent-integration/artifact.json")
 
 
 def _artifact():

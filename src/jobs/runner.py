@@ -12,13 +12,14 @@ import fcntl
 import os
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from src.jobs.artifacts import OutputStore, atomic_json, read_json, open_artifact
 from src.jobs.identity import identity, processes, stop_tree
 from src.jobs.result import build_result, report_json
 from src.jobs.pytest_output import PytestOutputParser, parse_junit
 from src.resources.box_lock import BoxLock, IncompatibleLockClient
-from src.resources.semaphore import SlotTimeout
+from src.resources.semaphore import SlotSemaphore, SlotTimeout, full_suite_lock_dir
 from src.git.manager import GitManager
 
 
@@ -80,8 +81,10 @@ async def supervise(directory: Path) -> None:
         store = None
         initial = bytearray()
         before = after = (None, None)
-        cm = None
+        cm = ExitStack()
         child = None
+        cache_before = cache_after = None
+        build_started = build_elapsed = None
 
         async def stop_owned():
             if job["contract"].get("native_windows"):
@@ -95,15 +98,30 @@ async def supervise(directory: Path) -> None:
                 raise InterruptedError("job cancelled while queued for capacity")
 
         try:
-            cm = box.acquire(
+            meta = {
+                "job_id": job["id"], "job_nonce": nonce, "task_id": job["task_id"],
+                "project_id": job.get("project_id"),
+                "session_id": job.get("submitter_session_id"),
+                "cwd": job["contract"]["cwd"],
+                "scope": job["contract"].get("test_scope"),
+            }
+            if job["contract"].get("test_scope") == "full":
+                # Same ordering as foreground aq test: queue for the full-suite
+                # lock before taking any shared capacity. The one queue deadline
+                # covers both locks, and both survive a wrapper's death.
+                full_lock = SlotSemaphore(full_suite_lock_dir(box.lock_dir), 1)
+                await asyncio.to_thread(cm.enter_context, full_lock.acquire(
+                    timeout=max(0, job["queue_deadline"] - time.time()),
+                    poll=0.1, meta=meta, on_wait=waiting,
+                ))
+            await asyncio.to_thread(cm.enter_context, box.acquire(
                 exclusive=job["job_class"] == "exclusive",
                 weight=job["weight"],
                 timeout=max(0, job["queue_deadline"] - time.time()),
                 poll=0.1,
-                meta={"job_id": job["id"], "job_nonce": nonce, "task_id": job["task_id"]},
+                meta=meta,
                 on_wait=waiting,
-            )
-            await asyncio.to_thread(cm.__enter__)
+            ))
             if (directory / "cancel.json").exists():
                 raise InterruptedError()
             started = time.time()
@@ -155,6 +173,11 @@ async def supervise(directory: Path) -> None:
                         inherited.append(candidate)
                 except OSError:
                     continue
+            from src.build_cache import cache_counters
+
+            cache = job["contract"].get("build_cache")
+            cache_before = await cache_counters(cache, job["contract"]["env"])
+            build_started = time.monotonic()
             child = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=job["contract"]["cwd"],
@@ -200,6 +223,7 @@ async def supervise(directory: Path) -> None:
                         await stop_owned()
                     await asyncio.wait({wait_child}, timeout=0.1)
                 exit_code = await wait_child
+                build_elapsed = time.monotonic() - build_started
                 if time.monotonic() >= deadline:
                     infra = "run_timeout"
                 # Descendants may retain pipes and locks after the leader exits.
@@ -207,6 +231,7 @@ async def supervise(directory: Path) -> None:
                 if [p for p in await processes(nonce) if p.pid != os.getpid()]:
                     await stop_owned()
                 await pumping
+                cache_after = await cache_counters(cache, job["contract"]["env"])
                 if job["contract"].get("native_windows"):
                     native_completion = read_json(directory / "native-completion.json")
                     if not native_completion or native_completion.get("nonce") != nonce:
@@ -323,6 +348,12 @@ async def supervise(directory: Path) -> None:
                 else "",
                 **(store.stats() if store else {}),
             }
+            if child:
+                from src.build_cache import build_measurements
+
+                completion["build_measurements"] = build_measurements(
+                    job, cache_before, cache_after, build_elapsed,
+                )
             if job["preset"] == "matter_render":
                 completion["capture"] = capture
             tail = b""

@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
+from src.state_machine import InvalidTransition
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
@@ -45,6 +46,7 @@ from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
+from src.commands.wait_v2_commands import WaitV2CommandsMixin
 from src.commands.cron_commands import CronCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
@@ -52,11 +54,13 @@ from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.git_identity_commands import GitIdentityCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
+from src.commands.project_relocation_commands import ProjectRelocationCommandsMixin
 from src.commands.policy_commands import PolicyCommandsMixin
 from src.commands.operator_commands import OperatorCommandsMixin
 from src.commands.operator_authority import bind_operator_dispatch, operator_grant_var
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
+from src.commands.task_split_commands import TaskSplitCommandsMixin
 from src.commands.routing_commands import RoutingCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.task_subtask_commands import TaskSubtaskCommandsMixin
@@ -107,11 +111,15 @@ from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
+from src.commands.ask_commands import AskCommandsMixin
 from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
+from src.commands.spec_ingest_commands import SpecIngestCommandsMixin
+from src.commands.batch_check_commands import BatchCheckCommandsMixin
+from src.commands.fidelity_review_commands import FidelityReviewCommandsMixin
 from src.routing.filing import GUARDED_COMMANDS, routing_choice_refusal, without_inert_choices
 
 if TYPE_CHECKING:
@@ -363,9 +371,11 @@ class CommandHandler(
     SystemCommandsMixin,
     GitIdentityCommandsMixin,
     ProjectCommandsMixin,
+    ProjectRelocationCommandsMixin,
     PolicyCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
+    TaskSplitCommandsMixin,
     RoutingCommandsMixin,
     TaskCommentCommandsMixin,
     TaskSubtaskCommandsMixin,
@@ -407,6 +417,7 @@ class CommandHandler(
     TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
+    WaitV2CommandsMixin,
     CronCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
@@ -414,10 +425,14 @@ class CommandHandler(
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,
+    AskCommandsMixin,
     GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
+    SpecIngestCommandsMixin,
+    BatchCheckCommandsMixin,
+    FidelityReviewCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
@@ -961,6 +976,7 @@ class CommandHandler(
         """
         from src.task_templates import task_template_scope
 
+        request_started = time.monotonic()
         with task_template_scope(self.config.data_dir), CorrelationContext(
             command=name, component="command_handler"
         ):
@@ -1021,7 +1037,8 @@ class CommandHandler(
                 }
                 if name == "update_config"
                 else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
-                if name == "supervisor_inbox_post"
+                if name in {"supervisor_inbox_post", "ask_intake", "ask_button", "ask_reply",
+                            "ask_apply_input", "ask_discussion_reply"}
                 else {
                     **args,
                     "data_base64": f"<image bytes: {len(args.get('data_base64', ''))} base64 chars>",
@@ -1050,7 +1067,7 @@ class CommandHandler(
             # ``_resolve_project_id_in_args`` and by handler bodies (e.g. an
             # embedded body/plan being popped for storage), and the raw values
             # never appear on the bus regardless.
-            _emit_started_at = time.monotonic()
+            _emit_started_at = request_started
             _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
             if private_call:
                 _emit_args_snapshot = dict(log_args)
@@ -1085,6 +1102,9 @@ class CommandHandler(
                 # plugin path previously ran with no capability check at all.
                 # It composes with, and does not replace, check_request_scope:
                 # a command must pass both.
+                wait_refusal = await self._wait_mutation_fence(name, principal, mutating=mutating)
+                if wait_refusal:
+                    return wait_refusal
                 decision = authorize_command(
                     name,
                     principal,
@@ -1233,6 +1253,10 @@ class CommandHandler(
                 _emit_error = f"Unknown command: {name}"
                 return {"success": False, "error_code": "unknown_command",
                         "error": f"Unknown command: {name}"}
+            except InvalidTransition as e:
+                _emit_ok = False
+                _emit_error = str(e)
+                return {"success": False, "code": e.code, "error": str(e)}
             except Exception as e:
                 logger.error(
                     "Command %s failed: args=%s err=%s",
@@ -1246,6 +1270,7 @@ class CommandHandler(
                 return {"success": False, "error_code": "command_runtime_error",
                         "error": str(e) if not principal.enforced else "Command execution failed"}
             finally:
+                dispatch_ms = (time.monotonic() - request_started) * 1000
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
                 _principal_var.reset(_principal_token)
@@ -1283,3 +1308,12 @@ class CommandHandler(
                             await bus.emit("command.invoked", payload)
                 except Exception:  # pragma: no cover -- defensive
                     logger.debug("command.invoked emit failed for %s", name, exc_info=True)
+                finally:
+                    total_ms = (time.monotonic() - request_started) * 1000
+                    log = logger.warning if total_ms >= 1000 else logger.debug
+                    log(
+                        "command timing name=%s ok=%s duration_ms=%.1f "
+                        "dispatch_ms=%.1f event_ms=%.1f error=%s",
+                        name, _emit_ok, total_ms, dispatch_ms, total_ms - dispatch_ms,
+                        None if _emit_ok or private_call else _emit_error,
+                    )

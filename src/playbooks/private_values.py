@@ -24,6 +24,14 @@ from sqlalchemy import insert, select, text
 
 REFERENCE_KEY = "__private_value__"
 FORMAT_VERSION = 1
+KEY_REMEDIATION = (
+    "Provision a base64-encoded random 32-byte key in the daemon's protected .env "
+    "file (mode 0600), map its variable name in playbooks.private_value_key_env, "
+    "and select its identifier with playbooks.private_value_active_key_id. "
+    "Restore the original key for an existing identifier; retain old mappings "
+    "for encrypted readback. Restart the daemon after provisioning. "
+    "See docs/specs/config.md, playbooks section."
+)
 
 
 class PrivateValueError(RuntimeError):
@@ -32,6 +40,25 @@ class PrivateValueError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def private_value_key_health(
+    config: Any, *, service: PrivateValueService | None = None
+) -> dict[str, Any]:
+    """Safe readiness facts; no database access, key bytes or automatic rotation.
+
+    Install checks the configured environment. Daemon diagnostics pass the live
+    service so a key added to the environment cannot hide an unloaded key ring.
+    """
+    if not config.enabled:
+        return {"ok": True, "state": "disabled"}
+    if service is None:
+        service = PrivateValueService.from_config(None, config)
+    try:
+        service.require_key()
+    except PrivateValueError as exc:
+        return {"ok": False, "error": exc.code, "remediation": KEY_REMEDIATION}
+    return {"ok": True}
 
 
 @dataclass(frozen=True)
@@ -202,13 +229,17 @@ class PrivateValueService:
             engine, active_key_id=getattr(config, "private_value_active_key_id", ""), keys=keys
         )
 
-    def require_ready(self) -> tuple[str, bytes]:
+    def require_key(self) -> tuple[str, bytes]:
         key = self._keys.get(self.active_key_id)
         if not key or len(key) != 32:
             raise PrivateValueError("private_storage_key_unavailable")
+        return self.active_key_id, key
+
+    def require_ready(self) -> tuple[str, bytes]:
+        key = self.require_key()
         if self.engine is None:
             raise PrivateValueError("private_storage_unavailable")
-        return self.active_key_id, key
+        return key
 
     async def check_ready(self) -> None:
         """Check the configured key and storage schema before a bound effect."""
