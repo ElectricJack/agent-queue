@@ -1,5 +1,7 @@
 # CLI command inventory — 2026-09-08
 
+Historical audit snapshot: per-project Discord channel commands listed below were subsequently retired by the Discord simplification rollout. They are not current commands.
+
 All 318 core leaf commands were discovered. Help was checked for every entry; `aq test` uses `--aq-help`. Installed plugin-specific top-level extensions were excluded from this offline inventory. A missing core handler does not imply a defect: file, git, note, and memory commands use runtime plugins. Live verification means only the listed read operation was exercised, not every flag or state.
 
 | Command | Evidence / status | Backend | Owner |

@@ -6,9 +6,16 @@ date: 2026-08-24
 
 # Migration Plan — Clone-Based Workspaces → Per-Slot Worktrees
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 Move project `agent-queue` from three separate clone directories
 (`agent-queue2/3/4`) to one base clone plus N slot worktrees, per
-[[specs/design/worktree-execution]].
+[specs/design/worktree-execution](../../specs/design/worktree-execution.md).
 
 ## 1. Headline: the feature is built; only the opt-in is missing
 
