@@ -1,0 +1,9 @@
+{
+  "exclusions": {
+    "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['ASSIGNED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['COMPLETED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['FAILED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['IN_PROGRESS']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['WAITING_INPUT']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}
