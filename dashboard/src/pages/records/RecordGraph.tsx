@@ -50,8 +50,8 @@ export default function RecordGraph({ nodes, edges, selectedId, onSelect }: Reco
         {nodes.map((node) => {
           const position = positions.get(node.recordId)!;
           return <button key={node.recordId} type="button" aria-pressed={selectedId === node.recordId}
-            onClick={() => onSelect(node, null)} data-record-kind={node.kind}
-            className={`absolute flex w-[300px] flex-col gap-2 border bg-gray-900 p-3 text-left text-sm hover:border-indigo-400 ${node.kind === "task" ? "rounded border-sky-700" : "rounded-2xl border-violet-700"}`}
+            onClick={() => onSelect(node, null)} data-record-kind={node.kind} data-record-row={node.recordId}
+            className={`absolute flex w-[300px] flex-col gap-2 border p-3 text-left text-sm hover:border-indigo-400 ${selectedId === node.recordId ? "border-indigo-400 bg-indigo-500/15" : `bg-gray-900 ${node.kind === "task" ? "border-sky-700" : "border-violet-700"}`} ${node.kind === "task" ? "rounded" : "rounded-2xl"}`}
             style={{ left: position.x, top: position.y }}>
             <span className="truncate">{node.title}</span><span className="flex items-center gap-2 text-xs text-gray-400">
               <KindBadge kind={node.kind} />{node.kind === "task" ? node.status : `${node.lifecycle} · ${node.verification}`}

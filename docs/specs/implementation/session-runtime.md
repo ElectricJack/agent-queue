@@ -221,6 +221,13 @@ async def _tmux(self, *args: str, timeout: float = 30.0) -> str   # asyncio.crea
   continues. The final pass runs with `quiet_seconds = dialog_settle_seconds` so a trust
   screen painted *after* readiness is still answered, and if one fires there the prefix
   wait is re-entered on the remaining dialog budget.
+  For Codex the builder also appends a built-in `trust-folder` rule when the harness's own
+  rules miss the 0.162 "Trust this folder?" screen (`› 1. Trust and continue`): it sends
+  Enter when `SessionSpec.codex_project_trust` is set and otherwise fails startup rather than
+  idling. That flag is set for a Codex launch that qualifies for the isolated-worktree
+  argument; `_launch` then records the repository root (the main checkout, for a linked
+  worktree) as `trust_level = "trusted"` in `$CODEX_HOME/config.toml` before
+  `provider.start()` (`src/sessions/codex_trust.py`), never changing an existing entry.
 - `nudge()` — `asyncio.Lock` per session name; `_find_agent_pane()` via
   `list-panes -F '#{pane_id}\t#{pane_current_command}'` matched against `process_names`;
   cancel copy-mode (`#{pane_in_mode}` → `send-keys -X cancel`); `send-keys -l` ≤ 4096 B else
@@ -277,8 +284,17 @@ def build_session_env(*, session_id: str, task_id: str | None, project_id: str,
                       harness_env: dict[str, str]) -> dict[str, str]
 ```
 
-— sets the nine `AQ_*` markers, strips `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` (relocated
-from `src/runtimes/_subprocess.py::isolated_env`; further scrubbing per [trust-and-ops](trust-and-ops.md)).
+— sets the nine `AQ_*` markers; further scrubbing per [trust-and-ops](trust-and-ops.md).
+Launch isolation correction (2026-10-15): discard all inherited `CLAUDE*` controls
+and `AQ_*` values, even when sensitive-variable scrubbing is disabled or its
+allowlist matches those controls. Fresh AQ identity and policy values come from
+the session builder. Only explicit launch configuration may supply Claude
+settings such as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; an enclosing shell's
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` must never reach a worker. The tmux pane must
+receive the scrubbed environment, rather than an overlay on a persistent server's
+environment, while retaining tmux terminal metadata. Daemon startup warns with
+inherited harness-control and `AQ_*` names only, preserving its database guard.
+
 Hook material (Claude `--settings <path>` merge; other harnesses' template files) is
 written into `work_dir` here, rendering the templates the harness profile declares.
 
@@ -346,16 +362,49 @@ class SessionReconciler:
    (`stall_nudges`, `stall_last_action_at`); events `task.stalled/nudged/restarted/quarantined`.
    A nudge the composer guard defers spends no rung — unless the refusal carries an
    escalating `NudgeReason` (`stale_frame`, `unreadable`) *and* progress evidence independent
-   of the composer corroborates the stall: the harness's own transcript older than the lease.
-   The rung is then spent without a nudge and `task.stalled` carries `deferred_reason`. With
-   no such evidence to offer (an `opencode` holder, whose conversation AQ cannot read at all),
+   of the composer corroborates the stall: the harness's own transcript older than the lease,
+   or a CLI's own store (`harness_progress`; `src/sessions/opencode_store.py` for a harness
+   whose CLI keeps one). The rung is then spent without a nudge and `task.stalled` carries
+   `deferred_reason`. With no such evidence to offer (a harness with neither reader nor store),
    the stall is announced with `evidence="unverified"` and how long the pane has held still,
    and nothing is spent — a terminal read is never the decision (design spec §4.3).
+   Pool guarded-failure reporting checks the stopped session instance and released
+   claim after teardown before announcing a return to READY or emitting
+   `task.restarted`. A retained integration owner or unconfirmed stop emits
+   `task.needs_attention` instead; its comment records the observed task status
+   and asks for investigation. A concurrent pause, manual recovery decision or
+   changed claim preserves those controls without a misleading recovery report.
+   A saved continuation note
+   is historical evidence, never permission to retry or release a recovery hold.
+4a. **Wedged-turn override** — the gate above is `window_activity`, and a TUI that repaints
+   its in-turn spinner keeps it fresh forever (`crisp-horizon-90.10`: 42 minutes, zero rungs,
+   zero events, task held). When the pane claims activity, the reconciler asks the CLI's own
+   store and the provider's residency (`GET <local endpoint>/api/ps`) before believing it: no
+   store row for longer than the lease, no tool call still open, and nothing resident or in
+   flight. All four readings positive → the store's clock becomes the session's `last` and the
+   ordinary ladder runs, `task.stalled` carrying `evidence="store_stalled"`. Every unknown —
+   no store, no rows, an unreadable store, a gateway provider, an unreachable endpoint, a
+   model merely held warm — holds the ladder (design spec §4.3.1).
 5. **Named desired-state** — build desired set from profiles with `lifecycle: named`;
    start/wake missing (respecting `wake_mode`), drain idle past `idle_timeout`
    (state `sleeping`), recycle past `max_session_age + jitter` via handoff (invoke
    `aq handoff` semantics through CommandHandler, then kill + relaunch with resume).
 6. **Backstop** — `stuck_timeout_seconds` exceeded end-to-end → force-kill + exit-classify.
+
+Between the orphan sweep and the ladder sits the **idle stop intent**
+(`_step_idle_stop_intent`, azure-dune-51): a live session with a recorded stop
+intent (`desired_state='stopped'`) or a spent claim budget, holding no open task,
+inside no claim and blocked on no agent question, is stopped after
+`idle_stop_grace_seconds` with the fenced stop `aq session kill` uses — a pool
+worker through `_terminate_pool_session`, so the slot, claim and worktree are
+released. The grace is measured from the first tick the shape was *observed*,
+keyed by instance token, never from `last_activity`: tmux's `window_activity`
+advances on any pane output, so an OpenCode TUI at its final summary keeps the
+activity stamp fresh and no pane-derived idle bound can fire on one (which is
+also why such a worker counted as idle *supply* and the abandoned-claim-loop
+recycle never saw it). `aq doctor --check sessions.stop_intent_pending` reports
+anything that outlives `stop_intent_report_seconds`, aged from the session's own
+`task_session_attempts.ended_at` when it has one.
 
 `adopt_on_start()`: `list_running("s-") + list_running("n-")`, cross-checked with
 `proctable.scan_by_env_marker("AQ_SESSION_ID")`; live matches → rebind (update `epoch`,
@@ -419,6 +468,16 @@ Registered in `src/api/app.py::create_app` next to `execute_router`/`health_rout
 `_cmd_task_close` (validates IN_PROGRESS + calling session, records outcome metadata, runs
 `_run_completion_pipeline` via the orchestrator, transitions the task) and
 `_cmd_task_heartbeat` (updates `agents.last_heartbeat` + `touch_session_activity`).
+
+**Project isolation is the session's own.** These commands address a row by id, unique id
+prefix, name or task and never read the `project_id` a per-project elevated token has
+injected, so `_session_project_scope_error` fences them: a supervisor token pinned to project
+A is refused a session belonging to project B ("out of scope: session belongs to another
+project"). It guards `session_kill`, `session_peek`, `session_drain_ack` and `session_token`;
+`session_logs` carries the same comparison inline, because it resolves a task session attempt
+as well as a session row. The loopback CLI and the global supervisor carry no project pin and
+stay unrestricted. See `tests/test_command_scope_matrix.py` for the derived set of
+supervisor-granted contractless commands the scope layer cannot pin this way.
 
 **A PR is matched by head commit, not only by head name.** In `pull_request` mode
 verification looks for an open PR for the task branch (`GitManager.afind_open_pr`). Matching

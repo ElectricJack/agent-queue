@@ -100,8 +100,8 @@ committed — but before its own session close persisted — finish cleanly on r
    ([`src/commands/integration_commands.py:1225`](../../../src/commands/integration_commands.py))
    validates the request, loads the parent (`invariant_error` when missing) and
    authorizes against its project.
-2. `ParentCompletion.complete_parent`
-   ([`src/integration/parent_completion.py:1005`](../../../src/integration/parent_completion.py))
+2. `ParentEpisodeRecords.complete_parent`
+   ([`src/integration/records.py:1005`](../../../src/integration/records.py))
    opens one immediate transaction and locks the parent's context — task, project,
    checkpoint and operation.
 3. The crash-retry replay is checked first: an operation already `completed`, a

@@ -236,7 +236,10 @@ class TestTaskReferenceDispositions:
         from src.database.queries.task_references import TASK_REFERENCE_DISPOSITIONS
 
         # Reference cleared through a helper rather than an inline DELETE.
-        indirect = {("task_layouts", "task_id"): "delete_layout_rows_for_tasks"}
+        indirect = {
+            ("task_layouts", "task_id"): "delete_layout_rows_for_tasks",
+            ("wait_priority_projection", "task_id"): "retire_task_waits",
+        }
         source = inspect.getsource(TaskQueryMixin._delete_one)
 
         for key, (ondelete, _nullable) in self._task_foreign_keys().items():

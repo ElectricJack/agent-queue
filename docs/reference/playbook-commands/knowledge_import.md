@@ -3,36 +3,48 @@
 
 # `knowledge_import`
 
-**Knowledge Import (dry-run).** Scan, seal and verify a legacy import inventory. Read-only by default; nothing is applied or written.
+**Knowledge Import.** Scan, seal and verify a legacy import inventory. Dry-run by default; apply/resume require explicit sealed selection.
 
 | Property | Value |
 |---|---|
 | Capability | `knowledge_import` |
-| Side effect | `read` |
+| Side effect | `composite` |
 | Idempotency | natural |
 | Retry safe | yes |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/inventory.py`](../../../src/commands/contracts/inventory.py) |
-| Contract fingerprint | `sha256:a5342cb45a739aaf3259ff25d7ae628ef950a4753f70be8068972e01e1c2ec63` |
+| Contract fingerprint | `sha256:c8e2971279713a7b046abf5abecae72531f0faf3741bfcf547eefcf91fea23ee` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `roots` | `InventoryRootSpec[]` | yes | — | — |
+| `operation` | `"dry-run" \| "apply" \| "resume" \| "cancel"` | no | `"dry-run"` | — |
+| `roots` | `InventoryRootSpec[]` | no | — | — |
 | `vector_export` | `string \| null` | no | `null` | — |
 | `scope_aliases` | `object \| null` | no | `null` | — |
-| `source_installation_id` | `string` | yes | — | — |
-| `snapshot_id` | `string` | yes | — | — |
-| `snapshot_timestamp` | `string` | yes | — | — |
+| `source_installation_id` | `string \| null` | no | `null` | — |
+| `snapshot_id` | `string \| null` | no | `null` | — |
+| `snapshot_timestamp` | `string \| null` | no | `null` | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `global_scope` | `boolean` | no | `false` | — |
+| `manifest_content_base64` | `string \| null` | no | `null` | — |
+| `manifest_sha256` | `string \| null` | no | `null` | — |
+| `selected_item_ids` | `string[]` | no | — | — |
+| `expected_revisions` | `object` | no | — | — |
+| `expected_source_hashes` | `object` | no | — | — |
+| `idempotency_key` | `string \| null` | no | `null` | — |
+| `backup_receipt` | `string \| null` | no | `null` | — |
+| `run_id` | `string \| null` | no | `null` | — |
+| `limit` | `integer` | no | `100` | — |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
 | `success` | `boolean \| null` | — |
-| `outcome` | `"read" \| "rejected" \| null` | — |
+| `outcome` | `"read" \| "rejected" \| "applied" \| "replayed" \| null` | — |
 | `error_code` | `string \| null` | — |
 | `error` | `string \| null` | — |
 | `source_installation_id` | `string \| null` | — |
@@ -45,6 +57,9 @@
 | `items` | `object[] \| null` | — |
 | `mappings` | `object[] \| null` | — |
 | `identities` | `object[] \| null` | — |
+| `run_id` | `string \| null` | — |
+| `state` | `string \| null` | — |
+| `replay` | `boolean` | — |
 
 ## Nested objects
 
@@ -71,7 +86,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using roots, vector_export, scope_aliases, source_installation_id, snapshot_id, snapshot_timestamp | — | always |
+| Composite using operation, roots, vector_export, scope_aliases, source_installation_id, snapshot_id, snapshot_timestamp, project_id, global_scope, manifest_content_base64, manifest_sha256, selected_item_ids, expected_revisions, expected_source_hashes, idempotency_key, backup_receipt, run_id, limit | — | always |
 
 <!-- aq:generated:end -->
 
