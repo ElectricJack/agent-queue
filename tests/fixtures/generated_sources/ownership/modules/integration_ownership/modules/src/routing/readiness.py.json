@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/routing/readiness.py::RouterReadiness": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/readiness.py::orchestrator_ready_projects": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/readiness.py::orchestrator_router_ready": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
