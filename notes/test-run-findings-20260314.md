@@ -1,5 +1,11 @@
 # Test Suite Results & Fix Plan
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 **Date:** 2026-03-14
 **Branch:** agile-rapids/run-test-suite-and-create-fix-plan
 **Test Run Summary:** 2 failed, 1,727 passed, 393 skipped, 4 warnings (~4m 49s)
