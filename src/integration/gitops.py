@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import integration_branch_owners
@@ -29,6 +30,7 @@ from src.integration.regeneration import (
     GeneratedRegenerationFailure,
     MissingRegenerator,
     RegenerationFailure,
+    generated_paths,
     merge_generated_tree,
     regenerated_tree,
 )
@@ -139,6 +141,13 @@ class SubjectGitAuthority:
         deadline, so an expired grant cannot finish a new authenticated push.
         """
         async with self.db.immediate() as conn:
+            from src.database.tables import projects
+
+            mode = await conn.scalar(select(projects.c.hierarchical_integration_mode).where(
+                projects.c.id == subject.project_id,
+            ))
+            if mode in {"disabled", "observe"}:
+                raise StaleFence("automatic integration is off")
             row = await self.db.lock_integration_subject_on(conn, subject.id)
             self._subject_current(subject, row)
             deadline = None
@@ -547,7 +556,7 @@ class GitOperations:
                             "members": results, "member": member.task_id,
                             "reason": exc.reason, **evidence}
                 except GeneratedMergeConflict as exc:
-                    files = sorted({line.split("\t", 1)[1]
+                    files = sorted(set(exc.files) | {line.split("\t", 1)[1]
                                     for line in exc.stdout.splitlines()[1:]
                                     if "\t" in line and
                                     line.split("\t", 1)[0].endswith((" 1", " 2", " 3"))})
@@ -574,16 +583,30 @@ class GitOperations:
             results.append({"member": member.task_id, "source": member.head_sha,
                             "head": head, "regenerated": regenerated, **evidence})
             current = head
-        if regenerations:
-            files = sorted({path for item in regenerations for path in item["files"]})
+        # Source-only changes can invalidate any derived artifact. Rebuild the
+        # whole registered set once, even if no branch committed generated output.
+        files = set()
+        if results and regenerate_generated:
+            files = await generated_paths(self.git, repo.store, current)
+            files.update(path for item in regenerations for path in item["files"])
+        if files:
+            files = sorted(files)
+            current_tree = await self.git.atree_sha(str(repo.store), current)
             try:
                 with commit_identity(self.git.resolve_commit_identity()):
                     tree = await regenerated_tree(
                         self.git, repo.store,
-                        await self.git.atree_sha(str(repo.store), current),
+                        current_tree,
                         command=repo.regenerate,
                         timeout_seconds=repo.regenerate_timeout_seconds,
+                        verified_merges=tuple(
+                            (item["effective_base_sha"], item["target_head_sha"], item["source"])
+                            for item in results
+                        ),
                     )
+            except MissingRegenerator as exc:
+                return {"outcome": "no_regenerator", "head": base_sha,
+                        "members": [], "reason": exc.reason}
             except RegenerationFailure as exc:
                 if exc.retryable:
                     raise GeneratedRegenerationFailure(
@@ -599,13 +622,16 @@ class GitOperations:
                         "error": str(exc)[:4000]}
             # Fold the combined sweep into the final unpublished merge. Keep its
             # exact parents, source trailers and merge-base evidence intact.
-            parents, message, index = last_merge
-            stamp = f"@{int(created_at)} +0000"
-            current = await self.run(
-                repo, *self.git.resolve_commit_identity().config_args(),
-                "commit-tree", tree, *parents, "-m", message,
-                env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+            parents, message, index = last_merge or (
+                ["-p", current], "Rebuild generated artifacts from batch sources", 0,
             )
+            if last_merge is not None or tree != current_tree:
+                stamp = f"@{int(created_at)} +0000"
+                current = await self.run(
+                    repo, *self.git.resolve_commit_identity().config_args(),
+                    "commit-tree", tree, *parents, "-m", message,
+                    env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+                )
             key = hashlib.sha256(f"{base_sha}:{current}:regenerated".encode()).hexdigest()
             await self.run(repo, "update-ref", f"refs/aq/batch-objects/{key}", current)
             for item in results[index:]:
