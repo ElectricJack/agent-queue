@@ -83,6 +83,8 @@ async def supervise(directory: Path) -> None:
         before = after = (None, None)
         cm = ExitStack()
         child = None
+        cache_before = cache_after = None
+        build_started = build_elapsed = None
 
         async def stop_owned():
             if job["contract"].get("native_windows"):
@@ -171,6 +173,11 @@ async def supervise(directory: Path) -> None:
                         inherited.append(candidate)
                 except OSError:
                     continue
+            from src.build_cache import cache_counters
+
+            cache = job["contract"].get("build_cache")
+            cache_before = await cache_counters(cache, job["contract"]["env"])
+            build_started = time.monotonic()
             child = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=job["contract"]["cwd"],
@@ -216,6 +223,7 @@ async def supervise(directory: Path) -> None:
                         await stop_owned()
                     await asyncio.wait({wait_child}, timeout=0.1)
                 exit_code = await wait_child
+                build_elapsed = time.monotonic() - build_started
                 if time.monotonic() >= deadline:
                     infra = "run_timeout"
                 # Descendants may retain pipes and locks after the leader exits.
@@ -223,6 +231,7 @@ async def supervise(directory: Path) -> None:
                 if [p for p in await processes(nonce) if p.pid != os.getpid()]:
                     await stop_owned()
                 await pumping
+                cache_after = await cache_counters(cache, job["contract"]["env"])
                 if job["contract"].get("native_windows"):
                     native_completion = read_json(directory / "native-completion.json")
                     if not native_completion or native_completion.get("nonce") != nonce:
@@ -339,6 +348,12 @@ async def supervise(directory: Path) -> None:
                 else "",
                 **(store.stats() if store else {}),
             }
+            if child:
+                from src.build_cache import build_measurements
+
+                completion["build_measurements"] = build_measurements(
+                    job, cache_before, cache_after, build_elapsed,
+                )
             if job["preset"] == "matter_render":
                 completion["capture"] = capture
             tail = b""
