@@ -3949,3 +3949,67 @@ async def test_disabled_train_dispatches_worker_without_integration_owner(sessio
     orch._hierarchy_origin_and_fence.assert_not_awaited()
     async with orch.db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(integration_branch_owners)) == 0
+
+
+async def test_container_sweep_isolates_one_unsettleable_container():
+    """One container whose settlement raises cannot abort the scheduler cycle."""
+    from src.orchestrator.monitoring import MonitoringMixin
+
+    class Sweeper(MonitoringMixin):
+        pass
+
+    sweeper = Sweeper()
+    sweeper.config = MagicMock()
+    sweeper.config.work_graph.container_sweep_interval_seconds = 1
+    sweeper.release_stale_container_claims = AsyncMock(return_value=[])
+    sweeper.reconcile_stale_containers = AsyncMock()
+    sweeper.db = MagicMock()
+    sweeper.db.settle_candidates = AsyncMock(return_value=["bad", "good"])
+    calls = []
+
+    async def settle(seeds, **kwargs):
+        calls.append(set(seeds))
+        if "bad" in seeds:
+            raise RuntimeError("subtasks open")
+        return list(seeds)
+
+    sweeper._settle_seeds = settle
+    await sweeper._sweep_container_completion()
+    assert calls == [{"bad", "good"}, {"bad"}, {"good"}]
+    sweeper.reconcile_stale_containers.assert_awaited_once()
+
+
+async def test_paused_project_ready_work_skips_delivery_admission(orch, monkeypatch):
+    """A paused project's READY tasks and Git frontier never cost a scheduler cycle."""
+    import src.integration.delivery_observer as observer
+    from src.models import ProjectStatus
+
+    frontier_scopes = []
+    real_frontier = observer.hierarchy_frontier_modes
+
+    async def frontier_spy(db, **kwargs):
+        frontier_scopes.append(kwargs.get("project_ids"))
+        return await real_frontier(db, **kwargs)
+
+    monkeypatch.setattr(observer, "hierarchy_frontier_modes", frontier_spy)
+
+    await _create_project_with_workspace(orch.db)
+    await _create_project_with_workspace(orch.db, "p-2", "beta", "/tmp/test-workspace-2")
+    for project_id in ("p-1", "p-2"):
+        await orch.db.create_task(Task(
+            id=f"ready-{project_id}", project_id=project_id, title="ready", description="",
+            status=TaskStatus.READY,
+        ))
+    await orch.db.update_project("p-2", status=ProjectStatus.PAUSED)
+    seen = []
+    original = orch._delivery_admission
+
+    async def spy(task_ids, **kwargs):
+        seen.append(set(task_ids))
+        return await original(task_ids, **kwargs)
+
+    orch._delivery_admission = spy
+    await orch._schedule()
+    assert seen and "ready-p-2" not in seen[0]
+    assert "ready-p-1" in seen[0]
+    assert frontier_scopes and all(scope == {"p-1"} for scope in frontier_scopes)
