@@ -1,4 +1,8 @@
+import asyncio
+import time
+
 import pytest
+from sqlalchemy import event, insert, inspect
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
@@ -39,6 +43,64 @@ async def test_jobs_lifecycle(db):
     await db.finish_layout_job(job["id"], error=None)
     assert await db.next_layout_job() is None
     assert (await db.get_layout_job(job["id"]))["status"] == "done"
+
+
+async def test_bulk_tidy_releases_one_pair_at_a_time_and_records_progress(db):
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    for variant in ("active", "all"):
+        await LayoutDriver(db).full_layout("p1", variant)
+
+    request = await db.create_layout_tidy_request(reason="operator")
+    assert request["total"] == 2 and request["pending"] == 2
+
+    progress = await db.advance_layout_tidy_requests()
+    assert progress is not None and progress["queued"] == 1 and progress["pending"] == 1
+    first = await db.next_layout_job()
+    assert first is not None
+    await db.layout_tidy_request_for_job(first["id"], running=True)
+    await db.finish_layout_job(first["id"], error=None)
+
+    progress = await db.advance_layout_tidy_requests()
+    assert progress is not None and progress["completed"] == 1 and progress["queued"] == 1
+    second = await db.next_layout_job()
+    assert second is not None and second["id"] != first["id"]
+    await db.finish_layout_job(second["id"], error=None)
+    assert await db.advance_layout_tidy_requests() is None
+
+
+async def test_bulk_tidy_waits_for_an_ordinary_job_before_releasing_a_pair(db):
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    for variant in ("active", "all"):
+        await LayoutDriver(db).full_layout("p1", variant)
+    await db.create_layout_tidy_request(reason="operator")
+    ordinary = await db.enqueue_layout_job("p1", "all", "tidy")
+
+    assert await db.advance_layout_tidy_requests() is None
+    assert (await db.get_layout_job(ordinary["id"]))["status"] == "queued"
+    await db.finish_layout_job(ordinary["id"], error=None)
+    progress = await db.advance_layout_tidy_requests()
+    assert progress is not None and progress["queued"] == 1
+
+
+async def test_layout_job_ledger_index_starts_with_the_kind_filter(db):
+    """The persistent rules ledger must not scan every historic job."""
+    async with db._engine.connect() as conn:
+        indexes = await conn.run_sync(
+            lambda sync: {
+                index["name"]: index["column_names"]
+                for index in inspect(sync).get_indexes("layout_jobs")
+            }
+        )
+    assert indexes["idx_layout_jobs_kind_project_variant_status"] == [
+        "kind",
+        "project_id",
+        "variant",
+        "status",
+    ]
 
 
 async def test_meta_absent_until_published(db):
@@ -101,6 +163,163 @@ async def test_publish_is_atomic_and_bumps_version(db):
     assert cells == {("b"): [(1, 0)]}
 
 
+async def test_publish_serializes_with_task_deletion_before_locking_geometry(db):
+    from sqlalchemy import delete, func, select
+
+    from src.database.tables import tasks
+
+    await db.create_task(Task(id="a", project_id="p1", title="A", description=""))
+    ws = WriteSet(upserts=[row("a", 0, 0, "/a/")])
+    await db.publish_layout("p1", "all", ws, consumed_seq=None, extent=(1, 1))
+    started = asyncio.Event()
+    publisher_pid = None
+
+    async def publish():
+        publisher = asyncio.current_task()
+
+        def observe_begin(conn):
+            nonlocal publisher_pid
+            if asyncio.current_task() is publisher:
+                publisher_pid = conn.scalar(select(func.pg_backend_pid()))
+                started.set()
+
+        engine = db._engine.sync_engine
+        event.listen(engine, "begin", observe_begin)
+        try:
+            return await db.publish_layout(
+                "p1", "all", ws, consumed_seq=None, extent=(1, 1)
+            )
+        finally:
+            event.remove(engine, "begin", observe_begin)
+
+    async with asyncio.timeout(20), asyncio.TaskGroup() as group:
+        async with db._engine.begin() as deletion:
+            deletion_pid = await deletion.scalar(select(func.pg_backend_pid()))
+            await deletion.execute(select(tasks.c.id).where(tasks.c.id == "a").with_for_update())
+            publication = group.create_task(publish())
+            await started.wait()
+            # Observe the real lock wait, then take the geometry lock that
+            # used to complete the task -> geometry -> task deadlock cycle.
+            while deletion_pid not in await deletion.scalar(
+                select(func.pg_blocking_pids(publisher_pid))
+            ):
+                await asyncio.sleep(0.01)
+            await db.delete_layout_rows_for_tasks(["a"], conn=deletion)
+            await deletion.execute(delete(tasks).where(tasks.c.id == "a"))
+    assert publication.result() == 2
+    assert await db.load_subtree_rows("p1", "all") == {}
+    assert await db.load_cells("p1", "all", ["a"]) == {}
+    assert (await db.get_layout_meta("p1", "all"))["node_count"] == 0
+    assert ws.upserts[0].task_id == "a"  # publication does not mutate its snapshot
+
+
+async def seed_publish_rows(db):
+    from src.database.queries.layout_queries import LAYOUT_WRITE_BATCH_SIZE
+    from src.database.tables import tasks
+
+    ids = [f"bulk-{i}" for i in range(LAYOUT_WRITE_BATCH_SIZE + 1)]
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(tasks),
+            [
+                {
+                    "id": tid, "project_id": "p1", "title": tid, "description": "",
+                    "created_at": time.time(), "updated_at": time.time(),
+                }
+                for tid in ids
+            ],
+        )
+    return [row(tid, i * 9, 0, f"/{tid}/") for i, tid in enumerate(ids)]
+
+
+async def test_large_publish_bounds_batches_and_yields_without_exposing_partial_rows(db):
+    from sqlalchemy.util import await_only
+
+    from src.database.queries.layout_queries import LAYOUT_WRITE_BATCH_SIZE
+
+    rows = await seed_publish_rows(db)
+    # A second connection must still see the old publication while any
+    # layout or cell batch is in flight.
+    await db.publish_layout("p1", "all", WriteSet(), consumed_seq=None, extent=(0, 0))
+    events = []
+    observations = []
+    checks = []
+
+    async def observe(batch):
+        events.append(("observe", batch))
+        meta = await db.get_layout_meta("p1", "all")
+        stored = await db.load_subtree_rows("p1", "all")
+        observations.append((meta["layout_version"], len(stored)))
+
+    def inspect_batch(conn, clause, multiparams, params, execution_options):
+        table = getattr(clause, "table", None)
+        if getattr(clause, "is_insert", False) and table.name in (
+            "task_layouts", "task_layout_cells",
+        ):
+            assert len(multiparams) <= LAYOUT_WRITE_BATCH_SIZE
+            events.append(("batch", len(checks)))
+            checks.append(asyncio.create_task(observe(len(checks))))
+        elif getattr(clause, "is_update", False) and table.name == "project_layout_meta":
+            # The version bump is the publication's last write before COMMIT.
+            # Hold it until every observer has made both of its reads: a read
+            # that lands after COMMIT would see the new publication.
+            await_only(asyncio.gather(*checks))
+
+    event.listen(db._engine.sync_engine, "before_execute", inspect_batch)
+    try:
+        version = await db.publish_layout(
+            "p1", "all", WriteSet(upserts=rows), consumed_seq=None, extent=(len(rows) * 9, 1)
+        )
+    finally:
+        event.remove(db._engine.sync_engine, "before_execute", inspect_batch)
+    assert version == 2
+    assert len(checks) >= 4  # both geometry and cells span multiple batches
+    # The publication yields to the loop: each batch's observer starts before
+    # the next batch is sent.
+    for batch in range(len(checks) - 1):
+        assert events.index(("observe", batch)) < events.index(("batch", batch + 1))
+    assert observations == [(1, 0)] * len(checks)
+    meta = await db.get_layout_meta("p1", "all")
+    assert meta["node_count"] == len(rows)
+    assert len(await db.load_subtree_rows("p1", "all")) == len(rows)
+    assert len(await db.load_cells("p1", "all", [r.task_id for r in rows])) == len(rows)
+
+
+@pytest.mark.parametrize("fail_table", ["task_layouts", "task_layout_cells"])
+async def test_late_publish_batch_failure_rolls_back_rows_cells_meta_and_dirty(db, fail_table):
+    rows = await seed_publish_rows(db)
+    await db.publish_layout(
+        "p1", "all", WriteSet(upserts=rows[:1]), consumed_seq=None, extent=(1, 1)
+    )
+    before_meta = await db.get_layout_meta("p1", "all")
+    before_cells = await db.load_cells("p1", "all", [r.task_id for r in rows])
+    async with db._engine.begin() as conn:
+        await db.mark_layout_dirty("p1", [rows[0].task_id], "test", conn=conn)
+    seq, marks = await db.pop_layout_dirty("p1", min_age_seconds=0)
+    calls = 0
+
+    def fail_late(conn, clause, multiparams, params, execution_options):
+        nonlocal calls
+        if getattr(clause, "is_insert", False) and clause.table.name == fail_table:
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("later batch failed")
+
+    event.listen(db._engine.sync_engine, "before_execute", fail_late)
+    try:
+        with pytest.raises(RuntimeError, match="later batch failed"):
+            await db.publish_layout(
+                "p1", "all", WriteSet(upserts=rows), consumed_seq=seq, extent=(len(rows) * 9, 1)
+            )
+    finally:
+        event.remove(db._engine.sync_engine, "before_execute", fail_late)
+    assert await db.get_layout_meta("p1", "all") == before_meta
+    stored = await db.load_subtree_rows("p1", "all")
+    assert set(stored) == {rows[0].task_id}
+    assert await db.load_cells("p1", "all", [r.task_id for r in rows]) == before_cells
+    assert await db.pop_layout_dirty("p1", min_age_seconds=0) == (seq, marks)
+
+
 async def test_translation_moves_subtree_and_rewrites_cells(db):
     for t in ("e", "c"):
         await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
@@ -153,6 +372,95 @@ async def test_publish_clears_consumed_dirty_rows(db):
     seq, _ = await db.pop_layout_dirty("p1", min_age_seconds=0)
     await db.publish_layout("p1", "all", WriteSet(), consumed_seq=seq, extent=(0, 0))
     assert await db.dirty_layout_projects() == []
+
+
+async def test_reflow_coalesces_a_successor_behind_a_running_claim(db):
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    first = await db.claim_layout_reflow_group()
+    assert first is not None and first["claims"][0]["generation"] == 1
+
+    # A second finished leaf under the same parent must not create a second
+    # job.  It becomes generation 2 behind the lease for generation 1.
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    status = await db.layout_reflow_status()
+    assert status["running"] == 1 and status["queued"] == 0
+
+    await db.fail_layout_reflow_claims(first["claims"], "simulated restart")
+    successor = await db.claim_layout_reflow_group()
+    assert successor is not None
+    assert successor["claims"][0]["generation"] == 2
+
+
+async def test_full_layout_acknowledges_only_captured_reflow_generations(db):
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    captured = await db.capture_layout_reflow_generations("p1", "active")
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+
+    await db.publish_layout(
+        "p1",
+        "active",
+        WriteSet(),
+        consumed_seq=None,
+        extent=(0, 0),
+        captured_reflows=captured,
+    )
+    next_group = await db.claim_layout_reflow_group()
+    assert next_group is not None
+    assert next_group["claims"][0]["generation"] == 2
+
+
+async def test_full_layout_acknowledgement_makes_an_old_reflow_publish_a_noop(db):
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    group = await db.claim_layout_reflow_group()
+    assert group is not None
+    captured = await db.capture_layout_reflow_generations("p1", "active")
+
+    # The full layout wins publication and consumes the captured lease.  A
+    # worker that finished its old CPU layout afterwards must not overwrite
+    # the full layout's current geometry/order.
+    await db.publish_layout(
+        "p1", "active", WriteSet(), consumed_seq=None, extent=(1, 1), captured_reflows=captured
+    )
+    version = (await db.get_layout_meta("p1", "active"))["layout_version"]
+    returned = await db.publish_layout(
+        "p1",
+        "active",
+        WriteSet(),
+        consumed_seq=None,
+        extent=(99, 99),
+        reflow_claims=group["claims"],
+    )
+    meta = await db.get_layout_meta("p1", "active")
+    assert returned == version and meta["layout_version"] == version
+    assert (meta["extent_w"], meta["extent_h"]) == (1, 1)
+
+
+async def test_concurrent_reflow_marks_coalesce_into_one_latest_generation(db):
+    await asyncio.gather(
+        *(db.enqueue_layout_reflows("p1", "active", ["scope"]) for _ in range(4))
+    )
+    group = await db.claim_layout_reflow_group()
+    assert group is not None and len(group["claims"]) == 1
+    assert group["claims"][0]["generation"] == 4
+
+
+async def test_expired_reflow_lease_is_requeued_with_a_bounded_attempt(db):
+    from sqlalchemy import update as sa_update
+
+    from src.database.tables import layout_reflow_requests
+
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    group = await db.claim_layout_reflow_group()
+    assert group is not None
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(layout_reflow_requests)
+            .where(layout_reflow_requests.c.scope_key == "scope")
+            .values(lease_expires_at=0)
+        )
+    assert await db.reap_expired_layout_reflows() == 1
+    status = await db.layout_reflow_status()
+    assert status["queued"] == 1 and status["failed"] == 0
 
 
 async def test_upsert_then_translation_of_the_same_node_leaves_no_ghost_cells(db):
@@ -232,6 +540,30 @@ async def test_edges_touching_and_matching(db):
     assert await db.load_matching_ids("p1", "all", q="", status="DEFINED") == {"a", "b", "c"}
 
 
+async def test_edges_touching_drops_rows_that_share_an_owner(db):
+    """With an owner map the database returns only edges that get drawn.
+
+    ``a``/``b`` sit inside collapsed container ``box``; ``far`` is outside it.
+    The a->b edge is drawn nowhere (both endpoints dock at ``box``), so it
+    must not cross the wire at all, while the edge leaving the container and
+    the edge to an endpoint with no owner row both survive.
+    """
+    for t in ("box", "a", "b", "far", "outside"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    await db.add_dependency("b", "a")  # inside the collapsed container
+    await db.add_dependency("far", "b")  # leaves it
+    await db.add_dependency("outside", "a")  # leaves it, to an unowned endpoint
+    ids = ["box", "a", "b", "far"]
+    owners = {"box": "box", "a": "box", "b": "box", "far": "far"}
+    assert await db.load_edges_touching(ids, owners=owners) == [
+        ("far", "b", "blocks", None),
+        ("outside", "a", "blocks", None),
+    ]
+    # Without the map the caller still gets every touching row, the b->a one
+    # included -- that is the arm `remap_edges` then has to discard.
+    assert len(await db.load_edges_touching(ids)) == 3
+
+
 async def test_matching_ids_treats_like_metacharacters_literally(db):
     await db.create_task(Task(id="pct", project_id="p1", title="Done 50% of it", description=""))
     await db.create_task(Task(id="und", project_id="p1", title="Done 50x of it", description=""))
@@ -288,3 +620,139 @@ async def test_matching_rows_ordered_caps_in_sql(db):
         "p1", "all", q="", status="DEFINED", limit=10
     )
     assert [r.task_id for r in rows] == ["b", "c", "a"] and truncated is False
+
+
+async def test_snapshot_carries_phase_order(db):
+    await db.create_task(Task(id="p1a", project_id="p1", title="Phase 1", description=""))
+    await db.create_task(Task(id="loose", project_id="p1", title="Loose", description=""))
+    await db.set_task_meta("p1a", "phase", {"order": 2, "label": "Build"})
+    tasks, _ = await db.load_project_snapshot("p1")
+    assert tasks["p1a"].phase_order == 2
+    assert tasks["loose"].phase_order is None
+
+
+async def test_snapshot_reads_metadata_in_one_statement(db):
+    """The snapshot load is on the 5-second dirty path, not just the full
+    layout: container flags and phase orders share ONE ``task_metadata``
+    read, and the whole load stays at three statements."""
+    from sqlalchemy import event
+
+    await db.create_task(Task(id="ph", project_id="p1", title="Phase", description=""))
+    await db.create_task(Task(id="c", project_id="p1", title="Child", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("c", "ph", conn=conn)
+    await db.set_task_meta("ph", "phase", {"order": 1, "label": "Build"})
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        tasks, _ = await db.load_project_snapshot("p1")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert tasks["ph"].is_container and tasks["ph"].phase_order == 1
+    meta_reads = [s for s in statements if "task_metadata" in s]
+    assert len(meta_reads) == 1, meta_reads
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 3, selects
+
+
+async def test_the_ledger_ignores_failed_and_other_kinds(db):
+    """The ledger answers "converged", not "a job once existed".
+
+    A ``failed`` job is not convergence (the rebuild never happened) but it
+    does spend retry budget, and a job of a different kind — an operator
+    tidy, a backfill, an older rules version — says nothing about the
+    current engine rules.
+    """
+    kind = "rules:1"
+    assert await db.layout_job_ledger(kind) == {}
+
+    tidy = await db.enqueue_layout_job("p1", "all", "tidy")
+    await db.finish_layout_job(tidy["id"], error=None)
+    older = await db.enqueue_layout_job("p1", "all", "rules:0")
+    await db.finish_layout_job(older["id"], error=None)
+    assert await db.layout_job_ledger(kind) == {}
+
+    failed = await db.enqueue_layout_job("p1", "all", kind)
+    await db.finish_layout_job(failed["id"], error="boom")
+    entry = (await db.layout_job_ledger(kind))[("p1", "all")]
+    assert entry == {"settled": False, "in_flight": False, "failed": 1, "last_error": "boom"}
+
+    queued = await db.enqueue_layout_job("p1", "all", kind)
+    ledger = await db.layout_job_ledger(kind)
+    assert ledger[("p1", "all")]["settled"] and ledger[("p1", "all")]["in_flight"]
+    assert set(ledger) == {("p1", "all")}  # per (project, variant), nothing else
+
+    await db.finish_layout_job(queued["id"], error=None)
+    entry = (await db.layout_job_ledger(kind))[("p1", "all")]
+    assert entry["settled"] and not entry["in_flight"] and entry["failed"] == 1
+
+
+async def test_published_layout_variants_lists_every_published_pair(db):
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    assert await db.published_layout_variants() == set()
+    await LayoutDriver(db).full_layout("p1", "all")
+    assert await db.published_layout_variants() == {("p1", "all")}
+
+
+async def test_reap_stale_layout_jobs_only_takes_the_long_running_ones(db):
+    """Nothing else resets a ``running`` row, so a daemon killed mid-rebuild
+    would leave one forever."""
+    from sqlalchemy import update as sa_update
+
+    from src.database.tables import layout_jobs
+
+    orphan = await db.enqueue_layout_job("p1", "all", "rules:1")
+    live = await db.enqueue_layout_job("p1", "active", "tidy")
+    queued = await db.enqueue_layout_job("p2", "all", "rules:1")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(layout_jobs)
+            .where(layout_jobs.c.id == orphan["id"])
+            .values(status="running", started_at=now - 500)
+        )
+        await conn.execute(
+            sa_update(layout_jobs)
+            .where(layout_jobs.c.id == live["id"])
+            .values(status="running", started_at=now - 5)
+        )
+
+    reaped = await db.reap_stale_layout_jobs(started_before=now - 240, error="orphaned: boom")
+
+    assert [r["id"] for r in reaped] == [orphan["id"]]
+    assert reaped[0]["kind"] == "rules:1" and reaped[0]["variant"] == "all"
+    row = await db.get_layout_job(orphan["id"])
+    assert row["status"] == "failed" and row["error"] == "orphaned: boom"
+    assert (await db.get_layout_job(live["id"]))["status"] == "running"
+    assert (await db.get_layout_job(queued["id"]))["status"] == "queued"
+
+
+async def test_a_rules_job_runs_a_full_layout(db):
+    """``kind`` is a ledger label only: the job path never looks at it."""
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    await db.create_task(Task(id="b", project_id="p1", title="b", description=""))
+    drv = LayoutDriver(db)
+    first = await drv.full_layout("p1", "all")
+    assert (await db.get_layout_meta("p1", "all"))["layout_version"] == first
+
+    job = await db.enqueue_layout_job("p1", "all", "rules:1")
+    claimed = await db.next_layout_job()
+    assert claimed["id"] == job["id"] and claimed["kind"] == "rules:1"
+    await drv.full_layout(claimed["project_id"], claimed["variant"])
+    await db.finish_layout_job(claimed["id"], error=None)
+
+    meta = await db.get_layout_meta("p1", "all")
+    assert meta["layout_version"] == first + 1
+    rows = await db.load_layout_rows("p1", "all", ["a", "b"])
+    assert set(rows) == {"a", "b"}
+    assert (await db.layout_job_ledger("rules:1"))[("p1", "all")]["settled"] is True
