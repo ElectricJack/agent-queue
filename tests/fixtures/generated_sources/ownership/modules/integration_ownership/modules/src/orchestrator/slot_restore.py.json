@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/slot_restore.py::_reconcile_slot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/slot_restore.py::import from src.workspace_disable import CLAIM_FAILURE_COOLDOWN, CLAIM_FAILURES, ENABLE_FIELDS, OPERATOR, QUARANTINED_DIRTY, disable_fields, disabled_slots_in_cap, reason_code": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/slot_restore.py::restore_disabled_slots": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
