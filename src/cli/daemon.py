@@ -14,7 +14,10 @@ interactive offer to launch the Vite dev server instead.
 
 from __future__ import annotations
 
+import gzip
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -54,6 +57,8 @@ CONFIG_DIR = os.path.expanduser("~/.agent-queue")
 BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
+MAX_LOG_SIZE_BYTES: int = 256 * 1024 * 1024
+MAX_ROTATED_GENS: int = 3
 PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
 LOCK_DIR = os.path.join(CONFIG_DIR, "daemon.lock")
 
@@ -128,6 +133,12 @@ def _held_for(*, unless_stopped: bool) -> StopIntent | None:
 #: when the wait ends sees the recorded stop there and does not spawn.
 START_SETTLE_SECONDS = 45.0
 
+#: Busy installs can take longer than 30 seconds to finish initialization.
+#: Keep the health wait bounded independently of post-start readiness checks.
+DAEMON_START_TIMEOUT_SECONDS = 120.0
+#: Bound both diagnostic I/O and Rich formatting, even for one huge log line.
+LOG_TAIL_MAX_BYTES = 64 * 1024
+
 
 def _read_pid() -> int | None:
     """Read and validate the PID from the PID file.
@@ -141,6 +152,38 @@ def _read_pid() -> int | None:
 def _find_daemon_pid() -> int | None:
     """Find a running daemon PID via PID file or pgrep fallback."""
     return find_daemon_pid(PID_FILE, CONFIG_PATH)
+
+
+def _remove_launched_pid_file(pid: int) -> None:
+    """Remove our child's PID file without deleting a successor's record."""
+    try:
+        if Path(PID_FILE).read_text(encoding="utf-8").strip() == str(pid):
+            os.remove(PID_FILE)
+    except OSError:
+        pass
+
+
+def _startup_health_ok(proc: subprocess.Popen, api_base: str, *, timeout: float = 1) -> bool:
+    """Accept healthy/degraded responses only while our launched child is alive."""
+    import urllib.error
+    import urllib.request
+
+    if proc.poll() is not None:
+        return False
+    try:
+        with urllib.request.urlopen(f"{api_base}/health", timeout=timeout) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        exc.close()
+    except (urllib.error.URLError, OSError):
+        return False
+    # A response from another listener must not hide our child's startup exit.
+    if proc.poll() is not None:
+        return False
+    if status == 503:
+        console.print("[yellow]Daemon is running with degraded health; run aq doctor.[/]")
+    return status in (200, 503)
 
 
 def _resolve_agent_queue_bin() -> str:
@@ -486,45 +529,39 @@ def _database_is_at_head() -> bool:
 def _backup_database() -> None:
     """Dump the configured Postgres database to BACKUPS_DIR.
 
-    Mirrors the operator wrapper: ``pg_dump`` inside the ``aq-postgres``
-    container is ``docker cp``-ed out, and a dump that is missing the marker
-    comment is refused as incomplete.  Any failure is a loud error — never a
-    silent skip.
+    Prefer compatible local PostgreSQL clients and the configured connection,
+    including Homebrew's keg-only clients. Fall back to the running container
+    publishing that endpoint. Both paths write custom archives; failure stops startup.
     """
+    import asyncio
     import datetime
+
+    from src.config import load_config
+    from src.database.backup import BackupError, backup_database, postgres_clients
 
     try:
         os.makedirs(BACKUPS_DIR, exist_ok=True)
     except OSError as exc:
         raise SystemExit(12) from exc
 
-    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-    out = os.path.join(BACKUPS_DIR, f"pre-deploy-{ts}.sql")
-    container, user, db = "aq-postgres", "agent_queue", "agent_queue"
-    tmp = f"/tmp/pre-deploy-{ts}.sql"
+    destination = Path(BACKUPS_DIR) / (
+        f"pre-deploy-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%S%fZ}.dump"
+    )
 
-    def _docker(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(args, capture_output=True, text=True, check=True)
+    async def _main() -> None:
+        clients = await postgres_clients(load_config(CONFIG_PATH).database.url)
+        await backup_database(clients, destination)
 
     try:
-        _docker("docker", "exec", container, "pg_dump", "-U", user, "-d", db, "-f", tmp)
-        _docker("docker", "cp", f"{container}:{tmp}", out)
-        _docker("docker", "exec", container, "rm", "-f", tmp)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        raise SystemExit(13) from exc
-
-    # The wrapper's integrity check: a real pg_dump carries that comment.
-    size = os.path.getsize(out) if os.path.exists(out) else 0
-    try:
-        with open(out, "rb") as handle:
-            if size > 4096:
-                handle.seek(-4096, os.SEEK_END)
-            tail = handle.read().decode("utf-8", "replace")
-    except OSError as exc:
+        asyncio.run(_main())
+    except BackupError as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
+        invalid = str(exc).startswith(("restore_format_unsupported", "restore_archive_invalid"))
+        raise SystemExit(15 if invalid else 13) from exc
+    except (OSError, TimeoutError) as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
         raise SystemExit(14) from exc
-    if "unrestrict" not in tail:
-        raise SystemExit(15)
-    console.print(f"[green]Backup written[/] {out} ({size:,} bytes)")
+    console.print(f"[green]Backup written[/] {destination} ({destination.stat().st_size:,} bytes)")
 
 
 def _post_daemon_checks() -> None:
@@ -566,7 +603,9 @@ def _post_daemon_checks() -> None:
     try:
         result = subprocess.run(
             [
-                _resolve_agent_queue_bin(),
+                sys.executable,
+                "-m",
+                "src.cli.app",
                 "doctor",
                 "--check",
                 "pools.stale_worktree_checkouts",
@@ -675,6 +714,10 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         env = _daemon_environment()
 
         os.makedirs(CONFIG_DIR, exist_ok=True)
+
+        # Rotate daemon.log if it exceeds MAX_LOG_SIZE_BYTES before starting
+        _rotate_if_needed(LOG_PATH)
+
         with open(LOG_PATH, "a") as log_file:
             proc = subprocess.Popen(
                 [bin_path, CONFIG_PATH],
@@ -690,73 +733,51 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         # Wait until the daemon's HTTP /health endpoint responds — replaces the
         # old fixed 5s pid check, which falsely reported success when crashes
         # (e.g. Discord login failure) happened later in async init. See #28.
-        import urllib.error
-        import urllib.request
-
         from .client import _resolve_api_url
 
         api_base = _resolve_api_url()
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + DAEMON_START_TIMEOUT_SECONDS
         ready = False
-        while time.monotonic() < deadline:
-            # Early-crash detect: if the process is gone, surface the log immediately.
-            try:
-                os.kill(proc.pid, 0)
-            except OSError:
+        while (remaining := deadline - time.monotonic()) > 0:
+            # poll() reaps an exited child, including a zombie that kill(pid, 0)
+            # would still report as alive. Keep the handle for PID-reuse fencing.
+            if proc.poll() is not None:
                 console.print("[bold red]Error:[/] Daemon exited during startup:")
                 _tail_log(30)
-                try:
-                    os.remove(PID_FILE)
-                except OSError:
-                    pass
+                _remove_launched_pid_file(proc.pid)
                 return False
-            # Probe /health. 200 = healthy, 503 = degraded but the daemon is up
-            # and serving (e.g. messaging-degraded mode from #29) — both count
-            # as "started successfully" here.
-            try:
-                with urllib.request.urlopen(f"{api_base}/health", timeout=1) as resp:
-                    if resp.status in (200, 503):
-                        ready = True
-                        break
-            except urllib.error.HTTPError as exc:
-                exc.close()
-                if exc.code == 503:
-                    console.print(
-                        "[yellow]Daemon is running with degraded health; run aq doctor.[/]"
-                    )
-                    ready = True
-                    break
-            except (urllib.error.URLError, OSError):
-                pass  # not yet listening
-            time.sleep(0.5)
+            if _startup_health_ok(proc, api_base, timeout=min(1, remaining)):
+                ready = True
+                break
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
         if not ready:
             console.print(
-                f"[bold red]Error:[/] Daemon process is alive (PID {proc.pid}) but "
-                f"/health didn't respond within 30s. Killing it. Last log lines:"
+                f"[yellow]Daemon (PID {proc.pid}) did not pass /health within "
+                f"{DAEMON_START_TIMEOUT_SECONDS:g}s. Last log lines before rechecking:"
             )
             _tail_log(30)
-            try:
-                os.kill(proc.pid, signal.SIGTERM)
-                # Brief grace period, then SIGKILL
-                for _ in range(5):
-                    time.sleep(1)
+            # Reading/printing diagnostics gives async initialization time to
+            # finish. Never act on the health result from before that work.
+            ready = _startup_health_ok(proc, api_base)
+            if not ready:
+                if proc.poll() is None:
+                    console.print("[bold red]Error:[/] Startup health still failed; stopping child.")
                     try:
-                        os.kill(proc.pid, 0)
-                    except OSError:
-                        break
-                else:
-                    try:
-                        os.kill(proc.pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-            except OSError:
-                pass
-            try:
-                os.remove(PID_FILE)
-            except OSError:
-                pass
-            return False
+                        # Popen signals poll again internally before using the
+                        # PID, so an exited/reaped child cannot target PID reuse.
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            if proc.poll() is None:
+                                proc.kill()
+                            proc.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        console.print(f"[bold red]Error stopping startup child:[/] {exc}")
+                if proc.poll() is not None:
+                    _remove_launched_pid_file(proc.pid)
+                return False
 
         console.print(f"[bold green]Daemon started[/] (PID {proc.pid})")
         _post_daemon_checks()
@@ -767,10 +788,9 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
 
 
 #: tmux session-name prefixes the daemon owns: ``s-<task_id>`` for task
-#: sessions and ``n-<profile>--<project>`` for named ones.  The reconciler
-#: adopts on exactly these two prefixes, so they are also the safe set to
-#: reap — anything else on the socket belongs to someone else.
-_AQ_SESSION_PREFIXES = ("s-", "n-")
+#: sessions, ``n-<profile>--<project>`` for named ones and ``p-`` for pool
+#: workers. Reap these AQ sessions; leave other sessions on the socket alone.
+_AQ_SESSION_PREFIXES = ("s-", "n-", "p-")
 
 
 def _tmux_socket() -> str:
@@ -907,15 +927,26 @@ def _await_start_in_progress(quiet: bool) -> int | None:
 
 
 def _tail_log(lines: int = 20) -> None:
-    """Print the last N lines of the daemon log."""
+    """Print at most N lines from a bounded byte tail of the daemon log."""
+    if lines <= 0:
+        return
     if not os.path.exists(LOG_PATH):
         console.print(f"[dim]No log file at {LOG_PATH}[/]")
         return
     try:
-        with open(LOG_PATH, encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-            for line in all_lines[-lines:]:
-                console.print(line.rstrip())
+        with open(LOG_PATH, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            start = max(0, size - LOG_TAIL_MAX_BYTES)
+            # Read one boundary byte to distinguish a full first line from a
+            # clipped one; the whole read still stays within the byte budget.
+            f.seek(start)
+            tail = f.read(LOG_TAIL_MAX_BYTES)
+        if start > 0:
+            boundary, tail = tail[:1], tail[1:]
+            if boundary != b"\n" and b"\n" in tail:
+                tail = tail.split(b"\n", 1)[1]
+        for line in tail.decode("utf-8", "replace").splitlines()[-lines:]:
+            console.print(line.rstrip(), markup=False, highlight=False)
     except OSError as e:
         console.print(f"[bold red]Error reading log:[/] {e}")
 
@@ -1159,6 +1190,56 @@ def daemon_stop(ctx: click.Context, keep_sessions: bool, no_dashboard_server: bo
     # After the daemon is down: nothing is left to notice the sessions
     # disappearing and try to reconcile them mid-shutdown.
     stop_agent_sessions()
+
+
+# ---------------------------------------------------------------------------
+# Rotation helpers
+# ---------------------------------------------------------------------------
+
+
+def _rotate_if_needed(log_path: str) -> None:
+    """Rotate the log file if it exceeds MAX_LOG_SIZE_BYTES."""
+    try:
+        if not os.path.exists(log_path):
+            return
+
+        stat = os.stat(log_path)
+        if stat.st_size <= MAX_LOG_SIZE_BYTES:
+            return
+
+        timestamp = time.strftime("%Y%m%d%H%M%S")
+        rotated_path = f"{log_path}.{timestamp}.gz"
+
+        # Stream bytes so a large log needs bounded memory and preserves any
+        # non-UTF-8 subprocess output. Never replace an existing archive or
+        # truncate the active log until compression has finished successfully.
+        with open(log_path, "rb") as source, gzip.open(rotated_path, "xb") as backup:
+            shutil.copyfileobj(source, backup)
+        with open(log_path, "wb"):
+            pass
+
+        _cleanup_old_rotations(log_path)
+    except OSError as e:
+        console.print(f"[dim]Failed to rotate log:[/] {e}")
+
+
+def _cleanup_old_rotations(current_log: str) -> None:
+    """Retain the newest MAX_ROTATED_GENS timestamped archives for this log."""
+    path = Path(current_log)
+    match = re.compile(rf"^{re.escape(path.name)}\.\d{{14}}\.gz$")
+    try:
+        archives = sorted(
+            (entry for entry in path.parent.iterdir() if match.fullmatch(entry.name)),
+            key=lambda entry: entry.name,
+            reverse=True,
+        )
+        for archive in archives[MAX_ROTATED_GENS:]:
+            try:
+                archive.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
 
 
 @cli.command("restart")
