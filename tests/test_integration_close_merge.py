@@ -13,7 +13,7 @@ from src.git.manager import GitError
 from src.integration.close_merge import ClosePolicy, CloseStore
 from src.integration.close_runtime import DaemonClose
 from src.integration.gitops import RetainedRepository
-from src.models import Project, Task, RepoConfig, RepoSourceType, Agent, SessionRecord, TaskStatus
+from src.models import Agent, Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus
 from tests.git_seed_helpers import clone_seed, init_bare_seed
 from tests.test_integration_gitops import LocalGit, commit, git
 
@@ -212,7 +212,7 @@ async def test_source_generation_change_settles_old_budget(scenario):
 
 
 async def test_budget_expiry_only_notifies_supervisor_and_keeps_claim(scenario):
-    from src.database.tables import messages, escalation_deliveries
+    from src.database.tables import escalation_deliveries, messages
     from src.waits.registry import build_registry
     from tests.test_wait_decisions import service_for
 
@@ -322,3 +322,59 @@ async def test_continue_close_cannot_delegate_another_authors_operation(scenario
     assert result["success"]
     assert handler._cmd_task_close.call_args.args[0]["claim_epoch"] == 1
     assert handler._cmd_task_close.call_args.args[0]["task_id"] == "child"
+
+
+@pytest.mark.parametrize(
+    ("kind", "check_name", "allowed"),
+    [("ci_check", "pending", True), ("ci_check", "missing", True),
+     ("ci_check", "unrelated", False), ("ci_run", "pending", False)],
+)
+async def test_close_author_ci_wait_only_delegates_required_checks(
+    scenario, kind, check_name, allowed
+):
+    from src.waits.adapters.ci import CIAdapter
+    from src.waits.conditions import Scope, WaitError
+
+    s = scenario
+    await bind_author(s)
+    await s.runtime.store.save(
+        s.row, state="checking", candidate_oid=s.source,
+        evidence={"hosted": {"pending_checks": ["pending"], "missing_checks": ["missing"]}},
+    )
+    adapter = CIAdapter(kind)
+    identity = {"check_name": check_name} if kind == "ci_check" else {"run_id": "123"}
+    condition = adapter.normalise({"repository_id": "r", "head_sha": s.source, **identity})
+    scope = Scope("p", "task", "child", session_id="author", claim_epoch=1)
+    async with s.db._engine.connect() as conn:
+        if allowed:
+            result = await adapter.authorise(conn, condition, scope)
+            assert result.context["session_id"] == "author"
+        else:
+            with pytest.raises(WaitError) as error:
+                await adapter.authorise(conn, condition, scope)
+            assert error.value.code == "wait.out_of_scope"
+
+
+@pytest.mark.parametrize("principal", ["service", "agent"])
+async def test_speculative_ci_run_wait_retains_integration_service_authority(scenario, principal):
+    from src.waits.adapters.ci import CIAdapter
+    from src.waits.conditions import Observation, Scope, Snapshot, WaitError
+
+    s = scenario
+    reader = AsyncMock(return_value=Snapshot("p", 0, Observation("run:123", "unsatisfied", facts={
+        "repository_id": "r", "head_sha": s.source, "run_id": "123",
+        "exists_on_origin": True, "identity_verified": True,
+    }), "ci:r"))
+    adapter = CIAdapter("ci_run", reader)
+    condition = adapter.normalise({"repository_id": "r", "head_sha": s.source, "run_id": "123"})
+    scope = Scope("p", "integration", "candidate", principal=principal)
+    async with s.db._engine.connect() as conn:
+        if principal == "service":
+            result = await adapter.authorise(conn, condition, scope)
+            assert result.context["owner_kind"] == "integration"
+            reader.assert_awaited_once()
+        else:
+            with pytest.raises(WaitError) as error:
+                await adapter.authorise(conn, condition, scope)
+            assert error.value.code == "wait.source_unresolved"
+            reader.assert_not_awaited()

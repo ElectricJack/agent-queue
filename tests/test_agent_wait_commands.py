@@ -18,6 +18,7 @@ from src.config import AppConfig
 from src.database.tables import sessions, tasks
 from src.models import AgentProfile, SessionRecord
 from src.profiles.capabilities import DENY_ALL
+from src.wait_runtime.cycle import CycleWaitMaintenance
 from tests.test_agent_wait_queries import NOW, env as _wait_env
 
 env = _wait_env
@@ -42,7 +43,12 @@ async def commands(env):
     config.wait_policy.v2_enabled = False
     orch = SimpleNamespace(db=env.db, config=config,
                            bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
-    return CommandHandler(orch, config)
+    handler = CommandHandler(orch, config)
+    orch.cycle_waits = CycleWaitMaintenance(orch)
+    try:
+        yield handler
+    finally:
+        await orch.cycle_waits.stop()
 
 
 def scope(**extra):
@@ -196,6 +202,7 @@ async def test_repeated_delivery_after_explicit_consumption_does_not_wake(
         )
         orch._last_delivery_pass = 0
         await Orchestrator._reconcile_sessions(orch)
+        await orch.cycle_waits.task
         await Orchestrator._deliver_messages(orch)
     assert typed() == []
 
@@ -388,6 +395,7 @@ async def test_task_wait_cascade_resolves_and_wakes_idle_pool_holder(
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 200)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
     resolved = await env.db.get_agent_wait(wait_id)
     assert resolved["state"] == ("expired" if terminal == "expired" else "satisfied")
     assert resolved["wait_resumed_at"] == NOW + 200
@@ -419,6 +427,7 @@ async def test_task_wait_cascade_resolves_and_wakes_idle_pool_holder(
     assert message.via == "wait_consume"
     # Repeated reconciliation/delivery must not submit the result twice.
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
     orch._last_delivery_pass = 0
     await Orchestrator._deliver_messages(orch)
     assert len(fake.sent_nudges) == 1
@@ -581,6 +590,7 @@ async def test_thread_wait_fires_on_reply_and_wakes_idle_holder(
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
     resolved = await env.db.get_agent_wait(wait_id)
     assert resolved["state"] == "satisfied"
     assert resolved["digest"]["message_id"] == reply_id
@@ -612,6 +622,7 @@ async def test_unthreaded_guidance_does_not_satisfy_a_thread_wait(commands, env,
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
 
     assert (await env.db.get_agent_wait(wait_id))["state"] == "active"
 
@@ -667,6 +678,7 @@ async def test_operator_approval_on_the_wait_thread_satisfies_it(
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
 
     await Orchestrator._reconcile_sessions(orch)
+    await orch.cycle_waits.task
 
     resolved = await env.db.get_agent_wait(wait_id)
     assert resolved["state"] == "satisfied", resolved
