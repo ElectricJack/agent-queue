@@ -21,6 +21,25 @@ import and activate the newly reviewed routing bundle through the normal
 installation workflow before filing this kind. Installed vault files are
 write-if-absent; changing shipped Markdown alone does not update an installation.
 
+When a route reports `operator_rule_missing`, inspect the executed artifact's
+`task_route_plan` policy literal, rather than only the editable vault source.
+The result includes that policy's `policy_sha256`. Import and activate the reviewed
+bundle containing `kinds.operator`, then reroute the affected unheld tasks through
+the authorized supervisor/operator workflow. The worker doing a code fix cannot
+activate a system router or reroute tasks it does not hold.
+
+`aq pool provider status` lists operator profiles in diagnostics with `reason=role`
+because bulk provider allocation controls select ordinary workers only. That
+diagnostic does not exclude operator profiles from routing or pool startup;
+inspect their individual bounds and demand with `aq pool status`.
+
+Pool claim validation preserves the profile's operator role when checking the
+session's frozen launch class and model. Demand counts only claimable routes
+whose task kind agrees with that role and whose class agrees with the pool's
+fixed class. An unrouted task or a stale route with a different role or class
+cannot launch a pool session as queued demand. Explicit warm-pool floors still
+apply.
+
 ## Preflight and execution
 
 Declare the complete action list and every applicable prerequisite up front.
