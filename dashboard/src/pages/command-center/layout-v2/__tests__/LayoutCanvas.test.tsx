@@ -28,6 +28,7 @@ interface FlowProps {
   onNodesChange?: (changes: NodeChange[]) => void;
   onNodeDragStop?: (event: unknown, node: FlowNode) => void;
   nodesDraggable?: boolean;
+  elevateNodesOnSelect?: boolean;
 }
 
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null, real: false }));
@@ -84,9 +85,11 @@ const tiles = vi.hoisted(() => ({
    * whichever rendered last. */
   paramsByProject: {} as Record<string, unknown>,
 }));
-const extents = vi.hoisted(() => ({ pending: false }));
+const extents = vi.hoisted(() => ({ pending: false, loading: false }));
+let layoutReady = false;
 vi.mock("../useLayoutTiles", () => ({
-  useLayoutTiles: (projectId: string, params: unknown, rect: unknown) => {
+  useLayoutTiles: (projectId: string, params: unknown, rect: unknown, ready: boolean) => {
+    layoutReady = ready;
     tiles.params = params;
     tiles.paramsSeen.push(params);
     tiles.paramsByProject[projectId] = params;
@@ -100,7 +103,7 @@ const currentRunningTarget = vi.hoisted(() => ({ value: null as unknown }));
  * simulate the `all` variant's extent already sitting in the query cache. */
 const hiddenFinishedCount = vi.hoisted(() => ({ value: null as number | null }));
 vi.mock("../../../../api/graphLayout", () => ({
-  useLayoutExtents: (ids: string[]) => ids.map(() => extents.pending
+  useLayoutExtents: (ids: string[]) => ids.map(() => extents.loading ? undefined : extents.pending
     ? { pending: true }
     : { layout_version: 1, extent_w: 10, extent_h: 10, node_count: 3 }),
   useLayoutNode: () => layoutNode,
@@ -227,6 +230,7 @@ beforeEach(() => {
   tiles.loaded = true;
   tiles.refetchVisible = vi.fn();
   extents.pending = false;
+  extents.loading = false;
   hiddenFinishedCount.value = null;
   base.setFocus.mockClear();
   base.setShowCompleted.mockClear();
@@ -254,6 +258,21 @@ afterEach(() => {
 });
 
 describe("LayoutCanvas", () => {
+  it("selects an entered epic without elevating its frame above the children", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 6, h: 3 }),
+        n("child", "card", 0.1, 0.45, { container_id: "e", depth: 1 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    const child = flow.current!.nodes.find((node) => node.id === "child");
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" selectedTaskId="e" /></MemoryRouter>);
+    expect(flow.current!.nodes.find((node) => node.id === "e")!.selected).toBe(true);
+    expect(flow.current!.nodes.find((node) => node.id === "child")).toBe(child);
+    expect(flow.current!.elevateNodesOnSelect).toBe(false);
+    expect(base.setFocus).not.toHaveBeenCalled();
+  });
+
   it("uses the dark default when the shell has not published a theme", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     expect(flow.current?.colorMode).toBe("dark");
@@ -711,7 +730,33 @@ describe("LayoutCanvas", () => {
     tiles.refetchVisible.mockClear();
     extents.pending = false;
     view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(tiles.refetchVisible).toHaveBeenCalled();
+    expect(layoutReady).toBe(true);
+    expect(tiles.refetchVisible).not.toHaveBeenCalled();
+  });
+
+  it("starts tiles before extent arrives and keeps that request when extent resolves", () => {
+    const original = globalThis.ResizeObserver;
+    let notify: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {};
+    class Stub {
+      constructor(cb: typeof notify) { notify = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+    try {
+      extents.loading = true;
+      const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
+      expect(tiles.paramsByProject).toHaveProperty("p1");
+      expect(tiles.rects[tiles.rects.length - 1]).not.toBeNull();
+      tiles.refetchVisible.mockClear();
+      extents.loading = false;
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(tiles.refetchVisible).not.toHaveBeenCalled();
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
   });
 
   it("hands the clicked card's payload to onTaskClick so run tasks keep their routing", () => {

@@ -22,6 +22,9 @@ def routing_profiles():
             id="worker-deep-codex", name="Deep Codex", harness="codex",
             default_class="deep-high",
         ),
+        "worker-fast": AgentProfile(
+            id="worker-fast", name="Fast Codex", harness="codex", default_class="fast-low",
+        ),
         "triage": AgentProfile(
             id="triage", name="Triage", harness="codex", default_class="fast-low",
         ),
@@ -68,6 +71,10 @@ def requested_task(**changes):
     ), **changes)
 
 
+def ordinary_fast_worker():
+    return replace(workers()[0], id="fast", name="Fast Codex", profile_id="worker-fast")
+
+
 def routing_state(task=None, agents=None, profiles=None):
     state = SchedulerState(
         projects=[Project(id="p", name="Project")],
@@ -90,6 +97,70 @@ def test_explicit_codex_deep_task_uses_sol_regardless_of_roster_order(reverse):
         roster.reverse()
     actions = Scheduler.schedule(routing_state(agents=roster))
     assert [(action.task_id, action.agent_id) for action in actions] == [("task", "sol")]
+
+
+@pytest.mark.parametrize("profile_id", ["spec-ingest", "triage", "reviewer", "final-reviewer"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_role_route_uses_renamed_role_definition_instead_of_compatible_pool(profile_id, reverse):
+    profiles = routing_profiles()
+    profiles[profile_id] = AgentProfile(
+        id=profile_id, name="Role", harness="claude", default_class="deep-high",
+    )
+    profiles["worker-deep-codex"].lifecycle = "pool"
+    saved = Agent(
+        id="role-agent", name="Review Spec Ingest", profile_id=profile_id,
+        harness="codex", intelligence_class="deep-high",
+    )
+    roster = [workers()[-1], replace(saved, id="old-role", enabled=False), saved]
+    if reverse:
+        roster.reverse()
+    task = requested_task(
+        profile_id=profile_id, route_source="role", affinity_agent_id="sol",
+    )
+    assert [action.agent_id for action in Scheduler.schedule(
+        routing_state(task, roster, profiles)
+    )] == [saved.id]
+    assert saved.name == "Review Spec Ingest" and saved.harness == "codex"
+
+
+@pytest.mark.parametrize("availability", ["busy", "disabled", "suppressed", "missing"])
+def test_role_route_waits_for_its_definition_without_falling_back_to_pool(availability):
+    profiles = routing_profiles()
+    profiles["spec-ingest"] = AgentProfile(
+        id="spec-ingest", name="Ingest", harness="claude", default_class="deep-high",
+    )
+    role = replace(workers()[-1], id="role-agent", profile_id="spec-ingest")
+    if availability == "busy":
+        role = replace(role, state=AgentState.BUSY, current_task_id="other")
+    elif availability == "disabled":
+        role = replace(role, enabled=False)
+    roster = [workers()[-1], *([] if availability == "missing" else [role])]
+    state = routing_state(
+        requested_task(profile_id="spec-ingest", route_source="role"), roster, profiles,
+    )
+    if availability == "suppressed":
+        state.suppressed_agent_ids = frozenset({role.id})
+    assert Scheduler.schedule(state) == []
+
+
+@pytest.mark.parametrize("profile_id", ["spec-ingest", "triage", "reviewer", "final-reviewer"])
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+@pytest.mark.parametrize("route_source", ["router", "override", "legacy"])
+def test_ordinary_work_never_uses_a_class_compatible_role_agent(profile_id, lifecycle, route_source):
+    profiles = routing_profiles()
+    profiles[profile_id] = AgentProfile(
+        id=profile_id, name="Role", harness="claude", default_class="deep-high",
+    )
+    profiles["worker-deep-codex"].lifecycle = lifecycle
+    role = replace(workers()[-1], id="role-agent", profile_id=profile_id)
+    task = requested_task(route_source=route_source, affinity_agent_id=role.id)
+    assert [action.agent_id for action in Scheduler.schedule(
+        routing_state(task, [role, workers()[-1]], profiles)
+    )] == ["sol"]
+    assert Scheduler.schedule(routing_state(task, [role], profiles)) == []
+    assert Scheduler.schedule(routing_state(
+        replace(task, profile_id=profile_id), [role], profiles,
+    )) == []
 
 
 def test_metadata_defined_pool_worker_is_generic_without_a_worker_prefix():
@@ -204,7 +275,7 @@ def test_explicit_profile_model_cannot_be_replaced_by_worker_model():
 def test_legacy_task_without_execution_requirements_still_uses_global_flock():
     task = requested_task(profile_id=None, intelligence_class=None)
     actions = Scheduler.schedule(routing_state(task))
-    assert [action.agent_id for action in actions] == ["triage"]
+    assert [action.agent_id for action in actions] == ["deep-claude"]
 
 
 def test_ready_task_with_unresolved_routing_gate_is_not_dispatched():
@@ -216,12 +287,12 @@ def test_helper_does_not_modify_worker_or_profile_and_reports_mismatch():
     from src.agents.routing import task_agent_mismatch
 
     profiles = routing_profiles()
-    worker = workers()[0]
+    worker = ordinary_fast_worker()
     before_worker = replace(worker)
     before_profile = replace(profiles["worker-deep-codex"])
     reason = task_agent_mismatch(
         requested_task(), worker, task_profile=profiles["worker-deep-codex"],
-        agent_profile=profiles["triage"], intelligence_classes=routing_classes(),
+        agent_profile=profiles["worker-fast"], intelligence_classes=routing_classes(),
     )
     assert reason and "class" in reason
     assert worker == before_worker
@@ -284,19 +355,19 @@ def test_a_vendorless_harness_resolves_its_class_model_from_its_id_slice():
 
 def test_worker_profile_fallback_yields_to_task_class_when_worker_has_no_class():
     profiles = routing_profiles()
-    profiles["triage"].default_class = ""
-    profiles["triage"].model = "gpt-5.6-luna"
-    agent = replace(workers()[0], intelligence_class=None)
+    profiles["worker-fast"].default_class = ""
+    profiles["worker-fast"].model = "gpt-5.6-luna"
+    agent = replace(ordinary_fast_worker(), intelligence_class=None)
     actions = Scheduler.schedule(routing_state(agents=[agent], profiles=profiles))
     assert [action.agent_id for action in actions] == [agent.id]
-    assert profiles["triage"].model == "gpt-5.6-luna"
+    assert profiles["worker-fast"].model == "gpt-5.6-luna"
 
 
 def test_unconfigured_worker_can_inherit_required_class():
     profiles = routing_profiles()
-    profiles["triage"].default_class = ""
-    profiles["triage"].model = ""
-    agent = replace(workers()[0], intelligence_class=None)
+    profiles["worker-fast"].default_class = ""
+    profiles["worker-fast"].model = ""
+    agent = replace(ordinary_fast_worker(), intelligence_class=None)
     actions = Scheduler.schedule(routing_state(agents=[agent], profiles=profiles))
     assert [action.agent_id for action in actions] == [agent.id]
 
@@ -305,7 +376,7 @@ def test_shipped_triage_capability_runs_on_the_configured_codex_triage_worker():
     profiles = routing_profiles()
     profiles["triage"].harness = "claude"
     profiles["triage"].model = "claude-sonnet-4-6"
-    task = requested_task(profile_id="triage", intelligence_class=None)
+    task = requested_task(profile_id="triage", route_source="role", intelligence_class=None)
     actions = Scheduler.schedule(routing_state(task, [workers()[0]], profiles))
     assert [action.agent_id for action in actions] == ["triage"]
 
@@ -415,6 +486,39 @@ async def test_prelaunch_recheck_rejects_task_without_effective_route(routing_db
     assert await orch._check_agent_routing(task, agent) == "awaiting intelligence route"
 
 
+async def test_prelaunch_role_recheck_rejects_pool_and_keeps_saved_role_overrides(
+    routing_db, tmp_path,
+):
+    from unittest.mock import AsyncMock
+    from src.config import AppConfig, DiscordConfig
+    from src.orchestrator import Orchestrator
+
+    await routing_db.create_profile(AgentProfile(
+        id="spec-ingest", name="Ingest", harness="claude", default_class="deep-high",
+    ))
+    task = requested_task(profile_id="spec-ingest", route_source="role")
+    orch = Orchestrator(AppConfig(
+        discord=DiscordConfig(bot_token="test", guild_id="1"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
+        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "work"),
+    ))
+    orch.db = routing_db
+    orch.session_spec_builder._intelligence_classes = routing_classes()
+    orch._effective_assignment_task = AsyncMock(return_value=(
+        task, EffectiveAssignmentRoute(task.id, "deep-high", None, "profile"),
+    ))
+    pool = workers()[-1]
+    assert "requires role agent" in await orch._check_agent_routing(task, pool)
+    role = replace(pool, id="role-agent", name="Review Spec Ingest", profile_id="spec-ingest")
+    assert await orch._check_agent_routing(task, role) is None
+    ordinary = requested_task(route_source="router")
+    orch._effective_assignment_task.return_value = (
+        ordinary, EffectiveAssignmentRoute(ordinary.id, "deep-high", None, "playbook"),
+    )
+    assert "reserved for role profile" in await orch._check_agent_routing(ordinary, role)
+    assert await orch._check_agent_routing(ordinary, pool) is None
+
+
 @pytest.mark.parametrize("interactive", [False, True])
 async def test_orchestrator_snapshot_enforces_matching_and_live_terminal_ownership(
     routing_db, tmp_path, interactive,
@@ -460,11 +564,12 @@ def test_unrouted_task_is_never_reserved_and_reports_the_route_as_the_blocker():
 
 def test_fresh_route_reserves_a_worker_at_the_class_it_names():
     state = routing_state(requested_task(profile_id=None, intelligence_class=None))
+    state.agents[0] = ordinary_fast_worker()
     state.assignment_routes = {
         "task": EffectiveAssignmentRoute("task", "fast-low", None, "playbook")
     }
 
-    assert [action.agent_id for action in Scheduler.schedule(state)] == ["triage"]
+    assert [action.agent_id for action in Scheduler.schedule(state)] == ["fast"]
 
 
 async def test_orchestrator_leaves_an_unrouted_task_and_its_workers_alone(routing_db, tmp_path):
@@ -531,7 +636,7 @@ def test_an_unclassified_unprofiled_task_keeps_legacy_global_routing():
     profiles = routing_profiles()
     profiles["legacy"] = AgentProfile(id="legacy", name="Legacy", harness="claude")
     state = routing_state(requested_task(profile_id=None, intelligence_class=None), profiles=profiles)
-    assert [action.agent_id for action in Scheduler.schedule(state)] == ["triage"]
+    assert [action.agent_id for action in Scheduler.schedule(state)] == ["deep-claude"]
 
 
 def test_inherited_model_does_not_restore_another_providers_fallback():

@@ -1,0 +1,559 @@
+{
+  "baseline_artifact_sha256": "sha256:0064f7e4b84733ae2d190fa6a420d48a8de100b13b5c406a0e770db5f893cafb",
+  "baseline_source_sha256": "sha256:b761ab57cc68323dbe0d62b9ef55e05ad16b655a1aa09bfe737e9bda4733ce02",
+  "scenarios": [
+    {
+      "name": "ingest-created",
+      "event": {
+        "event_type": "spec.approved",
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spec_path": "display-only.md"
+      },
+      "command": "ensure_spec_ingest",
+      "inputs": {
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "rule": "spec-ingest-on-approve",
+      "response": {
+        "success": true,
+        "task_id": "ingest-1",
+        "created": true
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "ingest-reused-receipt",
+      "event": {
+        "event_type": "spec.approved",
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spec_path": "display-only.md"
+      },
+      "command": "ensure_spec_ingest",
+      "inputs": {
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "rule": "spec-ingest-on-approve",
+      "response": {
+        "success": true,
+        "task_id": "ingest-1",
+        "created": false
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "proposal-gate-created",
+      "event": {
+        "event_type": "proposal.ready",
+        "project_id": "p1",
+        "proposal_id": "proposal-1"
+      },
+      "command": "gate_create",
+      "inputs": {
+        "project_id": "p1",
+        "gate_type": "human",
+        "title": "Approve task batch?",
+        "question": "Approve proposal proposal-1?",
+        "await_id": "proposal-1"
+      },
+      "rule": "proposal-ready-gate",
+      "response": {
+        "success": true,
+        "gate_id": "gate-1",
+        "was_created": true
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "proposal-gate-reused",
+      "event": {
+        "event_type": "proposal.ready",
+        "project_id": "p1",
+        "proposal_id": "proposal-1"
+      },
+      "command": "gate_create",
+      "inputs": {
+        "project_id": "p1",
+        "gate_type": "human",
+        "title": "Approve task batch?",
+        "question": "Approve proposal proposal-1?",
+        "await_id": "proposal-1"
+      },
+      "rule": "proposal-ready-gate",
+      "response": {
+        "success": true,
+        "gate_id": "gate-1",
+        "was_created": false
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "proposal-gate-skipped",
+      "event": {
+        "event_type": "proposal.ready",
+        "project_id": "p1",
+        "proposal_id": "proposal-1"
+      },
+      "command": "gate_create",
+      "inputs": {
+        "project_id": "p1",
+        "gate_type": "human",
+        "title": "Approve task batch?",
+        "question": "Approve proposal proposal-1?",
+        "await_id": "proposal-1"
+      },
+      "rule": "proposal-ready-gate",
+      "response": {
+        "success": true,
+        "gate_id": "gate-1",
+        "skipped": true
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "commit-approve",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": {
+        "success": true,
+        "already_committed": false,
+        "task_ids": [
+          "task-1"
+        ]
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "commit-approve-replay",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": {
+        "success": true,
+        "already_committed": true,
+        "task_ids": [
+          "task-1"
+        ]
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "commit-approved",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approved",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": {
+        "success": true,
+        "already_committed": false,
+        "task_ids": [
+          "task-1"
+        ]
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "commit-approved-replay",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approved",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": {
+        "success": true,
+        "already_committed": true,
+        "task_ids": [
+          "task-1"
+        ]
+      },
+      "lifecycle": "completed"
+    },
+    {
+      "name": "ensure_spec_ingest-rejected",
+      "event": {
+        "event_type": "spec.approved",
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spec_path": "display-only.md"
+      },
+      "command": "ensure_spec_ingest",
+      "inputs": {
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "rule": "spec-ingest-on-approve",
+      "response": {
+        "success": false,
+        "error": "refused"
+      },
+      "lifecycle": "failed"
+    },
+    {
+      "name": "ensure_spec_ingest-runtime-error",
+      "event": {
+        "event_type": "spec.approved",
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spec_path": "display-only.md"
+      },
+      "command": "ensure_spec_ingest",
+      "inputs": {
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "rule": "spec-ingest-on-approve",
+      "response": null,
+      "lifecycle": "failed",
+      "raises": true
+    },
+    {
+      "name": "ensure_spec_ingest-duplicate-event",
+      "event": {
+        "event_type": "spec.approved",
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "spec_path": "display-only.md"
+      },
+      "command": "ensure_spec_ingest",
+      "inputs": {
+        "project_id": "p1",
+        "decision_id": "decision-1",
+        "packet_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "rule": "spec-ingest-on-approve",
+      "response": {
+        "success": true,
+        "task_id": "ingest-1",
+        "created": true
+      },
+      "lifecycle": "completed",
+      "repeat_event": true
+    },
+    {
+      "name": "gate_create-rejected",
+      "event": {
+        "event_type": "proposal.ready",
+        "project_id": "p1",
+        "proposal_id": "proposal-1"
+      },
+      "command": "gate_create",
+      "inputs": {
+        "project_id": "p1",
+        "gate_type": "human",
+        "title": "Approve task batch?",
+        "question": "Approve proposal proposal-1?",
+        "await_id": "proposal-1"
+      },
+      "rule": "proposal-ready-gate",
+      "response": {
+        "success": false,
+        "error": "refused"
+      },
+      "lifecycle": "failed"
+    },
+    {
+      "name": "gate_create-runtime-error",
+      "event": {
+        "event_type": "proposal.ready",
+        "project_id": "p1",
+        "proposal_id": "proposal-1"
+      },
+      "command": "gate_create",
+      "inputs": {
+        "project_id": "p1",
+        "gate_type": "human",
+        "title": "Approve task batch?",
+        "question": "Approve proposal proposal-1?",
+        "await_id": "proposal-1"
+      },
+      "rule": "proposal-ready-gate",
+      "response": null,
+      "lifecycle": "failed",
+      "raises": true
+    },
+    {
+      "name": "gate_create-duplicate-event",
+      "event": {
+        "event_type": "proposal.ready",
+        "project_id": "p1",
+        "proposal_id": "proposal-1"
+      },
+      "command": "gate_create",
+      "inputs": {
+        "project_id": "p1",
+        "gate_type": "human",
+        "title": "Approve task batch?",
+        "question": "Approve proposal proposal-1?",
+        "await_id": "proposal-1"
+      },
+      "rule": "proposal-ready-gate",
+      "response": {
+        "success": true,
+        "gate_id": "gate-1",
+        "was_created": true
+      },
+      "lifecycle": "completed",
+      "repeat_event": true
+    },
+    {
+      "name": "task_batch_commit-rejected",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": {
+        "success": false,
+        "error": "refused"
+      },
+      "lifecycle": "failed"
+    },
+    {
+      "name": "task_batch_commit-runtime-error",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": null,
+      "lifecycle": "failed",
+      "raises": true
+    },
+    {
+      "name": "task_batch_commit-duplicate-event",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": {
+        "success": true,
+        "task_ids": [
+          "task-1"
+        ]
+      },
+      "lifecycle": "completed",
+      "repeat_event": true
+    },
+    {
+      "name": "forged-approval-not-approved",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": "task_batch_commit",
+      "inputs": {
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "proposal_id": "proposal-1"
+      },
+      "rule": "commit-on-gate-resolve",
+      "response": {
+        "success": false,
+        "not_approved": true,
+        "error": "gate does not approve this proposal"
+      },
+      "lifecycle": "failed"
+    },
+    {
+      "name": "rejected",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "rejected",
+        "await_id": "proposal-1"
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    },
+    {
+      "name": "free-text-approval",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "Yes, approve it",
+        "await_id": "proposal-1"
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    },
+    {
+      "name": "expired",
+      "event": {
+        "event_type": "gate.expired",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    },
+    {
+      "name": "nonhuman-gate",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "event",
+        "resolution": "approve",
+        "await_id": "proposal-1"
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    },
+    {
+      "name": "empty-await-id",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": ""
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    },
+    {
+      "name": "null-await-id",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve",
+        "await_id": null
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    },
+    {
+      "name": "missing-await-id",
+      "event": {
+        "event_type": "gate.resolved",
+        "project_id": "p1",
+        "gate_id": "gate-1",
+        "gate_type": "human",
+        "resolution": "approve"
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    },
+    {
+      "name": "task-completed-no-automatic-review",
+      "event": {
+        "event_type": "task.completed",
+        "project_id": "p1",
+        "task_id": "task-1"
+      },
+      "command": null,
+      "rule": null,
+      "lifecycle": null
+    }
+  ]
+}
