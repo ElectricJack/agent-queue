@@ -1,5 +1,12 @@
 # Agent flock Implementation Plan
 
+<!-- aq:historical -->
+> **Historical implementation plan.** This is how one feature was planned before
+> it was built, kept as the record of the decision. It is not a description of
+> current behaviour and its checklists are not work to do. Start at [the
+> documentation home](../../README.md); see [historical
+> material](../../history/README.md).
+
 > **For agentic workers:** Use the scoped requirements below. Execute independently owned changes in parallel, then review the integrated result.
 
 **Goal:** Make AQ agents durable global workers and provide the requested sidebar roster and up to four live tmux/settings tiles.
