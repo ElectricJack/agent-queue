@@ -887,6 +887,10 @@ class MonitoringMixin:
             return
         self._last_operational_event_retention_sweep = now
         try:
+            await self.db.purge_wait_source_events(now=now)
+        except Exception:
+            logger.exception("Wait source event retention sweep failed")
+        try:
             days = int(self.config.events.onboarding_request_retention_days)
             removed = await self.db.purge_finished_onboarding_requests(
                 now - days * 86_400.0
