@@ -15,6 +15,7 @@ from src.models import (
     Project,
     ProjectStatus,
     RepoSourceType,
+    SessionRecord,
     Task,
     TaskStatus,
     Workspace,
@@ -95,6 +96,124 @@ async def test_creates_one_agent_for_one_ready_task(db):
     assert agents[0].profile_id == "claude-opus"
     assert agents[0].state == AgentState.IDLE
     assert report.created == [("p", "claude-opus")]
+
+
+@pytest.mark.parametrize(
+    ("existing", "expected_name"),
+    [
+        ([], "Review Spec Ingest"),
+        ([("named-worker", "Review Spec Ingest", True)], "Review Spec Ingest 2"),
+        (
+            [
+                ("named-worker", "Review Spec Ingest", True),
+                ("named-worker", "Review Spec Ingest 2", True),
+            ],
+            "Review Spec Ingest 3",
+        ),
+        ([("named-worker", "Review Spec Ingest 2", True)], "Review Spec Ingest"),
+        ([("named-worker", "Review Spec Ingest", False)], "Review Spec Ingest"),
+        ([("other-profile", "Review Spec Ingest", True)], "Review Spec Ingest"),
+        ([("named-worker", "Operator Name", True)], "Review Spec Ingest"),
+    ],
+)
+async def test_new_agent_uses_display_name_with_only_needed_suffix(db, existing, expected_name):
+    # Ordinary profiles can create a replacement identity; persistent roles
+    # instead wait for their saved agent, regardless of its availability.
+    await _seed_project_with_profile(db, project_id="p", profile_id="named-worker")
+    await db.update_profile("named-worker", name="Review Spec Ingest")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="named-worker")
+    # These unavailable identities do not serve demand, but enabled agents of
+    # the same profile still reserve their names. Other roster entries do not.
+    for index, (profile_id, name, enabled) in enumerate(existing):
+        await db.create_agent(Agent(
+            id=f"existing-{index}", name=name, profile_id=profile_id,
+            state=AgentState.ERROR, enabled=enabled,
+        ))
+
+    reconciler = AgentReconciler(db)
+    report = await reconciler.reconcile()
+    agents = await db.list_agents()
+    created = [agent for agent in agents if not agent.id.startswith("existing-")]
+
+    assert report.created == [("p", "named-worker")]
+    assert len(created) == 1
+    assert created[0].name == expected_name
+    assert (await reconciler.reconcile()).created == []
+    assert len(await db.list_agents()) == len(existing) + 1
+    for index, (_, name, _) in enumerate(existing):
+        assert (await db.get_agent(f"existing-{index}")).name == name
+
+
+async def test_profile_rename_reuses_existing_agent_without_renaming_or_duplicating(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
+    await db.create_agent(Agent(
+        id="existing", name="spec-ingest-111", profile_id="spec-ingest",
+    ))
+    await db.update_profile("spec-ingest", name="Review Spec Ingest")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="spec-ingest")
+
+    assert (await AgentReconciler(db).reconcile()).created == []
+    agents = await db.list_agents()
+    assert [(agent.id, agent.name) for agent in agents] == [("existing", "spec-ingest-111")]
+
+
+async def test_pool_profile_demand_creates_no_task_agent(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="pool-profile")
+    await db.update_profile("pool-profile", lifecycle="pool", name="Pool Display Name")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="pool-profile")
+
+    assert (await AgentReconciler(db).reconcile()).created == []
+    assert await db.list_agents() == []
+
+
+@pytest.mark.parametrize("state,deleted", [
+    (AgentState.RETIRED, False), (AgentState.ERROR, False),
+    (AgentState.BUSY, False), (AgentState.IDLE, True),
+])
+async def test_stale_task_pointer_without_live_session_does_not_consume_cap(db, state, deleted):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest", max_agents=1)
+    await db.create_task(Task(
+        id="old", project_id="p", title="Old", description="", status=TaskStatus.IN_PROGRESS,
+    ))
+    await db.create_agent(Agent(
+        id="historical", name="Historical", profile_id="other", state=state,
+        current_task_id="old", deleted_at=_time.time() if deleted else None,
+    ))
+    await _seed_ready_task(db, task_id="new", project_id="p", profile_id="spec-ingest")
+    before = await db.get_task("old")
+
+    report = await AgentReconciler(db).reconcile()
+
+    assert report.created == [("p", "spec-ingest")]
+    assert await db.get_task("old") == before
+    # Counting never releases evidence or resurrects a historical definition.
+    assert (await db.get_agent("historical")).current_task_id == "old"
+    assert (await db.get_agent("historical")).state == state
+
+
+@pytest.mark.parametrize("state,project_id,blocked", [
+    ("starting", "p", True), ("running", "p", True), ("draining", "p", True),
+    ("stopped", "p", False), ("sleeping", "p", False),
+    ("running", "other", False), ("running", None, False),
+])
+async def test_project_cap_tracks_live_sessions_without_task_or_agent_pointers(
+    db, state, project_id, blocked,
+):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest", max_agents=1)
+    await _seed_bare_project(db, project_id="other")
+    await _seed_ready_task(db, task_id="new", project_id="p", profile_id="spec-ingest")
+    await db.create_session(SessionRecord(
+        id="session", project_id=project_id, profile_id="other", harness="codex",
+        provider="fake", name="session", lifecycle="pool", work_dir="/tmp",
+        epoch="epoch", instance_token="token", started_at=1,
+        state=state, desired_state="stopped",
+    ))
+    report = await AgentReconciler(db).reconcile()
+
+    assert report.created == ([] if blocked else [("p", "spec-ingest")])
+    if blocked:
+        assert any("1/1 live sessions" in reason for _, reason in report.skipped)
+        assert any("max_concurrent_agents=1" in reason for _, reason in report.skipped)
 
 
 @pytest.mark.parametrize("availability", [

@@ -200,6 +200,14 @@ Assume the daemon and dashboard server are running (`aq start`), the dashboard i
 1. Open **Command Center** in the left rail. AQ redirects this to the remembered project (or its first project), then opens **Graph**. Select a task node to read its task details in the contextual surface. Use the **Tasks** tab when you need search, state, or ownership filters rather than relationship geometry.
 2. In **Projects**, choose `demo`; its row gives you **Graph** and **Tasks**. The same project route also has **Overview**, **Sessions**, **Workspaces**, **Playbooks**, and **Config** deep links. Project state is loaded from the daemon, so a refresh is safe when another operator changes it.
 3. Open **Agent flock** from the rail. Select a worker to see its terminal and session information. Shift-click up to four agents to tile their windows. Pools show their global/project allocation rather than pretending each pool belongs only to the selected project.
+
+   Running project supervisors also appear here, labelled by project, with their harness,
+   model, state, idle time and last activity. Their auth badge shows the latest observed
+   API authentication outcome for 15 minutes: red for HTTP 401/403, green after a successful
+   call, and unknown when no recent observation exists. Select a supervisor to open its
+   terminal, then use **Messages** to send through the same relay as `aq chat <project>`.
+   The pane includes supervisor mail from other surfaces, labels queued/delivered messages
+   as unread until the session reads them, and shows linked replies and delivery diagnostics.
 4. From a task, open **Task files** / **Worktree preview** to inspect file content and a diff associated with that task. Treat it as an inspection surface: make and commit repository changes in the worker's worktree, not in the browser.
 5. Open **Settings** for **Playbooks**, **Profiles**, **Intelligence classes**, **Project roots**, **Messaging**, and **Config**. These are curation surfaces: changing one writes daemon-managed configuration, vault content, or database records, so use the validation/error feedback before retrying.
 6. Open **Metrics** for live and historical fleet measurements. A temporarily disconnected browser does not erase those durable samples; it reconnects and refetches. The live provider-usage display can label unavailable data rather than inventing a value.
