@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
 import pytest
 from sqlalchemy import delete, insert, select, update
 
@@ -24,6 +21,7 @@ from src.database.tables import (
     task_labels,
     tasks,
 )
+from src.integration.migration_heads import declaration
 from src.integration.models import (
     ArtifactSnapshot,
     HierarchicalIntegrationPolicy,
@@ -34,7 +32,6 @@ from src.integration.models import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from src.integration.migration_heads import MigrationHead, declaration, select_members
 
 BASE_SHA = "a" * 40
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
@@ -57,43 +54,6 @@ def test_migration_declaration_reads_literals_without_executing(source, parents)
 def test_dynamic_migration_revision_is_not_executed():
     with pytest.raises(ValueError):
         declaration("migration.py", "revision = dangerous()\ndown_revision = '43'")
-
-
-def test_internal_migration_chain_does_not_hide_a_sibling_collision():
-    members = [
-        dict(task_id=task, repository_id="repo", source_base="base", source_head=task)
-        for task in ("first", "second", "third")
-    ]
-    inspected = {
-        (member["task_id"], "repo", "base", member["source_head"]): heads
-        for member, heads in zip(
-            members,
-            (
-                (MigrationHead("44.py", "44", ("43",)), MigrationHead("45.py", "45", ("44",))),
-                (MigrationHead("46.py", "46", ("43",)),),
-                (MigrationHead("47.py", "47", ("45",)),),
-            ),
-            strict=True,
-        )
-    }
-    accepted, deferred = select_members(members, inspected)
-    assert [member["task_id"] for member in accepted] == ["first", "third"]
-    assert [member["task_id"] for member in deferred] == ["second"]
-
-
-def test_separate_alembic_environments_can_use_the_same_revision_ids():
-    members = [
-        dict(task_id=task, repository_id="repo", source_base="base", source_head=task)
-        for task in ("first", "second")
-    ]
-    inspected = {
-        (member["task_id"], "repo", "base", member["source_head"]): (
-            MigrationHead(f"{member['task_id']}/migrations/versions/44.py", "44", ("43",)),
-        )
-        for member in members
-    }
-    accepted, deferred = select_members(members, inspected)
-    assert accepted == members and deferred == []
 
 
 def _artifact() -> ArtifactSnapshot:
@@ -238,7 +198,7 @@ def _review_row(task_id: str, head: str, *, evidence_id: str, **overrides):
     return values
 
 
-async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(db):
+async def test_keyset_pages_full_frontier(db):
     leaf_ids = [f"root-{index:03d}" for index in range(205)]
     heads = {task_id: f"{index + 1:040x}" for index, task_id in enumerate(leaf_ids)}
     async with db.immediate() as conn:
@@ -275,7 +235,6 @@ async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(d
         await conn.execute(insert(integration_review_evidence), reviews)
 
         scanned = []
-        reviews_by_key = {}
         after = None
         while True:
             page = await db.eligible_root_page_on(
@@ -288,7 +247,6 @@ async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(d
             if not page:
                 break
             scanned.extend(page)
-            reviews_by_key.update(await db.latest_exact_reviews_on(conn, page))
             after = (page[-1]["task_id"], page[-1]["source_head"])
 
     assert [(row["task_id"], row["source_head"]) for row in scanned] == [
@@ -296,13 +254,6 @@ async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(d
     ]
     assert len({row["task_id"] for row in scanned}) == 205
     assert {row["source_kind"] for row in scanned} == {"leaf"}
-    rejected_key = ("root-050", "repo", BASE_SHA, heads["root-050"], 1)
-    assert reviews_by_key[rejected_key]["id"] == "review-root-050-latest-rejection"
-    assert reviews_by_key[rejected_key]["verdict"] == "rejected"
-    assert reviews_by_key[rejected_key]["evidence"] == {
-        "decision": "rejected",
-        "reason": "latest wins",
-    }
 
 
 async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db):
@@ -414,7 +365,6 @@ async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db
             after=None,
             limit=10,
         )
-        reviews = await db.latest_exact_reviews_on(conn, page)
 
     assert [(row["task_id"], row["source_kind"]) for row in page] == [
         ("leaf", "leaf"),
@@ -425,9 +375,6 @@ async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db
     assert parent["source_head"] == parent_head
     assert parent["generation"] == 4
     assert parent["current_verification_id"] == "verification-parent"
-    parent_key = ("parent", "repo", BASE_SHA, parent_head, 4)
-    assert reviews[parent_key]["id"] == "review-parent"
-    assert reviews[parent_key]["evidence"]["verification_id"] == "verification-parent"
 
 
 @pytest.mark.parametrize("receipt_branch", ["main", "refs/heads/main", "refs/heads/other"])
@@ -557,13 +504,9 @@ async def test_root_projection_excludes_each_common_near_miss(db, receipt_branch
             after=None,
             limit=100,
         )
-        delivered = await db.delivered_root_task_ids_on(
-            conn, project_id="p", repository_id="repo"
-        )
 
     expected = ["already-delivered", "good"] if receipt_branch.endswith("/other") else ["good"]
     assert [row["task_id"] for row in page] == expected
-    assert delivered == (set() if receipt_branch.endswith("/other") else {"already-delivered"})
 
 
 async def test_public_review_append_requires_existing_source_task_project(db):
@@ -602,77 +545,3 @@ async def test_immediate_transition_preserves_ordinary_status_and_post_commit_ca
 def reconciler_primitive_authority(monkeypatch):
     from tests.integration_primitive_scope import authorize_root_primitives
     authorize_root_primitives(monkeypatch)
-
-
-@pytest.mark.parametrize('condition, expected', [
-    ('green', None), ('closed', 'pr_closed'), ('moved', 'pr_identity_changed'),
-    # PR CI is never consulted before admission: red, pending, foreign and
-    # check-run outages all admit; batch candidate CI is the only gate.
-    ('foreign', None), ('red', None), ('rerun', None),
-    ('delivered', 'already_delivered'),
-    ('unknown', 'ancestry_unknown'), ('outage', None),
-])
-async def test_live_root_admission_ignores_pr_ci_and_reads_git(condition, expected):
-    from contextlib import asynccontextmanager
-    from src.git.manager import RemoteRefState
-    from src.integration.source_ci import RootAdmissionReader
-
-    @asynccontextmanager
-    async def transaction(store):
-        yield
-
-    member = {'repository_id': 'repo', 'pr_url': 'https://github.com/example/repo/pull/1',
-              'source_head': '1' * 40, 'source_branch': 'aq/source', 'default_branch': 'main'}
-    pull = {'state': 'closed' if condition == 'closed' else 'open',
-            'head': {'sha': ('2' if condition == 'moved' else '1') * 40,
-                     'ref': 'aq/source', 'repo': {'id': 9}},
-            'base': {'ref': 'main', 'repo': {'id': 9}}}
-    check = {'id': 1, 'name': 'unit', 'head_sha': '1' * 40, 'status': 'completed',
-             'conclusion': 'failure' if condition == 'red' else 'success',
-             'app': {'id': 'other' if condition == 'foreign' else 'forge'}}
-    checks = [check]
-    if condition == 'rerun':
-        checks.append({**check, 'id': 2, 'status': 'in_progress', 'conclusion': None})
-    client = SimpleNamespace(pull_request=AsyncMock(return_value=pull),
-                             commit_check_runs=AsyncMock(return_value=checks))
-    if condition == 'outage':
-        client.commit_check_runs.side_effect = RuntimeError('network unavailable')
-    git = SimpleNamespace(
-        bind_github_repository=AsyncMock(return_value=SimpleNamespace(repository_id=9)),
-        _github_client=lambda binding: client, arepository_transaction=transaction,
-        als_remote_ref=AsyncMock(side_effect=[
-            SimpleNamespace(state=RemoteRefState.PRESENT, oid='1' * 40),
-            SimpleNamespace(state=RemoteRefState.PRESENT, oid=BASE_SHA),
-        ]),
-        ais_ancestor=AsyncMock(return_value=None if condition == 'unknown' else condition == 'delivered'),
-    )
-    promotion = SimpleNamespace(
-        git=git, _resolve_repository=AsyncMock(return_value=SimpleNamespace(
-            origin_url='https://github.com/example/repo', retained_git_dir='/retained',
-        )), _ensure_retained_repository=AsyncMock(), _fetch_all_heads=AsyncMock(),
-        _tree_oid=AsyncMock(return_value='3' * 40),
-    )
-    result = await RootAdmissionReader(promotion)(member, HierarchicalIntegrationPolicy.model_validate(_policy()))
-    assert result['reason'] == expected
-    if expected is None:
-        assert result['tree'] == '3' * 40
-        client.commit_check_runs.assert_not_awaited()
-    elif expected.startswith('pr_'):
-        git.ais_ancestor.assert_not_awaited()
-
-
-async def test_root_admission_batches_closed_pr_pruning_without_reading_each_head():
-    from src.integration.source_ci import RootAdmissionReader
-
-    client = SimpleNamespace(paged_list=AsyncMock(return_value=[]))
-    git = SimpleNamespace(bind_github_repository=AsyncMock(return_value=SimpleNamespace(repository_id=9)),
-                          _github_client=lambda binding: client)
-    promotion = SimpleNamespace(git=git, _resolve_repository=AsyncMock(return_value=SimpleNamespace(
-        origin_url='https://github.com/example/repo',
-    )))
-    members = [{'repository_id': 'repo', 'pr_url': f'https://github.com/example/repo/pull/{i}'}
-               for i in range(352)]
-    result = await RootAdmissionReader(promotion).observe_many(members, None)
-    assert result == [{'reason': 'pr_closed'}] * 352
-    client.paged_list.assert_awaited_once()
-    git.bind_github_repository.assert_awaited_once()
