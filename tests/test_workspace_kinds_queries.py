@@ -155,3 +155,10 @@ class TestDelete:
         assert (await db.resolve_workspace_kind("p1", "vault")).description == "override"
         await db.delete_workspace_kind("p1", "vault")
         assert (await db.resolve_workspace_kind("p1", "vault")).description == "sys"
+
+
+async def test_special_slot_limit_roundtrip_and_removal(db):
+    await db.upsert_workspace_kind(_kind(id="native", mode="worktree", max_slots=2))
+    assert (await db.resolve_workspace_kind("p", "native")).max_slots == 2
+    await db.upsert_workspace_kind(_kind(id="native", mode="worktree"))
+    assert (await db.resolve_workspace_kind("p", "native")).max_slots is None
