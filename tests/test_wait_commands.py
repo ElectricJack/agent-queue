@@ -949,6 +949,72 @@ async def test_installed_wait_explain_reads_by_wait_and_by_task(env, principal):
     assert not missing["success"]
 
 
+async def _named_supervisor(env, project):
+    await env.db.create_session(SessionRecord(
+        id="sup", project_id=project, profile_id="supervisor", harness="codex",
+        provider="fake", name=f"n-supervisor--{project or 'global'}", lifecycle="named",
+        state="running", desired_state="running", instance_token="sup-token", epoch="boot",
+        work_dir="/tmp/supervisor", started_at=NOW))
+    return replace(WORKER, session_id="sup", session_instance_token="sup-token",
+                   task_id=None, project_id=project, profile_id="supervisor", elevated=True)
+
+
+async def test_project_supervisor_explains_task_waits_in_its_own_project_only(env):
+    """The delivery watchdog and stall checks hand supervisors `aq wait explain --task`."""
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["error_code"] == "wait.out_of_scope"
+    assert "Private title" not in str(foreign)
+    nominated = await execute(
+        handler, "wait_explain", {"task_id": "foreign", "project_id": "q"}, principal
+    )
+    assert nominated["error_code"] == "wait.out_of_scope"
+
+
+async def test_global_supervisor_explains_task_waits_in_any_project(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, None)
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["success"] and foreign["waits"] == [], foreign
+
+
+async def test_supervisor_read_scope_never_registers_or_mutates_for_a_task(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    registered = await execute(handler, "wait_register", {
+        "schema_version": 2, "condition": {"kind": "task", "task_id": "source"},
+        "idempotency_key": "sup-k", "task_id": "owner"}, principal)
+    assert registered["error_code"] in {"wait.out_of_scope", "out_of_scope"}
+    assert "owner task cannot be nominated" in registered["error"]
+    legacy = await execute(handler, "wait_register", {
+        "kind": "task", "ref": "source", "idempotency_key": "sup-legacy", "task_id": "owner"},
+        principal)
+    assert legacy["success"] is False
+    for name, args in (
+        ("wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1, "task_id": "owner"}),
+        ("wait_checkpoint", {"wait_id": receipt["wait_id"], "claim_epoch": 1,
+                             "summary": "Resume the source task.", "task_id": "owner"}),
+    ):
+        refused = await execute(handler, name, args, principal)
+        assert refused["success"] is False, (name, refused)
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(wait_records)) == 1
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+    # A pool worker still cannot read another task's waits.
+    worker = await execute(handler, "wait_explain", {"task_id": "source"})
+    assert worker["error_code"] == "wait.out_of_scope"
+
+
 async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
     receipt = await register(env)
     async with env.db._engine.begin() as conn:
@@ -1204,3 +1270,61 @@ async def test_holder_cancel_refuses_once_the_hibernation_stop_began(env):
     async with env.db._engine.connect() as conn:
         assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
         assert await conn.scalar(select(continuations.c.resume_state)) == "sleeping"
+
+
+@pytest.mark.parametrize("legacy_id", [None, "old-wait"])
+async def test_concrete_cancel_and_explain_clear_graph_once_and_deliver_one_outcome(env, legacy_id):
+    from src.database.tables import wait_edges
+
+    _, handler = await wait_service(env)
+    receipt = await register(env)
+    if legacy_id:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(legacy_id=legacy_id))
+    pointer = dict(schema_version=2, wait_id=legacy_id or receipt["wait_id"], claim_epoch=1)
+    explained = await execute(handler, "wait_explain", dict(wait_id=receipt["wait_id"]))
+    assert explained["success"] and explained["total"] == 1
+    assert (await execute(handler, "wait_cancel", pointer))["changed"] is True
+    assert (await execute(handler, "wait_cancel", pointer))["changed"] is False
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait["outcome"] == "cancelled"
+        assert not await conn.scalar(select(func.count()).select_from(wait_edges).where(
+            wait_edges.c.active.is_(True)))
+        assert not await conn.scalar(select(func.count()).select_from(wait_deadlines).where(
+            wait_deadlines.c.cancelled_at.is_(None), wait_deadlines.c.fired_at.is_(None)))
+        assert await conn.scalar(select(func.count()).select_from(messages).where(
+            messages.c.body_kind == "wait_outcome")) == 1
+        assert await conn.scalar(select(func.count()).select_from(events).where(
+            events.c.event_type == "wait.cancelled")) == 1
+
+
+async def test_concrete_service_cancel_is_owner_scoped_and_cannot_be_nominated_by_worker(env):
+    _, handler = await wait_service(env)
+    receipt = await handler.wait_service_command("wait_register", dict(
+        schema_version=2, project_id="p", owner_kind="integration", owner_id="train:one",
+        condition={"kind": "task", "task_id": "source"}, idempotency_key="integration"))
+    assert receipt["success"], receipt
+    args = dict(schema_version=2, wait_id=receipt["wait_id"], project_id="p",
+                owner_kind="integration", owner_id="train:other")
+    assert (await handler.wait_service_command("wait_cancel", args))["error_code"] == (
+        "wait.out_of_scope")
+    args["owner_id"] = "train:one"
+    assert (await execute(handler, "wait_cancel", args))["error_code"] == "wait.out_of_scope"
+    cancelled = await handler.wait_service_command("wait_cancel", args)
+    assert cancelled.get("changed") is True, cancelled
+    assert (await handler.wait_service_command("wait_cancel", args))["changed"] is False
+
+
+async def test_concrete_cancel_refuses_a_stale_claim_and_foreign_supervisor(env):
+    _, handler = await wait_service(env)
+    receipt = await register(env)
+    args = dict(schema_version=2, wait_id=receipt["wait_id"], claim_epoch=0)
+    assert (await execute(handler, "wait_cancel", args))["success"] is False
+    principal = await supervisor(env, project="q")
+    assert (await execute(handler, "wait_cancel", dict(wait_id=receipt["wait_id"]),
+                          principal))["error_code"] == "wait.out_of_scope"
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"

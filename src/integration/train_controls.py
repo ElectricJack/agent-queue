@@ -60,6 +60,55 @@ class TrainControls:
     def __init__(self, db, *, snapshot=project_snapshot, clock=time.time, train=None):
         self.db, self.snapshot, self.clock, self.train = db, snapshot, clock, train
 
+    async def rerequest_check(self, batch_id, *, check_name, dry_run,
+                              expected_candidate_sha, operator_id, reason):
+        from src.integration.candidate_baseline import candidate_head
+        from src.integration.checks import HybridChecks
+
+        if not dry_run and (not expected_candidate_sha or not reason.strip()):
+            raise ValueError("apply requires the previewed candidate SHA and a nonblank reason")
+        store = BatchStore(self.db)
+        batch = await store.get(batch_id)
+        if batch is None or batch.intent != "open" or self.train is None:
+            raise ValueError("an open batch and active train are required")
+        target = next((target for target in await self.train.targets.targets(self.clock())
+                       if target.key == (batch.project_id, batch.repository_id, batch.target_ref)),
+                      None)
+        if target is None or target.kind == "promotion":
+            raise ValueError("an active candidate train target is required")
+        lane = await self.train.lane_for(target)
+        snapshot = await lane.snapshot()
+        if snapshot is None or snapshot.error:
+            raise ValueError("candidate cannot be observed")
+        candidate = snapshot.observation.source_heads.get(
+            "refs/remotes/origin/" + candidate_ref(batch.id).removeprefix("refs/heads/"))
+        if not candidate or (expected_candidate_sha and candidate != expected_candidate_sha):
+            raise ValueError("candidate changed or is unavailable; preview again")
+        checks = await lane.checks.for_candidate(batch, candidate)
+        if isinstance(checks, HybridChecks):
+            checks = checks.hosted
+        if checks is None or check_name not in checks.required.names:
+            raise ValueError("a required hosted check is needed")
+        head = candidate_head(batch, candidate)
+        # Preview reads authenticated evidence too; it never requests or mutates CI.
+        await checks.refresh(head)
+        members = await store.members(batch.id)
+
+        async def authorize():
+            return await lane.service.repair_authorized(batch, members, candidate)
+
+        evidence = await checks.reconcile_stuck(
+            batch, head, authorize=authorize, names=(check_name,), dry_run=dry_run,
+            actor=operator_id, reason=reason,
+        )
+        if not evidence:
+            raise ValueError("the required check has no authenticated stuck-job evidence")
+        if evidence[0]["outcome"] in {"refused", "unavailable"}:
+            raise ValueError(f"check reconciliation {evidence[0]['outcome']}: {evidence[0]}")
+        return {"outcome": "preview" if dry_run else "reconciled", "batch_id": batch.id,
+                "project_id": batch.project_id, "candidate_sha": candidate,
+                "evidence": {"checks": evidence}}
+
     async def repair_target(self, batch_id, *, dry_run, expected_candidate_sha,
                             expected_target_sha, operator_id, reason):
         """Repair proven inherited failures without changing the sealed hierarchy."""
@@ -815,8 +864,7 @@ class TrainControls:
             if await load_delivery_requests(self.db, [task_id], conn=conn,
                     repository_id=batch.repository_id, target_ref=batch.target_ref,
                     reduced=True) != requests:
-                raise TrainControlError("source_changed", "task completion changed; "
-                                        "preview again")
+                raise TrainControlError('source_changed', 'task completion changed; preview again')
             await self._release_refusal(conn, batch, task_id, request, row["policy_snapshot"])
 
         if dry_run:
@@ -1056,10 +1104,7 @@ class TrainControls:
                 raise ValueError("delivery or origin changed; preview again")
             if not dry_run:
                 await conn.execute(
-                    update(task_branch_origins)
-                    .where(
-                        task_branch_origins.c.id == row["id"],
-                    )
+                    update(task_branch_origins).where(task_branch_origins.c.id == row['id'])
                     .values(retired_at=self.clock())
                 )
                 await self.db.log_event(
