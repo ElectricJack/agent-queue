@@ -131,34 +131,38 @@ class TestFiling:
             )
             monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: service)
 
+        tasks_before = len(await db.list_tasks(PROJECT_ID))
         result = await scoped(handler, sid)._cmd_create_task({
             "title": "Root finding", "description": "d", "reason": "held exposed it",
             "intelligence_class": "standard-high", **placement,
             **({"profile_id": "worker"} if routed else {}),
         })
 
+        if routed:
+            # A worker files hints, never a route (mandatory routing §5.2):
+            # the named profile is refused and nothing is written.
+            assert result.get("success") is False, result
+            assert result["code"] == "routing.choice_forbidden"
+            assert result["refused"] == ["profile_id"]
+            assert len(await db.list_tasks(PROJECT_ID)) == tasks_before
+            assert (await db.get_task("held")).filed_count == 0
+            return
         assert result.get("success") is True, result
         task = await db.get_task(result["task_id"])
         assert task.parent_task_id is None
         assert task.status == TaskStatus.DEFINED
-        assert task.intelligence_class == "standard-high"
+        # Unrouted, the class is only the filer's hint (mandatory routing §5.3).
+        assert task.class_hint == "standard-high"
+        assert task.intelligence_class is None
         assert await db.get_typed_dependencies(task.id) == [("held", "discovered-from")]
         gates = await db.get_gates_for_task(task.id)
         gate_events = [c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
                        if c.args[0] == "gate.created"]
-        if routed:
-            assert task.profile_id == "worker"
-            assert task.is_blocked is False
-            assert result["gate_id"] is None
-            assert gates == []
-            assert gate_events == []
-            assert result["profile_source"] == "explicit"
-        else:
-            assert task.profile_id is None
-            assert task.is_blocked is True
-            assert [g["gate_type"] for g in gates] == ["routing"]
-            assert result["gate_id"] == gates[0]["id"]
-            assert [event["gate_id"] for event in gate_events] == [result["gate_id"]]
+        assert task.profile_id is None
+        assert task.is_blocked is True
+        assert [g["gate_type"] for g in gates] == ["routing"]
+        assert result["gate_id"] == gates[0]["id"]
+        assert [event["gate_id"] for event in gate_events] == [result["gate_id"]]
         event = created_events(handler)[0]
         assert (event["parent_task_id"], event["discovered_from"]) == (None, "held")
         assert (await db.get_task("held")).filed_count == 1
@@ -181,17 +185,26 @@ class TestFiling:
         await db.create_task(Task(
             id="prereq", project_id=PROJECT_ID, title="prereq", description="p",
         ))
+        # A worker files hints only (mandatory routing §5.2); the route comes
+        # later, here from the operator's audited override (§7), which, like
+        # the router's apply, resolves the filing's routing gate.
         result = await scoped(handler, sid)._cmd_create_task({
             "title": "Follow-up", "description": "d", "root": True,
             "reason": "held exposed it", "depends_on": "prereq",
-            "profile_id": "worker", "intelligence_class": "standard-high",
+            "intelligence_class": "standard-high",
         })
         assert result.get("success") is True, result
         task_id = result["task_id"]
+        handler._current_scope = None
+        handler.config.swarm.enabled = True  # a pool has slots only while the swarm runs
+        routed = await handler._cmd_task_route_override({
+            "task_id": task_id, "profile_id": "worker", "intelligence_class": "standard-high",
+            "reason": "operator routes the filing by hand in this test",
+        })
+        assert routed.get("success") is True, routed
         await handler.orchestrator._check_defined_tasks()
         assert (await db.get_task(task_id)).status == TaskStatus.DEFINED
 
-        handler._current_scope = None
         removed = await handler._cmd_remove_dependency({"task_id": task_id, "depends_on": "prereq"})
         assert removed.get("ok") is True, removed
         await handler.orchestrator._check_defined_tasks()
@@ -199,7 +212,7 @@ class TestFiling:
         task = await db.get_task(task_id)
         assert task.status == TaskStatus.READY
         assert task.is_blocked is False
-        assert await db.get_gates_for_task(task_id) == []
+        assert all(gate["status"] == "resolved" for gate in await db.get_gates_for_task(task_id))
 
     async def test_legacy_null_instance_claim_keeps_unmanaged_worker_filing_compatible(
         self, handler, db
@@ -535,6 +548,20 @@ async def test_local_task_creation_does_not_accept_spoofed_session_provenance(ha
     })
     created = await db.get_task(result["task_id"])
     assert created.created_by_kind is None and created.created_by_id is None
+
+
+async def test_worker_ensure_task_cannot_claim_an_internal_origin(handler, db):
+    # ``ensure_task`` forwards an internal filer's origin (source-CI repair) to
+    # ``create_task``, whose worker guard still owns provenance.
+    sid = await holding_session(db)
+    result = await scoped(handler, sid)._cmd_ensure_task({
+        "project_id": PROJECT_ID, "dedup_key": "claimed-origin", "title": "Claimed",
+        "reason": "found it",
+        "_created_by_kind": "source_ci_repair", "_created_by_id": "source-ci:x",
+    })
+    assert result["success"] is True, result
+    created = await db.get_task(result["task_id"])
+    assert (created.created_by_kind, created.created_by_id) == ("session", sid)
 
 
 class TestWorkerGraphContainer:
@@ -1427,13 +1454,14 @@ class TestRootFilingCLI:
 
 
 async def route(db, task_id):
-    """Route *task_id* as ``task_route`` would: a profile and a class on the row."""
+    """Put a legacy route on *task_id*: a profile and a class on the row."""
     if await db.get_profile("standard-high-claude") is None:
         await db.create_profile(
             AgentProfile(id="standard-high-claude", name="standard-high-claude", harness="claude")
         )
     assert await db.update_task_routing(
-        task_id, profile_id="standard-high-claude", intelligence_class="standard-high",
+        task_id, profile_id="standard-high-claude",
+        route_source="legacy", intelligence_class="standard-high",
         preferred_workspace_id=None,
     )
 

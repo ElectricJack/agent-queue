@@ -20,8 +20,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../../api/hooks", () => ({
   useProjects: () => ({ data: mocks.projects, isLoading: false, error: null }),
   useCreateTask: () => ({ mutate: mocks.create, isPending: false, error: mocks.error }),
-  // The create form's optional route picker (with *Pin to this provider*).
-  useProfiles: () => ({ data: [] }),
   // CreateTaskModal requires an intelligence class, so the toolbar's create
   // form does not render without this hook.
   useIntelligenceClasses: () => ({
@@ -40,6 +38,7 @@ vi.mock("../../../api/graphLayout", () => ({
   fetchRunningTarget: mocks.running,
   locate: mocks.locate,
 }));
+vi.mock("../../../api/knowledge", () => ({ useKnowledgeCapabilities: () => ({ data: { available: false } }) }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks.open }) }));
 vi.mock("../useGraphLive", () => ({ useGraphLive: mocks.live }));
 vi.mock("../useGraphHierarchy", async (importOriginal) => ({
@@ -49,17 +48,17 @@ vi.mock("../useGraphHierarchy", async (importOriginal) => ({
   GraphStateProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-function Probe() {
+function Probe({ onCreated }: { onCreated?: (taskId: string) => void }) {
   const workspace = useTaskWorkspace();
   const location = useLocation();
   const { density } = useGraphState();
-  return <><TaskToolbar /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
+  return <><TaskToolbar onCreated={onCreated} /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
     <output data-testid="query">{location.search}</output>
     <output data-testid="density">{density}</output></>;
 }
-function mount(path = "/projects/alpha/graph") {
+function mount(path = "/projects/alpha/graph", onCreated?: (taskId: string) => void) {
   return render(<MemoryRouter initialEntries={[path]}><ShortcutsProvider><Routes>
-    <Route path="projects/:projectId/*" element={<TaskWorkspaceProvider><Probe /></TaskWorkspaceProvider>} />
+    <Route path="projects/:projectId/*" element={<TaskWorkspaceProvider><Probe onCreated={onCreated} /></TaskWorkspaceProvider>} />
     <Route path="command-center/*" element={<TaskWorkspaceProvider><Probe /></TaskWorkspaceProvider>} />
   </Routes></ShortcutsProvider></MemoryRouter>);
 }
@@ -190,6 +189,18 @@ describe("shared Command Center task controls", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("lets the combined workspace own navigation after task creation", async () => {
+    const onCreated = vi.fn();
+    mocks.create.mockImplementationOnce((_body, options) => options.onSuccess({ created: "new-task" }));
+    mount("/projects/alpha/tasks-knowledge?kind=task", onCreated);
+    await userEvent.click(screen.getByRole("button", { name: /Add task/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: /Title/ }), "New work");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /Intelligence class/ }), "fast-low");
+    fireEvent.submit(screen.getByRole("form", { name: "Create task" }));
+    expect(onCreated).toHaveBeenCalledWith("new-task");
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
   it("reports creation errors and leaves the draft available", async () => {
     mocks.error = new Error("Project is unavailable");
     mount();
@@ -308,5 +319,34 @@ describe("layout-aware task controls", () => {
     mocks.tidyFailed = true;
     mount("/projects/alpha/graph");
     expect(screen.getByRole("alert")).toHaveTextContent("Tidy failed");
+  });
+});
+
+
+describe("compact filter disclosure", () => {
+  it("keeps active secondary filters visible in its label and can be opened by keyboard", async () => {
+    const original = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true,
+      value: () => ({ matches: true }) });
+    try {
+      mount("/projects/alpha/tasks?window=24h&held=1");
+      const toggle = screen.getByRole("button", { name: "Filters (2 active)" });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByRole("combobox", { name: "Time range" })).not.toBeInTheDocument();
+      expect(screen.getByRole("searchbox", { name: "Search tasks" })).toBeInTheDocument();
+      toggle.focus();
+      await userEvent.keyboard("{Enter}");
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("combobox", { name: "Time range" })).toHaveValue("24h");
+      expect(screen.getByRole("checkbox", { name: "Held by provider" })).toBeChecked();
+      await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
+      expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
+      expect(screen.getByTestId("query")).toBeEmptyDOMElement();
+      await userEvent.click(toggle);
+      expect(toggle).toHaveFocus();
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original });
+    }
   });
 });

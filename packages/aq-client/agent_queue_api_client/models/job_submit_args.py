@@ -21,6 +21,7 @@ class JobSubmitArgs:
         session_id (None | str | Unset):
         claim_epoch (int | None | Unset):
         argv (list[str] | Unset):
+        attempt_id (None | str | Unset):
         wait (bool | Unset):  Default: False.
     """
 
@@ -31,6 +32,7 @@ class JobSubmitArgs:
     session_id: None | str | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
     argv: list[str] | Unset = UNSET
+    attempt_id: None | str | Unset = UNSET
     wait: bool | Unset = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -66,6 +68,12 @@ class JobSubmitArgs:
         if not isinstance(self.argv, Unset):
             argv = self.argv
 
+        attempt_id: None | str | Unset
+        if isinstance(self.attempt_id, Unset):
+            attempt_id = UNSET
+        else:
+            attempt_id = self.attempt_id
+
         wait = self.wait
 
         field_dict: dict[str, Any] = {}
@@ -86,6 +94,8 @@ class JobSubmitArgs:
             field_dict["claim_epoch"] = claim_epoch
         if argv is not UNSET:
             field_dict["argv"] = argv
+        if attempt_id is not UNSET:
+            field_dict["attempt_id"] = attempt_id
         if wait is not UNSET:
             field_dict["wait"] = wait
 
@@ -136,6 +146,15 @@ class JobSubmitArgs:
 
         argv = cast(list[str], d.pop("argv", UNSET))
 
+        def _parse_attempt_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        attempt_id = _parse_attempt_id(d.pop("attempt_id", UNSET))
+
         wait = d.pop("wait", UNSET)
 
         job_submit_args = cls(
@@ -146,6 +165,7 @@ class JobSubmitArgs:
             session_id=session_id,
             claim_epoch=claim_epoch,
             argv=argv,
+            attempt_id=attempt_id,
             wait=wait,
         )
 
