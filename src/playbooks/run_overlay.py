@@ -8,10 +8,11 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from src.api.models.playbook_v2 import PlaybookRunOverlayResponse, ReceiptDTO
+from src.api.models.playbook_v2 import PlaybookRunOverlayResponse, ReceiptDTO, ScriptExecutionDTO
 from src.event_schemas import event_field_is_sensitive
 from src.playbooks.definition import PlaybookDefinition
-from src.playbooks.graph_projection import project_value
+from src.playbooks.graph_projection import project_value, _registration
+from src.playbooks.private_values import REFERENCE_KEY, contains_reference, private_result_fields
 
 
 def _plain(value: Any) -> dict[str, Any]:
@@ -48,6 +49,8 @@ def _receipt(raw: Any) -> dict[str, Any]:
     for name, value in dict(data.get("inputs") or {}).items():
         redacted = name == "__redacted__" or (
             isinstance(value, str) and value.startswith("sensitive:")
+        ) or contains_reference(value) or (
+            isinstance(value, Mapping) and "__redacted__" in value
         )
         inputs.append(
             {
@@ -63,9 +66,19 @@ def _receipt(raw: Any) -> dict[str, Any]:
             }
         )
     result_map = dict(data.get("result") or {})
+    script = None
+    if data.get("step_kind") == "script" and result_map.get("job_id"):
+        script = {name: result_map[name] for name in ScriptExecutionDTO.model_fields
+                  if name in result_map and name != "output_refs"}
+        script["output_refs"] = {
+            name: reference[REFERENCE_KEY]
+            for name, reference in result_map.get("output_refs", {}).items()
+            if name in {"stdout", "stderr"} and isinstance(reference, Mapping)
+            and isinstance(reference.get(REFERENCE_KEY), str)
+        }
     result = None
     if result_map:
-        redacted = "__redacted__" in result_map or any(
+        redacted = contains_reference(result_map) or "__redacted__" in result_map or any(
             isinstance(value, str) and value.startswith("sensitive:")
             for value in result_map.values()
         )
@@ -113,6 +126,8 @@ def _receipt(raw: Any) -> dict[str, Any]:
             "step_kind": data["step_kind"],
             "attempt": int(data.get("attempt", 1)),
             "iteration_index": iteration if iteration >= 0 else None,
+            "iteration_path": data.get("iteration_path", ""),
+            "script": script,
             "outcome": exact_outcome,
             "selected_edge_id": selected,
             "started_at": started,
@@ -184,7 +199,10 @@ def project_overlay(
     receipt_total: int | None = None,
 ) -> dict[str, Any]:
     """Project newest receipts while preserving attempts and loop iterations."""
-    del contracts  # receipts are already contract-projected at the execution boundary
+    if contracts is None:
+        from src.commands.contracts import CONTRACTS
+
+        contracts = CONTRACTS
     if receipt_limit < 1:
         raise ValueError("receipt_limit must be >= 1")
     definition = PlaybookDefinition.model_validate(definition)
@@ -272,10 +290,22 @@ def project_overlay(
     ]
     bindings = []
     for name, value in sorted(dict(run_data.get("bindings") or {}).items()):
+        step = definition.steps.get(name) or next(
+            (item for item in definition.steps.values()
+             if getattr(item, "save_result_as", None) == name), None,
+        )
+        registration = _registration(contracts, getattr(step, "command", ""))
+        opaque = (registration is None or not isinstance(value, Mapping) or bool(
+            private_result_fields(registration.contract.execution, value)
+        ))
         bindings.append(
             {
                 "label": name,
-                "value": project_value(value, type_name=type(value).__name__),
+                "value": project_value(value, type_name=type(value).__name__,
+                                       redacted=opaque or contains_reference(value) or (
+                                           isinstance(value, Mapping) and any(
+                                               isinstance(item, Mapping) and "__redacted__" in item
+                                               for item in value.values()))),
                 "source": "binding",
                 "required": True,
                 "description": None,
