@@ -310,11 +310,20 @@ allowlist.
    `(transport, external_message_id)`. Text is nulled after 30 days.
 3. `src/asks/intake.py` inserts a message `msg-<input_id>` with
    `body_kind=conversation_input`, addressed to the supervisor, or to
-   `conversation-queued` if no supervisor can take it yet. A cycle step
-   (`route_queued_conversation_inputs`) retries the routing.
+   `conversation-queued` only if no addressed supervisor exists. Resolution and
+   notice insertion share the acceptance transaction. A stopped supervisor retains
+   its address and is woken through the named-session delivery path. A cycle step
+   (`route_queued_conversation_inputs`) recovers genuinely unassigned notices.
+   After commit, intake emits `message.sent`; conversation inputs wake the independent
+   delivery service immediately, bypassing its routine delivery interval. Replays
+   repair a missed wake using the original notice and notification deduplication.
+   Another supervisor may inspect the notice but cannot consume it through inbox
+   injection or mark it read.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
-   `outbound_deliveries`.
+   `outbound_deliveries`. For channel and DM conversations, the Discord reply
+   reference is the answered input's `external_message_id`, including follow-up
+   inputs. The conversation's root and destination stay unchanged.
 
 `supervisor_conversations` tracks each conversation. On bot `READY`, a
 backfill reads up to 24 hours or 1000 missed messages
@@ -592,7 +601,9 @@ arrives, the deterministic text goes out.
 Both reports follow one pattern: the daemon reserves the slot, freezes a
 brief of facts and a deterministic **fallback text**, and only then wakes a
 supervisor to author it. The fallback goes out if the supervisor misses the
-deadline. Requests are rows in `supervisor_report_requests` (kind `hourly`,
+deadline; for full-fleet hourly reporting it is only a one-line unavailable
+notice, never a concatenation of the evidence. Requests are rows in
+`supervisor_report_requests` (kind `hourly`,
 `morning` or `digest`), with the frozen brief, its hash and the fallback.
 Supervisor policy (the playbooks, what to write) is
 [supervisors-and-policy](supervisors-and-policy.md). The mechanism is here.
@@ -603,10 +614,27 @@ When a digest window would speak, the digest dispatcher creates an hourly
 request with a 24 KiB brief instead of posting directly (`src/reports/hourly.py`).
 It emits `digest.window_ready`. The `supervisor-hourly-report` playbook calls
 `report_reconcile`, and the supervisor runs `aq report brief` and
-`aq report submit`. Submit rejects URLs, validates references against the frozen
+`aq report submit`. The brief is input only: bounded facts, counts, links and
+active work, never delivered prose. The durable wake instructs the supervisor
+to write a short first-person developer update in plain English: what changed
+since the last update, highlights, anything blocked or needing Jack, and what
+comes next. It prioritizes meaningful changes and human decisions, combines
+related evidence and omits repeated noise; it does not invent progress or plans
+when evidence is missing.
+The update avoids internal IDs and train, batch or loop jargon unless Jack must
+act on one; a blocker asks the exact question he needs to answer. A window with
+no new facts stays silent even if work is still active.
+Only the submitted narrative becomes the report body, with server-owned links
+and marker. Submit rejects URLs, validates references against the frozen
 brief and requires a `delivery:` reference for any claim that something shipped.
 The enforced 600-character limit includes the server footer and marker. A grace
 period of 5 minutes and a limit of 12 per day apply.
+If a full-fleet hourly author is unavailable, late, capped or busy, the pump
+sends only “No report this hour: the supervisor update is unavailable.” This
+also applies when an authoring activation is missing or disabled. Quiet hours
+still suppress author wakes; they do not enable a fact dump. Feature-off and
+restricted-destination deterministic digests retain their existing behavior.
+Reservations, deadlines, visibility checks and one-post idempotency are unchanged.
 
 **Morning** (`reports.morning`, default off, at 07:00 in `reports.timezone`).
 `MorningDueEmitter` (`src/reports/morning_due.py`) emits `report.morning_due`

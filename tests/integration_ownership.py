@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2111,
+ 'authorized_owned_delta': 2212,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1049,7 +1049,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82504,
- 'measured_owned_total': 157610,
+ 'measured_owned_total': 157711,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1060,6 +1060,27 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
            'or new storage category.',
  'reconciled_inventory': '/tmp/smart-nexus-83-final-inventory.json',
  'remaining_headroom': 0,
+ 'project_schedule_composition': {
+     'authorized_engine_delta': 0,
+     'authorized_owned_delta': 101,
+     'authorized_shared_owned_delta': 101,
+     'authorized_table_delta': 0,
+     'decision_message_id': 'msg-3f67bea5611149e99abb6ae53a48aae7',
+     'dev_source_revision': 'b0bb1645a81b14b594192d6a75e80f6c4fdd3b4f',
+     'operator_decision': '6679052c',
+     'previous_measured_engine_lines': 82504,
+     'previous_measured_owned_total': 157610,
+     'previous_measured_table_count': 45,
+     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1945',
+     'reason': 'Exact supervisor-approved +101 counted shared owned lines for project '
+               'schedules and their legacy-import exclusion. Count register_schedule_contracts '
+               'without a new ownership exclusion; preserve original baselines, historical '
+               'grants and classifications, with zero remaining headroom.',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'source_revision': 'e906bfe0b601a4cd7c78ac9bd079bb7f5b43ef39',
+     'supersedes_decision_message_id': 'msg-8a308cadb20142e38c2692c762734e85',
+     'task_id': 'swift-forge-67',
+     'thread_id': 'swift-forge-67-ci-size'},
  'source_ci_repair_composition': {'authorized_engine_delta': 46,
                                   'authorized_owned_delta': 46,
                                   'merged_pull_request': 1917,

@@ -1175,6 +1175,7 @@
       "modules": [
         "tests/test_project_constraint_enforcement.py",
         "tests/test_project_constraints.py",
+        "tests/test_project_schedules.py",
         "tests/test_schedule.py",
         "tests/test_scheduler.py",
         "tests/test_timer_service.py",
@@ -5188,7 +5189,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:a4c9624f198e44ca6fbfd34871ae6f5fe434b387f07d1368c528662b7e840178",
+      "digest": "sha256:0fff545125d8bdcb2c0d32eb99f002c0ea1b26687115ca50be050048242d1f57",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -5200,8 +5201,10 @@
         "src.discord.intake_diagnostics",
         "src.discord.rate_guard",
         "src.escalations.transport",
+        "src.event_bus",
         "src.main",
         "src.messages.delivery",
+        "src.messages.service",
         "src.messages.session_lens",
         "src.models",
         "src.profiles.capabilities"
@@ -5401,14 +5404,15 @@
         "dashboard-server"
       ],
       "default_arm": true,
-      "digest": "sha256:05ce533824f6cca2682e76c62551d0b64125117adc38131d6bc6bf31591fe845",
+      "digest": "sha256:127932efe08c9b4c55a4b634611fa33332929165001e970cedf4a3ebb9998722",
       "imports": [
         "src.dashboard_server",
         "src.dashboard_server.proxy",
         "src.dashboard_server.relay_stats"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "skip"
       ],
       "summary": "The dashboard server's reverse proxy (docs/specs/dashboard-server.md §2, §7)."
     },
@@ -15132,6 +15136,33 @@
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
     },
+    "tests/test_project_schedules.py": {
+      "areas": [
+        "scheduling"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6b0c5c38d6a00ed1f5303787ca97b29207299252dbaa8d25923f9f4083bf87d8",
+      "imports": [
+        "src.api.codegen",
+        "src.cli.app",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.models",
+        "src.project_schedules",
+        "src.waits.adapters.base",
+        "src.waits.adapters.timer",
+        "src.waits.conditions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Long-horizon notices: durable receipts, cancellation races and scoped commands."
+    },
     "tests/test_project_supervisors.py": {
       "areas": [
         "projects"
@@ -16250,7 +16281,7 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:1644948f36327a2e3e72de6668fab8121357b80f16645e202222f12cc9dac66b",
+      "digest": "sha256:eab6a92f936275b758dcd41d01afda7515f01acd8e2208e1163fba7529f26e9e",
       "imports": [
         "src.commands.principal",
         "src.commands.report_commands",
@@ -16270,7 +16301,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Durable hourly author requests, CAS submission and deterministic fallback."
+      "summary": "Durable hourly author requests, CAS submission and minimal no-report fallback."
     },
     "tests/test_repository_checkout_repair.py": {
       "areas": [
@@ -18054,9 +18085,11 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:3557adf497a6c785a96b58cda8e3aa470d87427dcaddf03bb9050425367a4493",
+      "digest": "sha256:9bde0ee23070c86f16be39f38a07bfeef4b3a2daa46be0b62b66c04abecad5e6",
       "imports": [
+        "src.api.auth",
         "src.api.models.supervisor_inbox",
+        "src.api.scope",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
