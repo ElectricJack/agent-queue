@@ -41,9 +41,13 @@ import time
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
-from src.database.tables import agent_profiles, agents, sessions, task_session_attempts
+from src.database.tables import (
+    agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs,
+    projects, sessions, task_branch_origins, task_integration_checkpoints,
+    task_session_attempts, tasks, workspaces,
+)
 from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
-from src.models import AgentState, SessionRecord
+from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +141,14 @@ def _row_to_session(row) -> SessionRecord:
         claim_phase_at=row.get("claim_phase_at"),
         last_claim_epoch=row.get("last_claim_epoch"),
         last_claim_result=row.get("last_claim_result"),
+        claim_failure_count=int(row.get("claim_failure_count") or 0),
+        claim_failure_reason=row.get("claim_failure_reason"),
+        claim_failure_at=row.get("claim_failure_at"),
+        failed_preparation=row.get("failed_preparation"),
+        claim_refusal=row.get("claim_refusal"),
+        supervisor_health=row.get("supervisor_health"),
         hooks_provisioned=bool(row.get("hooks_provisioned")),
+        git_identity_digest=row.get("git_identity_digest"),
     )
 
 
@@ -221,7 +232,14 @@ class SessionQueryMixin:
                 claim_phase_at=session.claim_phase_at,
                 last_claim_epoch=session.last_claim_epoch,
                 last_claim_result=session.last_claim_result,
+                claim_failure_count=session.claim_failure_count,
+                claim_failure_reason=session.claim_failure_reason,
+                claim_failure_at=session.claim_failure_at,
+                failed_preparation=session.failed_preparation,
+                claim_refusal=session.claim_refusal,
+                supervisor_health=session.supervisor_health,
                 hooks_provisioned=session.hooks_provisioned,
+                git_identity_digest=session.git_identity_digest,
             )
         )
 
@@ -316,11 +334,14 @@ class SessionQueryMixin:
         live_only: bool = False,
         agent_id: str | None = None,
         claim_phase: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[SessionRecord]:
-        """List sessions, newest first.
+        """List sessions, newest first, with optional limit and offset.
 
         ``live_only=True`` is shorthand for ``states=("starting", "running",
-        "draining")`` — the set the reconciler observes each tick.
+        "draining")`` — the set the reconciler observes each tick.  The id
+        breaks timestamp ties so adjacent pages cannot overlap.
         """
         query = select(sessions)
         if state is not None:
@@ -341,10 +362,160 @@ class SessionQueryMixin:
             query = query.where(sessions.c.agent_id == agent_id)
         if claim_phase is not None:
             query = query.where(sessions.c.claim_phase == claim_phase)
-        query = query.order_by(sessions.c.started_at.desc())
+        query = query.order_by(sessions.c.started_at.desc(), sessions.c.id.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        if offset:
+            query = query.offset(offset)
         async with self._engine.begin() as conn:
             result = await conn.execute(query)
             return [_row_to_session(r) for r in result.mappings().fetchall()]
+
+    async def record_failed_preparation(
+        self, session_id: str, *, instance_token: str, task_id: str, claim_epoch: int,
+        preparation_started_at: float | None, task_created_at: float, failure: dict, now: float,
+    ) -> None:
+        """Retain one observation before cleanup erases the selected task binding.
+
+        Only the exact preparing claim can publish this diagnostic. Nothing reads
+        it for admission, mutation scope, release or reservation recovery.
+        """
+        from src.preparation_failure import preparation_identity
+
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().one_or_none()
+            if (row is None or row["instance_token"] != instance_token
+                    or row["task_id"] != task_id or row["last_claim_epoch"] != claim_epoch
+                    or row["claim_phase"] != "preparing"
+                    or row["claim_phase_at"] != preparation_started_at):
+                return
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.id == task_id, tasks.c.claim_epoch == claim_epoch,
+                tasks.c.created_at == task_created_at, tasks.c.project_id == row["project_id"],
+                tasks.c.assigned_agent_id == row["agent_id"],
+                tasks.c.status == TaskStatus.IN_PROGRESS.value,
+            ))).mappings().one_or_none()
+            if task is None:
+                return
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == task["project_id"],
+            ))).mappings().one_or_none()
+            repository_id = (
+                project["integration_repository_id"] if project is not None
+                and project["hierarchical_integration_mode"] in {"hierarchy", "train"}
+                else task["repo_id"]
+            )
+            origin = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.task_id == task_id,
+                task_branch_origins.c.repository_id == repository_id,
+                task_branch_origins.c.retired_at.is_(None),
+            ))).mappings().one_or_none()
+            checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == task_id,
+            ))).mappings().one_or_none()
+            branch = task["branch_name"] or ""
+            refs = {branch, f"refs/heads/{branch.removeprefix('refs/heads/')}",
+                    branch.removeprefix("refs/heads/")}
+            owners = (await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == repository_id,
+                integration_branch_owners.c.ref.in_(refs),
+            ).order_by(integration_branch_owners.c.id).limit(2))).mappings().all()
+            record = preparation_identity(
+                row, task, repository_id, origin, checkpoint, owners, failure, now,
+            )
+            await conn.execute(update(sessions).where(sessions.c.id == session_id).values(
+                failed_preparation=record,
+            ))
+
+    async def record_claim_refusal(
+        self, session_id: str, *, result: str, reason: str, now: float,
+        expected_preparation: SessionRecord | None = None,
+    ) -> SessionRecord | None:
+        """Count actual identical failures, never cooldown replays or an active claim.
+
+        Serialize concurrent callers on the session row. An idle worker with a repeated
+        blocker drains; a retained preparation keeps all ownership evidence intact.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().one_or_none()
+            if row is None:
+                return None
+            if expected_preparation is not None:
+                from src.claim_preparation import same_session_launch
+
+                observed = _row_to_session(row)
+                diagnostic = observed.failed_preparation
+                if (not same_session_launch(expected_preparation, observed)
+                        or observed.last_claim_epoch != expected_preparation.last_claim_epoch
+                        or observed.task_id not in (None, expected_preparation.task_id)
+                        or (observed.claim_phase is not None and (
+                            observed.claim_phase != "preparing"
+                            or observed.claim_phase_at != expected_preparation.claim_phase_at
+                        ))
+                        # A previous failure's unchanged diagnostic may survive
+                        # into a new attempt (e.g. activation returns no row).
+                        # Only a newly published diagnostic can supersede it.
+                        or (diagnostic is not None
+                            and diagnostic != expected_preparation.failed_preparation and (
+                            diagnostic.get("task_id") != expected_preparation.task_id
+                            or diagnostic.get("preparation_started_at")
+                            != expected_preparation.claim_phase_at
+                        ))):
+                    return None
+            if row["claim_phase"] == "active" or row["desired_state"] != "running":
+                return _row_to_session(row)
+            prior = row["claim_refusal"] or {}
+            identical = (prior.get("result"), prior.get("reason")) == (result, reason)
+            if identical and prior["retry_at"] > now:
+                return _row_to_session(row)
+            count = prior["count"] + 1 if identical else 1
+            delay = min(1800, 300 * 2 ** min(count - 2, 3)) if count > 1 else 60
+            fields = {"claim_refusal": {
+                "result": result, "reason": reason, "count": count, "retry_at": now + delay,
+            }}
+            if count >= 2 and row["task_id"] is None and row["claim_phase"] is None:
+                fields["desired_state"] = "stopped"
+            updated = (await conn.execute(update(sessions).where(
+                sessions.c.id == session_id,
+            ).values(**fields).returning(*sessions.c))).mappings().one()
+            return _row_to_session(updated)
+
+    async def publish_session_running(
+        self, session_id: str, instance_token: str, *, conn=None,
+        release_agent_reservation: bool = False,
+    ) -> None:
+        """Acknowledge a registered launch and atomically release its reservation.
+
+        A worker can claim during startup. Releasing only an unassigned
+        reservation preserves that claim's BUSY ownership.
+        """
+        if conn is None:
+            async with self.immediate() as owned_conn:
+                await self.publish_session_running(
+                    session_id, instance_token, conn=owned_conn,
+                    release_agent_reservation=release_agent_reservation,
+                )
+            return
+        row = (await conn.execute(select(sessions).where(
+            sessions.c.id == session_id,
+        ).with_for_update())).mappings().one_or_none()
+        if (row is None or row["instance_token"] != instance_token
+                or row["state"] not in _LIVE_STATES or row["desired_state"] != "running"):
+            raise ValueError("session changed before launch acknowledgement")
+        await self._update_session_on(conn, session_id, {
+            "state": "running" if row["state"] == "starting" else row["state"],
+            "last_activity": time.time(),
+        })
+        if release_agent_reservation and row["agent_id"]:
+            await conn.execute(update(agents).where(
+                agents.c.id == row["agent_id"],
+                agents.c.state == AgentState.BUSY.value,
+                agents.c.current_task_id.is_(None),
+            ).values(state=AgentState.IDLE.value))
 
     async def update_session(self, session_id: str, *, conn=None, **fields) -> int:
         """Update arbitrary columns.  Returns rows affected.
@@ -397,6 +568,48 @@ class SessionQueryMixin:
                 return 0
             return await self._update_session_on(conn, session_id, fields)
 
+    async def request_session_sleep(
+        self, observed: SessionRecord, *, stopped_confirmed: bool = False,
+    ) -> SessionRecord:
+        """Record sleep intent without reattaching terminal pool history.
+
+        Provider proof is obtained outside the transaction. Lock and compare
+        its instance/claim identity before normalizing a legacy stopped pool;
+        this operation never releases claims, owners or workspace locks.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == observed.id,
+            ).with_for_update())).mappings().one_or_none()
+            identity = (
+                "instance_token", "provider", "name", "lifecycle", "work_dir",
+                "started_at", "last_claim_epoch",
+            )
+            if (row is None or any(row[key] != getattr(observed, key) for key in identity)
+                    or (observed.lifecycle == "pool" and observed.state == "stopped"
+                        and row["state"] != "stopped")):
+                raise ValueError("Session changed before sleep; refresh the session")
+            desired = "sleeping"
+            if row["lifecycle"] == "pool" and row["state"] == "stopped":
+                # A late sleep must never turn stopped/stopped history back
+                # into an attached writer. A concurrent teardown may already
+                # have completed since the command resolved the live row.
+                desired = "stopped"
+                if row["desired_state"] != "stopped" and not (
+                    stopped_confirmed
+                    and observed.state == "stopped"
+                    and observed.desired_state == row["desired_state"] == "sleeping"
+                    and row["task_id"] is None
+                    and row["claim_phase"] is None
+                    and row["failed_preparation"] is None
+                ):
+                    raise ValueError(
+                        "Stopped pool session retains work or lacks inactive-instance proof"
+                    )
+            if desired == "sleeping" or row["desired_state"] != desired:
+                await self._update_session_on(conn, observed.id, {"desired_state": desired})
+            return _row_to_session({**row, "desired_state": desired})
+
     async def _update_session_on(self, conn, session_id: str, fields: dict) -> int:
         row = (await conn.execute(select(sessions).where(
             sessions.c.id == session_id,
@@ -406,6 +619,8 @@ class SessionQueryMixin:
         requested = fields.get("state", row["state"])
         if requested != row["state"] and requested not in _SESSION_TRANSITIONS.get(row["state"], ()):
             raise InvalidSessionTransition(session_id, row["state"], requested)
+        if fields.get("desired_state") == "sleeping" or fields.get("state") == "sleeping":
+            await self._cancel_sleeping_session_cron(conn, row, time.time())
         terminal_transition = requested in TERMINAL_SESSION_STATES and requested != row["state"]
         if terminal_transition:
             fields.setdefault("ended_at", time.time())
@@ -469,6 +684,48 @@ class SessionQueryMixin:
             row = result.fetchone()
             return int(row[0]) if row else 0
 
+    async def has_supervision_work(self, project_id: str | None = None) -> bool:
+        """Outstanding responsibilities that prevent supervisor idle sleep.
+
+        None means every project. Use EXISTS rather than hydrating the fleet's
+        task/session history on each reconciliation tick. Failed tasks remain
+        actionable until completed or archived, as in list_active_tasks.
+        """
+        project_scope = select(projects.c.id).where(
+            projects.c.status != ProjectStatus.ARCHIVED.value
+        )
+        if project_id is not None:
+            project_scope = project_scope.where(projects.c.id == project_id)
+        checks = [
+            select(tasks.c.id).where(
+                tasks.c.project_id.in_(project_scope),
+                tasks.c.status != TaskStatus.COMPLETED.value,
+            ).exists(),
+            select(gates.c.id).where(
+                gates.c.project_id.in_(project_scope), gates.c.status == "open",
+            ).exists(),
+            select(integration_batches.c.id).where(
+                integration_batches.c.project_id.in_(project_scope),
+                integration_batches.c.lifecycle.in_((
+                    "sealing", "sealed", "building", "testing", "repairing",
+                    "human_blocked", "promoting", "cleanup_pending",
+                )),
+            ).exists(),
+        ]
+        live_work = select(sessions.c.id).where(
+            sessions.c.state.in_(_LIVE_STATES), sessions.c.task_id.is_not(None),
+        )
+        if project_id is not None:
+            live_work = live_work.where(sessions.c.project_id == project_id)
+        checks.append(live_work.exists())
+        if project_id is None:
+            checks.append(select(playbook_v2_runs.c.run_id).where(
+                playbook_v2_runs.c.mode == "live",
+                playbook_v2_runs.c.lifecycle.in_(("running", "paused", "cancelling")),
+            ).exists())
+        async with self._engine.connect() as conn:
+            return bool(await conn.scalar(select(or_(*checks))))
+
     async def touch_session_activity(self, session_id: str, ts: float, *, conn=None) -> None:
         """Advance activity without allowing a delayed observer to rewind it."""
         stmt = (
@@ -478,19 +735,77 @@ class SessionQueryMixin:
                 or_(sessions.c.last_activity.is_(None), sessions.c.last_activity < ts),
             )
             .values(last_activity=ts)
+            .returning(sessions.c.task_id)
         )
         if conn is not None:
-            await conn.execute(stmt)
+            # Only a session holding a task can hold leases: an idle touch
+            # (the claim path) costs no extra statement.
+            touched = (await conn.execute(stmt)).first()
+            if touched is not None and touched.task_id:
+                from src.integration.lock import renew_session_leases_on
+
+                await renew_session_leases_on(self, conn, session_id, ts)
             return
         async with self._engine.begin() as owned:
-            await owned.execute(stmt)
+            await self.touch_session_activity(session_id, ts, conn=owned)
+
+    async def record_pool_claim_failure(
+        self, session_id: str, *, instance_token: str, claim_epoch: int,
+        reason: str, now: float,
+    ) -> SessionRecord | None:
+        """Count a refused preparation and atomically fence a repeating worker.
+
+        Called under the preparation's task control lock after its ordinary
+        release/retention decision. A newer or active claim invalidates the
+        write. Disabling only this instance's held checkout prevents reuse
+        while leaving all branch-owner and claim bindings intact for recovery.
+        """
+        from src.pool_claims import CLAIM_FAILURE_DRAIN_REASON, MAX_IDENTICAL_CLAIM_FAILURES
+        from src.workspace_disable import CLAIM_FAILURES, disable_fields
+
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().one_or_none()
+            if (row is None or row["instance_token"] != instance_token
+                    or row["lifecycle"] != "pool" or row["state"] != "running"
+                    or row["desired_state"] != "running"
+                    or row["last_claim_epoch"] != claim_epoch
+                    or row["claim_phase"] not in (None, "preparing")):
+                return None
+            count = (
+                int(row["claim_failure_count"] or 0) + 1
+                if row["claim_failure_reason"] == reason else 1
+            )
+            fields = {
+                "claim_failure_count": count, "claim_failure_reason": reason,
+                "claim_failure_at": now,
+            }
+            if count >= MAX_IDENTICAL_CLAIM_FAILURES:
+                fields.update(desired_state="stopped", end_reason=CLAIM_FAILURE_DRAIN_REASON)
+                if row["agent_id"]:
+                    await conn.execute(update(workspaces).where(
+                        workspaces.c.project_id == row["project_id"],
+                        workspaces.c.workspace_path == row["work_dir"],
+                        workspaces.c.locked_by_agent_id == row["agent_id"],
+                    ).values(**disable_fields(
+                        CLAIM_FAILURES,
+                        f"{count} identical refusals by session {session_id}: {reason}",
+                        now=now,
+                    )))
+            result = await conn.execute(update(sessions).where(
+                sessions.c.id == session_id,
+            ).values(**fields).returning(*sessions.c))
+            return _row_to_session(result.mappings().one())
 
     async def request_idle_pool_recycle(
         self, session_id: str, *, instance_token: str, stale_before: float
     ) -> bool:
-        """Fence an abandoned post-prepare-failure pool worker for teardown.
+        """Fence an idle pool worker whose claim loop went quiet for teardown.
 
-        The recovery caller has observed a stale idle worker, but that is not
+        The recovery caller has observed a stale idle worker (after a released
+        ``prepare_failed``, or one that never reached its loop because the
+        harness is parked on a provider screen), but that is not
         enough to stop it: a concurrent ``task_claim`` may be taking its
         slot.  This single conditional write is the hand-off fence.  Once it
         wins, a new claim sees ``desired_state='stopped'`` and cannot acquire
@@ -513,7 +828,6 @@ class SessionQueryMixin:
                         sessions.c.desired_state == "running",
                         sessions.c.task_id.is_(None),
                         sessions.c.claim_phase.is_(None),
-                        sessions.c.last_claim_result == "prepare_failed",
                         func.coalesce(sessions.c.last_activity, sessions.c.started_at)
                         <= stale_before,
                     )
@@ -526,3 +840,17 @@ class SessionQueryMixin:
         """Hard-delete a row.  Admin and tests only — stop() keeps history."""
         async with self._engine.begin() as conn:
             await conn.execute(delete(sessions).where(sessions.c.id == session_id))
+
+    async def prune_named_session(self, session_id: str, instance_token: str) -> bool:
+        """Forget only the fenced, inactive named history an operator inspected."""
+        async with self.immediate() as conn:
+            result = await conn.execute(delete(sessions).where(
+                sessions.c.id == session_id,
+                sessions.c.instance_token == instance_token,
+                sessions.c.lifecycle == "named",
+                sessions.c.state.in_(("sleeping", "stopped")),
+                sessions.c.desired_state == "stopped",
+                sessions.c.task_id.is_(None),
+                sessions.c.claim_phase.is_(None),
+            ))
+            return result.rowcount == 1

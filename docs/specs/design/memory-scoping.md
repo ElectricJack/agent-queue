@@ -4,9 +4,17 @@ tags: [design, memory, scoping, tools]
 
 # Memory Scoping & Agent Tools
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft
-**Principles:** [[guiding-design-principles]] (#6 specificity wins, #9 simple interfaces)
-**Related:** [[memory-plugin]], [[vault]], [[profiles]], [[self-improvement]], [[playbooks]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#6 specificity wins, #9 simple interfaces)
+**Related:** [memory-plugin](memory-plugin.md), [vault](vault.md), [profiles](profiles.md), [self-improvement](self-improvement.md), [playbooks](playbooks.md)
 
 ---
 
@@ -32,7 +40,7 @@ based on how and when it's loaded into agent context:
 
 | Tier   | Name           | Token Budget | When Loaded          | What It Contains                                                                                                                       |
 | ------ | -------------- | ------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **L0** | Identity       | ~400 tokens  | Always               | Agent type identity from [[profiles]] `## Role` + `## Rules` + `## Reflection` sections, composed as one block                         |
+| **L0** | Identity       | ~400 tokens  | Always               | Agent type identity from [profiles](profiles.md) `## Role` + `## Rules` + `## Reflection` sections, composed as one block                         |
 | **L1** | Critical Facts | ~200 tokens  | Always at task start | Project `facts.md` KV entries + agent-type `facts.md` entries. Eagerly loaded, no search needed.                                       |
 | **L1** | Guidance       | ~300 tokens  | Always at task start | Behavioral rules deterministically loaded from `memory/guidance/` directories under the agent-type and project vault paths.            |
 | **L2** | Topic Context  | ~500 tokens  | On-demand by topic   | Memories filtered by `topic` field matching the current work area. Loaded when the agent enters a topic or the playbook specifies one. |
@@ -174,7 +182,7 @@ relevant project-specific memory outranks a highly relevant system memory.
 ## 5. Override Model
 
 Overrides are **freeform English** that supplement or tweak the parent agent-type
-[[profiles|profile]] for a specific project. They are not structured config — an LLM
+[profile](profiles.md) for a specific project. They are not structured config — an LLM
 interprets them as contextual guidance.
 
 Example `projects/mech-fighters/overrides/coding.md`:
@@ -207,7 +215,7 @@ the override taking precedence as the more specific guidance.
 
 ## 6. Multi-Scope Query
 
-The [[memory-plugin]] queries all relevant collections in parallel and merges
+The [memory-plugin](memory-plugin.md) queries all relevant collections in parallel and merges
 results. This applies to both semantic search and KV lookups. Searches can
 optionally be filtered by topic (see Section 3) for improved precision.
 
@@ -334,7 +342,7 @@ Short insights (< 200 tokens) are stored as-is — they're already summary-lengt
 ## 10. Reflection Playbook (Periodic Consolidation)
 
 Agents write insights immediately during task execution. A separate
-**[[playbooks|reflection playbook]]** runs periodically to:
+**[reflection playbook](playbooks.md)** runs periodically to:
 
 1. Review recent task records and logs for the agent type
 2. Extract patterns the agent didn't catch in real-time

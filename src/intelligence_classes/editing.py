@@ -129,6 +129,13 @@ def _validate_mapping(mapping, original: dict) -> str:
                     raise IntelligenceClassEditError(
                         f"{provider}.{field} must be one of {', '.join(sorted(values))}"
                     )
+        if provider == "codex":
+            tier = config.get("service_tier", _MISSING)
+            if tier is not _MISSING and not _same_json(tier, old.get("service_tier", _MISSING)):
+                if not isinstance(tier, str) or tier not in {"default", "fast"}:
+                    raise IntelligenceClassEditError(
+                        "codex.service_tier must be one of default, fast"
+                    )
         # Fable supports adaptive thinking only. Preserve an existing legacy
         # pair on unrelated edits, but never introduce a disabled-thinking pair.
         if (
@@ -167,6 +174,71 @@ def _find_existing(root: Path, class_id: str) -> Path:
     if len(matches) != 1:
         raise IntelligenceClassEditError("Intelligence class must identify one existing vault file")
     return matches[0]
+
+
+def retire_intelligence_class(
+    data_dir: str, *, class_id: str, expected_revision: str | None = None,
+) -> str:
+    """Move one class source aside, preserving its bytes for restoration."""
+    if not isinstance(class_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}", class_id
+    ):
+        raise IntelligenceClassEditError("class_id must be an existing class identifier")
+    if expected_revision is not None and (
+        not isinstance(expected_revision, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_revision)
+    ):
+        raise IntelligenceClassEditError(
+            "expected_revision must be the class revision returned by the server"
+        )
+    data_root = Path(data_dir).resolve()
+    try:
+        root = (data_root / "vault" / "intelligence-classes").resolve(strict=True)
+        root.relative_to(data_root)
+    except (OSError, ValueError):
+        raise IntelligenceClassEditError("Intelligence-class vault is unavailable") from None
+    with _WRITE_LOCK:
+        path = _find_existing(root, class_id)
+        raw = path.read_bytes()
+        revision = hashlib.sha256(raw).hexdigest()
+        if expected_revision is not None and expected_revision != revision:
+            raise IntelligenceClassConflict(revision)
+        if path.is_symlink() or path.resolve(strict=True).parent != root:
+            raise IntelligenceClassEditError("Intelligence-class source is outside the vault")
+        retired = path.with_name(path.name + ".retired")
+        if retired.exists() or retired.is_symlink():
+            raise IntelligenceClassEditError(
+                "A retired copy already exists; restore or remove it before deleting this class"
+            )
+        if path.read_bytes() != raw:
+            raise IntelligenceClassConflict(hashlib.sha256(path.read_bytes()).hexdigest())
+        os.replace(path, retired)
+        return retired.name
+
+
+def vault_profile_references(data_dir: str, class_id: str) -> list[dict]:
+    """Find profile sources that may not have synced into the database yet."""
+    from src.profiles.parser import parse_profile
+
+    root = Path(data_dir) / "vault"
+    references = []
+    for path in sorted(root.glob("**/agent-types/*/profile.md")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            parsed = parse_profile(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            continue
+        if parsed.config.get("default_class") != class_id:
+            continue
+        profile_id = parsed.frontmatter.id or path.parent.name
+        references.append({
+            "kind": "profile", "id": profile_id,
+            "name": parsed.frontmatter.name or profile_id,
+            "lifecycle": parsed.config.get("lifecycle", "task"),
+            "source": str(path.relative_to(root)),
+        })
+    return references
 
 
 def edit_intelligence_class(

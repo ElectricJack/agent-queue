@@ -4,6 +4,12 @@ tags: [analysis, plan, overhaul, execution]
 
 # Framework Overhaul — Execution Plan, Waves 0–2
 
+<!-- aq:historical -->
+> **Historical analysis.** A point-in-time comparison or assessment. Its
+> conclusions were acted on elsewhere and its numbers were measured on the day
+> it was written. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 **Status:** Active (2026-08-19). Scope: everything buildable **without WSL/tmux**.
 Direction: [framework-overhaul-todo.md](framework-overhaul-todo.md) ·
 Specs: [design](../specs/design/README.md) · [implementation](../specs/implementation/README.md)

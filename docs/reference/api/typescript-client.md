@@ -91,12 +91,16 @@ single place the generated client is configured, and every call site imports
 from there rather than from the package:
 
 * **Base URL.** `client.setConfig({ baseUrl: import.meta.env.VITE_API_URL || "" })`.
-  Empty means same-origin, which is what a built dashboard served by the
-  daemon wants. In development, Vite proxies `/api`, `/health`, `/ready` and
-  `/ws` to the daemon
-  ([`dashboard/vite.config.ts`](../../../dashboard/vite.config.ts)), so the
-  browser still talks to its own origin. `VITE_API_URL` points a local
-  dashboard at a remote daemon.
+  Empty means same-origin, and both ways the dashboard is served keep it that
+  way: an installed AQ's dashboard server
+  ([`src/dashboard_server/`](../../../src/dashboard_server/)) and, in
+  development, Vite
+  ([`dashboard/vite.config.ts`](../../../dashboard/vite.config.ts)) each serve
+  the page and relay `/api`, `/health`, `/ready` and `/ws` to the daemon, so the
+  browser only ever talks to its own origin and the daemon needs no CORS. The
+  release bundle is built with `VITE_API_URL` unset; setting it points a local
+  development build at a remote daemon, which then has to accept that origin
+  itself.
 * **Errors throw.** A response interceptor turns any non-2xx into
   `new Error("API <status>: <detail>")`, with the parsed body kept on
   `error.payload`. React Query's `onError` only fires on a thrown error, so
@@ -168,6 +172,7 @@ authoritative; the daemon's database is.
 | A new endpoint is missing from the SDK | The committed `openapi.json` is behind the daemon. | Regenerate the spec (`./scripts/regenerate-api-client.sh --offline`) and then the TS client. |
 | TypeScript errors right after pulling | The generated tree is from an older spec. | Re-run the generate step; `pretypecheck` does it for you. |
 | Every request 404s in dev | The Vite proxy is not routing, or `VITE_API_URL` points somewhere else. | Check `dashboard/vite.config.ts` and the daemon's port. |
+| Every request answers `503` `daemon_unreachable` | The dashboard server is up and the daemon is not. | `aq status`, then `aq start`; the response carries `X-AQ-Dashboard-Server`, which tells it from the daemon's own degraded `/health` `503`. |
 | A mutation silently "succeeds" on an error | Something bypassed `dashboard/src/api/client.ts` and called the package directly. | Import from `../api/client`, which installs the throwing interceptor. |
 
 ## Related pages
