@@ -15,10 +15,26 @@ from __future__ import annotations
 import pytest
 
 from src.models import AgentProfile, Project
+from tests.assignment_routing_helpers import route_source_for
 
 # ``command_handler_factory`` and ``orchestrator_factory`` fixtures live in
 # tests/conftest.py — shared with test_review_pipeline_rules.py and
 # test_review_pipeline_e2e.py.
+
+
+async def _routed(h, args: dict, profile_id: str) -> str:
+    """File a task with hints only, then route it onto *profile_id*.
+
+    A filing may not name a profile (mandatory task routing §5.1): the route
+    is written afterwards, as the router (or, for ``reviewer``, the role
+    creator) would.
+    """
+    task_id = (await h.execute("create_task", args))["created"]
+    assert await h.db.update_task_routing(
+        task_id, profile_id=profile_id, route_source=route_source_for(profile_id),
+        intelligence_class=None, preferred_workspace_id=None
+    )
+    return task_id
 
 
 @pytest.mark.asyncio
@@ -28,16 +44,12 @@ async def test_reopen_cancels_stale_open_reviews(command_handler_factory):
     await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
     await h.db.upsert_profile(AgentProfile(id="reviewer", name="R"))
 
-    t = (await h.execute(
-        "create_task", {"project_id": "p", "title": "T", "profile_id": "worker"}
-    ))["created"]
+    t = await _routed(h, {"project_id": "p", "title": "T"}, "worker")
     await h.db.update_task(t, branch_name="feature/t")
     from src.models import TaskStatus
     await h.db.transition_task(t, TaskStatus.COMPLETED, context="test")
 
-    r = (await h.execute(
-        "create_task", {"project_id": "p", "title": "Review: T", "profile_id": "reviewer"}
-    ))["created"]
+    r = await _routed(h, {"project_id": "p", "title": "Review: T"}, "reviewer")
     await h.execute(
         "add_dependency",
         {"task_id": r, "depends_on": t, "dep_type": "discovered-from"},
@@ -66,14 +78,10 @@ async def test_reopen_preserves_completed_reviews(command_handler_factory):
     await h.db.upsert_profile(AgentProfile(id="reviewer", name="R"))
 
     from src.models import TaskStatus
-    t = (await h.execute(
-        "create_task", {"project_id": "p", "title": "T", "profile_id": "worker"}
-    ))["created"]
+    t = await _routed(h, {"project_id": "p", "title": "T"}, "worker")
     await h.db.update_task(t, branch_name="feature/t")
     await h.db.transition_task(t, TaskStatus.COMPLETED, context="test")
-    r = (await h.execute(
-        "create_task", {"project_id": "p", "title": "Review: T", "profile_id": "reviewer"}
-    ))["created"]
+    r = await _routed(h, {"project_id": "p", "title": "Review: T"}, "reviewer")
     await h.execute(
         "add_dependency",
         {"task_id": r, "depends_on": t, "dep_type": "discovered-from"},
@@ -97,14 +105,10 @@ async def test_reopen_ignores_non_discovered_from_edges(command_handler_factory)
     await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
 
     from src.models import TaskStatus
-    t = (await h.execute(
-        "create_task", {"project_id": "p", "title": "T", "profile_id": "worker"}
-    ))["created"]
+    t = await _routed(h, {"project_id": "p", "title": "T"}, "worker")
     await h.db.transition_task(t, TaskStatus.COMPLETED, context="test")
 
-    downstream = (await h.execute(
-        "create_task", {"project_id": "p", "title": "D", "profile_id": "worker"}
-    ))["created"]
+    downstream = await _routed(h, {"project_id": "p", "title": "D"}, "worker")
     await h.execute(
         "add_dependency",
         {"task_id": downstream, "depends_on": t, "dep_type": "blocks"},
@@ -129,15 +133,11 @@ async def test_reopen_cascade_only_cancels_reviewer_profiles(command_handler_fac
 
     from src.models import TaskStatus
 
-    t = (await h.execute(
-        "create_task", {"project_id": "p", "title": "T", "profile_id": "worker"}
-    ))["created"]
+    t = await _routed(h, {"project_id": "p", "title": "T"}, "worker")
     await h.db.update_task(t, branch_name="feature/t")
     await h.db.transition_task(t, TaskStatus.COMPLETED, context="test")
 
-    reviewer_task = (await h.execute(
-        "create_task", {"project_id": "p", "title": "Review: T", "profile_id": "reviewer"}
-    ))["created"]
+    reviewer_task = await _routed(h, {"project_id": "p", "title": "Review: T"}, "reviewer")
     await h.execute(
         "add_dependency",
         {"task_id": reviewer_task, "depends_on": t, "dep_type": "discovered-from"},
@@ -145,9 +145,7 @@ async def test_reopen_cascade_only_cancels_reviewer_profiles(command_handler_fac
 
     # A non-reviewer task that (hypothetically) also carries a
     # discovered-from edge to the reopened task — must not be cascaded.
-    non_reviewer_task = (await h.execute(
-        "create_task", {"project_id": "p", "title": "Non-review byproduct", "profile_id": "worker"}
-    ))["created"]
+    non_reviewer_task = await _routed(h, {"project_id": "p", "title": "Non-review byproduct"}, "worker")
     await h.execute(
         "add_dependency",
         {"task_id": non_reviewer_task, "depends_on": t, "dep_type": "discovered-from"},
@@ -175,12 +173,8 @@ async def test_task_gate_sweep_resolves_on_failed_review(orchestrator_factory):
     await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
 
     from src.models import TaskStatus
-    downstream = (await h.execute(
-        "create_task", {"project_id": "p", "title": "D", "profile_id": "worker"}
-    ))["created"]
-    review = (await h.execute(
-        "create_task", {"project_id": "p", "title": "R", "profile_id": "worker"}
-    ))["created"]
+    downstream = await _routed(h, {"project_id": "p", "title": "D"}, "worker")
+    review = await _routed(h, {"project_id": "p", "title": "R"}, "worker")
     gate_id, _ = await h.db.create_gate(
         project_id="p",
         gate_type="task",
@@ -203,9 +197,7 @@ async def test_pr_merged_sweep_unblocks_downstream(orchestrator_factory, monkeyp
     await h.db.create_project(Project(id="p", name="P"))
     await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
 
-    downstream = (await h.execute(
-        "create_task", {"project_id": "p", "title": "D", "profile_id": "worker"}
-    ))["created"]
+    downstream = await _routed(h, {"project_id": "p", "title": "D"}, "worker")
     pr = "https://github.com/o/r/pull/17"
     gate_id, _ = await h.db.create_gate(
         project_id="p",

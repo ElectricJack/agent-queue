@@ -1,0 +1,39 @@
+{
+  "exclusions": {
+    "src/database/queries/wait_queries.py::register_wait": "Generic verified-wait registration and owner fencing; service owner category integration grants no branch mutation or delivery authority.",
+    "src/database/queries/wait_queries.py::verify_owner": "Generic verified-wait registration and owner fencing; service owner category integration grants no branch mutation or delivery authority."
+  },
+  "generic_dependencies": {
+    "src/database/queries/wait_queries.py::REGISTRATION_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::import from src.waits.graph import GRAPH_LOCK, add_edges, clear_edges, lock_component_tasks, lock_graph, recompute_from, would_create_cycle": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::replace_wait_edges": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::resolve_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::wait_explain": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, events, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "landing_span": [
+        23,
+        42
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/database/queries/wait_queries.py::wait_graph": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/wait_queries.py::register_wait::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 442,
+      "owner": "register_wait",
+      "owner_fingerprint": "35275c598162a7df357a2f35f0fa77f8f16dbe38d6fbf5d46187110b331c731b",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    }
+  }
+}

@@ -1,6 +1,8 @@
 # Table families
 
-All 98 tables, grouped by what they are for. Each family opens with what it is
+Selected table families, grouped by what they are for. This catalog is not an
+exhaustive inventory of the current schema; consult the owning
+[system spec](../../specs/systems/README.md) for newer domain tables. Each family opens with what it is
 *about*; the tables inside it are listed with their purpose, the columns that
 carry meaning, and any invariant the database itself enforces.
 
@@ -209,8 +211,14 @@ what happened. The recurring devices are worth learning once:
 | `integration_outbox` | The durable event outbox for integration, deduplicated by key, with an acceptance cursor that only moves forward. |
 | `integration_outbox_artifact_pins` | Pins the playbook artifacts an outbox event was produced under, so replay is interpreted the same way. |
 | `integration_operation_artifact_pins` | Pins the playbook artifacts a repair operation was routed under, so a resumed operation keeps the policy it started with. |
-| `development_deliveries` | Development-mode delivery: executed Git facts kept separate from task episodes. States `prepared` → `publishing` → `delivered`, or `parked`/`adopted`/`cancelled`. |
 | `integration_legacy_deliveries` | One row per terminal child of a terminal parent the train never collected, recorded by `aq integration adopt-legacy-deliveries`. Proof is `development_delivery`, `branch_tip` or `content_equivalent` (the work landed under other commits), or an explicit, reasoned `superseded`, `abandoned` or `operator_accepted` decision, and names the default-branch tip it was checked against. Keyed by task id; a **soft ref**, so archive keeps it. Integration status accepts these children instead of reporting `missing_receipt`. |
+
+Development-mode delivery has no table: git answers it
+([`delivery_truth.py`](../../../src/integration/delivery_truth.py)). Revision
+`a00000000038` retired the `development_deliveries` receipt journal; publisher
+actions are `development.operation` events and retired source provenance is
+`development.legacy_provenance` events in `events`
+([database spec](../../specs/database.md#retired-development_deliveries)).
 
 ### Review, CI and repair
 
@@ -250,7 +258,6 @@ own. These tables are its control-plane identity, and they use **named
 | `integration_rollout_transitions` | Every change of a project's integration mode, with the operator, the reason and the blocker digest. Immutable. |
 | `integration_history_waivers` | An operator's explicit waiver of a history blocker, with a `sha256:`-prefixed digest of exactly what was waived. Immutable. |
 | `integration_history_waiver_consumptions` | Which transition consumed which waiver. One consumption per transition. |
-| `integration_legacy_gate_applicability` | Whether a legacy gate still applies to a project under the current rollout, and under which waiver. |
 | `integration_legacy_suppression` | The per-project projection of which legacy behaviours are suppressed. Deliberately the one reversible control in this group. |
 
 ## Related pages

@@ -11,11 +11,12 @@ the daemon:
 * **Origin gate** -- an ``Origin``, when present, must equal ``scheme://Host``
   or be trusted; otherwise ``403 origin_not_allowed``.  No ``Origin`` (curl, a
   same-origin ``GET``) passes.
-* **Peer gate** -- from a non-loopback peer, ``/ws/terminal/*`` and any request
-  carrying ``Authorization`` or an ``aq-bearer.*`` subprotocol are refused
-  ``403 loopback_only``: the two daemon rules that key on the peer address
-  would otherwise silently stop meaning anything.  No forwarding header is
-  invented for the daemon to trust instead.
+* **Peer gate** -- browser terminals and their read-only reconnect probes may
+  connect from any peer that passes the Host and Origin gates. Requests carrying
+  ``Authorization`` or an ``aq-bearer.*`` subprotocol remain loopback-only, even
+  for trusted origins. Human GitHub approvals require loopback or a trusted
+  tailnet origin. The edge overwrites dashboard viewer/peer headers with its
+  real-peer verdict; it adds no general forwarding headers.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ from src.dashboard_server.settings import DashboardServerSettings, normalise_ori
 
 _WILDCARD_BINDS = frozenset({"0.0.0.0", "::"})
 _BEARER_PREFIX = "aq-bearer."
-_TERMINAL_PREFIX = "/ws/terminal/"
+_TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
+_TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,17 @@ def _peer_is_loopback(scope: dict[str, Any]) -> bool:
     return host != "localhost" and is_loopback_host(host)
 
 
+def _peer_is_tailnet(scope: dict[str, Any]) -> bool:
+    client = scope.get("client")
+    if not client:
+        return False
+    try:
+        address = ipaddress.ip_address(str(client[0]))
+    except ValueError:
+        return False
+    return address in _TAILNET_V4 or address in _TAILNET_V6
+
+
 def _hostname_of_origin(origin: str) -> str:
     host = origin.split("://", 1)[1]
     if host.startswith("["):
@@ -118,6 +131,18 @@ class EdgeGate:
     def host_allowed(self, hostname: str) -> bool:
         return is_loopback_host(hostname) or hostname in self._allowed_hostnames
 
+    def operator_viewer(self, scope: dict[str, Any]) -> bool:
+        """Whether this browser may see the human GitHub approval control."""
+        if _peer_is_loopback(scope):
+            return True
+        if not _peer_is_tailnet(scope):
+            return False
+        hosts = _headers(scope, b"host")
+        if len(hosts) != 1:
+            return False
+        scheme = "https" if scope.get("scheme") == "https" else "http"
+        return normalise_origin(f"{scheme}://{hosts[0]}") in self._trusted
+
     def check(self, scope: dict[str, Any]) -> EdgeDenial | None:
         """``None`` when the request may be proxied, else the refusal to send."""
         hosts = _headers(scope, b"host")
@@ -132,6 +157,7 @@ class EdgeGate:
             )
 
         origins = _headers(scope, b"origin")
+        origin = None
         if origins:
             scheme = "https" if scope.get("scheme") in {"https", "wss"} else "http"
             origin = normalise_origin(origins[0]) if len(origins) == 1 else None
@@ -144,20 +170,30 @@ class EdgeGate:
                     "api_auth.trusted_dashboard_origins if it should.",
                 )
 
-        if not _peer_is_loopback(scope) and self._needs_loopback(scope):
+        # The daemon sees this proxy's loopback address, not the browser's.
+        # For a human GitHub approval, the edge must retain the real-peer
+        # distinction: only Jack's loopback browser or a configured origin on
+        # his tailnet may issue the POST.  Remote native clients lack Origin.
+        path = scope.get("path", "")
+        if (scope.get("method") == "POST"
+                and path.startswith("/api/reviews/pull-requests/")
+                and path.endswith("/approve")
+                and not _peer_is_loopback(scope)):
+            origin = normalise_origin(origins[0]) if len(origins) == 1 else None
+            if not _peer_is_tailnet(scope) or origin not in self._trusted:
+                return EdgeDenial(403, "operator_only", "Approval requires a trusted tailnet dashboard")
+
+        if not _peer_is_loopback(scope) and self._needs_loopback(scope, origin):
             return EdgeDenial(
                 403,
                 "loopback_only",
-                "Interactive terminals and bearer-token requests are accepted only from this "
-                "machine. Forward the port instead: ssh -L 8082:127.0.0.1:8082 <host>.",
+                "Bearer-token requests require a local connection. Use the dashboard or "
+                "forward the port over SSH.",
             )
         return None
 
-    @staticmethod
-    def _needs_loopback(scope: dict[str, Any]) -> bool:
-        path = scope.get("path", "")
-        if path == _TERMINAL_PREFIX.rstrip("/") or path.startswith(_TERMINAL_PREFIX):
-            return True
+    def _needs_loopback(self, scope: dict[str, Any], origin: str | None) -> bool:
+        """Bearer-token requests stay local; browser sessions may connect from anywhere."""
         if _headers(scope, b"authorization"):
             return True
         return any(protocol.startswith(_BEARER_PREFIX) for protocol in _subprotocols(scope))

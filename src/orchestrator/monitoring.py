@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
-from src.discord.notifications import (
-    format_failed_blocked_report,
-    format_failed_blocked_report_embed,
-)
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
     BudgetWarningEvent,
     ChainStuckEvent,
     StuckDefinedTaskEvent,
 )
+from src.notifications.render import format_failed_blocked_report
 from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
 from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
@@ -259,10 +257,22 @@ class MonitoringMixin:
         blocked = [task for task in blocked if task.id not in terminal]
 
         decisions = await self._projected_promotion_decisions(defined, blocked)
+        observed = {task.id: task for task in [*defined, *blocked]}
 
         for task_id in sorted(decisions):
+            # A change set can commit new blockers after this pass's read.
+            # Recheck the projection in the status write, under PostgreSQL's
+            # task-table/row locks, rather than promoting a stale snapshot.
+            from sqlalchemy import and_
+            from src.database.tables import tasks
+
             flipped = await self.db.transition_task(
-                task_id, TaskStatus.READY, context=decisions[task_id]
+                task_id, TaskStatus.READY, context=decisions[task_id],
+                extra_where=and_(
+                    tasks.c.status == observed[task_id].status.value,
+                    tasks.c.updated_at == observed[task_id].updated_at,
+                    tasks.c.is_blocked == 0,
+                ),
             )
             # WG-4: bus emit for the flipped set so ``task.blocked`` /
             # ``task.unblocked`` triggers actually fire.  ``log_blocked_flips``
@@ -449,6 +459,7 @@ class MonitoringMixin:
         if now - self._last_container_sweep < interval:
             return
         self._last_container_sweep = now
+        await self.release_stale_container_claims()
         candidates = await self.db.settle_candidates()
         if candidates:
             settled = await self._settle_seeds(set(candidates))
@@ -456,37 +467,107 @@ class MonitoringMixin:
                 logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
         await self.reconcile_stale_containers()
 
+    async def release_stale_container_claims(self) -> list[str]:
+        """Take back a stopped pool worker's claim on a container it cannot close.
+
+        A container is never leased and ``release_container_claim`` only takes
+        a claim back from a holder that is still running, so a container whose
+        worker has since stopped keeps a claim nobody may act on.  The
+        reconciler behind that claim (``stale_container_claim_clauses``) proves
+        each one before releasing it, and it is the shipped path for strands
+        that predate the event that would have prevented them: the release
+        leaves the parent PAUSED with no agent, which §7 settlement and the
+        parent-episode readiness projection both consume.  Returns the released
+        task ids.
+        """
+        released: list[str] = []
+        try:
+            candidates = await self.db.stale_container_claim_candidates()
+        except Exception:
+            logger.exception("Could not list container claims held by stopped sessions")
+            return released
+        for task_id in candidates:
+            try:
+                out = await self.db.release_stale_container_claim(task_id)
+            except Exception:
+                logger.exception("Could not release the stale container claim on %s", task_id)
+                continue
+            if not out.released:
+                continue
+            released.append(task_id)
+            logger.warning(
+                "Released the claim on container %s: its pool worker stopped while it was "
+                "still IN_PROGRESS, and a container is never leased (sharp-ridge-57)",
+                task_id,
+            )
+        return released
+
+    @property
+    def delivery_observer(self):
+        """Git delivery truth for settlement and the readers outside the publisher."""
+        from src.integration.delivery_observer import DeliveryObserver
+
+        observer = getattr(self, "_delivery_observer", None)
+        if observer is None or observer.db is not self.db or observer.git is not self.git:
+            observer = DeliveryObserver(self.db, git=self.git, data_dir=self.config.data_dir)
+            self._delivery_observer = observer
+        return observer
+
     async def reconcile_stale_containers(self) -> list[str]:
         """Complete BLOCKED/PAUSED containers whose children are all delivered.
 
         The stale-status leg of settlement (``stale_container_clauses``).  A
         child's completion settles its stranded container on the event path
-        only when every sibling is already delivered; a delivery that lands
-        later has no event, so the backstop sweep runs this every interval,
-        and :meth:`initialize` runs it once on start, because restarts and
-        updates are what strand these containers.  Returns the settled ids.
+        only when no child needs delivery proof; a delivery that lands later
+        has no event, so the backstop sweep runs this every interval, and
+        :meth:`initialize` runs it once on start, because restarts and updates
+        are what strand these containers.
+
+        Git proves delivery here, outside any transaction, and settlement
+        rechecks each child's identity and the target under its own locks.
+        A settled container can make its own stale parent a candidate, so the
+        pass repeats (bounded by the structural depth) while it makes
+        progress.  Returns the settled ids.
         """
-        candidates = await self.db.stale_container_candidates()
-        if not candidates:
-            return []
-        settled = await self._settle_seeds(set(candidates))
-        for cid in settled:
-            logger.info(
-                "Completed stale container %s: every child is COMPLETED and delivered", cid
-            )
+        from src.database.queries.hierarchy_queries import MAX_STRUCTURAL_DEPTH
+
+        settled: list[str] = []
+        for _level in range(MAX_STRUCTURAL_DEPTH + 1):
+            candidates = await self.db.stale_container_candidates()
+            if not candidates:
+                break
+            required = await self.db.stale_container_delivery_children(candidates)
+            children = set().union(*required.values()) if required else set()
+            delivery = await self.delivery_observer.observe(children) if children else None
+            if delivery is not None and not await delivery.fresh():
+                # The target kept moving: settle only what needs no proof.
+                delivery = None
+            now_settled = [
+                cid for cid in await self._settle_seeds(set(candidates), delivery=delivery)
+                if cid not in settled
+            ]
+            for cid in now_settled:
+                logger.info(
+                    "Completed stale container %s: every child is COMPLETED and delivered", cid
+                )
+            settled.extend(now_settled)
+            if not now_settled:
+                break
         return settled
 
-    async def _settle_seeds(self, seeds: set[str]) -> list[str]:
+    async def _settle_seeds(self, seeds: set[str], *, delivery=None) -> list[str]:
         """Run the §7 settlement predicate over *seeds* now, with post-commit fan-out.
 
         The same commit-then-notify shape as ``transition_task``: blocked-state
         flips are logged, settled containers reach the settlement listener, and
         waiters the settlement released are announced to the ready listener.
+        *delivery* is the git view the stale leg verifies inside the
+        transaction.
         """
         if not seeds:
             return []
         async with self.db._engine.begin() as conn:
-            result = await self.db.settle_containers(set(seeds), conn=conn)
+            result = await self.db.settle_containers(set(seeds), conn=conn, delivery=delivery)
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
@@ -619,7 +700,6 @@ class MonitoringMixin:
 
         for project_id, (proj_failed, proj_blocked) in projects.items():
             msg = format_failed_blocked_report(proj_failed, proj_blocked)
-            format_failed_blocked_report_embed(proj_failed, proj_blocked)
             await self._emit_text_notify(msg, project_id=project_id)
 
     async def _auto_archive_tasks(self) -> None:
@@ -692,6 +772,17 @@ class MonitoringMixin:
                     )
                 except Exception:
                     pass
+
+    async def _recover_interrupted_playbook_runs(self) -> None:
+        """Schedule a bounded page of runs interrupted by a prior process."""
+        if not self.config.playbooks.enabled or self.playbook_manager is None:
+            return
+        try:
+            scheduled = await self.playbook_manager.recover_interrupted_runs()
+            if scheduled:
+                logger.info("Scheduled V2 restart recovery for runs: %s", scheduled)
+        except Exception:
+            logger.exception("V2 restart recovery scan failed; next cycle will retry")
 
     async def _reconcile_playbook_child_tasks(self) -> None:
         """Resume playbook runs suspended on a child task that has settled.
@@ -782,7 +873,7 @@ class MonitoringMixin:
             sweeper = ArtifactRetentionSweeper(
                 self.db, playbooks, self.config.compiled_root
             )
-            await sweeper.sweep(now)
+            await sweeper.sweep(now, collect_runs=False)
         except Exception as e:
             logger.warning("Playbook V2 retention sweep failed: %s", e)
 
@@ -796,6 +887,23 @@ class MonitoringMixin:
         if now - self._last_operational_event_retention_sweep < 3600:
             return
         self._last_operational_event_retention_sweep = now
+        try:
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            async def collect():
+                try:
+                    with principal_context(ExecutionPrincipal.service("operational-retention")):
+                        result = await self._command_handler.execute("operational_retention", {})
+                    if not result.get("success"):
+                        logger.warning("Operational retention refused: %s", result)
+                except Exception:
+                    logger.exception("Operational retention sweep failed")
+
+            task = getattr(self, "_operational_retention_dispatch", None)
+            if task is None or task.done():
+                self._operational_retention_dispatch = asyncio.create_task(collect())
+        except Exception:
+            logger.exception("Operational retention sweep failed")
         try:
             days = int(self.config.events.onboarding_request_retention_days)
             removed = await self.db.purge_finished_onboarding_requests(
