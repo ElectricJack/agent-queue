@@ -11,6 +11,8 @@ tags: [design, cli, mcp, api, auth, prime, surface]
 > Start at [the documentation home](../../README.md) for what AQ does today, and
 > see [historical material](../../history/README.md) for how this material is
 > organised.
+> Current command dispatch, discovery and authorization:
+> [daemon-core](../systems/daemon-core.md#24-the-command-handler).
 
 **Status:** Draft — approved direction (2026-08-19)
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 visible and editable, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
@@ -141,6 +143,14 @@ does not release integration ownership or resolve gates and dependencies.
 > claim-fenced `AgentQuestionService` from completed native transcript turns
 > and answered by exact `question_id` through `aq question`. For an explicit
 > one-way blocker notification, use `aq message send --to user:dashboard`.
+
+Worker file reads admit `read_file` through the shared command surface. In addition
+to registered repositories and workspaces belonging to the session's project,
+workers may read `vault/projects/<project_id>/plans/` and `specs/` through
+`aq file read`, using either an absolute path or a `projects/...` vault-relative
+path. Resolve traversal and symlinks against these document roots before reading;
+foreign projects, other vault areas and write access remain outside this grant.
+Project document reads do not depend on knowledge-record activation.
 
 ### 3.2 Human surface
 
