@@ -9,10 +9,42 @@ from migrations.versions.a00000000001_squashed_baseline import LEGACY_HEAD
 from src.database.engine import create_postgres_engine, run_schema_setup
 from src.database.schema_key import alembic_head_revisions
 from src.database.tables import metadata
+from src.knowledge.protection_schema import PROTECTION_TABLE_NAMES
+from src.records.schema import RECORD_TABLE_NAMES
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
 POSTGRES_DSN = ensure_worker_postgres_dsn()
+# K05 revision59 installs protection guards during metadata creation too.
+# This regression isolates integration guards. Knowledge and ask audit guards
+# are installed by metadata.create_all independently of the integration repair.
+METADATA_GUARD_TABLE_NAMES = (
+    *RECORD_TABLE_NAMES, *PROTECTION_TABLE_NAMES,
+    "ask_decisions", "approved_document_snapshots",
+)
+
+#: Triggers that revisions *after* the squashed baseline add on top of the
+#: immutable pre-squash snapshot in :data:`migrations.integration_guards`.
+#: ``run_schema_setup`` upgrades to head, so the installed set is the snapshot
+#: plus these — each one named here rather than derived, so a revision that
+#: installs a new guard is a visible edit to this ratchet instead of a silent
+#: extra entry that only a real head upgrade would reveal.
+_POST_BASELINE_TRIGGERS: set[tuple[str, str]] = {
+    # a00000000049_repair_ejection
+    ("integration_result_current_member", "integration_candidate_member_results"),
+    ("integration_revision_manifest_immutable", "integration_candidate_revisions"),
+    # a00000000057_integration_subjects
+    ("integration_subject_identity_pinned", "integration_subjects"),
+    ("integration_subject_journal_append_only", "integration_subject_journal"),
+    # a00000000058_parent_subject_episode
+    ("integration_subject_parent_episode_pinned", "integration_subjects"),
+    # a00000000074_git_batch_inputs
+    ("trg_integration_git_batch_intent", "integration_batches"),
+    # a00000000077_operator_decisions
+    ("operator_decisions_immutable", "operator_decisions"),
+    # a00000000078_candidate_mutation_reclaim
+    ("trg_candidate_supersession_terminal", "integration_candidate_ref_mutations"),
+}
 
 
 @pytest.mark.parametrize("initial_revision", ["a00000000001", LEGACY_HEAD])
@@ -48,8 +80,14 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                 "c" * 40,
             )
             if initial_revision == "a00000000001":
+                # This regression concerns the original integration guards.
+                # Other audit-domain guards are installed by metadata create_all.
                 assert (
-                    await raw.fetchval("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal")
+                    await raw.fetchval(
+                        "SELECT count(*) FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
+                        "WHERE NOT tgisinternal AND c.relname <> ALL($1::text[])",
+                        list(METADATA_GUARD_TABLE_NAMES),
+                    )
                     == 0
                 )
                 # Prove the broken baseline permits changing durable evidence.
@@ -66,10 +104,14 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                 for row in await raw.fetch(
                     "SELECT tgname, relname FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
                     "JOIN pg_namespace n ON n.oid=c.relnamespace "
-                    "WHERE NOT tgisinternal AND n.nspname='public'"
+                    "WHERE NOT tgisinternal AND n.nspname='public' "
+                    "AND c.relname <> ALL($1::text[])",
+                    list(METADATA_GUARD_TABLE_NAMES),
                 )
             }
-            assert installed == {(name, table) for name, table, _ in TRIGGERS}
+            assert installed == {(name, table) for name, table, _ in TRIGGERS} | (
+                _POST_BASELINE_TRIGGERS
+            )
             for statement in (
                 "UPDATE integration_review_evidence SET verdict='rejected' WHERE id='keep'",
                 "DELETE FROM integration_review_evidence WHERE id='keep'",
@@ -112,7 +154,14 @@ async def test_unstamped_legacy_database_is_refused_without_changing_data():
                 await conn.execute(text("SELECT to_regclass('public.alembic_version')"))
             ).scalar_one() is None
             assert (
-                await conn.execute(text("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal"))
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_trigger JOIN pg_class c ON c.oid=tgrelid "
+                        "WHERE NOT tgisinternal "
+                        "AND c.relname <> ALL(CAST(:record_tables AS text[]))"
+                    ),
+                    {"record_tables": list(METADATA_GUARD_TABLE_NAMES)},
+                )
             ).scalar_one() == 0
     finally:
         await engine.dispose()

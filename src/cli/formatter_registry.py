@@ -202,7 +202,6 @@ def apply_formatter(command: str, result: dict, console, *, data_override: Any =
 def _register_all():
     """Register all built-in formatters. Called once at import time."""
     from .adapters import (
-        agent_proxy,
         plain_proxy,
         project_proxy,
         task_proxy,
@@ -210,7 +209,7 @@ def _register_all():
     from .formatters import (
         format_active_tasks_all,
         format_task_recent_activity,
-        format_agent_table,
+        format_flock,
         format_archived_tasks,
         format_available_tools,
         format_chain_health,
@@ -222,9 +221,16 @@ def _register_all():
         format_playbook_graph,
         format_pool_table,
         format_profile_detail,
+        format_provider_held_tasks,
+        format_provider_allocation_status,
+        format_provider_allocation_preview,
+        format_provider_allocation_apply,
+        format_provider_table,
         format_profile_list,
         format_prompt_list,
         format_project_table,
+        format_review_detail,
+        format_review_table,
         format_task_deps,
         format_task_detail,
         format_task_table,
@@ -242,6 +248,9 @@ def _register_all():
             {
                 "IN_PROGRESS": 0,
                 "WAITING_INPUT": 1,
+                "WAITING": 4,
+                "HIBERNATED": 5,
+                "RESUME_PENDING": 5,
                 "ASSIGNED": 2,
                 "READY": 3,
                 "VERIFYING": 6,
@@ -270,8 +279,10 @@ def _register_all():
         deps_raw = task.depends_on or []
         blocks_raw = task.blocks or []
         subtasks_raw = task.subtasks or []
-        deps_on = [d.id if hasattr(d, "id") else d["id"] for d in deps_raw]
-        dependents = [d.id if hasattr(d, "id") else d["id"] for d in blocks_raw]
+        # Keep typed dicts (they carry dep_type) so format_task_detail can
+        # group edges by type ("Part of" vs "Blocked by" vs provenance).
+        deps_on = list(deps_raw)
+        dependents = list(blocks_raw)
         subtask_stats = None
         if subtasks_raw:
             total = len(subtasks_raw)
@@ -299,14 +310,7 @@ def _register_all():
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-        entity="agent",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
 
     # -- Task extra commands ---------------------------------------------------
 
@@ -404,14 +408,7 @@ def _register_all():
 
     # -- Agent commands ------------------------------------------------------
 
-    FORMATTERS["list_agents"] = FormatterSpec(
-        render=format_agent_table,
-        extract="agents",
-        proxy=agent_proxy,
-        many=True,
-        empty_message="No agents found.",
-        entity="agent",
-    )
+    FORMATTERS["list_agents"] = FormatterSpec(render=format_flock, extract=None, many=False)
     FORMATTERS["list_profiles"] = FormatterSpec(
         render=format_profile_list,
         extract=None,
@@ -470,6 +467,33 @@ def _register_all():
         entity="pool",
     )
 
+    # -- Provider availability (provider-failover D20) ------------------------
+
+    for command, render in (
+        ("provider_allocation_status", format_provider_allocation_status),
+        ("provider_allocation_preview", format_provider_allocation_preview),
+        ("provider_allocation_apply", format_provider_allocation_apply),
+    ):
+        # Keep the entire typed object in JSON: projects, diagnostics, ceilings
+        # and warnings are part of the response, alongside the profile rows.
+        FORMATTERS[command] = FormatterSpec(render=render, many=False)
+
+    FORMATTERS["provider_status"] = FormatterSpec(
+        render=format_provider_table,
+        extract="providers",
+        many=True,
+        empty_message="No providers tracked.",
+        entity="provider",
+    )
+
+    FORMATTERS["provider_held_tasks"] = FormatterSpec(
+        render=format_provider_held_tasks,
+        extract="tasks",
+        many=True,
+        empty_message="No task is held by a provider.",
+        entity="task",
+    )
+
     # -- Formulas (swarm-work-model §13) -------------------------------------
 
     FORMATTERS["formula_list"] = FormatterSpec(
@@ -489,20 +513,35 @@ def _register_all():
         extract=None,
         many=False,
     )
-    FORMATTERS["get_project_channels"] = FormatterSpec(
-        render=format_key_value,
-        extract=None,
-        many=False,
-    )
-    FORMATTERS["get_project_for_channel"] = FormatterSpec(
-        render=format_key_value,
-        extract=None,
-        many=False,
-    )
     FORMATTERS["find_merge_conflict_workspaces"] = FormatterSpec(
         render=format_entity_detail,
         extract=None,
         many=False,
+    )
+
+    # -- Document reviews ----------------------------------------------------
+
+    from .formatters import (
+        format_ask_list, format_ask_detail, format_ask_preview, format_ask_receipt,
+    )
+    for name, renderer in {
+        "ask_list": format_ask_list, "ask_show": format_ask_detail,
+        "ask_prepare_decision": format_ask_preview, "ask_reply": format_ask_receipt,
+        "ask_decide": format_ask_receipt, "ask_history": format_ask_receipt,
+    }.items():
+        FORMATTERS[name] = FormatterSpec(render=renderer, extract=None, many=False, entity="ask")
+
+    FORMATTERS["review_show"] = FormatterSpec(
+        render=format_review_detail,
+        extract=None,
+        many=False,
+    )
+    FORMATTERS["review_list"] = FormatterSpec(
+        render=format_review_table,
+        extract="reviews",
+        many=True,
+        empty_message="No reviews found.",
+        entity="review",
     )
 
     # Project confirmations
@@ -516,7 +555,6 @@ def _register_all():
         "release_workspace",
         "queue_sync_workspaces",
         "set_active_project",
-        "set_control_interface",
     ):
         FORMATTERS[_proj_confirm] = FormatterSpec(
             render=format_confirmation,

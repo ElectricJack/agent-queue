@@ -19,6 +19,7 @@ class AddWorkspaceRequest:
         source (str): How to set up the workspace: clone (from project repo_url), link (existing dir)
         path (None | str | Unset): Directory path (required for link, auto-generated for clone)
         name (None | str | Unset): Workspace name (optional)
+        enabled (bool | None | Unset): Enable admission (default true). Register a cutover target with false.
         kind_id (None | str | Unset): Workspace kind id (e.g. 'project-repo', 'package-foo', 'vault'). Defaults to
             'project-repo'. Must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md.
     """
@@ -27,6 +28,7 @@ class AddWorkspaceRequest:
     source: str
     path: None | str | Unset = UNSET
     name: None | str | Unset = UNSET
+    enabled: bool | None | Unset = UNSET
     kind_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -47,6 +49,12 @@ class AddWorkspaceRequest:
         else:
             name = self.name
 
+        enabled: bool | None | Unset
+        if isinstance(self.enabled, Unset):
+            enabled = UNSET
+        else:
+            enabled = self.enabled
+
         kind_id: None | str | Unset
         if isinstance(self.kind_id, Unset):
             kind_id = UNSET
@@ -65,6 +73,8 @@ class AddWorkspaceRequest:
             field_dict["path"] = path
         if name is not UNSET:
             field_dict["name"] = name
+        if enabled is not UNSET:
+            field_dict["enabled"] = enabled
         if kind_id is not UNSET:
             field_dict["kind_id"] = kind_id
 
@@ -95,6 +105,15 @@ class AddWorkspaceRequest:
 
         name = _parse_name(d.pop("name", UNSET))
 
+        def _parse_enabled(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        enabled = _parse_enabled(d.pop("enabled", UNSET))
+
         def _parse_kind_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -109,6 +128,7 @@ class AddWorkspaceRequest:
             source=source,
             path=path,
             name=name,
+            enabled=enabled,
             kind_id=kind_id,
         )
 

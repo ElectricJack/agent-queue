@@ -33,6 +33,11 @@ class ActivationStateDTO:
             activated_by (None | str | Unset):
             pending_event_count (int | Unset):  Default: 0.
             running_count (int | Unset):  Default: 0.
+            source_path (None | str | Unset):
+            source_sha256 (None | str | Unset):
+            active_source_sha256 (None | str | Unset):
+            source_drift (bool | None | Unset):
+            source_error (None | str | Unset):
     """
 
     playbook_id: str
@@ -46,6 +51,11 @@ class ActivationStateDTO:
     activated_by: None | str | Unset = UNSET
     pending_event_count: int | Unset = 0
     running_count: int | Unset = 0
+    source_path: None | str | Unset = UNSET
+    source_sha256: None | str | Unset = UNSET
+    active_source_sha256: None | str | Unset = UNSET
+    source_drift: bool | None | Unset = UNSET
+    source_error: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         playbook_id = self.playbook_id
@@ -93,6 +103,36 @@ class ActivationStateDTO:
 
         running_count = self.running_count
 
+        source_path: None | str | Unset
+        if isinstance(self.source_path, Unset):
+            source_path = UNSET
+        else:
+            source_path = self.source_path
+
+        source_sha256: None | str | Unset
+        if isinstance(self.source_sha256, Unset):
+            source_sha256 = UNSET
+        else:
+            source_sha256 = self.source_sha256
+
+        active_source_sha256: None | str | Unset
+        if isinstance(self.active_source_sha256, Unset):
+            active_source_sha256 = UNSET
+        else:
+            active_source_sha256 = self.active_source_sha256
+
+        source_drift: bool | None | Unset
+        if isinstance(self.source_drift, Unset):
+            source_drift = UNSET
+        else:
+            source_drift = self.source_drift
+
+        source_error: None | str | Unset
+        if isinstance(self.source_error, Unset):
+            source_error = UNSET
+        else:
+            source_error = self.source_error
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -119,6 +159,16 @@ class ActivationStateDTO:
             field_dict["pending_event_count"] = pending_event_count
         if running_count is not UNSET:
             field_dict["running_count"] = running_count
+        if source_path is not UNSET:
+            field_dict["source_path"] = source_path
+        if source_sha256 is not UNSET:
+            field_dict["source_sha256"] = source_sha256
+        if active_source_sha256 is not UNSET:
+            field_dict["active_source_sha256"] = active_source_sha256
+        if source_drift is not UNSET:
+            field_dict["source_drift"] = source_drift
+        if source_error is not UNSET:
+            field_dict["source_error"] = source_error
 
         return field_dict
 
@@ -189,6 +239,51 @@ class ActivationStateDTO:
 
         running_count = d.pop("running_count", UNSET)
 
+        def _parse_source_path(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_path = _parse_source_path(d.pop("source_path", UNSET))
+
+        def _parse_source_sha256(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_sha256 = _parse_source_sha256(d.pop("source_sha256", UNSET))
+
+        def _parse_active_source_sha256(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        active_source_sha256 = _parse_active_source_sha256(d.pop("active_source_sha256", UNSET))
+
+        def _parse_source_drift(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        source_drift = _parse_source_drift(d.pop("source_drift", UNSET))
+
+        def _parse_source_error(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_error = _parse_source_error(d.pop("source_error", UNSET))
+
         activation_state_dto = cls(
             playbook_id=playbook_id,
             scope=scope,
@@ -201,6 +296,11 @@ class ActivationStateDTO:
             activated_by=activated_by,
             pending_event_count=pending_event_count,
             running_count=running_count,
+            source_path=source_path,
+            source_sha256=source_sha256,
+            active_source_sha256=active_source_sha256,
+            source_drift=source_drift,
+            source_error=source_error,
         )
 
         return activation_state_dto

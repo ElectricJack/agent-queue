@@ -1,0 +1,35 @@
+{
+  "id": 21960669,
+  "name": "Basic Protection",
+  "target": "branch",
+  "source_type": "Repository",
+  "source": "ElectricJack/agent-queue",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "refs/heads/main"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    }
+  ],
+  "node_id": "RRS_lACqUmVwb3NpdG9yec5FLfNEzgFPF90",
+  "created_at": "2026-08-31T21:46:56.468Z",
+  "updated_at": "2026-08-31T21:47:26.912Z",
+  "_links": {
+    "self": {
+      "href": "https://api.github.com/repos/ElectricJack/agent-queue/rulesets/21960669"
+    },
+    "html": {
+      "href": "https://github.com/ElectricJack/agent-queue/rules/21960669"
+    }
+  }
+}

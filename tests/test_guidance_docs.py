@@ -33,8 +33,27 @@ from pathlib import Path
 import click
 import pytest
 
-SKILLS_DIR = Path(__file__).resolve().parents[1] / "src" / "skills"
-PRIME_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "src" / "prime" / "templates"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+SKILLS_DIR = _REPO_ROOT / "src" / "skills"
+PRIME_TEMPLATES_DIR = _REPO_ROOT / "src" / "prime" / "templates"
+#: Operator runbooks are the same contract aimed at a human: the reader copies
+#: the line into a terminal.  The Discord cutover retired a whole command
+#: surface, so these are the guides most likely to name something that is gone.
+OPERATOR_DOCS = (
+    _REPO_ROOT / "docs" / "guides" / "discord-migration.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-commands.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-conversations.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
+    _REPO_ROOT / "docs" / "guides" / "escalations.md",
+    _REPO_ROOT / "docs" / "guides" / "smart-test-selection.md",
+    _REPO_ROOT / "docs" / "guides" / "reviews.md",
+)
+#: The CLI reference itself.  Its whole job is to show the reader the current
+#: command surface, so a leaf that has been renamed or an option that has been
+#: dropped is exactly the rot this scan exists to catch — and the pages quote
+#: several hundred invocations, which is more coverage than every other
+#: guidance file combined.
+CLI_REFERENCE_DIR = _REPO_ROOT / "docs" / "reference" / "cli"
 
 _FENCE = re.compile(r"^```(\w*)\s*$")
 _INLINE = re.compile(r"`([^`]+)`")
@@ -148,8 +167,12 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
 
     positional = 0
     remaining = iter(rest)
+    after_separator = False
     for token in remaining:
-        if token.startswith("-") and token != "-":
+        if token == "--" and not after_separator:
+            after_separator = True
+            continue
+        if not after_separator and token.startswith("-") and token != "-":
             option = token.split("=", 1)[0]
             if option in flags:
                 continue
@@ -169,14 +192,21 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
 
 
 def _guidance_files() -> list[Path]:
-    """Every static document that hands an agent a command line to run."""
-    return sorted(SKILLS_DIR.glob("*/SKILL.md")) + sorted(PRIME_TEMPLATES_DIR.rglob("*.md"))
+    """Every static document that hands a reader a command line to run."""
+    return (
+        sorted(SKILLS_DIR.glob("*/SKILL.md"))
+        + sorted(PRIME_TEMPLATES_DIR.rglob("*.md"))
+        + [path for path in OPERATOR_DOCS if path.exists()]
+        + sorted(CLI_REFERENCE_DIR.glob("*.md"))
+    )
 
 
 def _label(path: Path) -> str:
     if path.name == "SKILL.md":
         return f"src/skills/{path.parent.name}/SKILL.md"
-    return f"src/prime/templates/{path.relative_to(PRIME_TEMPLATES_DIR)}"
+    if path.is_relative_to(PRIME_TEMPLATES_DIR):
+        return f"src/prime/templates/{path.relative_to(PRIME_TEMPLATES_DIR)}"
+    return str(path.relative_to(_REPO_ROOT))
 
 
 def test_both_guidance_trees_are_where_we_think_they_are():
@@ -184,6 +214,11 @@ def test_both_guidance_trees_are_where_we_think_they_are():
     labels = [_label(path) for path in _guidance_files()]
     assert any(label.startswith("src/skills/") for label in labels), SKILLS_DIR
     assert any(label.startswith("src/prime/templates/") for label in labels), PRIME_TEMPLATES_DIR
+    for path in OPERATOR_DOCS:
+        assert path.exists(), f"{path} moved; the operator-runbook scan would be a no-op"
+    assert any(
+        label.startswith("docs/reference/cli/") for label in labels
+    ), CLI_REFERENCE_DIR
 
 
 @pytest.mark.parametrize("path", _guidance_files(), ids=_label)
@@ -267,3 +302,11 @@ def test_invocations_are_read_from_shell_blocks_and_inline_code_only():
         (1, "aq task show <id>"),
         (4, 'aq task close <id> --outcome pass --summary "..."'),
     ]
+
+
+def test_the_guard_honors_the_end_of_options_separator():
+    assert _problems("x.md", 1, 'aq job submit --preset test -- -k "term" tests/') == []
+    assert "has no option --nope" in _problems(
+        "x.md", 1, "aq job submit --nope -- -k term"
+    )[0]
+    assert "takes 0 positional" in _problems("x.md", 1, "aq task list -- --nope")[0]
