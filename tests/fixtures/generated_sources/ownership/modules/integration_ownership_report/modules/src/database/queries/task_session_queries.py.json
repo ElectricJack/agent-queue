@@ -1,0 +1,38 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_branch_origins, task_dependencies, task_session_attempts, tasks": {
+      "fingerprint": "455c28d55acee925165d18e6c76c13978a42ebff92c767bdd1f9fa1adbab8dfd",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_authorized_source_heads": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_source_ci_inherited_oids": {
+      "baseline_span": [
+        418,
+        447
+      ],
+      "landing_span": [
+        418,
+        447
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_dependencies, task_session_attempts, tasks": {
+      "reason": "Reads exact frozen batch members as inherited history for ordinary worker push authorization; the immutable sources remain required candidate ancestors."
+    },
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_source_ci, sessions, task_dependencies, task_session_attempts, tasks": {
+      "baseline_span": [
+        9,
+        17
+      ],
+      "landing_span": [
+        9,
+        17
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/development_stalls.py::PublisherStalls._write::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 496,
+      "owner": "PublisherStalls._write",
+      "owner_fingerprint": "fe844d24d88f29b7f64c3b2f36136ed68478476cb5106492b24d4d88bfc3e9dc",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development_stalls.py::PublisherStalls._write::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 501,
+      "owner": "PublisherStalls._write",
+      "owner_fingerprint": "fe844d24d88f29b7f64c3b2f36136ed68478476cb5106492b24d4d88bfc3e9dc",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
