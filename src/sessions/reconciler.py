@@ -113,7 +113,7 @@ def stall_reminder(task_id: str, minutes: int) -> str:
 
 _LIVE_STATES = ("starting", "running", "draining")
 #: Task statuses in which a session still holds the task's claim.
-_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING)
 #: Public alias — other modules ask "is this session row live?" too
 #: (``_cmd_task_close`` decides whether verification feedback can be
 #: handed back in place rather than reopening the task).
@@ -272,6 +272,8 @@ class SessionReconciler:
         #: Names whose destructive handling is deferred this tick because
         #: enumeration was incomplete.  Cleared and rebuilt every tick.
         self._deferred_prefixes: set[str] = set()
+        self._execution_wait_cache = {}
+        self._execution_wait_pass = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -335,6 +337,8 @@ class SessionReconciler:
             return
         now = now if now is not None else time.time()
         self._deferred_prefixes.clear()
+        self._execution_wait_cache.clear()
+        self._execution_wait_pass = now
 
         live = await self._step_observe(now)
         for step in (
@@ -590,6 +594,7 @@ class SessionReconciler:
             closed = task is None or task.status not in (
                 TaskStatus.IN_PROGRESS,
                 TaskStatus.ASSIGNED,
+                TaskStatus.WAITING,
             )
             if not closed:
                 await self._premature_drain(provider, row, task, now)
@@ -1123,11 +1128,17 @@ class SessionReconciler:
 
         waiting, resumed = await self._wait_lease(row, now)
         if waiting:
-            task = await self.db.get_task(row.task_id)
-            wait = await self.db.blocking_wait_for(row, task.claim_epoch, now) if task else None
-            if wait is None:
-                return
-            renew_until = wait["deadline_at"]
+            execution_wait = await self._active_execution_wait(row, now)
+            if execution_wait is not None:
+                renew_until = now + max(
+                    DEFAULT_TTL_SECONDS, float(self.sessions_config.lease_ttl_seconds)
+                )
+            else:
+                task = await self.db.get_task(row.task_id)
+                wait = await self.db.blocking_wait_for(row, task.claim_epoch, now) if task else None
+                if wait is None:
+                    return
+                renew_until = wait["deadline_at"]
         else:
             last = max(row.last_activity or row.started_at or 0.0, resumed)
             renew_until = (
@@ -1675,15 +1686,20 @@ class SessionReconciler:
 
     async def _recover_guarded_failure(self, provider, row, task, record, now: float) -> None:
         """One retry, then explicit attention, across replacement sessions."""
-        from src.sessions.worker_recovery import MAX_SAME_CAUSE, THRASH_CAUSE
+        from src.sessions.worker_recovery import (
+            MAX_SAME_CAUSE,
+            THRASH_CAUSE,
+            prepare_guarded_recovery,
+        )
 
         cause = record["cause"]
         blocked = record["count"] >= MAX_SAME_CAUSE
-        if cause == THRASH_CAUSE:
-            # A fresh retry must not resume the context that just thrashed.
-            await self.db.delete_task_meta(task.id, "session_resume_key")
-        await self.db.set_task_meta(task.id, META_STALL_NUDGES, "0")
-        await self.db.set_task_meta(task.id, META_STALL_LAST_ACTION, "0")
+        deferred = False
+        unconfirmed = False
+        retry_queued = not blocked
+        retry_message = "Retrying with a bounded continuation note. "
+        if not await prepare_guarded_recovery(self.db, row, task, record):
+            return
         if cause == "stalled":
             try:
                 await provider.interrupt(self._handle(row))
@@ -1695,6 +1711,18 @@ class SessionReconciler:
             await self.orchestrator._terminate_pool_session(
                 row, reason=cause,
                 task_status=TaskStatus.BLOCKED if blocked else TaskStatus.READY,
+            )
+            from src.sessions.worker_recovery import pool_recovery_disposition
+
+            disposition = await pool_recovery_disposition(self.db, row, task, record)
+            if disposition is None:
+                return  # No confirmed outcome, duplicate, or a newer claim/decision.
+            deferred = disposition["disposition"] == "handoff_deferred"
+            unconfirmed = disposition["disposition"] == "stop_unconfirmed"
+            retry_queued = disposition["disposition"] == "retry_ready"
+            retry_message = (
+                "Task returned to READY with a bounded continuation note; "
+                "claim admission remains subject to recovery controls. "
             )
         else:
             await self._stop_session(provider, row, reason=cause)
@@ -1710,23 +1738,34 @@ class SessionReconciler:
         await self.db.add_task_comment(
             task.id,
             f"Worker {row.id}: {cause}, consecutive incident {record['count']}. "
-            + ("BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
-               if blocked else "Retrying with a bounded continuation note. ")
+            + ("Continuation deferred: writer termination is unconfirmed; "
+               "claim/workspace binding retained. " if unconfirmed else
+               "Continuation deferred: stopped writer retains its claim/workspace binding; "
+               "supervisor investigation and guarded owner handoff required. "
+               if deferred else
+               "BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
+               if blocked else retry_message)
             + "Check the branch and recovery note in aq prime before repeating reads.",
             author_kind="supervisor", author_id="session-reconciler",
         )
-        if blocked:
+        if unconfirmed and not blocked:
+            return
+        if blocked or deferred:
             await self.db.notify_task_recovery(task.id, project_id=task.project_id)
             await self._emit(
                 "task.needs_attention", task_id=task.id, project_id=task.project_id,
-                title=task.title, session_id=row.id, reason=f"session_{cause}",
+                title=task.title, session_id=row.id,
+                reason=f"session_{cause}_handoff_deferred" if deferred and not blocked
+                else f"session_{cause}",
             )
             await self._emit(
                 "task.failed", task_id=task.id, project_id=task.project_id,
                 title=task.title, status=TaskStatus.BLOCKED.value, context=f"session_{cause}",
-                error=f"{record['count']} consecutive {cause} incidents; automatic retries stopped",
+                error=("Bounded continuation deferred behind retained stopped-writer binding"
+                       if deferred else
+                       f"{record['count']} consecutive {cause} incidents; automatic retries stopped"),
             )
-        else:
+        elif retry_queued:
             await self._emit(
                 "task.restarted", task_id=task.id, project_id=task.project_id,
                 title=task.title, session_id=row.id, attempt=record["count"], reason=cause,
@@ -1818,6 +1857,20 @@ class SessionReconciler:
             return False
         return await service.is_waiting(row, now=now)
 
+    async def _active_execution_wait(self, row, now):
+        from src.waits.holding import active_wait_for
+
+        key = (row.id, row.instance_token, row.task_id, row.last_claim_epoch,
+               row.state, row.desired_state, row.claim_phase)
+        if self._execution_wait_pass != now:
+            self._execution_wait_cache.clear()
+            self._execution_wait_pass = now
+        if key not in self._execution_wait_cache:
+            self._execution_wait_cache[key] = await active_wait_for(
+                self.db, row, include_acknowledged=True,
+            )
+        return self._execution_wait_cache[key]
+
     async def _wait_lease(self, row, now) -> tuple[bool, float]:
         """Bounded dormancy and consumption grace without inventing activity.
 
@@ -1825,6 +1878,11 @@ class SessionReconciler:
         last_claim_epoch is unset. The database additionally checks instance,
         ownership and task status. Death and explicit stops are never exempt.
         """
+        execution_wait = await self._active_execution_wait(row, now)
+        if execution_wait is not None:
+            return (True, 0.0) if execution_wait["cleared_at"] is None else (
+                False, execution_wait["cleared_at"],
+            )
         if not row.task_id:
             return False, 0.0
         task = await self.db.get_task(row.task_id)
@@ -2597,6 +2655,18 @@ class SessionReconciler:
                 continue
             if self._is_deferred(row.name):
                 continue
+            handler = getattr(self.orchestrator, "_command_handler", None)
+            recover = getattr(handler, "recover_orphaned_integration_task", None)
+            if recover is not None:
+                try:
+                    if await recover(task.id, row) is not None:
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Stopped integration writer recovery retained task %s for retry",
+                        task.id, exc_info=True,
+                    )
+                    continue
             logger.warning(
                 "Task %s is IN_PROGRESS but session %s is %s — releasing",
                 task.id,
@@ -2937,6 +3007,18 @@ class SessionReconciler:
                 continue
             if await self._disabled_project_supervisor(row):
                 continue
+            from src.sessions.supervisor_health import is_supervisor, reconcile
+
+            if is_supervisor(row):
+                try:
+                    if await reconcile(self, row, now=now):
+                        continue
+                except Exception:
+                    logger.warning("supervisor health recovery failed for %s", row.name, exc_info=True)
+                    continue
+            waiting, _ = await self._wait_lease(row, now)
+            if waiting:
+                continue
             # Named supervisors have no task stall ladder. Recover an owned
             # notification even if its message was consumed through the inbox
             # and therefore no longer produces another delivery attempt.
@@ -3016,6 +3098,8 @@ class SessionReconciler:
             if address is None or row.state in _LIVE_STATES:
                 continue
             if self._is_deferred(row.name):
+                continue
+            if now < (row.supervisor_health or {}).get("next_retry_at", 0):
                 continue
             last = row.last_activity or row.started_at or 0.0
             backoff = self.sessions_config.restart_backoff_seconds * max(row.restarts, 1)

@@ -10,12 +10,14 @@ export function CommentPopover({
   returnFocus,
   onSubmit,
   onClose,
+  onDraftChange,
 }: {
   anchor: Anchor;
   reference: CommentReference;
   returnFocus: HTMLElement;
   onSubmit: (body: string) => Promise<void> | void;
   onClose: () => void;
+  onDraftChange?: (text: string) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -37,7 +39,7 @@ export function CommentPopover({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        if (!body && !submitting) onClose();
       }
       if (event.key === "Tab" && rootRef.current) {
         const controls = Array.from(rootRef.current.querySelectorAll<HTMLElement>("textarea, button:not(:disabled)"));
@@ -53,7 +55,7 @@ export function CommentPopover({
       }
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) onClose();
+      if (rootRef.current && !rootRef.current.contains(event.target as Node) && !body && !submitting) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("pointerdown", onPointerDown);
@@ -61,7 +63,7 @@ export function CommentPopover({
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [onClose]);
+  }, [onClose, body, submitting]);
 
   const submit = async () => {
     if (!body.trim() || submitting) return;
@@ -89,13 +91,14 @@ export function CommentPopover({
         ref={inputRef}
         rows={4}
         value={body}
-        onChange={(event) => setBody(event.target.value)}
+        disabled={submitting}
+        onChange={(event) => { setBody(event.target.value); onDraftChange?.(event.target.value); }}
         className="w-full resize-y rounded border border-gray-700 bg-gray-950 p-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
         placeholder="Write a comment…"
       />
       {error && <p role="alert" className="mt-2 text-xs text-red-300">{error}</p>}
       <div className="mt-2 flex justify-end gap-2">
-        <button type="button" onClick={onClose} className="rounded px-2 py-1 text-xs text-gray-400 hover:bg-gray-800">Cancel</button>
+        <button type="button" disabled={submitting} onClick={onClose} className="rounded px-2 py-1 text-xs text-gray-400 hover:bg-gray-800">{body ? "Discard draft" : "Cancel"}</button>
         <button
           type="button"
           onClick={() => void submit()}
