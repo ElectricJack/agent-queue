@@ -1,9 +1,9 @@
 {
-  "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
-  "method": "Real command contract adapters and disposable PostgreSQL; exact argument/result replay through write-free V2 previews. Synthetic capture receipts, no renderer or model calls. Repeated identical sweeps deduplicated.",
+  "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+  "method": "Real command contract adapters and disposable PostgreSQL; exact argument/result replay through write-free V2 previews. Synthetic capture receipts, no renderer or model calls. Repeated identical sweeps deduplicated. Review audiences recorded from the same database.",
   "traces": [
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -72,11 +72,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-review",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -145,11 +162,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-review",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -218,11 +252,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-review",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -291,11 +342,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-review",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -355,11 +423,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-review",
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -438,11 +523,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_two_objects_recover_in_one_sweep"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -497,11 +594,94 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "Build a procedural rock"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_attempt_live_and_dry_has_only_plain_brief_and_one_final_result"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -556,11 +736,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -615,11 +807,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -674,11 +878,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -733,11 +949,94 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_checkpoint_refuses_a_human_review_without_changing_the_loop"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.BLOCKED]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -792,11 +1091,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.FAILED]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -851,11 +1162,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_inputs_refuse_foreign_score_scope_and_missing_capability"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -910,11 +1233,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -969,11 +1304,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[budget]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-budget]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1028,11 +1375,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[cap]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-cap]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1087,11 +1446,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[improve]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-improve]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1146,11 +1517,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[invalid]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-invalid]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1205,11 +1588,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[plateau]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-plateau]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1264,11 +1659,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[tie]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-repair]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1323,11 +1730,591 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-tie]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-budget]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-cap]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-improve]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-invalid]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-plateau]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-repair]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-completion",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-tie]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-completion--read",
+          "target": "on-completion--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--starts",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-completion--loops",
+          "target": "on-completion--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-completion--policy",
+          "target": "on-completion--choose"
+        },
+        {
+          "outcome": "default",
+          "step": "on-completion--choose",
+          "target": "on-completion--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--reconcile",
+          "target": "on-completion--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--loops",
+          "target": "on-completion--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-completion--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-completion",
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1382,11 +2369,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_bootstrap_restart_and_formula_discovery"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1441,11 +2440,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1500,11 +2511,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1559,11 +2582,38 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "Half-depth chip-scar probe"
+        },
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "rock \u00b7 r0 score"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "Build a procedural rock"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "Rock result"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
-      "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
+      "test": "tests/test_object_loop_playbook.py::test_attempt_live_and_dry_has_only_plain_brief_and_one_final_result"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1618,11 +2668,99 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1709,11 +2847,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_two_objects_recover_in_one_sweep"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1772,11 +2922,98 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "Build a procedural rock"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_attempt_live_and_dry_has_only_plain_brief_and_one_final_result"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_bootstrap_restart_and_formula_discovery"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1835,11 +3072,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1898,11 +3147,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -1961,11 +3222,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2024,11 +3297,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2087,11 +3372,98 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_checkpoint_refuses_a_human_review_without_changing_the_loop"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.BLOCKED]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2150,11 +3522,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.FAILED]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2213,11 +3597,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_inputs_refuse_foreign_score_scope_and_missing_capability"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2276,11 +3672,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2339,11 +3747,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_provider_outage_holds_work_until_deadline_then_waits_for_settlement"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2402,11 +3822,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[budget]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-budget]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2465,11 +3897,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[cap]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-cap]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2528,11 +3972,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[improve]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-improve]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2591,11 +4047,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[invalid]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-invalid]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2654,11 +4122,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[plateau]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-plateau]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2717,11 +4197,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[tie]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-repair]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2780,11 +4272,623 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-tie]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-budget]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-cap]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-improve]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-invalid]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-plateau]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-repair]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "on-formula",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-tie]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_start",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "on-formula--read",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "iterating",
+          "step": "on-formula--starts",
+          "target": "on-formula--start-check"
+        },
+        {
+          "outcome": "matched",
+          "step": "on-formula--start-check",
+          "target": "on-formula--start"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start",
+          "target": "on-formula--start-reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--start-reconcile",
+          "target": "on-formula--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--starts",
+          "target": "on-formula--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--loops",
+          "target": "on-formula--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "on-formula--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-formula",
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2848,11 +4952,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-failure",
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.BLOCKED]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2916,11 +5032,23 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "on-failure",
       "test": "tests/test_object_loop_playbook.py::test_failed_scorer_trace[TaskStatus.FAILED]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -2984,11 +5112,118 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "Half-depth chip-scar probe"
+        },
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "rock \u00b7 r0 score"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "Build a procedural rock"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_attempt_live_and_dry_has_only_plain_brief_and_one_final_result"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[approved]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3052,11 +5287,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[changes_requested]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3120,11 +5372,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[rejected]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3188,11 +5457,28 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_checkpoint_decision_trace[withdrawn]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3256,11 +5542,113 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_checkpoint_refuses_a_human_review_without_changing_the_loop"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
+        },
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_new_review_revision_never_adopts_old_checkpoint"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3324,223 +5712,32 @@
         }
       ],
       "live_outcome": "completed",
-      "rule": "recover",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[improve]"
-    },
-    {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
-      "commands": [
+      "review_audiences": [
         {
-          "name": "object_loop_inputs",
-          "outcome": "completed"
+          "decider": "supervisor",
+          "kind": "other",
+          "title": "checkpoint"
         },
         {
-          "name": "object_score_record",
-          "outcome": "completed"
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
         },
         {
-          "name": "object_loop_reconcile",
-          "outcome": "completed"
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
         }
       ],
-      "dry_completed": true,
-      "dry_nodes": [
-        {
-          "outcome": "completed",
-          "step": "recover--read",
-          "target": "recover--starts"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--starts",
-          "target": "recover--loops"
-        },
-        {
-          "outcome": "iterating",
-          "step": "recover--loops",
-          "target": "recover--policy"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--policy",
-          "target": "recover--choose"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--choose",
-          "target": "recover--score"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--score",
-          "target": "recover--reconcile"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--reconcile",
-          "target": "recover--loops"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--loops",
-          "target": "recover--done"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--done",
-          "target": null
-        }
-      ],
-      "live_outcome": "completed",
-      "rule": "recover",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[invalid]"
-    },
-    {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
-      "commands": [
-        {
-          "name": "object_loop_inputs",
-          "outcome": "completed"
-        },
-        {
-          "name": "object_score_record",
-          "outcome": "completed"
-        },
-        {
-          "name": "object_loop_reconcile",
-          "outcome": "completed"
-        }
-      ],
-      "dry_completed": true,
-      "dry_nodes": [
-        {
-          "outcome": "completed",
-          "step": "recover--read",
-          "target": "recover--starts"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--starts",
-          "target": "recover--loops"
-        },
-        {
-          "outcome": "iterating",
-          "step": "recover--loops",
-          "target": "recover--policy"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--policy",
-          "target": "recover--choose"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--choose",
-          "target": "recover--score"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--score",
-          "target": "recover--reconcile"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--reconcile",
-          "target": "recover--loops"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--loops",
-          "target": "recover--done"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--done",
-          "target": null
-        }
-      ],
-      "live_outcome": "completed",
-      "rule": "recover",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[tie]"
-    },
-    {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
-      "commands": [
-        {
-          "name": "object_loop_inputs",
-          "outcome": "completed"
-        },
-        {
-          "name": "object_score_record",
-          "outcome": "completed"
-        },
-        {
-          "name": "object_loop_reconcile",
-          "outcome": "completed"
-        }
-      ],
-      "dry_completed": true,
-      "dry_nodes": [
-        {
-          "outcome": "completed",
-          "step": "recover--read",
-          "target": "recover--starts"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--starts",
-          "target": "recover--loops"
-        },
-        {
-          "outcome": "iterating",
-          "step": "recover--loops",
-          "target": "recover--policy"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--policy",
-          "target": "recover--choose"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--choose",
-          "target": "recover--score"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--score",
-          "target": "recover--reconcile"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--reconcile",
-          "target": "recover--loops"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--loops",
-          "target": "recover--done"
-        },
-        {
-          "outcome": "completed",
-          "step": "recover--done",
-          "target": null
-        }
-      ],
-      "live_outcome": "completed",
       "rule": "recover",
       "test": "tests/test_object_loop_playbook.py::test_variation_is_three_levels_gated_and_never_publishes_or_settles_early"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
           "outcome": "completed"
-        },
-        {
-          "name": "object_score_record",
-          "outcome": "rejected"
         },
         {
           "name": "object_score_record",
@@ -3579,18 +5776,8 @@
           "target": "recover--score"
         },
         {
-          "outcome": "rejected",
-          "step": "recover--score",
-          "target": "recover--score-refused"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--score-refused",
-          "target": "recover--score-stop"
-        },
-        {
           "outcome": "completed",
-          "step": "recover--score-stop",
+          "step": "recover--score",
           "target": "recover--reconcile"
         },
         {
@@ -3610,19 +5797,27 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[budget]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-improve]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
           "outcome": "completed"
-        },
-        {
-          "name": "object_score_record",
-          "outcome": "rejected"
         },
         {
           "name": "object_score_record",
@@ -3661,18 +5856,8 @@
           "target": "recover--score"
         },
         {
-          "outcome": "rejected",
-          "step": "recover--score",
-          "target": "recover--score-refused"
-        },
-        {
-          "outcome": "matched",
-          "step": "recover--score-refused",
-          "target": "recover--score-stop"
-        },
-        {
           "outcome": "completed",
-          "step": "recover--score-stop",
+          "step": "recover--score",
           "target": "recover--reconcile"
         },
         {
@@ -3692,11 +5877,343 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[cap]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-invalid]"
     },
     {
-      "artifact_sha256": "sha256:08fc137f2499a67f7b577f1a438c38c6e8ca1ec424dc6933a17f79cd3bcb0acd",
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-tie]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-improve]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-invalid]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-tie]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
       "commands": [
         {
           "name": "object_loop_inputs",
@@ -3774,8 +6291,678 @@
         }
       ],
       "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
       "rule": "recover",
-      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[plateau]"
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-budget]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "rejected"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "rejected",
+          "step": "recover--score",
+          "target": "recover--score-refused"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--score-refused",
+          "target": "recover--score-stop"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score-stop",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-cap]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "rejected"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "rejected",
+          "step": "recover--score",
+          "target": "recover--score-refused"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--score-refused",
+          "target": "recover--score-stop"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score-stop",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-plateau]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "rejected"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "rejected",
+          "step": "recover--score",
+          "target": "recover--score-refused"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--score-refused",
+          "target": "recover--score-stop"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score-stop",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[calibrated-repair]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "rejected"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "rejected",
+          "step": "recover--score",
+          "target": "recover--score-refused"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--score-refused",
+          "target": "recover--score-stop"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score-stop",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-budget]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "rejected"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "rejected",
+          "step": "recover--score",
+          "target": "recover--score-refused"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--score-refused",
+          "target": "recover--score-stop"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score-stop",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-cap]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "rejected"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "rejected",
+          "step": "recover--score",
+          "target": "recover--score-refused"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--score-refused",
+          "target": "recover--score-stop"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score-stop",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-plateau]"
+    },
+    {
+      "artifact_sha256": "sha256:e9a2e756d3698ad04210529ed9f6a0571015bbdf603a85003f71109301ebb0a0",
+      "commands": [
+        {
+          "name": "object_loop_inputs",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "rejected"
+        },
+        {
+          "name": "object_score_record",
+          "outcome": "completed"
+        },
+        {
+          "name": "object_loop_reconcile",
+          "outcome": "completed"
+        }
+      ],
+      "dry_completed": true,
+      "dry_nodes": [
+        {
+          "outcome": "completed",
+          "step": "recover--read",
+          "target": "recover--starts"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--starts",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "iterating",
+          "step": "recover--loops",
+          "target": "recover--policy"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--policy",
+          "target": "recover--choose"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--choose",
+          "target": "recover--score"
+        },
+        {
+          "outcome": "rejected",
+          "step": "recover--score",
+          "target": "recover--score-refused"
+        },
+        {
+          "outcome": "matched",
+          "step": "recover--score-refused",
+          "target": "recover--score-stop"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--score-stop",
+          "target": "recover--reconcile"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--reconcile",
+          "target": "recover--loops"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--loops",
+          "target": "recover--done"
+        },
+        {
+          "outcome": "completed",
+          "step": "recover--done",
+          "target": null
+        }
+      ],
+      "live_outcome": "completed",
+      "review_audiences": [
+        {
+          "decider": "user",
+          "kind": "other",
+          "title": "brief-review"
+        },
+        {
+          "decider": "user",
+          "kind": "spec",
+          "title": "rev-amber-zenith"
+        }
+      ],
+      "rule": "recover",
+      "test": "tests/test_object_loop_playbook.py::test_scoring_live_and_dry_traces[self-repair]"
     }
   ]
 }

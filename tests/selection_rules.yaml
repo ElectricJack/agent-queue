@@ -67,15 +67,29 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["src/stall_watch.py", "src/database/queries/stall_watch_queries.py"], areas: ["task-lifecycle"] }
+  - { paths: ["src/policy_profiles/**", "src/commands/policy_commands.py", "src/api/models/policy.py", "src/cli/policy.py", "dashboard/src/pages/project/PolicyProfiles.tsx", "dashboard/src/api/policy.ts"], areas: ["policy-profiles"] }
+  - { paths: ["tests/integration_ownership.py", "tests/integration_ownership.json", "tests/integration_ownership_report.json"], areas: ["integration-trains"] }
+  - { paths: ["scripts/integration-cutover-evidence.py", "scripts/backfill-legacy-deliveries.py", "scripts/benchmark-git-truth.py", "scripts/benchmark-train-selection.py", "scripts/cleanup-origin-integration-refs.py"], areas: ["integration-trains"] }
+  - { paths: ["src/knowledge/__init__.py", "src/knowledge/imports/**", "tests/fixtures/knowledge/**"], areas: ["knowledge-inventory"] }
+  - { paths: ["src/records/**", "src/knowledge/**", "src/database/queries/record_queries.py", "src/database/queries/knowledge_queries.py", "tests/record_helpers.py"], areas: ["knowledge-records"] }
   - { paths: ["src/object_loop/**", "src/commands/object_loop_commands.py", "src/commands/contracts/object_loop.py", "src/api/models/object_loop.py"], areas: ["object-loop"] }
   # Match the core now and the sibling command/CLI files as they land.
   - { paths: ["src/**/collaboration*.py", "src/commands/*wait_commands.py", "src/cli/*wait*.py"], areas: ["collaboration"] }
-  - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py"], areas: ["agent-waits"] }
+  - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py", "src/api/models/wait.py"], areas: ["agent-waits"] }
+  - { paths: ["src/waits/**", "src/wait_runtime/**", "src/database/queries/wait_queries.py", "src/database/queries/continuation_queries.py", "src/commands/wait_v2_commands.py", "src/commands/contracts/wait_v2.py"], areas: ["agent-waits"] }
+  # The remaining v2 ownership paths land with the leaves that create them.
+  - { paths: ["src/waits/**", "src/database/queries/wait_source_queries.py", "src/doctor/wait_checks.py"], areas: ["agent-waits"] }
+  - { paths: ["src/database/queries/wait_metrics.py", "src/metrics/waits.py"], areas: ["agent-waits", "metrics"] }
+  - { paths: ["migrations/versions/a00000000102_workspace_kind_limits.py", "migrations/versions/a00000000110_wait_records.py"], areas: ["agent-waits"] }
+  - { paths: ["src/agent_cron.py", "src/database/queries/agent_cron_queries.py", "src/commands/cron_commands.py", "src/commands/contracts/cron.py", "src/cli/cron.py", "src/api/models/cron.py"], areas: ["agent-cron"] }
   - { paths: ["src/jobs/**", "src/commands/job_commands.py", "src/database/queries/job_queries.py", "src/commands/contracts/job.py", "src/api/models/job.py", "src/cli/jobs.py"], areas: ["managed-jobs"] }
+  - { paths: ["src/jobs/pytest_output.py"], areas: ["development-delivery"] }
   # ---- repository files outside src/
   - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
   - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }
   - { paths: ["docs/**"], areas: ["docs-guards"] }
+  - { paths: ["tests/fixtures/integration_replay/**"], areas: ["epic-trains"] }
   - { paths: ["docs/reference/cli-command-inventory.json"], areas: ["cli-framework"] }
   - { paths: ["docs/reference/cli/**"], areas: ["cli-framework", "install"] }
   - { paths: ["docs/reference/configuration*"], areas: ["config"] }
@@ -98,27 +112,39 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["package-lock.json"], areas: ["api-contract"] }
   - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
   - { paths: ["scripts/regenerate-generated.sh", ".gitattributes"], areas: ["generated-artifacts"] }
+  - { paths: ["scripts/generate-recorded-artifacts.py", "tests/fixtures/generated_sources/**"], areas: ["generated-artifacts", "integration-controls", "playbook-definition", "shipped-playbooks"] }
+  - { paths: ["scripts/generate-worker-capabilities.py"], areas: ["profiles"] }
   - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
   - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
-  - { paths: ["scripts/generate-cli-command-inventory.py"], areas: ["cli-framework"] }
+  - { paths: ["scripts/generate-promotion-flow-schema.py", "docs/reference/promotion-flow-schema.json", "src/commands/promote_commands.py", "src/commands/contracts/promote.py", "src/integration/promotion_steps.py", "src/integration/promotion_routing.py"], areas: ["integration-promotion"] }
+  - { paths: ["scripts/generate-cli-command-inventory.py", "scripts/generate-command-catalogue.py"], areas: ["cli-framework"] }
+  - { paths: ["scripts/refresh-command-audit-digest.py"], areas: ["command-dispatch"] }
   - { paths: ["scripts/build_release_artifact.py"], areas: ["packaging", "dashboard-server", "install"] }
   - { paths: ["scripts/check-merge-conflicts.sh"], areas: ["git-manager"] }
+  - { paths: ["scripts/operator-checks/**"], areas: ["supervisor"] }
   - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
+  - { paths: ["scripts/check_additive_migrations.py", "scripts/rollback_drill.py"], areas: ["database", "install"] }
   - { paths: ["scripts/migrate-legacy-playbook-worker-routes.py"], areas: ["playbook-authoring", "task-routing"] }
   - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }
+  - { paths: ["scripts/reconcile-claude-usage.py"], areas: ["transcripts"] }
+  - { paths: ["scripts/token-efficiency-report.py"], areas: ["metrics"] }
   - { paths: ["scripts/seed_layout_perf.py"], areas: ["graph-layout"] }
   - { paths: ["scripts/dashboard-perf/*.py"], areas: ["metrics"] }
+  - { paths: ["dashboard/src/pages/metrics/__tests__/waitFaultAccounting.json"], areas: ["metrics"] }
   - { paths: ["scripts/pkg5_scenarios/**"], areas: ["playbook-engine"] }
   - { paths: ["scripts/generate-playbook-schema.py"], areas: ["playbook-definition"] }
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
   - { paths: ["scripts/install.sh", "scripts/install-wsl.sh", "scripts/install-windows.ps1"], areas: ["install"] }
   - { paths: ["scripts/generate-selection-catalogue.py", "scripts/replay-test-selection.py"], areas: ["test-selection"] }
+  - { paths: ["scripts/evaluate-knowledge.py", "scripts/generate-knowledge-fixtures.py", "tests/fixtures/knowledge/**", "tests/knowledge_fixture_adapter.py", "src/knowledge/delivery.py", "src/prime/hook_envelopes.py"], areas: ["knowledge-evaluation"] }
 
   # ---- test helpers, fixtures and the selection artifacts
+  - { paths: ["tests/integration_primitive_scope.py"], areas: ["integration-trains", "integration-promotion"] }
   - { paths: ["tests/selection_*"], areas: ["test-selection"] }
   - { paths: ["tests/assignment_routing_helpers.py"], areas: ["orchestrator", "task-lifecycle", "task-routing"] }
   - { paths: ["tests/dashboard_server_helpers.py"], areas: ["dashboard-server", "install"] }
   - { paths: ["tests/git_mock_helpers.py"], areas: ["workspaces", "git-manager"] }
+  - { paths: ["tests/git_seed_helpers.py"], areas: ["git-manager", "worktree-slots", "integration-trains", "epic-trains"] }
   - { paths: ["tests/installer_machine.py"], areas: ["install"] }
   - { paths: ["tests/llm/**"], areas: ["llm-client"] }
   - { paths: ["tests/perf/__init__.py"], areas: ["claims", "formulas", "task-hierarchy", "graph-layout"] }
@@ -127,8 +153,12 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/playbook_fixture_activation.py"], areas: ["shipped-playbooks"] }
   - { paths: ["tests/playbook_v2_engine_helpers.py"], areas: ["ci-sentinel", "epic-trains", "integration-promotion", "playbook-engine", "shipped-playbooks", "task-routing"] }
   - { paths: ["tests/playbook_v2_helpers.py"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
+  - { paths: ["tests/_private_values_helper.py"], areas: ["playbook-engine", "shipped-playbooks"] }
   - { paths: ["tests/session_dispatch_helpers.py"], areas: ["integration-promotion", "memory-facts", "orchestrator", "profiles", "prompts", "provider-failover", "task-lifecycle"] }
   - { paths: ["tests/fixtures/app_mode/**"], areas: ["integration-controls"] }
+  - { paths: ["tests/fixtures/integration/**"], areas: ["integration-promotion"] }
+  - { paths: ["tests/fixtures/integration/failure-groups.json"], areas: ["integration-trains"] }
+  - { paths: ["tests/fixtures/integration_replay/**"], areas: ["integration-trains"] }
   - { paths: ["tests/fixtures/contracts/**"], areas: ["ci-sentinel", "playbook-engine", "provider-failover", "shipped-playbooks"] }
   - { paths: ["tests/fixtures/fake_gh/**"], areas: ["projects", "github"] }
   - { paths: ["tests/fixtures/formulas/**"], areas: ["formulas", "intelligence-classes", "e2e-kit"] }
@@ -138,6 +168,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/fixtures/playbooks/**"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine", "shipped-playbooks", "ci-sentinel", "supervisor", "task-routing", "epic-trains", "integration-promotion", "document-reviews", "docs-guards"] }
   - { paths: ["tests/fixtures/provider_failover/**"], areas: ["provider-failover", "e2e-kit"] }
   - { paths: ["tests/fixtures/reports/**"], areas: ["digest"] }
+  - { paths: ["tests/fixtures/routing/**"], areas: ["task-routing"] }
   - { paths: ["tests/fixtures/train_onboarding/**"], areas: ["epic-trains"] }
   - { paths: ["tests/fixtures/task_graphs/**"], areas: ["task-graph-creation", "intelligence-classes", "integration-trains"] }
   - { paths: ["tests/fixtures/transcripts/**"], areas: ["transcripts"] }
@@ -148,8 +179,8 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/aq_uri.py", "src/wiki_links.py", "src/vault_*.py", "src/file_watcher.py", "src/readme_handler.py", "src/override_handler.py", "src/reference_stub_enricher.py", "src/workspace_spec_watcher.py"], areas: ["vault"] }
   - { paths: ["src/vault.py"], areas: ["vault", "profiles", "intelligence-classes", "harnesses"] }
   - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
-  - { paths: ["src/claim_file.py", "src/pool_claims.py"], areas: ["claims", "worker-pools"] }
-  - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py"], areas: ["config"] }
+  - { paths: ["src/claim_file.py", "src/claim_timing.py", "src/claim_preparation.py", "src/pool_claims.py", "src/preparation_failure.py"], areas: ["claims", "worker-pools"] }
+  - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py", "src/portable_setup.py"], areas: ["config"] }
   - { paths: ["src/conversations/**"], areas: ["discord-conversations", "supervisor"] }
   - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/docs_urls.py"], areas: ["docs-guards", "playbook-authoring"] }
@@ -160,13 +191,14 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/llm_logger.py", "src/logging_config.py"], areas: ["logging"] }
   - { paths: ["src/main.py"], areas: ["orchestrator", "daemon-cli"] }
   - { paths: ["src/orphan_workflow_recovery.py", "src/workflow_pipeline_view.py", "src/workflow_stage_resume_handler.py"], areas: ["orchestrator"] }
-  - { paths: ["src/prompt_builder.py", "src/prompt_manager.py"], areas: ["prompts"] }
+  - { paths: ["src/prompt_builder.py", "src/prompt_manager.py", "src/task_templates.py"], areas: ["prompts"] }
   - { paths: ["src/dashboard_paths.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/remote_links.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
   - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }
   - { paths: ["src/surface_schema.py"], areas: ["command-dispatch"] }
-  - { paths: ["src/workspace_names.py"], areas: ["workspaces"] }
+  - { paths: ["src/warm_workspaces.py", "src/build_cache.py"], areas: ["workspaces", "integration-trains", "managed-jobs"] }
+  - { paths: ["src/workspace_names.py", "src/workspace_listing.py", "src/workspace_registration.py"], areas: ["workspaces"] }
   - { paths: ["src/playbook_schema.json", "src/playbook_v2_schema.json"], areas: ["playbook-definition"] }
 
   # ---- src/ packages
@@ -178,7 +210,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/api/providers.py", "src/api/models/provider.py"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/api/pull_requests.py", "src/api/models/git.py"], areas: ["github"] }
   - { paths: ["src/api/task_files.py", "src/api/workspace_files.py", "src/api/file_serving.py", "src/api/task_attachments.py", "src/api/models/files.py"], areas: ["file-access"] }
-  - { paths: ["src/api/pane_stream.py", "src/api/streams.py", "src/api/sessions.py", "src/api/terminal_stream.py", "src/api/task_sessions.py", "src/api/models/session.py"], areas: ["panes-streams", "session-runtime", "tmux-terminals"] }
+  - { paths: ["src/api/pane_stream.py", "src/api/streams.py", "src/api/sessions.py", "src/api/terminal_stream.py", "src/api/host_shell.py", "src/api/task_sessions.py", "src/api/models/session.py"], areas: ["panes-streams", "session-runtime", "tmux-terminals"] }
   - { paths: ["src/api/messages.py", "src/api/models/message.py"], areas: ["messages"] }
   - { paths: ["src/api/websocket.py"], areas: ["events", "agent-questions"] }
   - { paths: ["src/api/routers/proposals.py", "src/api/models/review.py"], areas: ["document-reviews"] }
@@ -239,15 +271,17 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/ops_commands.py"], areas: ["provider-usage", "metrics"] }
   - { paths: ["src/commands/pool_admin.py"], areas: ["worker-pools", "profiles"] }
   - { paths: ["src/commands/phase_commands.py"], areas: ["task-hierarchy"] }
-  - { paths: ["src/commands/playbook_commands.py", "src/commands/playbook_v2_commands.py"], areas: ["playbook-authoring", "playbook-engine"] }
+  - { paths: ["src/commands/playbook_commands.py", "src/commands/playbook_v2_commands.py", "src/commands/playbook_state_commands.py"], areas: ["playbook-authoring", "playbook-engine"] }
   - { paths: ["src/commands/plugin_commands.py"], areas: ["plugins"] }
   - { paths: ["src/commands/profile_commands.py"], areas: ["profiles", "intelligence-classes"] }
   - { paths: ["src/commands/project_commands.py", "src/commands/project_onboarding_commands.py"], areas: ["projects"] }
-  - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
+  - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/ask_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
+  - { paths: ["src/commands/task_changes.py"], areas: ["task-dependencies", "task-hierarchy", "task-archive", "task-comments", "work-graph", "task-routing"] }
   - { paths: ["src/commands/provider_commands.py", "src/commands/provider_allocation_commands.py"], areas: ["provider-failover"] }
   - { paths: ["src/commands/question_commands.py"], areas: ["agent-questions"] }
   - { paths: ["src/commands/report_commands.py"], areas: ["digest"] }
   - { paths: ["src/commands/routing_commands.py"], areas: ["task-routing"] }
+  - { paths: ["src/commands/operator_commands.py", "src/commands/operator_authority.py"], areas: ["operator-workers", "task-routing", "policy-profiles"] }
   - { paths: ["src/commands/session_commands.py"], areas: ["session-runtime", "claims"] }
   - { paths: ["src/commands/task_commands.py", "src/commands/helpers.py"], areas: ["task-lifecycle", "task-hierarchy", "task-dependencies", "task-archive"] }
   - { paths: ["src/commands/task_comment_commands.py"], areas: ["task-comments"] }
@@ -298,9 +332,11 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/discord/**"], areas: ["discord"] }
   - { paths: ["src/discord/escalation_*.py"], areas: ["escalations"] }
   - { paths: ["src/doctor/**"], areas: ["doctor"] }
+  - { paths: ["src/observations/**"], areas: ["doctor", "playbook-engine"] }
   - { paths: ["src/doctor/capability_checks.py"], areas: ["capabilities"] }
   - { paths: ["src/doctor/dashboard_*.py"], areas: ["dashboard-server", "dashboard-state"] }
   - { paths: ["src/doctor/db_checks.py"], areas: ["migrations"] }
+  - { paths: ["src/doctor/escalation_checks.py"], areas: ["escalations"] }
   - { paths: ["src/doctor/formula_checks.py"], areas: ["formulas"] }
   - { paths: ["src/doctor/git_checks.py", "src/doctor/integration_checks.py"], areas: ["integration-controls", "integration-ownership", "development-delivery"] }
   - { paths: ["src/doctor/hierarchy_checks.py"], areas: ["task-hierarchy"] }
@@ -325,20 +361,24 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/install/**"], areas: ["install"] }
   - { paths: ["src/install/pools.py"], areas: ["worker-pools"] }
 
-  - { paths: ["src/integration/delivery_truth.py", "src/integration/admission.py"], areas: ["development-delivery", "work-graph"] }
+  - { paths: ["src/integration/delivery_truth.py", "src/integration/admission.py", "src/integration/pr_admission.py"], areas: ["development-delivery", "work-graph"] }
   - { paths: ["src/integration/delivery_observer.py"], areas: ["development-delivery", "task-lifecycle", "task-archive", "integration-controls"] }
+  - { paths: ["src/operator_decisions.py"], areas: ["integration-trains"] }
   - { paths: ["src/integration/**"], areas: ["integration-trains"] }
   - { paths: ["src/integration/repair_progress.py"], areas: ["integration-promotion", "integration-ownership"] }
-  - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/identity_rebind.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py", "src/integration/recovery_controls.py"], areas: ["integration-ownership"] }
-  - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_completion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/review_evidence.py", "src/integration/legacy_*.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
-  - { paths: ["src/integration/controls.py", "src/integration/status.py"], areas: ["integration-controls"] }
+  - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py"], areas: ["integration-ownership"] }
+  - { paths: ["src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/repair_lineage.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/status.py"], areas: ["integration-controls"] }
   - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
-  - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
-  - { paths: ["src/integration/development*.py", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
-  - { paths: ["src/integration/delivery_path.py", "src/integration/manual_delivery.py"], areas: ["development-delivery", "integration-trains"] }
+  - { paths: ["src/integration/parent_source.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/cancelled_collection_recovery.py"], areas: ["integration-promotion", "integration-controls"] }
+  - { paths: ["src/integration/epic_*.py"], areas: ["epic-trains"] }
+  - { paths: ["src/integration/development*.py", "src/integration/repository_git.py", "src/integration/development_policy_template.md", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
+  - { paths: ["src/integration/delivery_path.py"], areas: ["development-delivery", "integration-trains"] }
+  - { paths: ["src/integration/truth_*.py"], areas: ["integration-trains", "integration-ownership"] }
   - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
-  - { paths: ["src/integration/train_onboarding.py", "src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
+  - { paths: ["src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
 
   - { paths: ["src/integrations/**"], areas: ["plugins"] }
   - { paths: ["src/intelligence_classes/**"], areas: ["intelligence-classes"] }
@@ -361,6 +401,7 @@ ownership:                      # path globs -> areas whose modules join M
 
   - { paths: ["src/panes/**"], areas: ["panes-streams"] }
   - { paths: ["src/playbooks/**"], areas: ["playbook-engine"] }
+  - { paths: ["src/playbooks/features.py"], areas: ["playbook-definition", "playbook-authoring"] }
   - { paths: ["src/playbooks/definition.py", "src/playbooks/expressions.py", "src/playbooks/validation.py", "src/playbooks/explanation.py", "src/playbooks/graph_projection.py", "src/playbooks/artifact_*.py", "src/playbooks/semantic_diff.py", "src/playbooks/pipeline_lowering.py"], areas: ["playbook-definition"] }
   - { paths: ["src/playbooks/authoring.py", "src/playbooks/proposal.py", "src/playbooks/activation.py", "src/playbooks/required.py", "src/playbooks/profiles.py"], areas: ["playbook-authoring", "shipped-playbooks"] }
   - { paths: ["src/playbooks/routing.py"], areas: ["task-routing"] }
@@ -390,12 +431,14 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/routing/**"], areas: ["task-routing"] }
   - { paths: ["src/resources/test_db_reaper.py"], areas: ["test-substrate"] }
   - { paths: ["src/resources/slot_report.py"], areas: ["development-delivery"] }
+  - { paths: ["src/asks/**", "src/database/queries/ask_queries.py", "src/database/queries/ask_input_queries.py", "src/database/queries/ask_delivery_queries.py", "src/commands/ask_communication_commands.py", "tests/ask_helpers.py"], areas: ["document-reviews"] }
   - { paths: ["src/reviews/**"], areas: ["document-reviews"] }
   - { paths: ["src/runtimes/**"], areas: ["session-runtime"] }
   - { paths: ["src/services/**"], areas: ["plugins"] }
 
   - { paths: ["src/sessions/**"], areas: ["session-runtime"] }
-  - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
+  - { paths: ["src/sessions/obsolete.py"], areas: ["task-lifecycle", "integration-ownership"] }
+  - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/host_shell.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
   - { paths: ["src/sessions/transcripts/**"], areas: ["transcripts"] }
   - { paths: ["src/sessions/pane_broadcaster.py"], areas: ["panes-streams"] }
   - { paths: ["src/sessions/questions.py"], areas: ["agent-questions"] }
@@ -405,6 +448,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/skills/**"], areas: ["doctor", "docs-guards", "worker-pools"] }
 
   - { paths: ["src/task_graph/**"], areas: ["task-graph-creation"] }
+  - { paths: ["src/task_graph/integration_dependencies.py"], areas: ["epic-trains"] }
   - { paths: ["src/task_graph/layout/**"], areas: ["graph-layout"] }
   - { paths: ["src/task_graph/formulas.py"], areas: ["formulas"] }
   - { paths: ["src/test_selection/**"], areas: ["test-selection"] }
@@ -414,6 +458,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/tools/**"], areas: ["tools-mcp", "api-contract"] }
 
 source_scanning:                # tests that read the tree; any matching trigger adds them
+  - { modules: ["tests/test_integration_size.py"], triggers: ["src/**", "dashboard/src/**", "migrations/integration_guards.py", "tests/integration_ownership*"] }
   - { modules: ["tests/test_v1_removal.py"], triggers: ["src/**/*.py", "tests/**/test_*.py"] }
   - modules:
       - "tests/test_sqlite_removal.py"
