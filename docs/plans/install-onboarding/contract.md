@@ -36,6 +36,16 @@ This makes the release artifact and `aq install` the public installation
 surface. `setup.sh` stays a contributor convenience for a source checkout; it
 is not the user-facing installer, package manager, or upgrade mechanism.
 
+Graft is optional and recommended: the wizard offers it and `--with graft`
+selects it. Its two steps (`graft.cli`, `graft.repos`) are advisory, so graft
+never changes the outcome, the exit code or first-task readiness. A missing
+graft is installed from the cleared `0.18.x` series with npm; a present one is
+never upgraded. Telemetry is turned off, and graft is set up per repository
+only — `graft init --no-global --no-statusline --no-agents` in each registered
+project's main checkout — never machine-wide and never in worker worktrees. A
+rerun reports drift instead of re-wiring. The operator policy behind this is
+the 2026-09-27 amendment to the project-defaults design.
+
 ## Supported-platform matrix
 
 The installer must reject an unsupported host before changing it, and report

@@ -19,7 +19,7 @@ from src.config import AppConfig
 from src.jobs.adapters import finite_command
 from src.jobs.artifacts import OutputStore, job_directory
 from src.jobs.output import read_output
-from src.jobs.policy import JobError
+from src.jobs.policy import JobError, presets, validate_args
 from tests.test_jobs_queries import db as _db_fixture
 from tests.test_jobs_queries import values
 
@@ -202,3 +202,76 @@ def test_finite_adapter_refuses_independent_shell_or_watchers(command):
 
 def test_finite_adapter_accepts_python3_ruff():
     assert finite_command("python3 -m ruff check src") == ("lint", ["src"])
+
+
+@pytest.mark.parametrize("command,preset", [
+    ("npm ci", "npm_ci"),
+    ("npm test", "npm_test"),
+    ("npm run build", "build"),
+    ("pnpm install --frozen-lockfile", "pnpm_install"),
+    ("pnpm check", "pnpm_check"),
+    ("pnpm run build", "pnpm_build"),
+])
+def test_finite_adapter_accepts_bounded_node_commands(command, preset):
+    assert finite_command(command) == (preset, [])
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        finite_command(command + " --extra")
+
+
+def test_node_presets_use_server_resolved_executables(tmp_path, monkeypatch):
+    for name in ("node", "npm", "pnpm"):
+        binary = tmp_path / name
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    accepted = presets(tmp_path)
+    assert accepted["build"].argv == (str(tmp_path / "npm"), "run", "build")
+    assert accepted["pnpm_install"].argv == (
+        str(tmp_path / "pnpm"), "install", "--frozen-lockfile"
+    )
+    assert validate_args(accepted["npm_ci"], [], tmp_path, 1) == [
+        str(tmp_path / "npm"), "ci"
+    ]
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        validate_args(accepted["npm_ci"], ["--unsafe"], tmp_path, 1)
+
+
+def test_test_preset_folds_xdist_only_when_available(tmp_path):
+    preset = presets(tmp_path)["test"]
+    assert validate_args(preset, ["tests"], tmp_path, 3)[-2:] == ["-n", "3"]
+    assert validate_args(preset, ["tests"], tmp_path, 3, xdist=False)[-1:] == ["tests"]
+    assert "-n" not in validate_args(
+        preset, ["tests", "-p", "no:xdist"], tmp_path, 3
+    )
+
+
+@pytest.mark.parametrize("workers", [
+    ["-n", "0"], ["-n0"], ["--numprocesses", "0"], ["--numprocesses=0"],
+])
+@pytest.mark.parametrize("xdist,plugins", [
+    (True, []), (False, []), (True, ["-p", "no:xdist"]), (True, ["-pno:xdist"]),
+])
+def test_test_preset_accepts_serial_without_requiring_xdist(tmp_path, workers, xdist, plugins):
+    preset = presets(tmp_path)["test"]
+    args = ["tests/test_example.py", *workers, *plugins]
+    expected = [*preset.argv, "tests/test_example.py", *plugins]
+    if xdist and not plugins:
+        expected += ["-n", "0"]
+    assert validate_args(preset, args, tmp_path, 3, xdist=xdist) == expected
+    assert args == ["tests/test_example.py", *workers, *plugins]
+
+
+@pytest.mark.parametrize("workers", [
+    ["-n", "1"], ["-n4"], ["-n", "auto"], ["--numprocesses", "logical"],
+    ["--numprocesses=4"], ["-n"], ["--numprocesses"], ["--numprocesses="],
+    ["-n", "-1"], ["-n0", "-n4"], ["-n4", "-n0"],
+    ["--numprocesses-bad=0"],
+])
+def test_test_preset_still_denies_worker_overrides(tmp_path, workers):
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        validate_args(presets(tmp_path)["test"], ["tests", *workers], tmp_path, 3)
+
+
+def test_serial_option_is_not_accepted_by_lint_preset(tmp_path):
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        validate_args(presets(tmp_path)["lint"], ["src", "-n0"], tmp_path, 3)
