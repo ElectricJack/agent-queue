@@ -1555,10 +1555,8 @@ class ExecutionMixin:
 
         pr_url = None
         completed_ok = True
-        managed_parent_suspended = False
         managed_parent_completed = False
         train_leaf_root = False
-        hier_child_leaf = False
         repair_writer_closed = False
         repair_writer_head = None
         repair_commit_proof = None
@@ -1747,9 +1745,7 @@ class ExecutionMixin:
                                         f"{completion['outcome']}."
                                     ]
                                     ctx.verification_feedback = ctx.verification_issues[0]
-                        elif managed_parent and getattr(
-                            self.config.integration, "git_first", "shadow"
-                        ) == "active":
+                        elif managed_parent:
                             # The train's epic lane, not a parent episode,
                             # collects this container: it closes normally at
                             # its exact final published head.  A refusal
@@ -1767,31 +1763,12 @@ class ExecutionMixin:
                                     f"Container checkpoint was refused: {exc}."
                                 ]
                                 ctx.verification_feedback = ctx.verification_issues[0]
-                        elif managed_parent:
-                            await hierarchy.checkpoint_and_suspend_parent(
-                                task.id,
-                                head,
-                                int(checkpoint["generation"]),
-                                expect_claim_epoch=expect_claim_epoch,
-                                accepted_close=accepted_close,
-                            )
-                            managed_parent_suspended = True
-                            pr_url = None
                         else:
                             await hierarchy.checkpoint_leaf_completion(task.id, head)
                             train_leaf_root = bool(
                                 task.parent_task_id is None
                                 and getattr(project, "hierarchical_integration_mode", None)
                                 == "train"
-                            )
-                            # A child is delivered by collection into its
-                            # container's branch.  When no collector will ever
-                            # take it, it opens its own pull request to the
-                            # default branch below; a container that has not
-                            # suspended itself yet is not stranded, so the
-                            # close leg is free.
-                            hier_child_leaf = bool(
-                                task.parent_task_id is not None and hierarchy_managed
                             )
                 else:
                     pr_url, completed_ok = await self._run_completion_pipeline(ctx)
@@ -1836,7 +1813,7 @@ class ExecutionMixin:
 
         git_completion = bool(
             outcome == "pass" and completed_ok
-            and not (managed_parent_suspended or managed_parent_completed or repair_writer_closed)
+            and not (managed_parent_completed or repair_writer_closed)
             and verifier_operation is None
             and (getattr(project, "hierarchical_integration_mode", None) in TRAIN_MODES
                  or ordinary_repair is not None)
@@ -1883,7 +1860,7 @@ class ExecutionMixin:
                 }
         if (
             session_live and outcome == "pass" and completed_ok and not git_completion
-            and not (managed_parent_suspended or managed_parent_completed or repair_writer_closed)
+            and not (managed_parent_completed or repair_writer_closed)
             and verifier_operation is None and await self._task_uses_git(ctx)
             and not await self._vault_only_delivery(ctx)
             and not (await self._task_produces_no_code(ctx) and ctx.no_work_proven)
@@ -1971,10 +1948,7 @@ class ExecutionMixin:
                 if draft and draft.get("identity") == accepted_close:
                     draft["completion"]["commits"] = [completion_source]
                     await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
-        if managed_parent_suspended:
-            new_status = TaskStatus.PAUSED
-            context = "integration_parent_suspended"
-        elif repair_writer_closed:
+        if repair_writer_closed:
             new_status = TaskStatus.COMPLETED
             context = "integration_repair_delegate_closed"
         elif outcome == "pass" and completed_ok:
@@ -2057,10 +2031,9 @@ class ExecutionMixin:
             ):
                 pr_kwargs["pr_merge_gate"] = pr_url
         try:
-            if managed_parent_suspended or managed_parent_completed:
-                # The suspension transition and episode reservation above
-                # or guarded parent completion are authoritative writes; do
-                # not run generic completion.
+            if managed_parent_completed:
+                # Guarded parent completion is authoritative; do not run
+                # generic completion again.
                 pass
             elif verification_reopened:
                 # _reopen_with_verification_feedback performed the state
@@ -2186,48 +2159,6 @@ class ExecutionMixin:
                 logger.warning(
                     "Task %s: could not open the train root pull request; "
                     "the root PR reconciler will retry",
-                    task.id,
-                    exc_info=True,
-                )
-
-        # A completed child is delivered by collection into its container's
-        # branch, and nothing in a healthy train ever opens it a pull request:
-        # only a root does (``open_for_epic`` refuses a parented task).  When
-        # the container has no collector left to carry it -- a paused epic whose
-        # episode lost its operation, an episode no Subject walks after the
-        # legacy engine's removal, or a container with no collection at all --
-        # this head would otherwise sit on a pushed branch forever
-        # (bright-rapids-84.1/.2/.3/.4/.7/.9, pr_url NULL).  Open it to the
-        # default branch instead.  Best-effort like the root leg above: a
-        # GitHub failure must not undo a committed COMPLETED, and the
-        # ``stranded_child`` line of ``stall.sweep`` says so out loud.  Under
-        # ``git_first: active`` the train is every child's collector (its lane
-        # for the parent branch) and no parent Subject runs, so this leg would
-        # read every child as ``no_consumer`` and open it around the train.
-        if (
-            hier_child_leaf
-            and new_status == TaskStatus.COMPLETED
-            and getattr(self.config.integration, "git_first", "shadow") != "active"
-        ):
-            from src.integration.stranded_children import (
-                open_stranded_child_pull_request,
-            )
-
-            try:
-                opened = await _bounded_close_publication(
-                    task.id, "stranded child pull request",
-                    lambda: open_stranded_child_pull_request(self.db, self.git, task.id),
-                )
-                if opened is not None:
-                    logger.info(
-                        "Task %s: stranded child pull request outcome: %s (%s)",
-                        task.id, opened["outcome"], opened.get("reason"),
-                    )
-                    pr_url = opened.get("pr_url") or pr_url
-            except Exception:
-                logger.warning(
-                    "Task %s: could not open a pull request for a child no "
-                    "collector will deliver; stall.sweep will name it",
                     task.id,
                     exc_info=True,
                 )
@@ -2409,12 +2340,9 @@ class ExecutionMixin:
                 completed_writer = owns_own_branch
             elif (
                 new_status != TaskStatus.COMPLETED
-                # The parent/repair legs below own their own release and their
-                # own workspaces; a checkpointed-and-suspended parent in
-                # particular lands non-COMPLETED on a *passing* close and must
-                # never be handed the leaf restore this leg performs.
+                # Parent and repair completion own their release/workspaces
+                # and must not receive the leaf restore this leg performs.
                 and not repair_writer_closed
-                and not managed_parent_suspended
                 and not managed_parent_completed
             ):
                 failed_writer = owns_own_branch
@@ -2436,7 +2364,7 @@ class ExecutionMixin:
         from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES, RETRYABLE_INTEGRATION_OWNER_ROLES
 
         release_needed = (
-            repair_writer_closed or managed_parent_suspended or completed_writer or failed_writer
+            repair_writer_closed or completed_writer or failed_writer
             or requeued_writer
         )
         if ordinary_repair is not None:

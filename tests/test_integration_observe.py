@@ -11,11 +11,9 @@ import pytest
 from sqlalchemy import event, insert, select
 
 from src.database import Database, tables as t
-from src.git.manager import RemoteRefResult, RemoteRefState
 from src.integration.models import Fence
 from src.integration.observe import (
     DatabaseObservationReader,
-    GitObservationReader,
     IntegrationObserver,
     ObservationRows,
 )
@@ -839,7 +837,8 @@ async def test_writer_push_baseline_uses_last_builder_write_not_a_late_reconcili
     assert (await observe(data, git)).writer.status is WriterStatus.CLAIMED
 
 
-async def test_current_operation_budget_conflicts_and_proven_writer_push():
+@pytest.mark.parametrize("deadline, limit", [(950, 2), (None, 2), (950, 0), (None, 0)])
+async def test_current_operation_budget_conflicts_and_proven_writer_push(deadline, limit):
     data = writer_snapshot(
         "IN_PROGRESS", [{"id": "live", "task_id": "repair", "state": "running", "started_at": 900}]
     )
@@ -855,10 +854,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
                 "starting_sha": BASE,
                 "intelligence_class": "deep-high",
                 "started_at": 800,
-                "deadline_at": 950,
+                "deadline_at": deadline,
                 "attempts": 1,
                 "dossier": {
-                    "budget": {"attempt_limit": 2},
+                    "budget": {"attempt_limit": limit},
                     "supervisor_recovery": {
                         "reason": "unchanged",
                         "subject": {"candidate_sha": HEAD},
@@ -893,6 +892,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
     assert facts.writer.fence_token == 4 and facts.budget.intelligence_class == "deep-high"
     assert facts.budget.attempts == 1 and facts.no_progress and not facts.ladder_exhausted
     assert facts.conflicts[0].files == ("a.py", "z.py")
+
+    assert facts.budget.deadline_at == deadline
+    assert facts.budget.attempt_limit == (limit or None)
+    assert facts.budget.expired(100_000) == (deadline is not None)
 
 
 async def test_journals_keep_only_unresolved_writes_and_ci_requests_are_pending():
@@ -1076,68 +1079,6 @@ async def test_missing_publisher_authority_stays_absent_and_collector_belongs_to
         data.subject
     )
     assert type(plain) is SubjectFacts  # no shared contract edits
-
-
-async def test_git_adapter_uses_authorized_repository_and_strict_reads_only():
-    git = AsyncMock()
-    git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
-    git.ais_ancestor.return_value = None
-    adapter = GitObservationReader(git)
-    repository = snapshot().repository
-    assert (await adapter.remote_head(repository, "refs/heads/main")).sha == HEAD
-    git.als_remote_ref.assert_awaited_once_with(
-        "/checkout", "main", repository_url=repository["url"]
-    )
-    assert await adapter.is_ancestor(repository, BASE, HEAD) is None
-    git.ais_ancestor.assert_awaited_once_with("/checkout", BASE, HEAD, strict=True)
-    git.afetch_origin.assert_not_called()
-    git.apush_branch.assert_not_called()
-
-
-async def test_git_adapter_reads_remote_heads_in_batched_chunks(monkeypatch):
-    from src.integration import observe as observe_module
-
-    monkeypatch.setattr(observe_module, "_REMOTE_REF_CHUNK", 2)
-
-    async def read(path, branches, *, repository_url):
-        if "boom" in branches:
-            raise ConnectionError("do not expose exception detail")
-        return {
-            branch: RemoteRefResult(RemoteRefState.ABSENT)
-            if branch == "gone"
-            else RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
-            for branch in branches
-        }
-
-    git = AsyncMock()
-    git.als_remote_refs.side_effect = read
-    repository = snapshot().repository
-    refs = [
-        "refs/heads/main",
-        "refs/heads/gone",
-        "refs/heads/-bad",
-        "refs/tags/v1",
-        "refs/heads/a",
-        "refs/heads/boom",
-    ]
-    heads = await GitObservationReader(git).remote_heads(repository, refs)
-    assert {ref: (head.ref, head.state) for ref, head in heads.items()} == {
-        "refs/heads/main": ("refs/heads/main", "present"),
-        "refs/heads/gone": ("refs/heads/gone", "absent"),
-        "refs/heads/-bad": ("refs/heads/-bad", "unknown"),
-        "refs/tags/v1": ("refs/tags/v1", "unknown"),
-        "refs/heads/a": ("refs/heads/a", "unknown"),
-        "refs/heads/boom": ("refs/heads/boom", "unknown"),
-    }
-    assert heads["refs/heads/main"].sha == HEAD
-    assert [call.args for call in git.als_remote_refs.await_args_list] == [
-        ("/checkout", ["main", "gone"]),
-        ("/checkout", ["a", "boom"]),
-    ]
-    assert {call.kwargs["repository_url"] for call in git.als_remote_refs.await_args_list} == {
-        repository["url"]
-    }
-    git.als_remote_ref.assert_not_called()
 
 
 async def test_observer_reads_every_remote_head_in_one_batched_port_call():
@@ -1332,31 +1273,6 @@ async def test_reconciler_without_current_candidate_does_not_probe_remote_ci():
     facts = await IntegrationObserver(Reader(data), Git(), candidate_ci=live).observe(data.subject)
     live.assert_not_awaited()
     assert facts.ci_state is CIState.NONE
-
-
-
-
-async def test_git_adapter_reads_many_heads_in_batched_round_trips():
-    git = AsyncMock()
-    refs = [f"refs/heads/aq/member-{index:03d}" for index in range(250)]
-
-    async def batch(path, branches, *, repository_url):
-        return {
-            branch: RemoteRefResult(RemoteRefState.PRESENT, oid=HEAD)
-            if branch.endswith("0")
-            else RemoteRefResult(RemoteRefState.ABSENT)
-            for branch in branches
-        }
-
-    git.als_remote_refs.side_effect = batch
-    adapter = GitObservationReader(git)
-    repository = snapshot().repository
-    heads = await adapter.remote_heads(repository, [*refs, "refs/tags/v1"])
-    assert list(heads) == [*refs, "refs/tags/v1"]
-    assert heads[refs[0]].state == "present" and heads[refs[0]].sha == HEAD
-    assert heads[refs[1]].state == "absent" and heads["refs/tags/v1"].state == "unknown"
-    assert git.als_remote_refs.await_count == 2  # chunked, never one call per ref
-    git.als_remote_ref.assert_not_called()
 
 
 async def test_observer_prefers_batched_remote_heads_and_keeps_errors_unknown():
