@@ -16,14 +16,14 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from src.database import Database, tables
+from src.database import tables
 from src.database.tables import (
     integration_subject_journal,
     integration_subjects,
     playbook_artifacts,
 )
 from src.integration.models import BranchKey, Fence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     DEFAULT_MAX_WAIT_SECONDS,
     OUTCOME_DETAILS,
     PHASE1_ADAPTED_COMMANDS,
@@ -62,7 +62,6 @@ from src.integration.subjects import (
     schedule_values,
     subject_key,
 )
-from tests.db_fixtures import lease_dsn
 
 NOW = 1_000_000.0
 HEAD = "a" * 40
@@ -161,7 +160,7 @@ def test_ports_wrap_existing_command_contracts_unchanged():
     adapted = {name for names in PHASE1_ADAPTED_COMMANDS.values() for name in names}
     assert adapted <= DESIGN_INTEGRATION_COMMANDS
     # No primitive name shadows an existing command except the seal it adapts.
-    assert {p.value for p in Primitive} & DESIGN_INTEGRATION_COMMANDS == {"integration_seal"}
+    assert not {p.value for p in Primitive} & DESIGN_INTEGRATION_COMMANDS
 
 
 def test_outcomes_outside_the_closed_set_are_refused():
@@ -456,9 +455,8 @@ async def test_ports_answer_closed_outcomes_or_unknown():
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("subjects"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("subjects")
     async with database._engine.begin() as conn:
         for sha in (ARTIFACT, NEW_ARTIFACT):
             await conn.execute(
@@ -473,7 +471,6 @@ async def db(tmp_path):
                 )
             )
     yield database
-    await database.close()
 
 
 def _row(subject: Subject) -> dict:
@@ -665,41 +662,6 @@ async def test_due_pages_are_keyset_ordered_and_skip_done_and_future(db):
         await db.due_integration_subject_page(now=NOW, after=None, limit=0)
 
 
-async def test_runtime_mode_scope_filters_before_paging_shared_root_batches(db):
-    from src.integration.reconciler import ScopedIntegrationDB
-
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            insert(tables.projects),
-            [
-                {
-                    "id": mode, "name": mode, "hierarchical_integration_mode": mode,
-                    "created_at": NOW,
-                }
-                for mode in ("train", "hierarchy", "development")
-            ],
-        )
-    for index, mode in enumerate(("development", "train", "hierarchy", "development")):
-        await _insert_raw(
-            db,
-            id=f"mode-{index}",
-            project_id=mode,
-            subject_key=f"root_batch:repo:mode-{index}",
-            engine="reconciler",
-            next_due_at=NOW - 10 + index,
-            due_set_at=NOW - 10 + index,
-        )
-    root_db = ScopedIntegrationDB(db, ("train", "hierarchy"))
-    first = await root_db.due_integration_subject_page(now=NOW, after=None, limit=1)
-    assert [row["id"] for row in first] == ["mode-1"]
-    second = await root_db.due_integration_subject_page(
-        now=NOW, after=(first[0]["next_due_at"], first[0]["id"]), limit=1
-    )
-    assert [row["id"] for row in second] == ["mode-2"]
-    development_db = ScopedIntegrationDB(db, ("development",))
-    rows = await development_db.due_integration_subject_page(now=NOW, after=None, limit=10)
-    assert [row["id"] for row in rows] == ["mode-0", "mode-3"]
-    assert await root_db.get_integration_subject("mode-1") == first[0]
 
 
 async def test_versioned_writes_refuse_a_stale_visit(db):

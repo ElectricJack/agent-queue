@@ -21,6 +21,11 @@ Forward cutover preserves its prefix, and reverse restores the exact string.
 Only the receipt update guard may be suspended, under the existing table lock
 and transaction with before/after guard verification. Lock acquisition has a
 bounded timeout; cancellation rolls back rows, configuration and trigger DDL.
+Receipt-table lock timeout refuses with `cutover_lock_timeout`.
+
+Reverse checks the receipt set against the original cutover audit, while origin
+retirement after cutover does not prevent restoration. An audit missing exact
+receipt targets refuses with `cutover_audit_incomplete` before Git observation.
 
 Every apply, including reverse, requires a saved plan. Changes to its fenced
 inputs refuse with `plan changed; preview again`. The plan lists creation of
