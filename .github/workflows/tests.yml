@@ -64,7 +64,7 @@ jobs:
     # The cache-miss install and the tests each have their own step deadline;
     # this total is their sum plus setup and cleanup, so a slow PyPI cannot
     # spend the tests' time (eight jobs in runs up to 36831813696 did).
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -256,9 +256,12 @@ jobs:
 
       - name: Run tests
         id: tests
-        # Run 39368476563 default-8 passed in 594.60s, then hit the old
-        # 600s deadline during shutdown. 900s keeps that run below 70%.
-        timeout-minutes: 15
+        # Run 38601833262 exhausted ten minutes while default shards were
+        # still progressing (collection alone took up to three minutes), and
+        # run 38612265340 exhausted fifteen on a slow runner at 92% of a shard
+        # that had finished in under nine minutes one run earlier.
+        # Keep the per-test timeout below; leave time for the final diagnostics.
+        timeout-minutes: 20
         # Include fixture setup/teardown in the per-test deadline. Keep the
         # failed/error node IDs and the slowest phases visible in every arm.
         run: |
@@ -270,7 +273,7 @@ jobs:
         env:
           TEST_STARTED_AT: ${{ steps.tests.outputs.started_at }}
           TEST_SUITE: ${{ matrix.suite.name }}
-          TEST_BUDGET_SECONDS: "900"
+          TEST_BUDGET_SECONDS: "1200"
         run: |
           elapsed=$(( $(date +%s) - TEST_STARTED_AT ))
           echo "$TEST_SUITE took ${elapsed}s of its ${TEST_BUDGET_SECONDS}s test budget"

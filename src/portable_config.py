@@ -33,7 +33,7 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
     {
         "agents_config", "integration", "scheduling", "monitoring",
         "archive", "auto_task", "llm_logging", "pricing",
-        "surface", "state_machine", "work_graph",
+        "surface", "state_machine", "work_graph", "wait_policy",
         # Only limits and policy switches (artifact/result/snapshot sizes,
         # pending-event and retention policy) -- no path, no credential.
         "playbooks", "swarm", "resources", "metrics",
@@ -44,7 +44,7 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
         "memory", "knowledge", "mcp_server", "sessions", "worktrees", "streams", "security",
         "messages", "events", "supervisor_agent", "api_auth", "test_selection", "providers",
         "provider_failover", "routing", "graph_layout", "dashboard_server", "dashboard", "host_shell",
-        "agent_profiles", "memory_extractor", "inbox", "planner", "plugins", "wait_policy",
+        "agent_profiles", "memory_extractor", "inbox", "planner", "plugins",
     }
 )
 

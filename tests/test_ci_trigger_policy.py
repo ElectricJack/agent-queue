@@ -631,8 +631,9 @@ def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_togeth
 @pytest.mark.parametrize(
     ('job', 'run_step', 'run_seconds'),
     [
-        # Run 39368476563 default-8 passed, then timed out during shutdown.
-        ('test', 'Run tests', 595),
+        # Run 38601833262 cancelled progressing default shards at ten minutes,
+        # before pytest could print failure diagnostics or finish teardown.
+        ('test', 'Run tests', 600),
         # tests/test_e2e_cli_stateful.py gives each item its own limit; let it
         # fire first, with a minute for its diagnostics and runner overhead.
         ('e2e-cli', 'Run scenario group', E2E_TEST_TIMEOUT_SECONDS + 59),

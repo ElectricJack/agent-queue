@@ -64,7 +64,6 @@ from src.database.tables import (
     integration_history_waiver_consumptions,
     integration_history_waivers,
     integration_legacy_deliveries,
-    integration_legacy_gate_applicability,
     integration_legacy_suppression,
     integration_operation_artifact_pins,
     integration_outbox,
@@ -191,12 +190,15 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Reconciler subjects and their journal shipped in revision 57.
         "integration_subjects",
         "integration_subject_journal",
+        # Author-assisted close attempts shipped in PostgreSQL revision 117.
+        "integration_close_attempts",
         # Shared operator decisions shipped in PostgreSQL revision 77.
         "operator_decisions",
         # Session-owned recurring prompts shipped in PostgreSQL revision 86;
         # legacy SQLite files predate schedules and their delivery diagnostics.
         "agent_cron",
-        # Verified waits shipped in PostgreSQL revisions 103-105.
+        # Verified waits and continuation admission shipped in PostgreSQL
+        # revisions 97/103 and later; legacy SQLite has no lifecycle to import.
         "admission_reservations", "continuations", "wait_bridge_progress",
         "wait_deadlines", "wait_edges", "wait_escalations", "wait_listener_cursors",
         "wait_measurements", "wait_priority_projection", "wait_records", "wait_source_events",
@@ -267,6 +269,18 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_compatibility_usage",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
+        # Encrypted playbook private values (revision 95), protected
+        # observation snapshots (revision 97) and durable playbook state
+        # namespaces and journals (revision 98) shipped after SQLite removal;
+        # legacy files have none of them.
+        "playbook_private_values",
+        "observation_snapshots",
+        "observation_snapshot_pages",
+        "playbook_state_namespaces",
+        "playbook_state_entries",
+        "playbook_state_operations",
+        # Script input retention pins shipped in PostgreSQL revision 100.
+        "job_input_pins",
     }
 )
 
@@ -362,13 +376,13 @@ _ORDERED_TABLES = [
     morning_report_facts,
     # Frozen outbound payloads and delivery receipts; owner references are soft.
     outbound_deliveries,
-    # Durable managed job contracts/results; owner/workspace references are soft.
-    jobs,
-    # FK → jobs; terminal receipt intents survive until delivery.
-    job_outbox,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
+    # Managed script jobs now reference playbook_v2_runs.
+    jobs,
+    # FK → jobs; terminal receipt intents survive until delivery.
+    job_outbox,
     # FK → playbook_v2_runs
     playbook_step_receipts,
     playbook_waits,
@@ -480,8 +494,6 @@ _ORDERED_TABLES = [
     integration_child_dispositions,
     # FK → integration_history_waivers, integration_rollout_transitions, projects
     integration_history_waiver_consumptions,
-    # FK → gates, integration_history_waivers, integration_rollout_transitions, projects
-    integration_legacy_gate_applicability,
     # FK → integration_repair_operations, playbook_artifacts
     integration_operation_artifact_pins,
     # FK → integration_parent_episodes, integration_repair_operations, tasks

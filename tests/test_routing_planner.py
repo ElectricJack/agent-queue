@@ -1957,6 +1957,125 @@ def test_operator_routing_cannot_bypass_frontier_role_using_a_benchmark_selector
     assert result.value["reason"] == "operator_work_cannot_use_benchmark_arms"
 
 
+# -- strict preference refusal diagnostics --------------------------------------
+
+
+@pytest.mark.parametrize("target", ["standard-high-claude", "claude"])
+def test_strict_bugfix_preference_routes_to_eligible_claude_with_capacity(target):
+    snapshot = replace(
+        _snapshot([_rung("standard-high", "claude", slots=8),
+                   _rung("standard-high", "codex")], busy={"standard-high-claude": 1}),
+        headroom={"standard-high-claude": 5, "standard-high-codex": 5},
+    )
+    result = _risk_plan(
+        RISK_POLICY, _task(task_type="bugfix", prefer_target=target, prefer_mode="strict"),
+        snapshot, {**NARROW_NO, "risk": "medium"},
+    )
+    assert result.outcome == "planned"
+    assert result.value["profile_id"] == "standard-high-claude"
+    assert result.value["preference"]["honoured"]
+
+
+@pytest.mark.parametrize("target", ["standard-high-claude", "claude", "deep-high-claude"])
+@pytest.mark.parametrize("cause", ["classification", "risk", "escalation"])
+def test_strict_preference_explains_class_and_reservation_exclusions(target, cause):
+    policy = ESCALATING_POLICY if cause == "escalation" else RISK_POLICY
+    classification = {**NARROW_NO, "intelligence_class": "deep-high", "risk": "low"}
+    changes = {}
+    if cause == "risk":
+        classification.update(intelligence_class="standard-high", risk="very_high")
+    elif cause == "escalation":
+        changes["failed_attempts"] = ({"intelligence_class": "standard-high"},)
+    task = _task(task_type="bugfix", prefer_target=target, prefer_mode="strict", **changes)
+    snapshot = replace(_snapshot(), headroom={p.id: 5 for p in _fleet()})
+    result = _risk_plan(policy, task, snapshot, classification)
+    assert result.outcome == "no_candidates"
+    assert result.value["reason"] == "prefer_target_unavailable"
+    detail = result.value["detail"]
+    assert "kinds.bugfix: selected class deep-high" in detail
+    if target != "deep-high-claude":
+        assert "standard-high-claude: class deep-high required" in detail
+    if target != "standard-high-claude":
+        assert "deep-high-claude: reserved for lanes ['code-design', 'design-review']" in detail
+    if cause == "risk":
+        assert "class raised from standard-high to deep-high for risk very_high" in detail
+    elif cause == "escalation":
+        assert "escalated_after_failure: standard-high to deep-high" in detail
+    soft = _risk_plan(policy, replace(task, prefer_mode="soft"), snapshot, classification)
+    assert soft.outcome == "planned"
+    assert soft.value["profile_id"] == "deep-high-codex"
+
+
+def test_strict_preference_explains_origin_lane_harness_restriction():
+    policy = BALANCED_POLICY.replace(
+        "design-review: {class: deep-high, harnesses: [claude, codex]}",
+        "design-review: {class: deep-high, harnesses: [codex]}",
+    )
+    result = _risk_plan(policy, _task(
+        task_type="bugfix", created_by_kind="review_dispatch",
+        prefer_target="deep-high-claude", prefer_mode="strict",
+    ))
+    assert result.outcome == "no_candidates"
+    detail = result.value["detail"]
+    assert "kinds.bugfix+origins.review_dispatch" in detail
+    assert "lane design-review: class deep-high, harnesses ['codex']" in detail
+    assert "lane harnesses ['codex'] exclude claude" in detail
+
+
+@pytest.mark.parametrize(("changes", "expected"), [
+    ({"preferred_provider": "codex"}, "project preferred_provider=codex"),
+    ({"exclude_providers": frozenset({"claude"})}, "excluded_providers: ['claude']"),
+    ({"needs_task_lifecycle": True}, "workspace_requirement"),
+])
+def test_strict_preference_names_project_and_task_constraints(changes, expected):
+    result = _risk_plan(BALANCED_POLICY, _task(
+        task_type="research", prefer_target="standard-high-claude", prefer_mode="strict",
+        **changes,
+    ))
+    assert result.outcome == "no_candidates"
+    assert "kinds.research: selected class standard-high" in result.value["detail"]
+    assert expected in result.value["detail"]
+
+
+def test_strict_preference_names_risk_harness_restriction():
+    policy = RISK_POLICY.replace(
+        "high: {min_class: standard-high, harnesses: [claude, codex]}",
+        "high: {min_class: standard-high, harnesses: [codex]}",
+    )
+    result = _risk_plan(policy, _task(
+        task_type="bugfix", prefer_target="standard-high-claude", prefer_mode="strict",
+    ), classification={**NARROW_NO, "risk": "high"})
+    assert result.outcome == "no_candidates"
+    assert "risk_harnesses: allowed harnesses ['codex']" in result.value["detail"]
+
+
+@pytest.mark.parametrize(("profile_changes", "expected"), [
+    ({"enabled": False}, "profile disabled"),
+    ({"slots": 0}, "profile has no configured slots"),
+])
+def test_strict_preference_explains_unavailable_installed_workers(profile_changes, expected):
+    result = _risk_plan(BALANCED_POLICY, _task(
+        task_type="research", prefer_target="claude", prefer_mode="strict",
+    ), _snapshot([_rung("standard-high", "claude", **profile_changes)]))
+    assert result.outcome == "no_candidates"
+    assert expected in result.value["detail"]
+    missing = _preferred_plans(prefer_target="missing")["strict"]
+    assert "no installed profile matches the target" in missing.value["detail"]
+
+
+@pytest.mark.parametrize(("classification", "expected"), [
+    ({**NARROW_NO, "risk": "low"}, "requires ['narrow', 'test_verified']"),
+    ({**NARROW_YES, "risk": "high"}, "max_risk=low, risk=high"),
+])
+def test_strict_preference_explains_narrow_lane_eligibility(classification, expected):
+    result = _risk_plan(LANE_CAP_POLICY, _task(
+        task_type="bugfix", prefer_target="standard-high-opencode", prefer_mode="strict",
+    ), classification=classification)
+    assert result.outcome == "no_candidates"
+    assert "narrow-only harness opencode excluded from general candidates" in result.value["detail"]
+    assert expected in result.value["detail"]
+
+
 # -- standard-first escalation --------------------------------------------------
 
 ESCALATING_POLICY = RISK_POLICY.replace(

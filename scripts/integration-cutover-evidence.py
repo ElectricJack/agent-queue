@@ -34,6 +34,7 @@ def ownership() -> dict:
 
     manifest = io.load_manifest()
     report = io.inventory(ROOT, manifest)
+    transition = manifest["phase"] == "transition"
     return {
         "baseline_revision": manifest["baseline"]["revision"],
         "landing_revision": manifest["landing"]["revision"],
@@ -41,13 +42,16 @@ def ownership() -> dict:
         "groups": report["groups"],
         "total": report["total"],
         "tables": len(report["tables"]),
-        "table_cap_in_phase": 45,
+        "table_cap_in_phase": 45 if transition else io.FINAL_TABLE_CAP,
         "uninventoried": report["unknown"],
         "unreviewed_writers": report["unknown_sinks"],
         "legacy_sinks_pending_stage4": report["legacy_sinks"],
         "budget_errors": io.budget_errors(report, manifest),
-        "engine_cap_in_phase": io.BASELINE_ENGINE_LINES + io.REPLACEMENT_ALLOWANCE,
-        "owned_cap_in_phase": io.BASELINE_OWNED_LINES + io.REPLACEMENT_ALLOWANCE,
+        "engine_cap_in_phase": (io.BASELINE_ENGINE_LINES + io.REPLACEMENT_ALLOWANCE
+                                if transition else io.FINAL_ENGINE_CAP),
+        "owned_cap_in_phase": (io.transition_owned_cap(manifest)
+                               if transition else io.FINAL_TOTAL_CAP),
+        "transition_exception": manifest.get("transition_exception") if transition else None,
         "final_caps": {
             "engine": io.FINAL_ENGINE_CAP, "owned_total": io.FINAL_TOTAL_CAP,
             "tables": io.FINAL_TABLE_CAP, "target_tables": io.TARGET_TABLES,
@@ -163,10 +167,10 @@ def render(ledger: dict) -> str:
         "",
         (f"- baseline `{own['baseline_revision'][:12]}`, landing "
          f"`{own['landing_revision'][:12]}`, phase `{own['phase']}`"),
-        (f"- owned lines {own['total']:,} of a {own['owned_cap_in_phase']:,} transition cap "
+        (f"- owned lines {own['total']:,} of a {own['owned_cap_in_phase']:,} {own['phase']} cap "
          f"(final cap {own['final_caps']['owned_total']:,})"),
         (f"- engine {own['groups'].get('engine', 0):,} of a {own['engine_cap_in_phase']:,} "
-         f"transition cap (final cap {own['final_caps']['engine']:,})"),
+         f"{own['phase']} cap (final cap {own['final_caps']['engine']:,})"),
         (f"- tables {own['tables']} of {own['table_cap_in_phase']} (final "
          f"{own['final_caps']['tables']}, target {own['final_caps']['target_tables']})"),
         f"- uninventoried definitions: {own['uninventoried'] or 'none'}",
@@ -174,6 +178,7 @@ def render(ledger: dict) -> str:
         (f"- legacy writers pending stage-4 retirement: "
          f"{len(own['legacy_sinks_pending_stage4'])}"),
         f"- budget errors: {own['budget_errors'] or 'none'}",
+        f"- one-time batch exception: {own.get('transition_exception') or 'none'}",
         "",
         "## Replay",
         "",

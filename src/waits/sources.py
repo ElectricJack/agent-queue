@@ -140,15 +140,20 @@ async def insert_message_with_source_event(conn, statement):
     return result
 
 
+async def record_dependency_change(conn, task_id, depends_on, dep_type, action):
+    await record_dependency_changes(conn, [(task_id, depends_on, dep_type, action)])
+
+
 async def record_dependency_changes(conn, changes):
-    """Publish every edge mutation with two queries, including bulk reparenting."""
+    """Publish a structural batch with one generation read and one outbox write."""
     from src.database.tables import tasks
     from src.waits.source_sql import source_batch_statement
 
+    changes = list(changes)
     if not changes:
         return
     generations = dict((await conn.execute(select(tasks.c.id, tasks.c.claim_epoch).where(
-        tasks.c.id.in_({depends_on for _, depends_on, _, _ in changes}),
+        tasks.c.id.in_(sorted({upstream for _, upstream, _, _ in changes})),
     ))).all())
     await conn.execute(source_batch_statement([dict(
         source_key=f"dependency:{task_id}:{depends_on}:{dep_type}",
@@ -158,10 +163,6 @@ async def record_dependency_changes(conn, changes):
             "dep_type": dep_type, "action": action,
         },
     ) for task_id, depends_on, dep_type, action in changes]))
-
-
-async def record_dependency_change(conn, task_id, depends_on, dep_type, action):
-    await record_dependency_changes(conn, [(task_id, depends_on, dep_type, action)])
 
 
 async def record_dependency_source_change(conn, source_task_id, action):
