@@ -31,6 +31,12 @@ Where git can prove nothing and the work must not be delivered now either, an
 operator records the decision instead: :func:`abandon_task` for one completed
 completion, :func:`abandon_epic` for a container by name. Both write the same
 audited ``abandoned`` row, and both refuse work git already proves.
+
+Where the work did land, but under other commits (a salvage, repair or squash
+re-landing), :func:`record_relanding` records the operator-named landing commit
+as a ``superseded`` row once git shows that commit on the default branch. An
+abandoned or re-landed task's branches are then queued for retirement, which
+bundles every unmerged tip before deleting it.
 """
 
 from __future__ import annotations
@@ -61,6 +67,11 @@ from src.integration.train_sources import _pending_tasks, project_delivered, pro
 
 CONTAINED_PROOF = "development_delivery"
 EQUIVALENT_PROOF = "content_equivalent"
+#: An operator-named re-landing: the task's content is on the target under the
+#: recorded commit (a salvage, repair or squash), not under its own source.
+RELANDED_PROOF = "superseded"
+#: Decisions that end a source branch's life, by retirement request prefix.
+_RETIRING_PROOFS = {"abandoned": "legacy-abandon", RELANDED_PROOF: "legacy-relanded"}
 #: A child of a still-open epic whose exact source is on the epic branch: the
 #: epic's own readiness reads retained provenance, so that is what is written.
 EPIC_PROOF = "epic_branch_provenance"
@@ -349,22 +360,8 @@ async def _abandon(db, project_id: str, task_id: str, *, dry_run: bool, operator
         raise ValueError("task is not a task of this project")
     if getattr(task.status, "value", task.status) != "COMPLETED":
         raise ValueError("only a completed task can be abandoned")
-    if not project.integration_repository_id:
-        raise ValueError("project has no integration repository")
-    async with db._engine.connect() as conn:
-        default = await conn.scalar(select(repos.c.default_branch).where(
-            repos.c.id == project.integration_repository_id))
-    if not default:
-        raise ValueError("integration repository has no default branch")
-    target = TrainTarget(project_id, project.integration_repository_id,
-                         "refs/heads/" + default.removeprefix("refs/heads/"))
-    snap = await snapshot(db, target)
-    if snap is None or snap.observation.error or not snap.target_oid:
-        raise ValueError("root target cannot be observed")
+    target, snap, target_tree = await _observe_root(db, project, snapshot)
     observation = snap.observation
-    rc, target_tree = await _git(observation, "rev-parse", snap.target_oid + "^{tree}")
-    if rc:
-        raise ValueError("root target tree cannot be read")
     branch = task.branch_name
     tip = observation.source_heads.get("refs/remotes/origin/" + branch) if branch else None
     ids, frontier = [task_id], [task_id]
@@ -407,6 +404,93 @@ async def _abandon(db, project_id: str, task_id: str, *, dry_run: bool, operator
     return {"outcome": "preview" if dry_run else "recorded", "task_id": task_id,
             "branch_tip": tip, "target_sha": snap.target_oid, "dry_run": dry_run,
             "results": results}
+
+
+async def record_relanding(db, project_id: str, task_id: str, *, landed_sha: str,
+                           dry_run: bool = True, operator_id: str = "operator",
+                           reason: str = "", snapshot=project_snapshot,
+                           clock=time.time) -> dict:
+    """Preview or record that a completion's content landed under another commit.
+
+    Salvage, repair and squash re-landings put a task's work on the default
+    branch under new SHAs. No ancestry or no-op merge check can then prove the
+    task's own branch delivered, so the train keeps it as an unknown blocker and
+    its branch looks unmerged forever. The operator names the landing commit,
+    which must be on the default branch tip; this records a ``superseded`` row
+    linking the task to it and queues the task's branches for retirement, which
+    bundles each unmerged tip before deleting it (:mod:`src.integration.branch_retirement`).
+
+    Refused when the task is not completed or belongs to another project, when
+    the landing commit is not on the default branch, and when git already proves
+    the task's own source there (then the ordinary backfill records that proof).
+    A container's undelivered descendants are not decided here: each re-landed
+    task is named on its own, or abandoned.
+    """
+    if not dry_run and not reason.strip():
+        raise ValueError("recording a re-landing requires a nonblank reason")
+    if not is_valid_git_oid(landed_sha or ""):
+        raise ValueError("the landing commit must be a full git object id")
+    project = await db.get_project(project_id)
+    task = await db.get_task(task_id)
+    if project is None or task is None or task.project_id != project_id:
+        raise ValueError("task is not a task of this project")
+    if getattr(task.status, "value", task.status) != "COMPLETED":
+        raise ValueError("only a completed task can be recorded as re-landed")
+    target, snap, target_tree = await _observe_root(db, project, snapshot)
+    observation = snap.observation
+    if (await _git(observation, "cat-file", "-e", landed_sha + "^{commit}"))[0]:
+        raise ValueError(f"landing commit {landed_sha[:12]} is not a fetched commit")
+    if (await _git(observation, "merge-base", "--is-ancestor", landed_sha,
+                   snap.target_oid))[0]:
+        raise ValueError(
+            f"landing commit {landed_sha[:12]} is not on {target.target_ref} at "
+            f"{snap.target_oid[:12]}")
+    async with db._engine.connect() as conn:
+        candidates = await _candidates(conn, task_id, task.branch_name,
+                                       observation.source_heads)
+        recorded = await conn.scalar(select(integration_legacy_deliveries.c.proof).where(
+            integration_legacy_deliveries.c.task_id == task_id))
+    if recorded is not None:
+        raise ValueError(f"{task_id} already has a recorded {recorded} delivery")
+    await _refuse_if_proven(
+        db, observation, task_id, candidates, container=False, tip=None, bases=(),
+        target_oid=snap.target_oid, target_tree=target_tree,
+    )
+    request = (await load_delivery_requests(
+        db, [task_id], repository_id=target.repository_id, target_ref=target.target_ref,
+        reduced=True,
+    )).get(task_id)
+    verdict = Verdict(task_id, "proven", RELANDED_PROOF, "operator_relanding", landed_sha)
+    if request is None or not _answered_by_row(request):
+        verdict.outcome = "unproven"
+        verdict.tried.append(("generation", "uncommitted_completion_row"))
+    elif not dry_run:
+        verdict.outcome = await _record(
+            db, request, target, snap.target_oid, verdict, operator_id=operator_id,
+            reason=f"relanded {task_id} as {landed_sha}: {reason}", now=clock())
+    return {"outcome": "preview" if dry_run else "recorded", "task_id": task_id,
+            "landed_sha": landed_sha, "target_sha": snap.target_oid, "dry_run": dry_run,
+            "results": [verdict.as_dict()]}
+
+
+async def _observe_root(db, project, snapshot):
+    """The project's root target, its observed snapshot and the tip's tree."""
+    if not project.integration_repository_id:
+        raise ValueError("project has no integration repository")
+    async with db._engine.connect() as conn:
+        default = await conn.scalar(select(repos.c.default_branch).where(
+            repos.c.id == project.integration_repository_id))
+    if not default:
+        raise ValueError("integration repository has no default branch")
+    target = TrainTarget(project.id, project.integration_repository_id,
+                         "refs/heads/" + default.removeprefix("refs/heads/"))
+    snap = await snapshot(db, target)
+    if snap is None or snap.observation.error or not snap.target_oid:
+        raise ValueError("root target cannot be observed")
+    rc, target_tree = await _git(snap.observation, "rev-parse", snap.target_oid + "^{tree}")
+    if rc:
+        raise ValueError("root target tree cannot be read")
+    return target, snap, target_tree
 
 
 async def _refuse_if_proven(db, observation, task_id, candidates, *, container: bool,
@@ -463,15 +547,16 @@ async def _record(db, request, target, target_oid, verdict, *, operator_id, reas
             reason=f"{reason.strip()} [via {verdict.via} {verdict.delivered_sha}]",
             created_at=now,
         ).on_conflict_do_nothing(index_elements=[integration_legacy_deliveries.c.task_id]))
-        if verdict.proof == "abandoned":
+        if verdict.proof in _RETIRING_PROOFS:
             from src.integration.branch_retirement import request_task_retirement_on
 
             await request_task_retirement_on(
-                conn, request.task_id, request_id=f"legacy-abandon:{request.task_id}",
+                conn, request.task_id,
+                request_id=f"{_RETIRING_PROOFS[verdict.proof]}:{request.task_id}",
                 reason=reason, now=now,
             )
     return "recorded"
 
 
-__all__ = ["CONTAINED_PROOF", "EPIC_PROOF", "EQUIVALENT_PROOF", "abandon_epic",
-           "abandon_task", "backfill_legacy_deliveries"]
+__all__ = ["CONTAINED_PROOF", "EPIC_PROOF", "EQUIVALENT_PROOF", "RELANDED_PROOF",
+           "abandon_epic", "abandon_task", "backfill_legacy_deliveries", "record_relanding"]
