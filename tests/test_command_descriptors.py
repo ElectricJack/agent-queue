@@ -15,13 +15,20 @@ from src.commands.command_inventory import command_snapshot
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.generated import (
-    GeneratedInvocationDisabled, JsonObjectResult, argument_model, generated_registration,
+    GeneratedInvocationDisabled,
+    JsonObjectResult,
+    argument_model,
+    generated_registration,
 )
 from src.commands.contracts.models import canonical_execution_document
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.descriptors import (
-    PLAYBOOK_DENIALS, HandlerCommand, PluginCommand, argument_usage,
-    build_descriptor_snapshot, discover_handler_inventory,
+    PLAYBOOK_DENIALS,
+    HandlerCommand,
+    PluginCommand,
+    argument_usage,
+    build_descriptor_snapshot,
+    discover_handler_inventory,
 )
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
@@ -41,25 +48,277 @@ EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-change
 EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
+OBJECT_LOOP_PORT_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
+PIPELINE_CHANGES = ROOT / "tests/fixtures/contracts/default-pipeline-building-blocks-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
 MERGE_CHANGES = ROOT / "tests/fixtures/contracts/epic-main-refresh-contract-changes.json"
+LEAF_CHANGES = ROOT / "tests/fixtures/contracts/batch745-leaf-contract-changes.json"
+COMPLETION_CHANGES = ROOT / "tests/fixtures/contracts/fast-smooth-completion-contract-changes.json"
+PUBLICATION_CHANGES = ROOT / "tests/fixtures/contracts/publication-delegation-contract-changes.json"
+BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-changes.json"
+DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refresh-contract-changes.json"
+SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
+TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
+OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-refactor-contract-changes.json"
+PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
+PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
+FAILOVER_CHANGES = ROOT / "tests/fixtures/contracts/provider-failover-playbook-changes.json"
+TRIAGE_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-triage-artifact-changes.json"
+MORNING_CHANGES = ROOT / "tests/fixtures/contracts/morning-report-building-block-changes.json"
+WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
+RESTART_HOLD_CHANGES = ROOT / "tests/fixtures/contracts/restart-hold-contract-changes.json"
+ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
+
+
+STRUCTURE_CHANGES = ROOT / "tests/fixtures/contracts/post-release-structure-contract-changes.json"
+
+
+def _structure_changes():
+    changes = json.loads(STRUCTURE_CHANGES.read_text())
+    assert changes["source_base"] == "908112dce62681fb4761e80a218382c75fc939cf"
+    assert changes["source_commit"] == "f136e4af2c8f05a3d52cce6118fab78e03733a9e"
+    assert set(changes["added_commands"]) == {"task_split"}
+    assert set(changes["transport_definitions"]) == {"reparent_task"}
+    assert set(changes["contracts"]) == {"integration_mutate_hierarchy"}
+    return changes
+
+
+def _revert_structure_catalogue(catalogue):
+    changes = _structure_changes()
+    for name, approved in changes["added_commands"].items():
+        assert catalogue["fallback"].pop(name) == approved["transport_definition"]
+        assert catalogue["tool_categories"].pop(name) == approved["category"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    for name, approved in changes["transport_definitions"].items():
+        [definition] = [row for row in catalogue["explicit"] if row["name"] == name]
+        assert definition == approved["current"]
+        schema = json.loads(json.dumps(definition["input_schema"]))
+        for field in ("expected_old_generation", "expected_new_generation"):
+            assert schema["properties"].pop(field)["type"] == "integer"
+            assert field not in schema.get("required", ())
+        assert schema == approved["previous"]["input_schema"]
+        definition.clear()
+        definition.update(approved["previous"])
+    return catalogue
+
+
+def test_structure_catalogue_preserves_reviewed_delta():
+    changes = _structure_changes()
+    for name, approved in changes["contracts"].items():
+        contract = CONTRACTS.require(name).contract
+        assert contract.fingerprint() == approved["fingerprint"]
+        assert canonical_execution_document(contract.execution) == approved["execution"]
+    previous = _revert_catalogue(
+        _revert_structure_catalogue(_before_restart_hold_catalogue()),
+        _wait_requeue_changes(),
+    )
+    assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
+        _pr_repair_changes()["cli_catalogue_sha256"]
+    )
+
+
+UPDATER_CHANGES = ROOT / "tests/fixtures/contracts/updater-safety-contract-changes.json"
+
+
+def _updater_changes():
+    return json.loads(UPDATER_CHANGES.read_text())
+
+
+def _before_updater_catalogue(catalogue=None):
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    for name, approved in _updater_changes()["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        assert definition["description"] == approved["description"]
+        assert _digest(definition) == approved["sha256"]
+        definition["description"] = approved["previous_description"]
+        assert _digest(definition) == approved["previous_sha256"]
+    return catalogue
+
+
+def test_updater_catalogue_only_changes_guarded_update_description():
+    evidence = _updater_changes()
+    assert set(evidence["transport_definitions"]) == {"update_and_restart"}
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    assert evidence["previous_cli_catalogue_sha256"] == _pr_repair_changes()["cli_catalogue_sha256"]
+    for name, approved in evidence["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        definition["description"] = approved["description"]
+        assert _digest(definition) == approved["sha256"]
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _stuck_check_changes():
+    return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
+
+
+def _pr_repair_changes():
+    return json.loads(PR_REPAIR_CHANGES.read_text())
+
+
+def _restart_hold_changes():
+    return json.loads(RESTART_HOLD_CHANGES.read_text())
+
+
+def _before_restart_hold_catalogue():
+    catalogue = _before_parallel_catalogue()
+    approved = _restart_hold_changes()["transport_definitions"]["restart_task"]
+    [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
+    assert definition == approved["definition"]
+    definition.clear()
+    definition.update(approved["previous_definition"])
+    return catalogue
+
+
+def test_restart_hold_catalogue_preserves_original_pr_evidence():
+    # Recover the PR's supervisor-health base through dev's frozen input chain.
+    catalogue = _revert_target_repair_catalogue(_dev_catalogue())
+    evidence = _restart_hold_changes()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    approved = evidence["transport_definitions"]["restart_task"]
+    [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
+    assert definition == approved["previous_definition"]
+    definition.clear()
+    definition.update(approved["definition"])
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _wait_requeue_changes():
+    return json.loads(WAIT_REQUEUE_CHANGES.read_text())
+
+
+def _before_wait_requeue_catalogue():
+    return _revert_catalogue(
+        _revert_structure_catalogue(_before_restart_hold_catalogue()),
+        _wait_requeue_changes(),
+    )
+
+
+def test_wait_requeue_catalogue_only_changes_reviewed_command():
+    evidence = _wait_requeue_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    assert {name for section in evidence["catalogue_sections"].values()
+            for name in section["entries"]} == {evidence["command"]}
+    previous = json.dumps(_before_wait_requeue_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+    assert evidence["previous_cli_catalogue_sha256"] == _pr_repair_changes()[
+        "cli_catalogue_sha256"
+    ]
+
+
+def _before_pr_repair_catalogue():
+    evidence = _pr_repair_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
+    return catalogue
+
+
+def test_pr_repair_catalogue_only_adds_reviewed_command():
+    evidence = _pr_repair_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    previous = json.dumps(_before_pr_repair_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def _before_stuck_check_catalogue():
+    evidence = _stuck_check_changes()
+    catalogue = _before_pr_repair_catalogue()
+    assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
+    return catalogue
+
+
+def test_stuck_check_catalogue_only_adds_reviewed_command():
+    evidence = _stuck_check_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    previous = json.dumps(_before_stuck_check_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def _completion_changes():
+    return json.loads(COMPLETION_CHANGES.read_text())
+
+
+def _before_completion_catalogue():
+    return _revert_catalogue(_before_stuck_check_catalogue(), _completion_changes())
+
+
+def _dev_catalogue():
+    return _revert_catalogue(_before_stuck_check_catalogue(), {
+        "catalogue_sections": _completion_changes()["source_catalogue_sections"],
+    })
+
+
+def test_completion_catalogue_preserves_both_frozen_inputs():
+    evidence = _completion_changes()
+    for catalogue, expected in (
+        (_before_completion_catalogue(), "previous_cli_catalogue_sha256"),
+        (_dev_catalogue(), "source_cli_catalogue_sha256"),
+    ):
+        assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+            evidence[expected]
+        )
+    assert evidence["source_cli_catalogue_sha256"] == _target_repair_changes()[
+        "cli_catalogue_sha256"
+    ]
+
 
 
 def _merge_changes():
     return json.loads(MERGE_CHANGES.read_text())
 
 
+def _leaf_changes():
+    return json.loads(LEAF_CHANGES.read_text())
+
+
+def _before_leaf_catalogue():
+    return _revert_catalogue(_before_completion_catalogue(), _leaf_changes())
+
+
 def _before_merge_catalogue():
-    return _revert_catalogue(json.loads(render_command_catalogue()), _merge_changes())
+    return _revert_catalogue(_before_leaf_catalogue(), _merge_changes())
+
+
+def test_leaf_catalogue_only_adds_reviewed_commands():
+    evidence = _leaf_changes()
+    assert evidence["source_base"] == "120f820ee85acd957525ac2b77c4bacaeed4c728"
+    assert not evidence["contracts"] and not evidence["transport_definitions"]
+    snapshot = command_snapshot()
+    for name, approved in evidence["new_commands"].items():
+        assert evidence["catalogue_sections"]["explicit"]["entries"][name]["previous"] is None
+        assert _digest(snapshot.commands[name].tool_definition()) == (
+            approved["transport_sha256"]), name
+        assert CONTRACTS.require(name).contract.fingerprint() == (
+            approved["contract_fingerprint"]), name
+    # Removing exactly the leaf commands recovers the merged epic bytes.
+    previous = json.dumps(_before_leaf_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence[
+        "previous_cli_catalogue_sha256"] == _merge_changes()["cli_catalogue_sha256"]
 
 
 def test_merged_catalogue_preserves_both_frozen_inputs():
     evidence = _merge_changes()
     for key, expected in (("catalogue_sections", "previous_cli_catalogue_sha256"),
                           ("source_catalogue_sections", "source_cli_catalogue_sha256")):
-        previous = _revert_catalogue(json.loads(render_command_catalogue()),
+        previous = _revert_catalogue(_before_leaf_catalogue(),
                                     {"catalogue_sections": evidence[key]})
         assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
             evidence[expected])
@@ -227,7 +486,15 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
+        for recording in (
+            _hibernation_changes(),
+            _dispatch_changes(),
+            _merge_changes(),
+            _leaf_changes(),
+            _completion_changes(),
+            _restart_hold_changes(),
+            _updater_changes(),
+        ):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -268,13 +535,27 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
+        for recording in (
+            _hibernation_changes(),
+            _dispatch_changes(),
+            _merge_changes(),
+            _leaf_changes(),
+            _completion_changes(),
+            _restart_hold_changes(),
+            _updater_changes(),
+            _held_release_changes(),
+        ):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
                 digest = approved["sha256"]
+        if name in _structure_changes()["transport_definitions"]:
+            approved = _structure_changes()["transport_definitions"][name]
+            assert _digest(approved["previous"]) == digest
+            digest = _digest(approved["current"])
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
-    actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
+    catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
+    actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
     assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
@@ -291,7 +572,17 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
     merge = _merge_changes()
     assert merge["previous_cli_catalogue_sha256"] == batch_fix["cli_catalogue_sha256"]
-    assert actual == merge["cli_catalogue_sha256"]
+    leaf = _leaf_changes()
+    assert leaf["previous_cli_catalogue_sha256"] == merge["cli_catalogue_sha256"]
+    completion = _completion_changes()
+    assert completion["previous_cli_catalogue_sha256"] == leaf["cli_catalogue_sha256"]
+    stuck_check = _stuck_check_changes()
+    assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
+    pr_repair = _pr_repair_changes()
+    assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
+    wait_requeue = _wait_requeue_changes()
+    assert wait_requeue["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == wait_requeue["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
@@ -370,7 +661,35 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    probe_port = json.loads((
+        ROOT / "tests/fixtures/contracts/provider-usage-probe-port-changes.json"
+    ).read_text())["playbook_fixtures"]
+    assert set(probe_port) == {"tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json"}
+    object_loop_port = json.loads(OBJECT_LOOP_PORT_CHANGES.read_text())["playbook_fixtures"]
+    assert set(object_loop_port) == {"tests/fixtures/playbooks/v2/object-loop/artifact.json"}
+    object_loop = json.loads(OBJECT_LOOP_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(object_loop) == {
+        "tests/fixtures/playbooks/v2/object-loop/artifact.json",
+        "tests/fixtures/playbooks/v2/object-loop/traces.json",
+    }
+    promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
+    assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
+    routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
+    assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
+    pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
+    assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    failover = json.loads(FAILOVER_CHANGES.read_text())["playbook_fixtures"]
+    assert set(failover) == {"tests/fixtures/playbooks/v2/provider-failover/artifact.json"}
+    triage = json.loads(TRIAGE_CHANGES.read_text())["playbook_fixtures"]
+    assert set(triage) == {"tests/fixtures/playbooks/v2/supervisor-failure-triage/artifact.json"}
+    morning = json.loads(MORNING_CHANGES.read_text())["playbook_fixtures"]
+    assert set(morning) == {"tests/fixtures/playbooks/v2/morning-report/artifact.json"}
+    hourly = json.loads(
+        (ROOT / "tests/fixtures/contracts/discord-report-contract-changes.json").read_text()
+    )["playbook_fixtures"]
+    assert set(hourly) == {"tests/fixtures/playbooks/v2/supervisor-hourly-report/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -393,6 +712,66 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in probe_port:
+            assert probe_port[path]["previous_sha256"] == digest
+            historical = ROOT / probe_port[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert probe_port[path]["sha256"] != digest
+            digest = probe_port[path]["sha256"]
+        if path in object_loop_port:
+            change = object_loop_port[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            ported = ROOT / "tests/fixtures/playbooks/object-loop-port/ported.artifact.json"
+            assert hashlib.sha256(ported.read_bytes()).hexdigest() == change["sha256"]
+            # The two reviewed recordings derive independently from this baseline.
+            # Keep the authoring port intact while the filter recording is current.
+        if path in object_loop:
+            assert object_loop[path]["previous_sha256"] == digest
+            assert object_loop[path]["sha256"] != digest
+            digest = object_loop[path]["sha256"]
+        if path in failover:
+            assert failover[path]["previous_sha256"] == digest
+            historical = ROOT / failover[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert failover[path]["sha256"] != digest
+            digest = failover[path]["sha256"]
+        if path in triage:
+            assert triage[path]["previous_sha256"] == digest
+            historical = ROOT / triage[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert triage[path]["sha256"] != digest
+            digest = triage[path]["sha256"]
+        if path in morning:
+            assert morning[path]["previous_sha256"] == digest
+            historical = ROOT / morning[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert morning[path]["sha256"] != digest
+            digest = morning[path]["sha256"]
+        if path in hourly:
+            assert hourly[path]["previous_sha256"] == digest
+            assert hourly[path]["sha256"] != digest
+            digest = hourly[path]["sha256"]
+        if path in promotion_request:
+            change = promotion_request[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
+        if path in routing:
+            assert routing[path]["previous_sha256"] == digest
+            historical = ROOT / routing[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert routing[path]["sha256"] != digest
+            digest = routing[path]["sha256"]
+        if path in pipeline:
+            assert pipeline[path]["previous_sha256"] == digest
+            historical = ROOT / pipeline[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert pipeline[path]["sha256"] != digest
+            digest = pipeline[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 
@@ -726,7 +1105,10 @@ def test_generic_argument_lookup_and_executor_never_invent_a_root_argument():
 
 def test_missing_dynamic_path_fails_before_generated_invocation(json_args):
     from src.playbooks.expressions import (
-        BindingRef, ResolutionScope, ValueResolutionError, resolve_value,
+        BindingRef,
+        ResolutionScope,
+        ValueResolutionError,
+        resolve_value,
     )
 
     # The expression layer's missing marker cannot be coerced into JSON or
@@ -735,3 +1117,701 @@ def test_missing_dynamic_path_fails_before_generated_invocation(json_args):
         value = resolve_value(BindingRef(binding="result", path="missing"),
                               ResolutionScope(bindings={"result": {"known": 1}}))
         json_args.model_validate({"count": value, "choice": "yes"})
+
+
+def _dev_hibernation_changes():
+    changes = json.loads(DEV_HIBERNATION_CHANGES.read_text())
+    assert changes["source_base"] == "4385c73158425a08114164893b623cf6b65718e8"
+    assert set(changes["contracts"]) == {
+        "job_cancel", "job_get", "job_submit", "message_wait",
+        "wait_cancel", "wait_get", "wait_list", "wait_register",
+    }
+    assert set(changes["transport_definitions"]) == {
+        "edit_task", "wait_cancel", "wait_get", "wait_list", "wait_register",
+    }
+    return changes
+
+
+def _supervisor_health_changes():
+    changes = json.loads(SUPERVISOR_HEALTH_CHANGES.read_text())
+    assert changes["source_base"] == "a73e55ae16605561e6ce371bab9685455cc1f34e"
+    assert set(changes["transport_definitions"]) == {"supervisor_restart"}
+    return changes
+
+
+def _revert_target_repair_catalogue(catalogue):
+    """Remove the new repair command and recover the preceding catalogue bytes."""
+    repair = _target_repair_changes()
+    for name, approved in repair["added_commands"].items():
+        assert catalogue["fallback"].pop(name) == approved["transport_definition"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        repair["previous_cli_catalogue_sha256"]
+    )
+    return catalogue
+
+
+def _revert_supervisor_health_catalogue(catalogue):
+    """Restore only the reviewed description text to recover the hibernation bytes."""
+    catalogue = _revert_target_repair_catalogue(catalogue)
+    changes = _supervisor_health_changes()
+    for name, approved in changes["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        assert definition["description"] == approved["description"]
+        definition["description"] = approved["previous_description"]
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == changes["previous_cli_catalogue_sha256"]
+    return catalogue
+
+
+def _target_repair_changes():
+    changes = json.loads(TARGET_REPAIR_CHANGES.read_text())
+    assert changes["source_commit"] == "8ec0c84e3afdd0b9bc79b9dbd7b59df197a47ff6"
+    assert set(changes["added_commands"]) == {"integration_repair_target"}
+    return changes
+
+
+def _publication_changes():
+    changes = json.loads(PUBLICATION_CHANGES.read_text())
+    assert changes["source_base"] == "f9a7591766d69481b309e8733be795e62ab0e59e"
+    assert set(changes["transport_definitions"]) == {"git_push", "push_branch"}
+    assert set(changes["added_commands"]) == {
+        "integration_delegate_publication", "integration_revoke_publication",
+    }
+    return changes
+
+
+def _revert_hibernation_catalogue(catalogue):
+    delta = _dev_hibernation_changes()["catalogue_delta"]
+    previous = delta["previous_explicit"]
+    catalogue["explicit"] = [
+        previous.get(entry["name"], entry) for entry in catalogue["explicit"]
+        if entry["name"] not in delta["added_explicit"]
+    ]
+    for key in ("fallback", "tool_categories"):
+        for name in delta[f"added_{key}"]:
+            catalogue[key].pop(name)
+    return catalogue
+
+
+def _withheld_catalogue():
+    """The publication catalogue minus exactly the reviewed delegation delta."""
+    changes = _publication_changes()
+    catalogue = _publication_catalogue()
+    for name, added in changes["added_commands"].items():
+        assert catalogue["fallback"].pop(name) == added["transport_definition"]
+        assert CONTRACTS.require(name).contract.fingerprint() == added["contract_fingerprint"]
+    [(prop, schema)] = changes["added_property"].items()
+    seen = set()
+    for _plugin, definitions in catalogue["internal"]:
+        for definition in definitions:
+            if definition["name"] in changes["transport_definitions"]:
+                assert definition["input_schema"]["properties"].pop(prop) == schema
+                seen.add(definition["name"])
+    assert seen == set(changes["transport_definitions"])
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == changes["previous_cli_catalogue_sha256"]
+    return catalogue
+
+
+def _batch_repair_changes():
+    changes = json.loads(BATCH_REPAIR_CHANGES.read_text())
+    assert changes["source_base"] == "ee36726bc1ae824a79787c2805c998422197da2a"
+    assert changes["source_commit"] == "67575c6b9a43f820d824ff2bdb7d6be41ec21db3"
+    assert set(changes["transport_definitions"]) == {"task_set"}
+    assert set(changes["added_property"]) == {"repair_batch"}
+    return changes
+
+
+def _publication_catalogue():
+    """Remove only the optional batch assignment to recover prior catalogue bytes."""
+    changes = _batch_repair_changes()
+    catalogue = _revert_hibernation_catalogue(
+        _revert_supervisor_health_catalogue(_dev_catalogue())
+    )
+    [(prop, schema)] = changes["added_property"].items()
+    [definition] = [item for item in catalogue["explicit"] if item["name"] == "task_set"]
+    assert definition["input_schema"]["properties"].pop(prop) == schema
+    assert prop not in definition["input_schema"].get("required", ())
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == changes["previous_cli_catalogue_sha256"]
+    return catalogue
+
+
+def test_publication_delegation_catalogue_only_adds_reviewed_commands_and_grant():
+    changes = _publication_changes()
+    _withheld_catalogue()
+    snapshot = command_snapshot()
+    [(prop, schema)] = changes["added_property"].items()
+    for name, approved in changes["transport_definitions"].items():
+        definition = snapshot.commands[name].tool_definition()
+        assert definition["input_schema"]["properties"][prop] == schema
+        assert prop not in definition["input_schema"].get("required", ())
+        assert CONTRACTS.require(name).contract.fingerprint() != approved["previous_fingerprint"]
+
+
+def test_batch_repair_catalogue_only_adds_optional_assignment():
+    _publication_catalogue()
+    schema = command_snapshot().commands["task_set"].tool_definition()["input_schema"]
+    assert schema["properties"]["repair_batch"]["type"] == "string"
+    assert "repair_batch" not in schema.get("required", ())
+
+
+def test_target_repair_catalogue_only_adds_reviewed_command():
+    _revert_target_repair_catalogue(_dev_catalogue())
+
+
+CONTINUOUS_CHANGES = ROOT / "tests/fixtures/contracts/promotion-continuous-contract-changes.json"
+
+
+
+def test_original_pr_1842_legacy_playbook_fixtures_are_unchanged():
+    changes = _observation_changes()["playbook_fixtures"]
+    assert set(changes) == {
+        "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
+    }
+    changes = {**changes, **_script_changes()["playbook_fixtures"]}
+    main = _main_changes()["playbook_fixtures"]
+    watch = _watch_changes()["playbook_fixtures"]
+    ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
+    hibernation = _hibernation_changes()["playbook_fixtures"]
+    continuous = json.loads(CONTINUOUS_CHANGES.read_text())["playbook_fixtures"]
+    assert set(continuous) == {"tests/fixtures/playbooks/v2/promotion-continuous/artifact.json"}
+    promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
+    assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
+    routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
+    assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
+    pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
+    assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
+        if path in changes:
+            assert changes[path]["previous_sha256"] == digest
+            digest = changes[path]["sha256"]
+        if path in main:
+            assert main[path]["previous_sha256"] == digest
+            digest = main[path]["sha256"]
+            path = main[path]["path"]
+        if path in watch:
+            assert watch[path]["previous_sha256"] == digest
+            historical = ROOT / watch[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert watch[path]["sha256"] != digest
+            digest = watch[path]["sha256"]
+        if path in ingest:
+            assert ingest[path]["previous_sha256"] == digest
+            assert ingest[path]["sha256"] != digest
+            digest = ingest[path]["sha256"]
+        if path in hibernation:
+            assert hibernation[path]["previous_sha256"] == digest
+            assert hibernation[path]["sha256"] != digest
+            digest = hibernation[path]["sha256"]
+        if path in continuous:
+            assert continuous[path]["previous_sha256"] == digest
+            historical = ROOT / continuous[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert continuous[path]["sha256"] != digest
+            digest = continuous[path]["sha256"]
+        if path in promotion_request:
+            change = promotion_request[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
+        if path in routing:
+            assert routing[path]["previous_sha256"] == digest
+            historical = ROOT / routing[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert routing[path]["sha256"] != digest
+            digest = routing[path]["sha256"]
+        if path in pipeline:
+            assert pipeline[path]["previous_sha256"] == digest
+            historical = ROOT / pipeline[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert pipeline[path]["sha256"] != digest
+            digest = pipeline[path]["sha256"]
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+POOL_DELETE_CHANGES = ROOT / "tests/fixtures/contracts/pool-delete-contract-changes.json"
+
+
+def _pool_delete_changes():
+    return json.loads(POOL_DELETE_CHANGES.read_text())
+
+
+def _before_pool_delete_catalogue(catalogue=None):
+    evidence = _pool_delete_changes()
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    definitions = catalogue["explicit"]
+    index = next(i for i, row in enumerate(definitions) if row["name"] == evidence["command"])
+    assert definitions.pop(index) == evidence["transport_definition"]
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["category"]
+    return catalogue
+
+
+def test_pool_delete_catalogue_only_adds_reviewed_command():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def test_pool_delete_original_catalogue_evidence():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    template = json.loads(render_command_catalogue())
+    explicit = {row["name"]: row for row in catalogue["explicit"]}
+    explicit[evidence["command"]] = evidence["transport_definition"]
+    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
+                             if row["name"] in explicit]
+    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["category"]}
+    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
+                                    if name in categories}
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _before_parallel_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_updater_catalogue(catalogue)
+    catalogue = _before_pool_delete_catalogue(catalogue)
+    catalogue = _before_retention_catalogue(catalogue)
+    catalogue = _before_workspace_catalogue(catalogue)
+    catalogue = _before_held_release_catalogue(catalogue)
+    return catalogue
+
+
+GIT_FIRST_CHANGES = ROOT / "tests/fixtures/contracts/git-first-active-contract-changes.json"
+
+
+
+HELD_RELEASE_CHANGES = ROOT / "tests/fixtures/contracts/held-release-contract-changes.json"
+
+
+OBSOLETE_CHILD_CHANGES = ROOT / "tests/fixtures/contracts/obsolete-child-contract-changes.json"
+
+
+
+WORKSPACE_CHANGES = ROOT / "tests/fixtures/contracts/workspace-ownership-contract-changes.json"
+
+
+def _git_first_changes():
+    return json.loads(GIT_FIRST_CHANGES.read_text())
+
+
+
+def _obsolete_child_changes():
+    changes = json.loads(OBSOLETE_CHILD_CHANGES.read_text())
+    assert changes["source_base"] == "feeb89e65e4bb5e2a4a2033fa32f967d1f66fce9"
+    assert set(changes["contracts"]) == {"integration_redrive_child"}
+    assert set(changes["transport_definitions"]) == {"integration_redrive_child"}
+    return changes
+
+
+
+HELD_RELEASE_MERGE_CHANGES = ROOT / "tests/fixtures/contracts/held-release-dev-merge-contract-changes.json"
+
+
+def _before_obsolete_child_catalogue():
+    return _revert_catalogue(json.loads(render_command_catalogue()), _obsolete_child_changes())
+
+
+
+def test_git_first_catalogue_only_updates_delivery_mode_description():
+    evidence = _git_first_changes()
+    change = evidence["catalogue_sections"]["explicit"]["entries"]["edit_project"]
+    previous, current = change["previous"], change["current"]
+    previous["input_schema"]["properties"]["hierarchical_integration_mode"]["description"] = (
+        current["input_schema"]["properties"]["hierarchical_integration_mode"]["description"]
+    )
+    assert previous == current
+    restored = _before_wait_requeue_catalogue()
+    assert hashlib.sha256((json.dumps(restored, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+
+def _workspace_changes():
+    return json.loads(WORKSPACE_CHANGES.read_text())
+
+
+def test_obsolete_child_contract_only_adds_pinned_disposition():
+    changes = _obsolete_child_changes()
+    old = _dev_changes()["contracts"]["integration_redrive_child"]
+    assert changes["contracts"]["integration_redrive_child"]["previous_fingerprint"] == (
+        old["fingerprint"]
+    )
+    old = old["execution"]
+    optional = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
+    old["args_schema"]["properties"].update(
+        dispose_obsolete={"default": False, "type": "boolean"},
+        superseded_by=optional, expected_parent_head_sha=optional,
+    )
+    position = old["receipt_projection"].index("tree_sha")
+    for field in ("parent_head_sha", "merge_head_sha", "superseded_by"):
+        old["result_schema"]["properties"][field] = optional
+        old["receipt_projection"].insert(position, field)
+        position += 1
+    assert changes["contracts"]["integration_redrive_child"]["execution"] == old
+    previous = json.dumps(_before_obsolete_child_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        changes["previous_cli_catalogue_sha256"]
+    )
+
+
+
+def test_original_pr_1872_legacy_execution_documents_and_fingerprints():
+    fixture = json.loads(GOLDEN.read_text())
+    changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"],
+               **_main_changes()["contracts"], **_dev_changes()["contracts"]}
+    for name, old in fixture["legacy_contracts"].items():
+        expected = changes.get(name, old)
+        if name in changes:
+            assert expected["previous_fingerprint"] == old["fingerprint"]
+            assert expected["fingerprint"] != old["fingerprint"]
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
+                          _leaf_changes(), _completion_changes(), _structure_changes(), _git_first_changes()):
+            later = recording["contracts"].get(name)
+            if later:
+                assert later["previous_fingerprint"] == expected["fingerprint"]
+                assert later["fingerprint"] != expected["fingerprint"]
+                expected = later
+        contract = CONTRACTS.require(name).contract
+        assert canonical_execution_document(contract.execution) == expected["execution"], name
+        assert contract.fingerprint() == expected["fingerprint"], name
+    assert set(fixture["legacy_contracts"]) - command_snapshot().handler_names == {
+        "count_project_memory_files", "read_project_memory_file", "git_diff",
+        "memory_save", "memory_search",
+    }
+    descriptors = command_snapshot().commands
+    for name in ("count_project_memory_files", "read_project_memory_file"):
+        assert descriptors[name].origin == "helper" and descriptors[name].available
+    for name in ("git_diff", "memory_save", "memory_search"):
+        assert descriptors[name].origin == "plugin" and descriptors[name].plugin
+
+
+
+def _before_workspace_catalogue(catalogue=None):
+    return _revert_catalogue(
+        json.loads(render_command_catalogue()) if catalogue is None else catalogue,
+        _workspace_changes(),
+    )
+
+
+def test_original_pr_1789_legacy_execution_documents_and_fingerprints():
+    fixture = json.loads(GOLDEN.read_text())
+    changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"],
+               **_main_changes()["contracts"], **_dev_changes()["contracts"]}
+    for name, old in fixture["legacy_contracts"].items():
+        expected = changes.get(name, old)
+        if name in changes:
+            assert expected["previous_fingerprint"] == old["fingerprint"]
+            assert expected["fingerprint"] != old["fingerprint"]
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
+                          _leaf_changes(), _completion_changes(), _obsolete_child_changes()):
+            later = recording["contracts"].get(name)
+            if later:
+                assert later["previous_fingerprint"] == expected["fingerprint"]
+                assert later["fingerprint"] != expected["fingerprint"]
+                expected = later
+        contract = CONTRACTS.require(name).contract
+        assert canonical_execution_document(contract.execution) == expected["execution"], name
+        assert contract.fingerprint() == expected["fingerprint"], name
+    assert set(fixture["legacy_contracts"]) - command_snapshot().handler_names == {
+        "count_project_memory_files", "read_project_memory_file", "git_diff",
+        "memory_save", "memory_search",
+    }
+    descriptors = command_snapshot().commands
+    for name in ("count_project_memory_files", "read_project_memory_file"):
+        assert descriptors[name].origin == "helper" and descriptors[name].available
+    for name in ("git_diff", "memory_save", "memory_search"):
+        assert descriptors[name].origin == "plugin" and descriptors[name].plugin
+
+
+
+def test_original_pr_1872_transport_views_and_cli_serialization_preserve_golden_evidence():
+    fixture = json.loads(GOLDEN.read_text())
+    changes = _observation_changes()
+    scripts = _script_changes()
+    main = _main_changes()
+    dev = _dev_changes()
+    contracts = {**changes["contracts"], **scripts["contracts"]}
+    snapshot = command_snapshot()
+    for name, digest in fixture["transport_definitions"].items():
+        if name in contracts:
+            approved = contracts[name]
+            assert approved["previous_transport_sha256"] == digest
+            digest = approved["transport_sha256"]
+        if name in main["transport_definitions"]:
+            approved = main["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
+        if name in dev["transport_definitions"]:
+            approved = dev["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes(), _git_first_changes()):
+            if name in recording["transport_definitions"]:
+                approved = recording["transport_definitions"][name]
+                assert approved["previous_sha256"] == digest
+                digest = approved["sha256"]
+        if name in _structure_changes()["transport_definitions"]:
+            approved = _structure_changes()["transport_definitions"][name]
+            assert _digest(approved["previous"]) == digest
+            digest = _digest(approved["current"])
+        assert _digest(snapshot.commands[name].tool_definition()) == digest, name
+    catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
+    actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
+    assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
+    assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
+    assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
+    assert dev["previous_cli_catalogue_sha256"] == main["cli_catalogue_sha256"]
+    withheld = json.loads(WITHHELD_CHANGES.read_text())
+    assert withheld["previous_cli_catalogue_sha256"] == dev["cli_catalogue_sha256"]
+    epic = _epic_changes()
+    assert epic["previous_cli_catalogue_sha256"] == withheld["cli_catalogue_sha256"]
+    hibernation = _hibernation_changes()
+    assert hibernation["previous_cli_catalogue_sha256"] == epic["cli_catalogue_sha256"]
+    dispatch = _dispatch_changes()
+    assert dispatch["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
+    batch_fix = json.loads(BATCH_FIX_CHANGES.read_text())
+    assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
+    merge = _merge_changes()
+    assert merge["previous_cli_catalogue_sha256"] == batch_fix["cli_catalogue_sha256"]
+    leaf = _leaf_changes()
+    assert leaf["previous_cli_catalogue_sha256"] == merge["cli_catalogue_sha256"]
+    completion = _completion_changes()
+    assert completion["previous_cli_catalogue_sha256"] == leaf["cli_catalogue_sha256"]
+    stuck_check = _stuck_check_changes()
+    assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
+    pr_repair = _pr_repair_changes()
+    assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
+    wait_requeue = _wait_requeue_changes()
+    assert wait_requeue["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == wait_requeue["cli_catalogue_sha256"]
+    previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
+    previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == hibernation["cli_catalogue_sha256"]
+    previous = json.dumps(_before_hibernation_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == epic["cli_catalogue_sha256"]
+    definitions = {d["name"]: d for d in effective_tool_definitions()}
+    for name, definition in _discover_all_commands().items():
+        assert definition == snapshot.commands[name].tool_definition()
+        if name in definitions:
+            assert definition == definitions[name]
+def _held_release_changes():
+    changes = json.loads(HELD_RELEASE_CHANGES.read_text())
+    assert changes["source_base"] == "2fcad876c53308a9d3b0e104258aeb2f4f50f6ce"
+    assert set(changes["transport_definitions"]) == {"doctor"}
+    assert set(changes["added_contracts"]) == {
+        "spec_ingest_legacy_adopt", "task_batch_release", "task_batch_retire",
+    }
+    return changes
+
+
+def test_original_pr_1789_transport_views_and_cli_serialization_preserve_golden_evidence():
+    fixture = json.loads(GOLDEN.read_text())
+    changes = _observation_changes()
+    scripts = _script_changes()
+    main = _main_changes()
+    dev = _dev_changes()
+    contracts = {**changes["contracts"], **scripts["contracts"]}
+    snapshot = command_snapshot()
+    for name, digest in fixture["transport_definitions"].items():
+        if name in contracts:
+            approved = contracts[name]
+            assert approved["previous_transport_sha256"] == digest
+            digest = approved["transport_sha256"]
+        if name in main["transport_definitions"]:
+            approved = main["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
+        if name in dev["transport_definitions"]:
+            approved = dev["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
+                          _leaf_changes(), _completion_changes(), _obsolete_child_changes()):
+            if name in recording["transport_definitions"]:
+                approved = recording["transport_definitions"][name]
+                assert approved["previous_sha256"] == digest
+                digest = approved["sha256"]
+        assert _digest(snapshot.commands[name].tool_definition()) == digest, name
+    actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
+    assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
+    assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
+    assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
+    assert dev["previous_cli_catalogue_sha256"] == main["cli_catalogue_sha256"]
+    withheld = json.loads(WITHHELD_CHANGES.read_text())
+    assert withheld["previous_cli_catalogue_sha256"] == dev["cli_catalogue_sha256"]
+    epic = _epic_changes()
+    assert epic["previous_cli_catalogue_sha256"] == withheld["cli_catalogue_sha256"]
+    hibernation = _hibernation_changes()
+    assert hibernation["previous_cli_catalogue_sha256"] == epic["cli_catalogue_sha256"]
+    dispatch = _dispatch_changes()
+    assert dispatch["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
+    batch_fix = json.loads(BATCH_FIX_CHANGES.read_text())
+    assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
+    merge = _merge_changes()
+    assert merge["previous_cli_catalogue_sha256"] == batch_fix["cli_catalogue_sha256"]
+    leaf = _leaf_changes()
+    assert leaf["previous_cli_catalogue_sha256"] == merge["cli_catalogue_sha256"]
+    completion = _completion_changes()
+    assert completion["previous_cli_catalogue_sha256"] == leaf["cli_catalogue_sha256"]
+    stuck_check = _stuck_check_changes()
+    assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
+    pr_repair = _pr_repair_changes()
+    assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
+    obsolete_child = _obsolete_child_changes()
+    assert obsolete_child["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == obsolete_child["cli_catalogue_sha256"]
+    previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
+    previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == hibernation["cli_catalogue_sha256"]
+    previous = json.dumps(_before_hibernation_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == epic["cli_catalogue_sha256"]
+    definitions = {d["name"]: d for d in effective_tool_definitions()}
+    for name, definition in _discover_all_commands().items():
+        assert definition == snapshot.commands[name].tool_definition()
+        if name in definitions:
+            assert definition == definitions[name]
+def _held_release_merge_changes():
+    changes = json.loads(HELD_RELEASE_MERGE_CHANGES.read_text())
+    assert changes["source_base"] == "94e69a6a60eaa640ee3cae13dd21edffb1ffc2c7"
+    assert changes["merged_source"] == "ddc3e6e6d9ba2ffa9af6fb1da041fa55115d2c5a"
+    return changes
+
+
+def test_original_pr_1789_obsolete_child_contract_only_adds_pinned_disposition():
+    changes = _obsolete_child_changes()
+    old = _dev_changes()["contracts"]["integration_redrive_child"]
+    assert changes["contracts"]["integration_redrive_child"]["previous_fingerprint"] == (
+        old["fingerprint"]
+    )
+    old = old["execution"]
+    optional = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
+    old["args_schema"]["properties"].update(
+        dispose_obsolete={"default": False, "type": "boolean"},
+        superseded_by=optional, expected_parent_head_sha=optional,
+    )
+    position = old["receipt_projection"].index("tree_sha")
+    for field in ("parent_head_sha", "merge_head_sha", "superseded_by"):
+        old["result_schema"]["properties"][field] = optional
+        old["receipt_projection"].insert(position, field)
+        position += 1
+    assert changes["contracts"]["integration_redrive_child"]["execution"] == old
+    previous = json.dumps(_before_obsolete_child_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        changes["previous_cli_catalogue_sha256"]
+    ) == _pr_repair_changes()["cli_catalogue_sha256"]
+
+
+
+def test_workspace_catalogue_only_changes_guarded_ownership_controls():
+    evidence = _workspace_changes()
+    snapshot = command_snapshot()
+    assert set(evidence["transport_definitions"]) == {"release_workspace"}
+    assert set(evidence["new_commands"]) == {"rebind_workspace"}
+    for name, approved in evidence["new_commands"].items():
+        assert _digest(snapshot.commands[name].tool_definition()) == approved["transport_sha256"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    previous = _before_restart_hold_catalogue()
+    assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def _retention_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/operational-retention-contract-changes.json").read_text()
+    )
+
+
+def _revert_held_release_catalogue(catalogue):
+    """Remove exactly the reviewed held-release delta, leaving every other entry in place."""
+    delta = _held_release_changes()["catalogue_delta"]
+    explicit = {entry["name"]: entry for entry in catalogue["explicit"]}
+    assert set(delta["previous_explicit"]) == {"doctor"}
+    assert set(delta["added_explicit"]) == {"spec_ingest_legacy_adopt"}
+    for name, entry in delta["added_explicit"].items():
+        assert explicit[name] == entry
+    catalogue["explicit"] = [
+        delta["previous_explicit"].get(entry["name"], entry)
+        for entry in catalogue["explicit"] if entry["name"] not in delta["added_explicit"]
+    ]
+    assert set(delta["added_fallback"]) == {"task_batch_release", "task_batch_retire"}
+    assert set(delta["added_tool_categories"]) == {"spec_ingest_legacy_adopt"}
+    for key in ("fallback", "tool_categories"):
+        for name, entry in delta[f"added_{key}"].items():
+            assert catalogue[key].pop(name) == entry
+    return catalogue
+
+
+def _before_held_release_catalogue(catalogue=None):
+    return _revert_held_release_catalogue(
+        json.loads(render_command_catalogue()) if catalogue is None else catalogue,
+    )
+
+
+def _before_retention_catalogue(catalogue=None):
+    evidence = _retention_changes()
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    entries = [e for e in catalogue["explicit"] if e.get("name") == evidence["command"]]
+    assert entries == [evidence["explicit_entry"]]
+    catalogue["explicit"].remove(entries[0])
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_held_release_merge_only_adds_reviewed_delta_to_dev():
+    held = _held_release_changes()
+    merge = _held_release_merge_changes()
+    assert merge["source_cli_catalogue_sha256"] == held["cli_catalogue_sha256"]
+    assert merge["previous_cli_catalogue_sha256"] == _pr_repair_changes()["cli_catalogue_sha256"]
+    # Removing exactly the held-release delta recovers dev's frozen catalogue bytes.
+    previous = json.dumps(_before_wait_requeue_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == merge["previous_cli_catalogue_sha256"]
+    snapshot = command_snapshot()
+    for name, approved in held["added_contracts"].items():
+        assert _digest(snapshot.commands[name].tool_definition()) == approved["transport_sha256"]
+        if "execution" in approved:
+            contract = CONTRACTS.require(name).contract
+            assert canonical_execution_document(contract.execution) == approved["execution"]
+            assert contract.fingerprint() == approved["fingerprint"]
+
+
+def test_retention_catalogue_only_adds_reviewed_command():
+    evidence = _retention_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def test_retention_original_catalogue_evidence():
+    evidence = _retention_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    template = json.loads(render_command_catalogue())
+    explicit = {row["name"]: row for row in catalogue["explicit"]}
+    explicit[evidence["command"]] = evidence["explicit_entry"]
+    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
+                             if row["name"] in explicit]
+    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["tool_category"]}
+    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
+                                    if name in categories}
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]

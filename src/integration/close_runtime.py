@@ -15,12 +15,14 @@ from src.integration.train_sources import LeasedPublish, TRAIN_MODES
 async def current_policy(db, project):
     """Read the same live project projection as the git-first train.
 
-    Boundary routes describe retired playbooks and are ignored by the train.
-    They must not resurrect an activation/epoch gate for an unpromoted close.
+    A disabled train leaves ordinary source publication and completion available.
     """
+    from src.integration.train_policy import load_train_policy
+
+    view = await load_train_policy(db, project.id)
     raw = project.hierarchical_integration_policy or {}
     close = CloseMergePolicy.model_validate(raw.get("close_merge") or {})
-    enabled = (project.status.value == "ACTIVE"
+    enabled = (view.enabled and project.status.value == "ACTIVE"
                and project.hierarchical_integration_mode in TRAIN_MODES
                and not project.hierarchical_integration_draining)
     return ClosePolicy(enabled, close.author_assist, close.author_budget_seconds,

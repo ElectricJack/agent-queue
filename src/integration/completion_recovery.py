@@ -13,15 +13,13 @@ from src.database.tables import (
     integration_branch_owners,
     projects,
     sessions,
-    task_integration_checkpoints,
     task_session_attempts,
     tasks,
     workspaces,
 )
-from src.git.manager import GitError, RemoteRefState
+from src.git.manager import RemoteRefState
 from src.integration.row_query import select_row
 from src.models import TaskStatus
-from src.review_keys import is_review_completion
 from src.sessions.provider import SessionHandle
 
 logger = logging.getLogger(__name__)
@@ -341,141 +339,4 @@ async def recover_completed_pool_claims(orch, project_id: str) -> list[str]:
         session = await db.get_session(candidate["session_id"])
         if await recover(task, session):
             recovered.append(task.id)
-    return recovered
-
-
-async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str]:
-    """An explicit flush repairs exact root PR links lost by older close paths.
-
-    Git reads precede the transaction; compare-and-swap protects against a
-    task being reopened or its completion head changing during observation.
-    Reviews, gates, branch ownership, and completion status are untouched.
-    """
-    project = await db.get_project(project_id)
-    if (
-        project is None
-        or project.hierarchical_integration_mode != "train"
-        or project.hierarchical_integration_draining
-        or not project.integration_repository_id
-    ):
-        return []
-    cp = task_integration_checkpoints
-    missing = or_(tasks.c.pr_url.is_(None), tasks.c.pr_url == "")
-    async with db._engine.connect() as conn:
-        rows = (
-            (
-                await conn.execute(
-                    select(
-                        tasks.c.id,
-                        tasks.c.branch_name,
-                        tasks.c.dedup_key,
-                        tasks.c.profile_id,
-                        cp.c.checkpoint_sha,
-                        cp.c.generation,
-                        cp.c.version,
-                    )
-                    .join(cp, cp.c.task_id == tasks.c.id)
-                    .where(
-                        tasks.c.project_id == project_id,
-                        tasks.c.repo_id == project.integration_repository_id,
-                        cp.c.repository_id == project.integration_repository_id,
-                        tasks.c.parent_task_id.is_(None),
-                        tasks.c.status == TaskStatus.COMPLETED.value,
-                        missing,
-                    )
-                    .order_by(tasks.c.id)
-                )
-            )
-            .mappings()
-            .all()
-        )
-    rows = [
-        r
-        for r in rows
-        if r["branch_name"] and not is_review_completion(r["dedup_key"], r["profile_id"])
-    ]
-    if not rows:
-        return []
-    resolved = await promotion._resolve_repository(project.integration_repository_id)
-    await promotion._ensure_retained_repository(resolved)
-    try:
-        repository = await promotion.git.bind_github_repository(resolved.origin_url)
-    except GitError:
-        # A local or otherwise unsupported origin has no GitHub PR to recover.
-        # Keep this best-effort sweep from failing the integration flush.
-        logger.debug("Could not authorize repository for PR recovery", exc_info=True)
-        return []
-    recovered = []
-    # Git observations precede SQL locking: origin materialization takes the
-    # project lock before the repository lock, so retaining the latter while
-    # waiting for SQL here would deadlock filing and the integration sweep.
-    async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
-        await promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
-    for row in rows:
-        try:
-            async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
-                checkout = str(resolved.retained_git_dir)
-                remote = await promotion.git.als_remote_ref(checkout, row["branch_name"])
-                if (
-                    remote.state is not RemoteRefState.PRESENT
-                    or remote.oid != row["checkpoint_sha"]
-                ):
-                    continue
-                url = await promotion.git.afind_open_pr(
-                    checkout, row["branch_name"], head_ref=remote.oid,
-                    include_workspace_head=False, repository=repository,
-                )
-                if not url:
-                    continue
-                identity = await promotion.git.aget_pr_identity(
-                    checkout, url, repository=repository
-                )
-                if (
-                    identity.head_oid != remote.oid
-                    or identity.head_ref != row["branch_name"]
-                    or identity.base_ref != resolved.repo.default_branch
-                ):
-                    continue
-            async with db.immediate() as conn:
-                await db.lock_hierarchy_project(conn, project_id)
-                current_project = (
-                    (await conn.execute(select(projects).where(projects.c.id == project_id)))
-                    .mappings()
-                    .one()
-                )
-                if (
-                    current_project["hierarchical_integration_mode"] != "train"
-                    or current_project["hierarchical_integration_draining"]
-                    or current_project["integration_repository_id"]
-                    != project.integration_repository_id
-                ):
-                    break
-                current_head = (
-                    select(cp.c.task_id)
-                    .where(
-                        cp.c.task_id == row["id"],
-                        cp.c.checkpoint_sha == remote.oid,
-                        cp.c.generation == row["generation"],
-                        cp.c.version == row["version"],
-                    )
-                    .exists()
-                )
-                changed = await conn.execute(
-                    update(tasks)
-                    .where(
-                        tasks.c.id == row["id"],
-                        tasks.c.project_id == project_id,
-                        tasks.c.repo_id == project.integration_repository_id,
-                        tasks.c.branch_name == row["branch_name"],
-                        tasks.c.parent_task_id.is_(None),
-                        tasks.c.status == TaskStatus.COMPLETED.value,
-                        missing,
-                        current_head,
-                    )
-                    .values(pr_url=url)
-                )
-                if changed.rowcount:
-                    recovered.append(row["id"])
-        except Exception:
-            logger.warning("Could not recover integration PR for %s", row["id"], exc_info=True)
     return recovered
