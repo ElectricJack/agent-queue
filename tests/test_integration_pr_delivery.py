@@ -186,6 +186,140 @@ async def test_a_head_already_on_main_is_proven_by_ancestry_and_closed_once(env)
                 ).scalar_one() == "COMPLETED"
 
 
+async def test_pr_closures_reuse_the_daemon_observers_fetched_objects(env, monkeypatch):
+    from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget
+    from src.integration.git_truth import GitTruth
+
+    _branch(env, "aq/delivered")
+    head = _git("rev-parse", "HEAD", cwd=env.work)
+    _push(env, "aq/delivered")
+    env.github.open(171, "aq/delivered", head)
+    env.github.open(172, "aq/delivered", head)
+    observer = DeliveryObserver(
+        env.db, git=env.control.git, data_dir=env.work.parent / "shared",
+        truth=GitTruth(env.control.git),
+    )
+    monkeypatch.setattr(env.db, "_prerequisite_observer", observer, raising=False)
+    fetch = AsyncMock(wraps=env.control.git.afetch_origin)
+    monkeypatch.setattr(env.control.git, "afetch_origin", fetch)
+    await observer.snapshot(DeliveryTarget(
+        "p", "repo", str(env.work.parent / "origin.git"), "refs/heads/main",
+    ))
+    monkeypatch.setattr(env.control.promotion, "_fetch_all_heads", AsyncMock(
+        side_effect=AssertionError("PR retirement must not fetch a separate repository"),
+    ))
+    for number in (171, 172):
+        control = DeliveredPullRequestClosure(env.db, env.control.promotion)
+        assert (await control.run("p", number))["outcome"] == "would_close"
+        assert (await control.run(
+            "p", number, dry_run=False, expected_head_sha=head, reason="delivered",
+        ))["outcome"] == "closed"
+    assert env.github.closed == [171, 172]
+    assert fetch.await_count == 1
+
+
+@pytest.mark.parametrize("rewind", [False, True])
+async def test_apply_revalidates_and_refreshes_a_cached_default_head(env, monkeypatch, rewind):
+    base = _git("rev-parse", "HEAD", cwd=env.work)
+    _branch(env, "aq/delivered")
+    head = _commit(env, "done.txt", "done\n", "delivered")
+    _push(env, "aq/delivered")
+    _git("switch", "main", cwd=env.work)
+    _git("merge", "--ff-only", head, cwd=env.work)
+    _push(env, "main")
+    env.github.open(174, "aq/delivered", head)
+    fetch = AsyncMock(wraps=env.control.git.afetch_origin)
+    monkeypatch.setattr(env.control.git, "afetch_origin", fetch)
+    assert (await env.control.run("p", 174))["outcome"] == "would_close"
+    if rewind:
+        _git("reset", "--hard", base, cwd=env.work)
+    else:
+        _commit(env, "main.txt", "advance\n", "main advanced since preview")
+    _push(env, "--force", "main")
+    result = await env.control.run(
+        "p", 174, dry_run=False, expected_head_sha=head, reason="apply preview",
+    )
+    assert result["outcome"] == ("undelivered" if rewind else "closed")
+    assert env.github.closed == ([] if rewind else [174])
+    assert fetch.await_count == 2
+
+
+@pytest.mark.parametrize("retry_while_fetching", [False, True])
+async def test_timed_out_pr_reader_retains_fetch_result_and_cleans_temp_store(
+    env, monkeypatch, retry_while_fetching,
+):
+    import asyncio
+    from pathlib import Path
+
+    _branch(env, "aq/delivered")
+    head = _git("rev-parse", "HEAD", cwd=env.work)
+    _push(env, "aq/delivered")
+    env.github.open(173, "aq/delivered", head)
+    observer = env.control._observer()
+    git = env.control.git
+    entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    joined = asyncio.Event()
+    temporary_roots = []
+    authenticated = git._arun_authenticated_git
+
+    async def held_network(args, **kwargs):
+        imported = Path(next(arg.split("=", 1)[1] for arg in args
+                             if arg.startswith("--git-dir=")))
+        temporary_roots.append(imported.parent)
+        entered.set()
+        await release.wait()
+        return await authenticated(args, **kwargs)
+
+    async def fetch_origin(store, **kwargs):
+        await git._afetch_origin_with_auth_to_url(
+            store, source_url=(env.work.parent / "origin.git").as_uri(), token=None,
+        )
+
+    observe = observer._observe_store
+    shared = observer._shared_observation
+    observations = 0
+
+    async def tracked_shared(*args, **kwargs):
+        nonlocal observations
+        observations += 1
+        if observations == 2:
+            joined.set()
+        return await shared(*args, **kwargs)
+
+    async def tracked_observe(*args):
+        try:
+            return await observe(*args)
+        finally:
+            finished.set()
+
+    fetch = AsyncMock(side_effect=fetch_origin)
+    monkeypatch.setattr(git, "afetch_origin", fetch)
+    monkeypatch.setattr(git, "_arun_authenticated_git", held_network)
+    monkeypatch.setattr(observer, "_observe_store", tracked_observe)
+    monkeypatch.setattr(observer, "_shared_observation", tracked_shared)
+    attempt = asyncio.create_task(env.control.run("p", 173))
+    retry = None
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(attempt, 0.01)
+        assert temporary_roots and all(root.exists() for root in temporary_roots)
+        if retry_while_fetching:
+            retry = asyncio.create_task(env.control.run("p", 173))
+            await asyncio.wait_for(joined.wait(), 10)
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), 10)
+        if not attempt.done():
+            attempt.cancel()
+        await asyncio.gather(attempt, return_exceptions=True)
+    assert all(not root.exists() for root in temporary_roots)
+    result = await asyncio.wait_for(retry, 10) if retry else await env.control.run("p", 173)
+    assert result["outcome"] == "would_close"
+    assert fetch.await_count == 1
+    assert len(temporary_roots) == 1
+
+
 @pytest.mark.parametrize("status", ["READY", "IN_PROGRESS", "PAUSED", "BLOCKED", "WAITING_INPUT"])
 @pytest.mark.parametrize("tracking", ["pr_url", "branch"])
 async def test_a_live_task_keeps_its_pr_open_even_when_its_head_is_already_on_main(

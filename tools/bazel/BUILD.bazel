@@ -1,0 +1,45 @@
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
+load("@rules_python//python:defs.bzl", "py_library")
+load(":prebuilt_cc.bzl", "prebuilt_cc_config")
+
+py_library(
+    name = "test_environment",
+    srcs = ["test_environment.py"],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["requirements_linux_x86_64.txt"])
+
+exports_files(["toolchains.lock.json", "native_toolchain.bzl"])
+toolchain_type(name = "native_toolchain_type", visibility = ["//visibility:public"])
+
+filegroup(name = "no_compiler_files")
+prebuilt_cc_config(name = "prebuilt_cc_config")
+cc_toolchain(
+    name = "prebuilt_cc",
+    toolchain_identifier = "aq-prebuilt-only",
+    toolchain_config = ":prebuilt_cc_config",
+    all_files = ":no_compiler_files",
+    ar_files = ":no_compiler_files",
+    as_files = ":no_compiler_files",
+    compiler_files = ":no_compiler_files",
+    dwp_files = ":no_compiler_files",
+    linker_files = ":no_compiler_files",
+    objcopy_files = ":no_compiler_files",
+    strip_files = ":no_compiler_files",
+)
+toolchain(
+    name = "prebuilt_cc_toolchain",
+    toolchain = ":prebuilt_cc",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+py_library(
+    name = "postgres_cluster",
+    srcs = ["postgres_cluster.py"],
+    deps = [":test_environment"],
+    data = ["//:postgres_test_migrations"],
+    visibility = ["//visibility:public"],
+)
