@@ -669,6 +669,56 @@ async def test_prepared_admission_does_not_admit_changed_project(env):
     assert "delivery_not_verified" in observation.constraints["batch_hold"]["reasons"]
 
 
+@pytest.mark.parametrize('expired', [False, True])
+async def test_fresh_admission_rechecks_stack_cache_without_git_under_graph(env, monkeypatch, expired):
+    from src.database.queries import claim_queries
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration import admission, stacked_branches
+    from src.waits.graph import lock_graph
+
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(side_effect=AssertionError('Git under graph fence')),
+        als_remote_refs=AsyncMock(side_effect=AssertionError('Git under graph fence')),
+    )
+    stack = StackView(env.db, 'p', snapshot=SimpleNamespace(
+        target_ref='refs/heads/main', target_oid='a' * 40, error=None,
+        store='/tmp/stack', repository_url='https://example.test/repo', git=git,
+    ))
+    monkeypatch.setattr(stacked_branches, 'time', SimpleNamespace(monotonic=lambda: 100))
+    stack.ref_cache[('/tmp/stack', 'https://example.test/repo', 'main')] = (
+        90 if expired else 100,
+        RemoteRefResult(RemoteRefState.PRESENT, 'a' * 40),
+    )
+    mode = replace(ProjectIntegrationMode.of(await env.db.get_project('p')),
+                   stackable_prerequisite_ids=frozenset({'source'}))
+    observe = admission.observe_admission
+
+    async def with_stack(*args, **kwargs):
+        view = await observe(*args, **kwargs)
+        view._snapshot.stack_views['p'] = stack
+        view._snapshot.hierarchy_modes['p'] = mode
+        return replace(view, hierarchy_modes={'p': mode})
+
+    monkeypatch.setattr(admission, 'observe_admission', with_stack)
+    predicates = claim_queries.claim_frontier_predicates
+    modes = []
+
+    def capture(*args, **kwargs):
+        if 'hierarchy_mode' in kwargs:
+            modes.append(kwargs['hierarchy_mode'])
+        return predicates(*args, **kwargs)
+
+    monkeypatch.setattr(claim_queries, 'claim_frontier_predicates', capture)
+    async with env.service.reader.prepared(task_ids=['holder'], cached_only=False):
+        async with env.db._engine.begin() as conn:
+            await lock_graph(conn)
+            assert await env.service.reader.observe_task(conn, 'holder') is not None
+    assert modes[-1].stackable_prerequisite_ids == (frozenset() if expired else {'source'})
+    git.aget_remote_url.assert_not_awaited()
+    git.als_remote_refs.assert_not_awaited()
+
+
 
 
 @pytest.mark.parametrize("entrypoint", ["sync", "startup_bridge"])

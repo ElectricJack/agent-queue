@@ -10,12 +10,17 @@ import re
 import stat
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, RemoteRefState, safe_git_detail
+from src.git.manager import (
+    RETAINED_FSCK_TIMEOUT_SECONDS, GitError, RemoteRefState, safe_git_detail,
+)
+from src.git.repository_lock import RepositoryLockTimeout
 from src.integration.selection_metrics import selection_count, selection_stage
 
 logger = logging.getLogger(__name__)
@@ -23,22 +28,46 @@ _HEX = re.compile(r"[0-9a-f]+\Z")
 _LOOSE_PATH = re.compile(r"(?:[^\s:]*objects)/([0-9a-f]{2})/([0-9a-f]{38}|[0-9a-f]{62})(?![0-9a-f])")
 _FSCK = ["--no-replace-objects", "fsck", "--full", "--no-dangling", "--no-reflogs",
          "--no-progress"]
-# Every write to a retained store disables auto-gc (the stores' config and the isolated
-# import environment); this foreground run, with a valid cwd under the repository
-# transaction, replaces it.  Command-line -c beats both.
-_MAINTENANCE = ["-c", "gc.auto=6700", "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false",
-                "gc", "--auto", "--quiet"]
 _RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
                     ("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"))
 MAX_ATTEMPTS = 2
-# Full object-body verification is CPU/I/O bound: the 423 MB integration cache
-# takes about a minute per pass on a healthy store. Recovery needs up to four
-# passes, so neither a pass nor their shared acquisition can use the ordinary
-# short-command budget alone.
-FSCK_TIMEOUT_SECONDS = 300
+# Recovery needs up to four full-body passes, using the same budget as the
+# pre-fetch lender check rather than the ordinary short-command timeout.
+FSCK_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
+
+
+@dataclass
+class _Checkout:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    path: Path | None = None
+
+
+_CHECKOUT_SCOPE: ContextVar[dict | None] = ContextVar("retained_checkout_scope", default=None)
+
+
+@contextmanager
+def retained_checkout_scope():
+    token = _CHECKOUT_SCOPE.set({})
+    try:
+        yield
+    finally:
+        _CHECKOUT_SCOPE.reset(token)
 
 
 async def open_retained_checkout(git, store, origin_url):
+    """Reuse one successful checkout open per tick, without caching Git authority."""
+    scope = _CHECKOUT_SCOPE.get()
+    if scope is None:
+        return await _open_retained_checkout(git, store, origin_url)
+    key = id(git), str(Path(store).absolute()), origin_url
+    checkout = scope.setdefault(key, _Checkout())
+    async with checkout.lock:
+        if checkout.path is None:
+            checkout.path = await _open_retained_checkout(git, store, origin_url)
+        return checkout.path
+
+
+async def _open_retained_checkout(git, store, origin_url):
     """Serialize creation when the train and its truth reader share a store."""
     store = Path(store)
     store.parent.mkdir(parents=True, exist_ok=True)
@@ -248,24 +277,6 @@ async def _publish_local_heads(git, store, repository_url):
         raise GitError("guarded local-only AQ branch publication failed")
 
 
-async def _maintain(git, store, git_dir):
-    """Best-effort foreground gc; a successful run makes any old gc.log obsolete."""
-    try:
-        result = await git.arun_git_result(_MAINTENANCE, cwd=str(store), lock_held=True,
-                                           env={"LC_ALL": "C"})
-    except GitError as exc:
-        logger.warning("retained cache %s maintenance failed: %s", store, exc)
-        return
-    if result.returncode:
-        logger.warning("retained cache %s maintenance failed: %s", store,
-                       safe_git_detail(result.stderr, limit=1000))
-        return
-    report = git_dir / "gc.log"
-    if report.is_file() and not report.is_symlink():
-        report.unlink()
-        logger.info("retained cache %s: removed stale gc.log after foreground gc", store)
-
-
 @asynccontextmanager
 async def _transaction(git, store, lock_held):
     if lock_held:
@@ -384,12 +395,16 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             try:
                 if pending.exists():
                     raise GitError("retained repository recovery pending")
-                if skip_unchanged and reusable and not journal.exists():
+                if skip_unchanged and reusable:
                     no_transfer = await incremental()
                 else:
                     no_transfer = False
                     await fetch()
             except (GitError, GitHubAccessError) as exc:
+                # A caller timeout leaves the shared check running. Starting
+                # recovery diagnosis now would duplicate that full-body scan.
+                if await git.aretained_store_check_running(str(directory)):
+                    raise
                 fetch_error = exc
             if not pending.exists() and await git.areuse_retained_verification(
                     str(directory), extend=reusable and fetch_error is None):
@@ -478,7 +493,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
     async with _transaction(git, store, lock_held):
         try:
             async with asyncio.timeout_at(deadline):
-                no_change = await acquire()
+                await acquire()
         except BaseException as exc:
             if state is not None and state["status"] != "recovered":
                 state["status"] = "exhausted" if state["attempts"] >= MAX_ATTEMPTS else "failed"
@@ -494,12 +509,9 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                     await asyncio.shield(accounting)
                 except asyncio.CancelledError:
                     await accounting
-            if isinstance(exc, TimeoutError):
+            if isinstance(exc, TimeoutError) and not isinstance(exc, RepositoryLockTimeout):
                 raise GitError("retained Git acquisition timed out") from exc
             raise
-        if not no_change:
-            with selection_stage("retained_maintenance"):
-                await _maintain(git, store, directory)
 
 
 async def clear_retained_recovery(git, state, *, by, record):

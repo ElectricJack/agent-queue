@@ -660,7 +660,7 @@ class MessageCommandsMixin:
         }
 
     async def _cmd_message_inbox(self, args: dict) -> dict:
-        """List a recipient's pending messages, optionally marking them delivered.
+        """List unread, unarchived mail; inject claims only undelivered messages.
 
         ``include_consumed`` additionally returns rows this recipient already
         consumed, so a worker whose inject consumed delivery before it could
@@ -725,6 +725,10 @@ class MessageCommandsMixin:
             not scope or scope.get("kind") == "local" or scope.get("elevated")
         ):
             session = await self.db.get_session(to_id)
+            if session is None and to_id.startswith(("supervisor-", "n-supervisor--")):
+                name = (f"n-supervisor--{to_id.removeprefix('supervisor-')}"
+                        if to_id.startswith("supervisor-") else to_id)
+                session = await self.db.get_session_by_name(name)
             if session is not None and session.lifecycle == "named" and session.profile_id == "supervisor":
                 supervisor_mailbox = True
                 suffix = session.project_id or "global"
@@ -733,7 +737,7 @@ class MessageCommandsMixin:
                         scope_error = self._system_message_scope_error()
                         if scope_error:
                             return scope_error
-                    recipients.extend([session.name, f"supervisor-{suffix}"])
+                    recipients.extend([session.id, session.name, f"supervisor-{suffix}"])
         recipients = list(dict.fromkeys(recipients))
         if supervisor_mailbox:
             await self.db.expire_finished_task_notices()
@@ -742,6 +746,7 @@ class MessageCommandsMixin:
         for recipient in recipients:
             pending.extend(await self.db.get_pending_messages(
                 to_kind, recipient, limit=limit, **profile_filter,
+                include_delivered=not inject,
             ))
         pending.sort(key=lambda message: (message.priority, message.created_at, message.id))
         pending = pending[:limit]

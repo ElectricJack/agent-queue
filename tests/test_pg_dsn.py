@@ -799,3 +799,28 @@ async def test_a_sigterm_owner_leaves_databases_the_sweep_can_prove_dead():
 
 async def _async_value(value):
     return value
+
+
+def test_collection_does_not_provision_even_with_a_dsn(monkeypatch):
+    _reset_derivation(monkeypatch)
+    monkeypatch.setattr(pg_dsn, "_COLLECTION_ONLY", True)
+    monkeypatch.setattr(pg_dsn, "_provision_worker_database", lambda *_: pytest.fail("provisioned"))
+    assert pg_dsn.ensure_worker_postgres_dsn() is None
+    assert pg_dsn._CACHED_DSN is pg_dsn._UNSET
+
+
+def test_pure_target_refuses_even_a_cached_dsn(monkeypatch):
+    monkeypatch.setenv("AQ_TEST_PG_MODE", "pure")
+    monkeypatch.setattr(pg_dsn, "_CACHED_DSN", "postgresql://u:p@h/owned")
+    with pytest.raises(RuntimeError, match="dependency requested by a pure target"):
+        pg_dsn.ensure_worker_postgres_dsn()
+
+
+def test_replace_database_preserves_socket_and_connection_options():
+    dsn = "postgresql+asyncpg://aq_test@/target?host=%2Ftmp%2Fsocket&port=12345"
+    assert pg_dsn._replace_database(dsn, "clone") == (
+        "postgresql+asyncpg://aq_test@/clone?host=%2Ftmp%2Fsocket&port=12345"
+    )
+    assert pg_dsn._maintenance_dsn(dsn) == (
+        "postgresql://aq_test@/postgres?host=%2Ftmp%2Fsocket&port=12345"
+    )

@@ -120,9 +120,9 @@ def test_the_ask_helper_takes_the_default_with_no_terminal(tmp_path: Path) -> No
 
     helper = SETUP_SH.read_text().split("# --- Detect Python 3.12+ ---")[0]
     script = helper + '\nif ask "Add it?" Y; then echo YES; else echo NO; fi\n'
-    # BASH_SOURCE[0] is not defined for bash -c on every supported Bash version.
-    # A real script preserves checkout initialization under set -u.
-    script_path = tmp_path / "setup-prompt.sh"
+    # The prefix resolves its checkout through BASH_SOURCE[0], which is not defined
+    # under `bash -c` on every Bash version. A file matches `bash setup.sh` safely.
+    script_path = tmp_path / "setup helper.sh"
     for default, expected in (("Y", "YES"), ("N", "NO")):
         body = script.replace('ask "Add it?" Y', f'ask "Add it?" {default}')
         script_path.write_text(body, encoding="utf-8")

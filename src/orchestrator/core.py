@@ -83,6 +83,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.event_bus import EventBus
 from src.git.github import GitHubAccess, GitHubClient
 from src.git.manager import GitManager
+from src.git.repository_lock import RepositoryLock
 from src.jobs.policy import JobError
 from src.llm_logger import LLMLogger
 from src.messaging.types import (
@@ -719,10 +720,10 @@ class Orchestrator(
         self._slot_starved_pauses: dict[str, str] = {}
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
-        """Get or create an asyncio.Lock for shared git operations on a workspace."""
+        """Get the shared repository mutex, honoring claim acquisition bounds."""
         workspace_path = os.path.normcase(os.path.realpath(workspace_path))
         if workspace_path not in self._git_mutexes:
-            self._git_mutexes[workspace_path] = asyncio.Lock()
+            self._git_mutexes[workspace_path] = RepositoryLock()
         return self._git_mutexes[workspace_path]
 
     def _resolve_git_lock(self, cwd: str) -> asyncio.Lock | None:
@@ -1124,9 +1125,11 @@ class Orchestrator(
 
         return None, unblocked
 
-    async def pause_task(self, task_id: str) -> None:
+    async def pause_task(self, task_id: str, *, require_workspace_release=False) -> None:
         async with self._task_control_lock(task_id):
-            snapshot = await self.db.pause_task(task_id)
+            snapshot = await self.db.pause_task(
+                task_id, require_workspace_release=require_workspace_release,
+            )
             await self._finish_manual_pause(task_id, snapshot)
 
     async def resume_task(
@@ -2474,6 +2477,9 @@ class Orchestrator(
             return await settle_orphaned_parent_operations(
                 self.db, now, legacy_engine_gone=True,
             )
+
+        async def maintain_retained_stores(now):
+            return await self._command_handler.retained_store_maintenance_tick(now)
         self.parent_subject_runtime = None
         self.development_subject_runtime = None
         self.integration_service = IntegrationService(
@@ -2498,6 +2504,7 @@ class Orchestrator(
                 "delivered PR cleanup": PullRequestReconciler(
                     self.db, self.git, commands=lambda: self._command_handler,
                 ).tick,
+                "retained store maintenance": maintain_retained_stores,
             },
             source_timeout_seconds=self.config.integration.service_source_timeout_seconds,
             item_timeout_seconds=self.config.integration.service_item_timeout_seconds,
@@ -2992,6 +2999,11 @@ class Orchestrator(
         for row in await self.db.list_sessions(live_only=True):
             if row.agent_id:
                 protected_agents.add(row.agent_id)
+        # Resume admission owns a fresh agent before its session is persisted.
+        # Preserve that reservation and its workspace across daemon restarts.
+        from src.waits.occupancy import continuation_agent_ids
+
+        protected_agents.update(await continuation_agent_ids(self.db))
 
         # Reset BUSY agents to IDLE
         await self.db.normalize_agent_state_casing()
@@ -3402,6 +3414,9 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        maintenance = vars(self).get("_retained_store_maintenance")
+        if maintenance is not None:
+            await maintenance.stop()
         if self._promotion_flow_check is not None and not self._promotion_flow_check.done():
             self._promotion_flow_check.cancel()
             await asyncio.wait({self._promotion_flow_check}, timeout=5.0)
@@ -4207,11 +4222,28 @@ class Orchestrator(
             # Diagnose them without confusing a retained owner with a dead one.
             if self._command_handler is not None:
                 try:
-                    findings = [f for f in await reconcile_slot_bindings(self.db, mgr, project.id)
-                                if f["kind"] == "slot_binding_retained"]
+                    audit = await reconcile_slot_bindings(self.db, mgr, project.id)
+                    findings = [f for f in audit if f["kind"] == "slot_binding_retained"]
                     previous = getattr(self, "_workspace_binding_findings", {})
+                    # A new pool reservation changes agent and generation,
+                    # but does not resolve the underlying retained source.
+                    # An unlocked or preparing slot has not been proved healthy
+                    # either. Keep its notice through the gap between sessions.
+                    preparing = {f["workspace_id"] for f in audit
+                                 if f["kind"] == "slot_binding_preparing"}
+                    unproved = {ws.id for ws in workspaces
+                                if not (ws.locked_by_task_id or ws.locked_by_agent_id)} | preparing
+                    old = previous.get(project.id, {})
+                    identities = {key: value for key, value in old.items() if key in unproved}
+                    current = {
+                        f["workspace_id"]: (f["locked_by_task_id"], f["detail"])
+                        for f in findings
+                    }
+                    identities.update(current)
+                    changed = [f for f in findings
+                               if old.get(f["workspace_id"]) != current[f["workspace_id"]]]
                     accepted = True
-                    if findings and previous.get(project.id) != findings:
+                    if changed:
                         result = await self._command_handler.execute("message_send", {
                             "project_id": project.id, "from_kind": "system",
                             "from_id": "workspace-binding-reconciler", "to_kind": "session",
@@ -4219,13 +4251,13 @@ class Orchestrator(
                             "subject": "Existing workspace bindings need fenced recovery",
                             "body": "\n".join(
                                 f"{f['workspace_id']} generation {f['generation']}: {f['detail']}"
-                                for f in findings[:50]
+                                for f in changed[:50]
                             ), "archive_after_inject": True,
                         })
                         if result.get("success") is False or result.get("error"):
                             accepted = False
                     if accepted:
-                        previous[project.id] = findings
+                        previous[project.id] = identities
                         self._workspace_binding_findings = previous
                 except Exception:
                     logger.warning("Existing workspace binding audit failed for %s", project.id)
@@ -4301,7 +4333,7 @@ class Orchestrator(
         from types import SimpleNamespace
 
         from src.git.manager import repository_urls_match
-        from src.integration.branch_retirement import retirement_report
+        from src.integration.branch_retirement import retirement_backlog_report, retirement_report
         from src.integration.branch_sweep import (
             BranchSweepReport, SweepSafety, _append_backup, record_sweep_date, sweep_checkout,
         )
@@ -4344,6 +4376,7 @@ class Orchestrator(
             skipped: list[str] = []
             unregistered: dict[str, list[str]] = {}
             retired: list[tuple[str, str | None]] = []
+            backlog_lines: list[str] = []
             migrations: list[dict] = []
             retirement = getattr(self, "branch_retirement_service", None)
             if retirement is not None:
@@ -4359,6 +4392,12 @@ class Orchestrator(
                 inventory_complete = False
                 failures.append(f"{project.name}: workspace list failed ({exc})")
                 repositories, workspaces = [], []
+            if repositories:
+                try:
+                    async with self.db._engine.connect() as conn:
+                        backlog_lines = await retirement_backlog_report(conn, project.id)
+                except Exception as exc:
+                    failures.append(f"retirement backlog inventory failed ({exc})")
             # Missing registrations are inventory issues, not failed Git probes.
             # Keep them (and their repository identity/holds) until an operator
             # restores or explicitly removes them. Persist notices across days
@@ -4575,6 +4614,7 @@ class Orchestrator(
             if new_notices:
                 lines.append("Missing workspace registrations: " + "; ".join(new_notices))
             lines.extend(retirement_lines[1:])
+            lines.extend(backlog_lines)
             for row in migrations:
                 if row["action"] == "blocked":
                     lines.append(f"  provenance {row['old_ref']}: {row['error']}")

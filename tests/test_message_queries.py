@@ -121,6 +121,26 @@ class TestPendingOrdering:
         pending = await db.get_pending_messages("session", "supervisor-p1")
         assert [m.id for m in pending] == [second.id]
 
+    async def test_include_delivered_filters_read_archive_and_project_before_limit(self, db):
+        read = await _send(db, priority=0)
+        await db.mark_read(read.id)
+        archived = await _send(db, priority=0)
+        await db.archive_messages([archived.id])
+        await _send(db, project_id="p2", priority=0)
+        await _send(db, to_id="other", priority=0)
+        delivered = await _send(db, priority=1)
+        await db.mark_delivered(delivered.id, via="prime")
+        pending = await _send(db, priority=2)
+        rows = await db.get_pending_messages(
+            "session", "supervisor-p1", include_delivered=True, project_id="p1", limit=1,
+        )
+        assert [m.id for m in rows] == [delivered.id]
+        rows = await db.get_pending_messages(
+            "session", "supervisor-p1", include_delivered=True, project_id="p1",
+        )
+        assert [m.id for m in rows] == [delivered.id, pending.id]
+        assert (await db.get_message(delivered.id)).read_at is None
+
     async def test_archived_rows_excluded(self, db):
         msg = await _send(db)
         await db.archive_messages([msg.id])

@@ -45,7 +45,7 @@ running_pid() {
 # daemon owns this port" from "nothing is there", and useless as a readiness
 # gate — see `ready_ok`.
 health_ok() {
-    curl -fsS --max-time 10 "$AQ_E2E_API_URL/api/health" >/dev/null 2>&1
+    e2e_health_answers 10
 }
 
 # Readiness: the daemon can actually query its schema.  This is what `start`

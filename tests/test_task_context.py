@@ -6,7 +6,14 @@ refactor — these tests are about TaskContext, not about adapters.
 
 from __future__ import annotations
 
+import pytest
+
 from src.models import TaskContext
+
+
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """These model field tests never allocate or read a database."""
 
 
 class TestTaskContextL0L1Fields:

@@ -111,9 +111,23 @@ an ancestor of the tip (`development_delivery`) or merging it changes only
 generated artifacts (`content_equivalent`). The latter ignores differences and
 conflicts only in paths marked `merge=aq-generated` by the pinned target's Git
 attributes; other differences or conflicts remain unproven.
-It never writes provenance, moves a ref or edits a task;
-anything unproven is listed and left alone for an explicit decision. A reopened
-task's new completion is not covered by the old row.
+It also inventories completed tasks that never recorded an origin, including
+tasks whose branches are gone. For these tasks, a passing completion's exact
+final reported source is retained as Git provenance only when ancestry proves
+that source on the default target. Dependency admission can then recheck that
+source normally. Re-running repairs previously backfilled rows that lack this
+provenance, using fresh Git proof. Earlier commits and content equivalence do
+not authorize this source binding. Preview writes nothing; apply does not move
+task branches or edit tasks. Anything unproven is listed and left alone for an
+explicit decision. A reopened task's new completion is not covered by the old row.
+
+Completed children whose epic branch was deleted are also inventoried, including
+children with recorded origins. They require strict ancestry of the current
+passing completion's exact final source on the default target. Apply retains
+that source independently of the deleted refs, so dependency admission can
+recheck it normally. An earlier commit, an equivalent tree or an old row cannot
+authorize the binding. Epic cleanup holds the parent ref until reconciliation
+records retained child witnesses; a new child completion restores the hold.
 
 A child of a still-open epic whose exact source is already on the epic branch
 gets retained provenance instead (`epic_branch_provenance`), because the epic's

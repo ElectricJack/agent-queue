@@ -34,6 +34,8 @@ from src.git.manager import GitError, is_valid_git_oid, repository_urls_match
 from src.integration.branch_discard import BranchDiscardService, _bundle
 from src.integration.delivery_branches import (
     LIVE_TASK_STATUSES,
+    UNSETTLED_DELIVERY_STATES,
+    batch_branch_references,
     branch_of,
     deletable,
     live_branch_references,
@@ -130,6 +132,33 @@ def retirement_report(results) -> list[str]:
               f"held/conflicted, {superseded} continued by a concurrent attempt.")]
     lines.extend(f"  retirement {state} ({count}): {error}"
                  for (state, error), count in held.most_common() if error)
+    return lines
+
+
+async def retirement_backlog_report(conn, project_id) -> list[str]:
+    """Expose terminal-batch backlog and unresolved legacy holders separately."""
+    from src.integration.development import operation_rows_on
+
+    held, terminal = await batch_branch_references(
+        conn, project_id=project_id, include_terminal=True,
+    )
+    pending = set((await conn.execute(select(retirements.c.branch).where(
+        retirements.c.project_id == project_id,
+        retirements.c.state.in_(("pending", "conflict")),
+    ))).scalars())
+    backlog = pending & terminal.keys()
+    counts = Counter(reason for ref in backlog for reason in terminal[ref])
+    lines = [f"Held retirement refs associated with terminal batches: {len(backlog)} "
+             "(terminal membership alone does not hold refs)."]
+    lines.extend(f"  terminal batch backlog ({count} refs): {reason}"
+                 for reason, count in sorted(counts.items()))
+    review = {reason for reason in held.values() if reason.startswith("operator review required:")}
+    for row in await operation_rows_on(conn, [project_id], states=UNSETTLED_DELIVERY_STATES):
+        if row["id"].startswith("legacy-operation:"):
+            review.add(f"operator review required: legacy development batch {row['id']} "
+                       f"is {row['state']}")
+    lines.append(f"Legacy holders requiring operator review: {len(review)}.")
+    lines.extend(f"  {reason}" for reason in sorted(review))
     return lines
 
 

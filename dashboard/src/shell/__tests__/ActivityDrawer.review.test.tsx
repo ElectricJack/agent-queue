@@ -25,7 +25,7 @@ describe("ActivityDrawer review gates", () => {
 
     fireEvent.click(screen.getByText("Architecture proposal"));
 
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/focus/asks/ask-one");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/asks/ask-one");
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
     expect(screen.queryByText("Half-depth chip-scar probe")).not.toBeInTheDocument();

@@ -129,6 +129,18 @@ transaction and clears only an incident whose cache is clean, including an `exha
 one; a dirty cache stays held (`not_clean`). See
 [integration-repository-recovery.md](integration-repository-recovery.md).
 
+`aq task claim-abort --task-id <id> --session-id <id> --claim-epoch <n>
+--instance-token <token> --reason <text>` lets a local operator or live project
+supervisor interrupt a hung preparation without acquiring its task-control lock.
+It refuses a session belonging to another project before reading its task.
+It waits up to ten seconds for cleanup (`settled` or `cleanup_pending`). Active or
+changed claims refuse; unavailable cleanup or branch handoff proof retains all
+ownership. The ordinary preparation deadline is `swarm.prepare_timeout`.
+
+Reopen settles a stopped pool predecessor's pending worker-branch handoff before
+moving the producer to READY. Stop, checkout publication, workspace and branch
+fence proofs remain required; an unproved handoff refuses reopen for recovery.
+
 For READY/BLOCKED tasks with `slot_reset_failure`, `aq task resume` clears the
 preparation backoff and retries. A historical claim from a terminal session does
 not prevent recovery once the session provider confirms that exact writer has

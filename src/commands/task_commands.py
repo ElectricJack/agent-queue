@@ -4756,6 +4756,9 @@ class TaskCommandsMixin:
                 )
             }
         scope = self._current_scope or {}
+        continuation_recovery = await self.recover_continuation_incident(args)
+        if continuation_recovery is not None:
+            return continuation_recovery
         stopped_session = None
         operator_handoff = False
         if decision == "retry":
@@ -4857,41 +4860,55 @@ class TaskCommandsMixin:
     async def _cmd_restart_task(self, args: dict) -> dict:
         from src.commands.supervisor_authority import operator_or_global_supervisor
         from src.database.queries.task_recovery_queries import RecoveryHoldError
+        from src.wait_runtime.restart import restart_attempt
+        from src.waits.conditions import WaitError
 
-        hold_override, error = await self.db.restart_hold_override(
-            args['task_id'], args.get('override_hold', False), args.get('reason'),
-            authority=operator_or_global_supervisor)
-        if error:
-            return {'success': False, 'error': error}
         try:
-            return await TaskCommandsMixin._restart_task(self, args, hold_override)
+            async with restart_attempt(args['task_id']):
+                hold_override, error = await self.db.restart_hold_override(
+                    args['task_id'], args.get('override_hold', False), args.get('reason'),
+                    authority=operator_or_global_supervisor)
+                if error:
+                    return {'success': False, 'error': error}
+                return await TaskCommandsMixin._restart_task(self, args, hold_override)
         except RecoveryHoldError as exc:
             return {'success': False, 'error_code': 'task_recovery.held',
                     'error': str(exc), 'recovery_hold': exc.incident}
+        except WaitError as exc:
+            return {'success': False, 'error_code': exc.code, 'error': str(exc)}
 
     async def _restart_task(self, args: dict, hold_override) -> dict:
         from src.integration.repair import OrdinaryRepairService
-        from src.wait_runtime.restart import readmit, release_continuations, restart_lock
+        from src.wait_runtime.restart import (
+            readmit, release_continuations, restart_lock, restart_phase,
+        )
         from src.waits.conditions import WaitError
 
+        restart_phase('recovery hold guard (task row lock)')
         await self.db.guard_restart_recovery_hold(args["task_id"], hold_override)
+        restart_phase('manual pause resume (task-control/repository locks)')
         refused = await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])
         if refused is not None:
             return refused
         # Resume's task-control lock covers continuation cleanup and readmission.
+        restart_phase('task-control lock')
         async with restart_lock(self, args["task_id"]):
+            restart_phase('task/recovery observation')
             task = await self.db.get_task(args["task_id"])
             if not task:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            restart_phase('recovery hold guard (task row lock)')
             await self.db.guard_restart_recovery_hold(task.id, hold_override)
+            restart_phase('integration repair observation')
             if stale := await OrdinaryRepairService(self.db).stale(task):
                 return {"success": False, "error": stale, "error_code": "stale_repair"}
             try:
                 released = await release_continuations(self, task)
             except WaitError as exc:
                 return {"success": False, "error": str(exc), "error_code": exc.code}
+            restart_phase('integration restart admission')
             project = await self.db.get_project(task.project_id)
             from src.integration.train_policy import worker_integration_enabled
 
@@ -5084,6 +5101,12 @@ class TaskCommandsMixin:
             self.db, task.project_id, subject="task reopen"
         )
         transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
+        if not await self.orchestrator.aprepare_reopened_integration_owner(task):
+            return {
+                "success": False,
+                "error": "Prior pool writer handoff remains unproven; retain the closed task "
+                         "and use aq integration release-owner after proving the writer stopped",
+            }
         try:
             if review_evidence_snapshot is None:
                 await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
@@ -5824,11 +5847,15 @@ class TaskCommandsMixin:
         Cross-project blocking deps name the other project in ``detail``.
         See docs/specs/design/work-graph.md §9.
         """
-        from src.explain import Reason, build_capacity_reasons
-
         task_id = args.get("task_id")
         if not task_id:
             return {"success": False, "error": "task_id is required"}
+        return await self._explain_task(str(task_id))
+
+    async def _explain_task(self, task_id: str, *, admission=None, pool_measure=None) -> dict:
+        """Explain one task, optionally using a project read's shared observations."""
+        from src.explain import Reason, build_capacity_reasons
+
         task = await self.db.get_task(str(task_id))
         if task is None:
             return {"success": False, "error": f"task '{task_id}' not found"}
@@ -5978,15 +6005,16 @@ class TaskCommandsMixin:
 
         from src.integration.admission import observe_admission
 
-        admission = await observe_admission(
-            self.db,
-            [str(task_id)],
-            self._development_integration(),
-            cached_only=True,
-            default_mode=self.config.integration.default_mode,
-            router_ready_projects=({task.project_id} if await orchestrator_router_ready(
-                self.orchestrator, task.project_id) else set()),
-        )
+        if admission is None:
+            admission = await observe_admission(
+                self.db,
+                [str(task_id)],
+                self._development_integration(),
+                cached_only=True,
+                default_mode=self.config.integration.default_mode,
+                router_ready_projects=({task.project_id} if await orchestrator_router_ready(
+                    self.orchestrator, task.project_id) else set()),
+            )
         from src.integration.delivery_engine import project_delivery_issue
 
         delivery_issues = {}
@@ -6183,7 +6211,8 @@ class TaskCommandsMixin:
         async def measure_pools():
             nonlocal measurement
             if measurement is None:
-                measurement = await self.orchestrator._measure_pools(for_display=True)
+                measurement = await (pool_measure() if pool_measure is not None else
+                                     self.orchestrator._measure_pools(for_display=True))
             return measurement
 
         pool_reason = await self._pool_wait_reason(task, measure_pools=measure_pools)
@@ -6619,7 +6648,7 @@ class TaskCommandsMixin:
         # Withheld: everything not READY-and-unblocked in DEFINED/BLOCKED.
         from src.models import TaskStatus
 
-        withheld: list[dict] = []
+        withheld_tasks = []
         for status in (TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.READY):
             for task in await self.db.list_tasks(project_id=str(project_id), status=status):
                 if (
@@ -6630,7 +6659,37 @@ class TaskCommandsMixin:
                     lbls = await self.db.get_task_labels(task.id)
                     if not any(x.startswith("hold:") for x in lbls):
                         continue
-                res = await self._cmd_explain_task({"task_id": task.id})
+                withheld_tasks.append(task)
+
+        # Admission evaluates the shared frontier SQL; pool measurement scans
+        # demand across every active project. Pay for each once per request,
+        # rather than once per withheld task, without retaining stale results
+        # on the handler between requests.
+        withheld: list[dict] = []
+        if withheld_tasks:
+            from src.routing.readiness import orchestrator_router_ready
+
+            withheld_admission = await observe_admission(
+                self.db,
+                [task.id for task in withheld_tasks],
+                self._development_integration(),
+                cached_only=True,
+                default_mode=self.config.integration.default_mode,
+                router_ready_projects=({str(project_id)} if await orchestrator_router_ready(
+                    self.orchestrator, str(project_id)) else set()),
+            )
+            measurement = None
+
+            async def measure_pools():
+                nonlocal measurement
+                if measurement is None:
+                    measurement = await self.orchestrator._measure_pools(for_display=True)
+                return measurement
+
+            for task in withheld_tasks:
+                res = await self._explain_task(
+                    task.id, admission=withheld_admission, pool_measure=measure_pools,
+                )
                 if res.get("success") and res.get("reasons"):
                     withheld.append({"task_id": task.id, "reasons": res["reasons"]})
 

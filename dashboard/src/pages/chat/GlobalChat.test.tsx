@@ -111,6 +111,14 @@ describe("GlobalChat conversation filtering", () => {
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
+  it("does not open a transcript or reply box for a missing conversation", async () => {
+    vi.mocked(supervisorInboxHistory).mockResolvedValue(historyResult([]));
+    renderChat("/?conversation=missing");
+    await screen.findByText(/No conversation with that id/);
+    expect(fetchChatMessages).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
   it("loads the selected conversation from a deep link", async () => {
     renderChat("/?conversation=conv-one");
     await screen.findByText("Discord history");

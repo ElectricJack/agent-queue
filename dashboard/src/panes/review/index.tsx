@@ -62,7 +62,7 @@ function SelectionCommentButton({ target, onOpen }: { target: CommentTarget; onO
   const ref = useRef<HTMLButtonElement>(null);
   const style = useCommentPosition(target.reference, ref, { withinContainer: true });
   return createPortal(
-    <button ref={ref} type="button" style={style}
+    <button ref={ref} type="button" data-primary-control style={style}
       onPointerDown={(event) => event.preventDefault()}
       onClick={onOpen}
       className="z-40 rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white shadow hover:bg-indigo-500">
@@ -326,7 +326,7 @@ function ReviewPaneContent({ reviewId, setShortcuts, askData }: {
           : null;
 
   return (
-    <div className="@container/review flex h-full min-h-0 flex-col bg-gray-950 text-gray-100">
+    <div className="@container/review flex h-full min-h-0 flex-col overflow-y-auto bg-gray-950 text-gray-100">
       {query.error && <p role="alert" className="p-3">Review refresh failed. Your draft is preserved.
         <button className="min-h-11 px-3" onClick={() => void query.refetch()}>Retry</button></p>}
       {response.review.held_while_paused && (
@@ -423,7 +423,7 @@ function ReviewPaneContent({ reviewId, setShortcuts, askData }: {
       {closing && <WithdrawReviewModal review={response.review} onClose={() => setClosing(false)}
         onWithdrawn={() => setClosing(false)} />}
       {showDiff && <DiffBlocks blocks={response.diff} />}
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex h-[60dvh] min-h-80 shrink-0 overflow-hidden">
         {toc.length > 0 && (
           <aside className="hidden w-48 shrink-0 overflow-y-auto border-r border-gray-800 p-3 @min-[800px]/review:block">
             <TocList

@@ -230,6 +230,10 @@ class PostgreSQLDatabaseAdapter(
 
     async def close(self) -> None:
         """Gracefully shut down the database engine."""
+        for observer in (self._prerequisite_observer, self._delivery_observer):
+            stop = getattr(observer, "stop_delivery_refresh", None)
+            if stop is not None:
+                await stop()
         if self._engine:
             await self._engine.dispose()
 
