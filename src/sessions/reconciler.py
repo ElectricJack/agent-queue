@@ -76,6 +76,7 @@ from src.sessions.usage_limit_screen import (
     UsageLimitScreen,
     detect_usage_limit_screen,
 )
+from src.waits.occupancy import continuation_occupancy
 
 logger = logging.getLogger(__name__)
 
@@ -2608,6 +2609,7 @@ class SessionReconciler:
         hold: pool sizing owns any later drain decision and its grace period.
         """
         # (a) live session, task closed or gone.
+        resuming: frozenset[str] | None = None
         for row in live:
             if row.lifecycle not in ("task", "pool"):
                 continue
@@ -2626,6 +2628,13 @@ class SessionReconciler:
             still_open = task is not None and is_live_pool_claim_task_status(task.status)
             if still_open:
                 continue
+            if task is not None and task.status is TaskStatus.RESUME_PENDING:
+                # Resume owns this new writer until acknowledgment. The old
+                # session is still excluded by the ordinary claim predicate.
+                if resuming is None:
+                    resuming, _ = await continuation_occupancy(self.db, self.config)
+                if row.id in resuming:
+                    continue
             if row.lifecycle == "pool":
                 # A terminal close can commit before its CLI response is
                 # lost to a daemon restart.  Its attached integration owner

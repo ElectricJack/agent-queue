@@ -1599,6 +1599,8 @@ that keeps your edits is `--grants-only`:
 
 ```bash
 aq doctor --check profiles.system_drift                          # which vault copies diverge, and how
+aq doctor --check profiles.capability_drift                      # missing default grants across shipped roles
+aq doctor --check profiles.capability_drift --fix                # additive repair; backup and edits kept
 aq agent profile-reseed --profile-id <id> --grants-only           # merge in only the missing grants
 ```
 
