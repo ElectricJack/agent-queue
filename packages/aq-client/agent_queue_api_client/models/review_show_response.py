@@ -11,9 +11,11 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.review_record import ReviewRecord
     from ..models.review_response_route import ReviewResponseRoute
+    from ..models.review_show_response_attachments_item import ReviewShowResponseAttachmentsItem
     from ..models.review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
     from ..models.review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
     from ..models.review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
+    from ..models.review_show_response_gate_type_0 import ReviewShowResponseGateType0
     from ..models.review_show_response_revision import ReviewShowResponseRevision
     from ..models.review_show_response_revisions_item import ReviewShowResponseRevisionsItem
 
@@ -34,6 +36,9 @@ class ReviewShowResponse:
         comments (list[ReviewShowResponseCommentsType0Item] | None | Unset):
         diff (list[ReviewShowResponseDiffType0Item] | None | Unset):
         dispatches (list[ReviewShowResponseDispatchesItem] | Unset):
+        attachments (list[ReviewShowResponseAttachmentsItem] | Unset):
+        dependent_task_ids (list[str] | Unset):
+        gate (None | ReviewShowResponseGateType0 | Unset):
     """
 
     review: ReviewRecord
@@ -45,9 +50,14 @@ class ReviewShowResponse:
     comments: list[ReviewShowResponseCommentsType0Item] | None | Unset = UNSET
     diff: list[ReviewShowResponseDiffType0Item] | None | Unset = UNSET
     dispatches: list[ReviewShowResponseDispatchesItem] | Unset = UNSET
+    attachments: list[ReviewShowResponseAttachmentsItem] | Unset = UNSET
+    dependent_task_ids: list[str] | Unset = UNSET
+    gate: None | ReviewShowResponseGateType0 | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.review_show_response_gate_type_0 import ReviewShowResponseGateType0
+
         review = self.review.to_dict()
 
         revision = self.revision.to_dict()
@@ -96,6 +106,25 @@ class ReviewShowResponse:
                 dispatches_item = dispatches_item_data.to_dict()
                 dispatches.append(dispatches_item)
 
+        attachments: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.attachments, Unset):
+            attachments = []
+            for attachments_item_data in self.attachments:
+                attachments_item = attachments_item_data.to_dict()
+                attachments.append(attachments_item)
+
+        dependent_task_ids: list[str] | Unset = UNSET
+        if not isinstance(self.dependent_task_ids, Unset):
+            dependent_task_ids = self.dependent_task_ids
+
+        gate: dict[str, Any] | None | Unset
+        if isinstance(self.gate, Unset):
+            gate = UNSET
+        elif isinstance(self.gate, ReviewShowResponseGateType0):
+            gate = self.gate.to_dict()
+        else:
+            gate = self.gate
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -116,6 +145,12 @@ class ReviewShowResponse:
             field_dict["diff"] = diff
         if dispatches is not UNSET:
             field_dict["dispatches"] = dispatches
+        if attachments is not UNSET:
+            field_dict["attachments"] = attachments
+        if dependent_task_ids is not UNSET:
+            field_dict["dependent_task_ids"] = dependent_task_ids
+        if gate is not UNSET:
+            field_dict["gate"] = gate
 
         return field_dict
 
@@ -123,9 +158,11 @@ class ReviewShowResponse:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.review_record import ReviewRecord
         from ..models.review_response_route import ReviewResponseRoute
+        from ..models.review_show_response_attachments_item import ReviewShowResponseAttachmentsItem
         from ..models.review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
         from ..models.review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
         from ..models.review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
+        from ..models.review_show_response_gate_type_0 import ReviewShowResponseGateType0
         from ..models.review_show_response_revision import ReviewShowResponseRevision
         from ..models.review_show_response_revisions_item import ReviewShowResponseRevisionsItem
 
@@ -202,6 +239,34 @@ class ReviewShowResponse:
 
                 dispatches.append(dispatches_item)
 
+        _attachments = d.pop("attachments", UNSET)
+        attachments: list[ReviewShowResponseAttachmentsItem] | Unset = UNSET
+        if _attachments is not UNSET:
+            attachments = []
+            for attachments_item_data in _attachments:
+                attachments_item = ReviewShowResponseAttachmentsItem.from_dict(attachments_item_data)
+
+                attachments.append(attachments_item)
+
+        dependent_task_ids = cast(list[str], d.pop("dependent_task_ids", UNSET))
+
+        def _parse_gate(data: object) -> None | ReviewShowResponseGateType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                gate_type_0 = ReviewShowResponseGateType0.from_dict(data)
+
+                return gate_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | ReviewShowResponseGateType0 | Unset, data)
+
+        gate = _parse_gate(d.pop("gate", UNSET))
+
         review_show_response = cls(
             review=review,
             revision=revision,
@@ -212,6 +277,9 @@ class ReviewShowResponse:
             comments=comments,
             diff=diff,
             dispatches=dispatches,
+            attachments=attachments,
+            dependent_task_ids=dependent_task_ids,
+            gate=gate,
         )
 
         review_show_response.additional_properties = d

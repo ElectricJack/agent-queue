@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/doctor/builtin.py::_check_config_parse": {
+      "baseline_span": [
+        28,
+        81
+      ],
+      "landing_span": [
+        28,
+        81
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}
