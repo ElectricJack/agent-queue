@@ -726,6 +726,9 @@ Dashboard, replacing the grid tests in `__tests__/`:
 - Focus deep link uses `node/{id}` for fit and breadcrumbs.
 - Level-of-detail steps down when the node budget is exceeded.
 - Nodes are positioned from server coordinates and never re-laid out on payload change.
+- Extent and the initial viewport tiles start independently. An unresolved extent must
+  not cancel or repeat tiles when it first resolves; an explicit layout-building 202
+  still triggers a retry when the layout publishes.
 
 Performance, in `scripts/`, on PostgreSQL:
 
@@ -762,6 +765,34 @@ Performance, in `scripts/`, on PostgreSQL:
   100-epic seed makes that single test take ~6 minutes.
 - Worst-case root band crossing: publish transaction under 1 s.
 - Mounted React Flow nodes under 400 at zoom 1 and at minimum zoom on a 1080p viewport.
+- Cached admission enrichment is scoped to the requested READY task IDs, including
+  prerequisite and stack observation. Proof revalidation reads only the source IDs it
+  verifies and skips an empty proof set. Scheduler passes retain their shared project
+  snapshot and mutation reads retain their freshness and authorization fences.
+  `test_tiles_active_enrichment_at_project_scale` seeds eight independent READY cards
+  and a 1,000-task historical prerequisite chain in a train project with the real
+  admission reader and Git observer. It caps cold/warm requests at 40 statements and
+  23 checkouts, forbids historical sources entering recursive authorization, and
+  forbids network Git. The sibling latency test requires `perf_strict` and asserts
+  median response below two seconds.
+
+2026-10-23 investigation (`noble-flare-12`): five read-only requests to the running
+agent-queue project's active tiles endpoint returned eight leaf cards with a median
+of 3,772 ms (3,369–4,273 ms). The request rectangle was `[-8,-8,16,16]`, with no
+expansion, root or filters. A disposable PostgreSQL cProfile reproduction using the
+fixture above measured 10,248 ms before candidate scoping (the 10-second frontier
+display timeout), then 103 ms after scoping (five samples, including a 488 ms cold
+request). The before profile spent 50.6 of 52.5 seconds in event-loop polling over
+five requests: the dominant cost was waiting for the project-wide recursive stack
+authorization SQL in `stacked_branches._inputs` / `_unauthorized_sources`, called
+by `observe_admission` → `hierarchy_frontier_modes` → `observe_stacks`, rather than
+Python geometry or serialization. Restricting that
+SQL removes the excess work without adding a thread pool or a stale admission cache.
+These are local ASGI measurements, not a deployed production after measurement;
+the production two-second visible-graph target needs confirmation after integration.
+Reproduce with `AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s
+tests/perf/test_layout_api_statements.py -k active_enrichment` and a disposable
+`POSTGRES_TEST_DSN`.
 
 ## 10. Rollout
 
@@ -945,3 +976,50 @@ observer regression tests enforce the no-network property for cold/warm/expired
 observations and identity changes. The <1 s / <3 s browser target still needs
 post-delivery verification on the deployed project; broad API contention remains
 visible in this baseline. No graph card or layout design was changed.
+
+
+### 2026-10-23: preserve caches and initial requests (noble-apex-40)
+
+The production router binding must live as long as its orchestrator, database,
+and command handler identities. Rebuilding the factory on every request discards
+its bounded, `layout_version`-keyed geometry cache and constructs FastAPI routes
+synchronously on every pan. A changed handler or database rebinds the router;
+a new layout version invalidates geometry through the existing cache key. Live
+card status and delivery readiness remain uncached.
+
+Extent and initial viewport tiles start independently. Extent availability must
+not abort tiles that are still in flight or invalidate cells already returned.
+Only a tiles response that actually reported layout pending is retried when an
+extent becomes ready; both response orderings must work. Explicit live-event and
+manual refreshes retain their invalidation behavior.
+
+The production-binding benchmark `test_active_tiles_profile_and_query_budget`
+uses 1,000 tasks (992 completed, eight visible READY cards), real cached admission,
+and the Git-truth prerequisite observer in all four project integration modes.
+It forbids network Git, verifies admission receives only the eight visible IDs,
+saves cProfile output, and caps warm SQL statements / connection checkouts at
+60/18 (disabled), 64/19 (development), and 87/27 (hierarchy/train). The uncached
+binding used one additional statement and checkout on every request. Timings
+are reported without host-dependent latency assertions.
+
+A consecutive before/after run on the shared test host reported these warm
+medians (six samples each). Host load varies; query counts and cache reuse are
+the deterministic regressions, and these timings establish no production claim.
+
+| Mode | Before ms | After ms |
+|---|---:|---:|
+| disabled | 174.2 | 110.4 |
+| development | 170.2 | 131.4 |
+| hierarchy | 233.5 | 235.6 |
+| train | 272.7 | 225.3 |
+
+Live measurements on October 23 remain a separate acceptance baseline:
+five active-tile requests returned eight leaf cards with p50 **3,217.5 ms**.
+Three-request isolation medians were 372.1 ms for no matching cards, 290.8 ms
+for IN_PROGRESS only (three cards), 3,421.1 ms for READY only (two cards), and
+3,920.6 ms unfiltered. This localizes the dominant remaining delay to readiness
+rather than geometry. The disposable fixture does not reproduce that delay.
+Do not remove delivery hold/unknown-evidence labels to hide the cost. A live
+admission profile and post-deployment browser measurement are still required to
+establish the task's under-two-second first-card acceptance target. Workers do
+not restart or modify the operator daemon to obtain that profile.

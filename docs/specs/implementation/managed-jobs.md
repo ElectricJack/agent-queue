@@ -1,24 +1,27 @@
-# Managed jobs: phase 2 execution substrate
+# Managed jobs: durable execution substrate
 
-Implements plan (2) of the approved 2026-09-24 exclusive job queue and managed
-long-running command specs in the agent-queue project vault. Phases 2 and 3 leave
-`resources.jobs.enabled: false`. Phase 3 exposes scoped CLI/MCP/typed API
-commands, atomic job waits and existing wait-result delivery. Phase 4 adds retained
-output attachments and publisher/finite-stream adapters. The internal reconciler
-remains excluded from public transports. There is one executor and one
-identity: `jobs.id`, `AQ_JOB_ID`, and `<data_dir>/runs/<uuid>/`.
+Implements the approved 2026-09-24 exclusive job queue and managed
+long-running command specs in the agent-queue project vault, through phases
+2–4 and subsequent recovery and playbook-script support. The phase numbers
+below describe delivery history. `resources.jobs.enabled` still defaults to
+false; an operator must enable it for detached submissions and local/hybrid
+integration CI. Disabling admission retains recovery, cancellation and cleanup.
+The CLI/MCP/typed API expose scoped commands, atomic job waits and retained
+output attachments. The internal reconciler remains excluded from public
+transports. There is one executor and one identity: `jobs.id`, `AQ_JOB_ID`, and
+`<data_dir>/runs/<uuid>/`.
 
 `src/jobs/service.py` orders accepted jobs by aged band, timestamp and id. An
 exclusive frontier drains existing shared work. The detached `src.jobs.runner`
 supervisor uses the existing versioned box locks, inherited by its command's
-children, and never accepts interpolated shell text. Finite test/lint/build/e2e
+children, and accepts server-built argv. Finite test/lint/build/e2e
 presets construct executable argv on the server. Test jobs select their interpreter
 from the pinned workspace using the same project rules as `aq test`; they use
 xdist only when that interpreter has it. A configured disposable
 `resources.jobs.test_database_url` is required for agent-queue tests and e2e; the worker
 DB refusal guards remain present and no daemon/session/provider credentials
 are inherited. This is separation on one OS account, not a sandbox.
-Publisher snapshots are standalone clones, so a foreign project whose snapshot
+Publisher snapshots are detached checkouts, so a foreign project whose snapshot
 has no virtual environment needs a `resources.test_interpreters` pin.
 
 The `test` preset accepts explicit serial execution as `-n 0`, `-n0`,
@@ -64,6 +67,15 @@ receipt plus a verified absence of marked processes releases a pin. Missing or
 unverifiable launch identity leaves a visible `cleanup_blocked` pin; elapsed time
 never clears it or launches a replacement. `aq doctor --check
 resources.jobs_cleanup --fix` retries reconciliation without guessing a PID.
+
+Startup recovery runs before workspace recovery. For non-playbook jobs that
+are no longer queued, it verifies receipts, nonce-marked processes and held
+slots before releasing stale pins. A previous daemon's launch with no receipt
+or intent can be proved never to execute only during this startup pass; elapsed
+time in an ordinary tick is insufficient. Unverifiable process or lock evidence
+retains the pin. Queued jobs stay pinned for later admission; playbook jobs wait
+for the first tick after their engine is available. Native Windows captures
+still require their native owner's cleanup proof.
 
 The runner takes an instance lock, writes fsync-renamed launch intent and started
 receipts, executes argv with null stdin, pumps stdout/stderr and enforces its
@@ -212,12 +224,15 @@ other unsupported commands defer with `jobs.preset_denied` until the operator
 selects supported presets and enables configured admission.
 
 Publisher checks belong to a deterministic integration operation and run at band
-zero in detached commit clones under `<data_dir>/job-snapshots/`. These snapshots
-have disabled `job-snapshot` workspace rows, so workers cannot acquire them. A
-snapshot has its own object storage, remains pinned until verified cleanup, and
-records the candidate SHA and server interpreter version. Verified terminal
-snapshots are removed when their 90-day result retention expires; cleanup I/O
-failures retain metadata for retry. Submission keys retain
+zero in detached candidate checkouts under the project's bound storage root,
+falling back to `<data_dir>/job-snapshots/`. These snapshots have disabled
+`job-snapshot` workspace rows, so workers cannot acquire them. New snapshots use
+linked worktrees sharing the primary store's objects; legacy standalone clones
+remain supported. Each records the candidate SHA and server interpreter version
+and remains pinned until verified cleanup. The retention sweep removes verified
+legacy snapshots after 90 days; warm-pool owner manifests keep reusable checkouts
+out of that deletion path. Cleanup I/O failures retain metadata for retry.
+Submission keys retain
 one job across response loss or publisher restart; infrastructure deferrals use a
 new attempt key, while unresolved cleanup blocks replacement. Queue and run
 budgets remain separate and are capped by the accepted job policy. Caller
@@ -225,6 +240,13 @@ cancellation does not cancel execution. A successful result attests only when it
 SHA and tracked-input fingerprint match the submitted snapshot; generated
 untracked test artifacts do not change the committed input. Pytest exit 5 fails
 validation under result v1.
+
+Integration snapshots may reuse a verified warm workspace and server-owned
+compiler cache paths. These optimizations retain the exact candidate input
+identity, workspace-generation pin and cleanup checks. Snapshot reuse is
+serialized against job pins; cache paths and environment are recorded in the
+accepted contract rather than supplied as arbitrary job arguments. See
+[integration trains](../../guides/hierarchical-integration-trains.md).
 
 A console stream's id is its canonical job id. `aq stream start` submits for a
 held task session in that task's workspace, prints its replay key, and accepts
@@ -288,3 +310,26 @@ Successful evidence must fit `matter_artifact_bytes`. Missing, invalid or
 oversized capture evidence fails the job; exit zero alone is insufficient.
 Cancellation and timeout remain authoritative even if a receipt claims success.
 This job layer records capture validity, not a quality score or human approval.
+
+### Playbook script jobs
+
+Playbook script steps submit an internal `playbook_script` job through
+`src/jobs/playbook.py`; this is not a public `aq job submit` preset. The owner
+is the playbook run, step, iteration path and attempt. A deterministic operation
+key makes response-loss replay return the same execution. These jobs share box
+admission with tests (weight 1, at most one active job per playbook owner), but
+use pinned input storage rather than a worker workspace pin.
+
+`resources.scripts.enabled` defaults to true; both it and managed-job admission
+must be enabled. Scripts run as ordinary host processes with bounded wall time
+and output, without an isolation prerequisite. The source may explicitly choose
+shell text and its interpreter; the general job endpoint still accepts only
+finite presets. Protected request/output values are encrypted; the runner gets
+its request and encryption key through a bounded stdin pipe, and ordinary
+job inspection excludes the launch contract and argv. Cancellation or an owning
+run's terminal lifecycle invokes verified cleanup. Ambiguous cleanup retains
+the input pin and blocks the owning run. The script runner owns a separate
+result contract and protected output, rather than the generic output ring.
+
+The [playbook script guide](../../guides/playbook-script-runner.md) owns program
+forms, configuration, pin validation, script outcomes and binding settlement.
