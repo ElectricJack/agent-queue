@@ -1,8 +1,8 @@
 """The flock registration invariant, including failure and concurrent observation."""
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import importlib
 import time
 from collections import Counter
@@ -199,6 +199,37 @@ async def test_cancelled_launch_cleans_up_registration(db):
     assert (await db.get_session(record.id)).state == "stopped"
 
 
+async def test_codex_project_trust_is_recorded_before_provider_start(db, tmp_path):
+    # nimble-harbor-12: the trust row must exist before Codex paints its TUI.
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    config = tmp_path / "codex-home" / "config.toml"
+    record, spec = registration(lifecycle="pool")
+    spec = replace(
+        spec, work_dir=str(repo), codex_project_trust=True,
+        env={**spec.env, "CODEX_HOME": str(config.parent)},
+    )
+    provider = FakeProvider()
+    original = provider.start
+    seen: list[str] = []
+
+    async def start(spec):
+        seen.append(config.read_text() if config.exists() else "")
+        return await original(spec)
+
+    provider.start = start
+    await launch_session(db, provider, spec, record)
+    assert seen == [f'[projects."{repo.resolve()}"]\ntrust_level = "trusted"\n']
+
+
+async def test_launch_without_codex_project_trust_leaves_config_alone(db, tmp_path):
+    config = tmp_path / "codex-home" / "config.toml"
+    record, spec = registration(lifecycle="pool")
+    spec = replace(spec, env={**spec.env, "CODEX_HOME": str(config.parent)})
+    await launch_session(db, FakeProvider(), spec, record)
+    assert not config.exists()
+
+
 async def test_running_acknowledgement_preserves_first_claim(db):
     await db.create_agent(Agent(id="a", name="Agent", profile_id="worker"))
     await db.create_task(Task(id="t", project_id="p", title="Work", description="",
@@ -301,7 +332,15 @@ _START_SITES = {
     ("src/dashboard_server/proxy.py", "exchange.start"): 1,
     ("src/dashboard_server/proxy.py", "self.start"): 1,
     ("src/discord/adapter.py", "self._bot.start"): 1,
-    ("src/integration/candidates.py", "self.repair.start"): 1,
+    # Freezes an epic refresh batch (conflicting root PR, collected-epic aggregate
+    # readiness); the train visits it without launching an agent.
+    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 2,
+    # Batch fixer reservation hands its launch to DaemonFixerRuntime, whose
+    # process start is the launch_session call pinned below.
+    ("src/integration/fixers.py", "self.runtime.start"): 1,
+    # Changelog section boundaries use re.Match offsets, never agent launches.
+    ("src/integration/promotion_notes.py", "following.start"): 1,
+    ("src/integration/promotion_notes.py", "match.start"): 3,
     ("src/intelligence_classes/editing.py", "block.start"): 1,
     ("src/main.py", "adapter.start"): 1,
     ("src/main.py", "metrics_sampler.start"): 1,
@@ -311,6 +350,8 @@ _START_SITES = {
     ("src/orchestrator/core.py", "self._config_watcher.start"): 1,
     ("src/orchestrator/core.py", "self.integration_service.start"): 1,
     ("src/orchestrator/core.py", "self.knowledge_generation_loop.start"): 1,
+    # Runs the async mailbox consumer; session starts still use launch_session.
+    ("src/orchestrator/core.py", "self.message_delivery_service.start"): 1,
     ("src/orchestrator/core.py", "self.record_outbox.start"): 1,
     ("src/orchestrator/core.py", "self.timer_service.start"): 1,
     ("src/orchestrator/sync_workflow.py", "adapter.start"): 1,
@@ -344,27 +385,38 @@ _PROCESS_SITES = {
     ("src/commands/helpers.py", "_run_subprocess_shell", "create_subprocess_shell"): 1,
     ("src/commands/profile_commands.py", "ProfileCommandsMixin._cmd_check_profile", "create_subprocess_exec"): 1,
     ("src/commands/profile_commands.py", "ProfileCommandsMixin._install_manifest", "create_subprocess_exec"): 3,
+    # The detached operator updater runs aq update with a scrubbed environment.
+    ("src/commands/system_commands.py", "SystemCommandsMixin._cmd_update_and_restart", "create_subprocess_exec"): 1,
+    # PostgreSQL clients, Docker probes and tmux session listing never launch agents.
+    ("src/database/backup.py", "_run", "create_subprocess_exec"): 1,
     ("src/doctor/builtin.py", "_probe_binary", "create_subprocess_exec"): 1,
     ("src/doctor/dashboard_server_checks.py", "_run_aq", "create_subprocess_exec"): 1,
     ("src/doctor/db_checks.py", "_git", "create_subprocess_exec"): 1,
     ("src/doctor/service_checks.py", "_run", "create_subprocess_exec"): 1,
     ("src/doctor/stall_checks.py", "_command", "create_subprocess_exec"): 1,
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._apush_refs_with_app_auth_to_url", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_authenticated_git_once", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_git_result_unlocked", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_subprocess", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_unlocked", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._run_isolated_import_git", "create_subprocess_exec"): 1,
+    # Whole-source proof pipes git diff into git patch-id; neither starts an agent.
+    ("src/git/manager.py", "GitManager.apatch_id", "create_subprocess_exec"): 2,
+    # Binary blob reads retain their dedicated bounded reader.
+    ("src/git/manager.py", "GitManager.aread_blob", "create_subprocess_exec"): 1,
+    # Git and workspace setup now share bounded process-group cleanup. This
+    # primitive owns command writers; provider agent launches stay above.
+    ("src/git/process.py", "run_owned_process", "create_subprocess_exec"): 1,
+    # Authenticated acquisition, push and credential-free import share this Git-only spawn.
+    ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
+    # Bounded ccache/sccache statistics read for warm build caches; never an agent.
+    ("src/build_cache.py", "cache_counters", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,
     ("src/jobs/matter.py", "native_status", "create_subprocess_exec"): 1,
     ("src/jobs/matter.py", "windows_path", "create_subprocess_exec"): 1,
     ("src/jobs/runner.py", "supervise", "create_subprocess_exec"): 1,
+    # Reviewed script programs acquire BoxLock capacity before spawning an ordinary
+    # process; they do not create an AQ agent/session. Acceptance tests cover admission.
+    ("src/jobs/script_runner.py", "launch", "create_subprocess_exec"): 1,
     ("src/jobs/service.py", "JobService.launch", "create_subprocess_exec"): 1,
     ("src/jobs/windows_owner.py", "run", "spawn"): 1,
     ("src/llm/cli.py", "ask_cli", "create_subprocess_exec"): 1,
-    ("src/orchestrator/worktree_manager.py", "WorktreeSlotManager._run_setup", "create_subprocess_exec"): 1,
     ("src/plugins/internal/files.py", "_run_subprocess", "create_subprocess_exec"): 1,
     ("src/plugins/internal/vibecop.py", "VibeCopRunner._run", "create_subprocess_exec"): 1,
     ("src/plugins/internal/vibecop.py", "VibeCopRunner.status", "create_subprocess_exec"): 3,
@@ -419,6 +471,7 @@ def test_all_agent_launch_paths_use_the_chokepoint():
         ("src/orchestrator/pools.py", "PoolsMixin._launch_pool_session_inner"): 1,
         ("src/agents/terminals.py", "_start_locked"): 1,
         ("src/messages/session_lens.py", "SessionLens._ensure_started_locked"): 1,
+        ("src/integration/fixer_runtime.py", "DaemonFixerRuntime._start"): 1,
     })
     # Host shells strip AQ/harness markers and are explicitly human terminals.
     assert tmux == Counter({

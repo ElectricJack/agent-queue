@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_identity.py::resolve_task_identity_on": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
