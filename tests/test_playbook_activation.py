@@ -914,11 +914,10 @@ async def _activate_the_shipped_pipeline(db, tmp_path):
 async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, tmp_path):
     """`solid-harbor.54`, end to end on the artifact the fleet runs.
 
-    `default-pipeline` has no AI step: `reviewer`, `final-reviewer` and
-    `spec-ingest` reach it only as literal `profile_id` arguments to
-    `ensure_task`.  While `compiled_against.profiles` was empty, widening any
-    of them left this activation `ready` forever, because health can only
-    compare what the artifact recorded.
+    `default-pipeline` has no AI step: `ensure_spec_ingest` creates its
+    server-owned `spec-ingest` role. An empty `compiled_against.profiles`
+    would leave activation `ready` after widening that role, because health
+    can only compare what the artifact recorded.
     """
     from src.playbooks.activation import ActivationHealth, load_activation_health
     from src.playbooks.validation import RegistryContractLookup
@@ -1536,10 +1535,15 @@ async def test_artifacts_command_honours_its_gates_and_arguments(db, tmp_path):
     lookups = (StubContracts(), StubProfiles(), None)
     handler = _v2_handler(db, lookups)
 
-    assert await handler._cmd_playbook_artifacts({}) == {"error": "playbook_id is required"}
+    assert await handler._cmd_playbook_artifacts({}) == {
+        "success": False,
+        "error": "playbook_id is required",
+    }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": 0}) == {
+        "success": False,
         "error": "limit must be >= 1"
     }
     assert await handler._cmd_playbook_artifacts({"playbook_id": "p", "limit": "many"}) == {
+        "success": False,
         "error": "limit must be an integer"
     }
