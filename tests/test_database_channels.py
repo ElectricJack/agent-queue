@@ -8,17 +8,13 @@ Covers:
 """
 
 import pytest
-from src.database import Database
 from src.models import Project
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 class TestProjectChannelDefaults:

@@ -56,6 +56,10 @@ somehow declares none.
 
 ## Capabilities
 
+The `## Capabilities` block below is the shared worker grant source. After
+editing it, run `python scripts/generate-worker-capabilities.py` to update every
+worker template.
+
 ```json
 {
   "harness_tools": [
@@ -73,6 +77,11 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "integration_continue_close",
+    "integration_batch_fix",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
@@ -137,6 +146,7 @@ somehow declares none.
     "review_attachment_add",
     "review_attachment_list",
     "review_comment",
+    "review_feedback_complete",
     "review_show",
     "review_submit",
     "github_issue_close_rejected",
@@ -163,6 +173,7 @@ somehow declares none.
     "test_selection_show"
   ],
   "plugin_tools": [
+    "read_file",
     "git_create_pr",
     "git_diff",
     "get_git_status",
