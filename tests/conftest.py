@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from hypothesis import settings
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
 from src.config import DatabaseConfig
@@ -16,6 +18,13 @@ from tests.db_fixtures import lease_dsn
 # Fresh per-test SQLite databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
 os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
+
+# CI explores the same examples on every run. Opt into a longer, randomized
+# local search with HYPOTHESIS_PROFILE=deep; deadlines are deliberately disabled
+# because a shared test box's latency is not a correctness invariant.
+settings.register_profile("ci", max_examples=40, derandomize=True, database=None, deadline=None)
+settings.register_profile("deep", max_examples=500, deadline=None)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
 def _resolve_base_dsn() -> str | None:
@@ -69,6 +78,7 @@ def pytest_configure(config) -> None:
     error = postgres_test_dsn_error()
     if error:
         raise pytest.UsageError(error)
+    _refuse_stale_selection_catalogue(config)
 
     # Collection validates configuration but must not create test resources.
     if getattr(config.option, "collectonly", False):
@@ -86,6 +96,33 @@ def pytest_configure(config) -> None:
     _PG_BASE_DSN = _resolve_base_dsn()
 
 
+def _refuse_stale_selection_catalogue(config) -> None:
+    """Refuse to run a named test module whose selection-catalogue entry is stale.
+
+    ``tests/selection_catalogue.json`` records every test module's areas and
+    ``src`` imports.  A worker who adds a module, or an import to one, and
+    runs only that file never sees ``tests/test_generated_artifacts.py``
+    fail; the candidate CI run does, and a train repair follows (2026-10-06:
+    keen-harbor-16.2).  The check is per named file, so directory runs are
+    untouched, and it is off under ``CI``, where that test is the check and a
+    usage error would only blank a job that names a file.  xdist workers
+    repeat the controller's configuration, so only the controller checks.
+    """
+    if (
+        os.environ.get("CI")
+        or hasattr(config, "workerinput")
+        or getattr(config.option, "pyargs", False)
+    ):
+        return
+    from src.test_selection.catalogue import stale_named_modules, stale_named_modules_message
+    from src.test_selection.discovery import named_test_modules
+
+    rels = named_test_modules(config.rootpath, config.invocation_params.dir, config.args)
+    problems = stale_named_modules(config.rootpath, rels)
+    if problems:
+        raise pytest.UsageError(stale_named_modules_message(problems))
+
+
 def pytest_unconfigure(config) -> None:
     """Drop worker databases after pytest has torn down session fixtures."""
     import asyncio
@@ -101,6 +138,80 @@ async def _dispose_pg_pool():
     yield
     if _PG_POOL is not None:
         await _PG_POOL.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logging():
+    """Undo the process-global logging configuration a test performs.
+
+    ``setup_logging()`` reconfigures the *root* logger — level, handlers,
+    filters — and every other test in the worker shares that one object.
+    Leaving it at ``INFO`` makes every ``logging.getLogger(__name__)``
+    record in the process reach pytest's ``caplog`` handler, so a test that
+    asserts on captured messages starts seeing unrelated loggers' output and
+    its outcome depends on shard order. That is not hypothetical:
+    ``tests/test_logging_config.py`` called ``setup_logging(level="DEBUG")``
+    and never restored, and on CI the ``src.database`` "database url=" INFO
+    line leaked into ``TestSchedulerBlockerLogging``'s assertions on whichever
+    worker ran both.
+
+    Snapshot the root logger around every test. Handlers the test installed
+    are removed and any file handler is closed (otherwise a per-test
+    RotatingFileHandler leaks a descriptor for the rest of the run), and
+    pytest's own capture handler — already attached when this fixture
+    starts — is among those restored.
+    """
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = root.handlers[:]
+    saved_filters = root.filters[:]
+    try:
+        yield
+    finally:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+        for log_filter in root.filters[:]:
+            root.removeFilter(log_filter)
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        for log_filter in saved_filters:
+            root.addFilter(log_filter)
+        root.setLevel(saved_level)
+
+
+@pytest.fixture(autouse=True)
+def _restore_command_handler_provider():
+    """Undo the process-global command handler provider a test installs.
+
+    ``Orchestrator.set_command_handler`` calls ``set_handler_provider``, which
+    points the global ``CONTRACTS`` registry at the live handler's descriptors
+    composed with its plugin registry. Nothing uninstalls it, so a later test
+    in the same worker that expects offline discovery (the packaged command
+    catalogue, the codegen routers) sees that handler's plugin definitions —
+    with runtime ``_plugin`` / ``_category`` keys — and its outcome depends on
+    shard order. On CI, ``test_orchestrator.py`` startup tests leaked into
+    ``test_cli_startup_offline.py`` and ``test_api_client_contract.py``.
+
+    Restore whatever was installed before the test, so a module-scoped
+    provider survives, and only touch the modules once something imported them.
+    """
+    import sys
+
+    def installed():
+        builtin = sys.modules.get("src.commands.contracts.builtin")
+        registry = sys.modules.get("src.commands.contracts.registry")
+        return (builtin, builtin._handler_provider if builtin else None,
+                registry, registry.CONTRACTS._snapshot_provider if registry else None)
+
+    _, saved_handler, _, saved_snapshot = installed()
+    yield
+    builtin, handler, registry, snapshot = installed()
+    if builtin is not None and handler is not saved_handler:
+        builtin._handler_provider = saved_handler
+    if registry is not None and snapshot is not saved_snapshot:
+        registry.CONTRACTS.configure_snapshot_provider(saved_snapshot)
 
 
 @pytest.fixture(autouse=True)

@@ -20,8 +20,9 @@ Six states in two halves (D1)::
 the *derived* one and never holds it.  The effective state is the override
 while one is active, else the derived state.
 
-Hysteresis (D3): no single unstructured observation moves a provider out of
-the launchable half.  A trip needs the provider's own structured statement
+Hysteresis (D3): no single broad pane-text observation moves a provider out of
+the launchable half. A trip needs an explicit quota statement on the CLI's
+retry screen, the provider's own structured statement
 (a usage snapshot, an auth probe) or two independent signals.  Recovery
 (D4) is a half-open breaker: an unavailable provider becomes ``degraded``
 with ``reason_code = recovering`` and the first ``launch_success`` completes
@@ -31,6 +32,7 @@ came from with ``level + 1``, so the next backoff doubles.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, replace
@@ -459,8 +461,23 @@ class _Ring:
         return self._windowed(found) if windowed else found
 
     def rate_limit_sessions(self) -> set[str]:
-        exits = self._windowed([e for e in self.entries if e.get("kind") == EXIT_RATE_LIMIT])
+        exits = self.rate_limit_exits()
         return {str(e.get("session_id") or f"anon-{i}") for i, e in enumerate(exits)}
+
+    def rate_limit_exits(self) -> list[Mapping[str, Any]]:
+        return self._windowed([e for e in self.entries if e.get("kind") == EXIT_RATE_LIMIT])
+
+    def usage_reset(self) -> float | None:
+        # The corroboration window is short; a stated quota reset can be many
+        # hours away. Keep that clock after the contributing exits age out.
+        deadlines = []
+        for entry in self.entries:
+            if entry.get("kind") != EXIT_RATE_LIMIT:
+                continue
+            deadline = (entry.get("detail") or {}).get("resets_at")
+            if isinstance(deadline, (int, float)) and math.isfinite(deadline) and deadline > self.now:
+                deadlines.append(float(deadline))
+        return max(deadlines, default=None)
 
     def generic_failures(self) -> list[Mapping[str, Any]]:
         return self._windowed(
@@ -510,6 +527,17 @@ def _failing_until(now: float, level: int, config: Any) -> float:
         level,
         _cfg(config, "recovery", "backoff_max_seconds", 3600),
     )
+
+
+def _rate_limit_until(
+    ring: _Ring, now: float, level: int, config: Any, account: UsageReading | None
+) -> float:
+    reset = ring.usage_reset()
+    if reset is not None:
+        if account is not None and account.resets_at is not None and account.resets_at > now:
+            return max(reset, account.resets_at)
+        return reset
+    return _exhausted_until(now, level, config, account)
 
 
 def _trip(
@@ -570,6 +598,18 @@ def _trip(
         return _Derived(UNAUTHENTICATED, "llm_auth_rejected", "the API rejected the credential")
 
     # -- exhausted -------------------------------------------------------
+    explicit = [
+        entry
+        for entry in ring.rate_limit_exits()
+        if (entry.get("detail") or {}).get("usage_exhausted") is True
+    ]
+    if explicit:
+        return _Derived(
+            EXHAUSTED,
+            "usage_limit_screen",
+            "the CLI reported free usage exhausted on its retry screen",
+            _rate_limit_until(ring, now, level, config, account),
+        )
     if account is not None and account.used_percent >= exhausted_pct:
         return _Derived(
             EXHAUSTED,
@@ -590,10 +630,10 @@ def _trip(
     if len(exit_sessions) >= exits_needed or (exit_sessions and usage_high):
         return _Derived(
             EXHAUSTED,
-            "rate_limited",
+            "usage_retry_screen" if ring.usage_reset() is not None else "rate_limited",
             f"{len(exit_sessions)} session(s) exited on a provider rate limit"
             + (f"; {account.label()} at {_fmt_pct(account.used_percent)}" if usage_high else ""),
-            _exhausted_until(now, level, config, account),
+            _rate_limit_until(ring, now, level, config, account),
         )
     llm_usage = ring.llm(SIGNAL_USAGE)
     if llm_usage:
@@ -684,6 +724,13 @@ def _launchable(
     return _Derived(AVAILABLE, "", "")
 
 
+def _holds_exhausted(account: UsageReading | None, config: Any) -> bool:
+    """The fresh, unreset account-wide reading still meets D3 rule (a)."""
+    return account is not None and account.used_percent >= _cfg(
+        config, "usage", "exhausted_percent", 99
+    )
+
+
 def _recovered(
     row: ProviderAvailability,
     evidence: Evidence | None,
@@ -699,6 +746,12 @@ def _recovered(
     grace = _cfg(config, "recovery", "reset_grace_seconds", 60)
     degraded_pct = _cfg(config, "usage", "degraded_percent", 85)
     if row.state == EXHAUSTED:
+        # The provider's own reading outranks a session's call and the clock:
+        # probation now would be tripped straight back by rule (a) on the next
+        # tick.  Only a fresher low reading, the window's reset or the reading
+        # going stale -- each of which drops it from ``account`` -- releases it.
+        if _holds_exhausted(account, config):
+            return None
         if row.until is not None and now >= row.until + grace:
             return "the usage window's reset time passed"
         if (
@@ -707,6 +760,10 @@ def _recovered(
             and account.used_percent < degraded_pct
         ):
             return f"{account.label()} window now at {_fmt_pct(account.used_percent)}"
+        if row.reason_code in {"usage_limit_screen", "usage_retry_screen"} and row.until is not None:
+            return None  # Launch acknowledgements cannot clear a blocking retry screen.
+        if _Ring(row, now, 0).usage_reset() is not None:
+            return None  # Nor can they clear a corroborated, stated reset.
         if success:
             return "a session made a successful call"
     elif row.state == FAILING:
@@ -736,12 +793,22 @@ def _probation_failure(row: ProviderAvailability, evidence: Evidence | None) -> 
 
 
 def _return_from_probation(
-    row: ProviderAvailability, level: int, now: float, config: Any, account: UsageReading | None
+    row: ProviderAvailability,
+    level: int,
+    now: float,
+    config: Any,
+    account: UsageReading | None,
+    ring: _Ring,
 ) -> _Derived:
     target = row.probation_from if row.probation_from in _DERIVED_UNAVAILABLE else FAILING
     reason = "the recovery canary failed; back to " + target
     if target == EXHAUSTED:
-        return _Derived(target, "canary_failed", reason, _exhausted_until(now, level, config, account))
+        return _Derived(
+            target,
+            "usage_retry_screen" if ring.usage_reset() is not None else "canary_failed",
+            reason,
+            _rate_limit_until(ring, now, level, config, account),
+        )
     if target == FAILING:
         return _Derived(target, "canary_failed", reason, _failing_until(now, level, config))
     return _Derived(target, "canary_failed", reason)
@@ -898,6 +965,10 @@ def reduce(
         tripped = _trip(row, ring, level=level, **trip_kwargs)
         if tripped is not None and _PRECEDENCE[tripped.state] < _PRECEDENCE[row.state]:
             row = replace(_apply(row, tripped, now), last_trip_at=now)
+        elif row.state == EXHAUSTED and (reset := ring.usage_reset()) is not None and (
+            row.until is None or reset > row.until
+        ):
+            row = replace(row, until=reset, reason_code="usage_retry_screen")
         elif (why := _recovered(row, evidence, now=now, config=config, account=account)):
             # Probation is a fresh start: the evidence that tripped the
             # provider must not re-trip it on the next tick.  One failure
@@ -913,21 +984,24 @@ def reduce(
                 counters_reset_at=now,
             )
         elif (
-            # A structured reset clock beats a guessed backoff.
+            # A structured reset clock beats a guessed backoff, and a guess
+            # that passed while the reading still holds is guessed again.
             tripped is not None
             and tripped.state == row.state == EXHAUSTED
-            and account is not None
-            and account.resets_at is not None
-            and account.resets_at > now
-            and account.used_percent >= _cfg(config, "usage", "exhausted_percent", 99)
+            and _holds_exhausted(account, config)
+            and (
+                (account.resets_at is not None and account.resets_at > now)
+                or row.until is None
+                or row.until <= now
+            )
         ):
-            row = replace(row, until=account.resets_at)
+            row = replace(row, until=tripped.until)
         return _finish(before, row, now=now, actor=actor, evidence=evidence)
 
     if row.state == DEGRADED and row.reason_code == RECOVERING:
         if _probation_failure(row, evidence):
             level = min(level + 1, _MAX_LEVEL)
-            back = _return_from_probation(row, level, now, config, account)
+            back = _return_from_probation(row, level, now, config, account, ring)
             row = replace(
                 _apply(row, back, now), level=level, last_trip_at=now, probation_from=None
             )
