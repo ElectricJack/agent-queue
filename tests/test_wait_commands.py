@@ -36,21 +36,23 @@ from src.commands.principal import (
 from src.config import AppConfig
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import (
-    continuations, doc_reviews, events, messages, sessions, tasks, wait_deadlines,
-    wait_records, wait_source_events,
+    admission_reservations, continuations, doc_reviews, events, messages, sessions,
+    tasks, wait_deadlines, wait_edges, wait_records, wait_source_events,
 )
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.models import SessionRecord
-from src.wait_runtime.service import WaitService
+from src.wait_runtime.service import WaitService, require_wait_handlers
 from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
 from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES, CapabilityPolicy
 from src.profiles.capability_sync import sync_profile_capabilities
 from src.profiles.drift import diff_profile, shipped_profile_path, vault_profile_path
+from src.profiles.sync import sync_profile_text_to_db
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.waits.legacy import translate_registration
 from src.waits.conditions import Condition, Scope, WaitError
 from src.waits.registry import build_registry
 from tests.test_operator_workers import operator as _operator, execute as operator_execute
+from tests.test_agent_wait_commands import _over_api
 from tests.test_wait_queries import NOW, Policy, decide, env as _env, register
 
 env = _env
@@ -252,6 +254,7 @@ async def test_upgrade_refusal_is_explicit_and_has_v2_example(commands):
     )
     assert result["error_code"] == "wait.upgrade_required"
     assert result["example"]["condition"]["task_id"] == "producer-task"
+    assert result["detail"]["example"]["schema_version"] == 2
 
 
 async def test_explicit_v2_body_requires_condition_and_stays_disabled(commands):
@@ -269,7 +272,7 @@ async def test_explicit_v2_body_requires_condition_and_stays_disabled(commands):
         ),
     )
     assert disabled["error_code"] == "wait.disabled"
-    assert not getattr(getattr(AppConfig(), "wait_policy", None), "v2_enabled", False)
+    assert AppConfig().wait_policy.v2_enabled
 
 
 async def test_missing_runtime_refuses_without_creating_rows(commands, env):
@@ -360,21 +363,30 @@ async def test_checkpoint_requires_current_holder_before_runtime_mutation(comman
     assert result["success"] and callback.await_args.kwargs["scope"] == env.scope
 
 
-async def test_show_consume_uses_ack_and_forwards_claim_fence(commands, env):
+@pytest.mark.parametrize("legacy_alias", [False, True])
+async def test_show_consume_uses_ack_and_forwards_claim_fence(commands, env, legacy_alias):
     receipt = await register(env)
+    read_id = receipt["wait_id"]
+    if legacy_alias:
+        read_id = "legacy-wait"
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(legacy_kind="agent_wait", legacy_id=read_id))
     callback = AsyncMock(
         return_value={"success": True, "wait_id": receipt["wait_id"], "acknowledged": True}
     )
     commands.orchestrator.wait_v2_handlers["wait_ack"] = callback
     result = await execute(
-        commands, "wait_get", dict(wait_id=receipt["wait_id"], consume=True, claim_epoch=1)
+        commands, "wait_get", dict(wait_id=read_id, consume=True, claim_epoch=1)
     )
     assert result["success"] and result["next_step"] == "continue"
     assert callback.await_args.args[0]["claim_epoch"] == 1
+    assert callback.await_args.args[0]["wait_id"] == receipt["wait_id"]
     callback.return_value = dict(success=False, error_code="continuation.stale_generation")
     assert (
         await execute(
-            commands, "wait_get", dict(wait_id=receipt["wait_id"], consume=True, claim_epoch=1)
+            commands, "wait_get", dict(wait_id=read_id, consume=True, claim_epoch=1)
         )
     )["error_code"] == "continuation.stale_generation"
 
@@ -597,8 +609,11 @@ async def test_copied_vault_additive_sync_closes_wait_grant_drift(tmp_path, prof
         {"wait_explain", "wait_checkpoint", "wait_ack"}
         if profile_id.startswith("worker")
         else {
+            "wait_register",
             "wait_get",
             "wait_list",
+            "wait_cancel",
+            "wait_ack",
             "wait_explain",
             "wait_graph",
             "wait_decide",
@@ -743,7 +758,7 @@ def test_cli_public_verbs_have_inventory_backend_evidence():
         assert _infer_handwritten_backend(wait.commands[path]) == name
 
 
-async def human_runtime(env, subject="task_comment"):
+async def human_runtime(env, subject="task_comment", *, park=True):
     config = AppConfig()
     config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
     orch = SimpleNamespace(db=env.db, config=config, wait_registry=env.registry,
@@ -779,6 +794,8 @@ async def human_runtime(env, subject="task_comment"):
         work_dir="/tmp/supervisor", started_at=NOW))
     principal = replace(WORKER, session_id="supervisor", session_instance_token="supervisor-token",
                         task_id=None, profile_id="supervisor", elevated=True)
+    if not park:
+        return service, handler, principal, receipt
     async with env.db._engine.begin() as conn:
         await env.db.park_task_for_continuation(
             conn, task_id="owner", wait_id=receipt["wait_id"],
@@ -883,6 +900,7 @@ async def test_human_registration_requires_hibernation_before_any_wait_write(env
 
     config = AppConfig()
     config.wait_policy.v2_enabled = True
+    config.wait_policy.hibernation_enabled = False
     lifecycle = WaitLifecycle(SimpleNamespace(orch=SimpleNamespace(db=env.db, config=config)))
     with pytest.raises(WaitError) as error:
         await lifecycle.register(dict(condition=dict(kind="human", subject="task_comment",
@@ -891,3 +909,422 @@ async def test_human_registration_requires_hibernation_before_any_wait_write(env
     assert error.value.code == "wait.disabled"
     async with env.db._engine.connect() as conn:
         assert not await conn.scalar(select(wait_records.c.id))
+
+
+async def wait_service(env):
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    orch = SimpleNamespace(db=env.db, config=config, wait_registry=env.registry,
+                           bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    service = WaitService(orch, clock=lambda: NOW)
+    handler = CommandHandler(orch, config)
+    orch._command_handler = handler
+    return service, handler
+
+
+async def test_wait_service_installs_a_handler_for_every_wait_command(env, monkeypatch):
+    _, handler = await wait_service(env)
+    installed = handler.orchestrator.wait_v2_handlers
+    assert (set(WAIT_V2_ARGS) - {"wait_checkpoint"}) | {"wait_register", "wait_cancel"} <= set(
+        installed)
+    partial = {k: v for k, v in installed.items() if k not in {"wait_cancel", "wait_explain"}}
+    with pytest.raises(RuntimeError, match="wait_cancel, wait_explain"):
+        require_wait_handlers(partial, installed["scheduler_wait_sync"])
+    monkeypatch.setitem(WAIT_V2_ARGS, "wait_unowned", WaitDecideArgs)
+    with pytest.raises(RuntimeError, match="wait_unowned"):
+        WaitService(SimpleNamespace(db=env.db, wait_registry=env.registry))
+
+
+@pytest.mark.parametrize("principal", [WORKER, TRUSTED_LOCAL])
+async def test_installed_wait_explain_reads_by_wait_and_by_task(env, principal):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    by_wait = await execute(handler, "wait_explain", {"wait_id": receipt["wait_id"]}, principal)
+    assert by_wait["success"], by_wait
+    assert by_wait["explanation"] == by_wait["waits"][0]
+    by_task = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert by_task["success"], by_task
+    assert [w["wait_id"] for w in by_task["waits"]] == [receipt["wait_id"]]
+    missing = await execute(handler, "wait_explain", {"wait_id": "absent"}, principal)
+    assert not missing["success"]
+
+
+async def _named_supervisor(env, project):
+    await env.db.create_session(SessionRecord(
+        id="sup", project_id=project, profile_id="supervisor", harness="codex",
+        provider="fake", name=f"n-supervisor--{project or 'global'}", lifecycle="named",
+        state="running", desired_state="running", instance_token="sup-token", epoch="boot",
+        work_dir="/tmp/supervisor", started_at=NOW))
+    return replace(WORKER, session_id="sup", session_instance_token="sup-token",
+                   task_id=None, project_id=project, profile_id="supervisor", elevated=True)
+
+
+async def test_project_supervisor_explains_task_waits_in_its_own_project_only(env):
+    """The delivery watchdog and stall checks hand supervisors `aq wait explain --task`."""
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["error_code"] == "wait.out_of_scope"
+    assert "Private title" not in str(foreign)
+    nominated = await execute(
+        handler, "wait_explain", {"task_id": "foreign", "project_id": "q"}, principal
+    )
+    assert nominated["error_code"] == "wait.out_of_scope"
+
+
+async def test_global_supervisor_explains_task_waits_in_any_project(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, None)
+    explained = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert explained["success"], explained
+    assert [w["wait_id"] for w in explained["waits"]] == [receipt["wait_id"]]
+    foreign = await execute(handler, "wait_explain", {"task_id": "foreign"}, principal)
+    assert foreign["success"] and foreign["waits"] == [], foreign
+
+
+async def test_supervisor_read_scope_never_registers_or_mutates_for_a_task(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    principal = await _named_supervisor(env, "p")
+    registered = await execute(handler, "wait_register", {
+        "schema_version": 2, "condition": {"kind": "task", "task_id": "source"},
+        "idempotency_key": "sup-k", "task_id": "owner"}, principal)
+    assert registered["error_code"] in {"wait.out_of_scope", "out_of_scope"}
+    assert "owner task cannot be nominated" in registered["error"]
+    legacy = await execute(handler, "wait_register", {
+        "kind": "task", "ref": "source", "idempotency_key": "sup-legacy", "task_id": "owner"},
+        principal)
+    assert legacy["success"] is False
+    for name, args in (
+        ("wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1, "task_id": "owner"}),
+        ("wait_checkpoint", {"wait_id": receipt["wait_id"], "claim_epoch": 1,
+                             "summary": "Resume the source task.", "task_id": "owner"}),
+    ):
+        refused = await execute(handler, name, args, principal)
+        assert refused["success"] is False, (name, refused)
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(wait_records)) == 1
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+    # A pool worker still cannot read another task's waits.
+    worker = await execute(handler, "wait_explain", {"task_id": "source"})
+    assert worker["error_code"] == "wait.out_of_scope"
+
+
+async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
+    receipt = await register(env)
+    async with env.db._engine.begin() as conn:
+        # The register command moves the owner to WAITING after the query commits.
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(status="WAITING"))
+    _, handler = await wait_service(env)
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert result["success"], result
+    WaitResponse.model_validate(result)
+    assert result["wait"]["outcome"] == "cancelled"
+    async with env.db._engine.connect() as conn:
+        outcome = (await conn.execute(select(messages).where(
+            messages.c.id == f"wait:{receipt['wait_id']}:outcome"))).mappings().one()
+        assert not await conn.scalar(select(func.count()).select_from(wait_deadlines).where(
+            wait_deadlines.c.wait_id == receipt["wait_id"], wait_deadlines.c.fired_at.is_(None),
+            wait_deadlines.c.cancelled_at.is_(None)))
+    assert outcome["body_kind"] == "wait_outcome"
+    assert (await env.db.get_task("owner")).status.value == "WAITING"
+    replay = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert replay["success"] and replay["warnings"] == ["wait already resolved: cancelled"]
+    ack = await execute(handler, "wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1})
+    assert ack["success"] and ack["outcome"] == "cancelled", ack
+    assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+@pytest.mark.parametrize("lost_owner", ["terminal", "session", "claim"])
+@pytest.mark.parametrize("caller", ["supervisor", "local"])
+async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
+    env, lost_owner, caller,
+):
+    receipt = await register(env)
+    service, handler = await wait_service(env)
+    source_lock = AsyncMock(side_effect=AssertionError("orphan cancellation needs no source"))
+    service.dispatcher.lock_source = source_lock
+    await env.db.create_session(SessionRecord(
+        id="sup", project_id="p", profile_id="supervisor", harness="codex", provider="fake",
+        name="n-supervisor--p", lifecycle="named", state="running", desired_state="running",
+        instance_token="sup-token", epoch="boot", work_dir="/tmp/sup", started_at=NOW,
+    ))
+    principal = replace(WORKER, session_id="sup", session_instance_token="sup-token",
+                        task_id=None, profile_id="supervisor", elevated=True)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(continuations).values(
+            id="old-intent", task_id="owner", wait_id=receipt["wait_id"], suspension_generation=1,
+            summary="Preserved checkpoint", facts={}, branch="aq/owner", saved_head="a" * 40,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="held", created_at=NOW,
+        ))
+        for rid, subject in (("old-reservation", {"continuation_id": "old-intent"}),
+                             ("replacement-reservation", {"task_id": "owner"})):
+            await conn.execute(insert(admission_reservations).values(
+                id=rid, project_id="p", scope={}, effective_priority=50, provenance="resume",
+                deadline_at=NOW + 60, state="pending", created_at=NOW, **subject,
+            ))
+        if lost_owner == "terminal":
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+                status="COMPLETED", assigned_agent_id=None,
+            ))
+        elif lost_owner == "session":
+            await conn.execute(update(sessions).where(sessions.c.id == "s").values(state="stopped"))
+        else:
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+    before = await env.db.get_task("owner")
+    # Neither a stale worker nor a supervisor of another project may do this.
+    assert not (await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}))["success"]
+    denied = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]},
+                           replace(principal, project_id="q"))
+    assert not denied["success"]
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]},
+                           principal if caller == "supervisor" else TRUSTED_LOCAL)
+    assert result["success"], result
+    wait = result["wait"]
+    assert wait["outcome"] == "cancelled" and wait["cleared_at"] == NOW
+    assert not wait["blocking"] and wait["decision_inputs"]["registration_receipt"] == receipt
+    assert await env.db.get_task("owner") == before
+    async with env.db._engine.connect() as conn:
+        assert not (await conn.execute(select(messages))).all()
+        assert not (await conn.execute(select(wait_edges).where(wait_edges.c.active.is_(True)))).all()
+        assert all(r.cancelled_at == NOW for r in (await conn.execute(select(wait_deadlines))).all())
+        intent = (await conn.execute(select(continuations))).mappings().one()
+        assert intent["resume_state"] == "cancelled" and intent["summary"] == "Preserved checkpoint"
+        reservations = {r.id: r.state for r in (await conn.execute(select(admission_reservations)))}
+        assert reservations == {"old-reservation": "cancelled", "replacement-reservation": "pending"}
+    replay = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, principal)
+    assert replay["success"] and replay["warnings"] == ["wait already resolved: cancelled"]
+    source_lock.assert_not_awaited()
+
+
+@pytest.mark.parametrize("consume", [False, True], ids=["ack", "show-consume"])
+async def test_shipped_supervisor_can_acknowledge_own_wait_and_release_held_mail(
+    env, tmp_path, consume,
+):
+    _, handler = await wait_service(env)
+    handler.config.security.capability_enforcement = "enforce"
+    handler.config.wait_policy.hibernation_enabled = False
+    # Reproduce an installed profile with registration/cancellation but no ACK,
+    # then repair a disposable vault through the same additive sync as deployment.
+    shipped = Path(shipped_profile_path("supervisor")).read_text()
+    stale = shipped.replace('    "wait_ack",\n', "")
+    vault_path = Path(vault_profile_path(str(tmp_path), "supervisor"))
+    vault_path.parent.mkdir(parents=True)
+    vault_path.write_text(stale)
+    synced = await sync_profile_text_to_db(stale, env.db)
+    assert synced.success, synced.errors
+    await env.db.update_project("p", supervisor_enabled=True)
+    for session_id, project in (("sup-p", "p"), ("other-p", "p"), ("sup-q", "q")):
+        await env.db.create_session(SessionRecord(
+            id=session_id, project_id=project, profile_id="supervisor", harness="codex",
+            provider="fake", name=f"n-supervisor--{project}" if session_id != "other-p"
+            else "other-supervisor", lifecycle="named", state="running",
+            desired_state="running", instance_token=f"{session_id}-token", epoch="boot",
+            work_dir="/tmp/supervisor", started_at=NOW,
+        ))
+    supervisor_scope = dict(session_id="sup-p", session_instance_token="sup-p-token",
+                            project_id="p", elevated=True)
+
+    async def call(name, args, **scope_changes):
+        return await _over_api(handler, name, args, **{**supervisor_scope, **scope_changes})
+
+    request = await call("message_send", dict(
+        to_kind="user", to_id="dashboard", thread_id="expected-reply", body="Owner decision?",
+    ))
+    assert request["success"], request
+    sent = await env.db.get_message(request["message_id"])
+    registered = await call("wait_register", dict(
+        schema_version=2, condition=dict(kind="message", thread_id=sent.thread_id,
+                                        after_seq=sent.created_seq),
+        idempotency_key="supervisor-reply",
+    ))
+    assert registered["success"], registered
+    wait_id = registered["wait_id"]
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id))).mappings().one()
+    assert (wait["owner_kind"], wait["owner_id"], wait["sleep_decision"]) == (
+        "session", "sup-p", "in_place")
+
+    # The owner's reply is on another thread; an unrelated worker question
+    # arrives through the canonical supervisor alias. Neither satisfies this wait.
+    reply = await env.db.create_message(
+        project_id="p", from_kind="user", from_id="dashboard", to_kind="session",
+        to_id="sup-p", thread_id="off-thread-reply", body="Owner reply on another thread",
+    )
+    question = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="s", to_kind="session",
+        to_id="supervisor-p", thread_id="worker-policy", body="Worker policy question",
+    )
+    held_ids = {reply.id, question.id}
+    for inject in (False, True, False):
+        inbox = await call("message_inbox", dict(to_kind="session", to_id="sup-p", inject=inject))
+        assert inbox["success"], inbox
+        assert held_ids.isdisjoint(row["id"] for row in inbox["messages"])
+    for message_id in held_ids:
+        status = await call("message_status", dict(message_id=message_id))
+        assert status["error_code"] == "wait.held_message", status
+        assert (await env.db.get_message(message_id)).delivered_at is None
+
+    cancelled = await call("wait_cancel", dict(wait_id=wait_id))
+    assert cancelled["success"] and cancelled["wait"]["outcome"] == "cancelled", cancelled
+    denied = await call("wait_ack", dict(wait_id=wait_id))
+    assert not denied["success"] and denied["error_code"] == "capability_denied", denied
+    repaired = sync_profile_capabilities(str(tmp_path), "supervisor")
+    assert repaired.added == {"aq_commands": ["wait_ack"]}
+    synced = await sync_profile_text_to_db(vault_path.read_text(), env.db)
+    assert synced.success, synced.errors
+    handler._invalidate_principal_cache()
+    # Even a fully privileged foreign supervisor cannot acknowledge the owner.
+    for foreign_scope in (
+        dict(session_id="other-p", session_instance_token="other-p-token"),
+        dict(session_id="sup-q", session_instance_token="sup-q-token", project_id="q"),
+        dict(session_instance_token="replacement-token"),
+    ):
+        denied = await call("wait_ack", dict(wait_id=wait_id), **foreign_scope)
+        assert not denied["success"], denied
+        assert denied["error_code"] in {"wait.out_of_scope", "continuation.stale_generation"}
+    denied_worker = await execute(handler, "wait_ack", dict(wait_id=wait_id, claim_epoch=1))
+    assert not denied_worker["success"] and denied_worker["error_code"] == "wait.out_of_scope"
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id))).mappings().one()
+    assert wait["outcome"] == "cancelled" and not wait["blocking"] and wait["cleared_at"] is None
+    assert (await call("message_status", dict(message_id=reply.id)))["error_code"] == (
+        "wait.held_message")
+
+    result = await call("wait_get" if consume else "wait_ack",
+                        dict(wait_id=wait_id, **({"consume": True} if consume else {})))
+    assert result["success"], result
+    ack = await call("wait_ack", dict(wait_id=wait_id))
+    assert ack["success"] and ack["acknowledged"], ack
+    assert {row["id"] for row in ack["held_messages"]} == held_ids
+    assert {row["body"] for row in ack["held_messages"]} == {reply.body, question.body}
+    assert await call("wait_ack", dict(wait_id=wait_id)) == ack
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id))).mappings().one()
+    delivery = wait["decision_inputs"]["delivery"]
+    assert wait["cleared_at"] == NOW and not wait["blocking"]
+    assert delivery["held_cursor_seq"] == max(reply.created_seq, question.created_seq)
+    assert delivery["acknowledgement"]["held_messages"] == ack["held_messages"]
+    for message_id in held_ids:
+        message = await env.db.get_message(message_id)
+        assert message.delivered_at == message.read_at == NOW and message.via == "wait_ack"
+        assert (await call("message_status", dict(message_id=message_id)))["success"]
+    later = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="s", to_kind="session",
+        to_id="supervisor-p", thread_id="later", body="Subsequent worker question",
+    )
+    inbox = await call("message_inbox", dict(to_kind="session", to_id="sup-p"))
+    assert inbox["success"] and later.id in {row["id"] for row in inbox["messages"]}, inbox
+
+
+async def test_worker_cannot_cancel_another_owners_wait(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    stranger = replace(WORKER, session_id="other", task_id="other")
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, stranger)
+    assert not result["success"]
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+
+
+async def test_supervisor_cancel_of_parked_wait_queues_the_continuation(env):
+    _, handler, principal, receipt = await human_runtime(env)
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, principal)
+    assert result["success"], result
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        intent = (await conn.execute(select(continuations))).mappings().one()
+    assert wait["outcome"] == "cancelled"
+    assert intent["resume_state"] == "queued"
+    assert (await env.db.get_task("owner")).status.value == "RESUME_PENDING"
+
+
+async def test_holder_cancel_withdraws_a_hibernation_intent_before_its_stop(env):
+    _, handler, _, receipt = await human_runtime(env, park=False)
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert result["success"], result
+    assert result["wait"]["sleep_decision"] == "in_place"
+    async with env.db._engine.connect() as conn:
+        intent = (await conn.execute(select(continuations))).mappings().one()
+    assert (intent["resume_state"], intent["hold_reason"]) == ("cancelled", "wait_cancel")
+    ack = await execute(handler, "wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1})
+    assert ack["success"], ack
+    assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+async def test_holder_cancel_refuses_once_the_hibernation_stop_began(env):
+    _, handler, _, receipt = await human_runtime(env, park=False)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            facts={"hibernation": {"stop_started_at": NOW + 5}}))
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert not result["success"] and result["error_code"] == "wait.unavailable", result
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+        assert await conn.scalar(select(continuations.c.resume_state)) == "sleeping"
+
+
+@pytest.mark.parametrize("legacy_id", [None, "old-wait"])
+async def test_concrete_cancel_and_explain_clear_graph_once_and_deliver_one_outcome(env, legacy_id):
+    from src.database.tables import wait_edges
+
+    _, handler = await wait_service(env)
+    receipt = await register(env)
+    if legacy_id:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(legacy_id=legacy_id))
+    pointer = dict(schema_version=2, wait_id=legacy_id or receipt["wait_id"], claim_epoch=1)
+    explained = await execute(handler, "wait_explain", dict(wait_id=receipt["wait_id"]))
+    assert explained["success"] and explained["total"] == 1
+    assert (await execute(handler, "wait_cancel", pointer))["changed"] is True
+    assert (await execute(handler, "wait_cancel", pointer))["changed"] is False
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait["outcome"] == "cancelled"
+        assert not await conn.scalar(select(func.count()).select_from(wait_edges).where(
+            wait_edges.c.active.is_(True)))
+        assert not await conn.scalar(select(func.count()).select_from(wait_deadlines).where(
+            wait_deadlines.c.cancelled_at.is_(None), wait_deadlines.c.fired_at.is_(None)))
+        assert await conn.scalar(select(func.count()).select_from(messages).where(
+            messages.c.body_kind == "wait_outcome")) == 1
+        assert await conn.scalar(select(func.count()).select_from(events).where(
+            events.c.event_type == "wait.cancelled")) == 1
+
+
+async def test_concrete_service_cancel_is_owner_scoped_and_cannot_be_nominated_by_worker(env):
+    _, handler = await wait_service(env)
+    receipt = await handler.wait_service_command("wait_register", dict(
+        schema_version=2, project_id="p", owner_kind="integration", owner_id="train:one",
+        condition={"kind": "task", "task_id": "source"}, idempotency_key="integration"))
+    assert receipt["success"], receipt
+    args = dict(schema_version=2, wait_id=receipt["wait_id"], project_id="p",
+                owner_kind="integration", owner_id="train:other")
+    assert (await handler.wait_service_command("wait_cancel", args))["error_code"] == (
+        "wait.out_of_scope")
+    args["owner_id"] = "train:one"
+    assert (await execute(handler, "wait_cancel", args))["error_code"] == "wait.out_of_scope"
+    cancelled = await handler.wait_service_command("wait_cancel", args)
+    assert cancelled.get("changed") is True, cancelled
+    assert (await handler.wait_service_command("wait_cancel", args))["changed"] is False
+
+
+async def test_concrete_cancel_refuses_a_stale_claim_and_foreign_supervisor(env):
+    _, handler = await wait_service(env)
+    receipt = await register(env)
+    args = dict(schema_version=2, wait_id=receipt["wait_id"], claim_epoch=0)
+    assert (await execute(handler, "wait_cancel", args))["success"] is False
+    principal = await supervisor(env, project="q")
+    assert (await execute(handler, "wait_cancel", dict(wait_id=receipt["wait_id"]),
+                          principal))["error_code"] == "wait.out_of_scope"
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"

@@ -32,19 +32,19 @@ class WorkflowCommandsMixin:
 
         workflow_id = args.get("workflow_id", "").strip()
         if not workflow_id:
-            return {"error": "workflow_id is required"}
+            return {"success": False, "error": "workflow_id is required"}
 
         playbook_id = args.get("playbook_id", "").strip()
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
 
         playbook_run_id = args.get("playbook_run_id", "").strip()
         if not playbook_run_id:
-            return {"error": "playbook_run_id is required"}
+            return {"success": False, "error": "playbook_run_id is required"}
 
         project_id = args.get("project_id", "").strip()
         if not project_id:
-            return {"error": "project_id is required"}
+            return {"success": False, "error": "project_id is required"}
 
         import time
 
@@ -72,11 +72,11 @@ class WorkflowCommandsMixin:
         """
         workflow_id = args.get("workflow_id", "").strip()
         if not workflow_id:
-            return {"error": "workflow_id is required"}
+            return {"success": False, "error": "workflow_id is required"}
 
         workflow = await self.db.get_workflow(workflow_id)
         if not workflow:
-            return {"error": f"Workflow '{workflow_id}' not found"}
+            return {"success": False, "error": f"Workflow '{workflow_id}' not found"}
 
         return {
             "success": True,
@@ -147,18 +147,19 @@ class WorkflowCommandsMixin:
         """
         workflow_id = args.get("workflow_id", "").strip()
         if not workflow_id:
-            return {"error": "workflow_id is required"}
+            return {"success": False, "error": "workflow_id is required"}
 
         stage_name = args.get("stage_name", "").strip()
         if not stage_name:
-            return {"error": "stage_name is required"}
+            return {"success": False, "error": "stage_name is required"}
 
         workflow = await self.db.get_workflow(workflow_id)
         if not workflow:
-            return {"error": f"Workflow '{workflow_id}' not found"}
+            return {"success": False, "error": f"Workflow '{workflow_id}' not found"}
 
         if workflow.status not in ("running", "paused"):
             return {
+                "success": False,
                 "error": (
                     f"Cannot advance workflow in status '{workflow.status}'. "
                     "Workflow must be running or paused."
@@ -231,15 +232,15 @@ class WorkflowCommandsMixin:
 
         workflow_id = args.get("workflow_id", "").strip()
         if not workflow_id:
-            return {"error": "workflow_id is required"}
+            return {"success": False, "error": "workflow_id is required"}
 
         workflow = await self.db.get_workflow(workflow_id)
         if not workflow:
-            return {"error": f"Workflow '{workflow_id}' not found"}
+            return {"success": False, "error": f"Workflow '{workflow_id}' not found"}
 
         direction = args.get("direction", "LR").strip().upper()
         if direction not in ("LR", "TD"):
-            return {"error": f"Invalid direction '{direction}'. Valid: LR, TD"}
+            return {"success": False, "error": f"Invalid direction '{direction}'. Valid: LR, TD"}
 
         include_task_details = args.get("include_task_details", True)
         if isinstance(include_task_details, str):
@@ -286,4 +287,4 @@ class WorkflowCommandsMixin:
         )
 
         result["success"] = True
-        return result
+        return {**result, "success": True}

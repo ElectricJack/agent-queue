@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import exists, func, literal, or_, select
+from sqlalchemy import exists, or_, select
 
 from src.database.queries.task_references import (
     describe_integration_references,
@@ -23,14 +23,10 @@ from src.database.tables import (
     integration_repair_stages,
     projects,
     repos,
-    task_branch_origins,
-    task_delivery_receipts,
     task_gates,
-    task_integration_checkpoints,
     task_labels,
     tasks,
 )
-from src.models import TaskStatus
 
 HIERARCHY_MODES = frozenset({"hierarchy", "train"})
 #: How an operator resolves completed work that has not reached the default
@@ -191,86 +187,6 @@ async def _development_undelivered_on(
     return result
 
 
-async def _hierarchy_undelivered_on(
-    conn, root_id: str, ids: Sequence[str], project_id: str
-) -> tuple[str, list[dict]]:
-    """Return default branch and the root's undelivered holder(s), if any."""
-    _delivery_query = (
-        select(repos.c.id, repos.c.default_branch)
-        .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
-        .where(projects.c.id == project_id)
-    )
-    repository = (await conn.execute(_delivery_query)).mappings().one_or_none()
-    if repository is None:
-        return "default branch", []
-    _delivery_query = select(
-        tasks.c.status, tasks.c.parent_task_id, tasks.c.repo_id, tasks.c.pr_url
-    ).where(tasks.c.id == root_id)
-    root = (await conn.execute(_delivery_query)).mappings().one_or_none()
-    if root is None or root["parent_task_id"] is not None:
-        return str(repository["default_branch"]), []
-    _delivery_query = (
-        select(task_delivery_receipts.c.id)
-        .where(
-            task_delivery_receipts.c.source_task_id == root_id,
-            task_delivery_receipts.c.target_task_id.is_(None),
-            task_delivery_receipts.c.repository_id == repository["id"],
-            func.regexp_replace(task_delivery_receipts.c.target_branch, "^refs/heads/", "")
-            == func.regexp_replace(literal(repository["default_branch"]), "^refs/heads/", ""),
-            task_delivery_receipts.c.disposition == "code",
-        )
-        .limit(1)
-    )
-    delivered = (await conn.execute(_delivery_query)).first()
-    if delivered:
-        return str(repository["default_branch"]), []
-    _delivery_query = (
-        select(task_delivery_receipts.c.id)
-        .where(
-            task_delivery_receipts.c.source_task_id.in_(list(ids)),
-            task_delivery_receipts.c.target_task_id.in_(list(ids)),
-            task_delivery_receipts.c.disposition == "code",
-        )
-        .limit(1)
-    )
-    collected = (await conn.execute(_delivery_query)).first()
-    candidate = bool(
-        root["status"] == TaskStatus.COMPLETED.value
-        and root["repo_id"] == repository["id"]
-        and str(root["pr_url"] or "").strip()
-        and (
-            await conn.execute(
-                select(task_integration_checkpoints.c.task_id).where(
-                    task_integration_checkpoints.c.task_id == root_id,
-                    task_integration_checkpoints.c.repository_id == repository["id"],
-                )
-            )
-        ).first()
-        and (
-            await conn.execute(
-                select(task_branch_origins.c.id).where(
-                    task_branch_origins.c.task_id == root_id,
-                    task_branch_origins.c.repository_id == repository["id"],
-                    task_branch_origins.c.retired_at.is_(None),
-                )
-            )
-        ).first()
-    )
-    if not collected and not candidate:
-        return str(repository["default_branch"]), []
-    _delivery_query = (
-        select(task_labels.c.label)
-        .where(task_labels.c.task_id == root_id, task_labels.c.label.like("hold:%"))
-        .order_by(task_labels.c.label)
-        .limit(1)
-    )
-    label = (await conn.execute(_delivery_query)).scalar_one_or_none()
-    holder = "hold_label" if label else ("collected_not_promoted" if collected else "awaiting_train")
-    return str(repository["default_branch"]), [
-        {"task_id": root_id, "holder": holder, "detail": label or holder}
-    ]
-
-
 async def undelivered_removal_holders(
     conn, *, root_id: str, ids: Sequence[str], project_id: str, mode: str | None,
     delivery=None, git_first=False,
@@ -280,7 +196,7 @@ async def undelivered_removal_holders(
     Explicit abandonment records these holders in its durable comment using the
     same predicate. Development delivery uses revalidated Git evidence.
     """
-    if mode == "development" or (git_first and mode in HIERARCHY_MODES):
+    if mode == "development" or mode in HIERARCHY_MODES:
         _delivery_query = (
             select(repos.c.default_branch)
             .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
@@ -288,9 +204,9 @@ async def undelivered_removal_holders(
         )
         branch = (await conn.execute(_delivery_query)).scalar_one_or_none() or "default branch"
         return str(branch), await _development_undelivered_on(
-            conn, ids, delivery, hierarchical=git_first,
+            conn, ids, delivery, hierarchical=mode in HIERARCHY_MODES,
         )
-    return await _hierarchy_undelivered_on(conn, root_id, ids, project_id)
+    return "default branch", []
 
 
 async def assert_integration_permits_removal(

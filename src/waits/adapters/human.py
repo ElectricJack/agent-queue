@@ -42,6 +42,10 @@ class HumanAdapter(MessageAdapter):
         return Condition(self.kind, params, raw.get("generation"))
 
     async def authorise(self, conn, cond, scope):
+        if cond.parameters['subject'] == 'legacy_escalation':
+            from src.waits.adapters.legacy_escalation import authorise
+
+            return await authorise(conn, cond, scope)
         if cond.parameters["subject"] == "message_thread":
             cond = await super().authorise(conn, cond, scope)
             human_recipient = await conn.scalar(
@@ -85,6 +89,10 @@ class HumanAdapter(MessageAdapter):
 
     async def snapshot(self, conn, cond):
         p = cond.parameters
+        if p['subject'] == 'legacy_escalation':
+            from src.waits.adapters.legacy_escalation import snapshot
+
+            return await snapshot(conn, cond)
         if p["subject"] == "review":
             review = await row(conn, doc_reviews, doc_reviews.c.id == p["review_id"])
             if not review:
@@ -195,6 +203,10 @@ class HumanAdapter(MessageAdapter):
 
     def source_key(self, cond):
         p = cond.parameters
+        if p['subject'] == 'legacy_escalation':
+            from src.waits.adapters.legacy_escalation import source_key
+
+            return source_key(cond)
         if p["subject"] == "review":
             return SourceKey("review", p["review_id"], cond.generation)
         if p["subject"] == "message_thread":
