@@ -48,9 +48,8 @@ from __future__ import annotations
 import asyncio
 import time
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
 
 from src.database.tables import merge_slots
@@ -83,7 +82,6 @@ class MergeSlotQueriesMixin:
         Idempotent on every dialect: SQLite ``INSERT OR IGNORE`` and PG
         ``ON CONFLICT DO NOTHING``.
         """
-        dialect = conn.dialect.name
         values = {
             "project_id": project_id,
             "holder_task_id": None,
@@ -91,26 +89,14 @@ class MergeSlotQueriesMixin:
             "expires_at": None,
             "updated_at": now,
         }
-        if dialect == "sqlite":
-            stmt = sqlite_insert(merge_slots).values(**values).on_conflict_do_nothing(
-                index_elements=["project_id"]
-            )
-        elif dialect == "postgresql":
-            stmt = pg_insert(merge_slots).values(**values).on_conflict_do_nothing(
-                index_elements=["project_id"]
-            )
-        else:  # generic fallback
-            existing = await conn.execute(
-                select(merge_slots.c.project_id).where(merge_slots.c.project_id == project_id)
-            )
-            if existing.fetchone() is not None:
-                return
-            stmt = insert(merge_slots).values(**values)
+        stmt = (
+            pg_insert(merge_slots)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["project_id"])
+        )
         await conn.execute(stmt)
 
-    async def acquire_merge_slot_row(
-        self, project_id: str, task_id: str, ttl: float
-    ) -> bool:
+    async def acquire_merge_slot_row(self, project_id: str, task_id: str, ttl: float) -> bool:
         """Atomic conditional acquire.  Returns True iff the slot is now held
         by *task_id*.
 
@@ -193,14 +179,18 @@ class MergeSlotQueriesMixin:
         async with self._get_merge_slot_lock():
             async with self._engine.begin() as conn:
                 expired = (
-                    await conn.execute(
-                        select(merge_slots.c.project_id).where(
-                            merge_slots.c.holder_task_id.isnot(None)
-                            & merge_slots.c.expires_at.isnot(None)
-                            & (merge_slots.c.expires_at < now)
+                    (
+                        await conn.execute(
+                            select(merge_slots.c.project_id).where(
+                                merge_slots.c.holder_task_id.isnot(None)
+                                & merge_slots.c.expires_at.isnot(None)
+                                & (merge_slots.c.expires_at < now)
+                            )
                         )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 if not expired:
                     return []
                 await conn.execute(
@@ -218,10 +208,14 @@ class MergeSlotQueriesMixin:
     async def get_merge_slot(self, project_id: str) -> MergeSlot | None:
         async with self._engine.begin() as conn:
             row = (
-                await conn.execute(
-                    select(merge_slots).where(merge_slots.c.project_id == project_id)
+                (
+                    await conn.execute(
+                        select(merge_slots).where(merge_slots.c.project_id == project_id)
+                    )
                 )
-            ).mappings().fetchone()
+                .mappings()
+                .fetchone()
+            )
         if row is None:
             return None
         return MergeSlot(

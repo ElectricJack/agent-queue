@@ -1,5 +1,11 @@
 # Mandatory triage through a shared playbook
 
+<!-- aq:historical -->
+> **Historical design record.** This spec describes one feature as it was
+> designed, not as the code stands today. Start at [the documentation
+> home](../../README.md) for current behaviour; see [historical
+> material](../../history/README.md).
+
 > **Superseded — do not implement.** This design expanded routing into a universal
 > admission gate, a dedicated triage execution type, and a push-only scheduling
 > migration. The approved replacement keeps routing at the assignment boundary and

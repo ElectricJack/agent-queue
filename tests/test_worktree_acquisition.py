@@ -17,7 +17,6 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
@@ -38,9 +37,8 @@ def _now() -> float:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id="p1", name="test"))
     # Mirror a real install: the workspaces-v2 migration provisions a vault
     # workspace per project, and vault auto-attaches to every task.
@@ -55,7 +53,6 @@ async def db(tmp_path):
         )
     )
     yield database
-    await database.close()
 
 
 async def _mktask(db, *, task_id="t1", preferred=None) -> Task:
@@ -254,6 +251,21 @@ class TestWorktreeModeAcquisition:
 
 
 class TestWorktreeCapacityCount:
+    async def test_pool_capacity_excludes_vault_and_disabled_base(self, db):
+        await _worktree_project(db)
+        assert await db.count_available_workspaces(
+            "p1", worktree_slot_cap=3, kind_id="project-repo"
+        ) == 3
+        await db.update_workspace("ws-base", enabled=False)
+        assert await db.count_available_workspaces(
+            "p1", worktree_slot_cap=3, kind_id="project-repo"
+        ) == 0
+
+    async def test_kind_capacity_without_worktrees_excludes_vault(self, db):
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 0
+        await _add_ws(db, ws_id="ws-repo", path="/repo", kind_id="project-repo")
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 1
+
     async def test_base_with_no_slots_still_reports_capacity(self, db):
         """Without this the reconciler never creates the first agent.
 
@@ -278,6 +290,14 @@ class TestWorktreeCapacityCount:
         )
         # cap 2 with one slot busy -> 1 slot of capacity, + the vault row.
         assert await db.count_available_workspaces("p1", worktree_slot_cap=2) == 2
+
+    @pytest.mark.parametrize("cap, expected", [(1, 1), (2, 2), (3, 3)])
+    async def test_disabled_slot_consumes_its_index(self, db, cap, expected):
+        await _worktree_project(db)
+        slots = await db.list_slots_for_base("ws-base")
+        await db.update_workspace(slots[0].id, enabled=False)
+        # Disabled slots cannot be acquired or recreated; the vault adds one.
+        assert await db.count_available_workspaces("p1", worktree_slot_cap=cap) == expected
 
     async def test_capacity_never_goes_negative(self, db):
         """Slots above a shrunk cap (not yet reaped) cannot subtract."""
@@ -550,3 +570,48 @@ class TestBranchAffinityHint:
             preferred_workspaces={"project-repo": "ws-gone"},
         )
         assert _primary(att).id == "ws-slot-0"
+
+
+async def test_special_limit_matches_capacity_acquisition_and_inventory(db):
+    from dataclasses import replace
+
+    await _worktree_project(db, slots=4)
+    kind = await db.resolve_workspace_kind("p1", "project-repo")
+    await db.upsert_workspace_kind(replace(kind, max_slots=2))
+    agent = await _mkagent(db)
+    assert await db.count_available_workspaces("p1", kind_id="project-repo", worktree_slot_cap=6) == 2
+    assert await db.count_free_slots("p1", worktree_slot_cap=6) == 2
+    for _ in range(2):
+        ws = await db.acquire_one_unlocked(
+            "p1", "project-repo", "exclusive", None, agent.id,
+            kind_mode=KIND_MODE_WORKTREE, worktree_slot_cap=6,
+        )
+        assert ws is not None and ws.slot_index < 2
+    assert await db.count_available_workspaces("p1", kind_id="project-repo", worktree_slot_cap=6) == 0
+    assert await db.acquire_one_unlocked(
+        "p1", "project-repo", "exclusive", None, agent.id,
+        kind_mode=KIND_MODE_WORKTREE, worktree_slot_cap=6,
+    ) is None
+    assert len(await db.list_slots_for_base("ws-base")) == 4
+
+
+async def test_disabled_base_excludes_slots_even_if_growth_raced_cutover(db):
+    await _worktree_project(db)
+    agent = await _mkagent(db)
+    await db.update_workspace("ws-base", enabled=False)
+    assert await db.count_free_slots("p1", worktree_slot_cap=3) == 0
+    assert await db.count_available_workspaces("p1", kind_id="project-repo", worktree_slot_cap=3) == 0
+    assert await db.acquire_one_unlocked(
+        "p1", "project-repo", "exclusive", None, agent.id,
+        kind_mode=KIND_MODE_WORKTREE, worktree_slot_cap=3,
+    ) is None
+
+
+async def test_default_base_lookup_ignores_disabled_special_and_slot_rows(db):
+    await _worktree_project(db)
+    await _add_ws(db, ws_id="a-special", path="/native", kind_id="native")
+    await db.update_workspace("ws-base", enabled=False)
+    await _add_ws(db, ws_id="z-new", path="/fast", kind_id=None)
+    await db.update_workspace("z-new", kind_id=None)
+    assert await db.get_project_workspace_path("p1") == "/fast"
+    assert (await db.find_worktree_base("p1", "project-repo")).id == "z-new"

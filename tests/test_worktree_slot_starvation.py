@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.models import (
     KIND_MODE_EXCLUSIVE_CLONE,
     KIND_MODE_WORKTREE,
@@ -48,6 +48,7 @@ from src.orchestrator import Orchestrator
 from src.orchestrator.workspace import SlotGrowth
 from src.orchestrator.worktree_manager import slot_path
 from src.scheduler import Scheduler, SchedulerState
+from tests.db_fixtures import lease_dsn
 
 
 def _git(args: list[str], cwd: str | Path) -> str:
@@ -83,7 +84,7 @@ def base_repo(tmp_path: Path) -> Path:
 async def _orch(tmp_path: Path, *, worktrees_enabled: bool = True) -> Orchestrator:
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "aq.db"),
+        database=DatabaseConfig(url=lease_dsn("aq.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = worktrees_enabled
@@ -170,6 +171,25 @@ class TestGrowthHandsOverTheSlot:
 
             assert Path(path) == slot_path(base_repo, 1)
             assert "tsk-b" not in o._workspace_wait_reasons
+        finally:
+            await o.shutdown()
+
+    async def test_disabled_slot_does_not_prevent_growth(self, tmp_path, base_repo):
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo, cap=3)
+            project = await o.db.get_project("p1")
+            first = await o._ensure_worktree_slots(project, "project-repo")
+            retired_id = first.created["project-repo"]
+            await o.db.update_workspace(retired_id, enabled=False)
+
+            growth = await o._ensure_worktree_slots(project, "project-repo")
+
+            new_slot = await o.db.get_workspace(growth.created["project-repo"])
+            assert new_slot.slot_index == 1
+            assert new_slot.enabled
+            assert not (await o.db.get_workspace(retired_id)).enabled
+            assert Path(slot_path(base_repo, 0)).exists()
         finally:
             await o.shutdown()
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -15,6 +16,9 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import insert, select, update
 
+from src.integration.row_query import select_row
+from src.integration.engine import root_engine_guard
+
 from src.database.tables import (
     integration_batches,
     integration_attestation_publications,
@@ -24,29 +28,42 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
     projects,
+    task_integration_checkpoints,
 )
-from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialMode,
+    GitHubRepositoryBinding,
+    credential_identity_from_client,
+)
 from src.git.manager import GitError
 from src.integration.ci import (
     TRUST_MANIFEST_PATH,
     AttestationError,
+    AttestationPayload,
     AuthenticatedGitHubObserver,
     CIService,
     CandidateCISubject,
     CIReceiptPayload,
     IntegrationCITrust,
     IntegrationTrustManifest,
+    SubjectTrustError,
     TrustedCIObservation,
     ci_trust_from_policy,
+    is_numeric_producer_id,
     select_trusted_attestation,
 )
-from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
+from src.integration.ci_producers import HostedCIProducer
+from src.integration.live_operations import ACTIVE_OPERATION_STATES
+from src.integration.promotion_contracts import RootAttestationProof, RootAttestationSubject
+from src.integration.repair import RepairService
 from src.integration.outbox import enqueue_integration_event
 
+logger = logging.getLogger(__name__)
 
 _MAX_TRUST_BYTES = 64 * 1024
 _PUBLICATION_LEASE_SECONDS = 300.0
-AppClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
+GitHubClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
 EnablementReader = Callable[[str], Awaitable[bool | tuple[str, ...]] | bool | tuple[str, ...]]
 
 
@@ -76,7 +93,7 @@ class IntegrationAttestationService:
         *,
         data_dir: str | Path,
         git_manager: Any,
-        app_client_factory: AppClientFactory | None,
+        github_client_factory: GitHubClientFactory | None,
         protection_reader: EnablementReader | None = None,
         probe_reader: EnablementReader | None = None,
         debug_class_reader: EnablementReader | None = None,
@@ -86,7 +103,7 @@ class IntegrationAttestationService:
         self.db = db
         self.data_dir = Path(data_dir)
         self.git = git_manager
-        self.app_client_factory = app_client_factory
+        self.github_client_factory = github_client_factory
         self.protection_reader = protection_reader
         self.probe_reader = probe_reader
         self.debug_class_reader = debug_class_reader
@@ -94,16 +111,22 @@ class IntegrationAttestationService:
         self.clock = clock
         self._clients: dict[GitHubRepositoryBinding, Any] = {}
         self._owned_publications: dict[str, str] = {}
+        # Refused subject trees by operation id, for ``aq integration status``.
+        self._subject_trust: dict[str, dict[str, Any]] = {}
 
-    async def publish(self, subject: RootAttestationSubject) -> AttestationPublicationResult:
+    async def publish(
+        self, subject: RootAttestationSubject, *, producer: HostedCIProducer | None = None,
+    ) -> AttestationPublicationResult:
         if not isinstance(subject, RootAttestationSubject):
             raise TypeError("publish requires RootAttestationSubject")
+        if producer is not None:
+            return await self._publish_train(subject, producer)
         initial = await self._green_state(subject, allow_promoting=False)
         if initial is None:
             return AttestationPublicationResult(outcome="stale", subject=subject)
         try:
             trust, client = await self._load_trust(initial)
-            observation = await AuthenticatedGitHubObserver(client).observe(
+            observation = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
                 trust, subject.candidate_sha
             )
             if not isinstance(observation, TrustedCIObservation):
@@ -149,7 +172,7 @@ class IntegrationAttestationService:
                 )
 
             await AuthenticatedGitHubObserver(client).publish(trust, payload)
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return AttestationPublicationResult(
                 outcome="configuration_blocked", subject=subject
             )
@@ -158,7 +181,7 @@ class IntegrationAttestationService:
         try:
             records = await self._attestation_records(client, trust, subject.candidate_sha)
             proof = self._proof_from_records(records, trust, subject, initial)
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return AttestationPublicationResult(
                 outcome="configuration_blocked", subject=subject
             )
@@ -168,6 +191,40 @@ class IntegrationAttestationService:
             )
         if not await self._finish_publication(initial, claim, proof):
             return AttestationPublicationResult(outcome="stale", subject=subject)
+        return AttestationPublicationResult(outcome="published", subject=subject, proof=proof)
+
+    async def _publish_train(self, subject, producer) -> AttestationPublicationResult:
+        """Attest a git-first candidate without legacy candidate/progress rows."""
+        if not isinstance(producer, HostedCIProducer):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        trust = producer.trust
+        if not isinstance(trust, IntegrationTrustManifest):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        if (subject.repository_numeric_id, subject.repository_full_name,
+            subject.required_check_version) != (
+            trust.repository_id, trust.full_name, trust.required_checks.version,
+        ):
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        try:
+            identity = credential_identity_from_client(producer.client)
+            if (identity.mode is not GitHubCredentialMode.APP or
+                identity.app_id != trust.attestation_app_id):
+                return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+            observer = AuthenticatedGitHubObserver(producer.client, expected_event="push")
+            observed = await observer.observe(trust, subject.candidate_sha)
+            if not isinstance(observed, TrustedCIObservation) or not isinstance(
+                observed.payload, AttestationPayload,
+            ):
+                return AttestationPublicationResult(outcome="not_green", subject=subject)
+            record_id = await observer.publish(trust, observed.payload)
+            records = await self._attestation_records(producer.client, trust, subject.candidate_sha)
+            proof = self._proof_from_records(records, trust, subject, {
+                "aggregate_external_id": observed.payload.external_id,
+            })
+            if proof is None or proof.check_run_id != record_id:
+                return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
         return AttestationPublicationResult(outcome="published", subject=subject, proof=proof)
 
     async def resolve(self, subject: RootAttestationSubject) -> RootAttestationProof | None:
@@ -182,7 +239,7 @@ class IntegrationAttestationService:
         try:
             trust, client = await self._load_trust(initial)
             if isinstance(trust, IntegrationCITrust):
-                observation = await AuthenticatedGitHubObserver(client).observe(
+                observation = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
                     trust, subject.candidate_sha
                 )
                 if not isinstance(observation, TrustedCIObservation) or not isinstance(
@@ -200,7 +257,7 @@ class IntegrationAttestationService:
                 return proof if rechecked == claim else None
             records = await self._attestation_records(client, trust, subject.candidate_sha)
             proof = self._proof_from_records(records, trust, subject, initial)
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return None
         if (
             proof is None
@@ -213,6 +270,7 @@ class IntegrationAttestationService:
             return None
         return proof
 
+    @root_engine_guard("candidate", outcome="stale_subject")
     async def handle_candidate_ci(self, row: dict[str, Any], _now: float) -> dict[str, Any]:
         """Observe a pending candidate, then publish its exact attestation."""
         try:
@@ -228,11 +286,14 @@ class IntegrationAttestationService:
             if pending is None:
                 return {"outcome": "stale_subject"}
             trust, client = await self._load_trust(pending)
-            if pending["candidate_state"] != "green":
+            if (
+                pending["candidate_state"] != "green"
+                or pending["batch_lifecycle"] == "repairing"
+            ):
                 observed = await CIService(
                     self.db,
                     trust,
-                    AuthenticatedGitHubObserver(client),
+                    AuthenticatedGitHubObserver(client, expected_event="push"),
                     clock=self.clock,
                 ).observe_candidate(candidate)
                 if observed["outcome"] != "green":
@@ -243,6 +304,17 @@ class IntegrationAttestationService:
                             tuple(observed.get("evidence_ids") or ()),
                         )
                     return observed
+            # An earlier observation may already have persisted exact green
+            # evidence before a retry reaches us.  Re-run only the guarded
+            # collector continuation in that case too: it is a no-op unless
+            # the current candidate is exact-green and the stage-one delegate
+            # is still merely an unattached reservation.
+            await RepairService(self.db, clock=self.clock).resume_root_collection(
+                candidate.operation_id,
+                candidate.batch_id,
+                candidate.revision,
+                candidate.candidate_sha,
+            )
             root_subject = RootAttestationSubject(
                 repository_numeric_id=pending["repository_numeric_id"],
                 repository_full_name=pending["repository_full_name"],
@@ -263,14 +335,14 @@ class IntegrationAttestationService:
                     else {}
                 ),
             }
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return {"outcome": "configuration_blocked"}
 
     async def enablement_blockers(
         self, canonical_repository_id: str
     ) -> IntegrationEnablementProbeResult:
         blockers: list[str] = []
-        if self.app_client_factory is None:
+        if self.github_client_factory is None:
             blockers.append("missing_trusted_integration_app")
         repository = await self.db.get_repo(canonical_repository_id)
         if (
@@ -301,32 +373,81 @@ class IntegrationAttestationService:
         return IntegrationEnablementProbeResult(ready=not unique, blockers=unique)
 
     async def _load_trust(
-        self, state: dict[str, Any]
+        self, state: dict[str, Any], *, boundary: str = "root"
     ) -> tuple[IntegrationTrustManifest | IntegrationCITrust, Any]:
         binding = GitHubRepositoryBinding(
             state["repository_numeric_id"], state["repository_full_name"]
         )
         client = await self._client(binding)
-        if _client_auth_mode(client) == "gh":
-            return (
-                ci_trust_from_policy(
-                    canonical_repository_id=state["canonical_repository_id"],
-                    repository_id=binding.repository_id,
-                    full_name=binding.full_name,
-                    policy=state["policy_snapshot"],
-                    boundary="root",
-                ),
-                client,
+        identity = credential_identity_from_client(client)
+        # The frozen snapshot boundary is the only authority for the required
+        # check set and its producer (spec I3).  A subject tree can be refused
+        # on identity, but nothing it contains reaches this value.
+        authority = ci_trust_from_policy(
+            canonical_repository_id=state["canonical_repository_id"],
+            repository_id=binding.repository_id,
+            full_name=binding.full_name,
+            policy=state["policy_snapshot"],
+            boundary=boundary,
+        )
+        if identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
+            self._subject_trust.pop(state.get("operation_id"), None)
+            return authority, client
+        if not is_numeric_producer_id(authority.producer_id):
+            # A policy fault (the preflight's ci_producer_not_numeric), never
+            # blamed on the subject tree.
+            raise AttestationError("App-mode CI producer is not a numeric App id")
+        try:
+            manifest = await self._subject_manifest(state, binding)
+            mismatched = tuple(
+                field
+                for field, observed, expected in (
+                    (
+                        "canonical_repository_id",
+                        manifest.canonical_repository_id,
+                        state["canonical_repository_id"],
+                    ),
+                    ("repository_id", manifest.repository_id, binding.repository_id),
+                    ("full_name", manifest.full_name, binding.full_name),
+                    ("attestation_app_id", manifest.attestation_app_id, identity.app_id),
+                    (
+                        "ci_producer_app_id",
+                        str(manifest.ci_producer_app_id),
+                        authority.producer_id,
+                    ),
+                )
+                if observed != expected
             )
-        token = await client.installation_token()
+            if mismatched:
+                raise SubjectTrustError(
+                    "identity_mismatch",
+                    "subject trust manifest names another identity: " + ", ".join(mismatched),
+                    fields=mismatched,
+                )
+        except SubjectTrustError as exc:
+            self._record_subject_trust(state, boundary, exc)
+            raise
+        self._subject_trust.pop(state.get("operation_id"), None)
+        # The tree's check set is informational: every consumer downstream
+        # (observer name selection, payload version, attestation selection)
+        # reads the snapshot's checks through this one trust object.
+        return manifest.model_copy(update={"required_checks": authority.required_checks}), client
+
+    async def _subject_manifest(
+        self, state: dict[str, Any], binding: GitHubRepositoryBinding
+    ) -> IntegrationTrustManifest:
+        """Read the trust manifest from the exact subject tree, classifying refusals."""
+        from src.projects.storage_binding import repository_path
+
         store = self._store(state["canonical_repository_id"])
+        if self.db is not None:
+            store = await repository_path(self.db, state["canonical_repository_id"], store)
         destination_ref = "refs/aq/attestation-trust/" + hashlib.sha256(
             f"{state['batch_id']}:{state['revision']}".encode()
         ).hexdigest()
-        imported = await self.git.afetch_exact_oid_with_app_auth(
+        imported = await self.git.afetch_repository_oid(
             str(store),
             repository=binding,
-            token=token,
             oid=state["candidate_sha"],
             destination_ref=destination_ref,
         )
@@ -338,29 +459,148 @@ class IntegrationAttestationService:
             env={"LC_ALL": "C"},
         )
         if result.returncode != 0:
-            raise AttestationError("candidate trust manifest is missing")
+            raise SubjectTrustError("missing", f"subject tree has no {TRUST_MANIFEST_PATH}")
         raw = result.stdout.encode("utf-8")
         if len(raw) > _MAX_TRUST_BYTES:
-            raise AttestationError("candidate trust manifest is too large")
-        trust = _parse_trust_manifest(raw)
-        if (
-            trust.canonical_repository_id != state["canonical_repository_id"]
-            or trust.repository_id != binding.repository_id
-            or trust.full_name != binding.full_name
-            or trust.attestation_app_id != client.config.app_id
-            or trust.required_checks.version != state["required_check_version"]
-            or trust.required_checks.names != state["required_check_names"]
-            or str(trust.ci_producer_app_id) != state["ci_producer_id"]
-        ):
-            raise AttestationError("candidate trust manifest does not match durable authority")
-        return trust, client
+            raise SubjectTrustError(
+                "too_large", f"subject trust manifest exceeds {_MAX_TRUST_BYTES} bytes"
+            )
+        return _parse_trust_manifest(raw)
+
+    def _record_subject_trust(
+        self, state: dict[str, Any], boundary: str, error: SubjectTrustError
+    ) -> None:
+        """Remember one refused subject for ``aq integration status`` (spec §5.3).
+
+        Like the external preflight, this is a live observation of provider
+        state: every poll of the subject re-derives it, and a later successful
+        load, a moved subject or an ended operation retires it.
+        """
+        operation_id = state.get("operation_id")
+        project_id = state.get("project_id")
+        if not operation_id or not project_id:
+            return
+        # The boundary picks the check set, not the subject: the train reads an
+        # epic head's parent checks under a batch identity with no parent episode.
+        parent = boundary == "parent" and "parent_task_id" in state
+        subject = (
+            {"parent_task_id": state["parent_task_id"], "generation": state["generation"]}
+            if parent
+            else {"batch_id": state["batch_id"], "revision": state["revision"]}
+        )
+        failure = {
+            "operation_id": operation_id,
+            "project_id": project_id,
+            "target_kind": "parent" if parent else "batch",
+            "subject": subject,
+            "head_sha": state["candidate_sha"],
+            "cause": error.cause,
+            "fields": list(error.fields),
+            "detail": str(error),
+        }
+        if self._subject_trust.get(operation_id) != failure:
+            logger.warning(
+                "Integration subject trust invalid for %s %s at %s: %s",
+                failure["target_kind"],
+                subject,
+                failure["head_sha"],
+                failure["detail"],
+            )
+        self._subject_trust[operation_id] = failure
+
+    async def subject_trust_blockers(self, project_id: str) -> list[dict[str, Any]]:
+        """Status blockers for refused subjects that are still current (spec I6)."""
+        failures = [
+            failure
+            for failure in list(self._subject_trust.values())
+            if failure["project_id"] == project_id
+        ]
+        if not failures:
+            return []
+        blockers: list[dict[str, Any]] = []
+        async with self.db._engine.connect() as conn:
+            for failure in failures:
+                if not await self._subject_still_current_on(conn, failure):
+                    if self._subject_trust.get(failure["operation_id"]) == failure:
+                        del self._subject_trust[failure["operation_id"]]
+                    continue
+                subject = failure["subject"]
+                named = (
+                    f"parent {subject['parent_task_id']} generation {subject['generation']}"
+                    if failure["target_kind"] == "parent"
+                    else f"batch {subject['batch_id']} revision {subject['revision']}"
+                )
+                blockers.append(
+                    {
+                        "code": "subject_trust_invalid",
+                        "detail": (
+                            f"{named} at {failure['head_sha']}: {failure['detail']}; "
+                            "refresh the branch from the default branch"
+                        ),
+                        "ref": failure["operation_id"],
+                        "target_kind": failure["target_kind"],
+                        "subject": dict(subject),
+                        "head_sha": failure["head_sha"],
+                        "cause": failure["cause"],
+                        "fields": list(failure["fields"]),
+                    }
+                )
+        return blockers
+
+    @staticmethod
+    async def _subject_still_current_on(conn: Any, failure: dict[str, Any]) -> bool:
+        operation = await select_row(
+            conn,
+            integration_repair_operations,
+            integration_repair_operations.c.id == failure["operation_id"],
+        )
+        if operation is None or operation["state"] not in ACTIVE_OPERATION_STATES:
+            return False
+        subject = failure["subject"]
+        if failure["target_kind"] == "parent":
+            checkpoint = await select_row(
+                conn,
+                task_integration_checkpoints,
+                task_integration_checkpoints.c.task_id == subject["parent_task_id"],
+            )
+            return bool(
+                checkpoint is not None
+                and operation["parent_task_id"] == subject["parent_task_id"]
+                and operation["episode_id"] == checkpoint["episode_id"]
+                and checkpoint["generation"] == subject["generation"]
+                and checkpoint["checkpoint_sha"] == failure["head_sha"]
+            )
+        row = (
+            await conn.execute(
+                select(
+                    integration_batches.c.current_revision,
+                    integration_candidate_revisions.c.head_sha,
+                )
+                .select_from(integration_batches)
+                .join(
+                    integration_candidate_revisions,
+                    (integration_candidate_revisions.c.batch_id == integration_batches.c.id)
+                    & (
+                        integration_candidate_revisions.c.revision
+                        == integration_batches.c.current_revision
+                    ),
+                )
+                .where(integration_batches.c.id == subject["batch_id"])
+            )
+        ).mappings().one_or_none()
+        return bool(
+            row is not None
+            and operation["batch_id"] == subject["batch_id"]
+            and int(row["current_revision"]) == subject["revision"]
+            and row["head_sha"] == failure["head_sha"]
+        )
 
     async def _client(self, binding: GitHubRepositoryBinding) -> Any:
-        if self.app_client_factory is None:
+        if self.github_client_factory is None:
             raise AttestationError("trusted integration App is unavailable")
         if binding in self._clients:
             return self._clients[binding]
-        value = self.app_client_factory(binding)
+        value = self.github_client_factory(binding)
         if inspect.isawaitable(value):
             value = await value
         if (
@@ -369,12 +609,10 @@ class IntegrationAttestationService:
             or value.repository.forge_host != "github.com"
         ):
             raise AttestationError("authenticated GitHub repository binding is invalid")
-        if _client_auth_mode(value) != "gh" and (
-            isinstance(value.config.app_id, bool)
-            or not isinstance(value.config.app_id, int)
-            or value.config.app_id <= 0
-        ):
-            raise AttestationError("trusted integration App binding is invalid")
+        try:
+            credential_identity_from_client(value)
+        except ValueError as exc:
+            raise AttestationError("trusted integration App binding is invalid") from exc
         self._clients[binding] = value
         return value
 
@@ -523,6 +761,49 @@ class IntegrationAttestationService:
                 ):
                     return False
                 identities = tuple(sorted(evidence_ids))
+                # The red event dispatches a repair delegate without evidence
+                # arguments.  Fold every terminal evidence row into the active
+                # stage's durable dossier before enqueueing so the delegate can
+                # see the failing checks, logs, hypothesis and attempt count.
+                # This mirrors the accounting ``record_result`` would apply had
+                # the root-train playbook called ``integration_record_repair``.
+                # ``record_result`` dedups via ``integration_repair_stage_evidence``;
+                # we instead dedup on the dossier itself so a repeated observation
+                # of the same evidence id does not inflate the budget.
+                dossier = dict(stage["dossier"] or {})
+                attempts = int(stage["attempts"])
+                seen_ids: set[str] = {
+                    item.get("evidence_id")
+                    for item in (dossier.get("failed_checks") or [])
+                }
+                seen_ids.update(
+                    item.get("evidence_id") for item in (dossier.get("logs") or [])
+                )
+                changed = False
+                for row in rows:
+                    if row["id"] in seen_ids:
+                        continue
+                    seen_ids.add(row["id"])
+                    evidence = dict(row)
+                    counted = (
+                        evidence["classification"] != "infrastructure"
+                        and evidence["conclusion"] in {"success", "failure"}
+                    )
+                    if counted:
+                        attempts += 1
+                    dossier = RepairService._dossier_with_evidence(
+                        dossier, evidence, attempts=attempts
+                    )
+                    changed = True
+                if changed:
+                    await conn.execute(
+                        update(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == subject.operation_id,
+                            integration_repair_stages.c.ordinal == stage["ordinal"],
+                        )
+                        .values(attempts=attempts, dossier=dossier)
+                    )
 
             identity = json.dumps(
                 {
@@ -583,13 +864,12 @@ class IntegrationAttestationService:
             await self.db.lock_hierarchy_project(conn, state["project_id"])
             if not await self._publication_subject_current_on(conn, state):
                 return "stale", {}
-            row = (
-                await conn.execute(
-                    select(integration_attestation_publications)
-                    .where(integration_attestation_publications.c.id == identity["id"])
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == identity["id"],
+                lock=True,
+            )
             if row is None:
                 await conn.execute(
                     insert(integration_attestation_publications).values(
@@ -684,13 +964,12 @@ class IntegrationAttestationService:
             await self.db.lock_hierarchy_project(conn, state["project_id"])
             if not await self._publication_subject_current_on(conn, state):
                 return False
-            row = (
-                await conn.execute(
-                    select(integration_attestation_publications)
-                    .where(integration_attestation_publications.c.id == claim["id"])
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == claim["id"],
+                lock=True,
+            )
             if row is None or any(row[key] != value for key, value in identity.items()):
                 return False
             if row["state"] == "published":
@@ -726,16 +1005,13 @@ class IntegrationAttestationService:
             await self.db.lock_hierarchy_project(conn, state["project_id"])
             if not await self._publication_subject_current_on(conn, state):
                 return None
-            row = (
-                await conn.execute(
-                    select(integration_attestation_publications)
-                    .where(
-                        integration_attestation_publications.c.id == identity["id"],
-                        integration_attestation_publications.c.state == "published",
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == identity["id"],
+                integration_attestation_publications.c.state == "published",
+                lock=True,
+            )
             if row is None or any(row[key] != value for key, value in identity.items()):
                 return None
             return dict(row)
@@ -743,42 +1019,31 @@ class IntegrationAttestationService:
     async def _publication_subject_current_on(
         self, conn: Any, state: dict[str, Any]
     ) -> bool:
-        batch = (
-            await conn.execute(
-                select(integration_batches)
-                .where(integration_batches.c.id == state["batch_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        candidate = (
-            await conn.execute(
-                select(integration_candidate_revisions)
-                .where(
-                    integration_candidate_revisions.c.batch_id == state["batch_id"],
-                    integration_candidate_revisions.c.revision == state["revision"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        operation = (
-            await conn.execute(
-                select(integration_repair_operations)
-                .where(integration_repair_operations.c.id == state["operation_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        batch = await select_row(
+            conn, integration_batches, integration_batches.c.id == state["batch_id"], lock=True
+        )
+        candidate = await select_row(
+            conn,
+            integration_candidate_revisions,
+            integration_candidate_revisions.c.batch_id == state["batch_id"],
+            integration_candidate_revisions.c.revision == state["revision"],
+            lock=True,
+        )
+        operation = await select_row(
+            conn,
+            integration_repair_operations,
+            integration_repair_operations.c.id == state["operation_id"],
+            lock=True,
+        )
         stage = None
         if operation is not None:
-            stage = (
-                await conn.execute(
-                    select(integration_repair_stages)
-                    .where(
-                        integration_repair_stages.c.operation_id == operation["id"],
-                        integration_repair_stages.c.ordinal == operation["active_stage"],
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            stage = await select_row(
+                conn,
+                integration_repair_stages,
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == operation["active_stage"],
+                lock=True,
+            )
         return bool(
             batch is not None
             and candidate is not None
@@ -902,8 +1167,6 @@ class IntegrationAttestationService:
                 "candidate_sha": candidate["head_sha"],
                 "operation_id": operation["id"],
                 "required_check_version": required["version"],
-                "required_check_names": tuple(names),
-                "ci_producer_id": required["producer_id"],
                 "policy_snapshot": operation["policy_snapshot"],
                 "ci_evidence_id": candidate["ci_evidence_id"],
                 "aggregate_external_id": evidence["run_id"] if evidence is not None else None,
@@ -1051,11 +1314,28 @@ class IntegrationAttestationService:
 
 
 def _parse_trust_manifest(raw: bytes) -> IntegrationTrustManifest:
+    malformed = "subject trust manifest is not a valid aq.integration-trust.v1 document"
     try:
         decoded = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, AttestationError) as exc:
+        raise SubjectTrustError("malformed", malformed) from exc
+    try:
         return IntegrationTrustManifest.model_validate(decoded)
-    except (UnicodeDecodeError, json.JSONDecodeError, AttestationError, ValidationError) as exc:
-        raise AttestationError("candidate trust manifest is invalid") from exc
+    except ValidationError as exc:
+        # The attestation name is an identity field (spec §5.1) that the schema
+        # pins as a literal; a well-formed document naming another check is an
+        # identity mismatch, not a malformed one.
+        errors = exc.errors()
+        if all(
+            error["type"] == "literal_error" and tuple(error["loc"]) == ("attestation_name",)
+            for error in errors
+        ):
+            raise SubjectTrustError(
+                "identity_mismatch",
+                "subject trust manifest names another identity: attestation_name",
+                fields=("attestation_name",),
+            ) from exc
+        raise SubjectTrustError("malformed", malformed) from exc
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1065,13 +1345,6 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise AttestationError("candidate trust manifest contains duplicate fields")
         value[key] = item
     return value
-
-
-def _client_auth_mode(client: Any) -> str:
-    mode = getattr(client, "auth_mode", None)
-    if isinstance(mode, str):
-        return mode
-    return str(getattr(getattr(client, "config", None), "auth_mode", "app"))
 
 
 __all__ = [

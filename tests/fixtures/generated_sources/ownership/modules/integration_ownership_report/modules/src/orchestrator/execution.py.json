@@ -1,0 +1,103 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked": {
+      "baseline_span": [
+        1249,
+        2194
+      ],
+      "landing_span": [
+        1277,
+        2222
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._emit_close_notify": {
+      "baseline_span": [
+        2281,
+        2370
+      ],
+      "landing_span": [
+        2309,
+        2398
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._execute_task": {
+      "baseline_span": [
+        323,
+        620
+      ],
+      "landing_span": [
+        323,
+        620
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._fail_session_launch": {
+      "baseline_span": [
+        1108,
+        1233
+      ],
+      "landing_span": [
+        1136,
+        1261
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._launch_session_for_task_locked": {
+      "baseline_span": [
+        728,
+        1107
+      ],
+      "landing_span": [
+        728,
+        1135
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._release_session_task_resources_locked": {
+      "baseline_span": [
+        2392,
+        2459
+      ],
+      "landing_span": [
+        2420,
+        2487
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._restore_slot_before_handoff_proof": {
+      "baseline_span": [
+        2195,
+        2232
+      ],
+      "landing_span": [
+        2223,
+        2260
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin.release_session_task_resources": {
+      "baseline_span": [
+        2371,
+        2391
+      ],
+      "landing_span": [
+        2399,
+        2419
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::import from src.notifications.builder import build_agent_summary, build_task_detail": {
+      "baseline_span": [
+        16,
+        16
+      ],
+      "landing_span": [
+        16,
+        16
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

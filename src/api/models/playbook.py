@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from src.api.models.ask import AskDecisionResponse
+
 from pydantic import BaseModel
 
 
@@ -140,11 +142,8 @@ class InspectPlaybookRunResponse(BaseModel):
     graph: dict[str, Any] | None = None
 
 
-class ResumePlaybookResponse(BaseModel):
-    resumed: str
-    playbook_id: str
-    status: str
-    tokens_used: int = 0
+class ResumePlaybookResponse(AskDecisionResponse):
+    """The exact human wait decision and its durable application state."""
 
 
 class CancelPlaybookRunResponse(BaseModel):
@@ -175,6 +174,9 @@ class RunPlaybookResponse(BaseModel):
     node_trace: list[dict[str, Any]] = []
     error: str | None = None
     final_response: str | None = None
+    run_ids: list[str] = []
+    runs: list[dict[str, Any]] = []
+    failed_steps: list[dict[str, Any]] = []
 
 
 class DryRunPlaybookResponse(BaseModel):
@@ -365,6 +367,16 @@ class UpdatePlaybookSourceResponse(BaseModel):
 
 
 
+class PlaybookDeleteResponse(BaseModel):
+    """``playbook_delete``: ``deleted`` is False when no exact entry existed."""
+
+    success: bool = True
+    deleted: bool
+    playbook_id: str | None = None
+    scope: str | None = None
+    scope_identifier: str | None = None
+
+
 class SetPlaybookEnabledResponse(BaseModel):
     playbook_id: str
     enabled: bool
@@ -394,4 +406,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_playbook_source": GetPlaybookSourceResponse,
     "update_playbook_source": UpdatePlaybookSourceResponse,
     "set_playbook_enabled": SetPlaybookEnabledResponse,
+    "playbook_delete": PlaybookDeleteResponse,
 }

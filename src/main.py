@@ -23,12 +23,15 @@ See specs/main.md for the full specification.
 from __future__ import annotations
 
 import asyncio
+import gc
+import inspect
 import logging
 import os
 import shutil
 import signal
 import sys
 import time
+from typing import Any
 
 from src.config import ConfigValidationError, load_config
 from src.database.migration_guard import DAEMON, set_process_scope
@@ -62,28 +65,203 @@ async def _cancel_readiness_tasks(pending: set[asyncio.Task]) -> None:
         )
 
 
-async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Event) -> None:
-    """Keep periodic reconciliation alive after a single degraded cycle."""
-    while not shutdown_event.is_set():
+async def _report_long_scheduler_cycle(task: asyncio.Task, *, interval: float = 30.0) -> None:
+    """Report the await chain without interrupting a cycle or exposing locals."""
+    while not task.done():
+        await asyncio.sleep(interval)
+        if task.done():
+            return
+        current = task.get_coro()
+        chain = []
+        seen = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            code = getattr(current, "cr_code", None) or getattr(current, "gi_code", None)
+            if code is not None:
+                chain.append(code.co_qualname)
+            current = getattr(current, "cr_await", None) or getattr(current, "gi_yieldfrom", None)
+        logger.warning("Scheduler cycle still running; await chain: %s", " -> ".join(chain))
+
+
+SCHEDULER_WAKE_EVENTS = (
+    "task.created", "task.routed", "task.route_overridden", "task.updated",
+    "task.ready", "task.completed", "task.failed", "task.closed", "task.paused",
+    "task.deleted", "task.unblocked", "task.rerouted", "gate.resolved", "gate.expired",
+    "provider.state_changed", "provider.allocation_changed", "pool.bounds_rescoped",
+    "session.started", "session.exited", "session.killed", "session.drain_acked",
+    "config.reloaded",
+)
+
+
+async def _scheduler_wake_or_shutdown(wake: asyncio.Event, shutdown: asyncio.Event) -> None:
+    tasks = [asyncio.create_task(wake.wait()), asyncio.create_task(shutdown.wait())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _run_pool_watchdog(orch: Orchestrator, shutdown: asyncio.Event) -> None:
+    """Keep pool progress observable when an unrelated cascade step is blocked."""
+    from src.orchestrator.pools import POOL_WATCHDOG_INTERVAL
+
+    while not shutdown.is_set():
         try:
-            await orch.run_one_cycle()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Orchestrator cycle failed; retrying on the next interval")
-        if shutdown_event.is_set():
-            break
-        try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+            await asyncio.wait_for(shutdown.wait(), timeout=POOL_WATCHDOG_INTERVAL)
+            return
+        except TimeoutError:
             pass
+        try:
+            await orch._check_pool_progress()
+        except Exception:
+            logger.exception("Pool progress watchdog failed; retrying on the next interval")
 
 
-async def run(config_path: str, profile: str | None = None) -> bool:
-    """Run the daemon. Returns True if a restart was requested."""
+async def _run_scheduler_cycles(
+    orch: Orchestrator, shutdown_event: asyncio.Event, *, interval: float | None = None,
+) -> None:
+    """Reconcile periodically and after relevant events, with bounded burst cadence.
+
+    Wakeups only request a normal cycle. Persisted readiness, provider backoff and
+    capacity remain authoritative; the periodic backstop covers missing events.
+    """
+    wake = asyncio.Event()
+    bus = getattr(orch, "bus", None)
+    unsubscribes = [bus.subscribe(event, lambda _data: wake.set())
+                    for event in SCHEDULER_WAKE_EVENTS] if bus is not None else []
+    loop = asyncio.get_running_loop()
+    watchdog = (
+        asyncio.create_task(_run_pool_watchdog(orch, shutdown_event), name="pool-watchdog")
+        if callable(getattr(orch, "_check_pool_progress", None)) else None
+    )
+    try:
+        while not shutdown_event.is_set():
+            wake.clear()
+            started = loop.time()
+            failed = False
+            cycle = asyncio.create_task(orch.run_one_cycle(), name="aq-scheduler-cycle")
+            reporter = asyncio.create_task(_report_long_scheduler_cycle(cycle))
+            try:
+                await cycle
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                failed = True
+                logger.exception("Orchestrator cycle failed; retrying on the next interval")
+            finally:
+                reporter.cancel()
+                await asyncio.gather(reporter, return_exceptions=True)
+            if shutdown_event.is_set():
+                break
+            scheduling = getattr(getattr(orch, "config", None), "scheduling", None)
+            periodic = interval if interval is not None else getattr(
+                scheduling, "cycle_interval_seconds", 5.0,
+            )
+            minimum = min(periodic, getattr(scheduling, "min_cycle_interval_seconds", 1.0))
+            try:
+                if failed:
+                    # A burst must not turn a degraded cycle into a retry spin.
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=periodic)
+                else:
+                    await asyncio.wait_for(
+                        _scheduler_wake_or_shutdown(wake, shutdown_event), timeout=periodic,
+                    )
+                    remaining = minimum - (loop.time() - started)
+                    if remaining > 0 and not shutdown_event.is_set():
+                        await asyncio.wait_for(shutdown_event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        if watchdog is not None:
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
+        for unsubscribe in unsubscribes:
+            unsubscribe()
+
+
+async def _bind_report_outbox(orch, transport, config, *, handler, bot):
+    """Bind the shared notification pump after its external transport is ready."""
+    from src.asks.delivery import AskDeliveryAdapter
+    from src.delivery.scheduler import DeliveryScheduler
+    from src.digest import DigestScheduleService
+
+    conversation_adapter = _bind_conversation_outbox(orch, transport, config)
+    rate_guard = _bot_rate_guard(bot)
+    lease_owner = f"daemon-{os.getpid()}"
+    # Hourly digest (discord-simplification §8) shares the destination and
+    # rate guard with escalations, while retaining its own durable outbox.
+    orch.digest_schedule = DigestScheduleService(
+        orch.db,
+        transport,
+        config=config,
+        lease_owner=lease_owner,
+        links=orch.dashboard_links,
+        rate_guard=rate_guard,
+        escalation_priority=orch.db.count_due_escalation_deliveries,
+        event_bus=orch.bus,
+        include_outbound=True,
+        pump_enabled=False,
+        conversation_adapter=conversation_adapter,
+        authoring_ready=lambda: bool(
+            orch.playbook_manager is not None
+            and orch.playbook_manager.is_active("supervisor-hourly-report")
+        ),
+    )
+    ask_adapter = (
+        AskDeliveryAdapter(handler, transport, lease_owner=lease_owner, links=orch.dashboard_links)
+        if handler is not None else None
+    )
+    orch.delivery_scheduler = DeliveryScheduler(
+        orch.db,
+        transport,
+        config=config,
+        lease_owner=lease_owner,
+        digest=orch.digest_schedule,
+        conversation_adapter=conversation_adapter,
+        ask_adapter=ask_adapter,
+        links=orch.dashboard_links,
+        rate_guard=rate_guard,
+    )
+    if handler is not None:
+        handler.ask_delivery = ask_adapter
+    logger.info("Digest scheduler wired to the Discord transport")
+    # READY may have attempted recovery before this binding existed.
+    # Its fail-closed pass leaves cursors untouched; recover now.
+    recover = getattr(bot, "_run_conversation_backfill", None)
+    if config.discord.conversation.enabled and recover is not None:
+        await recover()
+
+
+def _freeze_startup_heap() -> None:
+    """Keep the objects built at startup out of every later full collection.
+
+    Modules, models, routers and caches make up most of the daemon's ~500k
+    tracked objects and live as long as the process, yet each generation-2
+    collection re-traverses all of them.  On a 10k-task install those
+    collections ran every few seconds at 250-450 ms each, holding the event
+    loop -- the largest source of loop stalls (wise-ember.16).  Frozen, a
+    full collection only walks what the running daemon allocated since.
+    Garbage is collected first so none of it is frozen.
+    """
+    gc.collect()
+    gc.freeze()
+
+
+async def run(
+    config_path: str, profile: str | None = None, *, freeze_startup_heap: bool = False
+) -> bool:
+    """Run the daemon. Returns True if a restart was requested.
+
+    *freeze_startup_heap* is the process entry point's opt-in
+    (:func:`_freeze_startup_heap`); in-process callers such as tests leave it
+    off, since a freeze would outlive them.
+    """
     # A daemon launched by an interactive Claude Code or Codex session must
     # not retain that session's control variables.  Remove them before setup,
     # config loading, or constructing any child-launching subsystem.
+    inherited_aq_keys = sorted(key for key in os.environ if key.startswith("AQ_"))
     stripped_harness_markers = strip_harness_session_markers(os.environ)
     # The daemon owns the schema: this is what lets ``run_schema_setup``
     # migrate the production database.  ``AQ_DB_SCOPE=worker`` in the
@@ -102,8 +280,18 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             "Stripped inherited harness session marker(s) at daemon startup: %s",
             ", ".join(stripped_harness_markers),
         )
+    if inherited_aq_keys:
+        logger.warning(
+            "Inherited AQ_* variable(s) at daemon startup: %s. "
+            "Worker launches discard inherited AQ_* and inject fresh session values; "
+            "restart the daemon from a clean operator environment.",
+            ", ".join(inherited_aq_keys),
+        )
 
     config = load_config(config_path, profile=profile)
+    from src.task_templates import bind_task_templates
+
+    bind_task_templates(config.data_dir)
     logger.info(
         "Starting with env=%s, profile=%s",
         config.env,
@@ -121,11 +309,6 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         log_file_backup_count=config.logging.log_file_backup_count,
         console_format=config.logging.console_format,
     )
-
-    # Ensure database directory exists (SQLite only)
-    if config.database.backend == "sqlite":
-        db_path = config.database.url or config.database_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     orch = Orchestrator(config, runtimes=None)
 
@@ -258,19 +441,14 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             failed_task.cancel()
             raise
 
-        # Register the event-driven notification handler.
-        # The handler subscribes to notify.* events on the orchestrator's
-        # EventBus and routes them to the messaging platform (Discord embeds,
-        # threads, interactive views, etc.).
+        # The legacy Discord notification handler is intentionally not
+        # registered. Shared notify.* events remain on the EventBus for the
+        # dashboard/plugins, while Discord receives only durable escalations
+        # and eligible hourly digests below.
         bot = getattr(adapter, "bot", None)
-        if bot is not None:
-            from src.discord.notification_handler import DiscordNotificationHandler
-
-            _notification_handler = DiscordNotificationHandler(bot, orch.bus)
-            logger.info("Discord notification handler registered on EventBus")
-        else:
+        if bot is None:
             logger.info(
-                "No bot instance on adapter (%s) — notification handler not registered",
+                "No bot instance on adapter (%s) — Discord transports not registered",
                 adapter.platform_name,
             )
 
@@ -285,7 +463,77 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         if adapter_handler is not None:
             orch.set_command_handler(adapter_handler)
 
-        await _run_scheduler_cycles(orch, shutdown_event)
+        # Escalation delivery (discord-simplification §7): one channel post
+        # and one thread per incident, driven from the durable delivery
+        # outbox.  It is attached only when a real transport exists — with no
+        # bot, or with ``discord.escalation.enabled`` false, the core
+        # escalation records, the supervisor loop and the dashboard inbox are
+        # unaffected, which is the §9 promise about disabling the external
+        # surface.
+        cutover_report = getattr(bot, "_cutover_report", None)
+        cutover_ready = cutover_report is not None and cutover_report.status == "complete"
+        discord_transport = None
+        if bot is not None and cutover_ready:
+            from src.discord.escalation_transport import DiscordEscalationTransport
+
+            discord_transport = DiscordEscalationTransport(bot, config)
+
+        if discord_transport is not None and config.discord.channel_id:
+            from src.escalations import EscalationDeliveryService
+
+            handler = orch._get_handler()
+            # Every link names the dashboard server's configured origin
+            # (dashboard.server.public_url), resolved per new payload --
+            # never health_check.base_url, the daemon's own port.
+            orch.escalation_delivery = EscalationDeliveryService(
+                orch.db,
+                discord_transport,
+                config=config,
+                lease_owner=f"daemon-{os.getpid()}",
+                links=orch.dashboard_links,
+                rate_guard=_bot_rate_guard(bot),
+                on_status=(
+                    handler.emit_escalation_delivery_status if handler is not None else None
+                ),
+            )
+            logger.info("Escalation delivery service wired to the Discord transport")
+
+            await _bind_report_outbox(orch, discord_transport, config, handler=handler, bot=bot)
+        elif bot is not None:
+            logger.warning(
+                "Discord cutover is not ready or has no explicit shared channel; core "
+                "escalations and dashboard access remain active, but external delivery "
+                "is disabled"
+            )
+
+        # Document review delivery is a much smaller durable outbox than
+        # escalations: without a Discord bot or destination it intentionally
+        # settles its cursor without posting, so it must run in that degraded
+        # mode too.  The cancellation lifecycle mirrors the scheduler's
+        # services: start only after the adapter is ready and stop with it.
+        from src.reviews.notifier import ReviewNotifier
+
+        review_notifier_task = asyncio.create_task(
+            ReviewNotifier(
+                orch.db,
+                discord_transport,
+                config.discord.channel_id,
+                links=orch.dashboard_links,
+            ).run(),
+            name="aq-review-notifier",
+        )
+        from src.wait_runtime.service import WaitService
+
+        orch.wait_service = WaitService(orch)
+        wait_service_task = asyncio.create_task(orch.wait_service.run(), name="aq-waits")
+        try:
+            if freeze_startup_heap:
+                _freeze_startup_heap()
+            await _run_scheduler_cycles(orch, shutdown_event)
+        finally:
+            review_notifier_task.cancel()
+            wait_service_task.cancel()
+            await asyncio.gather(review_notifier_task, wait_service_task, return_exceptions=True)
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
     # (~3s) inside the task so it never blocks orchestrator startup.
@@ -334,6 +582,34 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     return restart
 
 
+def _bind_conversation_outbox(orch: Any, transport: Any, config: Any):
+    """Bind both ends of the conversation port once Discord cutover is complete."""
+    from src.conversations.delivery import ConversationDeliveryAdapter, DurableConversationOutbox
+
+    orch.conversation_outbox = DurableConversationOutbox(orch.db)
+    return ConversationDeliveryAdapter(
+        orch.db, transport, config=config, lease_owner=f"daemon-{os.getpid()}"
+    )
+
+
+def _bot_rate_guard(bot: Any):
+    """Defer dispatch before claiming when either shared Discord budget is held.
+
+    The guard is the bot's, not a second counter: an escalation is critical
+    traffic, so it is held rather than dropped, and the delivery row simply
+    retries after backoff (§7 keeps the existing rate guard).
+    """
+    tracker = getattr(bot, "_rate_tracker", None)
+
+    def allowed():
+        bucket = getattr(bot, "_outbound_bucket", None)
+        return (tracker is None or tracker.should_allow(critical=True)) and (
+            bucket is None or bucket.available()
+        )
+
+    return allowed
+
+
 async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     """Gather health check results from the orchestrator for the health endpoint.
 
@@ -342,13 +618,6 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     """
     checks: dict[str, dict] = {}
 
-    # Database check
-    try:
-        await orch.db.list_agents()
-        checks["database"] = {"ok": True}
-    except Exception as e:
-        checks["database"] = {"ok": False, "error": str(e)}
-
     # Orchestrator status
     checks["orchestrator"] = {
         "ok": True,
@@ -356,23 +625,42 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "running_tasks": len(orch._running_tasks),
     }
 
+    # Recomputed each collection so a required playbook repaired after startup
+    # appears in the next health snapshot without a daemon restart.
+    refresh_required = getattr(orch, "refresh_required_playbook_status", None)
+    if inspect.iscoroutinefunction(refresh_required):
+        required_playbooks = await refresh_required()
+    else:
+        required_playbooks = getattr(orch, "required_playbook_status", {"ok": True})
+    checks["required_playbooks"] = required_playbooks
+
+    # Routing needs protected storage even when every activation is healthy.
+    # Inspect the loaded key ring, rather than a newly configured environment.
+    from src.playbooks.private_values import private_value_key_health
+
+    checks["playbook_private_value_key"] = private_value_key_health(
+        orch.config.playbooks,
+        service=orch.db.playbook_private_values() if orch.config.playbooks.enabled else None,
+    )
+
     # Agent status
     try:
         agents = await orch.db.list_agents()
+        checks["database"] = {"ok": True}
         busy = sum(1 for a in agents if a.state == AgentState.BUSY)
         idle = sum(1 for a in agents if a.state == AgentState.IDLE)
         checks["agents"] = {"ok": True, "busy": busy, "idle": idle, "total": len(agents)}
     except Exception as e:
+        checks["database"] = {"ok": False, "error": str(e)}
         checks["agents"] = {"ok": False, "error": str(e)}
 
-    # Task counts
+    # Aggregate counts avoid materializing the entire ready backlog on every probe.
     try:
-        in_progress = await orch.db.list_tasks(status=TaskStatus.IN_PROGRESS)
-        ready = await orch.db.list_tasks(status=TaskStatus.READY)
+        task_counts = await orch.db.count_tasks_by_status()
         checks["tasks"] = {
             "ok": True,
-            "in_progress": len(in_progress),
-            "ready": len(ready),
+            "in_progress": task_counts.get(TaskStatus.IN_PROGRESS.value, 0),
+            "ready": task_counts.get(TaskStatus.READY.value, 0),
         }
     except Exception as e:
         checks["tasks"] = {"ok": False, "error": str(e)}
@@ -384,6 +672,13 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "platform": adapter.platform_name,
         "connected": connected,
     }
+    bot = getattr(adapter, "bot", None)
+    cutover = getattr(bot, "_cutover_report", None)
+    if cutover is not None:
+        checks["discord_cutover"] = {
+            "ok": cutover.status == "complete",
+            **cutover.as_dict(),
+        }
 
     # Discord rate guard — tracks invalid requests (401/403/429) toward
     # the 10,000 / 10 min Cloudflare ban threshold.
@@ -478,7 +773,7 @@ def main():
     if validate_only:
         sys.exit(_validate_config_only(config_path, profile))
 
-    restart = asyncio.run(run(config_path, profile=profile))
+    restart = asyncio.run(run(config_path, profile=profile, freeze_startup_heap=True))
     if restart:
         # Wait before re-exec to let platform rate limits settle.
         # Discord in particular rate-limits the initial GET /users/@me

@@ -1,0 +1,51 @@
+{
+  "window_start_utc": "2026-09-09T07:54:13.108003+00:00",
+  "window_end_utc": "2026-09-09T08:54:13.108003+00:00",
+  "project_id": "agent-queue",
+  "source_command": "aq --json task recent-activity --hours 1 --project-id agent-queue --limit 1000",
+  "truncated": false,
+  "active_tasks_returned": 46,
+  "current_status_counts": {
+    "IN_PROGRESS": 5,
+    "PAUSED": 3,
+    "READY": 7,
+    "COMPLETED": 30,
+    "BLOCKED": 1
+  },
+  "currently_pass_completed_in_window": 24,
+  "passed_task_ids": [
+    "clear-quest",
+    "grand-nexus",
+    "clear-flare",
+    "sound-apex",
+    "prime-bridge",
+    "bold-meadow",
+    "amber-crest",
+    "noble-ridge.4",
+    "fair-grove",
+    "noble-ridge.3",
+    "eager-glacier",
+    "steady-bridge",
+    "grand-rapids",
+    "keen-glacier",
+    "amber-zenith",
+    "nimble-cascade",
+    "calm-zenith",
+    "grand-apex",
+    "crisp-grove",
+    "noble-orbit",
+    "repair-640ced19-c324-4f6f-b50d-8f0181d181b7-0",
+    "stark-current",
+    "eager-falcon",
+    "brisk-torrent"
+  ],
+  "delivery_receipts_in_same_window": {
+    "keen-harbor": {
+      "code": 1
+    },
+    "noble-ridge": {
+      "code": 1
+    }
+  },
+  "interpretation": "Observed activity only. Task completions include repair and other supporting work; this is not a sustained capacity benchmark or proof of hundreds of reviewed deliveries per day."
+}
