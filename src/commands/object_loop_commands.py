@@ -15,6 +15,7 @@ import time
 from pydantic import ValidationError
 from sqlalchemy import insert, select, update
 
+from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
 from src.commands.contracts.object_loop import (
     ObjectCheckpointReadArgs, ObjectLoopReconcileArgs, ObjectLoopStartArgs,
@@ -350,7 +351,7 @@ class ObjectLoopCommandsMixin:
         message_id = "msg-object-start-" + hashlib.sha256(identity.encode()).hexdigest()
         async with self.db.immediate() as conn:
             await self.db._upsert_meta(epic.id, "object_start_refusal", refusal, conn=conn)
-            await conn.execute(pg_insert(messages).values(
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=message_id, project_id=request.project_id,
                 from_kind="system", from_id="object-loop",
                 to_kind="session", to_id=f"supervisor-{request.project_id}",
@@ -491,9 +492,30 @@ class ObjectLoopCommandsMixin:
 
     async def _cmd_object_checkpoint_read(self, args: dict) -> dict:
         from src.object_loop.evidence import final_evidence
+        from src.commands.principal import PrincipalKind, current_principal
 
         try:
             request = ObjectCheckpointReadArgs.model_validate(args)
+            principal = current_principal()
+            if principal and principal.kind is PrincipalKind.PLAYBOOK:
+                from src.playbooks.invocation import current_invocation
+
+                invocation = current_invocation()
+                # This read acts for a project run, never for a worker whose
+                # claim/epoch/instance-token fences cannot survive a kind switch.
+                # Session-origin runs must continue to use the direct session read.
+                if (invocation is None or not principal.project_id
+                        or principal.session_id is not None or principal.task_id is not None
+                        or not principal.parent_run_id or not principal.parent_step_id
+                        or invocation.run_id != principal.parent_run_id
+                        or invocation.step_id != principal.parent_step_id
+                        or "object_checkpoint_read" not in invocation.aq_commands
+                        or not principal.policy.allows_aq_command("object_checkpoint_read")
+                        or request.task_id is not None or request.session_id is not None):
+                    raise ValueError("out of scope: checkpoint read requires a project playbook "
+                                     "invocation without session/task identity")
+                if (self._job_scope() or {}).get("project_id") not in (None, principal.project_id):
+                    raise ValueError("out of scope: inherited project_id mismatch")
             rows = await self._readable_object_loops(request)
         except (ValidationError, ValueError) as exc:
             return _error(str(exc))
