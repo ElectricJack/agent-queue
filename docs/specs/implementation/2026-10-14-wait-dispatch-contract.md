@@ -1,5 +1,33 @@
 # Wait outcome integration contract
 
+## Publication hold recovery — 2026-10-27
+
+Continuation maintenance retries `push_failed` suspension holds using their persisted,
+capped publication backoff, including after daemon restart and source resolution.
+Every attempt freshly proves the original writer stopped before saving or publishing;
+recovery never signals it again. The claim and checkout remain owned until publication
+and detachment succeed. Successful publication withdraws its bound hold incident.
+Other infrastructure holds retain their existing recovery rules.
+
+`wait_decide requeue` also accepts an uncleared `push_failed` hold before parking,
+with either a pending or resolved source. It preserves generation, saved work,
+outcome and ownership and makes the same suspension protocol immediately eligible;
+it never queues resume admission before parking proof.
+
+`aq wait retire CONTINUATION_ID --expected-generation N --note REASON` dispatches
+`wait_decide` with decision `retire`. A live project supervisor or local operator
+may retire an unacknowledged continuation by id, without a pending source wait or
+an escalation decision. The command takes the task-control and graph fences,
+checks generation, project, branch and current writer ownership, and records an
+audit. It cancels that wait's continuation, deadlines, edges and reservations,
+preserves any resolved outcome and checkpoint, requests the exact holder stop,
+and leaves the task PAUSED using the durable manual-pause snapshot and claim fence.
+It neither wakes nor releases a writer or checkout; normal manual-pause cleanup
+owns eventual stopped-writer release. Terminal, acknowledged,
+superseded or foreign continuations refuse without mutation.
+After cleanup, explicit task Resume returns ordinary work to the frontier rather
+than restoring a suspended status whose continuation has been retired.
+
 ## Resume admission during source backlogs — 2026-10-25
 
 Each resume attempt captures fresh delivery and Git observations for its own
@@ -473,6 +501,18 @@ observation, progress preparation, ownership fences and per-event rollback.
 
 ## Retry and repair of resume workspace preparation
 
+Worktree acquisition reporting `slots_full`, `slot_warming` or `slot_lost_race`
+without an acquired workspace is capacity backpressure. Return the continuation
+to `queued`, release its temporary agent and capacity grant, and retain its
+admission request identity, FIFO position, first-request age, generation, saved
+head and resolved outcome. Retry with durable exponential backoff from five
+seconds, capped at sixty seconds; capacity contention never consumes the
+workspace failure or launch-attempt budget. Reobserve admission on every retry.
+The existing once-per-generation resume-stall notice signals prolonged capacity
+lag and includes the last workspace capacity reason. Provisioning failures such
+as `slot_stalled`, missing worktree configuration and checkout identity failures
+retain the infrastructure failure path.
+
 Workspace preparation retries contention (`wait.graph_busy`), transport failures,
 and OS busy/timeout errors up to three attempts, with durable 5/10 second backoff.
 The queued continuation retains the same reservation, agent, staged checkout,
@@ -489,3 +529,11 @@ preserves the source and checkout, records actor/reason/time in facts and an aud
 event, and resets the retry budget. It does not acknowledge the outcome. The hold
 incident is withdrawn when the fresh process receives prime, atomically with
 outcome delivery; failed retries retain the incident.
+
+`task_recover` with `decision=retry` also accepts the operational escalation ID
+of a held resume. It delegates to that same requeue transaction, repeating the
+project, task, continuation generation, exact current incident, open escalation,
+hold reason and stopped-process fences. Stale, unrelated and suspension-only
+incidents refuse without mutation. Other recovery decisions direct the operator
+to the continuation controls rather than treating this ID as a generic worker
+failure incident.

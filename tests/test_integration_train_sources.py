@@ -750,6 +750,9 @@ async def test_reopen_retires_source_ci_repairs_atomically(world, status, reopen
     before = git(world.origin.url, "rev-parse", "main")
     if reopen == "feedback":
         handler = TaskCommandsMixin()
+        handler.orchestrator = SimpleNamespace(
+            aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+        )
         handler.db, handler._current_scope = db, {}
         assert (await handler._cmd_reopen_with_feedback({
             "task_id": "source", "feedback": "reject this head",
@@ -2967,6 +2970,9 @@ async def test_abort_first_member_conflict_at_target_releases_member(world):
     assert git(origin.url, "rev-parse", candidate_ref(batch.id)) == target
 
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db, handler._current_scope = db, {}
     refusal = await handler._cmd_reopen_with_feedback({
         "task_id": "rework", "feedback": "resolve conflict",
@@ -3046,6 +3052,9 @@ async def test_aborted_batch_visit_releases_reopen_but_other_batch_stays_sealed(
         await conn.execute(update(integration_batches).where(integration_batches.c.id == "abort")
             .values(lifecycle=lifecycle))
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db, handler._current_scope = db, {}
     refusal = await handler._cmd_reopen_with_feedback({
         "task_id": "rework", "feedback": "fix regression",
