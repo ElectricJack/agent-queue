@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from src.config import GitHubAppConfig
-from src.git.github import GitHubAccess
+from src.git.github import BINDING_REVERIFY_SECONDS, GitHubAccess
 from src.git.github_app import AppTokenCandidate
 from src.git.github_auth import GitHubAuth
 from src.git.github_cli import GhResult
@@ -378,15 +378,19 @@ async def test_rebinding_uses_ready_generation_and_recovers_auth_rejection() -> 
     auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
     runner = FakeRunner(auth.credential_identity)
     access = GitHubAccess(auth, runner)
+    access._binding_clock = clock
     assert await access.bind_repository("acme/widgets") == WIDGETS
 
+    # Past the re-verify TTL the rebind verifies again and recovers a 401.
+    clock.now += BINDING_REVERIFY_SECONDS + 1
     runner.reject_generations = {1}
     assert await access.bind_repository("https://github.com/acme/widgets.git") == WIDGETS
+    # Inside the TTL the freshly verified binding is reused without a call.
     assert await access.bind_repository("acme/widgets", expected_binding=WIDGETS) == WIDGETS
 
     assert provider.bind_calls == ["acme/widgets"]
     assert provider.mint_calls == [WIDGETS]
-    assert [getattr(credential, "generation", 0) for _, credential in runner.calls] == [0, 1, 2, 2]
+    assert [getattr(credential, "generation", 0) for _, credential in runner.calls] == [0, 1, 2]
 
     before = len(runner.calls)
     with pytest.raises(GitHubAccessError, match="identity"):
@@ -396,10 +400,47 @@ async def test_rebinding_uses_ready_generation_and_recovers_auth_rejection() -> 
     assert len(runner.calls) == before
 
     runner.payloads[WIDGETS] = {"id": 999, "full_name": "acme/widgets"}
+    assert await access.bind_repository("acme/widgets") == WIDGETS
+    assert len(runner.calls) == before
+    clock.now += BINDING_REVERIFY_SECONDS + 1
     with pytest.raises(GitHubAccessError, match="identity"):
         await access.bind_repository("acme/widgets")
     assert len(runner.calls) == before + 1
     assert provider.mint_calls == [WIDGETS]
+
+
+@pytest.mark.asyncio
+async def test_rebinding_inside_ttl_verifies_once() -> None:
+    clock = Clock()
+    provider = FakeProvider(clock)
+    auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
+    runner = FakeRunner(auth.credential_identity)
+    access = GitHubAccess(auth, runner)
+    access._binding_clock = clock
+
+    for _ in range(50):
+        assert await access.bind_repository("acme/widgets") == WIDGETS
+        clock.now += 1
+
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_read_auth_rejection_forces_reverify_inside_ttl() -> None:
+    clock = Clock()
+    provider = FakeProvider(clock)
+    auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
+    runner = FakeRunner(auth.credential_identity)
+    access = GitHubAccess(auth, runner)
+    access._binding_clock = clock
+    assert await access.bind_repository("acme/widgets") == WIDGETS
+    runner.reject_all = True
+    with pytest.raises(GitHubAccessError):
+        await access.run_read(["api", "repos/acme/widgets"], repository=WIDGETS)
+    runner.reject_all = False
+    before = len(runner.calls)
+    assert await access.bind_repository("acme/widgets") == WIDGETS
+    assert len(runner.calls) == before + 1
 
 
 @pytest.mark.asyncio
@@ -410,6 +451,7 @@ async def test_rebinding_refreshes_at_window_and_after_expiry(advance: int) -> N
     auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
     runner = FakeRunner(auth.credential_identity)
     access = GitHubAccess(auth, runner)
+    access._binding_clock = clock
     assert await access.bind_repository("acme/widgets") == WIDGETS
     first = await auth.credential_for(WIDGETS)
 
