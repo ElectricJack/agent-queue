@@ -8,6 +8,7 @@ owning subsystem has not landed yet are listed in
 contract those owners must follow.
 """
 
+from src.doctor.advisory_lock_checks import advisory_lock_checks
 from src.doctor.ask_checks import ask_checks
 from src.doctor.builtin import builtin_checks
 from src.doctor.capability_checks import capability_checks
@@ -55,6 +56,7 @@ __all__ = [
     "DoctorContext",
     "DoctorRegistry",
     "Severity",
+    "advisory_lock_checks",
     "ask_checks",
     "builtin_checks",
     "capability_checks",
@@ -129,6 +131,8 @@ def default_registry() -> DoctorRegistry:
     for check in profile_checks():
         registry.register(check)
     for check in db_checks():
+        registry.register(check)
+    for check in advisory_lock_checks():
         registry.register(check)
     for check in dashboard_state_checks():
         registry.register(check)

@@ -1,0 +1,70 @@
+{
+  "after": {
+    "engine": 83917,
+    "owned": 159885,
+    "tables": 45
+  },
+  "before": {
+    "engine": 83773,
+    "owned": 159655,
+    "revision": "f3b2b8a466fde5fb3b36e8c91a78efcb02a81f3f",
+    "tables": 45
+  },
+  "charged_files": {
+    "src/api/scope.py": {
+      "after": 449,
+      "before": 448,
+      "delta": 1
+    },
+    "src/cli/auto_commands.py": {
+      "after": 26,
+      "before": 25,
+      "delta": 1
+    },
+    "src/cli/integration.py": {
+      "after": 1490,
+      "before": 1480,
+      "delta": 10
+    },
+    "src/commands/contracts/integration.py": {
+      "after": 2513,
+      "before": 2485,
+      "delta": 28
+    },
+    "src/commands/integration_commands.py": {
+      "after": 3284,
+      "before": 3253,
+      "delta": 31
+    },
+    "src/git/repository_lock.py": {
+      "after": 11,
+      "before": 0,
+      "delta": 11
+    },
+    "src/integration/repository_maintenance.py": {
+      "after": 170,
+      "before": 0,
+      "delta": 170
+    },
+    "src/integration/repository_recovery.py": {
+      "after": 541,
+      "before": 567,
+      "delta": -26
+    },
+    "src/orchestrator/core.py": {
+      "after": 2924,
+      "before": 2920,
+      "delta": 4
+    }
+  },
+  "delta": {
+    "engine": 144,
+    "owned": 230,
+    "tables": 0
+  },
+  "method": "Fresh complete dev archive and merged source inventory using unchanged classifications. Preserve all historical grants, exact +230 owned/+144 engine/+86 shared/0 tables, zero headroom, and original pins.",
+  "prior_grant_evidence": "docs/reports/2026-10-26-retained-store-maintenance-pair-refresh-ownership.json",
+  "referenced_decision": "size-cap-delegation-2026-10-23",
+  "supervisor_decision_message_id": "msg-52016cbae0e445e1baa70acb295b19ec",
+  "task_id": "clear-rapids-41"
+}
