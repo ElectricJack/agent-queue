@@ -31,7 +31,7 @@ def _instruction_sources() -> list[Path]:
     """Every shipped file an agent reads as instructions."""
     paths = {
         *DEFAULTS.glob("*/profile.md"),
-        *(REPO / "src" / "skills").glob("*/SKILL.md"),
+        *(REPO / "src" / "skills").rglob("*.md"),
         *(REPO / "src" / "prime" / "templates").glob("*.md"),
         *(REPO / "src" / "prompts").glob("*.md"),
         *(REPO / "src" / "prompts" / "default_playbooks").glob("*.md"),

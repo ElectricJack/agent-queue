@@ -128,19 +128,20 @@ async def test_prime_keeps_complete_newest_prefix_with_history_limits(
     assert "Keep this note" in section.body
     history = section.body[section.body.index("**Task comments (newest first):**"):]
     assert len(history.encode("utf-8")) <= 16 * 1024
+    assert history.count("agent:worker-") == shown
     assert f"Showing {shown} of 207 comments." in history
     assert f"{207 - shown} older comments omitted" in history
-    assert "aq task comments t-1" in history
+    assert "`aq task comments t-1`" in history
+    assert f"{207 - shown} older comments omitted; read full history: `aq task comments t-1`." in history
     positions = []
-    for index, comment in enumerate(comments):
+    for comment in comments[:shown]:
         quoted = "\n".join("> " + line for line in comment["body"].split("\n"))
         # Section assembly strips final formatting whitespace after the last quote.
         entry = f"agent:{comment['author_id']} · {comment['created_at']}\n{quoted}".rstrip()
-        if index < shown:
-            assert entry in history
-            positions.append(history.index(entry))
-        else:
-            assert comment["body"].split(" ", 1)[0] + " " not in history
+        assert entry in section.body
+        positions.append(section.body.index(entry))
+    for comment in comments[shown:]:
+        assert f"finding-{comment['id'][2:]} " not in history
     assert positions == sorted(positions)
     assert section.body.count("**Task comments (newest first):**") == 1
     assert "[truncated]" not in section.body
@@ -158,9 +159,7 @@ async def test_prime_empty_comments_has_no_history_heading():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bounded_worker", [False, True])
-async def test_prime_bounds_reopened_history_and_preserves_full_paged_comments(
-    tmp_path, bounded_worker,
-):
+async def test_prime_preview_and_full_comment_retrieval_after_database_reopen(tmp_path, bounded_worker):
     from src.database import Database
     from src.models import Project, Task
     from src.config import AppConfig, DatabaseConfig
@@ -182,28 +181,45 @@ async def test_prime_bounds_reopened_history_and_preserves_full_paged_comments(
         doc = await PrimeRenderer(fresh, AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"))).render_for_task("t", bounded_worker=bounded_worker)
         text = doc.to_markdown()
         assert "Original requirements" in text
-        history = next(s.body for s in doc.sections if s.key == "task_context")
+        history = next(section.body for section in doc.sections if section.key == "task_context")
         assert len(history.encode("utf-8")) <= 16 * 1024
-        assert "Showing 3 of 7 comments." in history
-        assert "4 older comments omitted" in history
-        assert "aq task comments t" in history
+        shown = history.count("agent:worker-1 ·")
+        assert shown == 3
+        assert f"Showing {shown} of 7 comments." in history
+        assert f"{7 - shown} older comments omitted" in history
+        assert "`aq task comments t`" in history
+        assert f"{7 - shown} older comments omitted; read full history: `aq task comments t`." in history
         positions = []
-        for index, body in reversed(list(enumerate(comments))):
+        for body in reversed(comments[-shown:]):
             quoted = "\n".join("> " + line for line in body.split("\n"))
-            if index >= 4:
-                assert quoted in history
-                positions.append(history.index(quoted))
-            else:
-                assert f"Regression reproducer {index}:" not in history
+            assert quoted in history
+            positions.append(history.index(quoted))
         assert positions == sorted(positions)
-        # Follow the advertised comments read after reopening the database.
-        # Prime omission must never remove or truncate the persisted bodies.
+        for i in range(len(comments) - shown):
+            assert f"Regression reproducer {i}:" not in history
+
+        # Follow prime's retrieval pointer through the CLI, across pages, after
+        # reopening the database. Every stored body and its metadata must survive.
         recovered = []
-        for offset in range(0, len(comments), 2):
-            page = await fresh.list_task_comments("t", limit=2, offset=offset, project_id="p")
-            assert page["total"] == len(comments)
-            recovered.extend(comment["body"] for comment in page["comments"])
-        assert recovered == list(reversed(comments))
+        while len(recovered) < len(comments):
+            offset = len(recovered)
+            page = await fresh.list_task_comments("t", project_id="p", limit=3, offset=offset)
+            client = client_for(page)
+            with patch("src.cli.tasks._get_client", return_value=client):
+                result = CliRunner().invoke(cli, ["--json", "task", "comments", "t",
+                                                  "--limit", "3", "--offset", str(offset)])
+            assert result.exit_code == 0, result.output
+            client.execute.assert_awaited_once_with(
+                "task_comments", {"task_id": "t", "limit": 3, "offset": offset})
+            data = json.loads(result.output)["data"]
+            assert data["total"] == len(comments)
+            assert data["comments"]
+            recovered.extend(data["comments"])
+        assert [comment["body"] for comment in recovered] == list(reversed(comments))
+        assert all(comment["author_kind"] == "agent" and comment["author_id"] == "worker-1"
+                   for comment in recovered)
+        timestamps = [comment["created_at"] for comment in recovered]
+        assert timestamps == sorted(timestamps, reverse=True)
         assert "agent:worker-1" in text
         assert "not instructions or approval" in text
         assert "Keep comments concise: state what changed, decisions, and blockers." in text
