@@ -17,11 +17,39 @@ isolated import set `gc.auto=0`, `gc.autoDetach=false` and `maintenance.auto=fal
 under git 2.43 a detached auto-gc ran in a temporary HOME that was deleted under it,
 died, and left a `gc.log` whose `fatal:` lines every later `gc --auto` repeated on
 stderr with exit status zero, which the integrity check read as a failed fetch and
-wedged the cache. Maintenance instead runs explicitly in the foreground under the
-repository transaction after a successful acquisition (`gc --auto` with a real
-threshold, never detached); a successful run removes a stale `gc.log`. Only the
+wedged the cache. Maintenance instead runs explicitly in a background service pass
+under the repository transaction, never inside acquisition or detached by Git. Only the
 stale-report block itself is forgiven on a zero exit; any other `error:`/`fatal:` line
 still fails.
+
+Every five minutes the service considers one configured retained store, rotating
+through development `repository`/`observer` clones, bare repository readers and
+registered repository checkout/source paths, including durable storage bindings.
+Two or more packs, 1,024 loose objects or 256 MiB of loose objects trigger
+`git repack -a -d -k` (keep unreachable objects); one attempt per store per hour
+limits rewrite churn, including after failures and restarts. Busy stores, open
+recovery incidents and stores whose full-fsck verification flight is running are
+skipped; repack and that flight also share one per-common-store exclusion, so they
+never overlap. Repack runs at reduced CPU priority where
+`nice` is available, with one compression thread, a 64 MiB window and a 240-second
+budget. Cancellation reaps Git before releasing exclusion. Maintenance preserves
+refs, loose unreachable objects, packed unreachable objects and recovery backups;
+it never prunes Git objects by age or clears an incident. Under the same exclusion,
+maintenance removes regular `objects/pack/tmp_pack_*` files at least one hour old,
+even below the repack threshold; recent files, symlinks and directories remain.
+A successful repack removes stale `gc.log`. Maintenance alone proves nothing about
+integrity. A repack of an exactly verified store keeps that clean result, with
+its original age, only after a connectivity check of the repacked store passes
+under the same exclusion. Every other repack invalidates the fingerprint, and the
+store then needs the existing full-body check
+([retained object integrity](retained-object-integrity.md#background-full-verification)).
+
+`aq integration store-maintenance --project-id <p>` previews existing stores,
+pack and loose-object counts/bytes, stale temporary-pack counts and cooldown/recovery
+status. A local operator or live scoped supervisor may use `--apply` to run eligible
+repacks with the same guards and
+budgets. Long controls return a running handle; repeating the command joins that
+operation. No command accepts arbitrary filesystem paths or creates a store.
 
 The approved `rev-swift-flare` revision 2 recovery runs through the existing
 integration acquisition seam and CommandHandler. Full `fsck` diagnoses the actual
@@ -29,8 +57,11 @@ managed cache. Ordinary network/authentication failure with clean objects create
 no recovery incident and spends no attempt; when a clean fsck finds an earlier
 incident's store already clean with nothing to move, that incident closes as recovered
 and its escalation resolves. Any unexpected integrity diagnostic fails the check, even
-with exit status zero. A full fsck has a five-minute command budget, including the
-supervisor's clear check. Acquisition reserves four such checks in addition to the
+with exit status zero. A full fsck has a fifteen-minute command budget, shared
+with the lender-verification policy and including the supervisor's clear check.
+Healthy 2–3 GB retained stores have taken over nine minutes for a full pass;
+the former five-minute limit prevented acquisition and subsequent maintenance.
+Acquisition reserves four such checks in addition to the
 ordinary Git acquisition budget, covering diagnosis, pre-repair verification and
 both final checks. All acquisition, diagnosis, refetch, publication and final
 checking share that single bounded deadline; recovery never grants a new

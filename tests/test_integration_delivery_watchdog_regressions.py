@@ -165,6 +165,8 @@ async def test_partial_hand_landing_still_owes_work(world, history):
     report = await observe_completed_branches(world.db, observer, now=world.now)
     assert report["unavailable"] == []
     assert report["entries"][0]["rule"] == "unreconciled"
+    assert report["targets"] == {"p": {"repository_id": "r", "target_ref": "refs/heads/main",
+                                       "target_oid": target}}
 
 
 @pytest.mark.parametrize("intent,lifecycle", [
@@ -255,3 +257,111 @@ async def test_conflicting_content_is_not_treated_as_hand_landed(world, history)
     assert report["unavailable"] == []
     assert report["deliveries"][0]["state"] == "progressing"
     assert (await world.rows(wait_records))[0]["outcome"] == "pending"
+
+
+async def _land(world):
+    """Drive the stuck generation to its one takeover and complete the landing task."""
+    for _ in range(2):
+        delivery = (await world.scan())["deliveries"][0]
+    land = delivery["redrive"]["task_id"]
+    async with world.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == land).values(
+            status=TaskStatus.COMPLETED.value))
+    world.observe.return_value["entries"].append({
+        "task_id": land, "project_id": "p", "archived": False, "root": True,
+        "branch": "aq/" + land, "head": "c" * 40, "wip": False, "rule": "stranded_root",
+        "reason": "no delivery owner"})
+    return land
+
+
+async def test_completed_landing_task_is_never_watched_or_relanded(world):
+    land = await _land(world)
+    for _ in range(4):
+        report = await world.scan()
+        assert report["landing_tasks"] == [land]
+        assert [d["task_id"] for d in report["deliveries"]] == ["t"]
+    # The original generation carries the landing: no land-of-a-land, and the
+    # supervisor hears once the landing completed without reaching main.
+    assert sorted(row["id"] for row in await world.rows(tasks)) == sorted(["t", land])
+    (projection,) = await world.rows(wait_records)
+    assert projection["owner_id"] == "t" and projection["outcome"] == "pending"
+    assert projection["decision_inputs"]["redrive"]["task_id"] == land
+    (incident,) = await world.rows(escalations)
+    assert incident["task_id"] == "t"
+
+
+async def test_landing_task_projection_is_cancelled_not_delivered(world):
+    """A projection a landing task gained before it was recognised never proves delivery."""
+    async with world.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(
+            created_by_kind="agent", created_by_id="someone"))
+    await world.scan()
+    async with world.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(
+            created_by_kind="system", created_by_id="delivery-watchdog"))
+    report = await world.scan()
+    assert report["deliveries"] == [] and report["landing_tasks"] == ["t"]
+    (projection,) = await world.rows(wait_records)
+    assert projection["outcome"] == "cancelled"
+    assert projection["decision_reason"] == "landing_task_unwatched"
+    assert projection["decision_inputs"]["head_on_target"] is False
+    assert "is not on main" in projection["decision_inputs"]["settled_outcome"]
+
+
+@pytest.mark.parametrize("change,outcome,rule", [
+    ({"archived": True}, "cancelled", "delivery_unwatched"),
+    ({"wip": True}, "cancelled", "delivery_unwatched"),
+    ({"rule": "retiring"}, "cancelled", "delivery_unwatched"),
+    ({"rule": "recorded", "reason": "its delivery is recorded as relanded"}, "satisfied",
+     "delivery_accounted"),
+])
+async def test_unreached_head_is_never_settled_as_reaching_main(world, change, outcome, rule):
+    for _ in range(3):
+        await world.scan()
+    world.observe.return_value["entries"][0].update(change)
+    assert (await world.scan())["deliveries"] == []
+    (projection,) = await world.rows(wait_records)
+    assert (projection["outcome"], projection["decision_reason"]) == (outcome, rule)
+    inputs = projection["decision_inputs"]
+    assert inputs["head_on_target"] is False
+    assert "reached the default branch" not in inputs["settled_outcome"]
+    (incident,) = await world.rows(escalations)
+    assert incident["state"] == "resolved"
+    assert incident["terminal_evidence"]["automatic_rule"] == rule
+
+
+async def test_absent_entry_settles_with_the_judged_target(world):
+    world.observe.return_value["targets"] = {"p": {
+        "repository_id": "r", "target_ref": "refs/heads/main", "target_oid": "d" * 40}}
+    await world.scan()
+    (projection,) = await world.rows(wait_records)
+    assert projection["decision_inputs"]["target_oid"] == "d" * 40
+    assert projection["decision_inputs"]["head_on_target"] is False
+    world.observe.return_value["entries"] = []
+    await world.scan()
+    (projection,) = await world.rows(wait_records)
+    assert projection["outcome"] == "satisfied"
+    assert projection["decision_inputs"]["head_on_target"] is True
+    assert projection["decision_reason"] == "delivery_contained"
+
+
+async def test_inventory_of_another_repository_is_unavailable(world):
+    world.observe.return_value["targets"] = {"p": {
+        "repository_id": "other", "target_ref": "refs/heads/main", "target_oid": "d" * 40}}
+    for _ in range(3):
+        report = await world.scan()
+        assert report["unavailable"] == ["p"] and report["deliveries"] == []
+    assert await world.rows(wait_records) == []
+    assert len(await world.rows(tasks)) == 1
+
+
+async def test_takeover_refuses_a_landing_task():
+    from src.integration.delivery_watchdog import _file_takeover_on
+
+    class Conn:
+        async def execute(self, _stmt):
+            return SimpleNamespace(scalars=lambda: ["land-x"])
+
+    with pytest.raises(ValueError, match="landing task"):
+        await _file_takeover_on(object(), Conn(), key="k", entry={"task_id": "land-x"},
+                                repository_id="r", target_ref="refs/heads/main")

@@ -1,0 +1,39 @@
+{
+  "bazel_slice_a_v2_merge_measurement": {
+    "applied_existing_engine_delta": 0,
+    "applied_existing_owned_delta": 314,
+    "applied_existing_table_delta": 0,
+    "charged_files": {
+      "src/task_graph/__init__.py": 43,
+      "src/task_graph/parser.py": 132,
+      "src/task_graph/validator.py": 139
+    },
+    "dev_source_revision": "512996c4738a348ac2a6372697f184e20a955a8c",
+    "existing_composition": "hand_integration_reconciliation.bazel_slice_a_lazy_task_graph_exports_composition",
+    "groups": {
+      "companions": 10365,
+      "engine": 83653,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 63095,
+      "ui": 262
+    },
+    "measured_engine_lines": 83653,
+    "measured_owned_total": 159522,
+    "measured_table_count": 45,
+    "new_grant": false,
+    "operator_decision": "6679052c",
+    "previous_measured_engine_lines": 83653,
+    "previous_measured_owned_total": 159208,
+    "previous_measured_table_count": 45,
+    "previous_measurement": "bazel_slice_a_lazy_task_graph_exports_merge_measurement",
+    "reason": "Remeasure Slice A after merging the settled V2 generator on current dev. Apply the existing approved +314 shared owned/+0 engine/+0 tables once to the dev ledger; no new grant. Preserve original measurements, all dev grants, classifications and zero headroom.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "supervisor_decision_message_id": "msg-bb71c846812341e68b2a81bd464d39ef",
+    "task_id": "clear-beacon-42",
+    "working_tree_source_sha256": {
+      "src/task_graph/__init__.py": "998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06"
+    }
+  }
+}
