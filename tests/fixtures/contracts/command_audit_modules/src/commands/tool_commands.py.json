@@ -1,0 +1,107 @@
+{
+  "find_applicable_tool": {
+    "argument_reads_diagnostic_only": [
+      "description",
+      "top_k"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/tool_commands.py:ToolCommandsMixin._cmd_find_applicable_tool",
+    "resource_gates": [
+      "catalogue_only"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'description is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'query': description, 'matches': results}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'query': description, 'matches': matches, 'method': 'keyword'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c6348986fb78431a1454de7ac64c44cb27fd3ba953af886649557dfef156db48",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "load_tools": {
+    "argument_reads_diagnostic_only": [
+      "category",
+      "tool_name"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "opaque",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/tool_commands.py:ToolCommandsMixin._cmd_load_tools",
+    "resource_gates": [
+      "catalogue_only"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Unknown tool: '{tool_name}'.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"'{tool_name}' is a core tool (already loaded).\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Tool '{tool_name}' is defined but not currently executable: {_missing_backend_hint(tool_name)}. Do not call it — use another approach.\", 'unavailable': [tool_name]}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "denial_result(tool_name)"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'loaded': cat, 'tools_added': [tool_name], 'single_tool': True, 'message': f\"Tool '{tool_name}' is now available.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"Provide 'category' or 'tool_name'.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Unknown category: {category}. Available: {', '.join(available)}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Category '{category}' has no executable tools right now: {reasons}. Do not call {', '.join(sorted(unavailable))}.\", 'unavailable': sorted(unavailable)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "opaque",
+    "source_digest": "sha256:8a7f0f5fadfff865e764f52236bce3bad6d259a821cc685c552b4623cc17c844",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_tool_registry.py"
+    ]
+  }
+}
