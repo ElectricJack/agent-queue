@@ -1,9 +1,10 @@
 """Container layout engine (§4.4, §4.7).
 
 ``layout_container`` lays out ONE container's children from a
-``ContainerScope``. Ordinals of existing children are immutable in
-``incremental`` and ``resize`` modes; only the forced rank repair may
-change them. ``tidy`` mode treats every child as movable.
+``ContainerScope``. Task containers use stable dependency-depth rows, with
+creation-time/id ties in every mode. At the project root, existing ordinals
+are immutable in ``incremental`` and ``resize`` except for forced rank repair;
+``tidy`` treats every root child as movable.
 """
 
 from __future__ import annotations
@@ -20,14 +21,22 @@ from src.task_graph.layout.constants import (
     INCREMENTAL_EVALS,
     INCREMENTAL_SECONDS,
     MAX_OPTIMIZED_SIBLINGS,
+    ROW_ASPECT,
+    TARGET_ROW_WIDTH,
+    TARGET_ROW_WIDTH_ROOT,
     TIDY_EVALS,
     TIDY_SECONDS,
 )
 from src.task_graph.layout.cost import container_cost
-from src.task_graph.layout.flow import FlowResult, flow_container
+from src.task_graph.layout.flow import (
+    FlowResult,
+    flow_container,
+    row_target,
+)
 from src.task_graph.layout.layering import break_cycles, minimal_ranks_acyclic
 from src.task_graph.layout.model import ContainerScope, LayoutRow
 from src.task_graph.layout.order_key import between
+from src.task_graph.layout.ordering import tidy_seed_key
 
 logger = logging.getLogger(__name__)
 
@@ -170,10 +179,17 @@ def _rows(scope: ContainerScope, ordinals, flow: FlowResult, sizes) -> dict[str,
     return rows
 
 
-def _evaluate(ordinals, scope, sizes, edges, minimal, is_root) -> tuple[float, FlowResult]:
+def _evaluate(
+    ordinals, scope, sizes, edges, minimal, is_root, *, target, chain_target
+) -> tuple[float, FlowResult]:
     ordered = _ordered_from(ordinals)
     flow = flow_container(
-        ordered, sizes, is_root=is_root, serpentine_chains=_serial_chains(ordered, edges),
+        ordered,
+        sizes,
+        is_root=is_root,
+        serpentine_chains=_serial_chains(ordered, edges),
+        target=target,
+        chain_target=chain_target,
     )
     cost = container_cost(ordered, flow.positions, edges, minimal, flow.lines_per_rank)
     return cost, flow
@@ -228,7 +244,18 @@ def _barycenter_gap(
 
 
 def _place_new(
-    cid: str, ordinals, scope, sizes, edges, minimal, is_root, budget: _Budget, rng
+    cid: str,
+    ordinals,
+    scope,
+    sizes,
+    edges,
+    minimal,
+    is_root,
+    budget: _Budget,
+    rng,
+    *,
+    target: float,
+    chain_target: float,
 ) -> None:
     """Choose rank (minimal, or minimal+1 if it pays) and a gap for ``cid``."""
     budget.check_safety()
@@ -237,7 +264,10 @@ def _place_new(
     best: tuple[float, tuple[int, str]] | None = None
     positions0: dict[str, tuple[float, float]] | None = None
     if blockers:
-        _, flow0 = _evaluate(ordinals, scope, sizes, edges, minimal, is_root)
+        _, flow0 = _evaluate(
+            ordinals, scope, sizes, edges, minimal, is_root, target=target,
+            chain_target=chain_target,
+        )
         positions0 = flow0.positions
     for rank in (rank0, rank0 + 1):
         in_rank = sorted(
@@ -264,7 +294,10 @@ def _place_new(
             key = between(lo, hi)
             trial = dict(ordinals)
             trial[cid] = (rank, key)
-            cost, _ = _evaluate(trial, scope, sizes, edges, minimal, is_root)
+            cost, _ = _evaluate(
+                trial, scope, sizes, edges, minimal, is_root, target=target,
+                chain_target=chain_target,
+            )
             budget.used += 1
             if best is None or cost < best[0]:
                 best = (cost, (rank, key))
@@ -275,7 +308,9 @@ def _place_new(
     ordinals[cid] = best[1]
 
 
-def _tidy_sweep(ordinals, scope, sizes, edges, minimal, is_root, budget, rng) -> None:
+def _tidy_sweep(
+    ordinals, scope, sizes, edges, minimal, is_root, budget, rng, *, target, chain_target
+) -> None:
     """Barycenter sweeps then greedy adjacent swaps (§4.7)."""
     ordered = _ordered_from(ordinals)
     blockers_of: dict[str, list[str]] = {}
@@ -306,7 +341,9 @@ def _tidy_sweep(ordinals, scope, sizes, edges, minimal, is_root, budget, rng) ->
             prev = between(prev, None)
             ordinals[c] = (r, prev)
     # Greedy adjacent swaps.
-    cur, _ = _evaluate(ordinals, scope, sizes, edges, minimal, is_root)
+    cur, _ = _evaluate(
+        ordinals, scope, sizes, edges, minimal, is_root, target=target, chain_target=chain_target
+    )
     improved = True
     while improved and not budget.spent():
         budget.check_safety()
@@ -318,7 +355,10 @@ def _tidy_sweep(ordinals, scope, sizes, edges, minimal, is_root, budget, rng) ->
                 a, b = rank[i], rank[i + 1]
                 trial = dict(ordinals)
                 trial[a], trial[b] = (r, ordinals[b][1]), (r, ordinals[a][1])
-                cost, _ = _evaluate(trial, scope, sizes, edges, minimal, is_root)
+                cost, _ = _evaluate(
+                    trial, scope, sizes, edges, minimal, is_root, target=target,
+                    chain_target=chain_target,
+                )
                 budget.used += 1
                 if cost < cur:
                     ordinals.update(trial)
@@ -331,35 +371,74 @@ def _tidy_sweep(ordinals, scope, sizes, edges, minimal, is_root, budget, rng) ->
                 break
 
 
-def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> ContainerResult:
+def layout_container(
+    scope: ContainerScope, *, mode: Mode, seed: int = 0, row_aspect: float = ROW_ASPECT
+) -> ContainerResult:
     is_root = scope.container_id is None
     sizes = _sizes(scope)
     edges = break_cycles(scope.children, scope.sibling_edges)
-    # ``edges`` is already acyclic — don't make ``minimal_ranks`` repeat the
-    # cycle search over the same list.
     minimal = minimal_ranks_acyclic(scope.children, edges)
+    if not is_root:
+        # Execution order is a property of the graph, not of task status or
+        # the optimizer's crossing cost. Recompute it on incremental/resize
+        # passes too, removing old slack and repairing removed dependencies.
+        ordinals: dict[str, tuple[int, str]] = {}
+        last_by_rank: dict[int, str] = {}
+        for cid in sorted(scope.children, key=lambda c: (scope.children[c].created_at, c)):
+            rank = minimal[cid]
+            key = between(last_by_rank.get(rank), None)
+            ordinals[cid] = (rank, key)
+            last_by_rank[rank] = key
+        flow = flow_container(
+            _ordered_from(ordinals), sizes, is_root=False, target=TARGET_ROW_WIDTH
+        )
+        changed = {
+            cid for cid, ordinal in ordinals.items()
+            if cid not in scope.existing or scope.existing[cid].ordinal != ordinal
+        }
+        return ContainerResult(
+            rows=_rows(scope, ordinals, flow, sizes),
+            allocated=flow.allocated,
+            changed_ordinals=changed,
+        )
+
+    # Computed ONCE per container pass: it depends only on the children's
+    # sizes, never on the candidate ordering, and ``_tidy_sweep`` evaluates
+    # thousands of candidates. ``chain_target`` deliberately stays at the
+    # floor so serpentine folding is unaffected by a widened scope (§3.1).
+    target = row_target(sizes, is_root=is_root, row_aspect=row_aspect)
+    chain_target = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
     rng = random.Random(seed)
     changed: set[str] = set()
 
     # Start from existing ordinals of children that still exist.
-    ordinals: dict[str, tuple[int, str]] = {
+    ordinals = {
         cid: scope.existing[cid].ordinal for cid in scope.children if cid in scope.existing
     }
 
     if mode == "tidy":
         ordinals = {cid: (minimal[cid], "") for cid in scope.children}
         budget = _Budget(TIDY_EVALS, TIDY_SECONDS)
-        # Seed keys by created_at so the sweep has a deterministic start.
+        # Seed keys by phase, then activity, then created_at so the sweep
+        # has a deterministic start AND finished work leads its rank, with
+        # the running band next (operator's model, decisions note OD5 Q1;
+        # §3.2). Where every sibling is one class this reduces to
+        # (created_at, id), i.e. exactly the original seed.
         for r in set(minimal.values()):
             prev = None
             for cid in sorted(
                 (c for c in scope.children if minimal[c] == r),
-                key=lambda c: (scope.children[c].created_at, c),
+                key=lambda c: tidy_seed_key(
+                    scope.children[c], scope.child_aggregates.get(c)
+                ),
             ):
                 prev = between(prev, None)
                 ordinals[cid] = (r, prev)
         if len(scope.children) <= MAX_OPTIMIZED_SIBLINGS:
-            _tidy_sweep(ordinals, scope, sizes, edges, minimal, is_root, budget, rng)
+            _tidy_sweep(
+                ordinals, scope, sizes, edges, minimal, is_root, budget, rng,
+                target=target, chain_target=chain_target,
+            )
         changed = set(scope.children)
     else:
         # Step 2: forced rank repair. A node whose old rank falls below its
@@ -396,20 +475,37 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
                         key=lambda c: ordinals[c][1],
                     )
                     if blockers:
-                        _, flow0 = _evaluate(ordinals, scope, sizes, edges, minimal, is_root)
+                        _, flow0 = _evaluate(
+                            ordinals, scope, sizes, edges, minimal, is_root,
+                            target=target, chain_target=chain_target,
+                        )
                         lo, hi = _barycenter_gap(in_rank, ordinals, flow0.positions, blockers)
                     else:
                         last = ordinals[in_rank[-1]][1] if in_rank else None
                         lo, hi = last, None
                     ordinals[cid] = (rank, between(lo, hi))
                 else:
-                    _place_new(cid, ordinals, scope, sizes, edges, minimal, is_root, budget, rng)
+                    _place_new(
+                        cid, ordinals, scope, sizes, edges, minimal, is_root, budget,
+                        rng, target=target, chain_target=chain_target,
+                    )
                 changed.add(cid)
 
     missing = set(scope.children) - set(ordinals)
     if missing:
         raise ValueError(f"unplaced children: {sorted(missing)}")
 
-    _, flow = _evaluate(ordinals, scope, sizes, edges, minimal, is_root)
+    # The project root uses its aspect-balanced target without band clamping:
+    # it has no enclosing frame, so buying width to shorten the view is useful.
+    ordered = _ordered_from(ordinals)
+    chains = _serial_chains(ordered, edges)
+    flow = flow_container(
+        ordered,
+        sizes,
+        is_root=is_root,
+        serpentine_chains=chains,
+        target=target,
+        chain_target=chain_target,
+    )
     rows = _rows(scope, ordinals, flow, sizes)
     return ContainerResult(rows=rows, allocated=flow.allocated, changed_ordinals=changed)

@@ -8,7 +8,10 @@ time.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -21,6 +24,18 @@ SRC = ROOT / "src"
 #: ``aq db import-sqlite``, for operators upgrading from a pre-PostgreSQL
 #: release.  It is scheduled for deletion — see its module docstring.
 ALLOWED = {SRC / "database" / "legacy_sqlite_import.py"}
+
+#: Modules that read *another program's* SQLite file.  AQ persists to
+#: PostgreSQL alone, but OpenCode records its tool calls -- its native question
+#: dialog included -- only in its own ``opencode.db``, which
+#: :mod:`src.sessions.native_questions` reads for question evidence and
+#: :mod:`src.sessions.opencode_store` reads for per-session liveness.  Such a
+#: reader may import the stdlib driver and name the file, nothing more, and
+#: must open it read-only (``test_foreign_store_readers_open_read_only``).
+FOREIGN_STORE_READERS = {
+    SRC / "sessions" / "native_questions.py",
+    SRC / "sessions" / "opencode_store.py",
+}
 
 #: SQLite *usage*, not the word.  Prose that explains why the backend is gone
 #: is wanted, not forbidden — the ratchet exists to stop the code coming back,
@@ -38,6 +53,10 @@ _SQLITE_USE = re.compile(
     """,
     re.VERBOSE,
 )
+#: The only SQLite use a foreign-store reader is allowed: the stdlib import and
+#: a quoted file name.  Removed from a line before ``_SQLITE_USE`` sees it, so an
+#: async driver, a SQLAlchemy URL or the deleted adapter still fails.
+_FOREIGN_STORE_READ = re.compile(r"""^\s*import\s+sqlite3\s*$|["'][\w.-]+\.db["']""")
 _DIALECT_BRANCH = re.compile(r"dialect\.name\s*[=!]=")
 
 
@@ -50,14 +69,27 @@ def test_nothing_uses_sqlite_outside_the_legacy_importer():
     for path in _python_sources():
         if path in ALLOWED:
             continue
+        foreign = path in FOREIGN_STORE_READERS
         hits = [
             f"{path.relative_to(ROOT)}:{n}"
             for n, line in enumerate(path.read_text().splitlines(), 1)
-            if _SQLITE_USE.search(line)
+            if _SQLITE_USE.search(_FOREIGN_STORE_READ.sub("", line) if foreign else line)
         ]
         if hits:
             offenders[path.name] = hits
     assert not offenders, f"SQLite crept back into src/: {offenders}"
+
+
+def test_foreign_store_readers_open_read_only():
+    """The allowance covers reading another program's file, never writing one."""
+    for path in FOREIGN_STORE_READERS:
+        assert path.is_file(), f"stale foreign-store allowance: {path.relative_to(ROOT)}"
+        text = path.read_text()
+        connects = text.count("sqlite3.connect(")
+        assert connects, f"{path.relative_to(ROOT)} no longer reads SQLite; drop its allowance"
+        assert text.count("?mode=ro") == connects, (
+            f"{path.relative_to(ROOT)} must open every foreign store with ?mode=ro"
+        )
 
 
 def test_the_sqlite_adapter_and_connection_shim_are_gone():
@@ -119,3 +151,45 @@ def test_a_non_postgres_url_is_refused_rather_than_treated_as_a_file(url):
 
     errors = AppConfig(database=DatabaseConfig(url=url)).validate()
     assert any("PostgreSQL DSN is required" in e.message for e in errors)
+
+
+def test_the_alembic_environment_has_no_sqlite_left():
+    """``migrations/env.py`` is outside ``src/`` and had its own SQLite arms.
+
+    It kept a ``sqlite+aiosqlite://`` default URL, a ``dialect.name ==
+    'sqlite'`` batch-mode branch and a StaticPool swap for months after the
+    cutover, so it gets the same ratchet the package sources get.
+    """
+    env = ROOT / "migrations" / "env.py"
+    offenders = [
+        f"env.py:{n}: {line.strip()}"
+        for n, line in enumerate(env.read_text().splitlines(), 1)
+        if _SQLITE_USE.search(line) or _DIALECT_BRANCH.search(line) or "render_as_batch" in line
+    ]
+    assert not offenders, f"SQLite crept back into the alembic env: {offenders}"
+    assert "sqlite" not in (ROOT / "alembic.ini").read_text().lower()
+
+
+def _alembic_without_a_url(*args: str) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != "AGENT_QUEUE_DB_URL"}
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("args", [("current",), ("upgrade", "head")])
+def test_alembic_with_no_url_configured_refuses_instead_of_making_a_database(args):
+    """The footgun this closes: a bare ``alembic upgrade head`` used to succeed.
+
+    With no URL set it resolved ``sqlite+aiosqlite:///~/.agent-queue/agent-queue.db``
+    and created or migrated that file, while the real PostgreSQL database sat
+    untouched.  It must now fail loudly and touch nothing.
+    """
+    result = _alembic_without_a_url(*args)
+    assert result.returncode != 0
+    assert "no database URL configured" in result.stderr + result.stdout
