@@ -171,16 +171,19 @@ def format_task_table(
             type_icon = TASK_TYPE_ICONS.get(task.task_type, "")
 
         pri_text = Text(str(task.priority), style=priority_style(task.priority))
+        readiness = _as_mapping(getattr(task, "claim_readiness", None))
 
         row = [task.id]
         if show_project:
             row.append(task.project_id)
         row.extend(
             [
-                _status_text(task.status),
+                _status_text(readiness.get("label", task.status)),
                 pri_text,
                 type_icon,
-                _truncate(task.title, 50),
+                Text(_truncate(task.title, 50) + (
+                    "\n" + readiness["reason"] if readiness.get("reason") else ""
+                )),
                 task.assigned_agent_id or "—",
             ]
         )
@@ -276,6 +279,9 @@ def format_task_detail(
 
     # Header line
     lines.append(Text(f"{status_icon} {status}", style=status_style))
+    readiness = _as_mapping(getattr(task, "claim_readiness", None))
+    if readiness and not readiness.get("claimable"):
+        lines.append(Text(f"{readiness['label']}: {readiness.get('reason', '')}", style="yellow"))
     lines.append("")
 
     # Core fields
@@ -516,7 +522,8 @@ def format_status_overview(
 
     # Task summary
     total = sum(task_counts.values())
-    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING"}
+    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING",
+                       "WAITING", "HIBERNATED", "RESUME_PENDING"}
     active = sum(v for k, v in task_counts.items() if k in active_statuses)
     completed = task_counts.get("COMPLETED", 0)
     failed = task_counts.get("FAILED", 0)
@@ -1422,8 +1429,13 @@ def format_prompt_list(data: dict) -> Table:
     return table
 
 
-def format_workspace_list(data: dict) -> Table:
-    """Format list_workspaces response as a table."""
+def format_workspace_list(data: dict) -> Table | Group:
+    """Format list_workspaces response as a table.
+
+    The Owner column shows the owner classification the daemon could prove
+    and the Checkout column the bounded probe result; a footer names a
+    partial readback, which is never evidence that a workspace is free.
+    """
     workspaces = data.get("workspaces", [])
     table = Table(
         title="Workspaces",
@@ -1436,18 +1448,49 @@ def format_workspace_list(data: dict) -> Table:
     table.add_column("Path", style="dim", ratio=1)
     table.add_column("Type", style="dim")
     table.add_column("Lock", style="dim")
+    table.add_column("Owner", style="dim")
+    table.add_column("Checkout", style="dim")
     for ws in workspaces:
         lock = ""
         if ws.get("locked_by_task_id"):
             lock = f"🔒 {ws['locked_by_task_id']}"
+        elif ws.get("locked_by_agent_id"):
+            lock = f"🔒 agent {ws['locked_by_agent_id']}"
+        owner = ws.get("owner") or {}
+        owner_text = owner.get("classification", "")
+        session = owner.get("session") or {}
+        if session.get("id"):
+            owner_text = f"{owner_text} ({session['id']})"
+        if owner.get("fence") == "mismatch":
+            owner_text += " fence≠"
+        checkout = ws.get("git_status") or ""
+        if checkout == "ok":
+            checkout = (ws.get("branch") or "") + (" *" if ws.get("dirty") else "")
         table.add_row(
             ws.get("id", ""),
             ws.get("name", "—"),
             ws.get("workspace_path", ""),
             ws.get("source_type", ""),
             lock,
+            owner_text,
+            checkout,
         )
-    return table
+    diagnostics = data.get("diagnostics")
+    if not diagnostics or diagnostics.get("complete", True):
+        return table
+    parts = [f"owner facts: {diagnostics.get('owner_facts', 'unknown')}"]
+    counts = diagnostics.get("git_status_counts") or {}
+    unfinished = {k: v for k, v in counts.items() if k in ("timeout", "not_started", "error")}
+    if unfinished:
+        parts.append(", ".join(f"{v} {k}" for k, v in sorted(unfinished.items())))
+    footer = Text()
+    footer.append(
+        f"  Partial readback ({'; '.join(parts)}) within "
+        f"{diagnostics.get('deadline_seconds', '?')}s. ",
+        style="yellow",
+    )
+    footer.append(diagnostics.get("authority", ""), style="dim")
+    return Group(table, footer)
 
 
 def format_active_tasks_all(data: dict) -> Group:

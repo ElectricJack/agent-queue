@@ -1,7 +1,7 @@
 """Simplified Discord gateway with opt-in supervisor conversations.
 
-Discord no longer owns task controls, worker input, project chat, execution
-threads, lifecycle notifications, or slash commands. Outbound escalation and
+Discord's explicit operator delete action shares the daemon command boundary.
+Worker input, execution threads and the six old slash commands remain retired. Outbound escalation and
 digest delivery live in their dedicated durable transports. Escalation replies
 and §5.3's choice buttons route first; enabled conversations pass verified input
 through the command boundary.
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentQueueBot(commands.Bot):
-    """One-channel Discord adapter with no direct work mutation surface."""
+    """One-channel Discord adapter with one explicit operator delete action."""
 
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):
         intents = discord.Intents.default()
@@ -170,6 +170,10 @@ class AgentQueueBot(commands.Bot):
         retired = unregister_retired_commands(self.tree)
         if retired:
             logger.info("Retired Discord slash commands: %s", ", ".join(retired))
+
+        from src.discord.task_delete import register_task_delete
+
+        register_task_delete(self)
 
         original_check = self.tree.interaction_check
 
