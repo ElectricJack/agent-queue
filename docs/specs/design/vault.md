@@ -18,6 +18,14 @@ tags: [design, vault, obsidian, structure]
 
 ---
 
+> **Obsolete runtime layout.** The `vault/orchestrator` tree and memory-plugin
+> ingestion described below are historical. Prime still reads project role files at
+> `projects/<id>/agent-types/<profile>/profile.md`; separate retrieval overrides live
+> at `projects/<id>/overrides/<profile>.md` and their indexer is inactive.
+> Knowledge records are database-owned and exported to Markdown. Use the
+> [current vault guide](../../concepts/configuration-and-vault.md) and
+> [system specification](../systems/configuration-and-vault.md) for seeding and watchers.
+
 ## 1. Overview
 
 The vault is a **structured, human-readable knowledge base** at `~/.agent-queue/vault/`
@@ -89,9 +97,13 @@ can browse, edit, and visualize alongside the system's own read/write operations
 │   │   └── agent-queue/
 │   │       └── ...
 │   │
-│   └── templates/                      # Templates for new profiles, playbooks
+│   └── templates/                      # Profile, playbook and generated task templates
 │       ├── profile-template.md
-│       └── playbook-template.md
+│       ├── playbook-template.md
+│       └── tasks/                      # Live generated worker instructions
+│           ├── source-ci-reopen.md
+│           ├── root-pr-check-repair.md
+│           └── ...                     # See generated-task-templates.md
 │
 ├── config.yaml                         # System configuration
 ├── .env                                # Secrets

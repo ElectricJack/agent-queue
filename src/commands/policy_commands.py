@@ -18,6 +18,9 @@ from src.policy_profiles.models import (
     PlaybookPolicy,
     PromotionPolicy,
     RoutingPreferences,
+    IntelligenceClassPolicy,
+    PoolPolicy,
+    ProjectPolicy,
     checksum,
 )
 from src.policy_profiles.service import PolicyFiles, apply_files, item
@@ -32,11 +35,18 @@ class PolicyCommandsMixin:
         return None
 
     async def _policy_files(self, project_id: str) -> PolicyFiles:
+        from src.integration.promotion_steps import read_stored_promotion_flow
+        from src.policy_profiles.integration import settings
+
         project = await self.db.get_project(project_id)
         if project is None:
             raise ValueError(f"Project {project_id!r} not found")
         workspace = await self.db.get_project_workspace_path(project_id)
-        return PolicyFiles(Path(self.config.vault_root), project, workspace)
+        integration = settings(
+            project, await read_stored_promotion_flow(self.db, project_id),
+            self.config.integration.git_first,
+        )
+        return PolicyFiles(Path(self.config.vault_root), project, workspace, integration=integration)
 
     async def _backfill_playbook_sources(self) -> dict:
         from src.playbooks.artifact_store import ArtifactStore, index_playbook_sources
@@ -56,8 +66,16 @@ class PolicyCommandsMixin:
         from src.playbooks.definition import referenced_profile_ids
         from src.playbooks.run_state import ArtifactVerificationFailed
         from src.policy_profiles.service import contained, read_profile
+        from src.portable_setup import collect_classes, pool_settings, project_settings
 
         entries = []
+        if adapter.project.hierarchical_integration_mode == "development":
+            warnings.append({
+                "item_id": "integration_settings:project:integration",
+                "playbook_id": None,
+                "message": "Skipped integration settings: development policy pins local "
+                           "task and artifact identities; configure it on the target install",
+            })
         activations = await self.db.list_playbook_activations()
         # Enabled system routines form the project's default pipeline. Project
         # activations and the bound router are also dependencies by construction.
@@ -205,6 +223,14 @@ class PolicyCommandsMixin:
                 step.get("gate", {}).pop("operator_logins", None)
             entries.append(item("flow", "project", PromotionPolicy(flow=portable_flow)))
         local = await asyncio.to_thread(adapter.read_local)
+        pool_rows = {row.id: row for row in await self.db.list_profiles() if row.lifecycle == "pool"}
+        profiles.update(pool_rows)
+        classes = await asyncio.to_thread(collect_classes, self.config.data_dir)
+        entries.extend(item(identifier, "system", IntelligenceClassPolicy(source=text))
+                       for identifier, text in classes.items())
+        entries.append(item("settings", "project", ProjectPolicy(
+            settings=await project_settings(self.db, adapter.project)
+        )))
         profiles.update(entry.name for entry in local if entry.type == "agent_settings")
         pending_profiles = sorted(profiles)
         visited_profiles = set()
@@ -222,13 +248,28 @@ class PolicyCommandsMixin:
                 # Derived class/harness rungs are generated from templates.
                 # Export the authorable ancestor, never a rung snapshot.
                 if "derived" not in parsed.frontmatter.tags:
+                    if profile_id in pool_rows:
+                        payload.pool = pool_settings(pool_rows[profile_id], path.read_text())
                     entries.append(item(profile_id, "system", payload))
+                elif profile_id in pool_rows:
+                    entries.append(item(profile_id, "system", PoolPolicy(
+                        settings=pool_settings(pool_rows[profile_id], path.read_text())
+                    )))
                 if payload.extends:
                     pending_profiles.append(payload.extends)
         # Saved drafts and actual local policy take precedence over inherited
         # defaults; one exported item per identity, never history.
-        entries.extend(local)
+        entries.extend(entry for entry in local if entry.type not in {
+            "pool", "intelligence_class", "project_settings"
+        })
+        if adapter.integration is not None:
+            entries.append(item("integration", "project", adapter.integration))
         unique = {entry.id: entry for entry in entries}
+        for entry in unique.values():
+            if isinstance(entry.payload, PolicyAgentSettings) and entry.name in pool_rows:
+                path = contained(adapter.vault, f"agent-types/{entry.name}/profile.md")
+                entry.payload.pool = pool_settings(pool_rows[entry.name], path.read_text())
+                entry.checksum = checksum(entry.payload.model_dump(mode="json"))
         return await asyncio.to_thread(
             adapter.portable, sorted(unique.values(), key=lambda entry: entry.id), name
         )
@@ -277,10 +318,15 @@ class PolicyCommandsMixin:
             if request.archive is not None
             else request.path
         )
-        bundle = request.bundle or await asyncio.to_thread(read_bundle, source)
+        if request.builtin == "default":
+            from src.policy_profiles.builtin import default_policy
+
+            bundle = await asyncio.to_thread(default_policy)
+        else:
+            bundle = request.bundle or await asyncio.to_thread(read_bundle, source)
         await asyncio.to_thread(files, bundle)
         materialized = await asyncio.to_thread(
-            adapter.materialize, bundle, request.values, require_values=applying
+            adapter.materialize, bundle, request.values, require_values=False
         )
         # A copied dependency follows the placement chosen for that playbook.
         # Skipped dependencies retain their destination-local identifiers.
@@ -321,6 +367,11 @@ class PolicyCommandsMixin:
             request.no_overwrite,
             applying=applying,
         )
+        if applying:
+            await asyncio.to_thread(
+                adapter.materialize, bundle, request.values,
+                selected_ids={row.id for row in rows if row.selected},
+            )
         if operator_grant() is not None and any(
             row.selected and (row.scope != "project" or row.type == "agent_settings")
             for row in rows
@@ -332,13 +383,21 @@ class PolicyCommandsMixin:
         if refusal := self._policy_authority():
             return refusal
         try:
-            request, adapter, bundle, _items, rows, _planned = await self._policy_import_plan(args)
+            request, adapter, bundle, items, rows, _planned = await self._policy_import_plan(args)
+            from src.policy_profiles.service import PLACEHOLDER
+
+            included = {
+                row.id for row in rows if row.scope != "skip" and row.id not in request.skip
+                and (not request.only or row.id in request.only)
+            }
+            needed = {key for entry in bundle.items if entry.id in included
+                      for key in PLACEHOLDER.findall(entry.payload.model_dump_json())}
             return {
                 "success": True,
                 "name": bundle.name,
                 "project_id": request.project_id,
                 "items": [row.model_dump(mode="json") for row in rows],
-                "placeholders": [p.model_dump() for p in bundle.placeholders],
+                "placeholders": [p.model_dump() for p in bundle.placeholders if p.name in needed],
                 "values": {
                     key: request.values.get(key, adapter.defaults().get(key, ""))
                     for key in (p.name for p in bundle.placeholders)
@@ -356,6 +415,7 @@ class PolicyCommandsMixin:
         if lock is None:
             self._policy_apply_lock = lock = asyncio.Lock()
         async with lock:
+            configured = []
             try:
                 request, adapter, _bundle, items, rows, planned = await self._policy_import_plan(
                     args, applying=True
@@ -365,12 +425,17 @@ class PolicyCommandsMixin:
                 from src.profiles.sync import sync_profile_text_to_db
 
                 global_profiles = {}
+                global_classes = {}
+                pool_paths = set()
+                pool_dependency_paths = set()
                 selected_global = {row.id for row in rows if row.selected and row.scope == "global"}
                 for entry in items:
                     if (
                         entry.id in selected_global
-                        and isinstance(entry.payload, PolicyAgentSettings)
-                        and not entry.payload.override
+                        and isinstance(entry.payload, (
+                            PolicyAgentSettings, PoolPolicy, IntelligenceClassPolicy
+                        ))
+                        and not getattr(entry.payload, "override", False)
                     ):
                         writes = planned.get(entry.id)
                         if writes is None:
@@ -378,6 +443,12 @@ class PolicyCommandsMixin:
                         for path, content in writes.items():
                             if path.name == "profile.md":
                                 global_profiles[path] = content.decode()
+                                if isinstance(entry.payload, PoolPolicy):
+                                    pool_paths.add(path)
+                                if isinstance(entry.payload, PoolPolicy) or entry.payload.pool:
+                                    pool_dependency_paths.add(path)
+                            elif path.parent.name == "intelligence-classes":
+                                global_classes[path.stem] = content.decode()
 
                 def validate_profiles():
                     def load_template(identifier):
@@ -393,17 +464,64 @@ class PolicyCommandsMixin:
                         if (
                             path.is_file()
                             and "derived" in parse_profile(path.read_text()).frontmatter.tags
+                            and path not in pool_paths
                         ):
                             raise ValueError("Edit the worker template, not a derived profile")
                         parsed = parse_profile(text)
-                        _, errors = resolve_inheritance(parsed, load_template)
+                        resolved, errors = resolve_inheritance(parsed, load_template)
                         if not parsed.is_valid or errors:
                             raise ValueError(
                                 "invalid global profile: " + "; ".join(parsed.errors + errors)
                             )
+                        class_id = resolved.config.get("default_class")
+                        if path in pool_dependency_paths and class_id:
+                            from src.policy_profiles.service import contained
+
+                            class_path = contained(adapter.vault, f"intelligence-classes/{class_id}.md")
+                            if class_id not in global_classes and not class_path.is_file():
+                                raise ValueError(f"Pool requires intelligence class {class_id!r}")
 
                 await asyncio.to_thread(validate_profiles)
+                integration_rows = [row for row in rows if row.selected
+                                    and row.scope == "project"
+                                    and row.type == "integration_settings"]
+                if len(integration_rows) > 1:
+                    raise ValueError("Select only one integration settings item per project")
+                for row in integration_rows:
+                    if row.status == "identical":
+                        continue
+                    from src.policy_profiles.integration import updates
+
+                    entry = next(entry for entry in items if entry.id == row.id)
+                    changes = updates(
+                        entry.payload, adapter.project, self.config.integration.git_first
+                    )
+                    from src.integration.promotion_steps import read_stored_promotion_flow
+
+                    target_flow = await read_stored_promotion_flow(self.db, request.project_id)
+                    local_gates = {step["id"]: step.get("gate", {}) for step in target_flow or []}
+                    for step in changes["promotion_flow"] or []:
+                        logins = local_gates.get(step["id"], {}).get("operator_logins")
+                        if logins is not None:
+                            step.setdefault("gate", {})["operator_logins"] = logins
+                    result = await self.execute("edit_project", {
+                        "project_id": request.project_id,
+                        **changes,
+                        "expected_integration_generation":
+                            adapter.project.hierarchical_integration_generation,
+                        "reason": "Import policy profile integration settings",
+                    })
+                    if result.get("outcome") != "configured":
+                        return {
+                            "success": False,
+                            "error": result.get("error") or "Integration configuration refused",
+                            "integration": result,
+                            "applied": [],
+                        }
+                    configured.append(row.id)
                 await asyncio.to_thread(apply_files, planned)
+                if global_classes:
+                    await self._reload_intelligence_classes()
                 for path, text in global_profiles.items():
                     synced = await sync_profile_text_to_db(
                         text, self.db, source_path=str(path), fallback_id=path.parent.name
@@ -415,6 +533,7 @@ class PolicyCommandsMixin:
                             + "; ".join(synced.errors),
                             "applied": list(planned),
                             "items": [row.model_dump(mode="json") for row in rows],
+                            "configured_integration": configured,
                         }
                 reviews = []
                 pending = []
@@ -423,8 +542,8 @@ class PolicyCommandsMixin:
                     if not row.selected:
                         continue
                     if (
-                        row.type in {"promotion_flow", "routing"}
-                        or row.type == "agent_settings"
+                        row.type in {"promotion_flow", "routing", "project_settings"}
+                        or row.type in {"agent_settings", "pool", "intelligence_class"}
                         and row.scope == "project"
                     ):
                         pending.append(row.id)
@@ -474,6 +593,7 @@ class PolicyCommandsMixin:
                                 "reviews": reviews,
                                 "pending_configuration": pending,
                                 "items": [item.model_dump(mode="json") for item in rows],
+                                "configured_integration": configured,
                             }
                         reviews.append({"item_id": row.id, "review_id": result["review_id"]})
                         from src.policy_profiles.models import encoded
@@ -493,7 +613,9 @@ class PolicyCommandsMixin:
                     "reviews": reviews,
                     "pending_configuration": pending,
                     "activated": False,
+                    "configured_integration": configured,
                     "items": [row.model_dump(mode="json") for row in rows],
                 }
             except (ValueError, OSError, KeyError) as exc:
-                return {"success": False, "error": str(exc)}
+                return {"success": False, "error": str(exc),
+                        "configured_integration": configured}
