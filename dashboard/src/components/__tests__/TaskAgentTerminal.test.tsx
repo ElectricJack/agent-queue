@@ -28,7 +28,7 @@ const clients: QueryClient[] = [];
 
 function Location() {
   const location = useLocation();
-  return <output aria-label="Current location">{location.pathname}{location.search}|{location.state?.agentSelection}</output>;
+  return <output aria-label="Current location">{location.pathname}{location.search}|{location.state?.agentSelection}|{location.state?.terminalFocus}</output>;
 }
 
 // The flock cache holds the whole list_agents response — the roster and the
@@ -60,7 +60,7 @@ describe("task terminal shortcut", () => {
     const button = screen.getByRole("button", { name: "Open agent terminal" });
     expect(button).toHaveAttribute("title", "Open Solar Eagle’s terminal");
     await userEvent.setup().click(button);
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=worker|replace");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=worker|replace|worker");
     expect(onOpenTerminal).toHaveBeenCalledOnce();
   });
 
@@ -83,7 +83,7 @@ describe("task terminal shortcut", () => {
       { ...worker, id: "new/worker", name: "Fable Raven", session_id: "session-2", session_state: "draining" },
     ])));
     await userEvent.setup().click(screen.getByRole("button", { name: "Open agent terminal" }));
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=new%2Fworker|replace");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=new%2Fworker|replace|new/worker");
   });
 
   it("removes the shortcut when the session ends", async () => {

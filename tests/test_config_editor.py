@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 
 import pytest
 import yaml
@@ -70,6 +71,8 @@ class TestBuildConfigSchema:
         assert props["scheduling"]["type"] == "object"
         assert props["validate_events"]["type"] == "boolean"
         assert props["env"]["type"] == "string"
+        assert "default" not in props["data_dir"]
+        assert "default" not in props["workspace_dir"]
 
     def test_nested_dataclass_resolved(self):
         schema = build_config_schema()
@@ -172,6 +175,129 @@ class TestWriteSection:
         assert "rolling_window_hours: 99" in after
         assert before != after
 
+    def test_yaml_11_boolean_words_round_trip_as_strings(self, tmp_path):
+        """``off`` is a documented merge_ci_policy value, not a boolean.
+
+        ruamel writes YAML 1.2 (where ``off`` is a plain string); every reader
+        here is PyYAML, which reads YAML 1.1 (where it is ``False``).  The
+        writer has to quote across that gap or a supported value comes back as
+        the wrong type and fails validation.
+        """
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("integration:\n  merge_ci_policy: required\n")
+
+        for value in ("off", "on", "yes", "no", "true", "false", "null"):
+            write_section(str(cfg), "integration", {"merge_ci_policy": value})
+            assert read_raw_config(str(cfg))["integration"]["merge_ci_policy"] == value
+
+    def test_number_like_strings_round_trip_as_strings(self, tmp_path):
+        """The YAML 1.1 gap is wider than the boolean words."""
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("integration: {}\n")
+
+        # Sexagesimal int, octal int, and the empty string all resolve to
+        # non-strings for a PyYAML reader when written bare.
+        for value in ("1:30", "012", "0x1f", ""):
+            write_section(str(cfg), "integration", {"merge_ci_policy": value})
+            assert read_raw_config(str(cfg))["integration"]["merge_ci_policy"] == value
+
+    def test_quoting_reaches_nested_values_and_keys(self, tmp_path):
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("existing: keep\n")
+        write_section(
+            str(cfg),
+            "pricing",
+            {"models": {"no": {"policy": "off"}}, "tiers": ["on", "keep"]},
+        )
+
+        raw = read_raw_config(str(cfg))["pricing"]
+        assert raw == {"models": {"no": {"policy": "off"}}, "tiers": ["on", "keep"]}
+        # Unambiguous strings are left bare — no gratuitous requoting.
+        assert "- keep" in cfg.read_text()
+
+    def test_genuine_booleans_are_not_stringified(self, tmp_path):
+        """Only strings get quoted; real bools/ints keep their type."""
+        from src.config_editor import read_raw_config, write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("existing: keep\n")
+        write_section(str(cfg), "memory", {"enabled": False, "top_k": 5, "ratio": 0.5})
+
+        assert read_raw_config(str(cfg))["memory"] == {
+            "enabled": False,
+            "top_k": 5,
+            "ratio": 0.5,
+        }
+
+    def test_untouched_sections_keep_their_bare_words(self, tmp_path):
+        """Quoting applies to what the caller writes, not to the whole file."""
+        from src.config_editor import write_section
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("integration:\n  merge_ci_policy: off\nscheduling:\n  hours: 12\n")
+        write_section(str(cfg), "scheduling", {"hours": 24})
+
+        assert "merge_ci_policy: off\n" in cfg.read_text()
+
+
+class TestUpdateSectionKeys:
+    def test_sets_and_removes_keys_leaving_the_rest_as_written(self, tmp_path):
+        from src.config_editor import update_section_keys
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "# top comment\n"
+            "discord:\n"
+            "  bot_token: ${MY_TOKEN}  # a reference\n"
+            "  channels:\n"
+            "    channel: aq-control\n"
+            "  guild_id: '1'\n"
+            "  conversation: {enabled: off}\n"
+        )
+        update_section_keys(
+            str(cfg),
+            "discord",
+            set_values={"channel_id": "1234567890123456789", "authorized_users": []},
+            remove=["channels", "absent"],
+        )
+
+        text = cfg.read_text()
+        assert "bot_token: ${MY_TOKEN}  # a reference\n" in text
+        assert "# top comment" in text
+        assert "conversation: {enabled: off}" in text
+        assert text.index("guild_id") < text.index("channel_id")  # appended
+        section = yaml.safe_load(text)["discord"]
+        assert "channels" not in section
+        assert section["channel_id"] == "1234567890123456789"  # stays a string
+        assert section["authorized_users"] == []
+
+    def test_creates_the_section_when_absent(self, tmp_path):
+        from src.config_editor import update_section_keys
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("scheduling:\n  hours: 12\n")
+        update_section_keys(str(cfg), "discord", set_values={"project_id": "p"})
+
+        assert yaml.safe_load(cfg.read_text()) == {
+            "scheduling": {"hours": 12},
+            "discord": {"project_id": "p"},
+        }
+
+    def test_refuses_a_section_that_is_not_a_mapping(self, tmp_path):
+        from src.config_editor import update_section_keys
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("discord: off\n")
+        with pytest.raises(ValueError):
+            update_section_keys(str(cfg), "discord", set_values={"project_id": "p"})
+        assert cfg.read_text() == "discord: off\n"
+
 
 class TestGetConfigCommand:
     """End-to-end tests for the _cmd_get_config handler via CommandHandler."""
@@ -207,6 +333,19 @@ class TestGetConfigCommand:
         assert result["config"]["discord"]["bot_token"] == "${MY_TOKEN}"
         assert "scheduling" in result["hot_reloadable"]
         assert "discord" in result["restart_required"]
+
+    @pytest.mark.asyncio
+    async def test_config_exposes_install_tracking_defaults_and_deployment_history(self, handler_with_config):
+        from src.install.deploy_history import record_deploy
+
+        handler, _ = handler_with_config
+        record_deploy(Path(handler.config.data_dir), "rolled_back", branch="dev", target="b" * 40,
+                      message="Previous version restored", automatic=True)
+        result = await handler.execute("get_config", {"section": "deploy"})
+        assert result["config"]["deploy"]["track_branch"] is None
+        assert result["config"]["deploy"]["poll_interval_seconds"] == 300
+        assert result["deployment_history"][-1]["outcome"] == "rolled_back"
+        assert result["deployment_history"][-1]["branch"] == "dev"
 
     @pytest.mark.asyncio
     async def test_section_filter(self, handler_with_config):
@@ -306,7 +445,6 @@ class TestUpdateConfigCommand:
         from src.commands.handler import CommandHandler
         from src.config import AppConfig
 
-        db_path = tmp_path / "test.db"
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(
             "discord:\n"
@@ -314,7 +452,7 @@ class TestUpdateConfigCommand:
             "  guild_id: '1'\n"
             "scheduling:\n"
             "  rolling_window_hours: 12\n"
-            f"database_path: {db_path}\n"
+            "database:\n  url: postgresql+asyncpg://localhost/aq_test\n"
         )
         config = AppConfig(data_dir=str(tmp_path / "data"))
         config._config_path = str(cfg_path)
@@ -470,6 +608,152 @@ class TestUpdateConfigCommand:
         )
         assert result["changed"] is True
         assert "scheduling" not in cfg_path.read_text()
+
+
+class TestConfigSecretRedactionRoundTrip:
+    """get_config hides literal credentials; update_config puts them back.
+
+    Everything here is a throwaway ``tmp_path`` config with obvious fake
+    credentials — the operator's config is never read or written.
+    """
+
+    FAKE_TOKEN = "fake-literal-bot-token"
+    FAKE_DSN = "postgresql+asyncpg://aq_user:fake-db-password@db.internal:5432/agent_queue"
+
+    @pytest.fixture
+    def handler_with_config(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.commands.handler import CommandHandler
+        from src.config import AppConfig
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            yaml.safe_dump(
+                {
+                    "discord": {"bot_token": self.FAKE_TOKEN, "guild_id": "1"},
+                    "database": {"url": self.FAKE_DSN},
+                    "scheduling": {"rolling_window_hours": 12},
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = AppConfig(data_dir=str(tmp_path / "data"))
+        config._config_path = str(cfg_path)
+        watcher = MagicMock()
+        watcher.reload = AsyncMock(return_value={"applied": ["scheduling"]})
+        orch = MagicMock()
+        orch.config = config
+        orch._config_watcher = watcher
+        return CommandHandler(orch, config), cfg_path, watcher
+
+    @pytest.mark.asyncio
+    async def test_get_config_never_returns_a_literal_credential(self, handler_with_config):
+        from src.config_secrets import SECRET_PLACEHOLDER
+
+        handler, _, _ = handler_with_config
+        result = await handler.execute("get_config", {})
+
+        serialized = repr(result)
+        assert self.FAKE_TOKEN not in serialized
+        assert "fake-db-password" not in serialized
+        assert result["config"]["discord"]["bot_token"] == SECRET_PLACEHOLDER
+        assert result["config"]["database"]["url"] == (
+            f"postgresql+asyncpg://aq_user:{SECRET_PLACEHOLDER}@db.internal:5432/agent_queue"
+        )
+        assert sorted(result["redacted"]) == ["database.url", "discord.bot_token"]
+        assert result["secret_placeholder"] == SECRET_PLACEHOLDER
+        # Non-secret settings are untouched.
+        assert result["config"]["scheduling"]["rolling_window_hours"] == 12
+        assert result["config"]["discord"]["guild_id"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_section_read_reports_only_that_section(self, handler_with_config):
+        handler, _, _ = handler_with_config
+        result = await handler.execute("get_config", {"section": "database"})
+        assert result["redacted"] == ["database.url"]
+
+    @pytest.mark.asyncio
+    async def test_saving_an_unrelated_field_keeps_the_stored_secret(self, handler_with_config):
+        """The bug this guards: a redacted read + whole-section write."""
+        handler, cfg_path, _ = handler_with_config
+        read = await handler.execute("get_config", {"section": "discord"})
+        section = read["config"]["discord"]
+        section["guild_id"] = "999"  # the operator's actual edit
+
+        result = await handler.execute("update_config", {"section": "discord", "data": section})
+
+        assert result["changed"] is True
+        assert not result["validation_errors"]
+        on_disk = yaml.safe_load(cfg_path.read_text())
+        assert on_disk["discord"]["bot_token"] == self.FAKE_TOKEN
+        assert on_disk["discord"]["guild_id"] == "999"
+        assert read["secret_placeholder"] not in cfg_path.read_text()
+
+    @pytest.mark.asyncio
+    async def test_saving_a_redacted_dsn_keeps_the_stored_password(self, handler_with_config):
+        handler, cfg_path, _ = handler_with_config
+        read = await handler.execute("get_config", {"section": "database"})
+        section = read["config"]["database"]
+        section["url"] = section["url"].replace("agent_queue", "agent_queue_two")
+
+        result = await handler.execute("update_config", {"section": "database", "data": section})
+
+        assert result["changed"] is True
+        on_disk = yaml.safe_load(cfg_path.read_text())
+        assert on_disk["database"]["url"] == (
+            "postgresql+asyncpg://aq_user:fake-db-password@db.internal:5432/agent_queue_two"
+        )
+
+    @pytest.mark.asyncio
+    async def test_deliberate_credential_change_is_written(self, handler_with_config):
+        handler, cfg_path, _ = handler_with_config
+        result = await handler.execute(
+            "update_config",
+            {"section": "discord", "data": {"bot_token": "fake-rotated-token", "guild_id": "1"}},
+        )
+        assert result["changed"] is True
+        on_disk = yaml.safe_load(cfg_path.read_text())
+        assert on_disk["discord"]["bot_token"] == "fake-rotated-token"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_placeholder_is_refused_and_writes_nothing(
+        self, handler_with_config
+    ):
+        from src.config_secrets import SECRET_PLACEHOLDER
+
+        handler, cfg_path, watcher = handler_with_config
+        before = cfg_path.read_bytes()
+
+        result = await handler.execute(
+            "update_config",
+            {
+                "section": "discord",
+                # A renamed key carrying the sentinel: there is nothing stored
+                # at that path to restore, so the save is refused.
+                "data": {"bot_token_renamed": SECRET_PLACEHOLDER, "guild_id": "1"},
+            },
+        )
+
+        assert result["applied"] is False
+        assert result["changed"] is False
+        assert "bot_token_renamed" in result["validation_errors"][0]
+        assert cfg_path.read_bytes() == before
+        watcher.reload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_env_reference_still_round_trips(self, handler_with_config, monkeypatch):
+        handler, cfg_path, _ = handler_with_config
+        monkeypatch.setenv("FAKE_TOKEN_VAR", "resolved-not-written")
+        await handler.execute(
+            "update_config",
+            {"section": "discord", "data": {"bot_token": "${FAKE_TOKEN_VAR}", "guild_id": "1"}},
+        )
+
+        read = await handler.execute("get_config", {"section": "discord"})
+        assert read["config"]["discord"]["bot_token"] == "${FAKE_TOKEN_VAR}"
+        assert read["redacted"] == []
+        assert "resolved-not-written" not in cfg_path.read_text()
 
 
 class TestCliDottedSet:

@@ -26,7 +26,7 @@ import subprocess
 import pytest
 
 from src.runtimes.base import Runtime
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.git.manager import GitManager
 from src.models import (
     Agent,
@@ -41,6 +41,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from tests.git_mock_helpers import stub_repo_root_identity
+from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +196,7 @@ async def orch(tmp_path):
     """
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
     )
     config.worktrees.enabled = False
@@ -276,6 +277,8 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
@@ -449,7 +452,7 @@ class TestGitMutexSerialization:
         """_resolve_git_lock maps a slot path to its base workspace's mutex."""
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
-            database_path=str(tmp_path / "test.db"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
             workspace_dir=str(tmp_path / "workspaces"),
         )
         o = Orchestrator(config, runtimes=MockAdapterFactory())
@@ -766,6 +769,8 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
@@ -1229,6 +1234,8 @@ class TestGitMutexRegistration:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
@@ -1294,6 +1301,8 @@ class TestGitMutexRegistration:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(

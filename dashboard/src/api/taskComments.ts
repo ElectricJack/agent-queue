@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { taskComment, taskCommentDelete, taskCommentEdit, taskComments } from "./client";
 
 export const COMMENT_PAGE_SIZE = 50;
@@ -7,13 +7,17 @@ export const COMMENT_MAX_LENGTH = 16_000;
 export const commentMutationKey = (taskId: string) => ["taskComment", taskId];
 const draftKey = (taskId: string) => ["taskCommentDraft", taskId];
 
+export const taskCommentsQuery = (taskId: string, offset: number) => queryOptions({
+  // Existing task.updated invalidation refreshes every loaded comment page.
+  queryKey: ["task", taskId, "comments", offset],
+  queryFn: async () => (await taskComments({
+    body: { task_id: taskId, limit: COMMENT_PAGE_SIZE, offset }, throwOnError: true,
+  })).data,
+});
+
 export function useTaskComments(taskId: string, offset: number) {
   return useQuery({
-    // Existing task.updated invalidation refreshes every loaded comment page.
-    queryKey: ["task", taskId, "comments", offset],
-    queryFn: async () => (await taskComments({
-      body: { task_id: taskId, limit: COMMENT_PAGE_SIZE, offset }, throwOnError: true,
-    })).data,
+    ...taskCommentsQuery(taskId, offset),
     enabled: !!taskId,
     refetchInterval: 60_000,
   });

@@ -1,0 +1,100 @@
+{
+  "reviewed_commit": "e44fce88d4d277e048f0e64f593412d757d37f39",
+  "note": "Read-only snapshot. Status blocker entries are not independent failures or measured time costs.",
+  "projects": [
+    {
+      "project_id": "agent-queue",
+      "effective_mode": "train",
+      "generation": 11,
+      "active_batch": {
+        "id": "integration-batch-2c484c0890ebecbbf98b0b12fd5469ff",
+        "repository_id": "agent-queue2",
+        "request_id": "integration-sweep:agent-queue:53",
+        "trigger": "periodic",
+        "state": "human_blocked",
+        "revision": 0,
+        "base_sha": "6d2b07db0ea59aae1c2230091c6863b5d178da78",
+        "integration_branch": "refs/heads/aq/integration/p-aeacda21cbc3fe134dede52ddb8a7a63/r-23902b8d33d997d489c44edb309aa723",
+        "tested_candidate_sha": null,
+        "ci_evidence_id": null,
+        "final_main_sha": null,
+        "cleanup_state": "pending",
+        "revision_state": "constructing",
+        "candidate_sha": "9e8f06509b4af43ca9ba5a28a23adaf1c3a33b4d"
+      },
+      "repair": [
+        {
+          "id": "repair-batch-integration-batch-2c484c0890ebecbbf98b0b12fd5469ff",
+          "target_kind": "batch",
+          "batch_id": "integration-batch-2c484c0890ebecbbf98b0b12fd5469ff",
+          "parent_task_id": null,
+          "active_stage": 1,
+          "state": "human_required",
+          "stages": [
+            {
+              "ordinal": 0,
+              "state": "expired",
+              "attempts": 0,
+              "deadline_at": 1788948596.7366614,
+              "started_at": 1788946796.7366614,
+              "intelligence_class": "standard-medium",
+              "profile_id": "standard-medium-claude",
+              "policy": {
+                "primary_seconds": 1800,
+                "primary_attempts": 3,
+                "debug_seconds": 3600,
+                "debug_attempts": 3,
+                "debug_intelligence_class": "deep-high",
+                "debug_profile_id": "deep-high-claude"
+              }
+            },
+            {
+              "ordinal": 1,
+              "state": "expired",
+              "attempts": 0,
+              "deadline_at": 1788956590.2194242,
+              "started_at": 1788952990.2194242,
+              "intelligence_class": "deep-high",
+              "profile_id": "deep-high-claude",
+              "policy": {
+                "primary_seconds": 1800,
+                "primary_attempts": 3,
+                "debug_seconds": 3600,
+                "debug_attempts": 3,
+                "debug_intelligence_class": "deep-high",
+                "debug_profile_id": "deep-high-claude"
+              }
+            }
+          ]
+        }
+      ],
+      "reconciliation": {
+        "pending": false
+      },
+      "cleanup_pending": [],
+      "blocker_counts": {
+        "active_owner": 191,
+        "human_hold": 3,
+        "missing_receipt": 16,
+        "open_child": 2,
+        "pending_ci": 1,
+        "stale_review": 6
+      }
+    },
+    {
+      "project_id": "matter-engine-cpp",
+      "effective_mode": "train",
+      "generation": 6,
+      "active_batch": null,
+      "repair": [],
+      "reconciliation": {
+        "pending": false
+      },
+      "cleanup_pending": [],
+      "blocker_counts": {
+        "active_owner": 20,
+        "open_child": 11
+      }
+    }
+  ]
+}

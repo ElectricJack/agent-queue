@@ -11,13 +11,16 @@ placeholder names.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import src.doctor  # noqa: F401 -- side effect: populates sys.modules
-from src.doctor.models import Severity
+from src.doctor.models import DoctorContext, Severity
 from src.models import (
     Agent,
     AgentProfile,
@@ -29,6 +32,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from tests.db_fixtures import seed_task_session_attempt
 
 # ``src/doctor/__init__.py`` does ``from src.doctor.pool_checks import
 # pool_checks`` (the factory function) to build ``default_registry()`` --
@@ -46,15 +50,11 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", lifecycle="pool"))
     yield database
-    await database.close()
 
 
 def test_check_names():
@@ -66,9 +66,292 @@ def test_check_names():
         "pools.orphan_agents",
         "pools.preparing_stuck",
         "pools.disabled",
+        "pools.task_lifecycle_shadow",
         "claims.holder_consistency",
+        "pools.global_bounds_migration",
+        "pools.floor_exceeds_max",
+        "pools.placement_starved",
+        "pools.session_awaiting_input",
+        "agents.dangling_current_task",
+        "claims.container_held",
     }
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
+
+
+async def test_stranded_branch_doctor_fetches_with_recorded_repository(
+    monkeypatch, tmp_path
+):
+    project = SimpleNamespace(id="proj", repo_url="https://github.com/acme/widgets.git")
+    git = SimpleNamespace(
+        bind_github_repository=AsyncMock(return_value=object()),
+        afetch_origin=AsyncMock(),
+        alist_remote_branches=AsyncMock(return_value=set()),
+    )
+    monkeypatch.setattr(pool_checks, "GitManager", lambda _access: git)
+    monkeypatch.setattr(
+        pool_checks, "_project_checkouts",
+        AsyncMock(return_value=[("proj", str(tmp_path), "main")]),
+    )
+    ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            integration=SimpleNamespace(github_app=None)
+        ),
+        db=SimpleNamespace(get_project=AsyncMock(return_value=project)),
+    )
+
+    assert await pool_checks._find_stranded_feature_branches(ctx) == {
+        "stranded": [], "stale": [], "unknown": 0
+    }
+    git.afetch_origin.assert_awaited_once_with(
+        str(tmp_path), repository_url=project.repo_url, all_heads=True
+    )
+
+
+async def test_doctor_default_branch_discovery_uses_recorded_repository(
+    monkeypatch, tmp_path
+):
+    project = SimpleNamespace(
+        id="proj", repo_url="https://github.com/acme/widgets.git",
+        repo_default_branch=None,
+    )
+    git = SimpleNamespace(aget_default_branch=AsyncMock(return_value="trunk"))
+    monkeypatch.setattr(pool_checks, "GitManager", lambda _access: git)
+    ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            integration=SimpleNamespace(github_app=None)
+        ),
+        db=SimpleNamespace(
+            list_projects=AsyncMock(return_value=[project]),
+            get_project_workspace_path=AsyncMock(return_value=str(tmp_path)),
+        ),
+    )
+
+    assert await pool_checks._project_checkouts(ctx) == [
+        ("proj", str(tmp_path), "trunk")
+    ]
+    git.aget_default_branch.assert_awaited_once_with(
+        str(tmp_path), repository_url=project.repo_url
+    )
+
+
+@pytest.mark.parametrize("elapsed", [0.0, 2.1, 2.7])
+async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(
+    db, monkeypatch, elapsed
+):
+    """Claimed workers and a pane that is still changing are not findings."""
+    from src.sessions.harness_parser import Harness
+    from src.sessions.harness_registry import HarnessRegistry
+    from src.sessions.input_prompts import InputPromptSignature
+    from src.sessions.provider import Cap
+
+    now = time.time()
+    await db.create_task(
+        Task(
+            id="ready", project_id=PROJECT_ID, title="ready", description="",
+            status=TaskStatus.READY, profile_id="worker", route_source="legacy",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="claimed", project_id=PROJECT_ID, title="claimed", description="",
+            status=TaskStatus.IN_PROGRESS, profile_id="worker", route_source="legacy",
+        )
+    )
+    for session_id, task_id, last_activity in (
+        ("blocked", None, now - 600),
+        ("changing", None, now - 10),
+        ("working", "claimed", now - 600),
+    ):
+        await db.create_session(
+            SessionRecord(
+                id=session_id,
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                harness="codex",
+                provider="fake",
+                name=f"p-worker--proj--{session_id}",
+                lifecycle="pool",
+                work_dir=f"/tmp/{session_id}",
+                epoch="test",
+                instance_token=f"token-{session_id}",
+                started_at=now - 1_000,
+                last_activity=last_activity,
+                state="running",
+                task_id=task_id,
+            )
+        )
+
+    harnesses = HarnessRegistry()
+    harnesses.upsert(
+        Harness(
+            id="codex",
+            command="codex",
+            input_prompts=(
+                InputPromptSignature(
+                    name="model-upgrade-menu",
+                    pattern="Try new model.*Use existing model",
+                    is_regex=True,
+                ),
+            ),
+        )
+    )
+    provider = SimpleNamespace(
+        supports=lambda capability: capability is Cap.PEEK,
+        peek=AsyncMock(return_value="Try new model\nUse existing model\n"),
+    )
+    config = SimpleNamespace(
+        swarm=SimpleNamespace(prepare_timeout=60, claim_wait_max=60)
+    )
+    handler = SimpleNamespace(
+        orchestrator=SimpleNamespace(
+            harness_registry=harnesses,
+            session_providers=SimpleNamespace(create=lambda *_args: provider),
+        )
+    )
+
+    # Control only the doctor's clock: database setup may take arbitrary time,
+    # while the recent, claimed and stalled sessions must keep their meanings.
+    monkeypatch.setattr(pool_checks, "time", SimpleNamespace(time=lambda: now + elapsed))
+    unchanged_seconds = round(600 + elapsed, 1)
+    finding = await pool_checks.run_check(
+        db,
+        "pools.session_awaiting_input",
+        config=config,
+        handler=handler,
+    )
+
+    assert finding.severity is Severity.WARN
+    assert finding.data == {
+        "count": 1,
+        "sessions": [
+            {
+                "session_id": "blocked",
+                "name": "p-worker--proj--blocked",
+                "project_id": PROJECT_ID,
+                "profile_id": "worker",
+                "harness": "codex",
+                "signature": "model-upgrade-menu",
+                "unchanged_seconds": unchanged_seconds,
+                "ready_tasks": 1,
+            }
+        ],
+    }
+    assert f"unchanged {unchanged_seconds:.0f}s, 1 READY" in finding.detail
+    provider.peek.assert_awaited_once()
+
+
+async def test_session_awaiting_input_is_info_without_live_pane_runtime(db):
+    finding = await pool_checks.run_check(
+        db,
+        "pools.session_awaiting_input",
+        config=SimpleNamespace(swarm=SimpleNamespace()),
+    )
+
+    assert finding.severity is Severity.INFO
+    assert "panes not inspected" in finding.detail
+
+
+async def test_task_lifecycle_shadow_reports_duplicate_profiles_and_active_tasks(db):
+    await db.update_profile("worker", harness="codex", default_class="deep-high")
+    await db.create_profile(
+        AgentProfile(
+            id="legacy-deep-codex", name="legacy", lifecycle="task", harness="codex",
+            default_class="deep-high",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="shadowed", project_id=PROJECT_ID, title="shadowed", description="",
+            status=TaskStatus.READY, profile_id="legacy-deep-codex", route_source="legacy",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="missing", project_id=PROJECT_ID, title="missing", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+
+    assert finding.severity is Severity.WARN
+    assert finding.data["profiles"] == [{
+        "profile_id": "legacy-deep-codex", "harness": "codex", "default_class": "deep-high",
+        "pool_profile_ids": ["worker"],
+    }]
+    assert {task["task_id"] for task in finding.data["tasks"]} == {"shadowed", "missing"}
+
+
+async def test_task_lifecycle_shadow_ignores_the_shipped_role_profiles(db):
+    """A fresh install runs every stage at some class a pool also runs at.
+
+    ``aq install`` makes every active rung a pool, so ``reviewer`` (claude,
+    standard-high), ``spec-ingest`` and ``supervisor`` (claude, deep-high),
+    ``triage`` (claude, fast-low) and ``pr-merger`` (codex, deep-high) all
+    share a harness/class with a pool.  None of them is a worker route: they
+    are single-purpose stages, and the check must stay clean on a box that
+    has changed nothing.
+    """
+    await db.update_profile("worker", harness="claude", default_class="standard-high")
+    for pool_id, harness, default_class in (
+        ("deep-high-claude", "claude", "deep-high"),
+        ("fast-low-claude", "claude", "fast-low"),
+        ("deep-high-codex", "codex", "deep-high"),
+    ):
+        await db.create_profile(
+            AgentProfile(
+                id=pool_id, name=pool_id, lifecycle="pool", harness=harness,
+                default_class=default_class,
+            )
+        )
+    shipped = (
+        ("reviewer", "claude", "standard-high", "task", True),
+        ("final-reviewer", "claude", "standard-high", "task", True),
+        ("spec-ingest", "claude", "deep-high", "task", False),
+        ("playbook-compiler", "claude", "fast-low", "task", False),
+        ("triage", "claude", "fast-low", "task", False),
+        ("pr-merger", "codex", "deep-high", "task", False),
+        ("supervisor", "claude", "deep-high", "named", False),
+    )
+    for profile_id, harness, default_class, lifecycle, read_only in shipped:
+        await db.create_profile(
+            AgentProfile(
+                id=profile_id, name=profile_id, lifecycle=lifecycle, harness=harness,
+                default_class=default_class, read_only=read_only,
+            )
+        )
+
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+
+    assert finding.severity is Severity.OK, finding.data
+    assert finding.data["profiles"] == []
+
+
+async def test_task_lifecycle_shadow_reports_only_a_writable_worker_copy(db):
+    """The case the check exists for: a hand-authored generic worker at a pool's route.
+
+    An operator's own read-only profile at the same route is a role, not a
+    worker, exactly like the shipped reviewer; the writable task-lifecycle
+    copy is the one that starts unpooled sessions on the pool's route.
+    """
+    await db.update_profile("worker", harness="claude", default_class="standard-high")
+    await db.create_profile(
+        AgentProfile(
+            id="auditor", name="auditor", lifecycle="task", harness="claude",
+            default_class="standard-high", read_only=True,
+        )
+    )
+    await db.create_profile(
+        AgentProfile(
+            id="house-worker", name="house", lifecycle="task", harness="claude",
+            default_class="standard-high",
+        )
+    )
+
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+
+    assert finding.severity is Severity.WARN
+    assert [row["profile_id"] for row in finding.data["profiles"]] == ["house-worker"]
 
 
 async def _stale_agent(db, agent_id, **kw):
@@ -434,3 +717,520 @@ async def test_pools_disabled_ok_when_flag_on(db):
     cfg.swarm.enabled = True
     finding = await pool_checks.run_check(db, "pools.disabled", config=cfg)
     assert finding.severity is Severity.OK
+
+
+# ---------------------------------------------------------------------------
+# pools.global_bounds_migration
+# ---------------------------------------------------------------------------
+
+
+async def _rescoped(db, profile_id, *, eligible, max_active):
+    """Write the audit row ``_announce_bounds_rescoped`` writes at upgrade."""
+    await db.log_event(
+        "pool.bounds_rescoped",
+        payload=json.dumps(
+            {
+                "profile_id": profile_id,
+                "eligible_projects": eligible,
+                "effective_max_active": max_active,
+                "effective_min_active": 0,
+                "previous_effective_max_active": (
+                    None if max_active is None else max_active * eligible
+                ),
+                "previous_effective_min_active": 0,
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+async def test_bounds_migration_reports_the_lost_ceiling(db):
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=5, max_active=4)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.INFO
+    assert finding.data["count"] == 1
+    entry = finding.data["profiles"][0]
+    assert entry["previous_effective_max_active"] == 20
+    assert entry["effective_max_active"] == 4
+    assert entry["suggested_max_active"] == 20
+    assert entry["command"] == "aq pool scale --profile-id worker --max 20"
+
+
+async def test_bounds_migration_self_resolves_once_max_active_changes(db):
+    """Re-scaling the pool *is* the acknowledgement — whichever way it went."""
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=5, max_active=4)
+    await db.update_profile("worker", max_active=6)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+    assert finding.data["count"] == 0
+
+
+async def test_bounds_migration_reads_the_oldest_record_not_the_newest(db):
+    """A restart re-announces; the notice must not reset with it.
+
+    ``_announce_bounds_rescoped`` runs once per daemon lifetime, so a box that
+    reboots after the operator has re-scaled writes a *second* row carrying
+    the new ceiling.  Reading the newest row would compare the new ceiling
+    against itself and start nagging again forever.
+    """
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=5, max_active=4)
+    await db.update_profile("worker", max_active=20)
+    await _rescoped(db, "worker", eligible=5, max_active=20)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_silent_for_a_single_project_install(db):
+    """One eligible project: per-project and fleet-wide bounds meant the same."""
+    await db.update_profile("worker", max_active=4)
+    await _rescoped(db, "worker", eligible=1, max_active=4)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_silent_without_an_upgrade_record(db):
+    """No reconcile tick has ever run — there is nothing to say."""
+    await db.update_profile("worker", max_active=4)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_ignores_an_unbounded_pool(db):
+    await _rescoped(db, "worker", eligible=5, max_active=None)
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+async def test_bounds_migration_survives_a_junk_payload(db):
+    """Doctor reporting nothing beats doctor raising on a hand-written row."""
+    await db.log_event("pool.bounds_rescoped", payload="not json")
+    finding = await pool_checks.run_check(db, "pools.global_bounds_migration")
+    assert finding.severity is Severity.OK
+
+
+def test_bounds_migration_has_no_fix():
+    """§4: choosing a fleet size is an operator decision, explicitly."""
+    check = next(c for c in pool_checks.CHECKS if c.id == "pools.global_bounds_migration")
+    assert check.fix is None
+
+
+# ---------------------------------------------------------------------------
+# pools.floor_exceeds_max
+# ---------------------------------------------------------------------------
+
+
+async def test_floor_exceeds_max_names_the_numbers_and_the_projects(db):
+    await db.create_project(Project(id="second", name="second"))
+    await db.create_project(Project(id="third", name="third"))
+    await db.update_profile("worker", min_active=1, max_active=2, min_per_project=1)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.WARN
+    assert finding.data["count"] == 1
+    entry = finding.data["profiles"][0]
+    assert entry["effective_min_active"] == 3
+    assert entry["max_active"] == 2
+    assert entry["projects"] == ["proj", "second", "third"]
+    assert "worker" in finding.detail and "min_per_project 1" in finding.detail
+
+
+async def test_floor_exceeds_max_ok_when_the_ceiling_funds_it(db):
+    await db.create_project(Project(id="second", name="second"))
+    await db.update_profile("worker", min_active=1, max_active=4, min_per_project=1)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.OK
+
+
+async def test_floor_exceeds_max_counts_only_active_projects(db):
+    """Eligibility matches ``_measure_pools``: ACTIVE projects, nothing else."""
+    from src.models import ProjectStatus
+
+    await db.create_project(Project(id="second", name="second"))
+    await db.create_project(Project(id="paused", name="paused"))
+    await db.update_project("paused", status=ProjectStatus.PAUSED)
+    await db.update_profile("worker", max_active=2, min_per_project=1)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.OK
+
+
+async def test_floor_exceeds_max_catches_a_bare_min_active(db):
+    """``min_per_project`` is not required — ``min_active`` alone can overshoot."""
+    await db.update_profile("worker", min_active=5, max_active=2)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.WARN
+    assert finding.data["profiles"][0]["effective_min_active"] == 5
+
+
+async def test_floor_exceeds_max_ignores_an_unbounded_pool(db):
+    await db.update_profile("worker", min_active=9, max_active=None, min_per_project=3)
+    finding = await pool_checks.run_check(db, "pools.floor_exceeds_max")
+    assert finding.severity is Severity.OK
+
+
+def test_floor_exceeds_max_has_no_fix():
+    check = next(c for c in pool_checks.CHECKS if c.id == "pools.floor_exceeds_max")
+    assert check.fix is None
+
+
+# ---------------------------------------------------------------------------
+# pools.placement_starved
+# ---------------------------------------------------------------------------
+
+
+class _FakeHandler:
+    """The one thing the check reaches for: ``handler.orchestrator``."""
+
+    def __init__(self, orchestrator):
+        self.orchestrator = orchestrator
+
+
+class _FakeOrchestrator:
+    def __init__(self, state, observing_since):
+        self._pool_starvation_state = state
+        self._pool_starvation_observing_since = observing_since
+
+
+def _starving(db, state, observing_since):
+    return pool_checks.run_check(
+        db,
+        "pools.placement_starved",
+        handler=_FakeHandler(_FakeOrchestrator(state, observing_since)),
+    )
+
+
+async def test_placement_starved_warns_past_five_minutes_with_reasons(db):
+    now = time.time()
+    state = {
+        "worker": {
+            "since": now - 900,
+            "wanted": 2,
+            "reasons": {"proj": "no_workspace", "second": "quarantined"},
+        }
+    }
+    finding = await _starving(db, state, now - 3600)
+    assert finding.severity is Severity.WARN
+    assert finding.data["count"] == 1
+    entry = finding.data["profiles"][0]
+    assert entry["wanted"] == 2
+    assert entry["reasons"] == {"proj": "no_workspace", "second": "quarantined"}
+    assert "proj: no_workspace" in finding.detail
+    assert "second: quarantined" in finding.detail
+
+
+async def test_placement_starved_ok_below_the_threshold(db):
+    now = time.time()
+    state = {"worker": {"since": now - 30, "wanted": 1, "reasons": {"proj": "at_cap"}}}
+    finding = await _starving(db, state, now - 3600)
+    assert finding.severity is Severity.OK
+    assert finding.data["count"] == 0
+    assert finding.data["recent"][0]["profile_id"] == "worker"
+
+
+async def test_placement_starved_ok_when_nothing_is_starved(db):
+    finding = await _starving(db, {}, time.time() - 3600)
+    assert finding.severity is Severity.OK
+    assert finding.data["count"] == 0
+
+
+async def test_placement_starved_says_so_when_the_daemon_is_young(db):
+    """Honest about not knowing: a young daemon cannot see a five-minute history."""
+    now = time.time()
+    state = {"worker": {"since": now - 320, "wanted": 1, "reasons": {"proj": "at_cap"}}}
+    finding = await _starving(db, state, now - 330)
+    assert finding.severity is Severity.WARN
+    assert "only been observing placement" in finding.detail
+
+
+async def test_placement_starved_info_without_a_reachable_orchestrator(db):
+    """INFO, never OK: doctor must not report health it cannot observe."""
+    finding = await pool_checks.run_check(db, "pools.placement_starved")
+    assert finding.severity is Severity.INFO
+    assert "not visible from here" in finding.detail
+
+
+def test_placement_starved_has_no_fix():
+    check = next(c for c in pool_checks.CHECKS if c.id == "pools.placement_starved")
+    assert check.fix is None
+
+
+# ---------------------------------------------------------------------------
+# agents.dangling_current_task
+# ---------------------------------------------------------------------------
+
+
+async def test_dangling_current_task_ok_when_clean(db):
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
+
+    finding = await pool_checks.run_check(db, "agents.dangling_current_task", config=None)
+    assert finding.severity is Severity.OK
+    assert finding.data.get("count", 0) == 0
+
+
+async def test_dangling_current_task_warns_on_completed_task(db):
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.IDLE, current_task_id="t1")
+
+    finding = await pool_checks.run_check(db, "agents.dangling_current_task", config=None)
+    assert finding.severity is Severity.WARN
+    assert finding.data["agents"] == [
+        {"agent_id": "a1", "task_id": "t1", "task_status": "COMPLETED"}
+    ]
+
+
+async def test_dangling_current_task_reports_a_missing_task_from_a_stubbed_database():
+    """The missing-row branch is normally hidden by the database FK.
+
+    Keep its diagnostic contract tested anyway: a legacy/manual write may
+    produce it before the check runs, and the check promises an honest
+    ``null`` status rather than raising while formatting the finding.
+    """
+    fake_db = SimpleNamespace(
+        list_live_attempt_agent_ids=AsyncMock(return_value=set()),
+        list_agents=AsyncMock(
+            return_value=[SimpleNamespace(id="a-missing", current_task_id="gone")]
+        ),
+        get_task=AsyncMock(return_value=None),
+    )
+
+    finding = await pool_checks._check_agents_dangling_current_task(
+        DoctorContext(config=None, db=fake_db)
+    )
+
+    assert finding.severity is Severity.WARN
+    assert finding.data == {
+        "count": 1,
+        "agents": [{"agent_id": "a-missing", "task_id": "gone", "task_status": None}],
+    }
+    fake_db.get_task.assert_awaited_once_with("gone")
+
+
+async def test_dangling_current_task_skipped_with_a_live_attempt(db):
+    """A BUSY agent whose task went COMPLETED but is still finishing its
+    write-up (a live attempt) is not dangling -- only the state-transition
+    race, not a mid-flight worker."""
+    now = time.time()
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
+    await seed_task_session_attempt(
+        db,
+        task_id="t1",
+        project_id=PROJECT_ID,
+        agent_id="a1",
+        agent_name="a1",
+        now=now,
+        heartbeat_age=10,
+        create_task=False,
+    )
+
+    finding = await pool_checks.run_check(db, "agents.dangling_current_task", config=None)
+    assert finding.severity is Severity.OK
+    assert finding.data.get("count", 0) == 0
+
+
+async def test_dangling_current_task_fix_clears_the_agent(db):
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.FAILED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
+
+    repaired = await pool_checks.run_check(
+        db, "agents.dangling_current_task", config=None, repair=True
+    )
+    assert repaired.severity is Severity.OK
+    assert repaired.data.get("count", 0) == 0
+
+    agent = await db.get_agent("a1")
+    assert agent is not None
+    assert agent.state is AgentState.IDLE
+    assert agent.current_task_id is None
+
+
+@pytest.mark.parametrize(
+    "state", [AgentState.ERROR, AgentState.RETIRED, AgentState.PAUSED]
+)
+async def test_dangling_current_task_fix_keeps_a_non_busy_state(db, state):
+    """The fix clears the pointer; it must not also un-retire the agent.
+
+    Production sets ERROR/RETIRED without clearing ``current_task_id``, and
+    RETIRED is what gates workspace reclaim -- rewriting it to IDLE would
+    hand a retired agent's workspace back to the scheduler.
+    """
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.FAILED,
+        )
+    )
+    await _stale_agent(db, "a1", state=state, current_task_id="t1")
+
+    repaired = await pool_checks.run_check(
+        db, "agents.dangling_current_task", config=None, repair=True
+    )
+    assert repaired.severity is Severity.OK
+
+    agent = await db.get_agent("a1")
+    assert agent is not None
+    assert agent.state is state
+    assert agent.current_task_id is None
+
+
+async def test_reset_stale_busy_agent_keeps_the_state_when_asked(db):
+    """The reconciler's own rescue is unchanged; only the doctor opts out."""
+    from src.orchestrator.agent_reconciler import reset_stale_busy_agent
+
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.FAILED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.ERROR, current_task_id="t1")
+
+    await reset_stale_busy_agent(db, "a1", reset_state=False)
+    agent = await db.get_agent("a1")
+    assert agent.state is AgentState.ERROR
+    assert agent.current_task_id is None
+
+    await db.update_agent("a1", state=AgentState.BUSY, current_task_id="t1")
+    await reset_stale_busy_agent(db, "a1")
+    agent = await db.get_agent("a1")
+    assert agent.state is AgentState.IDLE
+    assert agent.current_task_id is None
+
+
+def test_dangling_current_task_is_fixable():
+    check = next(c for c in pool_checks.CHECKS if c.id == "agents.dangling_current_task")
+    assert check.fix is not None
+
+
+# ---------------------------------------------------------------------------
+# claims.container_held (bold-flare-35)
+# ---------------------------------------------------------------------------
+
+
+async def _epic_held_by(
+    db, *, session: bool, filed_by: str = "planner-session",
+    status: TaskStatus = TaskStatus.IN_PROGRESS, session_state: str = "running",
+):
+    """An epic claimed as a plain task, whose children arrived afterwards."""
+    await _stale_agent(db, "a1", state=AgentState.BUSY)
+    await db.create_task(Task(
+        id="epic", project_id=PROJECT_ID, title="Epic", description="",
+        status=status, assigned_agent_id="a1",
+        created_by_kind="session", created_by_id="planner-session",
+    ))
+    await db.create_task(Task(
+        id="epic.1", project_id=PROJECT_ID, title="child", description="",
+        status=TaskStatus.DEFINED, created_by_kind="session", created_by_id=filed_by,
+    ))
+    async with db.immediate() as conn:
+        await db.set_parent("epic.1", "epic", conn=conn)
+    await db.update_agent("a1", current_task_id="epic")
+    if session:
+        await db.create_session(SessionRecord(
+            id="s1", project_id=PROJECT_ID, profile_id="worker", harness="claude",
+            provider="fake", name="s1", lifecycle="pool", work_dir="/w", epoch="e",
+            instance_token="t", started_at=time.time(), state=session_state, agent_id="a1",
+            task_id="epic", claim_phase="active", last_claim_epoch=0,
+        ))
+
+
+async def test_container_held_ok_when_clean(db):
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+async def test_container_held_flags_the_agent_and_fix_releases_its_session(db):
+    await _epic_held_by(db, session=True)
+
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.WARN
+    assert finding.data["count"] == 1
+    assert finding.data["agents"] == [{
+        "agent_id": "a1", "task_id": "epic", "session_id": "s1", "lifecycle": "pool",
+    }]
+
+    repaired = await pool_checks.run_check(
+        db, "claims.container_held", config=None, repair=True
+    )
+    assert repaired.severity is Severity.OK
+    task = await db.get_task("epic")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+    session = await db.get_session("s1")
+    assert (session.task_id, session.desired_state) == (None, "stopped")
+    agent = await db.get_agent("a1")
+    assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+    assert (await pool_checks.run_check(db, "claims.container_held", config=None)).severity \
+        is Severity.OK
+
+
+async def test_container_held_fix_resets_an_orphaned_busy_agent(db):
+    await _epic_held_by(db, session=False)
+
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.data["agents"][0]["session_id"] is None
+
+    await pool_checks.run_check(db, "claims.container_held", config=None, repair=True)
+    task = await db.get_task("epic")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+    agent = await db.get_agent("a1")
+    assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+
+
+async def test_container_held_ignores_the_holders_own_emergent_work(db):
+    await _epic_held_by(db, session=True, filed_by="s1")
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+async def test_container_held_sees_a_sleeping_holder_that_filed_the_children(db):
+    # A rate-limit cooldown leaves the session ``sleeping`` with its claim; it
+    # is the holder, not an orphan, and its own filings keep the claim.
+    await _epic_held_by(db, session=True, filed_by="s1", session_state="sleeping")
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+async def test_container_held_skips_an_assigned_task_awaiting_its_session(db):
+    await _epic_held_by(db, session=False, status=TaskStatus.ASSIGNED)
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+def test_container_held_is_fixable():
+    check = next(c for c in pool_checks.CHECKS if c.id == "claims.container_held")
+    assert check.fix is not None
+
+
+async def test_operator_and_ordinary_workers_are_separate_doctor_routes(db):
+    await db.update_profile("worker", harness="codex", default_class="deep-high")
+    for identifier, lifecycle, commands in (
+        ("operator-push", "task", ["operator_execute"]),
+        ("operator-pool", "pool", ["operator_execute"]),
+    ):
+        await db.create_profile(AgentProfile(id=identifier, name=identifier, harness="codex",
+            default_class="deep-high", lifecycle=lifecycle, aq_commands=commands))
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+    assert finding.data["profiles"] == [{"profile_id": "operator-push", "harness": "codex",
+        "default_class": "deep-high", "pool_profile_ids": ["operator-pool"]}]

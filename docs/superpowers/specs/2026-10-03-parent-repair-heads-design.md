@@ -1,0 +1,317 @@
+# Parent repair heads after child collection
+
+Child delivery receipts remain immutable. An authorized parent repair can extend
+their aggregate with an append-only `parent_head_extensions` proof in its stage
+dossier. Each edge binds the operation, episode, generation, repository, branch,
+stage, original writer identity, before/after SHA and exact ordered commit range.
+Readiness folds these edges alongside receipt edges. A bare stage subject, branch
+tip or successful check never establishes an extension.
+An edge retains its original generation when more children are filed in the same
+episode; a future-generation edge or an edge from another episode is refused.
+
+Normal publication-backed repair subject binding records an edge under the current
+attached writer fence. Advancing the parent checkpoint clears its current aggregate
+verification. Stage budgets, deadlines, policy, state and original receipts retain
+their existing lifecycle. Verification and completion continue through the existing
+exact-head checks and ownership controls.
+
+One range carries exactly one proof. When this operation's own committed conflict
+resolution already finalized an immutable code receipt for the very movement the
+subject binding is about to record — same operation, episode, parent, repository,
+branch, and exactly `expected_target` to `resolution_head_sha`, of the trusted
+resolution shape and sourced from a live child of this parent — the receipt is that
+proof and the binding records no edge. Readiness folds each range once, so a second
+edge beside the receipt would strand the walk on `repair_head_chain`. The stage
+dossier keeps the covering intent and receipt identity, the stage's own recorded
+lineage stays unchanged, and the checkpoint still advances at the verifier handoff
+exactly as an ordinary child delivery does. Anything short of exactly one such
+receipt — a pending or uncommitted intent, an untrusted proof shape, a foreign
+episode or operation, another range, or an ambiguous set of intents — is no proof at
+all, and the ordinary extension edge is recorded instead. An edge an older close
+already recorded beside such a receipt is a historical fact: this binding never
+rewrites one, and reconciling that state belongs to
+`aq integration recover-parent-head`.
+
+`aq integration recover-parent-head OPERATION --head SHA` previews recovery of a
+completed authorized repair whose older close recorded its commit range but omitted
+the extension. Apply additionally requires the previewed episode, generation, stage,
+current fence and an operator reason. Active or archived completed delegates are
+eligible only with their latest passing completion containing that exact head,
+matching canonical branch and repair origin, and the stage's exact subject and
+recorded lineage. An older active delegate's empty commit list is eligible only
+when its accepted-close metadata names that exact completion, audited session and
+current claim epoch. A contradictory nonempty list or missing accepted-close
+identity refuses recovery. The immutable completion record remains unchanged;
+the stage's complete recorded range and published Git head still prove the repair.
+Future repair closes pass their already-proven writer head directly to completion
+recording, including when the base checkout lacks the canonical parent ref.
+The original fenced `integration.repair_delegate_closed` outbox
+audit must identify that stage and delegate; the current owner must hold a later
+fence. Fetch and observe the actual origin ref, prove ancestry and the
+complete recorded range, and require every receipt tip to remain an ancestor.
+
+Recheck the database and remote proof under the project/operation/owner locks before
+appending the edge and advancing the checkpoint. No Git push, new writer, episode,
+generation or budget is allocated. Refuse active writers, pending external writes,
+manual pauses, open gates, paused/draining projects and human-required operations.
+Replay requires the same proof and current fence and leaves verification intact.
+Recovery clears old verification on its first application; fresh exact-head
+verification is required before completion. If the aggregate has no verifier yet,
+the same transaction uses the ordinary readiness projection to file its verifier
+and enqueue the fenced handoff. It preserves repair state and budgets and refuses
+if readiness cannot be projected; replay creates no duplicate verifier or event.
+Live recovery and daemon deployment
+belong to the supervisor/operator, not the implementing worker.
+
+Recovery may instead name the current published aggregate H' after a completed
+repair proved H. The stage and latest completion must still prove H with the
+exact fenced close audit; a later collection never substitutes for that audit.
+The stage generation may precede the current generation in the same episode.
+Readiness must fold the repair edge and every current child receipt to H', and
+Git must prove H is an ancestor of H' and the complete ordered range H..H' is
+covered by those receipt edges. Missing, foreign, ambiguous or incomplete
+receipt chains and unpublished/unrelated heads refuse recovery. A detached
+collector reservation may retain its confirmed workspace: prove that workspace's
+canonical ref is published ancestry and that its parent checkouts are clean and
+have no retained writers. Recheck this local proof before apply. An existing
+verifier must be an idle matching task, never a completed task silently re-armed.
+The preview reports both the repair head and the receipts covering its advancement.
+Apply records
+the original repair edge, preserves all receipt bytes and repair budgets,
+settles the closed repair stage, returns the operation to active verification,
+and enqueues a fresh exact-head verifier handoff. It does not complete the
+operation or parent until fresh trusted verification passes. A replay retains
+that new verification and enqueues no duplicate handoff. The advanced-head path
+requires an aggregate verifier even when the parent already has a past session.
+
+## Empty stages and duplicate receipt edges
+
+Stage dossiers carry cumulative repair commit lists. Determine whether a stage
+introduced commits using the shared repair-lineage helper, excluding inherited
+commits; never infer an empty stage from the cumulative list alone. Empty
+verification recovery still requires the exact no-progress incident, unchanged
+starting SHA and subject, an audited passing empty completion and accepted-close
+identity, settled detached delegates, a clean confirmed workspace and a complete
+trusted receipt chain. It retains every existing gate and ownership check.
+
+Before walking the collection, a recorded extension is covered by exactly one
+trusted code receipt only when operation, episode, repository, branch and parent
+identity agree and both endpoints are identical. Its complete ordered Git range,
+using the same helper as the resolution proof, must equal its recorded commits
+and the receipt's recorded resolution commits. A clean single-parent squash
+receipt proves its one squash commit. A squash-shaped merge receipt proves only
+a merge whose parents are exactly the aggregate before SHA and the reviewed head,
+in that order: its complete ordered range must equal the complete reviewed-source
+range followed by the merge tip. The base must lie on
+the tip's first-parent lineage and the tip must remain an ancestor of the
+published head. Merge receipts can include commits from their merged ancestry;
+their complete range is not restricted to first-parent commits.
+
+Covered edges are excluded from the repair walker and consumed by their receipt.
+Apply preserves the original edge and records `receipt_covered_extensions` on its
+originating stage exactly once. True durable extensions bridge receipt gaps with
+their existing proof, validated against the complete strict first-parent range;
+they need no second gap proof and are never appended again. Unconsumed edges,
+foreign or untrusted receipts and mismatched ranges refuse recovery. Missing
+extensions retain the historical gap-origin and multi-close proofs below.
+Apply accumulates every gap edge, coverage marker and active-stage marker in one
+dossier per ordinal and writes each stage once, including when multiple gaps
+originate in the same or active stage. Empty aggregate Git proof preserves exact
+ordered equality per receipt and requires exact unique set coverage of the whole
+aggregate; merged ancestry can interleave in the aggregate's Git order, which is
+returned as the proved commit range.
+Preview and replay preserve receipts, subjects, deadlines, attempts and stage
+budgets. Fresh aggregate verification continues to own completion.
+
+## Operator acceptance for vivid-quest-44
+
+After review, delivery and daemon deployment, preview the current aggregate:
+
+```bash
+aq integration recover-parent-head bdbdd609-7f16-42fc-942d-3dedc1e2adeb \
+  --head 0c61aada8cb782c3a6a0d4150c62ff55feb47869 --dry-run --json \
+  > /tmp/vivid-quest-44-recovery.json
+```
+
+Expect `would_recover`, stage `1`, repair head
+`4f458b9c6708725ca9d84d4e164de3c8fdf14cce`, and the current collection
+receipt IDs covering advancement to the supplied aggregate. Inspect the episode,
+generation, fence, attempts, deadline and completion identity. If the branch has
+advanced again, repeat the preview with that fully published head; never replace
+the original stage/close proof. A missing receipt, live holder or dirty/divergent
+confirmed workspace is a remaining prerequisite, not permission to bypass proof.
+
+After reviewing the preview, run its exact `apply_command`, or equivalently:
+
+```bash
+aq integration recover-parent-head bdbdd609-7f16-42fc-942d-3dedc1e2adeb \
+  --head 0c61aada8cb782c3a6a0d4150c62ff55feb47869 --apply \
+  --episode "$(jq -er '.data.episode_id' /tmp/vivid-quest-44-recovery.json)" \
+  --generation "$(jq -er '.data.generation' /tmp/vivid-quest-44-recovery.json)" \
+  --stage "$(jq -er '.data.stage' /tmp/vivid-quest-44-recovery.json)" \
+  --fence "$(jq -er '.data.fence_token' /tmp/vivid-quest-44-recovery.json)" \
+  --reason 'Reconcile the published authorized parent repair'
+```
+
+Expect `recovered`: the closed stage is passed, the operation is active, and the
+normal verifier handoff names H'. The checkpoint retains its episode/generation
+and clears old verification. Receipt bytes, original repair identity, deadlines
+and attempt counts remain unchanged. Fresh trusted H' verification and the
+standard completion gates must still pass. Replay with the current fence returns
+`already_recovered` without clearing that verification or queuing another handoff.
+The implementing worker does not run these commands against the operator database.
+No knowledge migration is delivered or renumbered by this recovery.
+
+## Operator acceptance for azure-vault-92
+
+Deliver the code through normal integration and update/restart the running daemon
+with the operator's supported procedure. No migration is required. The supervisor
+capability is merged additively on startup/profile reload. Before recovery, inspect
+the stage-12 close audit, latest passing completion (active or archived), current
+branch owner, and the verifier's session/workspace. A live verifier must be handled
+through the supported owner controls; this command refuses to detach it.
+
+```bash
+aq integration recover-parent-head bcab5af6-bf48-49d8-9491-c003e927e3ac \
+  --head 9928015dd5e269be00ad1fd03366ca2adb5cb237 --json
+```
+
+Require `would_recover`, episode `cfb14ee1-6cc1-4b2a-a362-16a4c1581946`,
+generation `2`, stage `12`, and receipt head
+`55d4a049fafc94bdc3ad9bbf05ecbc597c83129f`. Inspect the reported fence,
+deadline, attempts and completed repair identity. Run the preview's exact
+`apply_command`. A refusal names the unresolved prerequisite; do not substitute
+database edits, a reset or an exemption.
+
+After `recovered`, delivery readiness must report the supplied repair head while
+all nine original receipts retain their exact bytes. The checkpoint must retain
+its episode and generation, with no current aggregate verification. Resume the
+existing normal verifier flow using fresh exact-head evidence and close through
+the standard completion gates. These live acceptance steps are supervisor/operator
+work; the implementing worker's checks use disposable PostgreSQL and local Git.
+
+## Integration with parent subject ownership
+
+The operator recovery path holds the shared parent-engine exclusion across proof,
+Git read-back and application. A parent assigned to the reconciler refuses legacy
+recovery, including previews, without changing checkpoint or repair-stage state.
+This uses the existing operation-scoped parent engine guard and preserves the
+exclusive cutover protocol; feature flags alone are not ownership evidence.
+
+## Finished collection stages with historical receipt gaps
+
+The same recovery command may reconcile an active/escalated collection whose
+last conflict-resolution delegate completed but whose stage remains active.
+The final head can already be covered by a trusted conflict-resolution receipt.
+When its delegate-close outbox audit is absent, require the exact committed
+promotion intent and trusted receipt to agree on operation, episode, stage,
+delegate, repository, branch, source identity, resolution tree, commit range,
+session, instance, workspace, fence and observed push. An empty completion still
+requires its accepted-close identity; a contradictory audit or completion refuses.
+The push observation must equal the complete identity emitted by the ordinary
+resolution push writer, including all ten fields; extra keys refuse. When retries
+produced several close audits, every audit must have a complete authoring tuple,
+and exactly one must match that validated resolution's task, session, instance,
+workspace and fence. An incomplete audit or a missing or duplicate exact match
+refuses; an earlier claim's audit cannot substitute for the resolution author.
+This proof settles resolution bookkeeping and never supplies green check evidence.
+
+Missing edges between immutable child receipts may be recovered only from a
+completed stage that first recorded the exact gap range. Inherited commit lists
+in later stage dossiers are diagnostic copies, not additional authorship.
+Each gap independently requires the
+original fenced close audit, latest passing completion (or its exact accepted
+empty close), recorded commit range and Git ancestry to the current published
+parent head. A gap may end inside a continued stage's recorded repair range rather
+than at its final subject. Its latest passing completion and selected fenced close
+must prove that final subject. Git must prove the complete ordered gap range is a
+contiguous part of the commits first introduced in that stage and an ancestor of
+its completed subject. If continuation advanced the stage's starting SHA to its
+subject, the subject additionally needs its exact committed resolution tree and
+complete Git range. An interior gap additionally must equal the base of that
+stage's first committed resolution. Every historical completion must pass on the
+canonical branch, and every historical close must carry a complete unique fenced
+identity, with fences increasing after the previous stage. Each audit must pair
+with exactly one passing canonical-branch completion after that close and before
+the next; each committed resolution must match that audit's complete authoring
+tuple and completion. Git must prove the gap is the parent branch's exact
+first-parent range. Unrecorded repair-branch refs confer no authority. Missing,
+ambiguous or contradictory history refuses recovery. An archived historical gap
+with an empty completion is eligible only with one exact audited passing close,
+starting SHA equal to the gap base, subject equal to its end, and introduced commits
+exactly equal to the complete first-parent range. The preceding stage's recorded
+list must end at the gap base. This narrow pairing replaces the accepted-close
+metadata and claim epoch removed by archival. A live delegate still requires its
+exact accepted-close identity; resolution receipt fallback cannot prove this gap.
+The edge records only the missing gap and preserves the later stage subject.
+Unattributed commits and summary text are insufficient. Preview
+reports every gap or refuses. Apply rechecks all stage/delegate/owner facts and
+remote ancestry, appends each edge to its originating stage, and projects ordinary
+verifier readiness in one transaction. Both completed collection recovery and
+receipt-advanced repair recovery require a dedicated matching idle verifier,
+including parents with prior sessions, and a fresh exact-head handoff event. The
+confirmed former workspace is checked before preview and again under apply.
+No episode, generation, attempt budget,
+deadline, receipt, completion or human gate is replaced. Replay is idempotent.
+Fresh exact-head verification and the configured parent review path still own
+completion and delivery. Live apply follows supervisor review and deployment.
+
+## Resume collection after a no-progress escalation
+
+An escalated collection may own a later conflicted child intent while its current
+stage ended without progress. `reopen-collection` also accepts this narrowly
+proved state: the current failed/expired stage has its exact supervisor-recovery
+incident, every old stage is terminal, every old delegate is settled and detached,
+and the operation's detached collector reservation has the conflict's exact fence.
+Exactly one current conflict must name a completed child's current head. No old
+stage may already be bound to this conflict; retrying an exhausted conflict needs
+its existing recovery path, not another attempt budget.
+
+The remote tip must equal the conflict's expected target and retain the episode
+base and every collection receipt. A confirmed former parent checkout must have
+no unpublished ref, dirty canonical checkout or retained writer. Open human gates,
+manual holds, ambiguous writes, verifier work and stale episode/route evidence
+refuse this additional path. Apply repeats the database and Git proofs before
+transferring the collector fence and opening one fresh, writerless stage under the
+operation's frozen debug policy. Existing stage budgets, incidents and receipts
+remain byte-identical. Normal dispatch files a new delegate to resolve and publish
+the conflict; this command accepts no delivery and changes no Git ref. A retry
+cannot allocate another stage once the new stage is live or bound to that conflict.
+
+For quick-glacier-88 / operation c6ee6a67-66ac-424c-bbb5-bbf532f18348:
+
+```bash
+aq integration reopen-collection quick-glacier-88 --json
+aq integration reopen-collection quick-glacier-88 --apply \
+  --head 47760887c51dd4d2f2b08ce05ff85e5c94536056 \
+  --reason 'Resume the later child conflict after the detached no-progress stage'
+```
+
+Expect `would_reopen` with that operation, the current episode, the sole current
+child conflict and proposed frozen stage budget. Use the full head the preview
+reports if the branch has changed. Apply returns `reopened`, advances the collector
+fence and creates the next stage bound to that intent. Normal dispatch owns the
+conflict repair. Collection receipts for prerequisites are produced only by the
+ordinary fenced resolution/delivery path; a missing receipt is never fabricated.
+Any failed proof is a named refusal requiring inspection before a live apply.
+
+## Operator acceptance for crisp-horizon-90
+
+The worker proves the captured seven-stage history using the replay test. After
+review, delivery and deployment, the authorized supervisor/operator runs the live
+preview below. The worker's recovery command is out of scope and cannot perform
+this live acceptance check.
+
+```bash
+aq integration recover-parent-head 6397b45b-c5f2-4ddc-8450-638f77af1631 \
+  --head cd394b1a6c90d4cffcae1ce99aa6c8948286d021 --dry-run --json
+```
+
+Expect `would_recover` with stage 6 and each missing receipt edge named in the
+reason. Verify the gap attributed to stage 2 and the interior gap first recorded
+by stage 4, using its first committed resolution and parent first-parent
+lineage. Review the exact completion, close, episode, generation and current fence
+before using the returned apply command after deployment. Preserve all eleven
+child receipts and the original stage subjects, deadlines and attempt budgets.
+Fresh trusted verification still owns parent completion. A missing accepted-close,
+published lineage or historical audit remains a refusal; the worker must not fabricate evidence or apply recovery against the operator database.
