@@ -40,6 +40,8 @@ const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
 const MorningReportPage = lazy(() => import("./pages/reports/MorningReportPage"));
+const WaitingOn = lazy(() => import("./pages/WaitingOn"));
+const PlanPage = lazy(() => import("./pages/PlanPage"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 const FocusShell = lazy(() => import("./pages/focus/FocusShell"));
@@ -177,6 +179,7 @@ export default function App() {
       <ProjectScopePaneSync />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
+          <Route path="plans/:taskId" element={<PlanPage />} />
           {/* Focus routes sit outside the three-column shell (mobile dashboard §4.1). */}
           <Route path="focus" element={<FocusShell />}>
             <Route index element={<FocusHome />} />
@@ -196,6 +199,7 @@ export default function App() {
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="conversations" element={<GlobalChat />} />
+            <Route path="waiting" element={<WaitingOn />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="host-shell" element={<HostShell />} />
             <Route path="reviews" element={<ReviewsInbox />} />

@@ -34,8 +34,8 @@ TERMINAL_STATUSES = (
     TaskStatus.BLOCKED.value,
 )
 
-#: Metadata key holding a development repair's source manifest, written by
-#: :meth:`src.integration.development.DevelopmentPrimitives.ensure_repair`.
+#: Metadata key holding a development repair's source manifest. The retired
+#: development publisher wrote it; historical repair rows still carry it.
 DEVELOPMENT_REPAIR_SOURCES_KEY = "development_repair_sources"
 
 
@@ -136,7 +136,7 @@ class ArchiveQueryMixin:
     async def observe_removal_delivery(self, root_ids, *, for_mutation=False):
         """Git evidence for the subtrees of *root_ids*, taken before any transaction.
 
-        Development work and active Git-first hierarchy work are fetched and
+        Development and hierarchical work are fetched and
         evaluated once per repository however many roots a sweep archives. A target
         that keeps moving yields no view: the guard then holds that work as
         unknown rather than trusting a stale answer.
@@ -157,13 +157,12 @@ class ArchiveQueryMixin:
             for root_id in dict.fromkeys(root_ids):
                 sensitive |= await delivery_sensitive_ids(
                     conn, await self.subtree_ids(root_id, conn=conn),
-                    hierarchical=truthful is not None,
+                    hierarchical=True,
                 )
         if not sensitive:
             return None
         view = await observer.observe(
-            sensitive, **({"target_loader": delivery_targets} if truthful is not None
-                          and not for_mutation else {}),
+            sensitive, **({"target_loader": delivery_targets} if not for_mutation else {}),
         )
         return view if await view.fresh() else None
 
@@ -179,6 +178,9 @@ class ArchiveQueryMixin:
         obsolete_integration_delegate: bool = False,
         archive_reason: str | None = None,
         disposition: str | None = None,
+        replacement_task_id: str | None = None,
+        satisfied_by: str | None = None,
+        rewire: dict | None = None,
     ) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
 
@@ -196,17 +198,34 @@ class ArchiveQueryMixin:
         Deepest first, root last, so the subtree moves together. *disposition*
         (``obsolete`` or ``retire``) is the operator's recorded decision for the
         abandoned work; it is written on the task and on each branch retirement.
+        Retirement evidence (``replacement_task_id`` / ``satisfied_by``) uses
+        the change-set boundary and retains the obsolete marker in comments;
+        dependent edge rewrites and archive commit together.
         """
         if abandon_undelivered and not (abandon_reason or "").strip():
             raise ValueError("abandon_undelivered requires a reason")
         if delivery is None:
             delivery = await self.observe_removal_delivery([task_id])
-        async with self.immediate() as conn:
+        evidence = replacement_task_id is not None or satisfied_by is not None or rewire is not None
+        if evidence:
+            from src.commands.task_changes import boundary
+            from src.database.queries.hierarchy_queries import HierarchyError
+
+            if disposition != "obsolete":
+                raise HierarchyError("obsolete.invalid_disposition", "evidence requires obsolete")
+            task = await self.get_task(task_id)
+            if task is None:
+                return False
+            transaction = boundary(self, task.project_id)
+        else:
+            transaction = self.immediate()
+        async with transaction as conn:
             outcome = await self._archive_task_on(
                 task_id, conn=conn, abandon_undelivered=abandon_undelivered,
                 abandon_reason=abandon_reason, abandoned_by=abandoned_by,
                 delivery=delivery, obsolete_integration_delegate=obsolete_integration_delegate,
                 archive_reason=archive_reason, disposition=disposition,
+                replacement_task_id=replacement_task_id, satisfied_by=satisfied_by, rewire=rewire,
             )
         if outcome is None:
             return False
@@ -249,12 +268,46 @@ class ArchiveQueryMixin:
         self, task_id, *, conn, abandon_undelivered=False, abandon_reason=None,
         abandoned_by="operator", delivery=None, obsolete_integration_delegate=False,
         archive_reason=None, defer_projection=False, disposition=None,
+        replacement_task_id=None, satisfied_by=None, rewire=None,
     ):
         from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
+        from src.waits.graph import lock_component_tasks
 
+        await lock_component_tasks(conn, {
+            f"task:{tid}" for tid in await self.subtree_ids(task_id, conn=conn)
+        })
         terminal = set(TERMINAL_STATUSES)
         if archive_reason and archive_reason.strip():
             terminal.update({"DEFINED", "READY", "PAUSED"})
+        retirement_affected = set()
+        if replacement_task_id is not None or satisfied_by is not None or rewire is not None:
+            from src.database.queries.blocked_state import OBSOLETE_META_KEY
+            from src.sessions.obsolete import ObsoleteClose, ObsoleteCloseRefused, prepare_retirement_on
+
+            if disposition != "obsolete" or not (abandon_reason or "").strip():
+                raise HierarchyError(
+                    "obsolete.invalid_disposition", "retirement evidence requires obsolete and reason"
+                )
+            try:
+                evidence, retirement_affected = await prepare_retirement_on(
+                    self, conn, task_id, replacement_task_id=replacement_task_id,
+                    satisfied_by=satisfied_by, rewire=rewire,
+                )
+            except ObsoleteCloseRefused as exc:
+                raise HierarchyError(exc.code, exc.detail) from exc
+            previous = await conn.scalar(select(tasks.c.status).where(tasks.c.id == task_id))
+            marker = await ObsoleteClose._marker(conn, task_id) or {
+                      **evidence, "disposition": "obsolete", "reason": abandon_reason.strip(),
+                      "closed_by": abandoned_by, "closed_at": time.time(),
+                      "previous_status": previous, "cleanup": {"state": "pending"}}
+            await self._upsert_meta(task_id, OBSOLETE_META_KEY, marker, conn=conn)
+            await self._upsert_meta(task_id, "work_outcome", "abandoned", conn=conn)
+            # Metadata is FK-bound to the live row and removed by archive. Keep
+            # its exact retirement marker in the retained comment history.
+            await self.add_task_comment(
+                task_id, "Retirement evidence: " + json.dumps(marker, sort_keys=True),
+                author_kind="supervisor", author_id=abandoned_by, conn=conn,
+            )
         # Admission still protects live and undelivered work. An admitted
         # archive now queues audited branch retirement before removing rows.
         await self.guard_integration_mutation(
@@ -367,7 +420,7 @@ class ArchiveQueryMixin:
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
         ).scalar()
-        affected = await self._collect_affected(set(ids), conn)
+        affected = await self._collect_affected(set(ids), conn) | retirement_affected
         affected -= set(ids)
         if parent:
             affected.add(parent)
@@ -930,7 +983,8 @@ class ArchiveQueryMixin:
         stmt = stmt.order_by(archived_tasks.c.archived_at.desc()).limit(limit)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_archived_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return [self._row_to_archived_task(r) for r in rows]
 
     async def get_archived_task(self, task_id: str) -> dict | None:
         """Return a single archived task as a dict, or *None* if not found."""
@@ -939,9 +993,7 @@ class ArchiveQueryMixin:
                 select(archived_tasks).where(archived_tasks.c.id == task_id)
             )
             row = result.mappings().fetchone()
-            if not row:
-                return None
-            return self._row_to_archived_task(row)
+        return self._row_to_archived_task(row) if row else None
 
     async def list_archived_tasks_by_dedup_prefix(
         self, project_id: str, prefix: str
