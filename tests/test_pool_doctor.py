@@ -990,7 +990,7 @@ async def test_dangling_current_task_warns_on_completed_task(db):
     ]
 
 
-async def test_dangling_current_task_reports_a_missing_task_from_a_stubbed_database():
+async def test_dangling_current_task_reports_a_missing_task_from_a_stubbed_database(monkeypatch):
     """The missing-row branch is normally hidden by the database FK.
 
     Keep its diagnostic contract tested anyway: a legacy/manual write may
@@ -1003,6 +1003,9 @@ async def test_dangling_current_task_reports_a_missing_task_from_a_stubbed_datab
             return_value=[SimpleNamespace(id="a-missing", current_task_id="gone")]
         ),
         get_task=AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "src.waits.occupancy.continuation_agent_ids", AsyncMock(return_value=set())
     )
 
     finding = await pool_checks._check_agents_dangling_current_task(

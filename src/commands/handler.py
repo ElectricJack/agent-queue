@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
+from src.database.queries.task_queries import PauseFenceError
 from src.state_machine import InvalidTransition
 from src.logging_config import CorrelationContext
 
@@ -1255,6 +1256,10 @@ class CommandHandler(
                 _emit_error = f"Unknown command: {name}"
                 return {"success": False, "error_code": "unknown_command",
                         "error": f"Unknown command: {name}"}
+            except PauseFenceError as e:
+                _emit_ok = False
+                _emit_error = str(e)
+                return {"success": False, "code": "task.pause_fence", "error": str(e)}
             except InvalidTransition as e:
                 _emit_ok = False
                 _emit_error = str(e)

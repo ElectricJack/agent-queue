@@ -95,7 +95,9 @@ acknowledging another session's wait or crossing a project boundary.
 none implies success. See [wake context](wake-context-compaction.md).
 
 Transient resume workspace failures get up to three attempts with backoff while
-retaining the checkout. For a repaired workspace or launch hold, a supervisor can requeue
+retaining the checkout. Publication (`push_failed`) holds retry automatically with
+persisted backoff and fresh proof that the original writer is stopped. For a repaired
+publication, workspace or launch hold, a supervisor can requeue
 the exact continuation generation without changing the resolved wait:
 
 ```bash
@@ -105,7 +107,19 @@ aq wait decide --wait-id WAIT_ID --decision requeue \
 ```
 
 Pause and uncertain-stop holds require their own recovery. Requeue is audited;
-the hold incident resolves when the fresh session receives its resume context.
+the publication incident resolves after a successful push; resume incidents resolve
+when the fresh session receives its resume context.
+
+To retire a stranded continuation without looking up its wait id:
+
+```bash
+aq wait retire CONTINUATION_ID --expected-generation GENERATION \
+  --note 'Retire the stranded continuation and keep its work for recovery'
+```
+
+This supervisor decision pauses the task, retires its wait execution state and
+requests holder termination. It preserves the checkpoint, resolved outcome and
+checkout ownership for normal stopped-writer recovery; it does not wake the task.
 
 ## Deadlines and human input
 

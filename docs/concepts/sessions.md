@@ -347,6 +347,14 @@ Providers with no input channel skip the nudge rungs entirely rather than
 spending three cycles talking to nobody. A session parked on a human question
 is exempt from the ladder for as long as the question is open.
 
+**A session running a command of its own is not quiet.** A long foreground
+`aq test` under load, or a background task an ended turn waits on, leaves the
+pane and transcript silent for as long as it runs. While a process carrying the
+session's `AQ_INSTANCE_TOKEN` is an `aq test` run or a shell the harness spawned,
+neither the ladder nor the inactivity backstop acts and no rung is spent, for up
+to `sessions.stall_command_grace_seconds` (7200 s) after the session's last own
+activity. A command still running past that grace stalls as before.
+
 **A CLI parked on its usage-limit screen leaves the ladder at once.** Claude
 Code and Codex do not exit when they hit a usage limit mid-task; they print the
 limit line and sit at their prompt, where no nudge can help. Before each rung

@@ -104,8 +104,8 @@ def _pull_request(head_ref, *, head_repository='acme/widgets', draft=False):
     ('aq/parent/example/0123/1/' + 'a' * 40, True),
     (CANDIDATE_REF, True),
     (BATCH_REF, True),
-    ('aq/promote/main/' + 'a' * 40, True),
-    ('aq/promote/staging/main/' + 'a' * 40, True),
+    ('aq/promote/main/' + 'a' * 40, False),
+    ('aq/promote/staging/main/' + 'a' * 40, False),
     ('aq/backmerge/' + 'a' * 64, True),
     ('aq/backmerge/staging/' + 'a' * 40, True),
     ('aq/backmerge-example', False),
@@ -203,9 +203,9 @@ def test_the_warmed_venv_is_the_entry_each_tests_job_restores(job):
     assert _pip_installs(warm_install['run']) == installs
 
 
-def test_pull_requests_into_delivery_branches_run_ci():
+def test_only_dev_pull_requests_start_automatic_ci():
     pull_request = workflow()['on']['pull_request']
-    assert pull_request['branches'] == ['dev', 'staging', 'main']
+    assert pull_request['branches'] == ['dev']
     assert pull_request['types'] == ['opened', 'synchronize', 'reopened', 'ready_for_review']
 
 
@@ -219,7 +219,7 @@ def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
     tests = workflow()
     assert list(tests['on']) == ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']
     assert tests['on']['push']['branches'] == [
-        'aq/parent/**', 'aq/integration/**', 'aq/batches/**', 'aq/promote/**', 'aq/backmerge/**',
+        'aq/parent/**', 'aq/integration/**', 'aq/batches/**', 'aq/backmerge/**',
     ]
     assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
     assert list(tests['jobs']) == ['test', 'e2e-cli', 'dashboard']
@@ -310,6 +310,10 @@ def test_unattested_ci_runs_only_for_a_configured_unattested_push(configured, at
     ('pull_request', _pull_request('feature', head_repository='fork/widgets'), True),
     # The push trigger already tests an integration candidate's head SHA.
     ('pull_request', _pull_request(CANDIDATE_REF), False),
+    # Promotion CI is dispatched only when its project step policy requests it.
+    ('pull_request', _pull_request('aq/promote/staging/abc'), False),
+    ('pull_request', _pull_request('aq/promote/release/1.2.3'), False),
+    ('pull_request', _pull_request('aq/promote/release/1.2.3', head_repository='fork/widgets'), True),
     # A fork's branch gets no push run here, whatever its name.
     ('pull_request', _pull_request(CANDIDATE_REF, head_repository='fork/widgets'), True),
     # A draft runs once it is marked ready_for_review.
