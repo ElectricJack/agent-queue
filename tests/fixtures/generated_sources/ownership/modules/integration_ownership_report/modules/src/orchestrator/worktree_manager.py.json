@@ -1,0 +1,28 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "baseline_span": null,
+      "landing_span": [
+        634,
+        648
+      ],
+      "reason": "Read-only integration owner and managed job pin probe fences missing-slot recreation. Attached/pending ownership prevents removal of its Git registration; no lifecycle, storage or ref write."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_is_live": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.prune_branches": {
+      "landing_span": [
+        1396,
+        1488
+      ],
+      "reason": "Prunes only Git-proven merged task branches, protecting globally live branch references and attached worktrees while retaining unique failed-task work."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reap_slot": {
+      "reason": "Fresh transaction/generation/cap, retained integration owner/session/job pin, claim, process-liveness, sentinel/repository and cleanliness guards for retired inventory deletion. PostgreSQL deletion precedes non-forcing Git removal and successful commit precedes the reaped event; no ref publication/replay or duplicate integration lifecycle authority."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reset_slot_for_task": {
+      "reason": "Slot preparation resumes owner-recovery snapshots onto the task branch before a stopped writer restarts; merges proven progress, never publishes or resets it."
+    }
+  }
+}

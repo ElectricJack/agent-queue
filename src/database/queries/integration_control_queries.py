@@ -5,15 +5,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from sqlalchemy import insert, literal, select, update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
-    integration_history_waiver_consumptions,
-    integration_history_waivers,
     integration_legacy_suppression,
-    integration_rollout_transitions,
     projects,
 )
 
@@ -62,168 +59,6 @@ class IntegrationControlQueriesMixin:
             )
         )
         return result.rowcount == 1
-
-    async def append_integration_rollout_transition_on(
-        self,
-        conn: AsyncConnection,
-        *,
-        transition_id: str,
-        project_id: str,
-        generation: int,
-        old_effective_mode: str,
-        new_effective_mode: str,
-        old_desired_mode: str,
-        new_desired_mode: str,
-        draining: bool,
-        operator_id: str,
-        reason: str,
-        blocker_digest: str,
-        old_legacy_policy: dict[str, Any],
-        new_legacy_policy: dict[str, Any],
-        waiver_id: str | None,
-        now: float,
-    ) -> None:
-        """Append one exact post-CAS transition record without rewriting history."""
-        if not transition_id or not operator_id or not reason:
-            raise ValueError("transition identity, operator, and reason are required")
-        _mode(old_effective_mode)
-        _mode(new_effective_mode)
-        _mode(old_desired_mode)
-        _mode(new_desired_mode)
-        _digest(blocker_digest)
-        current = (
-            await conn.execute(
-                select(
-                    projects.c.hierarchical_integration_mode,
-                    projects.c.hierarchical_integration_desired_mode,
-                    projects.c.hierarchical_integration_draining,
-                ).where(
-                    projects.c.id == project_id,
-                    projects.c.hierarchical_integration_generation == generation,
-                )
-            )
-        ).one_or_none()
-        if current is None or tuple(current) != (
-            new_effective_mode,
-            new_desired_mode,
-            bool(draining),
-        ):
-            raise ValueError("transition does not match the current project generation")
-        if waiver_id is not None:
-            waiver = (
-                await conn.execute(
-                    select(integration_history_waivers.c.id).where(
-                        integration_history_waivers.c.id == waiver_id,
-                        integration_history_waivers.c.project_id == project_id,
-                        integration_history_waivers.c.blocker_digest == blocker_digest,
-                    )
-                )
-            ).scalar_one_or_none()
-            if waiver is None:
-                raise ValueError("history waiver does not match project and blocker digest")
-        await conn.execute(
-            insert(integration_rollout_transitions).values(
-                id=transition_id,
-                project_id=project_id,
-                generation=generation,
-                old_effective_mode=old_effective_mode,
-                new_effective_mode=new_effective_mode,
-                old_desired_mode=old_desired_mode,
-                new_desired_mode=new_desired_mode,
-                draining=bool(draining),
-                operator_id=operator_id,
-                reason=reason,
-                blocker_digest=blocker_digest,
-                old_legacy_policy=old_legacy_policy,
-                new_legacy_policy=new_legacy_policy,
-                waiver_id=waiver_id,
-                created_at=now,
-            )
-        )
-
-    async def append_integration_history_waiver_on(
-        self,
-        conn: AsyncConnection,
-        *,
-        waiver_id: str,
-        project_id: str,
-        operator_id: str,
-        reason: str,
-        blocker_digest: str,
-        now: float,
-    ) -> None:
-        if not waiver_id or not operator_id or not reason:
-            raise ValueError("waiver identity, operator, and reason are required")
-        _digest(blocker_digest)
-        await conn.execute(
-            insert(integration_history_waivers).values(
-                id=waiver_id,
-                project_id=project_id,
-                operator_id=operator_id,
-                reason=reason,
-                blocker_digest=blocker_digest,
-                created_at=now,
-            )
-        )
-
-    async def consume_integration_history_waiver_on(
-        self,
-        conn: AsyncConnection,
-        *,
-        waiver_id: str,
-        transition_id: str,
-        project_id: str,
-        blocker_digest: str,
-        consumed_by: str,
-        now: float,
-    ) -> bool:
-        """Consume a matching waiver once without mutating its original record."""
-        _digest(blocker_digest)
-        insert_fn = pg_insert
-        matching = (
-            select(
-                integration_history_waivers.c.id,
-                integration_rollout_transitions.c.id,
-                integration_history_waivers.c.project_id,
-                literal(blocker_digest),
-                literal(consumed_by),
-                literal(now),
-            )
-            .select_from(
-                integration_history_waivers.join(
-                    integration_rollout_transitions,
-                    integration_rollout_transitions.c.waiver_id == integration_history_waivers.c.id,
-                )
-            )
-            .where(
-                integration_history_waivers.c.id == waiver_id,
-                integration_history_waivers.c.project_id == project_id,
-                integration_history_waivers.c.blocker_digest == blocker_digest,
-                integration_rollout_transitions.c.id == transition_id,
-                integration_rollout_transitions.c.project_id == project_id,
-                integration_rollout_transitions.c.blocker_digest == blocker_digest,
-            )
-        )
-        result = await conn.execute(
-            insert_fn(integration_history_waiver_consumptions)
-            .from_select(
-                [
-                    "waiver_id",
-                    "transition_id",
-                    "project_id",
-                    "blocker_digest",
-                    "consumed_by",
-                    "consumed_at",
-                ],
-                matching,
-            )
-            .on_conflict_do_nothing(index_elements=["waiver_id"])
-        )
-        return result.rowcount == 1
-
-    async def consume_integration_history_waiver(self, **values: Any) -> bool:
-        async with self.immediate() as conn:
-            return await self.consume_integration_history_waiver_on(conn, **values)
 
     async def set_integration_legacy_suppression_on(
         self,
@@ -280,19 +115,3 @@ class IntegrationControlQueriesMixin:
                 .one_or_none()
             )
         return dict(row) if row is not None else None
-
-    async def list_integration_legacy_suppressions(self) -> list[dict]:
-        """Return the small per-project routing predicate snapshot."""
-        async with self._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        select(integration_legacy_suppression).order_by(
-                            integration_legacy_suppression.c.project_id
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [dict(row) for row in rows]
