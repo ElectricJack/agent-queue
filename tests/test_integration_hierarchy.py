@@ -331,6 +331,76 @@ async def test_materialization_failures_do_not_starve_later_claimable_work(db, h
     assert third  # Wrap around and retry the earlier failures.
 
 
+async def test_missing_root_reservation_failure_does_not_starve_later_roots(db):
+    from src.integration.branch_materialization import BranchMaterializationService
+
+    hierarchy = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE,
+        branch_head_resolver=lambda _repo, _branch: None,
+        branch_materializer=lambda _repo, _branch, base: base,
+    )
+    for task_id in ("blocked", "next"):
+        await db.create_task(Task(id=task_id, project_id="p", title=task_id, description="root",
+                                  status=TaskStatus.READY, branch_name="aq/" + task_id))
+    await hierarchy.ownership.acquire(BranchKey(repository_id="repo", branch="aq/blocked"),
+                                      "another-writer", "worker")
+    drain = BranchMaterializationService(
+        db, hierarchy_service_factory=lambda: hierarchy, legacy_container_collection=False)
+    assert await drain.drain_due(limit=1) == []
+    assert await _origins(db) == []  # Failed acquisition rolls back checkpoint and origin.
+    second = await drain.drain_due(limit=1)
+    assert len(second) == 1 and second[0]["task_id"] == "next"
+    assert await db.count_ready_by_profile("p") == {None: 1}
+    assert await drain.drain_due(limit=1) == []  # Wraps around to retry the first root.
+    owner = await hierarchy.ownership.get_owner(BranchKey(
+        repository_id="repo", branch="aq/blocked"))
+    assert owner["owner_id"] == "another-writer"
+    assert owner["fence_token"] == 1
+
+
+@pytest.mark.parametrize("blocker", [
+    "child", "not_ready", "foreign_repo", "repair", "writer", "assigned", "workspace", "session",
+])
+async def test_missing_root_origin_rechecks_eligibility_under_project_lock(db, tmp_path, blocker):
+    from src.database.tables import sessions
+
+    await db.create_task(Task(id="root", project_id="p", title="root", description="root",
+                              status=TaskStatus.READY, branch_name="aq/root"))
+    # Simulate eligibility changing after a scanner selected the task.
+    if blocker == "child":
+        await _create(db, "parent")
+        await db.update_task("root", parent_task_id="parent")
+    elif blocker == "not_ready":
+        await db.update_task("root", status=TaskStatus.IN_PROGRESS)
+    elif blocker == "foreign_repo":
+        await db.create_repo(RepoConfig(id="other", project_id="p", source_type=RepoSourceType.LINK))
+        await db.update_task("root", repo_id="other")
+    elif blocker == "repair":
+        await db.update_task("root", created_by_kind="integration_repair")
+    elif blocker == "writer":
+        await db.update_task("root", created_by_kind="integration_writer")
+    elif blocker == "assigned":
+        await db.create_agent(Agent(id="writer", name="writer", profile_id="worker"))
+        await db.update_task("root", assigned_agent_id="writer")
+    elif blocker == "workspace":
+        await db.create_workspace(Workspace(
+            id="slot", project_id="p", workspace_path=str(tmp_path / "slot"),
+            source_type=RepoSourceType.LINK, locked_by_task_id="root"))
+    else:
+        async with db.immediate() as conn:
+            await conn.execute(insert(sessions).values(
+                id="live", task_id="root", project_id="p", profile_id="worker",
+                harness="codex", provider="tmux", name="s-live", lifecycle="task",
+                state="running", desired_state="running", work_dir="/slots/live",
+                epoch="e", instance_token="token-live", started_at=1.0))
+    hierarchy = HierarchyIntegration(db)
+    async with db.immediate() as conn:
+        assert (await hierarchy.reserve_ready_root_origin_on(conn, "root"))["outcome"] == (
+            "not_eligible")
+    assert await _origins(db) == []
+    assert await db.get_integration_checkpoint("root") is None
+
+
 async def test_container_collection_is_skipped_without_the_legacy_engine(db, hierarchy):
     """``git_first: active``: the train collects containers, so reserve no episode.
 
@@ -727,7 +797,8 @@ async def test_ordinary_train_reparent_uses_current_work_fences_atomically(
     assert result["code"] == "needs_quiescence", result
     assert result["owner"]["kind"] == {
         "commits": "branch", "attached_owner": "branch_owner",
-        "locked_workspace": "workspace", "completed": "delivery", "holder": "claim",
+        "locked_workspace": "workspace", "delivered": "delivery", "completed": "delivery",
+        "holder": "claim",
     }[blocker]
     assert result["safe_continuation"]
     assert (await db.get_task(child_id)).parent_task_id == "parent"
@@ -1888,7 +1959,7 @@ async def test_hoisted_project_mode_admits_exactly_what_the_correlated_form_does
     assert await _hoisted_ids(db) == correlated
     # The states the predicates actually distinguish, so the equality above is
     # not just two empty sets agreeing.
-    assert correlated == ({"loose", second} if mode_value == "disabled" else set())
+    assert correlated == ({"loose", second} if mode_value == "disabled" else {second})
 
     source = await db.get_integration_checkpoint(first)
     async with db.immediate() as conn:
@@ -1910,7 +1981,7 @@ async def test_hoisted_project_mode_admits_exactly_what_the_correlated_form_does
     correlated = await _frontier_ids(db)
     assert await _hoisted_ids(db) == correlated
     # A matching receipt adds no positive eligibility without current Git.
-    assert correlated == ({"loose", second} if mode_value == "disabled" else set())
+    assert correlated == ({"loose", second} if mode_value == "disabled" else {second})
 
 
 async def test_hoisted_hierarchy_mode_without_a_repository_admits_nothing(db, hierarchy):
@@ -2071,11 +2142,11 @@ async def test_hoisted_frontier_reads_current_train_switch_without_project_looku
     # Reuse the same project snapshot across toggles: activation is not hoisted.
     mode = ProjectIntegrationMode.of(await db.get_project("p"))
     assert "projects" not in str(select(tasks.c.id).where(_frontier_where("p", mode)))
-    assert await _frontier_ids(db, mode) == await _frontier_ids(db) == set()
+    assert await _frontier_ids(db, mode) == await _frontier_ids(db) == {second}
     for selected, enabled, expected in (
-        ("unrelated-playbook", False, set()),
+        ("unrelated-playbook", False, {second}),
         (playbook_id, False, {"loose", second}),
-        (playbook_id, True, set()),
+        (playbook_id, True, {second}),
     ):
         await db.set_playbook_activation(
             playbook_id=selected, scope="project", scope_identifier="p",
@@ -2086,7 +2157,7 @@ async def test_hoisted_frontier_reads_current_train_switch_without_project_looku
 
 
 @pytest.mark.parametrize("unrelated_reworks", [0, 1, 2])
-async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
+async def test_unknown_sibling_admission_does_not_use_receipt_authority(
     db, hierarchy, unrelated_reworks
 ):
     await db.create_profile(AgentProfile(id="worker", name="worker"))
@@ -2104,11 +2175,9 @@ async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
         await conn.execute(update(tasks).where(tasks.c.id == second).values(
             status="READY", is_blocked=False, profile_id="worker", route_source="router",
         ))
-    assert not await db.is_hierarchy_task_runnable(second)
-    assert await db.count_ready_by_profile("p") == {}
-    [exclusion] = await db.claim_frontier_exclusions(second)
-    assert exclusion["code"] == "delivery_evidence_unavailable"
-    assert "sibling_prerequisite_not_delivered is unknown" in exclusion["detail"]
+    assert await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {"worker": 1}
+    assert await db.claim_frontier_exclusions(second) == []
 
     source = await db.get_integration_checkpoint(first)
     delivered_at = time.time()
@@ -2136,10 +2205,10 @@ async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
             disposition="code",
             created_at=delivered_at,
         ))
-    assert not await db.is_hierarchy_task_runnable(second)
-    assert await db.count_ready_by_profile("p") == {}
-    assert second not in await _frontier_ids(db)
-    assert second not in await _hoisted_ids(db)
+    assert await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {"worker": 1}
+    assert second in await _frontier_ids(db)
+    assert second in await _hoisted_ids(db)
     from dataclasses import replace
 
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
@@ -2147,8 +2216,11 @@ async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
     # The SQL projection accepts an explicit request-scoped Git overlay.
     # Its freshness and generation fences are exercised with real Git in
     # test_delivery_consumers and test_pool_reconciler.
-    mode = replace(ProjectIntegrationMode.of(await db.get_project("p")),
-                   delivered_prerequisite_ids=frozenset({first}))
+    negative = replace(ProjectIntegrationMode.of(await db.get_project("p")),
+                       observation_unavailable=False)
+    assert second not in await _frontier_ids(db, negative)
+    assert await db.count_ready_by_profile("p", hierarchy_mode=negative) == {}
+    mode = replace(negative, delivered_prerequisite_ids=frozenset({first}))
     assert second in await _frontier_ids(db, mode)
     assert await db.count_ready_by_profile("p", hierarchy_mode=mode) == {"worker": 1}
     async with db.immediate() as conn:
@@ -2158,9 +2230,7 @@ async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
             hierarchy_mode=mode,
         ) == second
     assert await db.hierarchy_prerequisite_delivery_head(second) is None
-    assert [reason["code"] for reason in await db.claim_frontier_exclusions(second)] == [
-        "delivery_evidence_unavailable",
-    ]
+    assert await db.claim_frontier_exclusions(second) == []
 
     # Closing and metadata bookkeeping can update the task row after its
     # receipt; they do not represent a new completion.
@@ -2172,8 +2242,8 @@ async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
             id="late-close-record", task_id=first, outcome="pass",
             completed_at=delivered_at + 2,
         ))
-    assert not await db.is_hierarchy_task_runnable(second)
-    assert await db.count_ready_by_profile("p") == {}
+    assert await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {"worker": 1}
     assert await db.hierarchy_prerequisite_delivery_head(second) is None
 
     # A reopened prerequisite invalidates the former receipt even when its
@@ -2181,10 +2251,8 @@ async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
     await asyncio.sleep(0.01)
     await db.update_task(first, status=TaskStatus.READY)
     await db.update_task(first, status=TaskStatus.COMPLETED)
-    assert not await db.is_hierarchy_task_runnable(second)
-    assert [reason["code"] for reason in await db.claim_frontier_exclusions(second)] == [
-        "delivery_evidence_unavailable"
-    ]
+    assert await db.is_hierarchy_task_runnable(second)
+    assert await db.claim_frontier_exclusions(second) == []
 
 
 async def test_reopening_a_completed_task_records_only_the_rework_boundary(db):
@@ -2350,8 +2418,9 @@ async def test_file_root_materializes_its_reserved_epic_branch(db):
 
 
 @pytest.mark.parametrize("mode", ["hierarchy", "train"])
+@pytest.mark.parametrize("empty_retained", [False, True])
 async def test_new_root_bootstraps_from_real_remote_default_branch(
-    db, internal_plugins_handler, tmp_path, mode
+    db, internal_plugins_handler, tmp_path, mode, empty_retained
 ):
     """The command handler's real git-backed resolver, not a stub.
 
@@ -2361,7 +2430,8 @@ async def test_new_root_bootstraps_from_real_remote_default_branch(
     that resolver looked up a branch nothing had pushed and creation rolled
     back with ``repository branch 'aq/<id>' does not exist``.
     """
-    from src.git.manager import GitManager
+    from src.git.manager import GitError, GitManager
+    from src.integration.repository_git import RepositoryGit
 
     await db.update_project("p", hierarchical_integration_mode=mode)
     origin = tmp_path / "origin.git"
@@ -2374,10 +2444,14 @@ async def test_new_root_bootstraps_from_real_remote_default_branch(
     _git(["add", "shared.txt"], work)
     _git(["commit", "-m", "base"], work)
     base = _git(["rev-parse", "HEAD"], work)
-    _git(["push", "origin", "main"], work)
     await db.update_repo("repo", source_path=str(work))
 
     handler = await internal_plugins_handler(db=db, git=GitManager())
+    if empty_retained:
+        retained = RepositoryGit(db, data_dir=handler.config.data_dir, git_manager=handler._git)
+        resolved = await retained._resolve_repository("repo")
+        await retained._ensure_retained_repository(resolved)
+    _git(["push", "origin", "main"], work)
     assert getattr(handler.orchestrator, "hierarchy_integration", None) is None
     result = await handler.execute(
         "create_task", {"project_id": "p", "title": "Real root", "description": "No branch"}
@@ -2393,6 +2467,85 @@ async def test_new_root_bootstraps_from_real_remote_default_branch(
     assert [(row["base_sha"], row["parent_ref"], row["materialized"]) for row in origins] == [
         (base, "main", False)
     ]
+    with pytest.raises(GitError, match="repository branch 'missing' does not exist"):
+        await handler._hierarchy_integration_service()._resolve_head(
+            await db.get_repo("repo"), "missing", filing=True,
+        )
+    assert await handler._hierarchy_integration_service()._resolve_head(
+        await db.get_repo("repo"), "refs/heads/main", filing=True,
+    ) == base
+    with pytest.raises(GitError, match="invalid branch name"):
+        await handler._hierarchy_integration_service()._resolve_head(
+            await db.get_repo("repo"), "main~0", filing=True,
+        )
+
+
+@pytest.mark.parametrize("mode", ["hierarchy", "train"])
+@pytest.mark.parametrize("tracking", [False, True])
+async def test_new_root_uses_retained_git_while_github_app_is_in_backoff(
+    db, internal_plugins_handler, tmp_path, mode, tracking
+):
+    from unittest.mock import AsyncMock
+
+    from src.config import GitHubAppConfig
+    from src.git.github import GitHubAccess, GitHubClient
+    from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
+    from src.git.manager import GitError
+    from src.integration.repository_git import RepositoryGit
+
+    await db.update_project("p", hierarchical_integration_mode=mode)
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    _git(["init", "--bare", "--initial-branch=dev", str(origin)], tmp_path)
+    _git(["clone", str(origin), str(work)], tmp_path)
+    _git(["config", "user.name", "Seed"], work)
+    _git(["config", "user.email", "seed@example.test"], work)
+    (work / "shared.txt").write_text("base\n")
+    _git(["add", "shared.txt"], work)
+    _git(["commit", "-m", "base"], work)
+    base = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "dev"], work)
+    await db.update_repo("repo", source_path=str(work), default_branch="dev")
+
+    access = GitHubAccess.from_config(
+        GitHubAppConfig("Iv1.client", 101, 202, "/unused/key.pem"),
+    )
+    access.runner._retry_at = time.time() + 3600
+    client = GitHubClient(GitHubRepositoryBinding(303, "acme/widgets"), access=access)
+    with pytest.raises(GitHubAccessError, match="backing off"):
+        await client.exact_head_ref("dev")
+
+    git = GitManager(github_access=access)
+    handler = await internal_plugins_handler(db=db, git=git)
+    retained = RepositoryGit(db, data_dir=handler.config.data_dir, git_manager=git)
+    resolved = await retained._resolve_repository("repo")
+    await retained._ensure_retained_repository(resolved)
+    store = resolved.retained_git_dir
+    if tracking:
+        # The fetched ref must win over the bare clone's older local head.
+        (work / "shared.txt").write_text("next\n")
+        _git(["commit", "-am", "next"], work)
+        base = _git(["rev-parse", "HEAD"], work)
+        _git(["push", "origin", "dev"], work)
+        _git(["fetch", "origin", "+refs/heads/dev:refs/remotes/origin/dev"], store)
+
+    github_url = "https://github.com/acme/widgets.git"
+    _git(["remote", "set-url", "origin", github_url], store)
+    await db.update_repo("repo", url=github_url)
+    access.bind_repository = AsyncMock(wraps=access.bind_repository)
+    result = await handler.execute("create_task", {
+        "project_id": "p", "title": "Offline root", "description": "GitHub is in backoff",
+    })
+    assert result["success"], result
+    task_id = result["created"]
+    assert (await db.get_integration_checkpoint(task_id))["checkpoint_sha"] == base
+    assert [(row["base_sha"], row["parent_ref"]) for row in await _origins(db)] == [(base, "dev")]
+    access.bind_repository.assert_not_awaited()
+    # Mutations still require live evidence, even when a local ref exists.
+    with pytest.raises(GitError, match="backing off"):
+        await handler._hierarchy_integration_service()._resolve_head(
+            await db.get_repo("repo"), "dev"
+        )
 
 
 @pytest.mark.parametrize("mode", ["hierarchy", "train"])

@@ -20,9 +20,9 @@ launch does not have to squeeze a 40 KB prompt through a command line.
 **Prompts over ~1 KB never ride argv.**  tmux's ``new-session`` command
 buffer is roughly 2 KB, and a truncated command is a launch that half-works.
 Above the harness's ``max_argv_prompt_bytes`` the prompt is written to
-``.aq/tmp/`` and the argv becomes a tiny ``sh -c`` wrapper that reads it
-back and ``exec``s the harness — the command string stays constant-size
-however long the prompt is.
+``.aq/tmp/`` and argv carries a short instruction to read that file. The
+file contents never become an exec argument (Linux limits each argument
+independently of the total argv size).
 """
 
 from __future__ import annotations
@@ -259,9 +259,8 @@ POOL_BOOTSTRAP_PROMPT = (
     "After an ambiguous close response, inspect your claim and task status before retrying close."
 )
 
-#: The ``sh -c`` script used for oversized prompts.  ``$1`` is the prompt
-#: file; everything after it is the harness argv.
-_PROMPT_FILE_SCRIPT = '__aq_prompt=$(cat "$1"); shift; exec "$@" "$__aq_prompt"'
+#: A configurable threshold must not permit prompts near MAX_ARG_STRLEN.
+_MAX_ARGV_PROMPT_BYTES = 16 * 1024
 
 
 def _infer_provider_from_harness(harness) -> str:
@@ -458,6 +457,7 @@ class SessionSpecBuilder:
         wake: str = "fresh",
         resume_key: str | None = None,
         prompt: str | None = None,
+        workspace_source_type=None,
         knowledge=None,
     ) -> SessionSpec:
         """Spec for a persistent session (``lifecycle="named"``).
@@ -469,6 +469,9 @@ class SessionSpecBuilder:
         A *knowledge* selection prepared before this launch is wrapped for the
         harness and recorded on the spec; the bundle's delivery acknowledgment
         still requires the persisted live session row.
+
+        Callers with a verified isolated worktree may pass *workspace_source_type*;
+        otherwise permission bypass requires the profile's explicit opt-in.
         """
         profile_id = getattr(profile, "id", "") or ""
         # Keep the established global runtime name for restart adoption; the
@@ -517,9 +520,9 @@ class SessionSpecBuilder:
             resume_key=effective_resume,
             bootstrap=bootstrap,
             lifecycle="named",
-            # Named sessions have no workspace, so only the profile's
-            # explicit permission opt-in can grant the skip-permissions flag.
-            allow_skip_permissions=skip_permissions_allowed(profile, None, harness=harness),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             knowledge=knowledge,
         )
 
@@ -962,7 +965,8 @@ class SessionSpecBuilder:
             argv.append(harness.prompt_flag)
 
         prompt_bytes = len(prompt.encode("utf-8"))
-        if prompt_bytes <= harness.max_argv_prompt_bytes:
+        threshold = min(harness.max_argv_prompt_bytes, _MAX_ARGV_PROMPT_BYTES)
+        if prompt_bytes <= threshold:
             argv.append(prompt)
             return argv
 
@@ -975,10 +979,15 @@ class SessionSpecBuilder:
             "Session %s: prompt is %d bytes (> %d) — delivering via %s",
             session_name,
             prompt_bytes,
-            harness.max_argv_prompt_bytes,
+            threshold,
             rel,
         )
-        return ["sh", "-c", _PROMPT_FILE_SCRIPT, "sh", rel, *argv]
+        argv.append(
+            "Read the complete startup instructions in the UTF-8 file "
+            f"{json.dumps(rel)} in the current working directory before taking any action. "
+            "Follow those instructions."
+        )
+        return argv
 
     #: Tool names a CLI harness understands directly.  Anything else in a
     #: profile's allowlist is an ``aq`` *command* name, which reaches a

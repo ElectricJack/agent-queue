@@ -396,22 +396,27 @@ async def test_active_integration_batch_requires_quiescence(started):
 
 
 async def test_split_root_admitted_only_after_observed_default_landing(started, tmp_path):
-    """Admit the split root only once current Git proves the source landed."""
+    """A split remainder uses current default-branch proof for admission."""
     from src.git.manager import GitManager
     from src.integration.admission import observe_admission
-    from src.integration.delivery_observer import DeliveryObserver
-    from src.integration.delivery_truth import DeliveryState
-    from src.integration.development import DevelopmentPrimitives
+    from src.integration.delivery_observer import DeliveryObserver, delivery_targets
     from src.integration.git_truth import GitTruth
+    from src.integration.hierarchy import materialize_exact_branch
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION, DeliveryState
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
     from src.models import TaskCompletion
-    from tests.test_delivery_consumers import Origin
+    from tests.test_delivery_consumers import Origin, git
 
     handler, args = started
     db = handler.db
     source_id = args["task_id"]
     origin = Origin(tmp_path)
     await db.update_repo("repo", url=origin.url)
+    service = handler._hierarchy_integration_service()
+    service.default_head_resolver = lambda _repo, _branch: git(origin.url, "rev-parse", "main")
+    service.branch_materializer = lambda repo, branch, base: materialize_exact_branch(
+        GitManager(), str(origin.clone), branch, base, repository_url=repo.url,
+    )
     source_before = await _row(db, tasks, source_id)
     branch_before = await _row(db, task_branch_origins, source_id)
     split = await handler.execute("task_split", args)
@@ -448,6 +453,8 @@ async def test_split_root_admitted_only_after_observed_default_landing(started, 
             )
         await db.resolve_gate(gate_id, resolved_by="test-router")
         await db.transition_task(tid, TaskStatus.READY)
+        moved_origin = await _row(db, task_branch_origins, tid)
+        await handler._hierarchy_integration_service().materialize_origin(moved_origin["id"])
         assert (await db.get_task(tid)).is_blocked
 
     head = origin.work(source_id)
@@ -463,31 +470,19 @@ async def test_split_root_admitted_only_after_observed_default_landing(started, 
         )
     )
     await db.transition_task(source_id, TaskStatus.COMPLETED)
-    observer = DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer-data")
-    db.set_delivery_observer(observer)
-    db.set_prerequisite_observer(
-        DeliveryObserver(
-            db,
-            git=GitManager(),
-            data_dir=tmp_path / "prerequisite-data",
-            truth=GitTruth(GitManager()),
-        )
+    observer = DeliveryObserver(
+        db, git=GitManager(), data_dir=tmp_path / "observer-data", truth=GitTruth(
+            GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION,
+        ),
     )
-    service = DevelopmentPrimitives(db, data_dir=tmp_path / "service-data", git=GitManager())
+    db.set_prerequisite_observer(observer)
 
-    async def delivery_withheld():
-        # The unstarted roots also lack a materialized origin; only delivery matters here.
-        view = await observe_admission(db, [root_id, other_root], service)
-        codes = {tid: {r["code"] for r in view.reasons.get(tid, ())} for tid in view.candidate_ids}
-        assert "prerequisite_delivery" in codes[other_root]
-        return "prerequisite_delivery" in codes[root_id]
+    async def admitted():
+        return await observe_admission(db, [root_id, other_root], handler.orchestrator)
 
-    unproven = await observer.observe([source_id])
+    unproven = await observer.observe([source_id], target_loader=delivery_targets)
     assert unproven.get(source_id).state is DeliveryState.UNKNOWN
-    # The persisted projection is structural; admission withholds the root.
-    assert not (await db.get_task(root_id)).is_blocked
-    assert (await db.get_task(other_root)).is_blocked
-    assert await delivery_withheld()
+    assert root_id not in (await admitted()).allowed
 
     async def receipt(name, **changes):
         async with db.immediate() as conn:
@@ -507,30 +502,49 @@ async def test_split_root_admitted_only_after_observed_default_landing(started, 
                 )
             )
 
-    # Receipts are history: even a verified default receipt cannot admit the root.
-    await receipt(
-        "verified-default",
-        reviewed_head_sha=head,
-        verification_evidence={"default_containment": "verified"},
-    )
-    assert await delivery_withheld()
+    await receipt("failed", disposition="failed", resolution_evidence={"reason": "failed check"})
+    await db.recompute_delivery_dependents([source_id])
+    assert root_id not in (await admitted()).allowed
     await GitProvenance(
         GitManager(), str(origin.clone), repository_url=origin.url
     ).write_completion(
         CompletedSource(CompletionIdentity("p", "repo", source_id, "split-source-close"), head)
     )
-    pending = await observer.observe([source_id])
+    pending = await observer.observe([source_id], target_loader=delivery_targets)
     assert not pending.satisfied(source_id)
-    assert await delivery_withheld()
+    assert root_id not in (await admitted()).allowed
 
+    # Historical receipt rows cannot admit a source that has not landed.
+    for name, changes in (
+        ("old-generation", {"created_at": completed_at - 1}),
+        ("epic-only", {"target_task_id": "epic"}),
+        ("wrong-default", {"target_branch": "refs/heads/release"}),
+    ):
+        await receipt(name, **changes)
+        await observer.observe([source_id], target_loader=delivery_targets)
+        assert root_id not in (await admitted()).allowed
+    await receipt(
+        "verified-default",
+        reviewed_head_sha=head,
+        after_sha=git(origin.url, "rev-parse", "main"),
+        verification_evidence={"default_containment": "verified"},
+    )
+    assert root_id not in (await admitted()).allowed
     origin.land(source_id)
-    landed = await observer.observe([source_id])
+    landed = await observer.observe([source_id], target_loader=delivery_targets)
     assert landed.get(source_id).state is DeliveryState.CONTAINED
-    assert landed.satisfied(source_id) and await landed.fresh()
-    assert not await delivery_withheld()
+    assert await landed.fresh()
+    view = await admitted()
+    assert root_id in view.allowed and other_root not in view.allowed, dict(view.reasons)
+    assert not (await db.get_task(root_id)).is_blocked  # Structural completion only.
     assert (await db.get_task(other_root)).is_blocked
-    frontier = {t.id for t in await db.get_ready_frontier("p")}
+    frontier = {t.id for t in await db.get_ready_frontier("p") if t.id in view.allowed}
     assert root_id in frontier and other_root not in frontier
+    # Rewinding the target revokes admission despite the retained receipt rows.
+    base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
+    git(origin.clone, "push", "--force", "origin", f"{base}:main")
+    assert not await view.is_fresh(root_id)
+    assert root_id not in (await admitted()).allowed
     assert await db.get_task_meta(source_id, "checks") == {"unit": "passed"}
     assert (await db.get_session("writer")).task_id == source_id
     assert await _row(db, task_branch_origins, source_id) == branch_before

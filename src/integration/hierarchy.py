@@ -35,6 +35,7 @@ from src.integration.models import BranchKey
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
 from src.integration.records import ParentEpisodeRecords
+from src.integration.row_query import select_row
 from src.models import RepoConfig, Task, TaskStatus
 from src.task_names import child_task_id, fresh_root_id
 
@@ -108,7 +109,7 @@ async def record_worker_publication(db, task_id: str, branch: str, head_sha: str
         ))
 
 
-async def missing_origin_tasks_on(conn, project_id: str, repository_id: str) -> list[str]:
+def _missing_origin_tasks(repository_id):
     """Open work and undelivered completions lacking their live delivery identity.
 
     Legacy artifact-bearing completions are conservatively included: receipts
@@ -148,15 +149,53 @@ async def missing_origin_tasks_on(conn, project_id: str, repository_id: str) -> 
         task_branch_origins.c.task_id == tasks.c.id,
         task_branch_origins.c.repository_id == repository_id,
     ).exists()
-    return list((await conn.execute(select(tasks.c.id).where(
-        tasks.c.project_id == project_id,
+    return select(tasks.c.id).where(
         or_(tasks.c.status != "COMPLETED", and_(
             ~historical, or_(tasks.c.branch_name.is_not(None), tasks.c.pr_url.is_not(None),
                              recorded_commits),
         )),
         ~live,
         ~repair, ~verifier, ~ordinary_repair,
+    )
+
+
+async def missing_origin_tasks_on(conn, project_id: str, repository_id: str) -> list[str]:
+    """Open work and legacy completions missing their live delivery identity."""
+    return list((await conn.execute(_missing_origin_tasks(repository_id).where(
+        tasks.c.project_id == project_id,
     ).order_by(tasks.c.id))).scalars())
+
+
+def ready_root_origin_tasks():
+    """Detached roots reconciliation may give a missing live origin.
+
+    Shared by the bounded scanner and its project-locked eligibility recheck.
+    Delegates use their existing subject branch, never a task origin.
+    """
+    from src.database.queries.integration_state_queries import session_attached_clause
+    from src.database.tables import projects
+    from src.integration.train_policy import train_disabled_for_project
+
+    return (_missing_origin_tasks(projects.c.integration_repository_id)
+        .add_columns(tasks.c.project_id, tasks.c.created_at)
+        .join(projects, projects.c.id == tasks.c.project_id)
+        .where(
+            projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            projects.c.integration_repository_id.is_not(None),
+            ~train_disabled_for_project(),
+            tasks.c.parent_task_id.is_(None), tasks.c.status == "READY",
+            tasks.c.assigned_agent_id.is_(None),
+            or_(tasks.c.repo_id.is_(None),
+                tasks.c.repo_id == projects.c.integration_repository_id),
+            tasks.c.created_by_kind.is_distinct_from("integration_repair"),
+            tasks.c.created_by_kind.is_distinct_from("integration_writer"),
+            ~select(sessions.c.id).where(
+                sessions.c.task_id == tasks.c.id, session_attached_clause(),
+            ).exists(),
+            ~select(workspaces.c.id).where(
+                workspaces.c.locked_by_task_id == tasks.c.id,
+            ).exists(),
+        ))
 
 
 async def materialize_exact_branch(
@@ -376,6 +415,7 @@ class HierarchyIntegration:
         db,
         *,
         default_head_resolver: DefaultHeadResolver | None = None,
+        filing_head_resolver: DefaultHeadResolver | None = None,
         branch_materializer: BranchMaterializer | None = None,
         checkpoint_verifier: CheckpointVerifier | None = None,
         ancestry_verifier: AncestryVerifier | None = None,
@@ -389,6 +429,7 @@ class HierarchyIntegration:
         self.db = db
         self.subject_policy_loader = subject_policy_loader
         self.default_head_resolver = default_head_resolver
+        self.filing_head_resolver = filing_head_resolver
         self.branch_materializer = branch_materializer
         self.checkpoint_verifier = checkpoint_verifier
         self.ancestry_verifier = ancestry_verifier
@@ -405,6 +446,27 @@ class HierarchyIntegration:
         Existing origins and checkpoints retain their identities on every retry.
         """
         pending = await missing_origin_tasks_on(conn, project_id, repo.id)
+        return await self._backfill_origins_on(conn, project_id, repo, pending)
+
+    async def reserve_ready_root_origin_on(self, conn, task_id: str) -> dict:
+        """Repair one missing root origin without changing its filing identity.
+
+        Both reconciliation and system filers use this under the same lock as
+        claims and train activation, so a stale scan cannot reserve for a writer
+        or for a project whose train has since been disabled.
+        """
+        project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
+        if project_id is None:
+            return {"outcome": "not_eligible", "task_id": task_id}
+        await self.db.lock_hierarchy_project(conn, project_id)
+        eligible = await conn.scalar(ready_root_origin_tasks().where(tasks.c.id == task_id))
+        if eligible is None:
+            return {"outcome": "not_eligible", "task_id": task_id}
+        _project, repo = await self._root_route(conn, project_id)
+        await self._backfill_origins_on(conn, project_id, repo, [task_id])
+        return {"outcome": "backfilled", "task_id": task_id}
+
+    async def _backfill_origins_on(self, conn, project_id, repo, pending) -> list[str]:
         if pending and self.branch_head_resolver is None:
             raise HierarchyError("invalid", "branch head resolver is unavailable for origin backfill")
         written = []
@@ -1259,13 +1321,11 @@ class HierarchyIntegration:
         )
         transition = None
         async with self.ownership.mutation_exclusion(fence) as conn:
-            current = (
-                await conn.execute(
-                    select(task_branch_origins)
-                    .where(task_branch_origins.c.id == origin_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            current = await select_row(
+                conn, task_branch_origins,
+                task_branch_origins.c.id == origin_id,
+                lock=True,
+            )
             if current is None or current["retired_at"] is not None:
                 raise HierarchyError("invalid", "pending origin changed")
             task = await self._task_row(conn, current["task_id"])
@@ -1642,27 +1702,23 @@ class HierarchyIntegration:
         return dict(row)
 
     async def _locked_checkpoint(self, conn, task_id: str) -> dict:
-        row = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        row = await select_row(
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == task_id,
+            lock=True,
+        )
         if row is None:
             raise HierarchyError("invalid", f"task has no integration checkpoint: {task_id}")
         return dict(row)
 
     async def _locked_origin(self, conn, task_id: str, repository_id: str) -> dict:
-        row = (
-            await conn.execute(
-                select(task_branch_origins)
-                .where(task_branch_origins.c.task_id == task_id)
-                .where(task_branch_origins.c.repository_id == repository_id)
-                .where(task_branch_origins.c.retired_at.is_(None))
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        row = await select_row(
+            conn, task_branch_origins,
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None),
+            lock=True,
+        )
         if row is None:
             raise HierarchyError("invalid", "task has no live branch origin")
         return dict(row)
@@ -1686,20 +1742,18 @@ class HierarchyIntegration:
         chain.reverse()
         parent_checkpoint: dict | None = None
         for row in chain:
-            existing = (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == row["id"]
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn, task_integration_checkpoints,
+                task_integration_checkpoints.c.task_id == row['id'],
+            )
             if existing is not None:
                 parent_checkpoint = dict(existing)
                 continue
             branch = row["branch_name"] or f"aq/{row['id']}"
             if parent_checkpoint is None:
                 base_sha = await self._resolve_head(
-                    repo, root_branch or row["branch_name"] or repo.default_branch
+                    repo, root_branch or row["branch_name"] or repo.default_branch,
+                    filing=root_branch is not None,
                 )
                 parent_ref = root_parent_ref or repo.default_branch
             else:
@@ -1734,10 +1788,11 @@ class HierarchyIntegration:
                 "checkpoint_sha": base_sha,
             }
 
-    async def _resolve_head(self, repo: RepoConfig, branch: str) -> str:
-        if self.default_head_resolver is None:
+    async def _resolve_head(self, repo: RepoConfig, branch: str, *, filing: bool = False) -> str:
+        resolver = (self.filing_head_resolver if filing else None) or self.default_head_resolver
+        if resolver is None:
             raise HierarchyError("invalid", "repository head resolver is unavailable")
-        value = self.default_head_resolver(repo, branch)
+        value = resolver(repo, branch)
         if inspect.isawaitable(value):
             value = await value
         if not isinstance(value, str) or not _OID.fullmatch(value):
