@@ -37,6 +37,9 @@ MAX_DIAGNOSTIC_BYTES = 256 * 1024
 MAX_STDIN_BYTES = 1024 * 1024
 
 
+BINDING_REVERIFY_SECONDS = 600.0
+
+
 @dataclass(frozen=True, slots=True)
 class GitHubAccessStatus:
     """Non-secret status for the effective startup credential composition."""
@@ -70,6 +73,9 @@ class GitHubAccess:
             raise ValueError("GitHub auth and runner credential identities do not match")
         self.auth = auth
         self.runner = runner
+        self._bindings: dict[str, GitHubRepositoryBinding] = {}
+        self._binding_verified_at: dict[str, float] = {}
+        self._binding_clock: Callable[[], float] = time.monotonic
 
     @classmethod
     def from_config(
@@ -326,6 +332,39 @@ class GitHubAccess:
                 "GitHub repository reference did not match the authorized repository",
             )
 
+        binding = self._bindings.get(full_name)
+        if binding is not None:
+            if expected_binding is not None and binding != expected_binding:
+                raise GitHubAccessError(
+                    "credentials", "authenticated repository identity did not match",
+                )
+            # A recently verified identity is reused without another API call:
+            # re-verifying on every bind tripped GitHub's secondary rate limit.
+            verified_at = self._binding_verified_at.get(full_name)
+            if verified_at is not None and self._binding_clock() - verified_at < BINDING_REVERIFY_SECONDS:
+                return binding
+            # Retain identity only, never a selected token. Every verification
+            # goes through the same expiry/401 recovery as other repository reads.
+            result = await self.run_read(
+                ["api", "--method", "GET", f"repos/{full_name}"],
+                repository=binding,
+            )
+            verified = self._verified_binding(
+                result, full_name=full_name, expected_binding=binding,
+            )
+            self._binding_verified_at[full_name] = self._binding_clock()
+            return verified
+
+        self._check_backoff()
+        return await self._bind_new_repository(full_name, expected_binding=expected_binding)
+
+    async def _bind_new_repository(
+        self,
+        full_name: str,
+        *,
+        expected_binding: GitHubRepositoryBinding | None,
+    ) -> GitHubRepositoryBinding:
+        """Verify an unbound candidate; only a CLI authentication rejection is replayable."""
         candidate: AppTokenCandidate | None = None
         selected: AppTokenCandidate | GitHubCredential
         if self.auth.mode is GitHubCredentialMode.APP:
@@ -344,11 +383,26 @@ class GitHubAccess:
 
         verification_binding = binding if candidate is not None else expected_binding
         try:
-            result = await self.runner.run(
-                ["api", "--method", "GET", f"repos/{full_name}"],
-                repository=binding,
-                credential=selected,
-            )
+            try:
+                result = await self.runner.run(
+                    ["api", "--method", "GET", f"repos/{full_name}"],
+                    repository=binding,
+                    credential=selected,
+                )
+            except GitHubAccessError as exc:
+                if candidate is None or exc.category != "credentials":
+                    raise
+                await self.auth.discard_candidate(candidate)
+                candidate = await self.auth.candidate_for_repository(full_name)
+                if candidate.repository != binding:
+                    raise GitHubAccessError(
+                        "credentials", "authenticated repository identity did not match",
+                    )
+                result = await self.runner.run(
+                    ["api", "--method", "GET", f"repos/{full_name}"],
+                    repository=binding,
+                    credential=candidate,
+                )
             verified = self._verified_binding(
                 result,
                 full_name=full_name,
@@ -361,6 +415,9 @@ class GitHubAccess:
                         "authenticated repository identity did not match",
                     )
                 await self.auth.accept_candidate(candidate)
+            if candidate is not None:
+                self._bindings[full_name] = verified
+                self._binding_verified_at[full_name] = self._binding_clock()
             return verified
         except asyncio.CancelledError:
             if candidate is not None:
@@ -434,6 +491,7 @@ class GitHubAccess:
         check_result: Callable[[GhResult], None] | None = None,
     ) -> GhResult:
         """Run a read and refresh one rejected App generation at most once."""
+        self._check_backoff()
         selected = await self.auth.credential_for(repository)
         try:
             return await self._run(
@@ -447,6 +505,9 @@ class GitHubAccess:
                 check_result=check_result,
             )
         except GitHubAccessError as exc:
+            if exc.category == "credentials":
+                # An auth rejection forces the next bind to re-verify identity.
+                self._binding_verified_at.pop(repository.full_name, None)
             if self.auth.mode is not GitHubCredentialMode.APP or exc.category != "credentials":
                 raise
         await self.auth.invalidate(repository, generation=selected.generation)
@@ -483,9 +544,12 @@ class GitHubAccess:
     ) -> GhResult:
         """Run a write once; an auth failure invalidates but never replays it."""
         try:
+            self._check_backoff()
             selected = await self.auth.credential_for(repository)
         except GitHubAccessError as exc:
-            raise GitHubWriteNotStarted(exc.category, str(exc), retry_at=exc.retry_at) from exc
+            raise GitHubWriteNotStarted(
+                exc.category, str(exc), retry_at=exc.retry_at, http_status=exc.http_status
+            ) from exc
         try:
             return await self._run(
                 args,
@@ -501,6 +565,11 @@ class GitHubAccess:
             if self.auth.mode is GitHubCredentialMode.APP and exc.category == "credentials":
                 await self.auth.invalidate(repository, generation=selected.generation)
             raise
+
+    def _check_backoff(self) -> None:
+        check_backoff = getattr(self.runner, "check_backoff", None)
+        if callable(check_backoff):
+            check_backoff()
 
     async def _run(
         self,
@@ -525,7 +594,7 @@ class GitHubAccess:
             check=check_result is None,
         )
         if check_result is not None:
-            check_result(result)
+            _validate_cli_result(self.runner, repository, result, check_result)
         return result
 
     @staticmethod
@@ -728,8 +797,26 @@ class GitHubRunnerAccess:
             check=check_result is None,
         )
         if check_result is not None:
-            check_result(result)
+            _validate_cli_result(self.runner, repository, result, check_result)
         return result
+
+
+def _validate_cli_result(
+    runner: GhRunnerLike,
+    repository: GitHubRepositoryBinding,
+    result: GhResultLike,
+    check_result: Callable[[GhResultLike], None],
+) -> None:
+    """Report actual API failures after decoding status and expected outcomes."""
+    try:
+        check_result(result)
+    except GitHubAccessError as exc:
+        # Injected runners may implement only the execution seam. Production
+        # uses GhRunner's shared warning cache for both checked and API calls.
+        warn_failure = getattr(runner, "warn_failure", None)
+        if callable(warn_failure):
+            warn_failure(exc, repository=repository)
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -850,6 +937,18 @@ class GitHubClient:
         value = _decode_json(response.body)
         if not isinstance(value, dict):
             raise GitHubAccessError("conflict_or_invalid", "GitHub response was not an object")
+        return value
+
+    async def authenticated_user(self) -> dict[str, Any]:
+        """Identify the human existing gh login without widening repository endpoints."""
+        from src.git.github_contracts import GitHubCredentialMode
+
+        if self.credential_identity.mode is not GitHubCredentialMode.EXISTING_LOGIN:
+            raise ValueError("human identity requires existing-login credentials")
+        response = await self._request_endpoint("GET", "user")
+        value = _decode_json(response.body)
+        if not isinstance(value, dict):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub user response was not an object")
         return value
 
     async def request_text(
@@ -1046,7 +1145,7 @@ class GitHubClient:
                     raise _command_error(result.returncode, result.stderr) from None
                 raise
             if response.status not in allowed:
-                raise _http_error(response.status, response.headers, self.clock())
+                raise _http_error(response.status, response.headers, self.clock(), response.body)
             if result.returncode and response.status in allowed:
                 # gh exits nonzero for HTTP failures.  An explicitly expected
                 # status remains usable, but unrelated command failures do not.
@@ -1289,7 +1388,9 @@ class GitHubClient:
             )
         existing = await self._ordinary_pr_for_head(head, base, head_oid)
         if existing is not None:
-            return PullRequestCreation(existing, created=False)
+            if existing["state"] == "closed" and not existing.get("merged_at"):
+                return await self._reopen_ordinary_pr(existing, head, base, head_oid)
+            return PullRequestCreation(existing["html_url"], created=False)
         try:
             result = await self.access.run_write(
                 ["pr", "create", "--title", title, "--body-file", "-", "--base", base,
@@ -1310,11 +1411,40 @@ class GitHubClient:
             # Read with a fresh credential when appropriate; never replay the
             # write inside this invocation.
             existing = await self._ordinary_pr_for_head(head, base, head_oid)
-            if existing is not None:
-                return PullRequestCreation(existing, created=False)
+            if existing is not None and (
+                existing["state"] == "open" or existing.get("merged_at")
+            ):
+                return PullRequestCreation(existing["html_url"], created=False)
             raise
 
-    async def _ordinary_pr_for_head(self, head: str, base: str, head_oid: str) -> str | None:
+    async def _reopen_ordinary_pr(
+        self, pull: dict[str, Any], head: str, base: str, head_oid: str
+    ) -> PullRequestCreation:
+        write_error = None
+        try:
+            await self.request_json(
+                "PATCH",
+                f"/repositories/{self.repository.repository_id}/pulls/{pull['number']}",
+                json_body={"state": "open"},
+            )
+        except GitHubAccessError as exc:
+            if isinstance(exc, GitHubWriteNotStarted) or exc.category == "cli_missing":
+                raise
+            write_error = exc
+        # A failed write may have reopened the PR. Validate the same request's
+        # identity and state with a read, never another write in this invocation.
+        current = await self._ordinary_pr_for_head(head, base, head_oid)
+        if current is not None and current["html_url"] == pull["html_url"] and (
+            current["state"] == "open" or current.get("merged_at")
+        ):
+            return PullRequestCreation(current["html_url"], created=False)
+        if write_error is not None:
+            raise write_error
+        raise GitHubAccessError("conflict_or_invalid", "PR reopen was not confirmed")
+
+    async def _ordinary_pr_for_head(
+        self, head: str, base: str, head_oid: str
+    ) -> dict[str, Any] | None:
         owner = self.repository.full_name.split("/", 1)[0]
         pulls = await self.paged_list(
             f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
@@ -1326,11 +1456,23 @@ class GitHubClient:
             if not isinstance(pr_head, dict) or pr_head.get("ref") != head:
                 continue
             matches.append(pull)
-        if not matches:
+        # An open request is the existing request.  Without one, merged or
+        # closed requests are history: a branch that already shipped earlier
+        # work may deliver more, so only a request for this exact delivery
+        # (same base and head commit) is reused or reopened.
+        current = [pull for pull in matches if pull.get("state") == "open"]
+        if not current:
+            current = [
+                pull for pull in matches
+                if pull["head"].get("sha") == head_oid
+                and isinstance(pull.get("base"), dict)
+                and pull["base"].get("ref") == base
+            ]
+        if not current:
             return None
-        if len(matches) != 1:
+        if len(current) != 1:
             raise GitHubAccessError("conflict_or_invalid", "PR head has multiple existing requests")
-        pull = matches[0]
+        pull = current[0]
         pr_head = pull["head"]
         pr_base = pull.get("base")
         head_repo = pr_head.get("repo")
@@ -1349,12 +1491,11 @@ class GitHubClient:
             or pr_base.get("ref") != base
             or pr_head.get("sha") != head_oid
             or pull.get("state") not in {"open", "closed"}
-            or (pull.get("state") == "closed" and not pull.get("merged_at"))
         ):
             raise GitHubAccessError(
                 "conflict_or_invalid", "existing PR head did not match the requested delivery"
             )
-        return url
+        return pull
 
     async def list_pull_requests(
         self, *, state: str = "open", base: str | None = None,
@@ -1498,6 +1639,53 @@ class GitHubClient:
         return await self.paged_items(
             f"/repositories/{self.repository.repository_id}/commits/{sha}/check-runs?per_page=100",
             key="check_runs",
+        )
+
+    async def rerequest_check_suite(self, check_suite_id: int) -> dict[str, Any]:
+        """Ask GitHub to run one check suite again, without pushing code.
+
+        GitHub's documented "Rerequest a check suite" endpoint:
+        ``POST /repos/{owner}/{repo}/check-suites/{check_suite_id}/rerequest``
+        (https://docs.github.com/en/rest/checks/suites#rerequest-a-check-suite).
+        It resets that suite to ``queued`` and clears its conclusion, which is
+        the only way to retry CI for a head that has not moved.  It is addressed
+        by suite id, so it cannot reach another repository, commit or head, and
+        it re-runs checks rather than dispatching a workflow — no ``actions:
+        write`` is involved.
+
+        GitHub documents writes to checks as GitHub-App-only: OAuth app tokens
+        and personal access tokens can read check suites and check runs but
+        cannot write them (https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks).
+        An existing-login credential therefore refuses here, before any request
+        is issued, instead of asking for one that cannot succeed; widening a
+        credential is a human decision, and the caller falls back to waiting for
+        its named infrastructure blocker.
+        """
+        if (
+            isinstance(check_suite_id, bool)
+            or not isinstance(check_suite_id, int)
+            or check_suite_id <= 0
+        ):
+            raise ValueError("invalid check suite ID")
+        if self.credential_identity.mode is not GitHubCredentialMode.APP:
+            raise GitHubAccessError(
+                "github_operation_unsupported",
+                "Re-requesting a check suite requires a GitHub App credential; GitHub "
+                "documents writes to checks as GitHub-App-only",
+            )
+        return await self.request_json(
+            "POST",
+            f"repos/{self.repository.full_name}/check-suites/{check_suite_id}/rerequest",
+            expected_statuses={201},
+        )
+
+    async def rerun_job(self, job_id: int) -> dict[str, Any]:
+        """Re-run one exact Actions job (requires Actions write permission)."""
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            raise ValueError("invalid Actions job ID")
+        return await self.request_json(
+            "POST", f"repos/{self.repository.full_name}/actions/jobs/{job_id}/rerun",
+            expected_statuses={201},
         )
 
     async def job_log(self, job_id: int) -> str:
@@ -1670,7 +1858,7 @@ class GitHubClient:
         return f"<!-- aq-integration-audit:{idempotency_key} -->"
 
     def _audit_pull_request(self, payload: dict[str, Any], idempotency_key: str):
-        from src.integration.candidates import AuditPullRequest
+        from src.integration.promotion_contracts import AuditPullRequest
 
         head = payload.get("head")
         base = payload.get("base")
@@ -1840,27 +2028,39 @@ def _next_link(value: str | None) -> str | None:
     return links[0] if links else None
 
 
-def _http_error(status: int, headers: Mapping[str, str], now: float) -> GitHubAccessError:
+def _http_error(
+    status: int, headers: Mapping[str, str], now: float, body: bytes = b""
+) -> GitHubAccessError:
     retry_after = headers.get("retry-after")
     remaining = headers.get("x-ratelimit-remaining")
     reset = headers.get("x-ratelimit-reset")
-    if status == 429 or (status == 403 and (retry_after is not None or remaining == "0")):
-        retry_at = now
+    secondary_limit = any(
+        text in body.lower() for text in (b"secondary rate limit", b"rate limit exceeded")
+    )
+    if status == 429 or (
+        status == 403 and (retry_after is not None or remaining == "0" or secondary_limit)
+    ):
+        retry_times: list[float] = []
         if retry_after:
             try:
-                retry_at = now + max(0, int(retry_after))
-            except ValueError:
+                retry_times.append(now + max(0, int(retry_after)))
+            except (ValueError, OverflowError):
                 try:
-                    retry_at = parsedate_to_datetime(retry_after).timestamp()
-                except (TypeError, ValueError):
+                    retry_times.append(parsedate_to_datetime(retry_after).timestamp())
+                except (TypeError, ValueError, OverflowError):
                     pass
-        elif reset:
+        # A secondary limit may leave the primary quota untouched. Its reset
+        # header does not govern that limit unless the primary quota is empty.
+        if reset and remaining == "0":
             try:
-                retry_at = max(now, float(reset))
-            except ValueError:
+                retry_times.append(float(int(reset)))
+            except (ValueError, OverflowError):
                 pass
         return GitHubAccessError(
-            "rate_limited", "GitHub request was rate limited", retry_at=retry_at
+            "rate_limited",
+            f"GitHub request was rate limited (rate_limited, HTTP {status})",
+            retry_at=max(now, *retry_times) if retry_times else now + 60.0,
+            http_status=status,
         )
     category = {
         401: "credentials",
@@ -1869,7 +2069,9 @@ def _http_error(status: int, headers: Mapping[str, str], now: float) -> GitHubAc
         409: "conflict_or_invalid",
         422: "conflict_or_invalid",
     }.get(status, "transient" if status >= 500 else "conflict_or_invalid")
-    return GitHubAccessError(category, f"GitHub request failed ({category})")
+    return GitHubAccessError(
+        category, f"GitHub request failed ({category}, HTTP {status})", http_status=status
+    )
 
 
 def _command_error(returncode: int, diagnostic: str) -> GitHubAccessError:
@@ -1881,13 +2083,16 @@ def _command_error(returncode: int, diagnostic: str) -> GitHubAccessError:
         category = "not_found_or_hidden"
     elif status in {409, 422}:
         category = "conflict_or_invalid"
-    elif status in {403, 429} and "rate limit" in diagnostic.lower():
+    elif status == 429 or (status == 403 and "rate limit" in diagnostic.lower()):
         category = "rate_limited"
     elif status == 403:
         category = "permission"
     else:
         category = "transient"
-    return GitHubAccessError(category, "GitHub CLI request failed")
+    detail = category if status is None else f"{category}, HTTP {status}"
+    return GitHubAccessError(
+        category, f"GitHub CLI request failed ({detail})", http_status=status
+    )
 
 
 def _strict_positive_int(value: Any) -> int | None:
