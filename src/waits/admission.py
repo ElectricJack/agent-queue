@@ -4,9 +4,10 @@ Identities bind a typed constraint to its task, route, repository and current
 configuration. Occupancy and time are observations, never cached verdicts.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from functools import wraps
 import hashlib
 import json
 import time
@@ -15,10 +16,30 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from src.database.tables import (
-    workspace_kinds, workspaces, continuations, integration_batch_members, integration_batches, integration_branch_owners,
-    integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records,
+    continuations, integration_batch_members, integration_batches, integration_branch_owners,
+    integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records, workspaces,
 )
 from src.waits.conditions import Condition, NodeKey, Observation, Snapshot
+from src.waits.graph import graph_locked
+
+_prepared = ContextVar("wait_admission_observation", default=None)
+
+
+def admission_pass(reader_path):
+    """Observe service inputs before a command takes any graph/owner locks."""
+    def decorate(method):
+        @wraps(method)
+        async def run(self, *args, **kwargs):
+            reader = self
+            for name in reader_path.split("."):
+                reader = getattr(reader, name, None)
+            if not isinstance(reader, AdmissionReader) or _prepared.get() is not None:
+                return await method(self, *args, **kwargs)
+            request = args[0] if args and isinstance(args[0], dict) else {}
+            async with reader.prepared(project_id=request.get("project_id")):
+                return await method(self, *args, **kwargs)
+        return run
+    return decorate
 
 
 def digest(value):
@@ -88,11 +109,9 @@ class AdmissionReader:
     def __init__(self, orchestrator, *, clock=time.time):
         self.orchestrator = orchestrator
         self.clock = clock
-        self._prepared = ContextVar("scheduler_admission", default=None)
 
     @asynccontextmanager
-    async def prepared(self, project_id):
-        """Observe Git/policy outside the graph lock, then revalidate on its connection."""
+    async def prepared(self, *, project_id=None):
         from src.integration.admission import observe_admission
         from src.integration.development import DevelopmentPrimitives
         from src.routing.readiness import orchestrator_ready_projects
@@ -100,23 +119,24 @@ class AdmissionReader:
         o = self.orchestrator
         ready = await orchestrator_ready_projects(o)
         async with o.db._engine.connect() as conn:
-            ids = list((await conn.execute(select(tasks.c.id).where(
-                tasks.c.project_id == project_id,
+            query = select(tasks.c.id, tasks.c.project_id).where(
                 tasks.c.status.in_(("READY", "DEFINED", "PAUSED", "RESUME_PENDING")),
-            ))).scalars())
-        service = getattr(o, "development_integration", None)
-        if service is None:
-            service = DevelopmentPrimitives(o.db, data_dir=o.config.data_dir,
-                                            git=getattr(o, "git", None))
-        view = await observe_admission(
-            o.db, ids, service, cached_only=True,
+            )
+            if project_id is not None:
+                query = query.where(tasks.c.project_id == project_id)
+            candidates = (await conn.execute(query)).all()
+        service = getattr(o, "development_integration", None) or DevelopmentPrimitives(
+            o.db, data_dir=o.config.data_dir, git=getattr(o, "git", None),
+        )
+        admission = await observe_admission(
+            o.db, [r.id for r in candidates], service, cached_only=True,
             default_mode=o.config.integration.default_mode, router_ready_projects=ready,
         )
-        token = self._prepared.set((view, frozenset(ids), ready))
+        token = _prepared.set((self, admission, ready))
         try:
             yield
         finally:
-            self._prepared.reset(token)
+            _prepared.reset(token)
 
     async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False):
         from src.database.queries.claim_queries import (
@@ -125,8 +145,16 @@ class AdmissionReader:
             route_claimable,
         )
         from src.database.queries.hierarchy_queries import ProjectIntegrationMode
-        from src.routing.readiness import orchestrator_router_ready
 
+        prepared = _prepared.get()
+        if prepared is None or prepared[0] is not self:
+            if graph_locked(conn):
+                from src.waits.conditions import WaitError
+                raise WaitError("wait.source_unresolved", "admission observation must precede graph lock")
+            async with self.prepared():
+                return await self.observe_task(conn, task_id, continuation_id=continuation_id,
+                                               migration_audit=migration_audit)
+        _, admission, ready_projects = prepared
         o = self.orchestrator
         config = o.config
         config_revision = digest(asdict(config))
@@ -155,32 +183,13 @@ class AdmissionReader:
             projects.c.id == task["project_id"],
         ))).mappings().one()
         profile = await o.db.get_profile(task["profile_id"], conn=conn) if task["profile_id"] else None
-        prepared = self._prepared.get()
-        ready = (task["project_id"] in prepared[2] if prepared is not None
-                 else await orchestrator_router_ready(o, task["project_id"]))
-        # The same SQL predicates the ordinary claim path uses. Git delivery is
-        # separately re-observed below; an old cached verdict never clears a hold.
+        ready = task["project_id"] in ready_projects
+        # Prepared stack views check cache expiry without Git I/O under the lock.
         project_model = await o.db.get_project(task["project_id"], conn=conn)
-        mode = ProjectIntegrationMode.of(project_model)
-        from src.integration.admission import observe_admission
-        from src.integration.development import DevelopmentPrimitives
-
-        service = getattr(o, "development_integration", None)
-        if service is None:
-            service = DevelopmentPrimitives(o.db, data_dir=config.data_dir,
-                                            git=getattr(o, "git", None))
-        if prepared is not None:
-            admission, ids, _ = prepared
-            if task_id not in ids:
-                return None  # Newly ready work is observed on the next pass.
-        else:
-            admission = await observe_admission(
-                o.db, [task_id], service, cached_only=True,
-                default_mode=config.integration.default_mode,
-                hierarchy_conn=conn,
-                router_ready_projects={task["project_id"]} if ready else set(),
-            )
-        mode = admission.hierarchy_modes.get(task["project_id"], mode)
+        mode = admission.hierarchy_modes.get(task["project_id"], ProjectIntegrationMode.of(project_model))
+        _, stack = admission.hierarchy_evidence(task["project_id"])
+        if stack is not None and not await stack.fresh():
+            mode = replace(mode, stackable_prerequisite_ids=frozenset())
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:
@@ -222,22 +231,15 @@ class AdmissionReader:
                             or project_count >= project["max_concurrent_agents"]
                             or profile_cap is not None and profile_count >= profile_cap)
         worktrees = o._worktrees_enabled()
-        from src.models import SYSTEM_KIND_SCOPE
-
-        workspace_rows = (await conn.execute(select(workspaces).where(
-            workspaces.c.project_id == task["project_id"],
-        ))).mappings().all()
-        kind_rows = (await conn.execute(select(workspace_kinds).where(
-            workspace_kinds.c.project_id.in_((SYSTEM_KIND_SCOPE, task["project_id"])),
-        ))).mappings().all()
-        kinds = {}
-        for row in sorted(kind_rows, key=lambda r: r["project_id"] != SYSTEM_KIND_SCOPE):
-            kinds[row["id"]] = o.db._row_to_workspace_kind(row)
         capacity = await o.db.count_available_workspaces(
             task["project_id"], kind_id="project-repo",
-            workspace_snapshot=[o.db._row_to_workspace(r) for r in workspace_rows],
-            kind_snapshot=kinds,
             worktree_slot_cap=o._project_slot_cap(project_model) if worktrees else None,
+            workspace_snapshot=[o.db._row_to_workspace(r) for r in (await conn.execute(
+                select(workspaces).where(workspaces.c.project_id == task["project_id"],
+                    func.coalesce(workspaces.c.kind_id, "project-repo") == "project-repo"),
+            )).mappings()],
+            kind_snapshot={"project-repo": await o.db.resolve_workspace_kind(
+                task["project_id"], "project-repo", conn=conn)},
         )
         capacity = max(0, capacity - sum(
             launch.project_id == task["project_id"] and not launch.workspace_acquired

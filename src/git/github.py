@@ -16,7 +16,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+from src.git.check_runs import CommitCheckRuns
 
 from src.git.github_contracts import (
     GitHubAccessError,
@@ -76,6 +78,7 @@ class GitHubAccess:
         self._bindings: dict[str, GitHubRepositoryBinding] = {}
         self._binding_verified_at: dict[str, float] = {}
         self._binding_clock: Callable[[], float] = time.monotonic
+        self.check_runs = CommitCheckRuns()
 
     @classmethod
     def from_config(
@@ -686,6 +689,8 @@ class GhRunnerLike(Protocol):
 class GitHubExecutionAccess(Protocol):
     """Credential-aware execution seam consumed by :class:`GitHubClient`."""
 
+    check_runs: CommitCheckRuns
+
     @property
     def credential_identity(self) -> GitHubCredentialIdentity: ...
 
@@ -737,6 +742,7 @@ class GitHubRunnerAccess:
     ) -> None:
         self.runner = runner
         self._refresh_read = refresh_read
+        self.check_runs = CommitCheckRuns()
 
     @property
     def credential_identity(self) -> GitHubCredentialIdentity:
@@ -977,6 +983,29 @@ class GitHubClient:
         key: str,
         max_pages: int = DEFAULT_MAX_PAGES,
     ) -> list[dict[str, Any]]:
+        endpoint = self._validated_endpoint(path)
+        parsed = urlsplit(endpoint)
+        query = parse_qs(parsed.query)
+        root = (f"repos/{self.repository.full_name}/"
+                if parsed.path.startswith("repos/")
+                else f"repositories/{self.repository.repository_id}/")
+        resource = parsed.path.removeprefix(root)
+        commit = re.fullmatch(r"commits/([0-9a-f]{40})/check-runs", resource)
+        cache = self.access.check_runs
+        if (key == "check_runs" and commit and query == {
+                "filter": ["all"], "per_page": ["100"]
+        } and type(max_pages) is int and max_pages == DEFAULT_MAX_PAGES):
+            return await cache.get(self.repository.repository_id, commit[1],
+                                   lambda: self._paged_items(path, key=key, max_pages=max_pages))
+        rows = await self._paged_items(path, key=key, max_pages=max_pages)
+        if (key == "workflow_runs" and resource == "actions/runs"
+                and set(query) == {"head_sha", "per_page"}
+                and len(query["head_sha"]) == 1
+                and re.fullmatch(r"[0-9a-f]{40}", query["head_sha"][0])):
+            cache.observe_workflows(self.repository.repository_id, query["head_sha"][0], rows)
+        return rows
+
+    async def _paged_items(self, path, *, key, max_pages):
         pages = await self._paged_json(path, max_pages=max_pages)
         items: list[dict[str, Any]] = []
         for payload in pages:
@@ -1625,9 +1654,14 @@ class GitHubClient:
     async def commit_head(self, ref: str) -> str:
         if not isinstance(ref, str) or not ref or any(c in ref for c in "?#\x00\r\n"):
             raise ValueError("invalid commit reference")
-        payload = await self.request_json(
-            "GET", f"/repositories/{self.repository.repository_id}/commits/{quote(ref, safe='')}"
-        )
+        try:
+            payload = await self.request_json(
+                "GET", f"/repositories/{self.repository.repository_id}/commits/{quote(ref, safe='')}"
+            )
+        except GitHubAccessError as exc:
+            if exc.http_status == 404 and re.fullmatch(r"[0-9a-f]{40}", ref):
+                self.access.check_runs.forget(self.repository.repository_id, ref)
+            raise
         sha = payload.get("sha")
         if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
             raise GitHubAccessError("conflict_or_invalid", "GitHub commit OID was malformed")
@@ -1637,7 +1671,8 @@ class GitHubClient:
         if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
             raise ValueError("invalid commit OID")
         return await self.paged_items(
-            f"/repositories/{self.repository.repository_id}/commits/{sha}/check-runs?per_page=100",
+            f"/repositories/{self.repository.repository_id}/commits/{sha}/check-runs"
+            "?filter=all&per_page=100",
             key="check_runs",
         )
 
@@ -1673,20 +1708,27 @@ class GitHubClient:
                 "Re-requesting a check suite requires a GitHub App credential; GitHub "
                 "documents writes to checks as GitHub-App-only",
             )
-        return await self.request_json(
-            "POST",
-            f"repos/{self.repository.full_name}/check-suites/{check_suite_id}/rerequest",
-            expected_statuses={201},
-        )
+        try:
+            return await self.request_json(
+                "POST",
+                f"repos/{self.repository.full_name}/check-suites/{check_suite_id}/rerequest",
+                expected_statuses={201},
+            )
+        finally:
+            # Also invalidate an ambiguous write and reads racing its response.
+            self.access.check_runs.forget(self.repository.repository_id)
 
     async def rerun_job(self, job_id: int) -> dict[str, Any]:
         """Re-run one exact Actions job (requires Actions write permission)."""
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
             raise ValueError("invalid Actions job ID")
-        return await self.request_json(
-            "POST", f"repos/{self.repository.full_name}/actions/jobs/{job_id}/rerun",
-            expected_statuses={201},
-        )
+        try:
+            return await self.request_json(
+                "POST", f"repos/{self.repository.full_name}/actions/jobs/{job_id}/rerun",
+                expected_statuses={201},
+            )
+        finally:
+            self.access.check_runs.forget(self.repository.repository_id)
 
     async def job_log(self, job_id: int) -> str:
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
