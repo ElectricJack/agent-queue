@@ -31,7 +31,8 @@ try {
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
-  const toggle = '[aria-label="Worker pools"] [role="switch"][aria-label$="worker pool"]';
+  // Select the fixture by profile ID so its display name can change.
+  const toggle = '[aria-label="Worker pools"] li:has([title="worker"]) [role="switch"]';
   const heldReads = [];
   let holdReads = false;
   let refuseWrite = false;

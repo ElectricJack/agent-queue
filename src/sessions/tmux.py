@@ -335,12 +335,23 @@ class TmuxProvider(SessionProvider):
 
         # ``exec`` so the agent *is* the pane process, not a child of a
         # lingering shell — process discovery and signalling depend on it.
-        # tmux replaces a pane's PATH with the client's PATH even when
-        # new-session -e PATH=... set the session environment. Restore the
-        # same lookup context used by preflight at exec time; quote it as
-        # literal data, including relative entries and shell metacharacters.
-        launch_path = shlex.quote(spec.env.get("PATH", os.defpath))
-        shell_cmd = f"PATH={launch_path} exec " + " ".join(shlex.quote(a) for a in spec.command)
+        # -e overlays the persistent tmux server's environment; omitted keys
+        # can still leak from the shell that originally started that server.
+        # Start the agent with exactly the scrubbed env plus tmux's terminal
+        # metadata. Reapply PATH too: tmux substitutes the client's PATH even
+        # when -e set a different, preflight-validated value.
+        launch_env = {"PATH": os.defpath, **spec.env}
+        terminal_env = " ".join(
+            f'{key}="${key}"' for key in ("TERM", "TMUX", "TMUX_PANE")
+            if key not in launch_env
+        )
+        shell_cmd = "exec /usr/bin/env -i " + terminal_env + " " + " ".join(
+            shlex.quote(arg)
+            for arg in (
+                *(f"{key}={value}" for key, value in launch_env.items()),
+                *spec.command,
+            )
+        )
 
         args = ["new-session", "-d", "-s", spec.session_name, "-c", str(work_dir)]
         for key, value in spec.env.items():
@@ -590,6 +601,20 @@ class TmuxProvider(SessionProvider):
         # A same-named successor also withholds recovery conservatively.
         names = await self._tmux("list-sessions", "-F", "#{session_name}")
         return h.name not in names.splitlines()
+
+    async def confirm_instance_stopped(self, h: SessionHandle) -> bool:
+        """Fresh proof that this token no longer owns the tmux name."""
+        names = await self._tmux("list-sessions", "-F", "#{session_name}")
+        if h.name not in names.splitlines():
+            return True
+        if not h.instance_token:
+            return False
+        try:
+            observed = await self._tmux("show-environment", "-t", f"={h.name}", _META_TOKEN_KEY)
+        except TmuxCommandError:
+            return False
+        token = _parse_environment_value(observed, _META_TOKEN_KEY)
+        return token is not None and token != h.instance_token
 
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...] = ()) -> bool:
         try:
@@ -1709,15 +1734,19 @@ _OPENCODE_AGENT_ROW = re.compile(r"\S.* · \S.*")
 
 @dataclass(frozen=True)
 class _OpenCodeBox:
-    """Row indices of the OpenCode composer box on one captured screen."""
+    """Rows and horizontal bounds of the OpenCode composer on one screen."""
 
     indent: int
+    right: int
     top: int
     agent: int
 
     def rows(self, lines: list[str]) -> list[str]:
         """The rows between the top padding and the agent row, bar removed."""
-        return [line[self.indent + len(_OPENCODE_BAR) :] for line in lines[self.top : self.agent]]
+        return [
+            line[self.indent + len(_OPENCODE_BAR) : self.right]
+            for line in lines[self.top : self.agent]
+        ]
 
 
 @dataclass(frozen=True)
@@ -1750,16 +1779,20 @@ def _opencode_box(lines: list[str]) -> _OpenCodeBox | None:
     if not border:
         return None
     indent = len(lines[border]) - len(lines[border].lstrip(" "))
+    # With its sidebar open, OpenCode paints worktree paths alongside the
+    # blank composer rows. Only columns above the bottom border are input;
+    # reading the rest of the screen misclassifies an idle box as a draft.
+    right = len(lines[border].rstrip())
     bar = " " * indent + _OPENCODE_BAR
     agent = border - 1
     if not lines[agent].startswith(bar) or not _OPENCODE_AGENT_ROW.fullmatch(
-        lines[agent][len(bar) :].strip()
+        lines[agent][len(bar) : right].strip()
     ):
         return None
     top = agent
     while top > 0 and lines[top - 1].startswith(bar):
         top -= 1
-    return _OpenCodeBox(indent=indent, top=top, agent=agent) if top < agent else None
+    return _OpenCodeBox(indent=indent, right=right, top=top, agent=agent) if top < agent else None
 
 
 def _opencode_input(lines: list[str]) -> str | None:
@@ -1831,10 +1864,16 @@ def _composer_preview(tail: str, prompt_prefix: str) -> str:
         border = _opencode_border(lines)
         if border is None:
             return ""
-        top = border
-        while top > 0 and lines[top - 1].strip():
-            top -= 1
-        rows = (line.strip().removeprefix(_OPENCODE_BAR).strip() for line in lines[top:border])
+        box = _opencode_box(lines)
+        top = box.top if box is not None else border
+        if box is None:
+            while top > 0 and lines[top - 1].strip():
+                top -= 1
+        right = len(lines[border].rstrip())
+        rows = (
+            line[:right].strip().removeprefix(_OPENCODE_BAR).strip()
+            for line in lines[top:border]
+        )
         return " / ".join(row for row in rows if row)
     prefix = _normalize(prompt_prefix).strip()
     if not prefix:
