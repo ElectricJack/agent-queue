@@ -9,22 +9,23 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.metrics import MAX_POINTS, build_metrics_router, choose_step
+from src.api.models.metrics import MetricsSample, PerfMetrics
 from src.api.websocket import _FORWARDED_PREFIXES, _metrics_event_allowed
-from src.database import Database
-from src.metrics.sampler import METRIC_TICK_EVENT
+from src.metrics.histogram import new_hist, observe
+from src.metrics.perf import PerfRegistry
+from src.metrics.sampler import METRIC_TICK_EVENT, aggregate_samples
 
 BASE = 1_700_000_000.0
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "m.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("m.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -160,6 +161,47 @@ def test_the_point_budget_is_a_real_number():
 
 
 # ---------------------------------------------------------------------------
+# roll-up tiers carry fractional counters
+# ---------------------------------------------------------------------------
+
+
+async def test_a_rolled_up_sample_with_a_fractional_agent_total_is_served(db, client_factory):
+    """The 1m/1h tiers average every numeric leaf, so counters are fractional.
+
+    ``agents.total`` used to be the module's only ``int``, which made
+    ``MetricsSample.model_validate`` raise on any coarse-tier row and turned
+    the whole history/zoom path into a 500.
+    """
+    rolled = aggregate_samples(
+        [{"agents": {"total": 4}}, {"agents": {"total": 5}}, {"agents": {"total": 5}}]
+    )
+    assert rolled["agents"]["total"] == pytest.approx(4.6667, abs=1e-4)
+    await db.write_metrics_sample("1m", BASE, rolled)
+
+    async with client_factory() as ac:
+        response = await ac.get(
+            "/api/metrics/series", params={"from": BASE, "to": BASE + 60, "step": "1m"}
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["samples"][0]["agents"]["total"] == pytest.approx(4.6667, abs=1e-4)
+
+
+def test_no_counter_on_a_sample_is_declared_int():
+    """A ratchet: an ``int`` leaf anywhere here cannot survive a roll-up."""
+    import src.api.models.metrics as metrics_models
+
+    offenders = [
+        f"{model.__name__}.{name}"
+        for model in vars(metrics_models).values()
+        if isinstance(model, type) and issubclass(model, BaseModel)
+        for name, field in model.model_fields.items()
+        if field.annotation is int
+    ]
+    assert offenders == []
+
+
+# ---------------------------------------------------------------------------
 # WebSocket fan-out
 # ---------------------------------------------------------------------------
 
@@ -220,3 +262,49 @@ def test_a_tick_is_a_registered_event_so_validation_does_not_warn():
 
     assert validate_event(METRIC_TICK_EVENT, {"ts": BASE, "agents": {"total": 1}}) == []
     assert validate_event(METRIC_TICK_EVENT, {"agents": {}}) != []
+
+
+def test_a_sample_with_a_perf_block_validates_and_a_bare_one_defaults():
+    registry = PerfRegistry()
+    registry.observe_route("GET /api/x", 12, 200)
+    registry.observe_stream_handshake("WS /ws/events", 4, accepted=True)
+    operation = registry.operation_started("git.fetch")
+    registry.operation_finished(operation, 7, "completed")
+    perf = {
+        "enabled": True,
+        **registry.snapshot(),
+        "host": {
+            "psi": {"cpu": None, "reason": "psi_unavailable"},
+            "test_slots": {"used": None, "reason": "resources_disabled"},
+            "stale": False,
+        },
+        "relay": {"available": False, "reason": "not_polled"},
+        "sampler": {"perf_ms": 0.4},
+    }
+    sample = MetricsSample.model_validate({"ts": 1.0, "perf": perf})
+    assert sample.perf.api.routes["GET /api/x"].latency.count == 1
+    assert sample.perf.api.streams["WS /ws/events"].handshake.count == 1
+    assert sample.perf.operations["git.fetch"].latency.count == 1
+    assert sample.perf.operations["git.fetch"].outcomes["completed"] == 1
+    assert sample.perf.operations["git.fetch"].peak_in_flight == 1
+    assert sample.perf.host.psi.reason == "psi_unavailable"
+    assert sample.perf.host.test_slots.used is None
+    assert MetricsSample.model_validate({"ts": 1.0}).perf == PerfMetrics()
+    assert MetricsSample.model_validate({"ts": 1.0, "perf": {"enabled": False}}).perf.enabled is False
+
+
+async def test_series_returns_the_stored_perf_block(db, client_factory):
+    hist = new_hist()
+    observe(hist, 30)
+    await db.write_metrics_sample("1s", BASE, {"perf": {"enabled": True, "loop": {"drift": hist}}})
+    async with client_factory() as client:
+        response = await client.get("/api/metrics/series", params={"from": BASE, "to": BASE})
+    assert response.status_code == 200
+    assert response.json()["samples"][0]["perf"]["loop"]["drift"]["count"] == 1
+
+
+def test_metrics_tick_schema_accepts_the_perf_block():
+    from src.event_schemas import EVENT_SCHEMAS, validate_event
+
+    assert "perf" in EVENT_SCHEMAS[METRIC_TICK_EVENT]["optional"]
+    assert validate_event(METRIC_TICK_EVENT, {"ts": BASE, "perf": {"enabled": False}}) == []

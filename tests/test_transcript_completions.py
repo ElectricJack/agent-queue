@@ -7,10 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from src.sessions.transcripts.base import TranscriptEntry
 from src.sessions.transcripts.claude import ClaudeTranscriptReader
 from src.sessions.transcripts.codex import CodexTranscriptReader
-from src.sessions.transcripts.base import TranscriptEntry
-
 
 CODEX_UUID = "01a02602-d8b3-7ab1-9c8a-3718b27f1348"
 
@@ -160,7 +159,7 @@ async def test_codex_task_complete_without_final_text_emits_nothing(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_claude_marks_text_end_turn_complete_but_not_tool_use(tmp_path: Path):
     """Treating a tool request as completion prematurely routes a question."""
-    path = tmp_path / "claude.jsonl"
+    path = tmp_path / "claude-transcript.jsonl"
     path.write_bytes(
         _jsonl(
             {

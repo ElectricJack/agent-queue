@@ -1,0 +1,17 @@
+{
+  "generic_dependencies": {
+    "src/waits/timers.py::WaitTimerDriver.fire": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/timers.py::import from src.database.queries.wait_queries import REGISTRATION_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "storage_sinks": {
+    "src/waits/timers.py::WaitTimerDriver.quarantine::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 102,
+      "owner": "WaitTimerDriver.quarantine",
+      "owner_fingerprint": "7cd72e9e361204a23e4a5db794ec9c119c76e5a7644cf90c097c8ca1e625d096",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    }
+  }
+}

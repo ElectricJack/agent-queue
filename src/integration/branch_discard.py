@@ -1,0 +1,447 @@
+"""Remove task branches an operator explicitly asked to discard.
+
+Deleting a task in a hierarchy/train project may also remove the branch that
+task put on the remote, but only on an explicit choice — see
+``docs/superpowers/specs/2026-09-08-task-deletion-with-materialized-branches-design.md``.
+``guard_integration_mutation`` records that choice by retiring the origin and
+marking it ``discard_state='pending'``; this service is what actually deletes
+the ref.
+
+The work is deliberately *not* on the integration outbox.  That outbox
+dispatches only to playbooks (``Orchestrator.accept_integration_event``), and
+no shipped playbook consumes branch-level events — the sibling
+``integration.branch_materialization_pending`` event has no consumer at all
+(design §6).  A drain over the origin rows is durable in the same way and
+actually runs.
+
+Origin rows carry no foreign key to ``tasks`` and ``_delete_one`` leaves them
+alone, so a retired origin outlives the task it describes and this service can
+still find its work after the subtree is gone.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import inspect
+import logging
+import shutil
+import tempfile
+import time
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import or_, select, update
+
+from src.database.tables import integration_branch_owners, task_branch_origins
+from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.manager import GitError
+from src.integration.branch_backup import _bundle, _record_deletions
+from src.models import RepoSourceType
+
+logger = logging.getLogger(__name__)
+
+#: A discard that keeps failing backs off from ~30s toward this ceiling.
+RETRY_BASE_SECONDS = 30.0
+RETRY_MAX_SECONDS = 3600.0
+#: Transport trouble is retried this many times before the row is parked as
+#: ``failed`` for an operator.  Conflicts never retry — they are a statement
+#: about the remote, not about the transport.
+MAX_ATTEMPTS = 8
+
+class BranchDiscardResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    outcome: Literal["complete", "conflict", "failed", "retryable", "wait", "stale"]
+    origin_id: str
+    task_id: str
+    branch: str | None
+    attempts: int
+    error: str | None = None
+
+
+class BranchDiscardService:
+    """Drain ``task_branch_origins`` rows marked for branch discard."""
+
+    def __init__(
+        self,
+        db: Any,
+        *,
+        data_dir: str | Path,
+        git_manager: Any | None = None,
+        github_client_factory: Any | None = None,
+        github_repository_binding_resolver: Any | None = None,
+        retirement_service: Any | None = None,
+        clock=time.time,
+    ) -> None:
+        self.db = db
+        self.data_dir = Path(data_dir)
+        self.git = git_manager
+        self.github_client_factory = github_client_factory
+        self.github_repository_binding_resolver = github_repository_binding_resolver
+        self.clock = clock
+        self.retirement_service = retirement_service
+
+    # -- draining -------------------------------------------------------
+
+    async def drain_due(self, *, now: float | None = None, limit: int = 20) -> list[
+        BranchDiscardResult
+    ]:
+        """Advance every discard whose backoff has elapsed, oldest request first."""
+        observed_at = self.clock() if now is None else now
+        async with self.db._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(task_branch_origins)
+                        .where(
+                            task_branch_origins.c.discard_state == "pending",
+                            or_(
+                                task_branch_origins.c.discard_next_attempt_at.is_(None),
+                                task_branch_origins.c.discard_next_attempt_at <= observed_at,
+                            ),
+                        )
+                        .order_by(
+                            task_branch_origins.c.discard_requested_at,
+                            task_branch_origins.c.id,
+                        )
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        results = []
+        for row in rows:
+            results.append(await self.advance(row["id"], now=observed_at))
+        return results
+
+    async def advance(self, origin_id: str, *, now: float | None = None) -> BranchDiscardResult:
+        """Attempt one discard, claiming it by its attempt count."""
+        observed_at = self.clock() if now is None else now
+        async with self.db.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(task_branch_origins)
+                        .where(task_branch_origins.c.id == origin_id)
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                return BranchDiscardResult(
+                    outcome="stale", origin_id=origin_id, task_id="", branch="", attempts=0
+                )
+            if row["discard_state"] != "pending":
+                return self._result("stale", row)
+            if (
+                row["discard_next_attempt_at"] is not None
+                and float(row["discard_next_attempt_at"]) > observed_at
+            ):
+                return self._result("wait", row)
+            # Claim by attempt count: two daemons draining the same row cannot
+            # both reach the delete.
+            claimed = await conn.execute(
+                update(task_branch_origins)
+                .where(
+                    task_branch_origins.c.id == origin_id,
+                    task_branch_origins.c.discard_state == "pending",
+                    task_branch_origins.c.discard_attempts == row["discard_attempts"],
+                )
+                .values(
+                    discard_attempts=int(row["discard_attempts"]) + 1,
+                    discard_next_attempt_at=observed_at
+                    + self._backoff(int(row["discard_attempts"]) + 1),
+                )
+            )
+            if claimed.rowcount != 1:
+                return self._result("wait", row)
+            claimed_row = dict(row)
+            claimed_row["discard_attempts"] = int(row["discard_attempts"]) + 1
+
+        try:
+            outcome, error = await self._perform(claimed_row)
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - transport trouble is retryable by default
+            outcome, error = "retryable", str(exc) or type(exc).__name__
+        return await self._finalize(claimed_row, observed_at, outcome, error)
+
+    # -- the actual removal ---------------------------------------------
+
+    async def _perform(self, row: dict[str, Any]) -> tuple[str, str | None]:
+        if self.retirement_service is not None:
+            return await self.retirement_service.discard_origin(row)
+        branch = self._branch(row)
+        if not branch:
+            return "failed", "origin branch is unknown; restore its exact ref before re-arming"
+        if not branch.startswith("aq/"):
+            return "conflict", "origin branch is outside the task branch namespace"
+        repository = await self.db.get_repo(row["repository_id"])
+        if repository is None:
+            return "failed", "discard repository is unavailable"
+        if branch == repository.default_branch:
+            # A corrupt origin must never authorize deletion of the default ref.
+            return "conflict", "default branch discard is forbidden"
+        owner = await self._live_owner(row["repository_id"], branch)
+        if owner is not None:
+            # Something re-acquired the ref after the delete — a repair
+            # delegate or a verifier.  Deleting it under a live writer would
+            # lose work the operator never asked to discard.
+            return "conflict", "branch has an active owner"
+        binding = await self._binding(repository)
+        if binding is None:
+            return "retryable", "repository binding is unavailable"
+        client = await self._github_client(binding)
+        if client is None or self.git is None:
+            return "retryable", "authenticated discard transport is unavailable"
+        head = await client.exact_head_ref(branch)
+        if head is None:
+            return "complete", None
+        main_head = await client.exact_head_ref(repository.default_branch)
+        if not main_head:
+            # Cannot assess reachability without the default branch head, and a
+            # thin ``--not <main>`` bundle needs it; refuse rather than guess.
+            return "retryable", f"cannot back up without the {repository.default_branch} head"
+        await self._backup_before_delete(
+            row,
+            binding=binding,
+            branch=branch,
+            head=head,
+            main_head=main_head,
+        )
+        try:
+            await self.git.adelete_repository_ref(
+                str(await self.resolved_store(row["repository_id"])),
+                repository=binding,
+                branch=branch,
+                expected_old_oid=head,
+            )
+        except GitError:
+            observed = await client.exact_head_ref(branch)
+            if observed is None:
+                return "complete", None
+            if observed != head:
+                return "conflict", "branch moved during discard"
+            raise
+        return "complete", None
+
+    async def _live_owner(self, repository_id: str, branch: str):
+        async with self.db._engine.connect() as conn:
+            return (
+                (
+                    await conn.execute(
+                        select(integration_branch_owners.c.id).where(
+                            integration_branch_owners.c.repository_id == repository_id,
+                            integration_branch_owners.c.ref == branch,
+                            integration_branch_owners.c.handoff_state != "released",
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+
+    async def _binding(self, repository) -> GitHubRepositoryBinding | None:
+        if self.github_repository_binding_resolver is None:
+            return None
+        binding = self.github_repository_binding_resolver(repository)
+        if inspect.isawaitable(binding):
+            binding = await binding
+        return binding
+
+    async def _github_client(self, binding: GitHubRepositoryBinding):
+        if self.github_client_factory is None:
+            return None
+        client = self.github_client_factory(binding)
+        if inspect.isawaitable(client):
+            client = await client
+        if client is None or client.repository != binding:
+            return None
+        return client
+
+    # -- the pre-delete backup ------------------------------------------
+
+    async def _backup_before_delete(
+        self,
+        row: dict[str, Any],
+        *,
+        binding: GitHubRepositoryBinding | None,
+        branch: str,
+        head: str,
+        main_head: str,
+        fetch_oid: Callable[..., Awaitable[str]] | None = None,
+    ) -> Path | None:
+        """Bundle a doomed head and record the row *before* the ref is deleted.
+
+        Nothing is deleted that cannot be put back: the head (and its commits
+        not on the default branch) is written to a verified bundle under
+        ``<data_dir>/backups/branch-deletions/`` and a TSV log line is
+        appended.  Any failure raises, which parks the discard as retryable;
+        the delete must not run without a restorable copy.
+        Retirement can supply a local exact-object fetch while sharing this
+        same backup and audit sequence.
+        """
+        repository_id = row["repository_id"]
+        now = self.clock()
+        store = await self.resolved_store(repository_id)
+        repository = await self.db.get_repo(repository_id)
+        if repository is None:
+            raise GitError("discard repository is unavailable")
+        await self._ensure_store(store, repository)
+        # The retained store may not hold the head or the default-branch head
+        # yet; both must be local before anything can be proven, bundled or
+        # deleted against.
+        fetch_oid = fetch_oid or self.git.afetch_repository_oid
+        await fetch_oid(
+            str(store),
+            repository=binding,
+            oid=head,
+            destination_ref=f"refs/aq/discard-backup/heads/{branch}",
+        )
+        await fetch_oid(
+            str(store),
+            repository=binding,
+            oid=main_head,
+            destination_ref="refs/aq/discard-backup/default",
+        )
+        from src.projects.storage_binding import repository_path
+
+        backup_dir = await repository_path(self.db, repository_id, self.backup_dir)
+        bundle = None
+        if not await self.git.ais_ancestor(str(store), head, main_head):
+            # ``False`` covers "already on the default branch" and "could not
+            # be established"; bundling the unknown case is the one that keeps
+            # the deletion restorable.
+            bundle = await _bundle(
+                self._run_git,
+                store,
+                {branch: head},
+                main_head=main_head,
+                backup_dir=backup_dir,
+                repository_id=repository_id,
+                now=now,
+            )
+        _record_deletions(
+            backup_dir,
+            {branch: {"head": head, "reason": f"task {row['task_id']} discarded"}},
+            bundled={branch} if bundle is not None else set(),
+            bundle=bundle,
+            repository_id=repository_id,
+            now=now,
+        )
+        return bundle
+
+    @property
+    def backup_dir(self) -> Path:
+        return self.data_dir / "backups" / "branch-deletions"
+
+    async def _run_git(self, store: Path, *args: str) -> str:
+        result = await self.git.arun_git_result(list(args), cwd=str(store))
+        if result.returncode:
+            raise GitError(result.stderr or result.stdout or "Git command failed")
+        return result.stdout.strip()
+
+    async def _ensure_store(self, store: Path, repository) -> None:
+        from src.integration.repository_recovery import ensure_retained_origin
+
+        origin = repository.url
+        if not origin:
+            if (repository.source_type is not RepoSourceType.LINK
+                    or not repository.source_path or not Path(repository.source_path).is_dir()):
+                raise GitError("discard repository origin is not configured")
+            origin = await self._run_git(Path(repository.source_path), "remote", "get-url", "origin")
+        store.parent.mkdir(parents=True, exist_ok=True)
+        if store.exists():
+            await ensure_retained_origin(self.git, store, origin)
+            return
+        # Concurrent discard passes can all find the store missing, and two
+        # ``git init`` runs on one directory race on its config lock.  Each
+        # initializes a private directory; the first rename publishes the store
+        # and a later one fails against the non-empty store and is discarded.
+        staging = Path(tempfile.mkdtemp(prefix=f".{store.stem}.", dir=store.parent))
+        try:
+            result = await self.git.arun_git_result(
+                ["init", "--bare", "--template=", str(staging)], cwd=str(store.parent)
+            )
+            if result.returncode != 0:
+                raise GitError(result.stderr or "retained store initialization failed")
+            await ensure_retained_origin(self.git, staging, origin)
+            try:
+                staging.rename(store)
+            except OSError:
+                if not store.exists():
+                    raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+        await ensure_retained_origin(self.git, store, origin)
+
+    # -- bookkeeping ----------------------------------------------------
+
+    async def _finalize(
+        self, row: dict[str, Any], now: float, outcome: str, error: str | None
+    ) -> BranchDiscardResult:
+        attempts = int(row["discard_attempts"])
+        if outcome == "retryable" and attempts >= MAX_ATTEMPTS:
+            outcome, error = "failed", error or "discard exhausted its attempts"
+        if outcome == "retryable":
+            state, next_attempt = "pending", now + self._backoff(attempts)
+        else:
+            state, next_attempt = outcome, None
+        async with self.db.immediate() as conn:
+            await conn.execute(
+                update(task_branch_origins)
+                .where(
+                    task_branch_origins.c.id == row["id"],
+                    task_branch_origins.c.discard_attempts == attempts,
+                )
+                .values(
+                    discard_state=state,
+                    discard_next_attempt_at=next_attempt,
+                    discard_last_error=error,
+                )
+            )
+        if outcome in {"conflict", "failed"}:
+            logger.warning(
+                "Branch discard for %s (%s) ended %s: %s",
+                self._branch(row), row["id"], outcome, error,
+            )
+        return self._result(outcome, row, error=error)
+
+    @staticmethod
+    def _backoff(attempts: int) -> float:
+        return min(RETRY_BASE_SECONDS * (2 ** max(attempts - 1, 0)), RETRY_MAX_SECONDS)
+
+    @staticmethod
+    def _branch(row: dict[str, Any]) -> str | None:
+        return row["branch_name"]
+
+    def _result(
+        self, outcome: str, row: dict[str, Any], *, error: str | None = None
+    ) -> BranchDiscardResult:
+        return BranchDiscardResult(
+            outcome=outcome,
+            origin_id=row["id"],
+            task_id=row["task_id"],
+            branch=self._branch(row),
+            attempts=int(row["discard_attempts"]),
+            error=error,
+        )
+
+    async def resolved_store(self, repository_id: str) -> Path:
+        from src.projects.storage_binding import repository_path
+
+        return await repository_path(self.db, repository_id, self.retained_store(repository_id))
+
+    def retained_store(self, repository_id: str) -> Path:
+        digest = hashlib.sha256(repository_id.encode()).hexdigest()
+        return self.data_dir / "integration-repositories" / f"{digest}.git"
+
+
+__all__ = ["BranchDiscardResult", "BranchDiscardService"]

@@ -15,6 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .app import cli, console
+from .envelope import reject_json_mode
 
 
 def _resolve_data_dir(data_dir: str | None) -> str:
@@ -33,8 +34,14 @@ def _resolve_data_dir(data_dir: str | None) -> str:
 
 
 @cli.group()
-def vault() -> None:
+@click.pass_context
+def vault(ctx: click.Context) -> None:
     """Vault management — migrate, inspect, and organize the knowledge base."""
+    reject_json_mode(
+        ctx,
+        "aq vault",
+        "vault migrations are local operator workflows with multi-step progress output",
+    )
 
 
 @vault.command("migrate")

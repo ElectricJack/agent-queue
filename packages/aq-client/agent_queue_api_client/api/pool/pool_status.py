@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PoolStatusRequest,
 ) -> Response[PoolStatusResponse | PoolStatusResponse422]:
-    """Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+    """Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
-     Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+     Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
     Args:
         body (PoolStatusRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PoolStatusRequest,
 ) -> PoolStatusResponse | PoolStatusResponse422 | None:
-    """Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+    """Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
-     Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+     Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
     Args:
         body (PoolStatusRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PoolStatusRequest,
 ) -> Response[PoolStatusResponse | PoolStatusResponse422]:
-    """Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+    """Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
-     Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+     Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
     Args:
         body (PoolStatusRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PoolStatusRequest,
 ) -> PoolStatusResponse | PoolStatusResponse422 | None:
-    """Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+    """Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
-     Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool
-    status`.
+     Supply/demand/bounds snapshot for every worker pool (one row per profile, fleet-wide, with the per-
+    project placement detail nested in `projects`). Backs `aq pool status`.
 
     Args:
         body (PoolStatusRequest):

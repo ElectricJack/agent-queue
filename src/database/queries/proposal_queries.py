@@ -11,32 +11,37 @@ import time
 import uuid
 from typing import Any, Iterable
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, exists, select, update
 
-from src.database.tables import task_dependencies, task_proposals, tasks
+from src.database.tables import gates, task_dependencies, task_proposals, tasks
 
 
 # --- Persistence -----------------------------------------------------------
 
 
 async def insert_proposal(
-    db, *, project_id: str, source: str, payload: dict
+    db, *, project_id: str, source: str, payload: dict, conn=None, status="draft"
 ) -> str:
     """Insert a fresh draft proposal and return its ``prop-``-prefixed id."""
     proposal_id = "prop-" + uuid.uuid4().hex[:12]
     now = time.time()
-    async with db._engine.begin() as conn:
+    async def write(conn):
         await conn.execute(
             task_proposals.insert().values(
                 id=proposal_id,
                 project_id=project_id,
                 source=source,
                 payload=json.dumps(payload),
-                status="draft",
+                status=status,
                 created_at=now,
                 updated_at=now,
             )
         )
+    if conn is not None:
+        await write(conn)
+    else:
+        async with db._engine.begin() as owned:
+            await write(owned)
     return proposal_id
 
 
@@ -74,6 +79,44 @@ async def update_proposal(
             .where(task_proposals.c.id == proposal_id)
             .values(**values)
         )
+    return result.rowcount > 0
+
+
+async def update_ungated_payload(
+    db, proposal_id: str, *, project_id: str, payload: dict, conn=None
+) -> bool:
+    """Replace a draft/ready proposal's payload unless a human gate awaits it.
+
+    The gate check and the write are one statement, so a concurrent
+    ``gate_create`` cannot land between them.  Once an approval gate exists
+    the payload it asks about is the only one the proposal can ever commit,
+    which is what binds a human decision to one proposal revision.  Returns
+    False when the proposal is not draft/ready or already has such a gate.
+    """
+    approval_gate = exists().where(
+        and_(
+            gates.c.project_id == project_id,
+            gates.c.gate_type == "human",
+            gates.c.await_id == proposal_id,
+        )
+    )
+    async def write(conn):
+        return await conn.execute(
+            update(task_proposals)
+            .where(
+                and_(
+                    task_proposals.c.id == proposal_id,
+                    task_proposals.c.status.in_(("draft", "ready")),
+                    ~approval_gate,
+                )
+            )
+            .values(payload=json.dumps(payload), status="ready", updated_at=time.time())
+        )
+    if conn is not None:
+        result = await write(conn)
+    else:
+        async with db._engine.begin() as owned:
+            result = await write(owned)
     return result.rowcount > 0
 
 

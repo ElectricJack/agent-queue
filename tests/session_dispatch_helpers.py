@@ -27,13 +27,14 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from src.config import AppConfig
+from src.config import DatabaseConfig, AppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.models import AgentProfile, Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
 from tests.assignment_routing_helpers import install_already_routed
 from tests.git_mock_helpers import stub_repo_root_identity
+from tests.db_fixtures import lease_dsn
 
 __all__ = [
     "SESSION_CLASSES",
@@ -64,7 +65,7 @@ async def drain_running_tasks(orch: Orchestrator) -> None:
 async def make_session_orch(tmp_path) -> Orchestrator:
     """An initialized orchestrator that dispatches the way production does."""
     config = AppConfig(
-        database_path=str(tmp_path / "test.db"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
@@ -117,20 +118,19 @@ async def create_session_project(
     orch: Orchestrator,
     *,
     project_id: str = "p-1",
-    default_profile_id: str | None = "claude",
+    profile_id: str | None = "claude",
     create_profile: bool = True,
 ) -> str:
-    """A project (defaulting to *default_profile_id*) with one bound workspace.
+    """A project with one bound workspace, and the session profile *profile_id*.
 
-    Returns the workspace path.  When *create_profile* is true the default
-    profile is created first so the project's FK is satisfied; pass
-    ``create_profile=False`` when the test registers profiles itself.
+    Returns the workspace path.  A project has no default profile (mandatory
+    routing §8): *profile_id* is only registered, when *create_profile* is
+    true, so a test can route tasks to it; pass ``create_profile=False`` when
+    the test registers profiles itself.
     """
-    if default_profile_id and create_profile:
-        await create_session_profile(orch, default_profile_id)
-    await orch.db.create_project(
-        Project(id=project_id, name="test-project", default_profile_id=default_profile_id)
-    )
+    if profile_id and create_profile:
+        await create_session_profile(orch, profile_id)
+    await orch.db.create_project(Project(id=project_id, name="test-project"))
     path = os.path.join(orch.config.workspace_dir, project_id)
     os.makedirs(path, exist_ok=True)
     await orch.db.create_workspace(

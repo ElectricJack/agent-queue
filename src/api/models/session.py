@@ -29,10 +29,18 @@ class SessionSummary(BaseModel):
     provider: str | None = None
     lifecycle: str | None = None
     state: str | None = None
+    desired_state: str | None = None
     work_dir: str | None = None
     started_at: float | None = None
     last_activity: float | None = None
     restarts: int = 0
+    claims: int = 0
+    claim_phase: str | None = None
+    claim_failure_count: int = 0
+    claim_failure_reason: str | None = None
+    claim_failure_at: float | None = None
+    failed_preparation: dict[str, Any] | None = None
+    supervisor_health: dict[str, Any] | None = None
     quarantined_at: float | None = None
     sleep_reason: str | None = None
     # ``sessions.epoch`` is a Text column (AQ_DAEMON_EPOCH — a hex string
@@ -48,6 +56,7 @@ class ListSessionsResponse(BaseModel):
     success: bool = True
     sessions: list[SessionSummary] = []
     count: int = 0
+    has_more: bool = False
 
 
 class ShowSessionResponse(BaseModel):
@@ -112,6 +121,14 @@ class SessionKillResponse(BaseModel):
     session_id: str
 
 
+class SupervisorRestartResponse(BaseModel):
+    success: bool = True
+    session_id: str
+    name: str
+    state: str
+    mode: str
+
+
 class SessionDesiredStateResponse(BaseModel):
     """``session_sleep`` / ``session_wake`` — intent, not observation.
 
@@ -143,7 +160,23 @@ class SessionTokenResponse(BaseModel):
     token: str
 
 
+class SessionCleanupResponse(BaseModel):
+    """``session_cleanup`` — taskless sleeping named sessions stopped and pruned.
+
+    With ``dry_run`` only ``count`` and ``sessions`` are filled.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool = True
+    dry_run: bool = False
+    count: int = 0
+    sessions: list[dict[str, Any]] = []
+    pruned: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "supervisor_restart": SupervisorRestartResponse,
     "session_list": ListSessionsResponse,
     "session_show": ShowSessionResponse,
     "session_peek": SessionPeekResponse,
@@ -152,7 +185,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_input": SessionInputResponse,
     "session_logs": SessionLogsResponse,
     "session_kill": SessionKillResponse,
+    "session_prune": SessionKillResponse,
     "session_sleep": SessionDesiredStateResponse,
     "session_wake": SessionDesiredStateResponse,
     "session_token": SessionTokenResponse,
+    "session_cleanup": SessionCleanupResponse,
 }

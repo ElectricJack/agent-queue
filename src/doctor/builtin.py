@@ -12,6 +12,8 @@ idempotent and touches only derived state (WAL file, expired log directories).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -80,7 +82,7 @@ async def _check_config_parse(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
-# db.connect / db.migrations / db.wal_size
+# db.connect / db.migrations
 # ---------------------------------------------------------------------------
 
 
@@ -168,62 +170,10 @@ async def _check_db_migrations(ctx: DoctorContext) -> CheckResult:
     )
 
 
-def _sqlite_path(ctx: DoctorContext) -> str | None:
-    """Resolve the on-disk SQLite file, or None for non-SQLite installs."""
-    if getattr(ctx.config.database, "backend", "sqlite") != "sqlite":
-        return None
-    path = getattr(ctx.db, "_path", None) if ctx.db is not None else None
-    if not path:
-        path = ctx.config.database.url or ctx.config.database_path
-    if not path or path == ":memory:":
-        return None
-    return path
 
 
-async def _check_db_wal_size(ctx: DoctorContext) -> CheckResult:
-    """Warn when the SQLite write-ahead log has grown past the threshold."""
-    path = _sqlite_path(ctx)
-    if path is None:
-        return CheckResult(
-            id="db.wal_size",
-            severity=Severity.INFO,
-            detail="not a file-backed SQLite database — WAL size not applicable",
-        )
-    wal = f"{path}-wal"
-    if not os.path.exists(wal):
-        return CheckResult(id="db.wal_size", severity=Severity.OK, detail="no WAL file present")
-    size_mb = os.path.getsize(wal) / _MB
-    threshold = ctx.config.security.wal_warn_mb
-    data = {"path": wal, "size_mb": round(size_mb, 1), "threshold_mb": threshold}
-    if size_mb > threshold:
-        return CheckResult(
-            id="db.wal_size",
-            severity=Severity.WARN,
-            detail=f"WAL is {size_mb:.0f} MB (threshold {threshold} MB)",
-            fixable=True,
-            data=data,
-        )
-    return CheckResult(
-        id="db.wal_size",
-        severity=Severity.OK,
-        detail=f"WAL is {size_mb:.1f} MB (threshold {threshold} MB)",
-        fixable=True,
-        data=data,
-    )
 
 
-async def _fix_db_wal_size(ctx: DoctorContext) -> CheckResult:
-    """Checkpoint and truncate the WAL.  Idempotent — a no-op when already small."""
-    from sqlalchemy import text
-
-    engine = getattr(ctx.db, "_engine", None) if ctx.db is not None else None
-    if engine is None:
-        return CheckResult(
-            id="db.wal_size", severity=Severity.INFO, detail="no engine — nothing to checkpoint"
-        )
-    async with engine.begin() as conn:
-        await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
-    return CheckResult(id="db.wal_size", severity=Severity.OK, detail="WAL checkpointed")
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +572,147 @@ async def _fix_logs_llm_size(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# logs.llm_repeated_playbook_calls
+# ---------------------------------------------------------------------------
+
+
+_REPEATED_PLAYBOOK_CALL_WARN_COUNT = 3
+
+
+def _exact_prompt_digest(entry: dict) -> str | None:
+    """Return a non-sensitive identity for the exact logged LLM input.
+
+    ``prompt_fingerprint`` identifies a prompt *template* only; it deliberately
+    omits task-specific input.  A doctor warning must not mistake several
+    normal tasks using the same playbook step for a loop, so group on a digest
+    of the complete recorded input as well.
+    """
+    request = entry.get("input")
+    if not isinstance(request, dict):
+        return None
+    canonical = {
+        "system": request.get("system"),
+        "messages": request.get("messages"),
+        "tools": request.get("tools"),
+        "max_tokens": request.get("max_tokens"),
+    }
+    try:
+        encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
+
+
+def _find_repeated_playbook_calls(base: str) -> tuple[list[dict], int, int]:
+    """Scan direct-call logs for duplicate requests from one playbook step.
+
+    Returns compact diagnostic records only; prompts and task descriptions stay
+    in their protected log files and are never copied into doctor output.
+    """
+    groups: dict[tuple[str, str, str], dict] = {}
+    scanned = malformed = 0
+    for root, _dirs, filenames in os.walk(base):
+        if "llm.jsonl" not in filenames:
+            continue
+        path = os.path.join(root, "llm.jsonl")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                for raw in handle:
+                    if not raw.strip():
+                        continue
+                    try:
+                        entry = json.loads(raw)
+                    except json.JSONDecodeError:
+                        malformed += 1
+                        continue
+                    if not isinstance(entry, dict):
+                        malformed += 1
+                        continue
+                    caller = entry.get("caller")
+                    if not isinstance(caller, str) or not caller.startswith("playbook:"):
+                        continue
+                    exact_digest = _exact_prompt_digest(entry)
+                    if exact_digest is None:
+                        malformed += 1
+                        continue
+                    template = entry.get("prompt_fingerprint")
+                    template = template if isinstance(template, str) else ""
+                    key = (caller, template, exact_digest)
+                    group = groups.setdefault(
+                        key,
+                        {
+                            "caller": caller,
+                            "prompt_fingerprint": template,
+                            "input_digest": exact_digest,
+                            "count": 0,
+                            "first_timestamp": entry.get("timestamp"),
+                            "last_timestamp": entry.get("timestamp"),
+                            "models": set(),
+                            "providers": set(),
+                        },
+                    )
+                    group["count"] += 1
+                    group["last_timestamp"] = entry.get("timestamp")
+                    if isinstance(entry.get("model"), str):
+                        group["models"].add(entry["model"])
+                    if isinstance(entry.get("provider"), str):
+                        group["providers"].add(entry["provider"])
+                    scanned += 1
+        except OSError:
+            # A concurrent retention cleanup should make this diagnostic less
+            # complete, never make all of ``aq doctor`` fail.
+            continue
+    repeated = []
+    for group in groups.values():
+        if group["count"] < _REPEATED_PLAYBOOK_CALL_WARN_COUNT:
+            continue
+        repeated.append(
+            {
+                **group,
+                "models": sorted(group["models"]),
+                "providers": sorted(group["providers"]),
+            }
+        )
+    repeated.sort(key=lambda item: (-item["count"], item["caller"], item["input_digest"]))
+    return repeated, scanned, malformed
+
+
+async def _check_logs_llm_repeated_playbook_calls(ctx: DoctorContext) -> CheckResult:
+    """Flag a likely replay loop without exposing the repeated prompt itself."""
+    base = _llm_log_dir(ctx)
+    if not os.path.isdir(base):
+        return CheckResult(
+            id="logs.llm_repeated_playbook_calls",
+            severity=Severity.OK,
+            detail="no LLM log directory",
+        )
+    repeated, scanned, malformed = await asyncio.to_thread(_find_repeated_playbook_calls, base)
+    data = {
+        "path": base,
+        "scanned_playbook_calls": scanned,
+        "malformed_lines": malformed,
+        "threshold": _REPEATED_PLAYBOOK_CALL_WARN_COUNT,
+        "repeated": repeated[:50],
+    }
+    if repeated:
+        return CheckResult(
+            id="logs.llm_repeated_playbook_calls",
+            severity=Severity.WARN,
+            detail=(
+                f"{len(repeated)} playbook step(s) repeated an identical LLM request "
+                f"at least {_REPEATED_PLAYBOOK_CALL_WARN_COUNT} times"
+            ),
+            data=data,
+        )
+    return CheckResult(
+        id="logs.llm_repeated_playbook_calls",
+        severity=Severity.OK,
+        detail=f"{scanned} playbook LLM call(s); no repeated exact request",
+        data=data,
+    )
+
+
+# ---------------------------------------------------------------------------
 # tasks.stuck / pauses.active
 # ---------------------------------------------------------------------------
 
@@ -797,12 +888,16 @@ def builtin_checks() -> list[DoctorCheck]:
         DoctorCheck(id="config.parse", run=_check_config_parse),
         DoctorCheck(id="db.connect", run=_check_db_connect),
         DoctorCheck(id="db.migrations", run=_check_db_migrations),
-        DoctorCheck(id="db.wal_size", run=_check_db_wal_size, fix=_fix_db_wal_size),
         DoctorCheck(id="vault.parse", run=_check_vault_parse, timeout_s=15.0),
         DoctorCheck(id="harness.binaries", run=_check_harness_binaries, timeout_s=15.0),
         DoctorCheck(id="harness.drift", run=_check_harness_drift, fix=_fix_harness_drift),
         DoctorCheck(
             id="logs.llm_size", run=_check_logs_llm_size, fix=_fix_logs_llm_size, timeout_s=15.0
+        ),
+        DoctorCheck(
+            id="logs.llm_repeated_playbook_calls",
+            run=_check_logs_llm_repeated_playbook_calls,
+            timeout_s=15.0,
         ),
         DoctorCheck(id="tasks.stuck", run=_check_tasks_stuck),
         DoctorCheck(id="pauses.active", run=_check_pauses_active),
