@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from src.config import AgentProfileConfig, AppConfig, DatabaseConfig, load_config
-from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
@@ -38,11 +37,9 @@ from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -1507,7 +1504,8 @@ class TestProfileMcpServersShape:
         """Project-scoped profile CRUD was retired with the concept itself."""
         assert await handler.execute(
             "create_project_profile", {"project_id": "proj", "agent_type": "coding"}
-        ) == {"error": "Unknown command: create_project_profile"}
+        ) == {"success": False, "error_code": "unknown_command",
+              "error": "Unknown command: create_project_profile"}
         async with await self._client(handler) as client:
             for route in (
                 "/api/agent/create-project-profile",

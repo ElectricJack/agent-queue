@@ -5,10 +5,27 @@ status: draft
 
 # Approved document ingestion
 
-`ReviewService.decide` emits `spec.approved` after a successful approval of
-kind `spec` or `plan`, using the absolute vault path after its status rewrite.
-Other documents and rejected or stale decisions do not ingest. The default
-pipeline deduplicates on `spec-ingest:<path>` and runs the role at deep-high.
+Successful approval of kind `spec` or `plan` dispatches `spec.approved` with
+an immutable `decision_id` and `packet_sha256`. The absolute vault path is a
+mirror link, not approval authority. Other documents and rejected or stale
+decisions do not ingest. The default pipeline calls `ensure_spec_ingest`,
+deduplicates on `spec-ingest:decision:<id>`, and runs the role at deep-high.
+Replayed approvals return the original transactional task receipt after the
+task completes, is closed as obsolete, or is archived. Settling a task does
+not authorize replacement ingestion. The graph's committed receipt likewise
+prevents replay from recreating existing or archived work. A new approved
+decision is distinct; a path or textual graph reference alone cannot establish
+its ingestion authority. See [work-graph §15](../design/work-graph.md#15-immutable-approval-ingestion-2026-10-11).
+
+The role launches on the enabled global `spec-ingest` agent definition, retaining
+its saved name, id and execution overrides. Generic pool definitions cannot take
+this assignment, the ingestion agent cannot take ordinary implementation tasks,
+and busy or disabled role definitions do not create duplicates.
+The shipped profile grants `knowledge_show` and `record_search` for prime's
+project knowledge context and scoped discovery, plus `record_capabilities` for
+inspecting available record operations. Existing installs receive these grants through the
+operator's `aq agent profile-reseed --profile-id spec-ingest --grants-only`;
+the shipped file remains write-if-absent.
 
 Submitted `spec_kind: design | implementation` belongs to each immutable
 review revision and survives vault regeneration. Missing values remain unset
@@ -26,8 +43,9 @@ children, routing gates, provenance and edges commit together, and the call
 returns the created task ids. There is no proposal gate and no separate
 commit call; a later `task_batch_commit` on that proposal is an idempotent
 replay returning the original receipt. Only an authenticated live spec-ingest
-role assignment may produce such an ungated proposal. Its source must match the held task's dedup path and an
-approved vault document. The server stamps this authority into the proposal;
+role assignment may produce such an ungated proposal. Its source must be
+`spec:decision:<id>` for the held task's server-stamped decision and immutable
+approved packet. The server stamps this authority into the proposal;
 caller-chosen source text cannot bypass ordinary proposal approval. Such
 proposals emit no `proposal.ready`, so the human proposal gate does not run.
 Ingest authority only creates work: a change set carrying edits, edge removals
