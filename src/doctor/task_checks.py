@@ -10,20 +10,69 @@ from sqlalchemy import and_, exists, func, literal, or_, select, union_all
 from src.agent_waits import TERMINAL_TASK_STATUSES
 from src.database.queries.blocked_state import OBSOLETE_META_KEY
 from src.database.queries.claim_queries import claim_frontier_predicates
-from src.database.queries.hierarchy_queries import container_flag_exists
+from src.database.queries.hierarchy_queries import container_flag_exists, never_leaseable_container
 from src.database.tables import (
     agent_waits,
     archived_tasks,
     integration_branch_owners,
     messages,
+    task_dependencies,
     task_metadata,
     tasks,
 )
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
-from src.models import TaskStatus
+from src.models import BLOCKING_DEP_TYPES, DepType, TaskStatus
 
 OWNER = "task-lifecycle"
 _STALE_STATUSES = frozenset({TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED})
+
+
+async def container_dependency_report(ctx: DoctorContext, *, project_ids=None) -> dict:
+    """Bounded, report-only candidates; historical edges carry no caller identity."""
+    if ctx.db is None:
+        return {"edges": [], "truncated": False}
+    dependent = tasks.alias("container_dependent")
+    containers = select(tasks.c.id).where(never_leaseable_container()).correlate(None)
+    statement = (
+        select(
+            dependent.c.id.label("task_id"), dependent.c.project_id,
+            dependent.c.status, tasks.c.id.label("depends_on"),
+            tasks.c.project_id.label("dependency_project_id"),
+            task_dependencies.c.dep_type,
+        )
+        .select_from(task_dependencies.join(
+            dependent, dependent.c.id == task_dependencies.c.task_id,
+        ).join(tasks, tasks.c.id == task_dependencies.c.depends_on_task_id))
+        .where(
+            task_dependencies.c.dep_type.in_(sorted(BLOCKING_DEP_TYPES - {DepType.PARENT_CHILD.value})),
+            dependent.c.status.not_in((TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)),
+            dependent.c.id.not_in(containers),
+            never_leaseable_container(),
+        )
+        .order_by(dependent.c.project_id, dependent.c.id, tasks.c.id, task_dependencies.c.dep_type)
+        .limit(51)
+    )
+    if project_ids is not None:
+        statement = statement.where(dependent.c.project_id.in_(project_ids))
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(statement)).mappings().all()
+    return {"edges": [dict(row) for row in rows[:50]], "truncated": len(rows) > 50}
+
+
+async def _check_container_dependencies(ctx: DoctorContext) -> CheckResult:
+    check_id = "tasks.container_dependencies"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+    report = await container_dependency_report(ctx)
+    if not report["edges"]:
+        return CheckResult(id=check_id, severity=Severity.OK,
+                           detail="no unfinished leaf has a scheduling dependency on a container")
+    return CheckResult(
+        id=check_id, severity=Severity.WARN,
+        detail=(f"{len(report['edges'])} leaf-to-container dependency edge(s) need review; "
+                "retarget to the concrete prerequisite leaf or confirm intentional operator fan-in"),
+        data=report,
+    )
 
 
 async def _check_pending_timer_waits(ctx: DoctorContext) -> CheckResult:
@@ -351,6 +400,12 @@ async def _check_dangling_lifecycle(ctx: DoctorContext) -> CheckResult:
 
 def task_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="tasks.container_dependencies",
+            run=_check_container_dependencies,
+            owner=OWNER,
+            timeout_s=10.0,
+        ),
         DoctorCheck(
             id="waits.pending_timers",
             run=_check_pending_timer_waits,
