@@ -296,6 +296,10 @@ class WaitLifecycle:
             await self.orch._command_handler.wait_service_resume_stalls(self)
         except Exception:
             logger.exception("Could not report stalled wait resumes")
+        try:
+            await self.orch._command_handler.wait_service_expire_resume_grants(self)
+        except Exception:
+            logger.exception("Could not expire held resume grants")
         async with self.db._engine.connect() as conn:
             ready = [dict(row) for row in (await conn.execute(select(continuations).join(
                 tasks, tasks.c.id == continuations.c.task_id,
