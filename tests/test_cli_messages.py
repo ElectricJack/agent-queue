@@ -66,6 +66,27 @@ def _invoke(runner, args, client):
 
 
 class TestMessageSend:
+    def test_omitted_sender_is_left_for_the_server(self, runner, monkeypatch):
+        monkeypatch.setenv("AQ_SESSION_ID", "forged-environment-session")
+        client = _mock_client({"message_send": {"message_id": "msg-1"}})
+        result = _invoke(
+            runner, ["message", "send", "--to", "session:supervisor-p1", "--body", "hi"],
+            client,
+        )
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert "from_kind" not in args and "from_id" not in args
+
+    def test_explicit_sender_flags_are_preserved(self, runner):
+        client = _mock_client({"message_send": {"message_id": "msg-1"}})
+        result = _invoke(runner, [
+            "message", "send", "--to", "user:dashboard", "--body", "hi",
+            "--from-kind", "session", "--from-id", "own-session",
+        ], client)
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert (args["from_kind"], args["from_id"]) == ("session", "own-session")
+
     def test_json_envelope(self, runner):
         client = _mock_client(
             {"message_send": {"message_id": "msg-1", "state": "queued", "message": {}}}
@@ -202,6 +223,28 @@ class TestReplyAlias:
 
 
 class TestInboxAndList:
+    def test_own_history_and_scoped_report_do_not_request_system_authority(self, runner):
+        client = _mock_client({
+            "message_list": {"count": 0, "messages": []},
+            "message_send": {"message_id": "report", "state": "queued"},
+        })
+        history = _invoke(runner, [
+            "--json", "message", "list", "--to-kind", "session", "--to-id", "own-uuid",
+            "--since", "1", "--limit", "500",
+        ], client)
+        assert history.exit_code == 0, history.output
+        args = client.execute.await_args.args[1]
+        assert args["to_id"] == "own-uuid" and args["limit"] == 500
+        assert "project_id" not in args and "system_only" not in args
+        report = _invoke(runner, [
+            "--json", "message", "send", "--to", "session:supervisor-global", "--body", "ack",
+        ], client)
+        assert report.exit_code == 0, report.output
+        args = client.execute.await_args.args[1]
+        assert args["to_id"] == "supervisor-global" and "system_only" not in args
+        # The server binds this route's sender; the CLI supplies no labels.
+        assert "from_kind" not in args and "from_id" not in args
+
     def test_inbox_json_envelope(self, runner):
         client = _mock_client(
             {
@@ -231,12 +274,66 @@ class TestInboxAndList:
         assert args["to_kind"] == "session"
         assert args["to_id"] == "session-current"
 
+    def test_project_supervisor_default_inject_keeps_immutable_session_identity(
+        self, runner, monkeypatch
+    ):
+        monkeypatch.setenv("AQ_SESSION_ID", "project-supervisor-uuid")
+        monkeypatch.setenv("AQ_PROJECT_ID", "p1")
+        monkeypatch.setenv("AQ_PROFILE", "supervisor")
+        client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
+        result = _invoke(runner, ["--json", "message", "inbox", "--inject"], client)
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert (args["to_kind"], args["to_id"], args["inject"]) == (
+            "session", "project-supervisor-uuid", True,
+        )
+
+    def test_explicit_own_uuid_overrides_stale_global_default(self, runner, monkeypatch):
+        monkeypatch.setenv("AQ_SESSION_ID", "global-supervisor-uuid")
+        monkeypatch.setenv("AQ_PROJECT_ID", "p1")
+        client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
+        result = _invoke(runner, [
+            "--json", "message", "inbox", "--to", "session:project-supervisor-uuid",
+            "--inject",
+        ], client)
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert (args["to_kind"], args["to_id"]) == ("session", "project-supervisor-uuid")
+        assert args["inject"] is True
+
     def test_inject_flag_is_forwarded(self, runner):
         client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
         _invoke(
             runner, ["message", "inbox", "--to", "session:s", "--inject"], client
         )
         assert client.execute.await_args.args[1]["inject"] is True
+
+    def test_include_consumed_flag_is_forwarded(self, runner):
+        """fair-impact-65: the re-read a worker needs after its inject crashed."""
+        client = _mock_client(
+            {
+                "message_inbox": {
+                    "to_kind": "session", "to_id": "s", "count": 0, "messages": [],
+                    "consumed": 1,
+                    "consumed_messages": [
+                        {"id": "msg-9", "from": "system:review", "body": "revise section 3"}
+                    ],
+                }
+            }
+        )
+        result = _invoke(
+            runner,
+            ["message", "inbox", "--to", "session:s", "--include-consumed"],
+            client,
+        )
+        assert result.exit_code == 0, result.output
+        assert client.execute.await_args.args[1]["include_consumed"] is True
+        assert "revise section 3" in result.output
+
+    def test_include_consumed_defaults_off(self, runner):
+        client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
+        _invoke(runner, ["message", "inbox", "--to", "session:s"], client)
+        assert client.execute.await_args.args[1]["include_consumed"] is False
 
     def test_list_filters_are_forwarded(self, runner):
         client = _mock_client({"message_list": {"count": 0, "messages": []}})
@@ -495,6 +592,28 @@ class TestTaskCreateGraph:
         assert args["project_id"] == "p1"
         assert args["dry_run"] is False
 
+    def test_from_spec_forwards_the_scoped_filing_reason(self, runner):
+        client = _mock_client({"create_task_graph": _GRAPH_RESULT})
+        result = _invoke(
+            runner,
+            [
+                "task",
+                "create",
+                "-p",
+                "p1",
+                "--from-spec",
+                "projects/p1/specs/x.md",
+                "--reason",
+                "Split the approved plan into deliverable work",
+            ],
+            client,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert client.execute.await_args.args[1]["reason"] == (
+            "Split the approved plan into deliverable work"
+        )
+
     def test_graph_file_is_decoded_before_sending(self, runner, tmp_path):
         graph_file = tmp_path / "graph.json"
         graph_file.write_text(
@@ -586,6 +705,7 @@ class TestNoDuplicateAutoCommands:
 
         assert {
             "message_send",
+            "message_wait",
             "message_reply",
             "message_inbox",
             "message_list",
@@ -594,13 +714,13 @@ class TestNoDuplicateAutoCommands:
 
     def test_message_group_exposes_the_handcrafted_message_commands(self, runner):
         group = cli.commands["message"]
-        assert set(group.commands) == {"send", "reply", "inbox", "list", "status"}
+        assert set(group.commands) == {"send", "reply", "inbox", "list", "status", "wait"}
 
     def test_message_tools_are_registered_for_mcp_and_api(self):
         from src.tools import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
         names = {t["name"] for t in _ALL_TOOL_DEFINITIONS}
-        for tool in ("message_send", "message_reply", "message_inbox", "message_list"):
+        for tool in ("message_send", "message_wait", "message_reply", "message_inbox", "message_list"):
             assert tool in names
             assert _TOOL_CATEGORIES[tool] == "message"
         assert "create_task_graph" in names
