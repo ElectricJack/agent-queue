@@ -325,19 +325,19 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                 await fetch()
             except (GitError, GitHubAccessError) as exc:
                 fetch_error = exc
-            reusable = getattr(git, "retained_store_verified", None)
+            reusable = getattr(git, "aretained_store_verified", None)
             if (not pending.exists() and reusable is not None
-                    and reusable(str(directory))):
+                    and await reusable(str(directory))):
                 if fetch_error:
                     raise fetch_error
                 return
-            fingerprint = _object_store_fingerprint(str(directory))
+            fingerprint = await asyncio.to_thread(_object_store_fingerprint, str(directory))
             started = time.monotonic()
             before = await fsck()
             if _clean(before) and not pending.exists():
-                record = getattr(git, "record_retained_store_verified", None)
+                record = getattr(git, "arecord_retained_store_verified", None)
                 if record is not None:
-                    record(str(directory), fingerprint, started)
+                    await record(str(directory), fingerprint, started)
                 if fetch_error:
                     raise fetch_error
                 return

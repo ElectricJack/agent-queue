@@ -515,6 +515,25 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "path": "/repos/myrepo/.aq/worktrees/slot-3",
         "reason": "cap_shrunk",
     },
+    "worktree.stale_claim_retired": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-5",
+        "path": "/repos/myrepo/.aq/worktrees/slot-5",
+        "holder_task_id": "steady-harbor-62",
+        "holder_claim_epoch": 1,
+        "holder_session_id": "sess-old",
+        "reason": "holder task is COMPLETED",
+        "actor": "claim",
+        "claimant_task_id": "task-new",
+    },
+    "worktree.sentinel_cleared": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-4",
+        "path": "/repos/myrepo/.aq/worktrees/slot-4",
+        "holder_task_id": "brisk-quest-34",
+        "branch": "aq/brisk-quest-34",
+        "reason": "task brisk-quest-34 is COMPLETED",
+    },
     "worktree.restored": {
         "project_id": "proj-1",
         "workspace_id": "ws-slot-2",
@@ -767,6 +786,23 @@ _CANONICAL_PAYLOADS["integration.resolution_push_observed"][
 # ``cleanup_requested``) and the cascade's ``route_needed.py``.
 _CANONICAL_PAYLOADS.update(
     {
+        "integration.publication_verified": {
+            "project_id": "proj-1",
+            "batch_id": "batch-1",
+            "revision": 1,
+            "repository_id": "repo-1",
+            "target_ref": "refs/heads/main",
+            "head_sha": "a" * 40,
+            "candidate_sha": "a" * 40,
+            "publication_verified": True,
+        },
+        # TrainLaneFactory._checks_changed invalidates exact-head readiness.
+        "integration.readiness_changed": {
+            "project_id": "proj-1",
+            "repository_id": "repo-1",
+            "head_sha": "a" * 40,
+            "reason": "checks_changed",
+        },
         "integration.completed_container_checkpoint_recovered": {
             "id": "recovery-1", "operator_id": "human:local-operator",
             "reason": "repair accepted final source", "task_id": "container-1",

@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 from src.models import TaskStatus
 
+from src.observations.models import SnapshotValue
+
 from . import TaskRef
 
 
@@ -175,6 +177,25 @@ class EpicDeliveryStatus(BaseModel):
     implementation_total: int = 0
 
 
+class ClaimReadinessReason(BaseModel):
+    code: str
+    detail: str
+    ref: str | None = None
+    batch_id: str | None = None
+    batch_ids: list[str] | None = None
+    epic_id: str | None = None
+    action: str | None = None
+    blocking_task_ids: list[str] | None = None
+
+
+class ClaimReadiness(BaseModel):
+    state: Literal["claimable", "waiting_on_delivery", "withheld", "unknown"]
+    claimable: bool
+    label: str
+    reason: str = ""
+    reasons: list[ClaimReadinessReason] = Field(default_factory=list)
+
+
 class TaskDisplayFields(BaseModel):
     """A container's rollup of its descendants (``src/task_graph/activity.py``).
 
@@ -186,6 +207,7 @@ class TaskDisplayFields(BaseModel):
     display_reason: str | None = None
     child_state_counts: dict[str, int] | None = None
     descendant_state_counts: dict[str, int] | None = None
+    claim_readiness: ClaimReadiness | None = None
 
 
 class TaskDetail(TaskDisplayFields):
@@ -266,7 +288,7 @@ class TaskDict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ListTasksResponse(BaseModel):
+class ListTasksResponse(SnapshotValue):
     display_mode: str = "flat"
     tasks: list[TaskDetail] = []
     total: int = 0
@@ -341,6 +363,9 @@ class TaskShowResponse(TaskDetail):
     labels: list[str] = []
     provenance: list[dict[str, Any]] = []
     claimed_by: ClaimedBy | None = None
+    # Present only on the assigned fidelity reviewer's bounded member read.
+    batch_member: dict[str, Any] | None = None
+    fidelity: dict[str, Any] | None = None
 
 
 class TaskSetResponse(TaskShowResponse):
@@ -609,6 +634,14 @@ class RemoveTaskResponse(DeleteTaskResponse):
 class TaskControlResponse(BaseModel):
     task_id: str
     status: str
+
+
+class DiscardPauseCheckpointResponse(BaseModel):
+    task_id: str
+    discarded: bool
+    branch: str | None = None
+    ref: str | None = None
+    commit: str | None = None
 
 
 class StopTaskResponse(BaseModel):
@@ -1022,6 +1055,8 @@ class ApprovedSpecPacketResponse(BaseModel):
     body: str
     packet: dict[str, Any]
     feedback: list[dict[str, Any]]
+    # The batch's frozen approved design lineage, never a caller-selected document.
+    design: dict[str, Any] | None = None
 
 
 class SpecIngestReconcileResponse(BaseModel):
@@ -1062,10 +1097,22 @@ class TaskBatchProposeResponse(BaseModel):
 
 
 class TaskBatchAckResponse(BaseModel):
-    """``task_batch_update`` / ``task_batch_discard`` — bare acknowledgement."""
+    """Acknowledgement, including the current held graph after a scoped update."""
 
     success: bool = True
     diff: dict[str, Any] | None = None
+    proposal_id: str | None = None
+    batch_id: str | None = None
+    state: str | None = None
+    status: str | None = None
+    structure_revision: int | None = None
+    structure_digest: str | None = None
+    members: dict[str, str] | None = None
+    task_ids: list[str] | None = None
+    replayed: bool | None = None
+    lineage: dict[str, Any] | None = None
+    release_receipt: dict[str, Any] | None = None
+    reviewer_task_id: str | None = None
 
 
 class TaskBatchValidateResponse(BaseModel):
@@ -1385,6 +1432,7 @@ class TaskRecoveryResponse(BaseModel):
     incident_id: str
     decision: str
     status: str
+    decided_at: float | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
@@ -1410,6 +1458,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
+    "discard_pause_checkpoint": DiscardPauseCheckpointResponse,
     "restart_task": RestartTaskResponse,
     "task_recover": TaskRecoveryResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,
@@ -1437,6 +1486,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,
     "ensure_spec_ingest": EnsureTaskResponse,
+    "ensure_fidelity_review": EnsureTaskResponse,
     "approved_spec_packet": ApprovedSpecPacketResponse,
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
     "batch_reconcile": BatchReconcileResponse,

@@ -16,6 +16,16 @@ async def fence_owner(conn, wait, task, *, parked_required=False):
                   elevated=wait["owner_kind"] == "session")
     continuation = None
     if task and task["status"] == "HIBERNATED" and wait["sleep_decision"] == "hibernate":
+        if wait['session_id'] is None:
+            from src.wait_runtime.legacy_parking import legacy_parked
+
+            continuation = (await conn.execute(select(continuations).where(
+                continuations.c.wait_id == wait['id'],
+                continuations.c.resume_state == 'sleeping',
+            ).with_for_update())).mappings().first()
+            if continuation and await legacy_parked(conn, task, wait, continuation):
+                return scope, continuation
+            raise WaitError('wait.out_of_scope', 'legacy no-writer provenance is not current')
         stopped = await conn.scalar(select(sessions.c.id).where(
             sessions.c.id == wait["session_id"],
             sessions.c.instance_token == delivery.get("instance_token"),
@@ -33,7 +43,8 @@ async def fence_owner(conn, wait, task, *, parked_required=False):
             raise WaitError("wait.out_of_scope", "stopped continuation ownership changed")
     else:
         scope = await verify_owner(conn, scope)
-        if parked_required and wait["sleep_decision"] == "hibernate":
+        if (parked_required and wait["owner_kind"] == "task"
+                and wait["sleep_decision"] == "hibernate"):
             continuation = (await conn.execute(select(continuations).where(
                 continuations.c.wait_id == wait["id"],
                 continuations.c.task_id == wait["owner_id"],
