@@ -245,7 +245,18 @@ operation-owned bounded recovery protocol and human gates.
 
 One consequence is deliberate: because a failed attempt is now published, `_retry_reset_ref` keeps it (a published tip the start point does not contain wins over the start point), so a retry lands on its predecessor's work instead of silently below it.
 
-**Slot affinity is the price of the forensic exception.** A slot left on an unpushed `aq/<task_id>` branch means the *next push dispatch* of that same task must land on that slot or it cannot check the branch out at all. Pool sessions acquire slots before they know the task, so preparation detects an idle unclaimed holder and detaches it; a live holder is never disturbed. Clean pushed branches are normally detached at release, avoiding the collision altogether. Push acquisition still **prefers the slot that already holds the task's branch** (`WorkspaceMixin._slot_branch_affinity` → `acquire_for_task(preferred_workspaces=...)` → the existing `prefer_workspace_id` seam).
+**Slot affinity is the price of the forensic exception.** A slot left on an unpushed `aq/<task_id>` branch means the *next push dispatch* of that same task must land on that slot or it cannot check the branch out at all. Pool sessions acquire slots before they know the task, so preparation detects an idle unclaimed holder and detaches it; a live task holder is never disturbed. Clean pushed branches are normally detached at release, avoiding the collision altogether. Push acquisition still **prefers the slot that already holds the task's branch** (`WorkspaceMixin._slot_branch_affinity` → `acquire_for_task(preferred_workspaces=...)` → the existing `prefer_workspace_id` seam).
+
+An agent-only sibling reservation may release a clean task branch when exactly
+one live pool session matches its project, path and agent, holds no task or
+failed preparation, and is idle or only selecting work. Preparation locks that
+session and the unchanged workspace generation with NOWAIT through detachment,
+so a concurrent claim wins or waits without reversing repository lock ordering.
+Claims, task processes, integration owners and job pins still block detachment;
+the checkout stays at the same commit and retains predecessor task attribution.
+Its sentinel branch is cleared so the detached pool can be reused after the
+shared task branch advances in the destination slot.
+Failed-preparation reconciliation findings name the recorded task when available.
 
 **Preparation identity and reconciliation.** Preparation requires an enabled
 registered row with the exact project, session `work_dir`, agent and task lock.

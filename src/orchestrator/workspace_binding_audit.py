@@ -166,7 +166,11 @@ async def _prove_pool_reservation(db, mgr, ws, holders):
                 "source and lock preserved"), None
     session = exact[0]
     if session["failed_preparation"] is not None:
-        return "pool session retains a failed preparation; source and lock preserved", None
+        failure = session["failed_preparation"]
+        task_id = failure.get("task_id") if isinstance(failure, dict) else None
+        task_detail = f" for task {task_id}" if task_id else ""
+        return (f"pool session retains a failed preparation{task_detail}; "
+                "source and lock preserved"), None
     if Path(ws.workspace_path, ".aq", "claim.json").exists():
         return "claim file retained without a task binding; no automatic claim retirement", None
     agent = await db.get_agent(ws.locked_by_agent_id)
