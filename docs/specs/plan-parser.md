@@ -4,6 +4,14 @@ tags: [spec, plans, tasks]
 
 # Specification: Plan Parser
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 > **Superseded.** Everything below this notice describes the pre-llm-direct-path
 > design: automatic plan discovery during the completion pipeline, regex parsing
 > into `PlanStep`/`ParsedPlan`, an LLM fallback parser (`src/plan_parser_llm.py`,
@@ -11,39 +19,29 @@ tags: [spec, plans, tasks]
 > **deleted** — see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`
 > §6.3 and its "Deviations applied during implementation" §2.
 >
-> **What exists now: nothing.** `src/plan_parser.py` has been deleted
-> entirely (with the `integration_mode` cutover), including the residual
-> `find_plan_file`/`find_all_plan_files`/`read_plan_file` utilities.
-> The `process_plan` and `process_task_completion` commands that used to drive
-> plan discovery (`process_plan` → `AWAITING_PLAN_APPROVAL` → `approve_plan`)
-> were deleted outright — the LLM plan parser they depended on is gone, so a
-> discovered-but-unparsed plan was an unrecoverable dead end (llm-direct-path
-> §6.3 addendum). Nothing discovers plan files anymore. The `approve_plan` /
-> `reject_plan` / `delete_plan` remediation commands, the
-> `TaskStatus.AWAITING_PLAN_APPROVAL` status, and the
-> `tasks.awaiting_plan_approval` doctor check have all been **removed** as
-> well; the disposition path for rows stranded in the old status is now the
-> `integration_mode` migration's preflight (Alembic `c4d5e6f7a8b9` fails the
-> upgrade with per-row remediation SQL — see
-> `docs/guides/upgrade-integration-mode.md`). Structured, LLM-assisted plan
-> breakdown — if wanted — is expected to come from dispatching the work to an
-> agent running under a `planner` profile (a `harness`-selected coding agent,
-> like any other), not from an in-process LLM call; no such profile ships
-> in-tree yet. Pre-task workspace cleanup still deletes files matching
-> `auto_task.plan_file_patterns` (`Orchestrator._cleanup_plan_files_before_task`).
+> **Current replacement (2026-10-22).** `src/plan_parser.py`, its discovery
+> utilities, `process_plan`, and the old approval commands/statuses are deleted.
+> AQ does not automatically discover a plan file at completion. The shipped
+> [planner profile](../../src/profiles/defaults/planner/profile.md) can author an
+> explicit graph, filed with `aq task create --graph` or `--from-spec` (the first
+> fenced `aq-graph` block in a vault spec). Reviewed change sets use
+> `aq task batch-propose`. These are deterministic command paths without an
+> in-process LLM parser. Workspace preparation still removes configured
+> `auto_task.plan_file_patterns`; that cleanup does not discover or ingest plans. See
+> [Tasks](../concepts/tasks.md) and [task change sets](../guides/task-change-sets.md).
 >
 > The rest of this page is kept as historical reference for the data model
 > shapes that no longer exist in code.
 
 ## 1. Overview (historical)
 
-The plan parser converts markdown implementation plan files into structured task definitions that the [[specs/orchestrator]] can schedule as follow-up work.
+The plan parser converts markdown implementation plan files into structured task definitions that the [specs/orchestrator](orchestrator.md) can schedule as follow-up work.
 
 When an agent completes a task, it may write a plan file (e.g. `.claude/plan.md`) to its workspace describing the steps required to carry out that work. The plan parser reads this file, identifies the actionable steps, and returns them as an ordered list of `PlanStep` objects wrapped in a `ParsedPlan`. The orchestrator then creates one child task per step, chaining them with dependencies.
 
 The module was split into two files:
 
-- `src/plan_parser.py` — regex-based parser, data models, plan file discovery, and task description builder. No I/O beyond reading the plan file itself. **Only the discovery/reading functions survive; the parser and task-description builder were deleted.**
+- `src/plan_parser.py` — regex-based parser, data models, plan file discovery, and task description builder. No I/O beyond reading the plan file itself. **Deleted, including discovery/reading functions.**
 - `src/plan_parser_llm.py` — async wrapper that sends the raw markdown to a `ChatProvider` (Claude or another configured LLM) and uses tool-use structured output to extract steps. Falls back to the regex parser on any failure. **Deleted.**
 
 ---

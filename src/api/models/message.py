@@ -12,6 +12,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.commands.contracts.message_wait import MessageWaitArgs, MessageWaitValue
+
+
+class MessageWaitResponse(MessageWaitValue):
+    success: bool = True
+
+
+REQUEST_MODELS = {"message_wait": MessageWaitArgs}
+
 
 class MessageModel(BaseModel):
     """Rendered message dict (see ``src/commands/message_commands.py::message_to_dict``)."""
@@ -34,6 +43,7 @@ class MessageModel(BaseModel):
     body: str
     priority: int = 100
     created_at: float | None = None
+    created_seq: int | None = None
     delivered_at: float | None = None
     read_at: float | None = None
     read: bool = False
@@ -44,6 +54,7 @@ class MessageModel(BaseModel):
     via: str | None = None
     body_kind: str | None = None
     pane_open: dict | None = None
+    provenance: dict | None = None
 
 
 class MessageReplyResponse(BaseModel):
@@ -51,6 +62,10 @@ class MessageReplyResponse(BaseModel):
     message_id: str
     reply_id: str
     reply: MessageModel
+    message_ids: list[str] | None = None
+    seq: int | None = None
+    replayed: bool | None = None
+    state: str | None = None
 
 
 class MessageInboxResponse(BaseModel):
@@ -61,6 +76,11 @@ class MessageInboxResponse(BaseModel):
     injected: int | None = None
     archived: int | None = None
     messages: list[MessageModel] = []
+    #: Present only when ``include_consumed`` was set: the read-only re-read of
+    #: rows this recipient already consumed, in the same delivery order. Absent
+    #: otherwise, so an unflagged call's envelope is byte-identical to before.
+    consumed: int | None = None
+    consumed_messages: list[MessageModel] | None = None
 
 
 class MessageListResponse(BaseModel):
@@ -78,6 +98,7 @@ class MessageStatusResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "message_wait": MessageWaitResponse,
     # message_send is API_EXCLUDED — see module docstring.
     "message_reply": MessageReplyResponse,
     "message_inbox": MessageInboxResponse,
