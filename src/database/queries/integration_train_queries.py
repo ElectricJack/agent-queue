@@ -8,6 +8,7 @@ from sqlalchemy import and_, case, exists, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
+    archived_tasks,
     gates,
     integration_batch_members,
     integration_batches,
@@ -24,6 +25,8 @@ from src.database.tables import (
     task_labels,
     tasks,
 )
+from src.database.queries.blocked_state import obsolete_marker
+from src.database.queries.ingest_hold import not_ingest_held
 from src.models import TaskStatus
 
 
@@ -37,6 +40,31 @@ _ACTIVE_BATCH_LIFECYCLES = (
     "promoting",
     "cleanup_pending",
 )
+
+
+def legacy_batch_row():
+    """Predicate naming the ``integration_batches`` rows the old engine owns.
+
+    A non-null ``target_ref`` is the Git-first train's additive input/intent
+    shape (see ``tables.py``); the legacy rows are the ones
+    ``uq_integration_batches_active_project`` makes mutually exclusive per
+    project.  The train alone advances its own rows, so after a rollback to
+    ``integration.git_first: shadow`` nothing visits them again: a leftover
+    train batch must neither read as busy to the legacy engine nor hold its
+    members out of the legacy frontier.
+    """
+    return integration_batches.c.target_ref.is_(None)
+
+
+def _root_delivery_receipt_conditions(repository_id: str, default_branch):
+    """The receipt rules shared by eligibility and dependency satisfaction."""
+    return (
+        task_delivery_receipts.c.target_task_id.is_(None),
+        task_delivery_receipts.c.repository_id == repository_id,
+        func.regexp_replace(task_delivery_receipts.c.target_branch, "^refs/heads/", "")
+        == func.regexp_replace(default_branch, "^refs/heads/", ""),
+        task_delivery_receipts.c.disposition == "code",
+    )
 
 
 class IntegrationTrainQueriesMixin:
@@ -66,7 +94,13 @@ class IntegrationTrainQueriesMixin:
         )
         operation = integration_repair_operations.alias("integration_train_operation")
 
-        has_children = exists(select(child.c.id).where(child.c.parent_task_id == tasks.c.id))
+        archived_child = archived_tasks.alias("integration_train_archived_child")
+        has_children = or_(
+            exists(select(child.c.id).where(child.c.parent_task_id == tasks.c.id)),
+            exists(select(archived_child.c.id).where(
+                archived_child.c.parent_task_id == tasks.c.id,
+            )),
+        )
         leaf_identity = and_(
             ~has_children,
             checkpoint.c.checkpoint_sha.is_not(None),
@@ -126,17 +160,15 @@ class IntegrationTrainQueriesMixin:
             .where(
                 integration_batch_members.c.task_id == tasks.c.id,
                 integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES),
+                legacy_batch_row(),
             )
         )
         delivered_to_root = exists(
             select(task_delivery_receipts.c.id).where(
                 task_delivery_receipts.c.source_task_id == tasks.c.id,
-                task_delivery_receipts.c.target_task_id.is_(None),
-                task_delivery_receipts.c.repository_id == repository_id,
-                func.regexp_replace(
-                    task_delivery_receipts.c.target_branch, "^refs/heads/", ""
-                ) == func.regexp_replace(repository.c.default_branch, "^refs/heads/", ""),
-                task_delivery_receipts.c.disposition == "code",
+                *_root_delivery_receipt_conditions(
+                    repository_id, repository.c.default_branch
+                ),
             )
         )
 
@@ -193,10 +225,13 @@ class IntegrationTrainQueriesMixin:
                 tasks.c.project_id == project_id,
                 tasks.c.parent_task_id.is_(None),
                 tasks.c.status == TaskStatus.COMPLETED.value,
+                ~obsolete_marker(tasks),
                 tasks.c.repo_id == repository_id,
                 tasks.c.pr_url.is_not(None),
                 func.trim(tasks.c.pr_url) != "",
                 ~held,
+                # A held ingestion container is never a train root.
+                not_ingest_held(),
                 ~unresolved_gate,
                 ~active_membership,
                 ~delivered_to_root,
@@ -214,6 +249,30 @@ class IntegrationTrainQueriesMixin:
             await conn.execute(statement.order_by(tasks.c.id, source_head).limit(limit))
         ).mappings()
         return [dict(row) for row in rows]
+
+    async def delivered_root_task_ids_on(
+        self, conn: AsyncConnection, *, project_id: str, repository_id: str
+    ) -> set[str]:
+        """Return epic ids delivered to this repository's default branch.
+
+        Receipt rows survive task archival, so this read does not join the
+        active tasks table.
+        """
+        rows = await conn.execute(
+            select(task_delivery_receipts.c.source_task_id)
+            .select_from(
+                task_delivery_receipts.join(
+                    repos, repos.c.id == task_delivery_receipts.c.repository_id
+                )
+            )
+            .where(
+                repos.c.id == repository_id,
+                repos.c.project_id == project_id,
+                task_delivery_receipts.c.source_task_id.is_not(None),
+                *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
+            )
+        )
+        return set(rows.scalars().all())
 
     async def latest_exact_reviews_on(
         self,

@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from src.sessions.transcripts.claude import ClaudeTranscriptReader
 from src.sessions.transcripts.codex import CodexTranscriptReader
 
@@ -60,6 +62,24 @@ def test_known_key_remains_authoritative_even_when_another_launch_is_nearby(tmp_
     old = rollout(tmp_path, OLD)
     rollout(tmp_path, NEW, START + 1)
     assert CodexTranscriptReader(tmp_path).resolve_session(row(key=OLD)) == old
+
+
+@pytest.mark.parametrize("day", ["2026/08/30", "2026/09/01"])
+@pytest.mark.parametrize("key", [None, AQ])
+def test_codex_local_date_partition_can_differ_from_utc_launch(tmp_path, day, key):
+    path = rollout(tmp_path, NEW, day=day)
+    assert CodexTranscriptReader(tmp_path).resolve_session(row(key=key)) == path
+
+
+def test_cross_date_discovery_still_rejects_ambiguous_launches(tmp_path):
+    rollout(tmp_path, OLD, day="2026/08/30")
+    rollout(tmp_path, NEW, START + 1)
+    assert CodexTranscriptReader(tmp_path).resolve_session(row(key=None)) is None
+
+
+def test_adjacent_date_partition_does_not_accept_another_workspaces_session(tmp_path):
+    rollout(tmp_path, NEW, cwd="/other-slot", day="2026/08/30")
+    assert CodexTranscriptReader(tmp_path).resolve_session(row(key=None)) is None
 
 
 def test_missing_claude_key_never_uses_other_conversation(tmp_path):

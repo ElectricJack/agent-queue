@@ -64,12 +64,14 @@ def sync_detailed(
     body: CreateTaskGraphRequest,
 ) -> Response[Any | CreateTaskGraphResponse422]:
     """Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
      Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
     Args:
         body (CreateTaskGraphRequest):
@@ -99,12 +101,14 @@ def sync(
     body: CreateTaskGraphRequest,
 ) -> Any | CreateTaskGraphResponse422 | None:
     """Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
      Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
     Args:
         body (CreateTaskGraphRequest):
@@ -129,12 +133,14 @@ async def asyncio_detailed(
     body: CreateTaskGraphRequest,
 ) -> Response[Any | CreateTaskGraphResponse422]:
     """Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
      Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
     Args:
         body (CreateTaskGraphRequest):
@@ -162,12 +168,14 @@ async def asyncio(
     body: CreateTaskGraphRequest,
 ) -> Any | CreateTaskGraphResponse422 | None:
     """Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
      Create a whole task graph in one transaction from a graph document or a vault spec's fenced aq-graph
-    block.  Validates vars, keys, dependency types, profiles, cycles, and spec references first; dry_run
-    returns the report without writing.
+    block.  Validates vars, keys, dependency types, classes, cycles, and spec references first; dry_run
+    returns the report without writing. Nodes carry hints (intelligence_class, task_type), never a
+    route: a profile or pin in a node, defaults or parent is refused (routing.choice_forbidden).
 
     Args:
         body (CreateTaskGraphRequest):

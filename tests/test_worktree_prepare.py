@@ -282,6 +282,37 @@ class TestPrepareCreatesAndResetsASlot:
         finally:
             await o.shutdown()
 
+    async def test_tool_generated_ignore_files_do_not_block_the_next_reset(
+        self, tmp_path, base_repo
+    ):
+        """An idle slot on a commit older than the repo's graft rules gets them
+        written by the graft indexer: '/graft/' appended to the tracked
+        .gitignore and an untracked .ignore.  The next claim must still reset it.
+        """
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=1)
+            t1, a1 = await _mk(o, "tsk-1", "a-1")
+            p1 = Path(await o._prepare_workspace(t1, a1))
+            await o._release_workspaces_for_task("tsk-1")
+
+            with (p1 / ".gitignore").open("a") as f:
+                f.write("/graft/\n")
+            (p1 / ".ignore").write_text("!graft/\ngraft/.cache/\ngraft/.graph/\n")
+            (p1 / "graft" / ".cache").mkdir(parents=True)
+            (p1 / "graft" / ".cache" / "stats.json").write_text("{}\n")
+
+            t2, a2 = await _mk(o, "tsk-2", "a-2")
+            p2 = Path(await o._prepare_workspace(t2, a2))
+
+            assert p2 == p1
+            assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=p2) == "aq/tsk-2"
+            assert _git(["status", "--porcelain"], cwd=p2) == ""
+            assert (p2 / ".gitignore").read_text() == "node_modules/\n"
+            assert not (p2 / ".ignore").exists()
+        finally:
+            await o.shutdown()
+
     async def test_plan_subtask_resumes_the_parent_branch(self, tmp_path, base_repo):
         """One plan, one branch, one PR (§6.1 resume_branch mapping)."""
         o = await _orch(tmp_path, worktrees_enabled=True)
@@ -572,6 +603,19 @@ class TestRecoveryDoesNotDestroySlots:
                 for e in await o.git.aworktree_list(str(base_repo))
             }
             assert str(slot.resolve()) in paths
+        finally:
+            await o.shutdown()
+
+    async def test_path_aliases_share_the_registered_git_mutex(self, tmp_path, base_repo):
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            slot, _cache = await self._slot_with_work(o, base_repo)
+            base_lock = o._git_mutex(str(base_repo))
+            assert o._git_mutex(str(base_repo) + "/") is base_lock
+            assert o._resolve_git_lock(str(slot) + "/") is base_lock
+            o._worktree_base_paths.clear()
+            o._register_slot_bases([await o.db.get_workspace_for_task("tsk-1")], str(base_repo) + "/")
+            assert o._resolve_git_lock(str(slot)) is base_lock
         finally:
             await o.shutdown()
 
