@@ -123,3 +123,9 @@ describe("taskReason vocabulary (spec §3.3/§3.4)", () => {
     for (const input of forms) expect(text(input)).not.toMatch(/\d+[smhd]\b|\d{1,2}:\d{2}|ago/);
   });
 });
+
+it("names a delivery hold before READY's frontier ranking", () => {
+  const readiness = { state: "waiting_on_delivery" as const, claimable: false,
+    label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" };
+  expect(text({ status: "READY", readyAhead: 0, claimReadiness: readiness })).toBe(readiness.reason);
+});

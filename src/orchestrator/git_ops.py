@@ -19,7 +19,6 @@ from src.models import (
     INTEGRATION_MODE_PULL_REQUEST,
     PhaseResult,
     PipelineContext,
-    RepoConfig,
     Task,
     TaskStatus,
 )
@@ -467,210 +466,6 @@ class GitOpsMixin:
                 return False
         return True
 
-    async def _merge_and_push(
-        self,
-        task: Task,
-        repo: RepoConfig,
-        workspace: str,
-        *,
-        _max_retries: int = 3,
-    ) -> None:
-        """Merge the task branch into default and push.
-
-        .. deprecated::
-            No longer called by the completion pipeline.  The agent now
-            handles merging and pushing via its prompt instructions.  Kept
-            for manual recovery use cases.
-        """
-        has_remote = await self.git.ahas_remote(workspace)
-
-        if has_remote:
-            # sync_and_merge handles fetch, hard-reset, merge, and push
-            # with retry.  max_retries counts *retries* after the first
-            # attempt, so subtract 1 from _max_retries (total attempts).
-            success, error = await self.git.async_and_merge(
-                workspace,
-                task.branch_name,
-                repo.default_branch,
-                max_retries=max(_max_retries - 1, 0),
-            )
-            if not success:
-                if error == "merge_conflict":
-                    await self._emit_notify(
-                        "notify.merge_conflict",
-                        MergeConflictEvent(
-                            task=build_task_detail(task),
-                            branch=task.branch_name or "",
-                            target_branch=repo.default_branch,
-                            project_id=task.project_id,
-                        ),
-                    )
-                else:
-                    # error starts with "push_failed: …"
-                    await self._emit_notify(
-                        "notify.push_failed",
-                        PushFailedEvent(
-                            task=build_task_detail(task),
-                            branch=repo.default_branch,
-                            error_detail=(
-                                f"Could not push after {_max_retries} attempts. "
-                                f"Workspace may be diverged. Details: {error}"
-                            ),
-                            project_id=task.project_id,
-                        ),
-                    )
-                # Recovery: reset workspace to origin state so it's clean
-                # for the next task.  After a failed push the local default
-                # branch may contain un-pushed merge commits; hard-resetting
-                # to origin discards them.
-                try:
-                    await self.git.arecover_workspace(workspace, repo.default_branch)
-                except Exception:
-                    pass  # best-effort recovery
-                return
-        else:
-            # LINK / INIT repos have no remote — just merge locally.
-            merged = await self.git.amerge_branch(
-                workspace,
-                task.branch_name,
-                repo.default_branch,
-            )
-            if not merged:
-                # Rebase fallback: rebase the task branch onto the default
-                # branch and retry the merge.  This resolves conflicts caused
-                # by the task branch being based on a stale snapshot.
-                rebased = await self.git.arebase_onto(
-                    workspace,
-                    task.branch_name,
-                    repo.default_branch,
-                )
-                if rebased:
-                    merged = await self.git.amerge_branch(
-                        workspace,
-                        task.branch_name,
-                        repo.default_branch,
-                    )
-            if not merged:
-                await self._emit_notify(
-                    "notify.merge_conflict",
-                    MergeConflictEvent(
-                        task=build_task_detail(task),
-                        branch=task.branch_name or "",
-                        target_branch=repo.default_branch,
-                        project_id=task.project_id,
-                    ),
-                )
-                # Recovery: ensure we're on the default branch so the
-                # workspace is clean for the next task.  merge_branch()
-                # already aborts the merge, but we make sure we're on the
-                # right branch as a safety net.
-                try:
-                    await self.git._arun(
-                        ["checkout", repo.default_branch],
-                        cwd=workspace,
-                    )
-                except Exception:
-                    pass  # best-effort recovery
-                return
-
-            # Clean up the task branch after successful local merge
-            try:
-                await self.git.adelete_branch(
-                    workspace,
-                    task.branch_name,
-                    delete_remote=False,
-                )
-            except Exception:
-                pass  # branch cleanup is best-effort
-            return
-
-        # Clean up the task branch after successful merge + push
-        try:
-            await self.git.adelete_branch(
-                workspace,
-                task.branch_name,
-                delete_remote=has_remote,
-            )
-        except Exception:
-            pass  # branch cleanup is best-effort
-
-    async def _create_pr_for_task(
-        self,
-        task: Task,
-        repo: RepoConfig,
-        workspace: str,
-    ) -> str | None:
-        """Push the task branch and create a PR. Returns the PR URL or None.
-
-        .. deprecated::
-            No longer called by the completion pipeline.  The agent now
-            creates PRs via its prompt instructions.  Kept for manual use.
-
-        Uses ``force_with_lease=True`` when pushing the task branch so that
-        retries (e.g. after a failed PR creation where the push succeeded)
-        don't fail with a non-fast-forward error.  ``--force-with-lease`` is
-        safe here because the task branch is owned exclusively by this agent —
-        no other user is expected to push to it (resolves **G5**).
-        """
-        if not await self.git.ahas_remote(workspace):
-            # No remote — notify user to review the branch locally
-            await self._emit_text_notify(
-                f"**Review needed:** Task `{task.id}` — {task.title}\n"
-                f"Branch `{task.branch_name}` is ready for review in `{workspace}` "
-                f"(no remote — no PR was opened). Merge it locally when accepted.",
-                project_id=task.project_id,
-            )
-            return None
-
-        try:
-            # Use --force-with-lease so the push succeeds even when the
-            # branch was previously pushed (e.g. task retries or subtask
-            # chains that push intermediate results).  Task branches are
-            # owned by a single agent, so force-pushing is safe.
-            await self.git.apush_validated_delivery(
-                workspace,
-                f"origin/{repo.default_branch}",
-                task.branch_name,
-                task.branch_name,
-                force_with_lease=True,
-                event_bus=self.bus,
-                project_id=task.project_id,
-                identity_policy=await self._publish_policy(task, workspace),
-                inherited_oids=await self.db.list_source_ci_inherited_oids(task.id),
-            )
-        except Exception as e:
-            await self._emit_notify(
-                "notify.push_failed",
-                PushFailedEvent(
-                    task=build_task_detail(task),
-                    branch=task.branch_name or "",
-                    error_detail=str(e),
-                    project_id=task.project_id,
-                ),
-            )
-            return None
-
-        try:
-            repository = await self.git.bind_github_repository(repo.url)
-            pr_url = await self.git.acreate_pr(
-                workspace,
-                branch=task.branch_name,
-                title=task.title,
-                body=f"Automated PR for task `{task.id}`.\n\n{task.description[:500]}",
-                base=repo.default_branch,
-                event_bus=self.bus,
-                project_id=task.project_id,
-                repository=repository,
-            )
-            return pr_url
-        except Exception as e:
-            await self._emit_text_notify(
-                f"**PR Creation Failed:** Task `{task.id}` — {e}\n"
-                f"Branch `{task.branch_name}` has been pushed. Create a PR manually.",
-                project_id=task.project_id,
-            )
-            return None
-
     async def _task_has_code_changes(
         self, workspace: str, min_files: int = 3, min_lines: int = 50
     ) -> bool:
@@ -829,7 +624,7 @@ class GitOpsMixin:
         return ctx.repo is not None
 
     async def _preserve_non_source_drafts(self, ctx: PipelineContext) -> bool:
-        """Refuse dirty document/no-code closes before automatic Git writes.
+        """Refuse document/no-code closes for an already-proven dirty Git checkout.
 
         Review submission copies the draft to the vault but leaves the local
         file intact. Publishing that duplicate as source would manufacture
@@ -837,13 +632,9 @@ class GitOpsMixin:
         """
         from src.deliverables import resolve_task_deliverables
 
-        if not ctx.workspace_path or not await self._task_uses_git(ctx):
-            return False
         items = await resolve_task_deliverables(self.db, ctx.task)
         review_only = bool(items) and all(item["kind"] == "review" for item in items)
         if not review_only and not await self._task_produces_no_code(ctx):
-            return False
-        if await self.git.ahas_uncommitted_changes(ctx.workspace_path, strict=True) is not True:
             return False
         message = (
             "Document-only/no-code task has uncommitted source-checkout files. "
@@ -1095,7 +886,9 @@ class GitOpsMixin:
         ctx.no_work_proven = True
         return True
 
-    async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
+    async def _sweep_uncommitted_before_skip(
+        self, ctx: PipelineContext, *, has_uncommitted: bool | None
+    ) -> None:
         """Best-effort dirty-slot cleanup on a verification path that skips the checks.
 
         A task that bypasses git verification must still not leave dirty
@@ -1106,7 +899,9 @@ class GitOpsMixin:
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return
         try:
-            if await self.git.ahas_uncommitted_changes(workspace):
+            if has_uncommitted is None:
+                has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if has_uncommitted:
                 current = await self.git.aget_current_branch(workspace)
                 await self._auto_remediate_uncommitted(
                     workspace,
@@ -1254,7 +1049,13 @@ class GitOpsMixin:
         workspace = ctx.workspace_path
         task = ctx.task
 
-        if await self._preserve_non_source_drafts(ctx):
+        uses_git = bool(workspace) and await self._task_uses_git(ctx)
+        # Share the initial status between draft protection and remediation;
+        # cleanliness is checked again after remediation.
+        has_uncommitted = (
+            await self.git.ahas_uncommitted_changes(workspace, strict=True) if uses_git else None
+        )
+        if has_uncommitted is True and await self._preserve_non_source_drafts(ctx):
             return PhaseResult.STOP
 
         # Skip verification if the agent exited with an error — bad git state
@@ -1269,10 +1070,10 @@ class GitOpsMixin:
             # Still auto-remediate uncommitted changes so the workspace is
             # clean for the next task.  Without this, a crashed agent leaves
             # dirty state that bleeds into subsequent tasks.
-            await self._sweep_uncommitted_before_skip(ctx)
+            await self._sweep_uncommitted_before_skip(ctx, has_uncommitted=has_uncommitted)
             return PhaseResult.CONTINUE
 
-        if not workspace or not await self._task_uses_git(ctx):
+        if not uses_git:
             return PhaseResult.CONTINUE
 
         if not await self.git.avalidate_checkout(workspace):
@@ -1282,7 +1083,6 @@ class GitOpsMixin:
         default_branch = ctx.default_branch or "main"
         has_remote = await self.git.ahas_remote(workspace, strict=True)
         current_branch = await self.git.aget_current_branch(workspace, strict=True)
-        has_uncommitted = await self.git.ahas_uncommitted_changes(workspace, strict=True)
         if has_remote is None or not current_branch or has_uncommitted is None:
             logger.error("Task %s: required Git state could not be verified", task.id)
             return PhaseResult.STOP
