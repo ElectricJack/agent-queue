@@ -1058,7 +1058,7 @@ async def observe_completed_branches(
     from functools import partial
 
     from src.integration.delivery_observer import DeliveryTarget
-    from src.integration.git_truth import GitTruth, GitTruthSnapshot
+    from src.integration.git_truth import GitTruth, GitTruthSnapshot, merge_noop
     from src.integration.train_sources import project_delivered
 
     now = time.time() if now is None else now
@@ -1097,9 +1097,22 @@ async def observe_completed_branches(
                 if ref.startswith("refs/remotes/origin/")
             }
             store, tip, git = observation.store, observation.target_oid, observer.git
+            target_tree = None
 
-            async def reachable(head, store=store, tip=tip, git=git):
-                return await git.ais_ancestor(store, head, tip, strict=True)
+            async def reachable(head, store=store, tip=tip, git=git, observation=observation):
+                nonlocal target_tree
+
+                ancestry = await git.ais_ancestor(store, head, tip, strict=True)
+                if ancestry is not False:
+                    return ancestry
+                # Inventory only: hand landing can preserve all content under
+                # different commits. This is not strict train containment and
+                # does not authorize deleting a ref or publishing a candidate.
+                if target_tree is None:
+                    target_tree = await git.atree_sha(store, tip)
+                if await git.atree_sha(store, head) == target_tree:
+                    return True
+                return await merge_noop(observation, head, tip, target_tree=target_tree)
 
             async def contains(head, branch, store=store, heads=heads, git=git):
                 return bool(await git.ais_ancestor(store, head, heads[branch], strict=True))

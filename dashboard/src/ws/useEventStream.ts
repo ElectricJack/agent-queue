@@ -351,10 +351,14 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   }
 
   if (type.startsWith("pool.")) {
-    if (type === "pool.renamed") {
+    if (type === "pool.renamed" || type === "pool.deleted") {
       queryClient.invalidateQueries({ queryKey: ["profiles"] });
       queryClient.invalidateQueries({ queryKey: ["profile"] });
       queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    }
+    if (type === "pool.deleted") {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
     }
     queryClient.invalidateQueries({ queryKey: ["pools"] });
     queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
@@ -421,6 +425,16 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   if (type.startsWith("provider.") || (type as string) === "notify.provider_state") {
     queryClient.invalidateQueries({ queryKey: ["providers", "availability"] });
     queryClient.invalidateQueries({ queryKey: ["providers", "held-tasks"] });
+    return;
+  }
+  if (type === "batch.held" || type === "batch.receipt_recorded" || type === "batch.needs_scope" || type === "batch.released") {
+    const batch = event as { batch_id: string; project_id: string };
+    queryClient.invalidateQueries({ queryKey: ["batch", batch.project_id, batch.batch_id] });
+    queryClient.invalidateQueries({ queryKey: ["proposal", batch.batch_id] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    queryClient.invalidateQueries({ queryKey: ["task"] });
+    queryClient.invalidateQueries({ queryKey: ["explain"] });
+    queryClient.invalidateQueries({ queryKey: ["asks"] });
     return;
   }
   if (type === "proposal.status_changed") {
