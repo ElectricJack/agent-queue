@@ -68,14 +68,21 @@
 
 Change fields on a task that already exists. `edit_task` is the general-purpose
 mutator behind `aq task set`: title, description, priority, task type, status,
-retry budget, verification type, profile, intelligence class, integration mode,
+retry budget, verification type, intelligence-class hint, integration mode,
 workspace mode, agent affinity, the `skip_verification` flag, and the
 `needs_attention` operational signal.
 
+It never edits a route: the project's router writes that. `profile_id`, `pin`
+and `provider_intent` (and any other routing choice) are refused with
+`code: routing.choice_forbidden`. The two hints stay editable — the class hint
+(`intelligence_class`, stored as `class_hint`) and the kind (`task_type`) — and
+on a queued task no worker holds, editing either sends the task back to its
+router.
+
 It is deliberately conservative about the two things that are not really
-"fields". Routing (`profile_id`, `intelligence_class`) is refused while a worker
-holds the task, because retargeting a running agent silently is worse than
-refusing. Pausing is refused outright — `pause_task` exists so the running
+"fields". A class-hint edit is refused while a worker holds the task, because
+re-routing a running agent silently is worse than refusing. Pausing is refused
+outright — `pause_task` exists so the running
 session is stopped as part of the transition. A cross-project move is likewise
 refused while the task has a parent, children, or an active hierarchy/train
 branch origin: moving only its row would strand project-scoped hierarchy and
@@ -87,8 +94,8 @@ No shipped playbook in
 [`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
 `edit_task`, and that is a design position rather than an omission: the default
 pipeline creates work and gates it, and *routing* — the field a pipeline most
-often wants to write — has its own narrower command,
-[`task_route`](task_route.md), which also resolves the routing gate. A custom
+often wants to write — belongs to the project's router alone,
+[`task_route_apply`](task_route_apply.md), which also resolves the routing gate. A custom
 policy reaches for `edit_task` when it needs to re-prioritise, retype or
 re-describe an existing task, or to raise and clear `needs_attention` from an
 automated observer.
@@ -105,32 +112,40 @@ step is safe.
    dispatches `_cmd_edit_task`.
 2. `_cmd_edit_task`
    ([`src/commands/task_commands.py:3150`](../../../src/commands/task_commands.py))
-   runs three refusals before it looks at any field:
+   runs four refusals before it looks at any field:
    - `status: PAUSED` is refused with a pointer to `pause_task`
      (`task_commands.py:3151`).
    - A status change on a manually paused task (`PAUSED` with no `resume_after`)
      is refused with a pointer to `resume_task`.
-   - `profile_id` / `intelligence_class` on an `IN_PROGRESS` or claimed task is
-     refused: *"Task is running or claimed; stop the task before changing its
-     routing."*
+   - Any routing choice (`profile_id`, `pin`, `provider_intent`, …) is refused
+     with `routing.choice_forbidden` — by `CommandHandler.execute` first, and
+     again by the handler for an in-process caller.
+   - `intelligence_class` on an `IN_PROGRESS` or claimed task is refused:
+     *"Task is running or claimed; stop the task before changing its class
+     hint."*
 3. Each supplied key is then validated and collected into an `updates` dict
    (`task_commands.py:3178-3271`). Presence, not truthiness, drives the write, so
-   `null` **clears** a nullable field — `profile_id`, `task_type`,
-   `integration_mode`, `affinity_agent_id`, `affinity_reason`, `workspace_mode`
-   and `workflow_id` all support that. `project_id`, `profile_id` and
+   `null` **clears** a nullable field — `intelligence_class` (the class hint),
+   `task_type`, `integration_mode`, `affinity_agent_id`, `affinity_reason`,
+   `workspace_mode` and `workflow_id` all support that. `project_id` and
    `affinity_agent_id` are read back from the database; `task_type`,
    `verification_type`, `integration_mode`, `affinity_reason` and
-   `workspace_mode` are checked against their enum; a routing edit re-validates
-   the class against the resolved profile with `_validate_routing_class`
-   (`task_commands.py:1624`).
+   `workspace_mode` are checked against their enum; a class hint must name a
+   known class (`_validate_routing_class`, `task_commands.py:1624`).
 4. The writes happen in a fixed order (`task_commands.py:3272-3288`):
-   - A routing edit goes through `db.update_task_routing`
-     ([`src/database/queries/task_queries.py:1953`](../../../src/database/queries/task_queries.py)),
-     whose `UPDATE` carries the "no worker holds it" predicate in the statement
-     itself — `status != IN_PROGRESS`, `assigned_agent_id IS NULL`, and no
+   - A hint edit (`intelligence_class` or `task_type`) on a queued task
+     (`DEFINED`, `READY`, `BLOCKED` or `PAUSED`) whose route came from the router,
+     or that is `unrouted` or `legacy`, goes through `db.reset_task_route`
+     ([`src/database/queries/task_queries.py`](../../../src/database/queries/task_queries.py)):
+     it stores the new hint, clears `profile_id`, `intelligence_class` and the
+     `route` record (keeping its `constraints`), and sets `route_source:
+     unrouted`, so the router plans the task again. Its `UPDATE` carries the
+     "no worker holds it" predicate in the statement itself — `status !=
+     IN_PROGRESS`, `assigned_agent_id IS NULL`, and no
      `starting`/`running`/`draining` session — so a claim that wins after the
-     command's read cannot be silently retargeted. A rowcount of 0 is the same
-     refusal as step 2.
+     command's read is never re-routed; a refused write is the same refusal as
+     step 2. An override, a role task, or a claimed or finished task keeps its
+     route, and only the hint is stored.
    - Remaining fields go through `db.update_task`.
    - A status change goes through `db.transition_task` with `context:
      "edit_task"`, so the transition is logged like every other one.
@@ -164,7 +179,7 @@ the result carries a `warning` saying the task will fail at execution time.
 
 | Outcome | Cause |
 |---|---|
-| `rejected` | Unknown task, project, profile or affinity agent; a cross-project move of a task with a parent, children, or active hierarchy/train branch origin; `status: PAUSED`; a status change on a manually paused task; a routing change while the task is running or claimed (either from the pre-check or from `update_task_routing` returning rowcount 0); an invalid `status`, `task_type`, `verification_type`, `integration_mode`, `affinity_reason` or `workspace_mode`; a class with no mapping for the profile's harness provider; or no updatable field at all. |
+| `rejected` | `code: routing.choice_forbidden` for a `profile_id`, `pin`, `provider_intent` or other routing choice. Unknown task, project or affinity agent; a cross-project move of a task with a parent, children, or active hierarchy/train branch origin; `status: PAUSED`; a status change on a manually paused task; a class-hint change while the task is running or claimed (either from the pre-check or from `reset_task_route` refusing the write); an invalid `status`, `task_type`, `verification_type`, `integration_mode`, `affinity_reason` or `workspace_mode`; an unknown intelligence class; or no updatable field at all. |
 | `unauthorized` | The capability gate refused `edit_task` for the step principal. |
 | `contract_violation` | The dict did not satisfy `EditTaskValue` (`updated` and `fields` are required), or the outcome has no transition and there is no `runtime_error` edge. |
 | `input_resolution_failed` | A resolved input failed `EditTaskArgs` — e.g. `priority` bound to a string. |
@@ -175,8 +190,11 @@ Statically, `argument_missing` fires when `task_id` has no input and
 argument, so a playbook cannot set it.
 
 `aq task show <id>` reads the result back; `aq task explain --task-id <id>` explains why an
-edited task still is not running; a refused routing edit is resolved by stopping
-the task ([`stop_task`](stop_task.md)) first.
+edited task still is not running (often `awaiting_route` just after a hint edit);
+a refused class-hint edit is resolved by stopping the task
+([`stop_task`](stop_task.md)) first. To send a task back to its router without
+editing a field, use `aq task route`; to name its profile in an emergency, the
+operator's `aq task route-override`.
 
 ## Example step
 

@@ -27,12 +27,15 @@ however long the prompt is.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
 
+from src.git.identity import GitIdentity, resolve_git_identity
 from src.profiles.capabilities import HARNESS_TOOL_NAMES
 from src.resources.limits import session_env_caps, wrap_session_argv
+from src.sessions.dialogs import first_match
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
 from src.sessions.provider import DialogRule, SessionSpec
@@ -43,7 +46,9 @@ __all__ = [
     "BOOTSTRAP_PROMPT",
     "BYPASS_PERMISSION_MODE",
     "POOL_BOOTSTRAP_PROMPT",
+    "WORKER_TOOL_ENV",
     "SessionSpecBuilder",
+    "knowledge_startup_delivery",
     "named_session_name",
     "pool_session_name",
     "sanitize_name",
@@ -67,6 +72,58 @@ BYPASS_PERMISSION_MODE = "bypassPermissions"
 #: composition adds derived flags idempotently.
 CODEX_FULL_AUTO_FLAG = "--full-auto"
 CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+
+#: Launch env for worker sessions (``lifecycle`` ``task`` and ``pool``).
+#: graft copies its ~360 MB code index into every checkout it sees, and every
+#: ``.aq/worktrees`` slot is one: 8.5 GB of copies on 2026-09-27.  The
+#: operator's ``~/.local/bin/graft`` shim and the ``graft-hooks.cjs`` guard
+#: already set these, but an ``npm i -g`` or ``graft init`` replaces both, so
+#: the launch sets them as well.  ``DO_NOT_TRACK`` is the telemetry opt-out
+#: the shim also sets.  Named sessions are left alone.  A key the harness's
+#: own ``env`` map names wins, as with the resource caps.
+WORKER_TOOL_ENV: dict[str, str] = {
+    "GRAFT_NO_SEED": "1",
+    "GRAFT_NO_REFRESH": "1",
+    "DO_NOT_TRACK": "1",
+}
+
+_WORKER_LIFECYCLES = frozenset({"task", "pool"})
+
+
+def knowledge_startup_delivery(
+    *,
+    harness,
+    markdown: str,
+    bundle_id: str,
+    hooks_provisioned: bool = False,
+    prompt_mode: str = "arg",
+    session_id: str = "",
+    claim_epoch=None,
+    source: str | None = None,
+    env=None,
+):
+    """Classify and wrap the knowledge this launch is about to carry (design §9).
+
+    Thin by construction: the payload is already prepared and budgeted, so this
+    only decides *how* the bytes leave. A launch with neither a provisioned hook
+    nor a prompt channel cannot deliver them through argv, so the caller writes
+    the returned guidance through :data:`src.knowledge.delivery.STARTUP_GUIDANCE_FILE`
+    instead of dropping them.
+    """
+    from src.knowledge.delivery import plan
+
+    return plan(
+        markdown,
+        bundle_id=bundle_id,
+        harness=getattr(harness, "id", "") or getattr(harness, "command", "") or "",
+        supports_hooks=hooks_provisioned,
+        prompt_mode=getattr(harness, "prompt_mode", "arg"),
+        source=source,
+        env=env,
+        session_id=session_id,
+        claim_epoch=claim_epoch,
+    )
+
 
 #: The bootstrap prompt.  Deliberately tiny — see the module docstring.
 #: ``{}`` fields: task_id, work_dir.
@@ -93,7 +150,7 @@ BOOTSTRAP_PROMPT = (
 )
 
 
-def skip_permissions_allowed(profile, workspace_source_type) -> bool:
+def skip_permissions_allowed(profile, workspace_source_type, *, harness=None) -> bool:
     """Whether this launch may carry the harness's skip-permissions flag.
 
     [[design/trust-and-ops]] §4 is narrow about this: skip-permissions
@@ -108,11 +165,17 @@ def skip_permissions_allowed(profile, workspace_source_type) -> bool:
     Two ways to qualify:
 
     * the workspace is a git worktree (``RepoSourceType.WORKTREE``), or
-    * the profile sets ``permission_mode: bypassPermissions``, which is the
-      explicit opt-in §4 asks for.
+    * the profile sets ``permission_mode: bypassPermissions`` or, for Claude,
+      ``claude_dangerously_skip_permissions: true`` as an explicit opt-in.
     """
     value = getattr(workspace_source_type, "value", workspace_source_type)
     if isinstance(value, str) and value.lower() == "worktree":
+        return True
+    is_claude = (
+        _is_claude_cli(harness) if harness is not None
+        else (getattr(profile, "harness", None) or "claude") == "claude"
+    )
+    if is_claude and getattr(profile, "claude_dangerously_skip_permissions", False):
         return True
     mode = str(getattr(profile, "permission_mode", "") or "").strip()
     return mode == BYPASS_PERMISSION_MODE
@@ -129,6 +192,7 @@ def skip_permissions_allowed(profile, workspace_source_type) -> bool:
 #: session exists to process.
 NAMED_BOOTSTRAP_PROMPT = (
     "You are the {profile} session in {work_dir}.\n"
+    "{supervisor_scope}"
     "{supervisor_patrol}"
     "Run `aq message inbox --inject --json` once to retrieve pending messages, "
     "then handle anything waiting.\n"
@@ -143,6 +207,13 @@ NAMED_BOOTSTRAP_PROMPT = (
 )
 
 SUPERVISOR_PATROL_PROMPT = (
+    "Keep pool workers executing or closing their own tasks. Never tell a worker "
+    "to hold idle for source mapping, integration controls or delivery paperwork. "
+    "Read the project's integration mode first: with the train off, train controls "
+    "are not prerequisites for worker publication and close. Resolve actual command "
+    "refusals through their owner; preserve human holds and integration ownership. "
+    "If execution needs an answer, give concrete guidance or one bounded durable "
+    "message wait; never an indefinite hold with no retries.\n"
     "You are responsible for keeping AQ running between messages. "
     "As your FIRST action on a cold start, list the scheduled jobs and establish "
     "a recurring patrol on your harness scheduler if one does not already exist. "
@@ -151,24 +222,38 @@ SUPERVISOR_PATROL_PROMPT = (
     "`python3 ~/.agent-queue/operator-checks/stall-sweep.py` from the vault, "
     "poll all three supervisor inboxes (`aq --json message inbox --inject`, "
     "`aq --json message inbox --to profile:supervisor`, and "
-    "`aq --json message inbox --to session:supervisor-agent-queue`), and FIX "
+    "`aq --json message inbox --to {supervisor_inbox}`), and FIX "
     "what it finds rather than only reporting it. A scheduler job is not a "
     "background inbox poll or shell sleep loop. The patrol only lives as long "
     "as this session; re-establish it after any restart. If your harness has "
     "no scheduler, say so once in your first reply and fall back to sweeping "
-    "at the start of every turn.\n"
+    "at the start of every turn. If the sweep reports SWEEP-AUTH, stop the patrol's "
+    "remaining checks and report that single error with its recovery command. "
+    "Do not retry denied calls or remove AQ_API_TOKEN to bypass authentication. "
+    "An expired credential needs local-operator recovery with "
+    "`aq session token <session-id> --json` and replacement of this session's "
+    "AQ_API_TOKEN with .data.token.\n"
 )
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
 #: scope at launch; the worker claims its own work in a loop.  ``{}`` fields:
-#: project_name, profile_id.
+#: project_name, profile_id, message_wait_guidance.
 POOL_BOOTSTRAP_PROMPT = (
     "You are a pool worker for project {project_name} (profile {profile_id}).\n"
     "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
     "work, then `aq task close --outcome pass|fail --summary \"...\" --claim-next --wait 60`.\n"
     "On `no_ready_work`, claim again. On `session_exhausted` or `drain_requested`, exit 0.\n"
-    "On `not_admissible`, wait as instructed and claim again. Never touch tasks you do not\n"
-    "hold; .aq/claim.json in your workspace is the proof of what you hold.\n"
+    "On `prepare_failed` or `not_admissible`, respect `retry_after` and the returned instructions.\n"
+    "The daemon quarantines the workspace after three identical preparation refusals.\n"
+    "On a repeated identical refusal, report the blocker ONCE to the project supervisor.\n"
+    "If idle (no held claim or preparation), run `aq session drain-ack` and exit 0.\n"
+    "If preparation is retained, preserve it and end the turn awaiting the supervisor's\n"
+    "inbox delivery. {message_wait_guidance}\n"
+    "Do not poll claims or inboxes, reread unchanged context, or repeat the report.\n"
+    "A refusal_count >= 2 or a\n"
+    "drain_requested with blocker instructions also requires that one report.\n"
+    "Never touch tasks you do not hold; .aq/claim.json in your workspace is the proof\n"
+    "of what you hold.\n"
     "Daemon restarts are temporary: on daemon_unreachable / exit code 3, keep retrying "
     "`aq task claim --next --wait 60`. Do not start the daemon or end your pool loop. "
     "After an ambiguous close response, inspect your claim and task status before retrying close."
@@ -191,6 +276,16 @@ def _infer_provider_from_harness(harness) -> str:
     mapping = {"claude": "anthropic", "codex": "openai", "gemini": "google"}
     key = getattr(harness, "id", "") or getattr(harness, "command", "")
     return mapping.get(key, "")
+
+
+#: Codex 0.162's trust screen as painted in a worker slot (verified live,
+#: 2026-10-21). A harness whose own rules miss it gets a built-in one.
+_CODEX_TRUST_SCREEN = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+    "  permission settings.\n\n"
+    "› 1. Trust and continue\n"
+    "  2. Back to Agent Command Center\n"
+)
 
 
 def _is_codex_cli(harness) -> bool:
@@ -295,6 +390,8 @@ class SessionSpecBuilder:
         prompt: str | None = None,
         workspace_source_type=None,
         extra_env: dict[str, str] | None = None,
+        git_identity: GitIdentity | None = None,
+        knowledge=None,
     ) -> SessionSpec:
         """Spec for a one-task session (``lifecycle="task"``).
 
@@ -306,7 +403,16 @@ class SessionSpecBuilder:
         *extra_env* is applied after the ``AQ_*`` markers, before scrubbing
         (see :func:`~src.sessions.env.build_session_env`) — e.g.
         ``AQ_CLAIM_EPOCH`` for a push launch that joins the claim fence
-        (swarm-work-model §10).
+        (swarm-work-model §10).  :data:`WORKER_TOOL_ENV` fills in underneath
+        it.
+
+        *git_identity* is the project's resolved commit identity
+        (:func:`src.git.identity.resolve_git_identity`); it is injected as
+        ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` and its digest recorded.
+
+        *knowledge* is an already-prepared
+        :class:`~src.knowledge.delivery.KnowledgeSelection`; it is wrapped for
+        this harness and never re-selected, ranked or budgeted here.
         """
         name = task_session_name(task.id)
         bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
@@ -328,9 +434,13 @@ class SessionSpecBuilder:
             resume_key=resume_key,
             bootstrap=bootstrap,
             lifecycle="task",
-            allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             task_intelligence_class=getattr(task, "intelligence_class", None),
             extra_env=extra_env,
+            git_identity=git_identity,
+            knowledge=knowledge,
         )
 
     def build_named_spec(
@@ -348,12 +458,21 @@ class SessionSpecBuilder:
         wake: str = "fresh",
         resume_key: str | None = None,
         prompt: str | None = None,
+        workspace_source_type=None,
+        knowledge=None,
     ) -> SessionSpec:
         """Spec for a persistent session (``lifecycle="named"``).
 
         ``wake="resume"`` only takes effect when a *resume_key* is actually
         known; waking "resume" with no key is a fresh start, not an error —
         the first wake of a never-run session has nothing to resume.
+
+        A *knowledge* selection prepared before this launch is wrapped for the
+        harness and recorded on the spec; the bundle's delivery acknowledgment
+        still requires the persisted live session row.
+
+        Callers with a verified isolated worktree may pass *workspace_source_type*;
+        otherwise permission bypass requires the profile's explicit opt-in.
         """
         profile_id = getattr(profile, "id", "") or ""
         # Keep the established global runtime name for restart adoption; the
@@ -370,7 +489,21 @@ class SessionSpecBuilder:
         bootstrap = prompt if prompt is not None else NAMED_BOOTSTRAP_PROMPT.format(
             profile=profile_id or "agent",
             work_dir=work_dir,
-            supervisor_patrol=SUPERVISOR_PATROL_PROMPT if is_supervisor else "",
+            supervisor_scope=(
+                "You are the global supervisor for ALL projects in AQ. Your elevated "
+                "AQ access is global; an unset project is intentional. Do not ask the "
+                "user to select a project to connect or resume this terminal. Select "
+                "a project only when a specific operation needs a target.\n"
+                if is_supervisor and project_id is None else
+                f"You supervise project {project_id}; stay within that project's scope.\n"
+                if is_supervisor else ""
+            ),
+            supervisor_patrol=SUPERVISOR_PATROL_PROMPT.format(
+                supervisor_inbox=(
+                    f"session:supervisor-{project_id}"
+                    if project_id is not None else "session:supervisor-agent-queue"
+                ),
+            ) if is_supervisor else "",
         )
         return self._build(
             harness=harness,
@@ -388,10 +521,10 @@ class SessionSpecBuilder:
             resume_key=effective_resume,
             bootstrap=bootstrap,
             lifecycle="named",
-            # Named sessions have no workspace, so only the profile's
-            # explicit ``permission_mode: bypassPermissions`` opt-in
-            # (trust-and-ops §4) can grant the skip-permissions flag.
-            allow_skip_permissions=skip_permissions_allowed(profile, None),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
+            knowledge=knowledge,
         )
 
     def build_pool_spec(
@@ -411,6 +544,8 @@ class SessionSpecBuilder:
         resume_key: str | None = None,
         prompt: str | None = None,
         workspace_source_type=None,
+        git_identity: GitIdentity | None = None,
+        knowledge=None,
     ) -> SessionSpec:
         """Spec for a pool worker session (``lifecycle="pool"``, §11).
 
@@ -418,23 +553,36 @@ class SessionSpecBuilder:
         while *session_name* is the readable provider-facing name from
         :func:`pool_session_name`. The bootstrap prompt and env markers
         identify the launch as a pool worker rather than a one-task or
-        persistent session, per §11.2/§11.3.
+        persistent session, per §11.2/§11.3.  Like a task launch it also
+        carries :data:`WORKER_TOOL_ENV`.
+
+        Its commits use *git_identity*, defaulting to what *project* resolves
+        to now (:func:`src.git.identity.resolve_git_identity`) -- never a
+        per-profile address.  The pool records the digest so a claim can
+        retire the session once the project's identity changes.
         """
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
         project_name = getattr(project, "name", "") or project_id
+        from src.waits.policy import enabled as waits_enabled
+
+        message_wait_guidance = (
+            "With an active claim, use ONE durable message wait for the reply."
+            if waits_enabled(self.config, project_id)
+            else "Wait registration is disabled for this project. With an active claim, "
+            "preserve it and end the turn awaiting the supervisor's inbox delivery."
+        )
         bootstrap = prompt if prompt is not None else POOL_BOOTSTRAP_PROMPT.format(
-            project_name=project_name, profile_id=profile_id
+            project_name=project_name, profile_id=profile_id,
+            message_wait_guidance=message_wait_guidance,
         )
         extra_env = {
             "AQ_SESSION_KIND": "pool",
             "AQ_AGENT_ID": agent_id,
             "AQ_PROFILE_ID": profile_id,
-            "GIT_AUTHOR_NAME": f"aq {profile_id}",
-            "GIT_COMMITTER_NAME": f"aq {profile_id}",
-            "GIT_AUTHOR_EMAIL": f"{profile_id}@agent-queue.local",
-            "GIT_COMMITTER_EMAIL": f"{profile_id}@agent-queue.local",
         }
+        if git_identity is None:
+            git_identity = resolve_git_identity(self.config, project).identity
         return self._build(
             harness=harness,
             profile=profile,
@@ -451,8 +599,12 @@ class SessionSpecBuilder:
             resume_key=resume_key,
             bootstrap=bootstrap,
             lifecycle="pool",
-            allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             extra_env=extra_env,
+            git_identity=git_identity,
+            knowledge=knowledge,
         )
 
     # -- internals ---------------------------------------------------------
@@ -478,6 +630,8 @@ class SessionSpecBuilder:
         allow_skip_permissions: bool = False,
         task_intelligence_class: str | None = None,
         extra_env: dict[str, str] | None = None,
+        git_identity: GitIdentity | None = None,
+        knowledge=None,
     ) -> SessionSpec:
         files: list[tuple[str, str]] = []
 
@@ -488,6 +642,11 @@ class SessionSpecBuilder:
             # policy deliberately withholds hook trust (notably supervisors
             # running in the vault). Existing user hooks remain untouched.
             hook_files = []
+        # Worker-lifecycle (task/pool) Claude sessions only: supervisors and
+        # named sessions never see the overrides, and the empty-map default
+        # leaves the hook file byte-identical to the shipped template.
+        if lifecycle in _WORKER_LIFECYCLES and hook_files:
+            hook_files = self._apply_claude_plugin_overrides(hook_files, harness)
         prompt = None if harness.prompt_mode == "none" else bootstrap
         argv = self._compose_argv(
             harness=harness,
@@ -501,6 +660,7 @@ class SessionSpecBuilder:
             hook_files=hook_files,
             task_intelligence_class=task_intelligence_class,
             class_config=class_config,
+            worker_context=lifecycle in _WORKER_LIFECYCLES,
         )
 
         files.extend(hook_files)
@@ -513,7 +673,58 @@ class SessionSpecBuilder:
             or (bool(harness.hook_trust_flag) and allow_skip_permissions)
         )
 
+        # Knowledge delivery is a wrap, never a selection: the bundle was
+        # prepared and budgeted before this call. A launch that cannot carry it
+        # through argv (no hook, no prompt channel) writes explicit guidance
+        # into the workspace instead of silently dropping the payload.
+        knowledge_transport = None
+        if knowledge is not None and knowledge.markdown:
+            from src.knowledge.delivery import (
+                STARTUP_GUIDANCE,
+                STARTUP_GUIDANCE_FILE,
+                startup_guidance,
+            )
+
+            delivery = knowledge_startup_delivery(
+                harness=harness,
+                markdown=knowledge.markdown,
+                bundle_id=knowledge.bundle_id,
+                hooks_provisioned=hooks_provisioned,
+                prompt_mode=harness.prompt_mode,
+                session_id=session_id,
+                claim_epoch=epoch,
+                source=knowledge.source,
+            )
+            knowledge_transport = delivery.transport
+            if delivery.transport == STARTUP_GUIDANCE and not delivery.suppressed:
+                files.append((
+                    STARTUP_GUIDANCE_FILE,
+                    startup_guidance(
+                        knowledge.markdown,
+                        harness=getattr(harness, "id", ""),
+                        bundle_id=knowledge.bundle_id,
+                    ),
+                ))
+
         launch_env = dict(extra_env or {})
+        if git_identity is not None:
+            # Policy, not a default: applied over *extra_env* so no caller-
+            # supplied GIT_* can quietly replace the resolved identity.
+            launch_env.update(git_identity.env())
+        if lifecycle in _WORKER_LIFECYCLES:
+            harness_env = getattr(harness, "env_map", None) or {}
+            from src.sessions.context import compact_tokens
+
+            limit = compact_tokens(self.config)
+            key = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+            if _is_claude_cli(harness) and (limit or key in harness_env):
+                # This is configuration, never inherited session identity.
+                # build_session_env filters CLAUDE_CODE_* from harness input;
+                # the builder explicitly supplies this one supported setting.
+                launch_env.setdefault(key, str(harness_env.get(key, limit)))
+            for key, value in WORKER_TOOL_ENV.items():
+                if key not in harness_env:
+                    launch_env.setdefault(key, value)
         provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
         thinking = str(class_config.get("thinking") or "").strip()
         if provider == "anthropic":
@@ -569,6 +780,18 @@ class SessionSpecBuilder:
                 keys=(),
                 quarantine=True,
             ), *dialogs)
+        codex_project_trust = _is_codex_cli(harness) and allow_skip_permissions
+        if _is_codex_cli(harness) and first_match(dialogs, _CODEX_TRUST_SCREEN) is None:
+            # Codex 0.162 renamed its trust screen, and an operator-edited
+            # vault harness keeps the old rule. Its "› 1. Trust and continue"
+            # row must never pass for the composer. Pre-trust normally keeps
+            # the screen away; without the worktree argument, fail startup.
+            dialogs = (*dialogs, DialogRule(
+                name="trust-folder",
+                pattern=r"(?m)Trust this folder\?[\s\S]*^\s*›\s*1\. Trust and continue\s*$",
+                is_regex=True,
+                keys=("Enter",) if codex_project_trust else (),
+            ))
 
         return SessionSpec(
             session_name=session_name,
@@ -588,6 +811,9 @@ class SessionSpecBuilder:
             files=tuple(files),
             instance_token=instance_token,
             hooks_provisioned=hooks_provisioned,
+            git_identity_digest=git_identity.digest if git_identity is not None else None,
+            knowledge_transport=knowledge_transport,
+            codex_project_trust=codex_project_trust,
         )
 
     def _compose_argv(
@@ -604,6 +830,7 @@ class SessionSpecBuilder:
         hook_files: list[tuple[str, str]] | None = None,
         task_intelligence_class: str | None = None,
         class_config: dict | None = None,
+        worker_context: bool = False,
     ) -> list[str]:
         if class_config is None:
             class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
@@ -617,6 +844,10 @@ class SessionSpecBuilder:
             argv.append(resume_key)
 
         argv.extend(harness.args)
+        if worker_context and _is_codex_cli(harness):
+            from src.sessions.context import codex_compact_override
+
+            argv.extend(codex_compact_override(harness.args, self.config))
 
         # These profile switches are explicit opt-ins for one concrete CLI.
         # Raw harness args remain a supported escape hatch; when they already
@@ -862,7 +1093,9 @@ class SessionSpecBuilder:
             logger.warning("Harness %r has no effort_flag; effort %r not applied", harness.id, effort)
         return effort
 
-    def _resolve_class_config(self, profile, harness, task_intelligence_class) -> dict:
+    def _resolve_class_config(
+        self, profile, harness, task_intelligence_class, *, for_display: bool = False,
+    ) -> dict:
         """Resolve the whole provider slice without dropping its thinking fields.
 
         Worker class > task class > profile default. Unknown classes, providers,
@@ -878,6 +1111,8 @@ class SessionSpecBuilder:
             return {}
         cls = self._intelligence_classes.get(class_id)
         if cls is None:
+            if for_display:
+                return {}
             logger.warning(
                 "intelligence-class '%s' not found; no launch model resolved",
                 class_id,
@@ -952,6 +1187,40 @@ class SessionSpecBuilder:
                     template,
                     src,
                 )
+        return out
+
+    def _apply_claude_plugin_overrides(
+        self, hook_files: list[tuple[str, str]], harness: Harness
+    ) -> list[tuple[str, str]]:
+        """Fold worker plugin overrides into the rendered Claude hook file.
+
+        ``sessions.worker_claude_plugin_overrides`` is merged as
+        ``enabledPlugins`` into ``.aq/hooks/claude.json`` — the one hook file
+        a Claude CLI session actually reads — so an operator can disable a
+        per-worker plugin without touching ``~/.claude/settings.json``.  The
+        empty-map default returns *hook_files* untouched, so the file stays
+        byte-identical to the shipped template; only a configured, non-empty
+        map is re-serialized.
+        """
+        if not _is_claude_cli(harness):
+            return hook_files
+        overrides = (getattr(self.config, "sessions", None) or None)
+        overrides = getattr(overrides, "worker_claude_plugin_overrides", None) or {}
+        if not overrides:
+            return hook_files
+        logger.info(
+            "Worker plugin overrides applied to %s: %s (audit: rendered claude.json carries this set)",
+            harness.id,
+            json.dumps(dict(overrides), sort_keys=True),
+        )
+        out: list[tuple[str, str]] = []
+        for dest, content in hook_files:
+            if not dest.endswith("claude.json"):
+                out.append((dest, content))
+                continue
+            payload = json.loads(content)
+            payload["enabledPlugins"] = dict(overrides)
+            out.append((dest, json.dumps(payload, indent=2) + "\n"))
         return out
 
     def _default_api_url(self) -> str:

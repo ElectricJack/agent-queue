@@ -21,8 +21,18 @@ KIND_ROOT = "root"
 KIND_ACK = "ack"
 KIND_RELAY = "relay"
 KIND_RESOLUTION = "resolution"
+#: The §5.1/§5.2 in-place root edit: one post per incident, rewritten as the
+#: incident moves rather than appended to.  Defined here with the rest of the
+#: kinds so the query layer's vocabulary and the delivery kinds stay one list.
+KIND_STATE = "state"
 
-DELIVERY_KINDS: tuple[str, ...] = (KIND_ROOT, KIND_ACK, KIND_RELAY, KIND_RESOLUTION)
+DELIVERY_KINDS: tuple[str, ...] = (
+    KIND_ROOT,
+    KIND_ACK,
+    KIND_RELAY,
+    KIND_RESOLUTION,
+    KIND_STATE,
+)
 
 #: Lower number wins in :meth:`claim_escalation_deliveries`' ordering.  A root
 #: post goes out before its own follow-ups, and every escalation delivery
@@ -32,12 +42,18 @@ DELIVERY_KINDS: tuple[str, ...] = (KIND_ROOT, KIND_ACK, KIND_RELAY, KIND_RESOLUT
 PRIORITY_ROOT = 0
 PRIORITY_RESOLUTION = 2
 PRIORITY_FOLLOWUP = 5
+#: A state edit rewrites a post that already exists, so it must not overtake
+#: the root that creates it.  It sits with the thread follow-ups: both are
+#: "the incident moved on" messages, and the resolution outranks them because
+#: it is the same post entering its final form.
+PRIORITY_STATE = 5
 PRIORITY_DIGEST = 20
 
-#: States in which the incident still wants a human in the channel.
+#: Nonterminal incidents, including answered ones awaiting supervisor action.
 OPEN_STATES = frozenset({"needs_human", "reply_received", "resolving"})
 #: States in which nothing may be re-opened; a late reply is answered, not acted on.
 TERMINAL_STATES = frozenset({"resolved", "cancelled", "stale"})
+INTERNAL_DELIVERY_ERROR = "supervisor delivery incident is internal-only; nothing was sent"
 
 _SEVERITY_LABEL = {
     "critical": "🚨 Critical",
@@ -64,6 +80,37 @@ class EscalationFacts:
     task_status: str | None = None
     choices: Sequence[str] = field(default_factory=tuple)
     terminal_outcome: str | None = None
+    source_kind: str = ""
+    #: Derived from a bound wait's explicit human conversion, never a queued retry.
+    human_requested: bool = False
+    #: Derived from the committed wait decision, never from a transport event.
+    human_delivery_authorized: bool = False
+    #: Which §5.5 rule closed the incident (``human`` for one a person closed).
+    #: NULL for an incident closed before the stateful phase, which renders
+    #: exactly as it always did.
+    outcome: str | None = None
+    #: When the channel post last entered its collapsed one-line form.  Set by
+    #: the dispatcher after a successful edit, so a replay can tell "already
+    #: collapsed" from "not yet".
+    collapsed_at: float | None = None
+    #: When the incident was raised, which §5.2's stale row prints as the date
+    #: it has been sitting since.
+    created_at: float | None = None
+    #: When anyone last changed the incident, which is what §5.2's stale timer
+    #: and §5.5's "no activity for 7 days" rule both measure from.
+    updated_at: float | None = None
+
+    @property
+    def wants_human_delivery(self) -> bool:
+        if self.source_kind in {"supervisor_delivery", "continuation"}:
+            return False
+        return self.human_delivery_authorized or self.source_kind not in {
+            "wait", "integration_train_stall", "integration_delivery_stuck",
+        }
+
+    @property
+    def needs_human_answer(self) -> bool:
+        return self.wants_human_delivery and self.state == "needs_human"
 
     @property
     def is_terminal(self) -> bool:
@@ -83,6 +130,7 @@ class EscalationFacts:
         else:
             choices = tuple(str(value) for value in raw_choices)
         return cls(
+            human_requested=bool(row.get("human_requested")),
             id=str(row["id"]),
             project_id=str(row["project_id"]),
             state=str(row["state"]),
@@ -98,6 +146,12 @@ class EscalationFacts:
             terminal_outcome=(
                 str(row["terminal_outcome"]) if row.get("terminal_outcome") else None
             ),
+            source_kind=str(row.get("source_kind") or ""),
+            human_delivery_authorized=bool(row.get("human_delivery_authorized", False)),
+            outcome=(str(row["outcome"]) if row.get("outcome") else None),
+            collapsed_at=(float(row["collapsed_at"]) if row.get("collapsed_at") else None),
+            created_at=(float(row["created_at"]) if row.get("created_at") else None),
+            updated_at=(float(row["updated_at"]) if row.get("updated_at") else None),
         )
 
 
