@@ -28,10 +28,14 @@ ALLOWED = {SRC / "database" / "legacy_sqlite_import.py"}
 #: Modules that read *another program's* SQLite file.  AQ persists to
 #: PostgreSQL alone, but OpenCode records its tool calls -- its native question
 #: dialog included -- only in its own ``opencode.db``, which
-#: :mod:`src.sessions.native_questions` reads for question evidence.  Such a
+#: :mod:`src.sessions.native_questions` reads for question evidence and
+#: :mod:`src.sessions.opencode_store` reads for per-session liveness.  Such a
 #: reader may import the stdlib driver and name the file, nothing more, and
 #: must open it read-only (``test_foreign_store_readers_open_read_only``).
-FOREIGN_STORE_READERS = {SRC / "sessions" / "native_questions.py"}
+FOREIGN_STORE_READERS = {
+    SRC / "sessions" / "native_questions.py",
+    SRC / "sessions" / "opencode_store.py",
+}
 
 #: SQLite *usage*, not the word.  Prose that explains why the backend is gone
 #: is wanted, not forbidden — the ratchet exists to stop the code coming back,

@@ -2,12 +2,10 @@ import { matchPath } from "react-router-dom";
 
 export const TASK_TABS = [
   { tab: "graph", label: "Graph" },
-  { tab: "tasks", label: "Tasks" },
+  { tab: "tasks-knowledge", label: "Tasks & Knowledge" },
 ] as const;
 
 export const PROJECT_TABS = [
-  { tab: "knowledge", label: "Knowledge" },
-  { tab: "records", label: "All records" },
   { tab: "overview", label: "Overview" },
   { tab: "sessions", label: "Sessions" },
   { tab: "workspaces", label: "Workspaces" },
@@ -18,7 +16,7 @@ export const PROJECT_TABS = [
 export type WorkspaceTab = (typeof TASK_TABS)[number]["tab"] | (typeof PROJECT_TABS)[number]["tab"];
 
 export function isTaskTab(tab: WorkspaceTab): boolean {
-  return tab === "graph" || tab === "tasks";
+  return tab === "graph";
 }
 
 /** The URL is the single project selection; no tab-local or stored selection. */
@@ -28,7 +26,9 @@ export function projectNavigation(pathname: string): {
   const project = matchPath("/projects/:projectId/*", pathname);
   const global = matchPath("/command-center/*", pathname);
   const requestedTab = (project ?? global)?.params["*"]?.replace(/\/$/, "") || "graph";
-  const tab = [...TASK_TABS, ...PROJECT_TABS].find((item) => item.tab === (requestedTab === "profiles" ? "config" : requestedTab))?.tab ?? "graph";
+  const canonicalTab = ["tasks", "knowledge", "records"].includes(requestedTab) || requestedTab.startsWith("knowledge/")
+    ? "tasks-knowledge" : requestedTab === "profiles" ? "config" : requestedTab;
+  const tab = [...TASK_TABS, ...PROJECT_TABS].find((item) => item.tab === canonicalTab)?.tab ?? "graph";
   let projectId = project?.params.projectId ?? null;
   if (projectId) {
     try { projectId = decodeURIComponent(projectId); }
@@ -40,7 +40,7 @@ export function projectNavigation(pathname: string): {
 /** Resource tabs need a project; selecting All projects returns to the graph. */
 export function workspaceHref(projectId: string | null | undefined, tab: WorkspaceTab, search = ""): string {
   const base = projectId ? `/projects/${encodeURIComponent(projectId)}` : "/command-center";
-  const target = projectId || isTaskTab(tab) ? tab : "graph";
+  const target = projectId || isTaskTab(tab) || tab === "tasks-knowledge" ? tab : "graph";
   return `${base}/${target}${search}`;
 }
 

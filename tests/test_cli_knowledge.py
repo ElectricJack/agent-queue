@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -193,3 +195,39 @@ def test_proposal_resolves_claim_file_epoch_without_overriding_explicit(runner, 
     assert result.exit_code == 0, result.output
     assert captured["claim_epoch"] == expected
     assert captured["snapshot"]["title"] == "Correction"
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "src/skills/aq-knowledge/SKILL.md",
+        "docs/guides/knowledge-records.md",
+    ],
+)
+def test_documented_reference_create_passes_cli_and_snapshot_contracts(runner, document):
+    """Run the published command against a fake daemon, then validate its source."""
+    from src.cli.app import cli
+    from src.commands.contracts.knowledge import KnowledgeCreateArgs
+    from src.knowledge.models import Snapshot
+
+    text = (Path(__file__).resolve().parents[1] / document).read_text(encoding="utf-8")
+    commands = [
+        shlex.split(block.split("```", 1)[0].replace("\\\n", " "))
+        for block in text.split("```bash\n")[1:]
+    ]
+    command = next(args for args in commands if ["knowledge", "create"] == args[2:4])
+    captured = {}
+    mock = _mock_client({"knowledge_create": {"record_id": "r-1"}}, captured)
+    with patch("src.cli.app._get_client", return_value=mock):
+        result = runner.invoke(cli, command[1:])
+    assert result.exit_code == 0, result.output
+    assert mock.execute.await_args.args[0] == "knowledge_create"
+    args = KnowledgeCreateArgs.model_validate(captured)
+    snapshot = Snapshot.model_validate(
+        {key: getattr(args, key) for key in ("title", "body", "category", "tags", "sources")}
+    )
+    assert args.project_id == "agent-queue"
+    assert snapshot.category == "reference"
+    assert snapshot.sources[0].kind == "url"
+    assert snapshot.sources[0].retained is False
+    assert snapshot.sources[0].observed_at.endswith("Z")
