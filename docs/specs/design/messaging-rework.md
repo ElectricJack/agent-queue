@@ -4,9 +4,17 @@ tags: [design, messaging, discord, dashboard, api, overhaul]
 
 # Messaging Rework — Out-of-Process Discord, Dashboard as Primary UI
 
-**Status:** Superseded for Discord by [[../messaging/discord]] and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained design history below does not describe the current Discord product surface.
-**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #5 reduce effort not judgment, #7 events not coupling, #10 fewer moving parts)
-**Related:** [[../analysis/framework-overhaul-todo]] (D7, Workstream F §9), [[session-runtime]] (notify events, transcripts, SSE), [[supervisor-agent]] (messages table, chat relay), [[work-graph]] (gates, event log, `after_seq`), [[aq-surface]] (commands, `--json` envelope), [[../messaging/base]] (superseded in part), [[../messaging/discord]] (superseded), [[../messaging/telegram]] (removed)
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
+**Status:** Superseded for Discord by [../messaging/discord](../messaging/discord.md) and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained design history below does not describe the current Discord product surface.
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #2 visible and editable, #5 reduce effort not judgment, #7 events not coupling, #10 fewer moving parts)
+**Related:** [../analysis/framework-overhaul-todo](../../analysis/framework-overhaul-todo.md) (D7, Workstream F §9), [session-runtime](session-runtime.md) (notify events, transcripts, SSE), [supervisor-agent](supervisor-agent.md) (messages table, chat relay), [work-graph](work-graph.md) (gates, event log, `after_seq`), [aq-surface](aq-surface.md) (commands, `--json` envelope), [../messaging/base](../messaging/base.md) (superseded in part), [../messaging/discord](../messaging/discord.md) (superseded), `../messaging/telegram` (removed)
 
 ---
 
@@ -47,9 +55,9 @@ adapter out of process.
 | # | Decision |
 |---|---|
 | M1 | **Telegram is removed entirely** — `src/telegram/` and the `python-telegram-bot` dependency are deleted, not paused. |
-| M2 | **Discord becomes a separate process** in `packages/aq-discord/` with its own `pyproject.toml` and its own `discord.py` dependency. After migration the daemon never imports discord.py. |
+| M2 | **Discord becomes a separate process** in `packages/aq-discord/` with its own `pyproject.toml` and its own `discord.py` dependency. After migration the daemon never imports discord.py. **Not done, and not required.** The Discord simplification keeps the adapter in-tree at `src/discord/` behind a transport-neutral command/event boundary — the daemon still imports discord.py. Moving the process boundary remains separate, unscheduled work; nothing in the current product surface depends on it. |
 | M3 | The bot talks to the daemon **only via REST + WebSocket** — the same `/api/execute` + `/api/ws` surface the dashboard uses — authenticated with a **service token**, with reconnect/backoff and `after_seq` resume. |
-| M4 | Discord keeps five features: per-task threads (streamed from transcript events, in-place edits), thread replies → agent messages / gate answers, gate & approval buttons, project-channel chat → the project's supervisor session, and a minimal (≤6) set of read-only slash commands. |
+| M4 | ~~Discord keeps five features: per-task threads (streamed from transcript events, in-place edits), thread replies → agent messages / gate answers, gate & approval buttons, project-channel chat → the project's supervisor session, and a minimal (≤6) set of read-only slash commands.~~ **Superseded** by the [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md) §1–§2. All five are removed from the target surface. Discord keeps exactly two: the hourly activity digest and one escalation thread per human decision, whose replies return to the owning project supervisor. §4.1–4.5 below describe the retired design. |
 | M5 | Removed: the 122 mirrored command handlers, the project wizard, and the ad-hoc views (`src/discord/commands.py`, `project_wizard.py`, most of `views.py`). |
 | M6 | `src/messaging/` stays in-tree as the transport-port abstraction (used by the interim in-process adapter and any future in-process transport). Its Telegram branch goes now. |
 | M7 | **The dashboard is the primary UI.** Every dashboard feature follows the API-first rule: a named `CommandHandler` command + a registered Pydantic response model + the generated TS client — no dashboard-private endpoints. |
@@ -82,7 +90,7 @@ daemon already communicates through events; the bot becomes just another subscri
 Three properties define the boundary:
 
 1. **The daemon is authoritative and bot-agnostic.** It emits events into the durable event
-   log ([[work-graph]]) and serves commands. It has no knowledge that a Discord process
+   log ([work-graph](work-graph.md)) and serves commands. It has no knowledge that a Discord process
    exists; if `aq-discord` is down, nothing in the daemon degrades.
 2. **The bot is a projection.** Discord threads, embeds, and buttons are a *view* of daemon
    state, rendered from events at-least-once and made idempotent by event `seq`. The bot
@@ -96,12 +104,21 @@ Three properties define the boundary:
 
 ## 4. What Discord keeps
 
+> **Superseded (2026-09-08).** Sections 4.1–4.5 describe the M4 surface, which the
+> [Discord simplification implementation spec](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md)
+> removed in full. Per-task execution threads, thread-reply-to-worker routing, gate and
+> approval buttons, project-channel chat and the six slash commands no longer exist. For the
+> current surface read [../messaging/discord](../messaging/discord.md) and
+> [Discord notifications](../../guides/discord-commands.md); for what replaced each control,
+> the [replacement capability checklist](../../guides/discord-replacement-checklist.md); for the
+> operator procedure, the [migration runbook](../../guides/discord-migration.md).
+
 ### 4.1 Per-task threads (observe surface)
 
 A thread is created in the project's channel when a task's session starts
 (`task.session.started`), not when the task is created — DEFINED/READY tasks are dashboard
 material. The thread streams the agent's activity from `task.session.output` events, which
-[[session-runtime]] now feeds from **transcript readers** (the harness's own JSONL
+[session-runtime](session-runtime.md) now feeds from **transcript readers** (the harness's own JSONL
 transcripts) instead of the dead SDK callback. Rendering ports the two patterns that already
 work in `src/discord/notification_handler.py` and `src/discord/rate_guard.py`:
 
@@ -119,8 +136,8 @@ A human message in a task thread becomes structured input to the task, replacing
 ad-hoc description-append (`_handle_task_thread_message` in `src/discord/bot.py`):
 
 - If the task has an **open human gate** (an `aq ask` question or approval —
-  [[work-graph]]), the reply resolves it via `gate_resolve`.
-- Otherwise it becomes a **`messages` row addressed to the task** ([[supervisor-agent]])
+  [work-graph](work-graph.md)), the reply resolves it via `gate_resolve`.
+- Otherwise it becomes a **`messages` row addressed to the task** ([supervisor-agent](supervisor-agent.md))
   via `message_send`; the daemon delivers it by nudge (or `UserPromptSubmit` inject) per
   the session-runtime delivery rules. The bot never touches sessions directly.
 
@@ -132,31 +149,38 @@ Routing rules, loop prevention, and permissions are specified in §7.
 thread (plus a brief in the channel). Buttons call `gate_resolve` with the actor's identity.
 This replaces the five bespoke view classes (`TaskApprovalView`, `PlanApprovalView`,
 `AgentQuestionView`, `TaskFailedView`, `TaskBlockedView`) with one gate-shaped view, because
-plan approval, task approval, and agent questions all collapse into gates ([[work-graph]]).
+plan approval, task approval, and agent questions all collapse into gates ([work-graph](work-graph.md)).
 
 ### 4.4 Project channel chat → the project supervisor
 
 A message in a mapped project channel relays to that project's supervisor session via the
-relay API owned by [[supervisor-agent]] (`session_message_send` →
+relay API owned by [supervisor-agent](supervisor-agent.md) (`session_message_send` →
 `POST /api/sessions/{name}/message`). The supervisor's reply (a `message.replied` event or
 tailed assistant turn) posts back to the channel. This replaces the in-process
 `Supervisor.chat()` loop, the channel history buffer, and channel summarization — the
 supervisor session owns its own conversation memory (`--resume`).
 
-### 4.5 Minimal slash commands (6)
+### 4.5 Minimal slash commands (6) — removed, none survive
 
-| Command | Backs onto | Why it survives |
+> **Superseded (2026-09-08).** The bot registers **no** slash commands. The cutover
+> unregisters these six from the guild ([Discord simplification implementation spec]
+> (../../superpowers/specs/2026-09-08-discord-simplification-implementation.md) §10) and
+> leaves unrelated guild commands alone. The table is history; the third column records
+> where each capability lives now.
+
+| Removed command | Backed onto | Where it lives now |
 |---|---|---|
-| `/status` | `system_status` | The single highest-frequency glance; answerable in one embed. |
-| `/tasks [project] [status]` | `list_tasks` | Orientation before replying in a thread. |
-| `/explain <task>` | `task_explain` | "Why isn't X running" is *the* support question; explain is built for it ([[work-graph]]). |
-| `/peek <task>` | `session_peek` | See the live pane without leaving Discord; complements thread streaming. |
-| `/gates [project]` | `gate_list` | What is waiting on a human right now. |
-| `/attach <task>` | `session_attach` | Prints the `tmux attach` command — the bridge to the real terminal. |
+| `/status` | `system_status` | Dashboard overview; `aq system status`. |
+| `/tasks [project] [status]` | `list_tasks` | Dashboard Tasks tab; `aq task list`. The hourly digest carries the activity summary nobody has to ask for. |
+| `/explain <task>` | `task_explain` | `aq task explain`; dashboard task detail. |
+| `/peek <task>` | `session_peek` | `aq session peek`; dashboard session view. Discord never streamed a pane again. |
+| `/gates [project]` | `gate_list` | Dashboard gates view; `aq playbook gates`. A gate that needs a human now opens an escalation thread instead of waiting to be discovered. |
+| `/attach <task>` | `session_attach` | `aq session attach`. |
 
-Selection rule: **read-only or navigation only**. Every mutation flows through gate buttons,
-thread replies, supervisor chat, or the dashboard — mutating slash commands are exactly the
-122-command surface we are deleting. Six is the cap; additions require removing one.
+The old selection rule (**read-only or navigation only**, capped at six) is moot: Discord is
+an output surface plus one reply path. The only inbound message the bot acts on is a reply
+in an escalation thread, and that is routed to the owning project supervisor rather than
+executing a command.
 
 ### 4.6 Removed
 
@@ -171,8 +195,8 @@ replacements are the dashboard (§8) and the supervisor chat.
 ## 5. Event consumption contract
 
 `aq-discord` consumes the daemon's event stream over `GET /api/ws?after_seq=<n>` (envelope,
-sequencing, and replay are owned by [[work-graph]]; event *names and payloads* below are
-owned by [[session-runtime]], [[work-graph]], and [[supervisor-agent]] — this spec pins the
+sequencing, and replay are owned by [work-graph](work-graph.md); event *names and payloads* below are
+owned by [session-runtime](session-runtime.md), [work-graph](work-graph.md), and [supervisor-agent](supervisor-agent.md) — this spec pins the
 fields the bot needs, and the payload-registry test keeps them honest). Delivery is
 at-least-once; the bot deduplicates on `seq` and persists the last-rendered seq.
 
@@ -188,7 +212,7 @@ at-least-once; the bot deduplicates on `seq` and persists the last-rendered seq.
 | `message.created` / `message.replied` | `message_id, task_id\|session_name, project_id, author, author_kind, body` | Agent/supervisor replies into thread or channel; used for reply receipts |
 | `pr.created`, `merge.conflict`, `budget.warning` | ids, `pr_url`, `branch`, usage figures | Channel briefs (no buttons; PR review happens on the forge/dashboard) |
 
-**Name mapping.** [[session-runtime]] currently names its lifecycle events
+**Name mapping.** [session-runtime](session-runtime.md) currently names its lifecycle events
 `session.started` / `session.exited` (etc.) and streams transcript output as
 `notify.task_message` (the existing `stream_id` contract). The rows above use the
 messaging-view names; whichever names the owning spec finalizes, the **fields** listed here
@@ -230,7 +254,7 @@ applied to presentation state).
    (or `approve` / `reject` as the entire message), so a casual comment can never approve.
 3. Otherwise → `message_send {task_id, body, author, source:"discord"}`. The daemon owns
    what happens next (store row; nudge live session; queue for next run — per
-   [[supervisor-agent]] and [[session-runtime]]). The bot acknowledges with a 📨 reaction on
+   [supervisor-agent](supervisor-agent.md) and [session-runtime](session-runtime.md)). The bot acknowledges with a 📨 reaction on
    success, ⚠️ + error reply on failure. **No client-side queueing of actions**: if the
    daemon is down, the human sees the failure immediately instead of a silent maybe-later.
 
@@ -273,7 +297,7 @@ ephemerally (buttons/slash).
 |---|---|
 | **Daemon down / unreachable** | Bot stays up. WS reconnect loop with exponential backoff + jitter (1 s → 60 s cap). Actions fail fast and visibly (§7.1). Slash commands answer with a degraded notice. Nothing is queued client-side. |
 | **Bot down / crashed** | Daemon unaffected — events accumulate in the durable event log. Supervision (systemd / `run.sh`) restarts the bot; it resumes from its persisted `last_seq`. |
-| **Catch-up after gap** | Replay from `after_seq` with collapse rules: `task.session.output` collapses to the latest text per stream (never replay intermediate edits); sessions still live get threads created late; tasks that went terminal while offline get a single summary post; open gates are always rendered regardless of age; other events older than `catchup.max_age_s` (default 6 h) are dropped. If the requested seq has been compacted away ([[work-graph]] retention), the bot falls back to a state resync: `list_tasks` + `gate_list` + `session_list` snapshot, then streams from the current head. |
+| **Catch-up after gap** | Replay from `after_seq` with collapse rules: `task.session.output` collapses to the latest text per stream (never replay intermediate edits); sessions still live get threads created late; tasks that went terminal while offline get a single summary post; open gates are always rendered regardless of age; other events older than `catchup.max_age_s` (default 6 h) are dropped. If the requested seq has been compacted away ([work-graph](work-graph.md) retention), the bot falls back to a state resync: `list_tasks` + `gate_list` + `session_list` snapshot, then streams from the current head. |
 | **Discord rate limits / bans** | Ported rate guard: warn → critical (shed non-critical edits) → halt (stop all I/O until the window clears). Stream coalescing means shedding loses only intermediate frames. |
 | **Registry loss** | Thread registry rebuilt from thread-name prefixes (§6). |
 
@@ -294,15 +318,15 @@ model in `src/api/models/` + generated client — never a dashboard-private endp
 | 1 | **Sessions view** — list with state, auto-refreshing peek, copyable attach command, nudge box, logs | `session_list`, `session_peek`, `session_attach`, `session_nudge`, `session_logs` | `SessionSummary`, `SessionListResponse`, `SessionPeekResponse`, `SessionAttachResponse`, `SessionNudgeResponse`, `SessionLogsResponse` |
 | 2 | **Task explain + graph** — typed edges, gates, blockers with reasons | `task_explain`, `task_graph` | `TaskExplainResponse` (blocker list: dep/gate/cap/budget/affinity/lease…), `TaskGraphResponse` (typed nodes/edges, gate nodes, cross-project edges flagged) |
 | 3 | **Gates / approvals inbox** — all pending human gates across projects, one-click resolve | `gate_list`, `gate_resolve` | `GateSummary`, `GateListResponse`, `GateResolveResponse` |
-| 4 | **Supervisor chat panel** — per-project chat with the supervisor session | `session_message_send`, `session_message_history` (command wrappers over [[supervisor-agent]]'s relay: `POST /api/sessions/{name}/message`, `GET /api/sessions/{name}/messages`) | `ChatMessage`, `ChatHistoryResponse`, `MessageSendResponse` |
+| 4 | **Supervisor chat panel** — per-project chat with the supervisor session | `session_message_send`, `session_message_history` (command wrappers over [supervisor-agent](supervisor-agent.md)'s relay: `POST /api/sessions/{name}/message`, `GET /api/sessions/{name}/messages`) | `ChatMessage`, `ChatHistoryResponse`, `MessageSendResponse` |
 | 5 | **Worktrees view** — slots, branches, tasks, doctor findings, reap | `worktree_list`, `workspace_doctor`, `worktree_reap` | `WorktreeSummary`, `WorktreeListResponse`, `WorkspaceDoctorResponse` |
 | 6 | **Harness editor** — vault `harnesses/*.md` round-trip editing with validation | `harness_list`, `harness_get`, `harness_update`, `harness_validate` | `HarnessSummary`, `HarnessDetail`, `HarnessValidateResponse` |
 | 7 | **Doctor page** — run checks, apply fixes | `doctor_run`, `doctor_fix` | `DoctorCheck`, `DoctorReport` |
 | 8 | **Costs** — token ledger × pricing, per project/task/profile over time | `costs_summary`, `costs_breakdown` | `CostsSummaryResponse`, `CostsBreakdownResponse` |
 
 Command names above that belong to other workstreams (`session_*`, `task_explain`,
-`gate_*`, `worktree_*`, `doctor_*`) are *owned* by [[session-runtime]], [[work-graph]],
-[[supervisor-agent]], and [[aq-surface]] respectively; this spec claims only the dashboard
+`gate_*`, `worktree_*`, `doctor_*`) are *owned* by [session-runtime](session-runtime.md), [work-graph](work-graph.md),
+[supervisor-agent](supervisor-agent.md), and [aq-surface](aq-surface.md) respectively; this spec claims only the dashboard
 obligation: the command must exist with a registered response model before the page ships.
 Live updates come from the same WS contract as §5 — one event stream serves both consumers.
 
@@ -324,5 +348,5 @@ Live updates come from the same WS contract as §5 — one event stream serves b
 1. Should approval gates accept bare `approve`/`reject` text replies at all, or buttons
    only? (Current lean: allow the exact keywords, nothing fuzzier.)
 2. Thread archive timing for `COMPLETED` — fixed 24 h vs. archive-on-merge once the merge
-   slot ([[workspaces-v2]]) emits `task.merged`.
+   slot ([workspaces-v2](workspaces-v2.md)) emits `task.merged`.
 3. Whether `aq-discord` ships a read-only "no token" spectator mode. Deferred.

@@ -9,7 +9,7 @@ Category prefixes are stripped from command names for cleaner UX:
 ``git_commit`` becomes ``aq git commit``, ``memory_search`` becomes
 ``aq memory search``.
 
-Tool definitions are imported from ``src.tools.definitions._ALL_TOOL_DEFINITIONS``
+Tool definitions are loaded from the generated ``src/tools/command_catalogue.json``
 (a pure data structure, no heavy deps) so commands appear in ``--help``
 even when the daemon is down.  Execution still goes through the REST API.
 """
@@ -22,16 +22,44 @@ from collections import defaultdict
 import click
 from rich.console import Console
 
-from src.tools import (
-    CATEGORIES,
-    _ALL_TOOL_DEFINITIONS,
-    _CLI_CATEGORY_OVERRIDES,
-    _TOOL_CATEGORIES,
-)
+from src.tools.command_catalogue import load_command_catalogue
+
+_CATALOGUE = load_command_catalogue()
+_ALL_TOOL_DEFINITIONS = _CATALOGUE["explicit"]
+_CATEGORY_DESCRIPTIONS = {
+    **_CATALOGUE["categories"],
+    "ask": "Human requests, discussion and prepared decisions.",
+}
+_CLI_CATEGORY_OVERRIDES = _CATALOGUE["cli_category_overrides"]
+_TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    "policy_export",
+    "policy_diff",
+    "policy_apply",
+    "create_project",
+    "remove_task",
+    "promote_schema",
+    "promote_validate",
+    "promote_rulesets",
+    "promote_request",
+    "promote_hotfix",
+    "promote_approve",
+    "promote_cancel",
+    "promote_repair",
+    "promote_status",
+    "promote_list",
+    # pool_provider.py mounts schema-generated status/apply in a nested group
+    # and translates preview's operator flags into structured arguments.
+    "provider_allocation_status",
+    "provider_allocation_preview",
+    "provider_allocation_apply",
+    # test_runner.py — internal commands of the claim-aware smart runner.
+    "test_select",
+    "test_selection_recheck",
+    "test_selection_observe",
     # app.py
     "get_status",
     # tasks.py — interactive commands only (wizard, search, select, confirmations)
@@ -40,6 +68,8 @@ HANDCRAFTED_COVERAGE = {
     "restart_task",
     # tasks.py — `aq task create --graph|--from-spec|--dry-run`
     "create_task_graph",
+    # tasks.py — file-based or inline transactional change sets with a diff preview.
+    "task_batch_propose",
     # agent_surface.py — claim-aware worker-loop commands: positional task
     # ids, --claim-epoch fenced against .aq/claim.json (swarm-work-model §10).
     "task_claim",
@@ -48,6 +78,14 @@ HANDCRAFTED_COVERAGE = {
     "task_set",
     "task_comment",
     "task_comments",
+    # tasks.py — `aq task subtasks|subtask-add|subtask-show|subtask-done|
+    # subtask-start|subtask-skip`: optional positional TASK_ID falling back
+    # to $AQ_TASK_ID, and --claim-epoch fencing on the writes, same as the
+    # comment verbs above.
+    "task_subtask_add",
+    "task_subtasks",
+    "task_subtask_get",
+    "task_subtask_update",
     "task_handoff",
     "subagent_event",
     # messages.py — hand-crafted so every message command routes through
@@ -78,21 +116,59 @@ HANDCRAFTED_COVERAGE = {
     # envelope, which the generated `aq system prime` cannot do.
     "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
+    "wait_register",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
+    "message_wait",
+    "wait_get",
+    "wait_list",
+    "wait_cancel",
+    "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+    "wait_decide", "wait_lift", "wait_legacy_bridge",
+    # collaboration.py — positional THREAD ids and --claim-epoch resolution.
+    "collaboration_create",
+    "collaboration_accept",
+    "collaboration_get",
+    "collaboration_list",
+    "collaboration_close",
     "question_list",
     "question_answer",
     "question_escalate",
+    # reviews.py — reads the local markdown file before calling the API.
+    "review_submit",
+    "review_dispatch",
     # projects.py — composite/UX-heavy commands only
-    "edit_project",
     "set_default_branch",
     "onboard_project",
+    "bind_project_repository",
     # integration.py — positional identities and explicit rollout CAS fences.
+    "integration_release_held_gate",
     "integration_status",
-    "integration_flush",
-    "integration_enable",
-    "integration_waive_history",
-    "integration_resume",
-    "integration_abort",
-    "integration_retry_cleanup",
+    "integration_continue_close",
+    "integration_trust_manifest",
+    "integration_app_verify",
+    "integration_reevaluate_repair",
+    "integration_release_owner",
+    "integration_restore_task_origin",
+    "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
+    "integration_clear_retained_recovery",
+    "integration_release_stale_owners",
+    "integration_redrive_root",
+    "integration_authorize_root",
+    "integration_redrive_child",
+    "integration_recover_completed_container",
+    "integration_reopen_collection",
+    "integration_close_delivered_pr",
+    "integration_fast_forward_pr",
+    "integration_record_root_noop",
+    "integration_supersede_completion",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",
@@ -110,10 +186,27 @@ HANDCRAFTED_COVERAGE = {
     # auto-generation (no interesting args).
     "formula_show",
     "formula_cook",
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
+    "job_retain",
+    "report_request",
+    "report_brief",
+    "report_submit",
 }
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
+    "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
+    "job_reconcile",
+    "job_submit_integration",
+
     "shutdown",
     "restart_daemon",
     "update_and_restart",
@@ -121,6 +214,14 @@ EXCLUDED = {
     "load_tools",  # supervisor-internal meta-tool
     # Core response tool — not useful from CLI
     "reply_to_user",
+    # Daemon-internal failure-event hooks for the recovery incident; the
+    # reviewed supervisor-failure-triage playbook calls the successor.
+    "task_recovery_notify",
+    "task_failure_triage_notify",
+    # Daemon-internal provider state-change notice (provider-failover D19),
+    # contracted for the provider-failover playbook; idempotent per
+    # (provider, generation).  Operators read ``aq provider status``.
+    "provider_availability_notify",
 }
 
 # Map tool_registry category names → CLI group names.
@@ -138,10 +239,17 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "mcp": "mcp",
     "message": "message",
     "escalation": "escalation",
+    "supervisor_inbox": "supervisor-inbox",
+    "decision": "decision",
+    "review": "review",
+    "github_issue": "github-issue",
     "digest": "digest",
+    "dashboard": "dashboard",
     "discord": "discord",
     "pool": "pool",
+    "provider": "provider",
     "formula": "formula",
+    "test_selection": "test-selection",
 }
 
 # Human-readable group descriptions for newly created groups.
@@ -154,10 +262,17 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "mcp": "MCP server registry and tool catalog.",
     "message": "Inter-agent and user message queue.",
     "escalation": "Durable human escalations and supervisor-owned resolution.",
+    "supervisor-inbox": "Supervisor conversations — status, history, and explicit replies.",
+    "supervisor": "Supervisor session lifecycle.",
+    "review": "Document reviews: submit specs and plans for Jack's approval",
+    "github-issue": "GitHub issue triage and review actions for the bound project.",
     "digest": "Hourly activity digest — dry preview and schedule health.",
+    "dashboard": "Durable shared and roaming dashboard state.",
     "discord": "Explicit Discord historical-message housekeeping.",
     "pool": "Worker pool sizing — status and scale.",
+    "provider": "Provider availability — status, history, recheck and overrides.",
     "formula": "Reusable task-graph templates — list, resolve, and cook.",
+    "test-selection": "Smart test selection — records, policy and promotion.",
 }
 
 
@@ -280,9 +395,7 @@ def _schema_to_click_type(prop_schema: dict) -> type | click.Choice | click.Para
         if "$ref" in prop_schema:
             schema_type = "object"
         elif branches:
-            schema_type = [
-                "object" if "$ref" in b else b.get("type", "string") for b in branches
-            ]
+            schema_type = ["object" if "$ref" in b else b.get("type", "string") for b in branches]
     type_names = set(schema_type) if isinstance(schema_type, list) else {schema_type}
 
     if "enum" in prop_schema:
@@ -336,6 +449,8 @@ def _strip_category_prefix(cmd_name: str, category: str) -> str:
 
     Falls back to the full name if stripping would leave nothing useful.
     """
+    if cmd_name == "ask_prepare_decision" and category == "ask":
+        return "prepare"
     singular = category.rstrip("s")
     plural = singular + "s"
 
@@ -368,46 +483,97 @@ def _make_auto_command(
     cli_name: str,
     tool_def: dict,
     console: Console,
+    *,
+    owner_kind: str = "core",
+    owner: str = "agent-queue",
 ) -> click.Command:
     """Build a Click command from a tool definition."""
     input_schema = tool_def.get("input_schema", {})
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
+    if cmd_name == "supervisor_inbox_reply":
+        required.discard("text")  # The callback enforces --text XOR --file.
 
     params: list[click.Parameter] = []
     for prop_name, prop_schema in properties.items():
         click_type = _schema_to_click_type(prop_schema)
         description = prop_schema.get("description", "")
         option_name = f"--{prop_name.replace('_', '-')}"
+        option_decls = [option_name]
+        # The terminal picker speaks in terms of a project, while the API's
+        # stable field remains ``project_id``.  Keep the conventional long
+        # option as an alias for scripts, and expose the concise documented
+        # spelling in ``aq agent start-terminal --project <id>``.
+        if cmd_name == "start_agent_terminal" and prop_name == "project_id":
+            option_decls = ["--project", option_name, "project_id"]
 
         if isinstance(click_type, type) and click_type is bool:
             params.append(
                 click.Option(
                     [option_name + "/--no-" + prop_name.replace("_", "-")],
-                    default=None,
+                    required=prop_name in required,
+                    **({} if prop_name in required else {"default": None}),
                     help=description,
                 )
             )
         else:
             params.append(
                 click.Option(
-                    [option_name],
+                    option_decls,
                     type=click_type,
                     required=prop_name in required,
-                    default=None,
+                    **({} if prop_name in required else {"default": None}),
                     help=description,
                 )
             )
 
-    def _make_callback(name: str):
-        from .formatter_registry import apply_formatter
+    if cmd_name == "supervisor_inbox_history":
+        params.append(
+            click.Option(
+                ["--state", "history_states"],
+                multiple=True,
+                type=click.Choice(["opening", "open", "closed", "delivery_blocked"]),
+                help="Conversation state filter; repeat for multiple states.",
+            )
+        )
+    if cmd_name == "supervisor_inbox_reply":
+        params.append(
+            click.Option(
+                ["--file", "reply_file"],
+                type=click.Path(exists=True, dir_okay=False),
+                help="Read reply text from a UTF-8 file (exclusive with --text).",
+            )
+        )
 
+    def _make_callback(name: str):
         @click.pass_context
         def callback(ctx, **kwargs):
             # Late-bind imports so mock patches take effect in tests
             from . import app as _app
+            from .formatter_registry import apply_formatter, command_output
 
             api_url = ctx.obj.get("api_url") if ctx.obj else None
+            if name == "knowledge_propose" and kwargs.get("claim_epoch") is None:
+                from .claim_epoch import resolve_claim_epoch
+
+                kwargs["claim_epoch"] = resolve_claim_epoch(None)
+            if name == "supervisor_inbox_history":
+                states = kwargs.pop("history_states", ())
+                if states:
+                    if kwargs.get("states") is not None:
+                        raise click.UsageError("Use either --state or --states.")
+                    kwargs["states"] = list(states)
+            if name == "supervisor_inbox_reply":
+                from pathlib import Path
+
+                reply_file = kwargs.pop("reply_file", None)
+                if (kwargs.get("text") is None) == (reply_file is None):
+                    raise click.UsageError("Provide exactly one of --text or --file.")
+                if reply_file is not None:
+                    try:
+                        kwargs["text"] = Path(reply_file).read_text(encoding="utf-8")
+                    except (OSError, UnicodeError) as exc:
+                        raise click.UsageError(f"Cannot read reply file: {exc}") from exc
             # ``None`` means "option not given" and is dropped; an option
             # given as literal JSON ``null`` arrives as EXPLICIT_NULL and
             # is sent as a real ``None`` (see the sentinel's docstring).
@@ -457,25 +623,70 @@ def _make_auto_command(
                         emit_error(exc.code, exc.detail_message, exc.details or None)
                     else:
                         console.print(f"[bold red]Error:[/] {exc}")
-                        _app._render_command_findings(exc.details or {})
+                        details = exc.details or {}
+                        formatted = False
+                        if name == "provider_allocation_apply":
+                            if details.get("preview"):
+                                formatted = apply_formatter(
+                                    "provider_allocation_preview", details["preview"], console
+                                )
+                            elif details.get("status"):
+                                formatted = apply_formatter(name, details, console)
+                        if not formatted:
+                            _app._render_command_findings(details)
                     raise SystemExit(exc.exit_code)
                 else:
                     raise
 
-            # Use Rich formatter if registered, otherwise fall back to JSON
-            if not apply_formatter(name, result, console):
-                # Typed responses need to_dict() for JSON serialisation
-                json_data = result.to_dict() if hasattr(result, "to_dict") else result
-                console.print_json(data=json_data)
+            # One success funnel for built-in and plugin-contributed generated
+            # commands.  Formatter metadata identifies collection payloads so
+            # JSON and human modes expose the same logical data.
+            from .envelope import emit
+
+            data, entity, total = command_output(name, result)
+
+            def _render(_data):
+                brief = bool((ctx.obj or {}).get("brief"))
+                formatted = apply_formatter(
+                    name,
+                    result,
+                    console,
+                    **({"data_override": _data} if brief else {}),
+                )
+                if not formatted:
+                    # Let emit's plain JSON fallback handle unknown commands;
+                    # this closure is only used when a Rich formatter exists.
+                    from .envelope import to_jsonable
+
+                    click.echo(json.dumps(to_jsonable(result), ensure_ascii=False, indent=2))
+
+            emit(
+                ctx,
+                data,
+                entity=entity,
+                total=total,
+                legacy_data=result,
+                render=_render,
+            )
 
         return callback
 
-    return click.Command(
+    command = click.Command(
         name=cli_name.replace("_", "-"),
         callback=_make_callback(cmd_name),
         params=params,
         help=tool_def.get("description", f"Execute the {cmd_name} command."),
     )
+    # Machine-readable provenance for the maintained CLI inventory.  Callback
+    # introspection alone only says ``src.cli.auto_commands.callback`` and
+    # cannot distinguish a core CommandHandler operation from an internal or
+    # external plugin provider.  Keep these as Click-compatible private
+    # attributes so inventory generation never changes command behaviour.
+    command._aq_registration = "generated"  # type: ignore[attr-defined]
+    command._aq_backend_command = cmd_name  # type: ignore[attr-defined]
+    command._aq_owner_kind = owner_kind  # type: ignore[attr-defined]
+    command._aq_owner = owner  # type: ignore[attr-defined]
+    return command
 
 
 def register_auto_commands(cli_group: click.Group, console: Console) -> None:
@@ -485,32 +696,29 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     hand-crafted group (task, hook, project, agent, plugin) or creates
     a new one (git, memory, file, system).
     """
-    # Build complete tool map: explicit defs + auto-discovered
+    # Discovery belongs to generation: importing the live handler here makes
+    # every CLI invocation load the daemon and database dependencies.
     tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
-    try:
-        from src.mcp_registration import _discover_all_commands
+    for name, defn in _CATALOGUE["fallback"].items():
+        if name not in tool_map:
+            tool_map[name] = defn
 
-        discovered = _discover_all_commands()
-        for name, defn in discovered.items():
+    # Internal schemas are packaged too, avoiding plugin implementation imports.
+    plugin_categories: dict[str, str] = {}
+    plugin_owners: dict[str, str] = {}
+    for category, tool_defs in _CATALOGUE["internal"]:
+        for defn in tool_defs:
+            name = defn["name"]
             if name not in tool_map:
                 tool_map[name] = defn
-    except Exception:
-        pass
-
-    # Collect internal plugin tool definitions (no daemon needed)
-    plugin_categories: dict[str, str] = {}
-    try:
-        from src.plugins.internal import collect_internal_tool_definitions
-
-        for category, tool_defs in collect_internal_tool_definitions():
-            for defn in tool_defs:
-                name = defn["name"]
-                if name not in tool_map:
-                    tool_map[name] = defn
-                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
-                    plugin_categories[name] = category
-    except Exception:
-        pass
+            if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
+                plugin_categories[name] = category
+            plugin_owners[name] = {
+                "files": "aq-files",
+                "git": "aq-git",
+                "notes": "aq-notes",
+                "vibecop": "aq-vibecop",
+            }.get(category, f"internal:{category}")
 
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)
@@ -519,10 +727,10 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     for cmd_name, defn in tool_map.items():
         if cmd_name in HANDCRAFTED_COVERAGE or cmd_name in EXCLUDED:
             continue
-        # Determine category: check _TOOL_CATEGORIES, then overrides, then plugins
+        # CLI overrides intentionally take precedence over the shared API/MCP category.
         cat = (
-            _TOOL_CATEGORIES.get(cmd_name)
-            or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            or _TOOL_CATEGORIES.get(cmd_name)
             or plugin_categories.get(cmd_name)
         )
         if cat:
@@ -530,7 +738,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
             categorized_names.add(cmd_name)
 
     # Register commands into each category's CLI group
-    for cat_name in sorted(CATEGORIES.keys()):
+    for cat_name in sorted(_CATEGORY_DESCRIPTIONS):
         cli_name = CATEGORY_CLI_NAMES.get(cat_name, cat_name)
         tools = category_tools.get(cat_name, [])
         if not tools:
@@ -544,7 +752,7 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
             # Create a new group for this category
             desc = CATEGORY_CLI_DESCRIPTIONS.get(
                 cli_name,
-                CATEGORIES[cat_name].description,
+                _CATEGORY_DESCRIPTIONS[cat_name],
             )
 
             @click.group(cli_name, help=desc)
@@ -564,7 +772,15 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
                 continue
 
             try:
-                auto_cmd = _make_auto_command(cmd_name, stripped, defn, console)
+                owner = plugin_owners.get(cmd_name)
+                auto_cmd = _make_auto_command(
+                    cmd_name,
+                    stripped,
+                    defn,
+                    console,
+                    owner_kind="internal-plugin" if owner else "core",
+                    owner=owner or "agent-queue",
+                )
                 target_group.add_command(auto_cmd)
             except Exception:
                 pass
@@ -588,7 +804,15 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
                 if hasattr(system_group, "commands") and click_name in system_group.commands:
                     continue
                 try:
-                    auto_cmd = _make_auto_command(cmd_name, cmd_name, defn, console)
+                    owner = plugin_owners.get(cmd_name)
+                    auto_cmd = _make_auto_command(
+                        cmd_name,
+                        cmd_name,
+                        defn,
+                        console,
+                        owner_kind="internal-plugin" if owner else "core",
+                        owner=owner or "agent-queue",
+                    )
                     system_group.add_command(auto_cmd)
                 except Exception:
                     pass

@@ -432,7 +432,9 @@ def _follow(
     default=None,
     help=f"Log file path (default: {_default_log_path()}).",
 )
+@click.pass_context
 def logs_cmd(
+    ctx: click.Context,
     lines: int,
     follow: bool,
     no_follow: bool,
@@ -470,6 +472,7 @@ def logs_cmd(
     """
     if no_follow:
         follow = False
+    as_json = as_json or bool((ctx.obj or {}).get("json"))
 
     filepath = log_file or _default_log_path()
 

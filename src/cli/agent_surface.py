@@ -15,31 +15,37 @@ the caller must pass ``--task-id`` explicitly (or export the env var).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import sys
+import time
 
 import click
 
-from .app import cli, console, _run, _get_client, _handle_errors
-from .claim_epoch import claim_epoch_option, read_claim_epoch, resolve_claim_epoch  # noqa: F401
+from .app import _get_client, _handle_errors, _run, cli, console
+from .claim_epoch import claim_epoch_option, read_claim_epoch, resolve_claim_epoch
 from .envelope import emit
+from .exceptions import DaemonNotRunningError
 from .tasks import task
+
+#: Knowledge delivery transports the prime CLI can carry (design §9). Imported
+#: at module scope because they are constants, not knowledge code: ``aq prime``
+#: must still import on a host with the whole knowledge feature absent.
+HOOK_ENVELOPE = "hook_envelope"
+STARTUP_PROMPT = "startup_prompt"
 
 
 @cli.command("schema")
 @click.pass_context
-@_handle_errors
 def schema(ctx: click.Context) -> None:
     """Print the system's enum catalog (task statuses, types, dependency
     types, gate types/statuses, ...) so scripts and agents never guess
     magic strings.
     """
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    from src.surface_schema import get_surface_schema
 
-    async def _get_schema():
-        async with _get_client(api_url) as client:
-            return await client.execute("get_schema")
-
-    result = _run(_get_schema())
+    result = get_surface_schema()
 
     def _render(data: dict) -> None:
         from rich.table import Table
@@ -88,18 +94,30 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
     ``--hook-format`` wrap it in a harness's hook envelope — wrapping is a
     pure presentation step (``src/prime/hook_envelopes.py``), so it runs
     even for a suppressed hook call without needing the daemon.
+
+    When the daemon prepared a knowledge bundle for this claim, the output has
+    already been written by the time ``knowledge_context_deliver`` records the
+    transport receipt: preparation is not delivery, and an acknowledgment that
+    does not complete is recorded ``unknown`` rather than "the model read it".
     """
     from src.prime.hook_envelopes import suppressed, wrap
 
     hook_mode = hook_json or bool(hook_format)
-    harness = "claude" if hook_json else (hook_format or "")
+    harness = hook_format or ("claude" if hook_json else "")
+    source = None
+    if hook_mode and not sys.stdin.isatty():
+        try:
+            event = json.loads(sys.stdin.read(64 * 1024))
+            if isinstance(event, dict) and event.get("hook_event_name") == "SessionStart":
+                value = event.get("source")
+                source = value if isinstance(value, str) else None
+        except (ValueError, OSError):
+            pass
 
-    if suppressed(os.environ, hook_mode):
+    if suppressed(os.environ, hook_mode, source):
         # Bootstrap argv prompt already delivered .aq/prompt.md — priming
         # again here would waste the exact tokens this design saves
-        # (design §5.4). Post-compaction SessionStart events still reach
-        # this command because session-runtime clears the env var's effect
-        # there by design.
+        # (design §5.4). A compact/resume source bypasses this suppression.
         click.echo(wrap("", harness))
         return
 
@@ -122,9 +140,82 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
     if hook_mode:
         body = result.get("body", "") if "error" not in result else result.get("error", "")
         click.echo(wrap(body, harness))
+        _acknowledge_knowledge_delivery(
+            result,
+            transport=HOOK_ENVELOPE,
+            harness=harness,
+            source=source,
+            session_id=session_id or os.environ.get("AQ_SESSION_ID") or "",
+            api_url=api_url,
+        )
         return
 
     emit(ctx, result, render=lambda data: click.echo(data.get("body", "")))
+    _acknowledge_knowledge_delivery(
+        result,
+        transport=STARTUP_PROMPT,
+        harness="",
+        source=source,
+        session_id=session_id or os.environ.get("AQ_SESSION_ID") or "",
+        api_url=api_url,
+    )
+
+
+def _acknowledge_knowledge_delivery(result, *, transport, harness, source, session_id, api_url):
+    """Record the transport receipt for a bundle this output just carried.
+
+    Awaits nothing about comprehension: ``delivered`` means these bytes left
+    through this transport and the daemon accepted the receipt. Anything else is
+    best effort and never disturbs the agent's payload — the session's
+    ``knowledge_context_deliver`` grant, its claim epoch, or a disabled context
+    feature all leave prime exactly as it was.
+    """
+    bundle = result.get("context_bundle") if isinstance(result, dict) else None
+    digest = bundle.get("content_sha256") if isinstance(bundle, dict) else None
+    if not isinstance(bundle, dict) or not bundle.get("bundle_id") or not digest:
+        return
+
+    from src.knowledge.delivery import transport_for, transport_key
+
+    # The receipt needs the transport and its idempotency key, not the bytes:
+    # prime already wrote those, and the daemon re-derives the payload from the
+    # bundle it prepared.
+    claim_epoch = read_claim_epoch()
+    carrier = transport_for(
+        harness, supports_hooks=transport == HOOK_ENVELOPE, prompt_mode="arg",
+    )
+    args = {
+        "bundle_id": str(bundle["bundle_id"]),
+        "transport": carrier,
+        "idempotency_key": transport_key(
+            transport=carrier, bundle_id=str(bundle["bundle_id"]),
+            session_id=session_id, claim_epoch=claim_epoch, source=source,
+        ),
+        "rendered_sha256": str(digest),
+        "state": "delivered",
+    }
+    if claim_epoch is not None:
+        args["claim_epoch"] = claim_epoch
+
+    async def _deliver(state):
+        payload = {**args, "state": state}
+        async with _get_client(api_url) as client:
+            return await client.execute("knowledge_context_deliver", payload)
+
+    try:
+        _run(_deliver("delivered"))
+    except Exception as exc:  # noqa: BLE001 - any refusal is an unrecorded receipt
+        # Bytes left the process but the receipt did not land: ``unknown``, and
+        # never "the model read it". If the daemon is unreachable there is
+        # nowhere to record even that, and the bundle stays prepared.
+        try:
+            _run(_deliver("unknown"))
+        except Exception:  # noqa: BLE001 - the daemon itself may be unreachable
+            click.echo(
+                f"aq prime: knowledge delivery receipt unrecorded ({exc}); "
+                "the bundle is prepared, not delivered.",
+                err=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +226,25 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
 @cli.command("handoff")
 @click.argument("subject", required=False)
 @click.argument("detail", required=False)
+@click.option("--schema-version", type=click.Choice(["1"]), default=None)
+@click.option("--goal", default=None, help="Goal to resume.")
+@click.option("--completed", multiple=True, help="Completed work (repeatable, at most 20).")
+@click.option("--next-step", default=None, help="Concrete next action after wake.")
+@click.option("--waiting-for", default=None, help="What must resolve before continuing.")
+@click.option("--file", "files", multiple=True, help="Relevant path (repeatable, at most 20).")
+@click.option("--decision", "decisions", multiple=True, help="Decision (repeatable, at most 20).")
+@click.option("--constraint", "constraints", multiple=True, help="Constraint to preserve exactly.")
+@click.option("--evidence", multiple=True, help="Exact check/error evidence or retrievable log path.")
+@click.option("--do-not-repeat", multiple=True, help="Rejected approach (repeatable, at most 20).")
+@click.option(
+    "--uncertainty",
+    "uncertainties",
+    multiple=True,
+    help="Open uncertainty (repeatable, at most 20).",
+)
+@click.option(
+    "--idempotency-key", default=None, help="Optional retry key, unique within this claim."
+)
 @click.option(
     "--auto",
     is_flag=True,
@@ -147,8 +257,33 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
 @claim_epoch_option
 @click.pass_context
 @_handle_errors
-def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id, claim_epoch) -> None:
-    """Record a handoff note; request a session restart unless ``--auto`` (design §6.1)."""
+def handoff(
+    ctx: click.Context,
+    subject,
+    detail,
+    auto,
+    task_id,
+    session_id,
+    claim_epoch,
+    schema_version,
+    goal,
+    completed,
+    next_step,
+    waiting_for,
+    files,
+    decisions,
+    do_not_repeat,
+    uncertainties,
+    constraints,
+    evidence,
+    idempotency_key,
+) -> None:
+    """Record a bounded handoff; non-auto requests a restart (it does not perform one).
+
+    Structured agent text is limited to 8 KiB UTF-8 in total. Empty automatic
+    hooks save facts-only recovery and preserve useful notes. The daemon captures
+    current checkout, waits, jobs and gates without restarting or releasing a claim.
+    """
     resolved_task_id = task_id or os.environ.get("AQ_TASK_ID")
     resolved_session_id = session_id or os.environ.get("AQ_SESSION_ID")
     resolved_epoch = resolve_claim_epoch(claim_epoch)
@@ -164,6 +299,27 @@ def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id, clai
             args["subject"] = subject
         if detail:
             args["detail"] = detail
+        if schema_version:
+            args["schema_version"] = int(schema_version)
+        for field, value in (
+            ("goal", goal),
+            ("next_step", next_step),
+            ("waiting_for", waiting_for),
+            ("idempotency_key", idempotency_key),
+        ):
+            if value is not None:
+                args[field] = value
+        for field, value in (
+            ("completed", completed),
+            ("files", files),
+            ("decisions", decisions),
+            ("do_not_repeat", do_not_repeat),
+            ("uncertainties", uncertainties),
+            ("constraints", constraints),
+            ("evidence", evidence),
+        ):
+            if value:
+                args[field] = list(value)
         if resolved_epoch is not None:
             args["claim_epoch"] = resolved_epoch
         async with _get_client(api_url) as client:
@@ -232,8 +388,19 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
         args["wait"] = wait
 
     async def _claim():
-        async with _get_client(api_url) as client:
-            return await client.execute("task_claim", args)
+        # Pool workers survive daemon upgrades. Connection refusal means no
+        # request was sent, so retrying is safe; ambiguous response failures
+        # still propagate without replaying the command.
+        deadline = time.monotonic() + max(wait or 0, 0)
+        while True:
+            try:
+                async with _get_client(api_url) as client:
+                    return await client.execute("task_claim", args)
+            except DaemonNotRunningError:
+                remaining = deadline - time.monotonic()
+                if not claim_next or remaining <= 0:
+                    raise
+                await asyncio.sleep(min(2.0, remaining))
 
     result = _run(_claim())
 
@@ -248,6 +415,12 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
             console.print(f"claim_epoch={data['claim_epoch']}")
         if data.get("reason"):
             console.print(f"[dim]{data['reason']}[/]")
+        if data.get("retry_after") is not None:
+            console.print(
+                f"retry_after={data['retry_after']}s; refusal_count={data.get('refusal_count', 0)}"
+            )
+        if data.get("instructions"):
+            console.print(data["instructions"])
 
     emit(ctx, result, render=_render)
 
@@ -255,7 +428,40 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
 @task.command("close")
 @click.argument("task_id", required=False)
 @click.option(
-    "--outcome", type=click.Choice(["pass", "fail"]), required=True, help="Overall task outcome."
+    "--outcome",
+    type=click.Choice(["pass", "fail"]),
+    default=None,
+    help="Overall task outcome (required unless --obsolete, --no-change or --done).",
+)
+@click.option(
+    "--obsolete",
+    is_flag=True,
+    help=(
+        "Operator/supervisor: retire superseded work instead of closing it with an outcome. "
+        "Releases safe branch owners; needs TASK_ID and --reason."
+    ),
+)
+@click.option(
+    "--no-change",
+    "no_change",
+    is_flag=True,
+    help=(
+        "Operator/supervisor one-shot close: nothing needed doing. Works from any state "
+        "(stops a live writer, clears stale claims) in one call; needs TASK_ID and --reason."
+    ),
+)
+@click.option(
+    "--done",
+    is_flag=True,
+    help=(
+        "Operator/supervisor one-shot close: the work already landed elsewhere. Works from "
+        "any state in one call; needs TASK_ID and --reason."
+    ),
+)
+@click.option(
+    "--reason",
+    default=None,
+    help="Why the task is closed (with --obsolete, --no-change or --done).",
 )
 @click.option("--summary", default=None, help="Summary for the reviewer/dashboard/vault note.")
 @click.option(
@@ -285,6 +491,12 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
 )
 @click.option("--abandon-children", is_flag=True, help="Abandon open child tasks.")
 @click.option(
+    "--skip-open-subtasks",
+    "skip_open_subtasks",
+    is_flag=True,
+    help="Mark any open subtasks skipped instead of refusing the close.",
+)
+@click.option(
     "--claim-next",
     "claim_next",
     is_flag=True,
@@ -300,6 +512,10 @@ def task_close(
     ctx: click.Context,
     task_id,
     outcome,
+    obsolete,
+    no_change,
+    done,
+    reason,
     summary,
     failure_class,
     work_outcome,
@@ -311,6 +527,7 @@ def task_close(
     commands,
     deliverable_unmet,
     abandon_children,
+    skip_open_subtasks,
     claim_next,
     wait,
     claim_epoch,
@@ -322,8 +539,48 @@ def task_close(
     the pool bootstrap prompt and ``aq-tasks`` tell workers to run --
     ``aq task close --outcome pass --claim-next`` -- since a pool worker's
     task changes with every claim.
+
+    ``--obsolete --reason "..."`` is the operator/supervisor form for work that
+    was superseded: no outcome, no completion pipeline, nothing published.
+    The task goes to COMPLETED as abandoned, its branch owners are released
+    through the release-owner safety proof. A live integration Subject must
+    settle before retirement.
+
+    ``--no-change`` and ``--done`` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state,
+    in one call, a live writer is stopped (the task goes PAUSED, never READY),
+    stale claims, workspace locks and the agent binding are cleared, a no-op
+    or shipped completion record is written and the task goes to COMPLETED.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    chosen = [
+        name
+        for name, flag in (("obsolete", obsolete), ("no_change", no_change), ("done", done))
+        if flag
+    ]
+    if len(chosen) > 1:
+        raise click.UsageError("choose one of --obsolete, --no-change or --done")
+    if chosen:
+        flag = "--" + chosen[0].replace("_", "-")
+        if outcome:
+            raise click.UsageError(f"{flag} is its own outcome; drop --outcome")
+        if not task_id:
+            raise click.UsageError(f"{flag} needs TASK_ID")
+        if not (reason or "").strip():
+            raise click.UsageError(f"{flag} needs --reason")
+
+        async def _close_operator():
+            async with _get_client(api_url) as client:
+                return await client.execute(
+                    "task_close", {"task_id": task_id, chosen[0]: True, "reason": reason}
+                )
+
+        emit(ctx, _run(_close_operator()))
+        return
+    if not outcome:
+        raise click.UsageError(
+            "--outcome is required (or --obsolete / --no-change / --done with --reason)"
+        )
     resolved_epoch = resolve_claim_epoch(claim_epoch)
     args: dict = {"outcome": outcome}
     if task_id:
@@ -350,6 +607,8 @@ def task_close(
         args["deliverable_unmet"] = list(deliverable_unmet)
     if abandon_children:
         args["abandon_children"] = True
+    if skip_open_subtasks:
+        args["skip_open_subtasks"] = True
     if claim_next:
         args["claim_next"] = True
     if wait is not None:
