@@ -94,6 +94,7 @@ class WaitExplainArgs(WaitV2ScopeArgs):
 class WaitGraphArgs(CommandArgs):
     project_id: str | None = None
     fleet: bool = False
+    costs: bool = False
 
     @model_validator(mode="after")
     def target(self):
@@ -185,6 +186,7 @@ class WaitEvictArgs(WaitSleepDecideArgs):
 
 
 class SchedulerWaitSyncArgs(CommandArgs):
+    initial_audit: bool = False
     project_id: str = Field(min_length=1)
     blockers: list[dict[str, Any]]
     cycle_id: str = Field(min_length=1)
@@ -192,6 +194,7 @@ class SchedulerWaitSyncArgs(CommandArgs):
 
 
 class WaitLegacyBridgeArgs(CommandArgs):
+    mode: Literal["project", "agent-waits"] = "agent-waits"
     project_id: str | None = None
     apply: bool = False
 
@@ -199,10 +202,18 @@ class WaitLegacyBridgeArgs(CommandArgs):
 class WaitExplainValue(CommandValue):
     explanation: dict[str, Any] | None = None
     waits: list[dict[str, Any]] = Field(default_factory=list)
+    task: dict[str, Any] | None = None
+    total: int = 0
+    offset: int = 0
+    truncated: bool = False
 
 
 class WaitGraphValue(CommandValue):
-    graph: dict[str, Any]
+    graph: dict[str, Any] | None = None
+    projects: list[dict[str, Any]] = Field(default_factory=list)
+    total_projects: int = 0
+    offset: int = 0
+    truncated: bool = False
 
 
 class WaitCheckpointValue(CommandValue):
