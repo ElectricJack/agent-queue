@@ -200,9 +200,18 @@ class EscalationCommandsMixin:
             or any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in choices)
         ):
             return _error("invalid_request", "choices must be at most 20 non-empty strings")
-        if await self.db.get_project(project_id) is None:
+        if await self.db.get_project(project_id, conn=conn) is None:
             return _error("not_found", "project not found")
         task_id = args.get("task_id")
+        if args["source_kind"] == "continuation":
+            # Infrastructure holds may follow an already satisfied wait. They
+            # belong to the suspension intent, rather than a pending deadline.
+            if conn is None or principal.kind is not PrincipalKind.SERVICE:
+                return _error("invalid_binding", "continuation incidents require the wait transaction")
+            from src.wait_runtime.hibernate import validate_hold_binding
+
+            if not await validate_hold_binding(conn, args):
+                return _error("invalid_binding", "continuation incident does not match its intent")
         if args["source_kind"] == "wait":
             # Only the timer/loop command can bind an operational wait incident.
             # A caller cannot manufacture a wait escalation through the generic API.
@@ -235,7 +244,8 @@ class EscalationCommandsMixin:
             return _error("invalid_binding", "task_recovery source requires task_id")
         task = None
         if task_id is not None:
-            task = await self.db.get_task(task_id)
+            task = (await self.db.get_task_on(conn, task_id) if conn is not None
+                    else await self.db.get_task(task_id))
             if task is None or task.project_id != project_id:
                 return _error("out_of_scope", "task does not belong to the escalation project")
         if args["source_kind"] == "task_recovery":
@@ -294,7 +304,7 @@ class EscalationCommandsMixin:
                 "escalation.created.v1",
                 created_payload,
             )
-        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait"}:
+        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait", "continuation"}:
             from src.asks.models import SourceIdentity
             ask = await self._publish_source_ask(SourceIdentity(
                 project_id, "free_text", incident["id"], {"id": incident["id"]},
@@ -663,7 +673,7 @@ class EscalationCommandsMixin:
             if not args.get("expected"):
                 return {**_error("ask.context_missing",
                     "Review the request effects and pass its expected version; use prepare first"),
-                    "ask_id": ask["id"], "ask_url": f"/asks/{ask['id']}",
+                    "ask_id": ask["id"], "ask_url": f"/focus/asks/{ask['id']}",
                     "expected": {k: ask[k] for k in (
                         "decision_generation", "source_fingerprint", "feedback_version")}}
             # No interpretation of an uncertain reply can become an approval.

@@ -1,0 +1,19 @@
+{
+  "shared_definitions": {
+    "src/wait_runtime/legacy_parking.py::checkpoint_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::current_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::import from src.database.tables import agents, sessions, task_integration_checkpoints, wait_bridge_progress, workspaces": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::legacy_parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    }
+  }
+}
