@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import select, union, update
+from sqlalchemy import and_, or_, select, union, update
 
 from src.database import tables as t
 from src.database.queries.integration_state_queries import (
@@ -18,6 +18,58 @@ from src.integration.models import BranchKey
 from src.integration.owner_recovery import _Refusal
 from src.integration.stale_owners import _fence_blocker
 from src.integration.runtime_contracts import Subject, SubjectSchedule, schedule_values
+
+
+def _ended_published_resolution_clause():
+    """An ended operation's exactly acknowledged publication is audit history.
+
+    Reserved attempts still block. The separate mutation, session, owner and
+    checkout guards keep any remaining publication or cleanup authority fenced.
+    """
+    resolution = t.integration_candidate_resolutions
+    batch = t.integration_batches.alias("resolution_terminal_batch")
+    operation = t.integration_repair_operations.alias("resolution_ended_operation")
+    mutation = t.integration_candidate_ref_mutations.alias("resolution_applied_mutation")
+    return and_(
+        resolution.c.state == "pushed",
+        select(batch.c.id)
+        .where(
+            batch.c.id == resolution.c.batch_id,
+            or_(
+                batch.c.intent == "aborted",
+                batch.c.lifecycle.in_(("promoted", "empty", "failed", "aborted")),
+            ),
+        )
+        .correlate(resolution)
+        .exists(),
+        select(operation.c.id)
+        .where(
+            operation.c.id == resolution.c.operation_id,
+            operation.c.batch_id == resolution.c.batch_id,
+            operation.c.episode_id == resolution.c.operation_episode_id,
+            operation.c.state.in_(("completed", "cancelled")),
+        )
+        .correlate(resolution)
+        .exists(),
+        select(mutation.c.id)
+        .where(
+            mutation.c.resolution_id == resolution.c.id,
+            mutation.c.batch_id == resolution.c.batch_id,
+            mutation.c.revision == resolution.c.revision,
+            mutation.c.member_ordinal == resolution.c.member_ordinal,
+            mutation.c.operation_id == resolution.c.operation_id,
+            mutation.c.operation_episode_id == resolution.c.operation_episode_id,
+            mutation.c.operation_stage == resolution.c.stage_ordinal,
+            mutation.c.repository_id == resolution.c.repository_id,
+            mutation.c.target_branch == resolution.c.target_branch,
+            mutation.c.purpose == "repair_resolution",
+            mutation.c.state == "applied",
+            mutation.c.desired_sha == resolution.c.resolved_head_sha,
+            mutation.c.remote_sha == resolution.c.resolved_head_sha,
+        )
+        .correlate(resolution)
+        .exists(),
+    )
 
 
 class TrainQuiesce:
@@ -124,7 +176,9 @@ class TrainQuiesce:
                 select(t.integration_batches.c.id).where(
                     t.integration_batches.c.project_id == request.project_id,
                     t.integration_batches.c.intent != "aborted",
-                    t.integration_batches.c.lifecycle.not_in(("promoted", "empty", "failed", "aborted")),
+                    t.integration_batches.c.lifecycle.not_in(
+                        ("promoted", "empty", "failed", "aborted")
+                    ),
                 ),
                 select(t.integration_batches.c.id).where(
                     t.integration_batches.c.project_id == request.project_id,
@@ -143,6 +197,7 @@ class TrainQuiesce:
                 select(t.integration_candidate_resolutions.c.id).where(
                     t.integration_candidate_resolutions.c.batch_id.in_(batch_ids),
                     t.integration_candidate_resolutions.c.state.in_(("reserved", "pushed")),
+                    ~_ended_published_resolution_clause(),
                 ),
                 select(t.integration_attestation_publications.c.id).where(
                     t.integration_attestation_publications.c.batch_id.in_(batch_ids),
