@@ -1,11 +1,14 @@
 """Authorized, fixed-generation terminal WebSockets with bounded raw-byte flow.
 
 These routes never launch an agent. ``/ws/terminal/{id}`` owns only a disposable
-tmux attach client. ``/ws/terminal/{id}/input`` (phones) never attaches: it types
-through tmux commands against the fenced session, so it cannot resize the agent's
-window, and it sends no output. Both run the same origin, credential, operator,
-loopback, generation and connection-limit checks. Input is ephemeral: no command
-dispatch, transcripts, replay, or input logging.
+tmux attach client. Two opt-in query parameters serve phones: ``history=N`` sends
+up to N lines of the pane's scrollback ahead of the attach output (and has tmux
+scroll with line feeds, so later lines reach the viewer's scrollback too), and
+``restore_size=1`` puts the agent's window size back when the last client leaves.
+``/ws/terminal/{id}/input`` never attaches: it types through tmux commands against
+the fenced session and sends no output. Both run the same origin, credential,
+operator, loopback, generation and connection-limit checks. Input is ephemeral: no
+command dispatch, transcripts, replay, or input logging.
 """
 from __future__ import annotations
 
@@ -19,18 +22,29 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from src.api.auth import LOCAL_SCOPE
+from src.api.auth import (
+    LOCAL_SCOPE,
+    request_operator_viewer,
+    request_remote_dashboard_viewer,
+)
+from src.api.host_shell import (
+    HOST_SHELL_NO_BEARER,
+    HOST_SHELL_VIEWER_REQUIRED,
+    audit_host_shell,
+)
 from src.models import TaskStatus
+from src.sessions.host_shell import HostShellManager, is_host_shell_name
 from src.sessions.terminal_pty import TerminalAttachError
 
 _PROTOCOL = "aq-terminal-v1"
 _LIVE = {"starting", "running", "draining"}
 _ACTIVE_TASKS = {
-    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT,
+    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
 }
 _INPUT_FRAME_LIMIT = 64 * 1024
 _INPUT_QUEUE_LIMIT = 128 * 1024
 _OUTPUT_CHUNK = 16 * 1024
+_HISTORY_LINES = 10_000
 
 
 class TerminalAccessResponse(BaseModel):
@@ -72,14 +86,29 @@ def _dimensions(cols, rows) -> tuple[int, int]:
     return cols, rows
 
 
+def _phone_options(query) -> tuple[int, bool]:
+    """``history`` (0..10000 lines) and ``restore_size`` (0/1); absent means off."""
+    history = query.get("history", "0")
+    restore = query.get("restore_size", "0")
+    if (
+        not history.isascii() or not history.isdigit() or int(history) > _HISTORY_LINES
+        or restore not in {"0", "1"}
+    ):
+        raise TerminalStreamError("Invalid terminal options", 4400)
+    return int(history), restore == "1"
+
+
 def _generation(row):
     return row.id, row.name, row.provider, row.instance_token, row.agent_id, row.started_at
 
 
-async def _attach(provider, row, *, cols, rows):
+async def _attach(provider, row, *, cols, rows, restore_size=False, scrollback=False):
     # POSIX imports are deliberately confined to the platform-specific helper.
     from src.sessions.terminal_pty import PtyTmuxClient
-    return await PtyTmuxClient.attach(provider, row, cols=cols, rows=rows)
+    return await PtyTmuxClient.attach(
+        provider, row, cols=cols, rows=rows, restore_size=restore_size,
+        scrollback=scrollback,
+    )
 
 
 async def _attach_input(provider, row):
@@ -148,7 +177,35 @@ class TerminalStreamService:
         if not local_same_origin and origin not in {_origin(item) for item in trusted}:
             raise TerminalStreamError("Terminal origin is not allowed", 4403)
 
-    async def _authorize(self, ws, token):
+    def host_shells(self) -> HostShellManager:
+        return HostShellManager(self.orchestrator.session_providers.create("tmux"))
+
+    def host_shell_enabled(self) -> bool:
+        cfg = getattr(self.config, "host_shell", None)
+        return bool(cfg is not None and cfg.enabled is True)
+
+    def host_shell_allow_remote(self) -> bool:
+        cfg = getattr(self.config, "host_shell", None)
+        return bool(cfg is not None and getattr(cfg, "allow_remote", False) is True)
+
+    def host_shell_viewer(self, request) -> bool:
+        """The local operator, or a remote dashboard viewer under ``allow_remote``."""
+        if request_operator_viewer(request):
+            return True
+        return self.host_shell_allow_remote() and request_remote_dashboard_viewer(request)
+
+    async def _authorize(self, ws, token, *, host_shell: bool = False):
+        if host_shell:
+            # A host shell is remote code execution by design: never a bearer
+            # token (a worker or a supervisor); the local operator on loopback
+            # or through the dashboard edge's operator verdict; and, with
+            # ``allow_remote``, a viewer the edge proxied from another machine.
+            if not self.host_shell_enabled():
+                raise TerminalStreamError("Host shells are disabled", 4403)
+            if token is not None:
+                raise TerminalStreamError(HOST_SHELL_NO_BEARER, 4403)
+            if not self.host_shell_viewer(ws):
+                raise TerminalStreamError(HOST_SHELL_VIEWER_REQUIRED, 4403)
         scope = LOCAL_SCOPE
         if token is not None:
             if self.token_store is None:
@@ -166,7 +223,18 @@ class TerminalStreamService:
         if not ws.client or ws.client.host not in {"127.0.0.1", "::1", "localhost"}:
             raise TerminalStreamError("Terminal access is restricted to loopback", 4403)
 
+    async def _host_shell(self, session_id, generation=None):
+        shell = await self.host_shells().get(session_id)
+        if shell is None:
+            raise TerminalStreamError("Terminal session is no longer available")
+        identity = (shell.name, shell.instance_token)
+        if generation is not None and identity != generation:
+            raise TerminalStreamError("Terminal session instance has changed")
+        return shell, identity
+
     async def _session(self, session_id, generation=None):
+        if is_host_shell_name(session_id):
+            return await self._host_shell(session_id, generation)
         db = self.orchestrator.db
         row = await db.get_session(session_id)
         if (
@@ -223,10 +291,12 @@ class TerminalStreamService:
         children = []
         current = asyncio.current_task()
         registered = False
+        host_shell = is_host_shell_name(session_id)
+        audited = False
         try:
             self._check_origin(ws)
             token = self._credentials(ws)
-            await self._authorize(ws, token)
+            await self._authorize(ws, token, host_shell=host_shell)
             if len(self._handlers) >= self.connection_limit:
                 raise TerminalStreamError("Too many terminal connections", 4429)
             self._handlers.add(current)
@@ -239,20 +309,37 @@ class TerminalStreamService:
                     )
                 except (TypeError, ValueError):
                     raise TerminalStreamError("Invalid terminal dimensions", 4400) from None
+                history, restore_size = _phone_options(ws.query_params)
             row, generation = await self._session(session_id)
             await ws.accept(subprotocol=_PROTOCOL if _PROTOCOL in ws.scope.get("subprotocols", []) else None)
             accepted = True
+            if host_shell:
+                # Audit the accepted connection even if the attach backend fails.
+                audited = True
+                await audit_host_shell(
+                    self, ws, "input_connected" if input_only else "attached", session_id,
+                )
             provider = self.orchestrator.session_providers.create(row.provider)
             if input_only:
                 client = await self.attach_input(provider, row)
                 ready = {"type": "ready", "session_id": session_id, "mode": "input"}
             else:
-                client = await self.attach(provider, row, cols=cols, rows=rows)
+                # Only a phone asks for these; other attach backends need not
+                # know the keywords.
+                options = {}
+                if restore_size:
+                    options["restore_size"] = True
+                if history:
+                    options["scrollback"] = True
+                client = await self.attach(provider, row, cols=cols, rows=rows, **options)
                 ready = {"type": "ready", "session_id": session_id, "cols": cols, "rows": rows}
             await self._session(session_id, generation)
-            await self._authorize(ws, token)
+            await self._authorize(ws, token, host_shell=host_shell)
             if not await client.verify():
                 raise TerminalStreamError("Terminal session instance has changed")
+            # Captured after the generation checks, so it is this instance's
+            # history; it goes out first, under the same output credit.
+            pending = b"" if input_only or not history else await client.history(history, rows)
             await asyncio.wait_for(ws.send_json(ready), self.ack_timeout)
 
             outstanding = 0
@@ -314,7 +401,7 @@ class TerminalStreamService:
                     queued_input -= len(data)
 
             async def read_output():
-                nonlocal outstanding
+                nonlocal outstanding, pending
                 while True:
                     while outstanding >= self.output_limit:
                         credit.clear()
@@ -322,9 +409,13 @@ class TerminalStreamService:
                             await asyncio.wait_for(credit.wait(), self.ack_timeout)
                         except TimeoutError:
                             raise TerminalStreamError("Terminal output acknowledgement timed out", 4408) from None
-                    data = await client.read(min(_OUTPUT_CHUNK, self.output_limit - outstanding))
-                    if not data:
-                        return "exit"
+                    budget = min(_OUTPUT_CHUNK, self.output_limit - outstanding)
+                    if pending:
+                        data, pending = pending[:budget], pending[budget:]
+                    else:
+                        data = await client.read(budget)
+                        if not data:
+                            return "exit"
                     outstanding += len(data)
                     try:
                         await asyncio.wait_for(ws.send_bytes(data), self.ack_timeout)
@@ -335,10 +426,12 @@ class TerminalStreamService:
                 nonlocal touched_input_at
                 while True:
                     await asyncio.sleep(self.recheck_seconds)
-                    await self._authorize(ws, token)
+                    await self._authorize(ws, token, host_shell=host_shell)
                     await self._session(session_id, generation)
                     if not await client.verify():
                         raise TerminalStreamError("Terminal session instance has changed")
+                    if host_shell:
+                        continue  # no sessions row to touch
                     # tmux window_activity measures output, not silent typing.
                     # Amortize persistence here; input never awaits a DB request.
                     observed_input = last_input_at
@@ -379,6 +472,10 @@ class TerminalStreamService:
                     await client.close()
             if registered:
                 self._handlers.discard(current)
+            if audited:
+                await audit_host_shell(
+                    self, ws, "input_disconnected" if input_only else "detached", session_id,
+                )
 
 
 def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -> APIRouter:
@@ -395,7 +492,7 @@ def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -
         try:
             service._check_origin(request, browser_probe=True, browser_origin=browser_origin)
             token = service._credentials(request)
-            await service._authorize(request, token)
+            await service._authorize(request, token, host_shell=is_host_shell_name(session_id))
             await service._session(session_id)
             if len(service._handlers) >= service.connection_limit:
                 raise TerminalStreamError("Too many terminal connections", 4429)
@@ -415,5 +512,8 @@ def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -
         # Phones type here and watch the pane stream: never an attach at phone size.
         await service.handle(websocket, session_id, input_only=True)
 
+    from src.api.host_shell import add_host_shell_routes
+
+    add_host_shell_routes(router, service)
     router.add_event_handler("shutdown", service.shutdown)
     return router

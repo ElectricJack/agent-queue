@@ -16,7 +16,7 @@ aq system config tune --explain       # …with the reason for every value
 aq system config tune --apply         # write it
 ```
 
-`aq setup` does this automatically for a fresh config. Nothing consults the
+`aq install` does this automatically for a fresh config. Nothing consults the
 tuner at runtime: once written, the file is the truth, and your edits stand.
 
 ## What the machine decides
@@ -91,10 +91,9 @@ no reviewer tasks or PR gates on downstream work. If you want different
 routing, keep a project-scope copy of the routing playbook — no code change,
 and no config key.
 
-The one routing-adjacent knob the tuner writes is
-`max_concurrent_playbook_runs`, scaled to the fleet size, because playbook
-runs compete with agent sessions for the same box and the same provider
-quota.
+The tuner also writes `max_concurrent_playbook_runs`, scaled to the fleet size.
+The current V2 event dispatcher does not enforce this legacy concurrency setting;
+it is not a limit on simultaneous V2 runs.
 
 ## Retry, recovery and integration
 
@@ -102,22 +101,27 @@ quota.
 | --- | --- | --- |
 | `auto_task.max_verification_retries` | 2 | One reopen for a genuine flake, then a stop. |
 | `swarm.prepare_timeout` | 120 | An abandoned preparation becomes eligible for recovery after two minutes. A live preparation request remains protected while its Git operations run under their own timeouts. |
-| `agents_config.stuck_timeout_seconds` | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. |
+| `agents_config.stuck_timeout_seconds` (emitted name) | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. The loader currently reads YAML `agents`, so this recommendation needs that key to take effect; see the [configuration reference](../reference/configuration.md#top-level-sections). |
 | `integration.default_mode` | `pull_request` | Worker output lands on a branch and a PR, never straight onto the default branch. |
-| `integration.merge_ci_policy` | `warn` | The merge path asks GitHub for the check rollup and records the verdict, but still merges. A new install usually has no CI yet, and `required` fails closed on an unreadable rollup — nothing would ever merge. Move to `required` once the default branch is reliably green. |
+| `integration.merge_ci_policy` | `warn` | Installation-level compatibility default. Active delivery also follows project/repository CI and integration policy; this value alone does not guarantee a merge. |
 | `integration.merge_require_up_to_date` | `true` | A green rollup only proves the head passed against the base as it was when the run started. |
 
 ## Playbooks
 
-The tuner sets `playbooks.enabled: true`. Playbooks are how AQ routes a task to
-a worker (`default-assignment-routing`), escalates a blocked task
-(`blocked-task-escalation`) and probes provider usage
-(`provider-usage-probe`); a fresh daemon activates those shared system
-playbooks on its first start. With playbooks off, a task created without an
-explicit profile and intelligence class is never routed, and Settings →
-Playbooks is empty. The code default is `false` only because it predates the
-Playbook V2 runtime. Set `playbooks.enabled: false` to run with no playbooks,
-in which case every task must name its profile and class.
+The tuner sets `playbooks.enabled: true`; the code default remains `false`.
+On a fresh, empty vault the installation receipt installs six reviewed system
+bundles. Its first activation attempt enables three required policies
+(`default-assignment-routing`, `provider-usage-probe`, `provider-failover`) and two
+shared defaults (`default-pipeline`, `supervisor-failure-triage`). `morning-report`
+stays inactive and needs explicit activation and `reports.morning.enabled`.
+An existing non-empty vault gets an installation receipt without new activation.
+`blocked-task-escalation` is retired, and the stateful stuck-task
+watch is optional. Later restarts only observe activations; repair and bundle
+refresh require explicit operator commands. See [installation and recovery](../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+
+The bound routing playbook is the normal writer of a task's route, so disabling
+playbooks prevents new ordinary routing. Agent cron remains independent of the
+playbook switch.
 
 ## Pull-based worker pools
 
@@ -127,10 +131,12 @@ be pushed one — and the code default is `false` only because the pull path
 post-dates the push path. `swarm.fresh_context_per_task` stays on so one
 task's context does not leak into the next on a shared worker.
 
-`swarm.max_starts_per_tick` (1 / 2 / 3 by size class) and
+`swarm.max_starts_per_tick` (1 / 2 / 3 by size class, shared across all profiles
+and projects) and
 `swarm.scale_down_grace` (300s on a small box, 120s elsewhere) exist to stop
-start/drain churn on a bursty queue. Set `swarm.enabled: false` to keep every
-profile on `lifecycle: task` (push). Operator detail:
+start/drain churn on a bursty queue. `swarm.enabled: false` stops pool scheduling
+without changing profile lifecycle. To use push workers instead, explicitly
+change the relevant profiles to `lifecycle: task` before disabling pools. Operator detail:
 [worker pools](worker-pools.md).
 
 ## What is deliberately *not* written
@@ -164,7 +170,11 @@ aq system config tune --apply --overwrite         # re-derive and replace
 `--apply` **keeps** any section you have already customised and reports it as
 `kept`; only `--overwrite` replaces one. A section that already matches the
 recommendation is reported `unchanged` and not rewritten, so re-running the
-command is a no-op.
+command is a no-op. Decisions apply to whole sections, not individual keys.
+Before writing, the tuner validates a candidate and refuses newly introduced
+errors; pre-existing errors are reported separately. It writes locally without
+forcing live reload or retaining a transaction backup. The temporary-file
+preflight does not reproduce environment overlays or a caller-selected profile.
 
 Two knobs move together and are the usual mistake:
 
@@ -189,14 +199,13 @@ an unpriced column.
 
 ## Relationship to portable bundles
 
-`aq system export-portable-config` carries this tuning (and your global agent
-profiles) to another install; see the module docstring in
-`src/portable_config.py` for the allowlist. Because every tuned value is
+`aq system export-portable-config` carries this tuning, global profiles,
+intelligence classes, configured pools, projects and policy sources to another
+install; see [portable setup configuration](../specs/portable-config.md).
+Because every tuned value is
 either a constant or a function of cores and RAM, the recommendation exports
 cleanly with no exclusions — a test asserts it. The `integration` section
-travels as six keys only (`default_mode`, `merge_ci_policy`,
-`merge_required_checks`, `merge_require_up_to_date`, `owner_recovery_sweep`,
-`publisher_stall_after`); `github_app` and
+travels with merge, reconciler and service timeout policy; `github_app` and
 `scratch_probe` name one installation's own app, repository and key paths and
 are reported as excluded rather than shipped.
 

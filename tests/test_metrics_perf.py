@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
 
 import pytest
 
 from src.config import AppConfig, MetricsConfig
 from src.metrics.histogram import percentile
+from src.metrics.loop_watchdog import LoopWatchdog
 from src.metrics.perf import (
     OVERFLOW_LABEL,
     ROUTE_LIMIT,
@@ -177,12 +179,84 @@ async def test_stop_cancels_the_task_and_is_idempotent():
     probe = LoopLagProbe(PerfRegistry(), interval_ms=10)
     probe.start()
     task = probe._task
+    watchdog = probe._watchdog
     probe.start()  # a second start does not spawn a second probe
     assert probe._task is task
     await probe.stop()
     await probe.stop()
     assert probe._task is None
     assert task.done()
+    assert not watchdog._thread.is_alive()
+
+
+def test_watchdog_samples_code_locations_and_rate_limits_warnings(monkeypatch, caplog):
+    now = [0.0]
+    watchdog = LoopWatchdog(threading.get_ident(), clock=lambda: now[0])
+    watchdog.touch(0.1)
+    assert "test_watchdog_samples_code_locations" in " ".join(watchdog._stack())
+    monkeypatch.setattr(watchdog, "_stack", lambda: ("codex.py:581 (_read_new_sync)",))
+    watchdog.poll()
+    assert not caplog.records
+    now[0] = 2.0
+    watchdog.poll()
+    for _ in range(20):
+        watchdog.poll()
+    assert len(caplog.records) == 1
+    assert "codex.py:581" in caplog.text and watchdog._samples == 21
+    now[0] = 32.0
+    watchdog.poll()
+    assert len(caplog.records) == 2
+    watchdog.touch(0.1)
+    watchdog.poll()
+    assert "recovered" in caplog.text and "22 samples" in caplog.text
+    assert not watchdog._stacks and watchdog._samples == 0
+
+
+def test_watchdog_stack_storage_is_bounded(monkeypatch):
+    now = [2.0]
+    watchdog = LoopWatchdog(threading.get_ident(), clock=lambda: now[0])
+    watchdog._deadline = 0.0
+    stack = ["location-0"]
+    monkeypatch.setattr(watchdog, "_stack", lambda: tuple(stack))
+    for i in range(200):
+        stack[0] = f"location-{i}"
+        watchdog.poll()
+    assert len(watchdog._stacks) <= 64
+    assert sum(watchdog._stacks.values()) == 200
+
+
+def test_watchdog_thread_samples_while_the_loop_thread_is_blocked(monkeypatch):
+    sampled = threading.Event()
+    loop_thread = threading.get_ident()
+    watchdog = LoopWatchdog(loop_thread, threshold=0.01)
+    original = watchdog._stack
+    observations = []
+
+    def sample():
+        observations.append((threading.get_ident(), original()))
+        sampled.set()
+        return observations[-1][1]
+
+    monkeypatch.setattr(watchdog, "_stack", sample)
+    watchdog.start()
+    try:
+        assert sampled.wait(5), "watchdog must sample without a loop callback"
+    finally:
+        watchdog.stop()
+    assert observations[0][0] != loop_thread
+    assert "test_watchdog_thread_samples" in " ".join(observations[0][1])
+    assert not watchdog._thread.is_alive()
+
+
+async def test_a_disabled_probe_does_not_start_a_stack_sampler():
+    registry = PerfRegistry()
+    registry.enabled = False
+    probe = LoopLagProbe(registry)
+    probe.start()
+    try:
+        assert probe._watchdog is None
+    finally:
+        await probe.stop()
 
 
 async def test_stop_before_start_is_a_no_op():
@@ -218,3 +292,99 @@ def test_config_defaults_and_validation():
     assert "perf_loop_probe_ms" in {
         e.field for e in MetricsConfig(perf_loop_probe_ms=1001).validate()
     }
+
+
+async def test_operation_timing_tracks_overlap_across_ticks_and_cancellation():
+    from src.metrics.perf import timed_operation
+    from src.metrics.sampler import aggregate_samples
+
+    reg = PerfRegistry()
+    install_registry(reg)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    @timed_operation("session.tmux")
+    async def work():
+        entered.set()
+        await release.wait()
+
+    try:
+        first_task = asyncio.create_task(work())
+        await entered.wait()
+        entered.clear()
+        second_task = asyncio.create_task(work())
+        await entered.wait()
+        first = reg.snapshot()
+        assert first["operations"]["session.tmux"]["in_flight"] == 2
+        first_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_task
+        release.set()
+        await second_task
+        second = reg.snapshot()
+        operation = second["operations"]["session.tmux"]
+        assert operation["in_flight"] == 0
+        assert operation["peak_in_flight"] == 2
+        assert operation["outcomes"] == {"kind": "sum", "cancelled": 1, "completed": 1}
+        merged = aggregate_samples([first, second])["operations"]["session.tmux"]
+        assert merged["latency"]["count"] == 2
+        assert merged["outcomes"]["cancelled"] == 1
+        assert reg.snapshot()["operations"] == {}
+    finally:
+        install_registry(None)
+
+
+def test_operation_metrics_bound_labels_and_disable_without_leaking_gauges():
+    reg = PerfRegistry()
+    keys = [reg.operation_started(f"test.{n}") for n in range(ROUTE_LIMIT + 4)]
+    assert len(reg.snapshot()["operations"]) == ROUTE_LIMIT + 1
+    reg.enabled = False
+    assert reg.operation_started("disabled") is None
+    for key in keys:
+        reg.operation_finished(key, 2, "completed")
+    ended = reg.snapshot()["operations"]
+    assert all(entry["in_flight"] == 0 for entry in ended.values())
+    assert all(entry["latency"]["count"] == 0 for entry in ended.values())
+    assert reg.snapshot()["operations"] == {}
+
+
+@pytest.mark.parametrize("failure,outcome", [(TimeoutError, "timeout"), (ValueError, "error")])
+def test_operation_failures_propagate_and_are_observed(failure, outcome):
+    from src.metrics.perf import operation_timing
+
+    reg = PerfRegistry()
+    install_registry(reg)
+    try:
+        with pytest.raises(failure):
+            with operation_timing("db.wait_graph_lock"):
+                raise failure("original failure")
+        entry = reg.snapshot()["operations"]["db.wait_graph_lock"]
+        assert entry["latency"]["count"] == 1
+        assert entry["outcomes"][outcome] == 1
+    finally:
+        install_registry(None)
+
+
+def test_slow_operation_logs_structured_fields_and_restores_context(monkeypatch):
+    from src.metrics import perf
+    from src.logging_config import CorrelationContext, get_correlation_context
+
+    reg = PerfRegistry()
+    install_registry(reg)
+    stamps = iter((10.0, 11.5))
+    monkeypatch.setattr(perf.time, "perf_counter", lambda: next(stamps))
+    logged = []
+    monkeypatch.setattr(perf.logger, "warning", lambda message: logged.append(
+        (message, get_correlation_context()),
+    ))
+    try:
+        with CorrelationContext(command="test_command", operation="outer"):
+            with perf.operation_timing("git.fetch"):
+                pass
+            assert get_correlation_context()["operation"] == "outer"
+        assert logged == [("operation timing", {
+            "command": "test_command", "operation": "git.fetch", "duration_ms": 1500.0,
+            "outcome": "completed",
+        })]
+    finally:
+        install_registry(None)
