@@ -16,12 +16,12 @@ The steps, as the spec numbers them:
 2. **Candidates** — worker candidates for the lane (or the class), minus
    reserved cells, excluded providers, providers other than the project's
    ``preferred_provider``, for a task needing a non-pool workspace every
-   pool profile and, for work the ``local_models`` gate refuses (priority at
-   or above its threshold, a train bugfix, work others wait on), every
-   self-hosted model, and every harness a classified risk's rule does not
-   list.  A narrow lane's candidates form the preferred tier when the
-   classification meets its ``requires``, its ``max_risk`` (an unknown risk
-   does not) and its ``below_priority``.
+   pool profile and, for work the ``local_models`` gate refuses (a train
+   bugfix; work others wait on), every self-hosted model, and every harness
+   a classified risk's rule does not list.  A narrow lane's candidates form
+   the preferred tier when the classification meets its ``requires`` and its
+   ``max_risk`` (an unknown risk does not).  A task's priority is not an
+   input: it orders the claim frontier, never the route.
 2b. **Preference** — the filer's ``prefer_target``, a harness or a profile:
    ``strict`` leaves only the candidates that serve it and refuses to fall
    back, ``soft`` flags them so :func:`reselect` prefers them while they have
@@ -32,7 +32,7 @@ The steps, as the spec numbers them:
    a narrow lane's flags (and its ``max_risk``), and the risk when a ``risk``
    rule could raise the class or remove a candidate's harness.
 5. **Load score** — ``pressure = (load + 1) / (slots × weight × usage ×
-   availability)``; ``load = busy + eligible backlog``.  Blocked, unclaimable
+   usage_headroom × availability)``; ``load = busy + eligible backlog``. Blocked, unclaimable
    routed work (dependency, hold, origin, container, gate, already-assigned)
    is evidenced but never load: a worker cannot run it, so it must not
    consume a slot.
@@ -48,7 +48,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from src.models import TaskType
+from src.models import TaskStatus, TaskType
 from src.profiles.catalog import worker_route
 from src.routing.policy import (
     CLASSIFICATION_FLAGS,
@@ -116,6 +116,7 @@ class ProfileFacts:
     needs_workspace: bool = True
     #: The harness runs a self-hosted model (:data:`LOCAL_MODEL_PROVIDERS`).
     local: bool = False
+    operator: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,12 +186,12 @@ class TaskFacts:
     needs_task_lifecycle: bool = False
     #: ``benchmark:<arm>`` task labels; multiple selectors are an error.
     benchmark_arms: tuple[str, ...] = ()
-    #: The task's priority; ``None`` (unknown) leaves the priority gate open.
-    priority: int | None = None
     #: The task delivers through its project's integration train.
     on_train: bool = False
     #: An unfinished task waits on this one through a blocking edge.
     blocks_work: bool = False
+    #: Durable substantive failures, recorded atomically with retry/reopen.
+    failed_attempts: tuple[Mapping[str, Any], ...] = ()
 
 
 # -- outputs -------------------------------------------------------------------
@@ -248,6 +249,8 @@ class Score:
     load: int
     usage_percent: float | None
     usage_factor: float
+    usage_headroom_factor: float
+    usage_binding_window: dict[str, Any] | None
     usage_soft_limited: bool
     avail_factor: float
     weight: float
@@ -337,6 +340,12 @@ def worker_classes(profile: ProfileFacts) -> frozenset[str]:
     if not fixed and profile.lifecycle != "task":
         return frozenset()
     eligible = frozenset({fixed}) & profile.classes if fixed else profile.classes
+    if profile.operator:
+        from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES
+
+        if profile.harness not in OPERATOR_HARNESSES or profile.local:
+            return frozenset()
+        eligible &= OPERATOR_CLASSES
     return frozenset(
         class_id for class_id in eligible
         if worker_route(
@@ -437,14 +446,56 @@ class _Rule:
     #: The class before a ``risk`` rule's floor raised it, and that risk.
     raised_from: str | None = None
     raised_for_risk: str | None = None
+    #: The risk was not answered, and :data:`ASSUMED_RISK` stood in for it.
+    risk_assumed: bool = False
+    uses_risk_floor: bool = True
+    escalated_after_failure: Mapping[str, Any] | None = None
 
 
-def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | None) -> _Rule:
+#: The risk a policy that reads risks applies when the classifier answered
+#: without one, or failed: not knowing is not evidence the change is safe.
+ASSUMED_RISK = "medium"
+#: Journaled reasons that are rework after a passing attempt, not a verdict on
+#: the class's ability: they never count toward ``escalate.after_failures``.
+REWORK_REASONS = frozenset({"reopen_with_feedback"})
+
+
+def counts_toward_escalation(attempt: Mapping[str, Any]) -> bool:
+    """Whether a journaled attempt is a capability failure for escalation.
+
+    Review feedback on a COMPLETED task reworks a passing attempt; it is not a
+    failure of the class that produced it.  Rows journaled before the journal
+    stopped recording rework are excluded here too.
+    """
+    return (
+        attempt.get("reason") not in REWORK_REASONS
+        and attempt.get("previous_status") != TaskStatus.COMPLETED.value
+    )
+
+
+def _effective_risk(
+    policy: RoutingPolicy, classification: Any, classified: Classification | None,
+) -> tuple[str | None, bool]:
+    """The risk the plan applies, and whether it was assumed.
+
+    Only an answer, failed or not, assumes one: before the classifier runs an
+    unknown risk stays unknown, so the planner still asks for it.
+    """
+    risk = classified.risk if classified else None
+    if risk is None and classification is not None and policy.uses_risk:
+        return ASSUMED_RISK, True
+    return risk, False
+
+
+def _rule(
+    task: TaskFacts, policy: RoutingPolicy, classified: Classification | None,
+    risk: str | None = None, *, risk_assumed: bool = False,
+) -> _Rule:
     """Step 1: the kind, the merged rule and the class.
 
-    The classified risk's floor comes last, so it beats a hint and
-    ``max_class``: it is a safety floor, and an operator who wants a task
-    below it overrides the route.
+    The *risk*'s floor beats a hint and ``max_class`` unless the kind has
+    an explicit standard-first escalation policy. Risk harness restrictions
+    still apply to that policy; design lanes retain their usual floors.
     """
     notes: list[str] = []
     kind = task.task_type or (classified.task_type if classified else None) or policy.default_kind
@@ -472,23 +523,55 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
     if hint is not None and hint not in policy.class_order:
         notes.append(f"class hint {hint} is not on class_order, ignored")
         hint = None
-    chosen = hint or (classified.intelligence_class if classified else None) or class_id
+    escalation = base.escalate if lane is None else None
+    chosen = (
+        class_id if escalation is not None
+        else hint or (classified.intelligence_class if classified else None) or class_id
+    )
     clamped_from = None
     if max_class is not None and policy.rank(chosen) > policy.rank(max_class):
         clamped_from, chosen = chosen, max_class
     raised_from = raised_for_risk = None
-    risk = classified.risk if classified else None
+    if risk_assumed:
+        notes.append(f"no risk answer, treated as {risk}")
     risk_rule = policy.risk.get(risk) if risk is not None else None
-    if risk_rule is not None:
+    if risk_rule is not None and escalation is None:
         floor = risk_rule.floor(classified.flags if classified else ())
         if policy.rank(chosen) < policy.rank(floor):
             raised_from, raised_for_risk, chosen = chosen, risk, floor
             notes.append(f"class raised from {raised_from} to {chosen} for risk {risk}")
+    escalated = None
+    if escalation is not None:
+        # This policy deliberately tries the default class first. Risk still
+        # restricts harnesses in step 2, but neither a hint nor a risk floor
+        # can skip the lower-class attempt.
+        narrow = False
+        failures = [
+            dict(attempt) for attempt in task.failed_attempts
+            if attempt.get("intelligence_class") == class_id
+            and counts_toward_escalation(attempt)
+        ]
+        chosen = class_id
+        raised_from = raised_for_risk = None
+        if len(failures) >= escalation.after_failures:
+            chosen = escalation.to_class
+            escalated = {
+                "from": class_id, "to": chosen, "after_failures": escalation.after_failures,
+                "failed_attempts": failures,
+            }
+            notes.append(f"escalated_after_failure: {class_id} to {chosen}")
+        else:
+            notes.append(f"try {class_id} before escalation after failure")
+    if kind == "operator" and chosen not in {"standard-high", "deep-high"}:
+        chosen = "deep-high" if policy.rank(chosen) > policy.rank("standard-high") else "standard-high"
+        notes.append("operator work requires frontier standard-high or deep-high")
     return _Rule(
         kind=kind, rule=rule_name, origin=origin_name, class_id=chosen, hint=hint,
         clamped_from=clamped_from, lane=lane, narrow=narrow,
         prefer_harnesses=prefer_harnesses, notes=tuple(notes),
-        raised_from=raised_from, raised_for_risk=raised_for_risk,
+        raised_from=raised_from, raised_for_risk=raised_for_risk, risk_assumed=risk_assumed,
+        uses_risk_floor=escalation is None,
+        escalated_after_failure=escalated,
     )
 
 
@@ -505,29 +588,39 @@ def _lane_admits_risk(lane: Lane, risk: str | None) -> bool:
     return risk is not None and risk_rank(risk) <= risk_rank(lane.max_risk)
 
 
-def _lane_admits_priority(lane: Lane, task: TaskFacts) -> bool:
-    """A narrow lane's ``below_priority`` is met; an unknown priority meets it."""
-    return (
-        lane.below_priority is None
-        or task.priority is None
-        or task.priority < lane.below_priority
-    )
-
-
 def _cells(
     snapshot: Snapshot,
     class_id: str,
     selectors: frozenset[str] | None,
     *,
     exclude: frozenset[str] = frozenset(),
+    operator: bool = False,
+    exclusions: list[str] | None = None,
 ) -> list[ProfileFacts]:
     """Worker profiles at *class_id* a lane's *selectors* admit and *exclude* does not."""
-    return [
-        profile for profile in snapshot.profiles
-        if class_id in worker_classes(profile)
-        and (selectors is None or any(selector_matches(profile.harness, s) for s in selectors))
-        and not any(selector_matches(profile.harness, s) for s in exclude)
-    ]
+    found = []
+    for profile in snapshot.profiles:
+        classes = worker_classes(profile)
+        reason = None
+        if not profile.enabled:
+            reason = "profile disabled"
+        elif profile.slots <= 0:
+            reason = "profile has no configured slots"
+        elif class_id not in classes:
+            reason = f"class {class_id} required, worker classes {sorted(classes)}"
+        elif profile.operator != operator:
+            reason = f"operator={operator} required"
+        elif selectors is not None and not any(
+            selector_matches(profile.harness, s) for s in selectors
+        ):
+            reason = f"lane harnesses {sorted(selectors)} exclude {profile.harness}"
+        elif any(selector_matches(profile.harness, s) for s in exclude):
+            reason = f"narrow-only harness {profile.harness} excluded from general candidates"
+        if reason is None:
+            found.append(profile)
+        elif exclusions is not None:
+            exclusions.append(f"{profile.id}: {reason}")
+    return found
 
 
 def _order_key(policy: RoutingPolicy, lane: Lane | None):
@@ -562,8 +655,6 @@ def local_refusal(
     supplied; without it the task's own kind is used.
     """
     gate = policy.local_models
-    if task.priority is not None and task.priority >= gate.below_priority:
-        return f"priority {task.priority} is not below {gate.below_priority}"
     kind = kind or task.task_type
     if task.on_train and kind in gate.train_kinds:
         return f"a {kind} delivered through the integration train"
@@ -581,6 +672,7 @@ def _filter(
     candidates: list[Candidate], task: TaskFacts, policy: RoutingPolicy,
     *, respect_reserved: bool = True, local_gate: bool = True, kind: str | None = None,
     risk_harnesses: tuple[str, ...] = (),
+    exclusions: list[str] | None = None,
 ) -> tuple[list[Candidate], str | None]:
     """Step 2's removals, returning the survivors and why the list emptied.
 
@@ -590,7 +682,8 @@ def _filter(
     """
     local_refused = local_gate and local_refusal(task, policy, kind) is not None
     stages = (
-        ("reserved", lambda c: not respect_reserved or not _reserved_away(policy, c)),
+        ("reserved", lambda c: kind == "operator" or not respect_reserved
+         or not _reserved_away(policy, c)),
         ("excluded_providers", lambda c: c.provider not in task.exclude_providers),
         (
             "preferred_provider_unavailable",
@@ -607,6 +700,27 @@ def _filter(
     reason = None if candidates else "no_worker_candidates"
     for name, keep in stages:
         kept = [candidate for candidate in candidates if keep(candidate)]
+        if exclusions is not None:
+            for candidate in candidates:
+                if candidate not in kept:
+                    detail = name
+                    if name == "reserved":
+                        lanes = sorted({
+                            lane for cell in policy.reserved
+                            if cell.class_ == candidate.intelligence_class
+                            and cell.harness == candidate.harness
+                            for lane in cell.only_lanes
+                        })
+                        detail += f" for lanes {lanes}"
+                    elif name == "preferred_provider_unavailable":
+                        detail += f": project preferred_provider={task.preferred_provider}"
+                    elif name == "risk_harnesses":
+                        detail += f": allowed harnesses {list(risk_harnesses)}"
+                    elif name == "excluded_providers":
+                        detail += f": {sorted(task.exclude_providers)}"
+                    elif name == "local_model_gate":
+                        detail += f": {local_refusal(task, policy, kind)}"
+                    exclusions.append(f"{candidate.profile_id}: {detail}")
         if candidates and not kept:
             reason = name
         candidates = kept
@@ -639,6 +753,7 @@ def _candidates(
     rule: _Rule,
     flags: frozenset[str] | None,
     risk: str | None = None,
+    *, exclusions: list[str] | None = None,
 ) -> _Pool:
     """Step 2.  *flags* ``None`` means the classification is still unknown;
     *risk* ``None`` means no risk was classified."""
@@ -646,7 +761,8 @@ def _candidates(
     if rule.lane is not None:
         lane = policy.lanes[rule.lane]
         class_id = lane.class_ or rule.class_id
-        cells = _cells(snapshot, class_id, frozenset(lane.harnesses))
+        cells = _cells(snapshot, class_id, frozenset(lane.harnesses),
+                       operator=rule.kind == "operator", exclusions=exclusions)
         prefer = lane.preferred_harnesses
         found = [
             _candidate(
@@ -658,6 +774,7 @@ def _candidates(
         ]
         found, reason = _filter(
             found, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+            exclusions=exclusions,
         )
         ordered = sorted(found, key=_order_key(policy, lane))
         preferred = [c for c in ordered if c.tier == PREFERRED]
@@ -668,16 +785,24 @@ def _candidates(
     # the active policy names every installed member of that CLI family.
     from src.routing.policy import is_opencode_family
 
+    if exclusions is not None:
+        exclusions.extend(
+            f"{profile.id}: OpenCode family requires an eligible narrow lane"
+            for profile in snapshot.profiles
+            if is_opencode_family(profile.harness, profile.provider, profile.harness_family)
+        )
     general = [
         _candidate(profile, rule.class_id, tier=FALLBACK, lane=None,
                    preferred_hosted=profile.harness in rule.prefer_harnesses)
         for profile in _cells(
-            snapshot, rule.class_id, None, exclude=policy.narrow_harnesses()
+            snapshot, rule.class_id, None, exclude=policy.narrow_harnesses(),
+            operator=rule.kind == "operator", exclusions=exclusions,
         )
         if not is_opencode_family(profile.harness, profile.provider, profile.harness_family)
     ]
     general, reason = _filter(
         general, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+        exclusions=exclusions,
     )
     general.sort(key=_order_key(policy, None))
 
@@ -686,22 +811,29 @@ def _candidates(
     if rule.narrow:
         for name, lane in policy.narrow_lanes():
             mapped = (lane.classes or {}).get(rule.class_id)
-            if mapped is None or not _lane_admits_priority(lane, task):
-                # The priority ceiling is known before any classification, so
-                # a lane it refuses is not even a potential one.
+            if mapped is None:
+                if exclusions is not None:
+                    exclusions.append(f"lane {name}: no mapping for class {rule.class_id}")
                 continue
             lane_cells = [
                 _candidate(profile, mapped, tier=PREFERRED, lane=name)
-                for profile in _cells(snapshot, mapped, frozenset(lane.harnesses))
+                for profile in _cells(snapshot, mapped, frozenset(lane.harnesses),
+                                      operator=rule.kind == "operator", exclusions=exclusions)
             ]
             lane_cells, _reason = _filter(
                 lane_cells, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+                exclusions=exclusions,
             )
             lane_cells.sort(key=_order_key(policy, lane))
             if flags is None:
                 potential.extend(lane_cells)
             elif set(lane.requires) <= flags and _lane_admits_risk(lane, risk):
                 preferred.extend(lane_cells)
+            elif exclusions is not None and lane_cells:
+                exclusions.append(
+                    f"lane {name}: requires {list(lane.requires)}, flags {sorted(flags)}, "
+                    f"max_risk={lane.max_risk}, risk={risk}"
+                )
     seen: set[tuple[str, str]] = set()
     ordered: list[Candidate] = []
     for candidate in preferred + general:
@@ -765,6 +897,39 @@ def _apply_preference(pool: _Pool, task: TaskFacts) -> tuple[_Pool, str | None]:
         return _Pool(matching, matching_potential, pool.reason), None
     return _Pool(_flagged(pool.candidates, target), _flagged(pool.potential, target),
                  pool.reason), None
+
+
+def _preference_refusal_detail(
+    task: TaskFacts, policy: RoutingPolicy, snapshot: Snapshot, rule: _Rule,
+    flags: frozenset[str] | None, risk: str | None,
+) -> str:
+    """Trace the actual admission checks for the target, without changing selection."""
+    target = prefer_target(task)
+    profiles = tuple(
+        profile for profile in snapshot.profiles
+        if profile.id == target or profile.harness == target
+    )
+    details = [
+        f"strict preference {target}: no worker candidate serves it",
+        f"{rule.rule}: selected class {rule.class_id}, narrow={rule.narrow}",
+    ]
+    if rule.lane is not None:
+        lane = policy.lanes[rule.lane]
+        details.append(
+            f"lane {rule.lane}: class {lane.class_ or rule.class_id}, "
+            f"harnesses {list(lane.harnesses)}"
+        )
+    if rule.clamped_from:
+        details.append(f"class clamped from {rule.clamped_from} to {rule.class_id}")
+    details.extend(rule.notes)
+    if profiles:
+        # Use the same class, lane and filter code as the real plan. Capacity
+        # and provider liveness come later; neither explains this refusal.
+        _candidates(task, policy, replace(snapshot, profiles=profiles), rule, flags, risk,
+                    exclusions=details)
+    else:
+        details.append("no installed profile matches the target")
+    return "; ".join(dict.fromkeys(details))
 
 
 def preference_record(
@@ -841,13 +1006,31 @@ def score(candidate: Candidate, snapshot: Snapshot, balance: Balance) -> Score |
     else:
         usage = facts.usage_percent
         usage_factor = _usage_factor(usage, balance)
+    headroom_factor = 1.0
+    binding = None
+    if balance.usage_mode == "headroom":
+        # Freshness is computed against the snapshot clock, including resets.
+        # A bare percentage has no freshness evidence and stays neutral here.
+        binding = max(
+            (q for q in facts.quota if q["freshness"] == "fresh"),
+            key=lambda q: float(q["used_percent"]), default=None,
+        )
+        if binding is not None:
+            usage = float(binding["used_percent"])
+            if usage <= balance.usage_soft_percent:
+                headroom_factor = 1.0 - max(0.0, usage) / 100.0
     avail_factor = balance.degraded_factor if facts.state == "degraded" else 1.0
     weight = balance.weight(candidate.harness)
-    pressure = (busy + backlog + 1) / (slots * weight * usage_factor * avail_factor)
+    pressure = (busy + backlog + 1) / (
+        slots * weight * usage_factor * headroom_factor * avail_factor
+    )
     return Score(
         profile_id=candidate.profile_id, intelligence_class=candidate.intelligence_class,
         tier=candidate.tier, slots=slots, busy=busy, backlog=backlog, blocked=blocked, load=busy + backlog,
         usage_percent=usage, usage_factor=round(usage_factor, 4),
+        usage_headroom_factor=round(headroom_factor, 4),
+        usage_binding_window={key: binding.get(key) for key in ("window", "scope", "resets_at")}
+        if binding is not None else None,
         usage_soft_limited=usage is not None and usage > balance.usage_soft_percent,
         avail_factor=avail_factor, weight=weight, pressure=round(pressure, 4),
         effective_headroom=snapshot.headroom.get(candidate.profile_id),
@@ -953,6 +1136,8 @@ def selection_evidence(
             "effective_headroom": snapshot.headroom.get(candidate.profile_id),
             "usage_percent": result.usage_percent if result else None,
             "usage_factor": result.usage_factor if result else None,
+            "usage_headroom_factor": result.usage_headroom_factor if result else None,
+            "usage_binding_window": result.usage_binding_window if result else None,
             "usage_soft_limited": result.usage_soft_limited if result else None,
             "quota_status": "observed" if facts.quota else "unknown",
             "quota": list(facts.quota[:8]), "preference_bypassed": bypass,
@@ -991,10 +1176,17 @@ def selection_reason(evidence: Mapping[str, Any]) -> str:
     ) or (f"own usage {chosen['usage_percent']:g}% (window/age unknown)"
           if chosen["usage_percent"] is not None else "quota unknown")
     age = evidence["snapshot_age_seconds"]
+    binding = chosen.get("usage_binding_window")
+    usage_headroom = f"usage headroom factor {chosen.get('usage_headroom_factor', 1):g}"
+    if binding:
+        usage_headroom += (
+            f" (binding {binding['window']}({binding['scope']}), "
+            f"resets at {binding['resets_at'] if binding['resets_at'] is not None else 'unknown'})"
+        )
     reason = (
         f"{evidence['mode']}: {evidence['profile_id']}/{evidence['provider']} "
         f"class {evidence['class']}, {chosen['state']}, load {chosen['load']}/{chosen['slots']}, "
-        f"headroom {headroom if headroom is not None else 'unknown'}; {windows}; "
+        f"headroom {headroom if headroom is not None else 'unknown'}; {usage_headroom}; {windows}; "
         f"snapshot age {f'{age:g}s' if age is not None else 'unknown'}"
     )
     bypassed = [f"{c['profile_id']}: {c['preference_bypassed']}"
@@ -1019,7 +1211,7 @@ def _risk_could_change_route(
 ) -> bool:
     """A classified risk could raise *rule*'s class or remove one of *candidates*."""
     for risk_rule in policy.risk.values():
-        if policy.rank(risk_rule.min_class) > policy.rank(rule.class_id):
+        if rule.uses_risk_floor and policy.rank(risk_rule.min_class) > policy.rank(rule.class_id):
             return True
         if risk_rule.harnesses and any(
             not any(selector_matches(c.harness, s) for s in risk_rule.harnesses)
@@ -1077,6 +1269,10 @@ def plan_route(
     classification: Any = None,
 ) -> PlanResult:
     """``task_route_plan`` for a task the router still owes a route."""
+    if task.task_type == "operator" and task.benchmark_arms:
+        return PlanResult("no_candidates", {
+            "task_id": task.task_id, "reason": "operator_work_cannot_use_benchmark_arms",
+        })
     if task.benchmark_arms:
         # A benchmark arm must never inherit the ordinary class fallbacks:
         # they would turn an unavailable model into another arm's result.
@@ -1140,8 +1336,18 @@ def plan_route(
     classified, failed, error = read_classification(classification, policy)
     known = classification is not None
     flags = (classified.flags if classified else frozenset()) if known else None
-    risk = classified.risk if classified else None
-    rule = _rule(task, policy, classified)
+    risk, risk_assumed = _effective_risk(policy, classification, classified)
+    rule = _rule(task, policy, classified, risk, risk_assumed=risk_assumed)
+    if rule.kind == "operator" and "operator" not in policy.kinds:
+        return PlanResult("no_candidates", {
+            "task_id": task.task_id,
+            "reason": "operator_rule_missing",
+            "detail": (
+                "kinds.operator: the executed routing policy has no operator rule; "
+                "import and activate a reviewed routing artifact containing kinds.operator"
+            ),
+            "policy_sha256": policy_sha256,
+        })
     unmatched = policy.unmatched_selectors(snapshot.harnesses) if snapshot.harnesses else []
     if unmatched:
         # Reported, never refused: OpenCode harnesses are operator-installed, so
@@ -1159,10 +1365,7 @@ def plan_route(
         return PlanResult("no_candidates", {
             "task_id": task.task_id,
             "reason": refused,
-            "detail": (
-                f"strict preference {prefer_target(task)}: no worker candidate serves it"
-                + (f" in lane {rule.lane}" if rule.lane else "")
-            ),
+            "detail": _preference_refusal_detail(task, policy, snapshot, rule, flags, risk),
             # The pre-preference list, so ``kind`` still reads as profile or
             # harness for a name the planner could not place.
             "preference": preference_record(task, eligible, snapshot, None),
@@ -1258,10 +1461,13 @@ def plan_route(
         "preference": preference,
         "policy_sha256": policy_sha256,
         "class_clamped_from": rule.clamped_from,
+        **({"escalated_after_failure": dict(rule.escalated_after_failure)}
+           if rule.escalated_after_failure is not None else {}),
         # Present only when a risk floor raised the class, so a plan without
         # one is the plan it was before risks existed.
         **({"class_raised_for_risk": {
             "from": rule.raised_from, "to": rule.class_id, "risk": rule.raised_for_risk,
+            **({"assumed": True} if rule.risk_assumed else {}),
         }} if rule.raised_from is not None else {}),
         "classification": classification_record,
         "balance": policy.balance.model_dump(mode="json"),
