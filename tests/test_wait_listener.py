@@ -148,7 +148,7 @@ async def test_source_budget_adapts_to_timeouts_without_exceeding_lease(monkeypa
 
     async def drain_one(watermark, retry_pending, attempt, recovery, **kwargs):
         observed.append(active[-1][0])
-        attempt.update(retry=False)
+        attempt.update(retry=False, event={"seq": watermark})
         if len(observed) <= 3:
             active[-1][1].reschedule(asyncio.get_running_loop().time())
             await asyncio.Event().wait()
