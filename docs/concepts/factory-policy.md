@@ -87,5 +87,4 @@ never capture one per task. A pre-existing failure neither fails the task nor ju
 skipping tests. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
 
 Profiles and skills are seeded write-if-absent: edit installed profiles in the vault; re-copy drifted
-skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py`
-rejects retired stages, sibling-by-default placement, refusal bypasses and roles that omit this page.
+skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py` rejects retired stages, sibling-by-default placement, refusal bypasses and roles that omit this page.
