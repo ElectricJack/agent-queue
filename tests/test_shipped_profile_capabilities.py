@@ -18,6 +18,7 @@ import pytest
 
 from src.api.scope import (
     AGENT_COMMAND_SET,
+    _BATCH_REVIEW_COMMANDS,
     _PLAYBOOK_COMPILER_COMMANDS,
     _SPEC_INGEST_COMMANDS,
     _TRIAGE_COMMANDS,
@@ -48,6 +49,7 @@ PROFILE_IDS = sorted(p.name for p in DEFAULTS_DIR.iterdir() if (p / "profile.md"
 #: a new unreachable name fails this test, forcing a deliberate decision.
 #: Resolutions are filed for Package 1 in the child plan §14.
 EXPECTED_UNREACHABLE: dict[str, set[str]] = {
+    "fidelity-reviewer": {"approved_spec_packet", "get_downstream_tasks", "list_tasks"},
     "final-reviewer": {"pr_merge", "reopen_with_feedback"},
     "operator-claude": set(),
     "operator-codex": set(),
@@ -79,7 +81,7 @@ def _parsed(profile_id: str):
 def test_every_shipped_profile_is_covered():
     """The pin lists exactly the shipped profiles — no drift either way."""
     assert set(PROFILE_IDS) == set(EXPECTED_UNREACHABLE)
-    assert len(PROFILE_IDS) == 13
+    assert len(PROFILE_IDS) == 14
 
 
 @pytest.mark.parametrize("profile_id", [pid for pid in PROFILE_IDS if pid.startswith("worker-")])
@@ -88,6 +90,7 @@ def test_every_worker_template_can_publish_and_shares_the_worker_grants(profile_
     assert parsed.frontmatter.template is True
     policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
     assert policy.allows_plugin_tool("git_push")
+    assert policy.allows_plugin_tool("read_file")
     assert policy.allows_plugin_tool("git_create_pr")
     assert parsed.capabilities == _parsed("worker-codex").capabilities
 
@@ -141,9 +144,12 @@ class TestShippedProfile:
         assert set(harness) <= HARNESS_TOOL_NAMES
 
     def test_every_aq_command_is_a_real_command(self, profile_id):
-        """No aspirational names: each one resolves to a dispatchable handler."""
+        """Every grant names a handler or an explicitly defined read scope."""
         parsed = _parsed(profile_id)
-        unknown = sorted(set(parsed.capabilities["aq_commands"]) - _builtin_command_names())
+        from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+        unknown = sorted(set(parsed.capabilities["aq_commands"]) -
+                         (_builtin_command_names() | AQ_FEATURE_CAPABILITIES))
         assert unknown == []
 
     def test_policy_is_constructible_and_not_legacy(self, profile_id):
@@ -167,6 +173,9 @@ class TestShippedProfile:
         if profile_id == "spec-ingest":
             # These commands require the live server-owned ingestion role.
             reachable = reachable | _SPEC_INGEST_COMMANDS
+        if profile_id == "fidelity-reviewer":
+            # Only the three batch commands currently have a reviewer scope path.
+            reachable = AGENT_COMMAND_SET | _BATCH_REVIEW_COMMANDS
         unreachable = set() if profile_id == "supervisor" else granted - reachable
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
@@ -183,12 +192,20 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
         "supervisor_inbox_status",
     } <= granted
     assert "supervisor_inbox_post" not in granted
-    assert granted <= _builtin_command_names()
+    from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+    assert granted <= _builtin_command_names() | AQ_FEATURE_CAPABILITIES
 
 
 def test_supervisor_can_diagnose_and_repair_repository_checkouts():
     granted = set(_parsed("supervisor").capabilities["aq_commands"])
     assert {"project_doctor", "repair_repository_checkout", "repair_workspace_checkout"} <= granted
+
+
+def test_spec_ingest_can_follow_the_prime_wait_lifecycle():
+    granted = set(_parsed("spec-ingest").capabilities["aq_commands"])
+    assert {"approved_spec_packet", "wait_register", "wait_get", "wait_checkpoint"} <= granted
+    assert {"wait_decide", "wait_lift", "wait_source_commit"}.isdisjoint(granted)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +215,7 @@ def test_supervisor_can_diagnose_and_repair_repository_checkouts():
 #: Shipped profiles that deliberately cannot create tasks directly. Prime must
 #: therefore *not* render its Emergent work section for them — see
 #: ``src/prime/sections.py:profile_allows_create_task``.
-NO_CREATE_TASK: set[str] = {"spec-ingest", "pr-merger"}
+NO_CREATE_TASK: set[str] = {"spec-ingest", "pr-merger", "fidelity-reviewer"}
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)

@@ -1,0 +1,53 @@
+{
+  "generic_dependencies": {
+    "src/waits/decisions.py::WaitDecisions.decide": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decisions.py::WaitDecisions.human": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decisions.py::import from src.database.queries.wait_queries import wait_explain": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decisions.py::import from src.waits.ownership import fence_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/waits/decisions.py::WaitDecisions.raise_escalation": {
+      "landing_span": [
+        36,
+        84
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/waits/decisions.py::import from src.database.tables import admission_reservations, continuations, escalation_deliveries, escalations, events, integration_branch_owners, messages, sessions, task_context, tasks, wait_deadlines, wait_edges, wait_escalations, wait_records": {
+      "landing_span": [
+        17,
+        21
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  },
+  "storage_sinks": {
+    "src/waits/decisions.py::WaitDecisions.audit::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 88,
+      "owner": "WaitDecisions.audit",
+      "owner_fingerprint": "1b62cdf43d63f7c9dc6d867841cd777c1151fd8abe15feeaab4bb87574bb4e9e",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/decisions.py::WaitDecisions.human::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 512,
+      "owner": "WaitDecisions.human",
+      "owner_fingerprint": "42362d0be198ae9cc96135dc82d0e8297994cfd1f7aaab63cb621122d9bd994b",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/decisions.py::WaitDecisions.resolve_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 130,
+      "owner": "WaitDecisions.resolve_escalation",
+      "owner_fingerprint": "8de4bc678882ecf59dadb327813c618416f30b07567b2dc076d11780cf2fea60",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    }
+  }
+}
