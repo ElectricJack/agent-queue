@@ -20,6 +20,20 @@ class RepositoryLockTimeout(TimeoutError):
         super().__init__(f"repository lock busy after {seconds:g}s; retry after cooldown")
 
 
+class RetainedVerificationPending(RepositoryLockTimeout):
+    """A shared full object check outlived the caller's wait; it keeps running."""
+
+    def __init__(self, seconds: float):
+        TimeoutError.__init__(
+            self, f"retained Git object verification in progress after {seconds:g}s; "
+            "retry after cooldown")
+
+
+def repository_lock_wait_seconds() -> float | None:
+    """The caller's acquisition bound, if it opted into one."""
+    return _WAIT_LIMIT.get()
+
+
 @contextmanager
 def repository_lock_wait_limit(seconds: float):
     """Bound acquisition only, leaving the owner and protected work untouched."""
