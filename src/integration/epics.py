@@ -1,0 +1,574 @@
+"""Recursive epic readiness using ordinary tasks, Git, checks and tree reviews.
+
+This is the reduced train's parent component, not another runtime. CommandHandler
+adapters supply policy/check producers and the shared batch/ordinary completion
+actions. No episode, verification generation, receipt or delegate audit is read.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
+from functools import lru_cache
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
+
+from sqlalchemy import and_, literal, or_, select
+
+from src.database.tables import (
+    archived_tasks, events, gates, playbook_activations, playbook_artifacts, projects, repos,
+    task_dependencies, task_gates, task_labels, task_metadata, tasks,
+)
+from src.git.manager import GitError
+from src.integration.delivery_truth import DeliveryRequest, DeliveryState, load_delivery_requests
+from src.integration.git_truth import GitDeliveryEvidence, GitTruthSnapshot
+from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews, TreeVerdict
+
+if TYPE_CHECKING:
+    from src.integration.models import RequiredCheckSet
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EpicPolicy:
+    """Current epic inputs; head checks gate readiness only when required.
+
+    Epic-level checks are advisory by default (fast-smooth integration 6.4):
+    they are read and shown, and a red, missing or unavailable result never
+    delays readiness. ``checks_required`` is set only by a project playbook's
+    explicit parent-check data, read on every visit, so removing it applies to
+    pending epics at once. It is a current fact, not a frozen policy field.
+    """
+
+    check_names: tuple[str, ...]
+    check_trust: str
+    reviews: ReviewRequirements = ReviewRequirements()
+    check_version: str = ""
+    checks_required: bool = False
+
+
+@lru_cache(maxsize=64)
+def _artifact_parent_checks(artifact_sha256: str, path: str) -> RequiredCheckSet | None:
+    """An immutable artifact's ``parent_episode`` check data; failures are not cached."""
+    from src.integration.runtime_contracts import SubjectKind
+    from src.playbooks.definition import load_definition_json
+
+    data = Path(path).read_bytes()
+    if f"sha256:{hashlib.sha256(data).hexdigest()}" != artifact_sha256:
+        raise ValueError(f"artifact at {path} does not match {artifact_sha256}")
+    policy = load_definition_json(data.decode("utf-8")).integration_policy
+    table = policy.tables.get(SubjectKind.PARENT_EPISODE) if policy is not None else None
+    return table.required_checks if table is not None else None
+
+
+async def playbook_epic_checks_on(conn, project_id: str) -> RequiredCheckSet | None:
+    """Epic checks a project's enabled playbook explicitly requires, else ``None``.
+
+    This is the only opt-in to an epic-level CI gate (fast-smooth integration
+    6.4): project-scoped, ready activations whose active artifact carries
+    ``tables.parent_episode.required_checks``. It is read on every visit, so an
+    edit or disable that removes the requirement applies to pending epics at
+    once. Shipped defaults require none. An unreadable artifact is retried on
+    the next visit and, meanwhile, adds no gate (default to proceed).
+    """
+    rows = (await conn.execute(select(
+        playbook_artifacts.c.artifact_sha256, playbook_artifacts.c.path,
+    ).join(playbook_activations, playbook_activations.c.active_artifact_sha256
+           == playbook_artifacts.c.artifact_sha256).where(
+        playbook_activations.c.scope == "project",
+        playbook_activations.c.scope_identifier == project_id,
+        playbook_activations.c.enabled.is_(True),
+        playbook_activations.c.health == "ready",
+    ).order_by(playbook_activations.c.playbook_id))).all()
+    for artifact_sha256, path in rows:
+        try:
+            checks = await asyncio.to_thread(_artifact_parent_checks, artifact_sha256, path)
+        except (OSError, ValueError) as exc:
+            logger.warning("Project %s playbook artifact %s is unreadable for epic checks: %s",
+                           project_id, artifact_sha256, exc)
+            continue
+        if checks is not None:
+            return checks
+    return None
+
+
+@dataclass(frozen=True)
+class HeadChecks:
+    repository_id: str
+    head_sha: str
+    names: tuple[str, ...]
+    trust: str
+    state: Literal["green", "red", "pending", "unknown"]
+
+
+@dataclass(frozen=True)
+class EpicNode:
+    request: DeliveryRequest
+    parent_id: str | None
+    branch_ref: str | None
+    policy: EpicPolicy
+    required: bool = True
+    holds: tuple[str, ...] = ()
+    source_base: str | None = None
+    container: bool = False
+
+    @property
+    def task_id(self) -> str:
+        return self.request.task_id
+
+
+@dataclass(frozen=True)
+class EpicGraph:
+    project_id: str
+    repository_id: str
+    repository_url: str
+    default_ref: str
+    epic_id: str
+    nodes: tuple[EpicNode, ...]
+    dependencies: tuple[tuple[str, str, str], ...] = ()
+    project_holds: tuple[str, ...] = ()
+
+    def node(self, task_id: str) -> EpicNode:
+        return next(node for node in self.nodes if node.task_id == task_id)
+
+    def children(self, task_id: str) -> tuple[EpicNode, ...]:
+        return tuple(node for node in self.nodes if node.parent_id == task_id and node.required)
+
+    def authorization(self, task_id: str) -> tuple[str, ...]:
+        """Transitive prerequisite closure of this subtree, including absent inputs."""
+        subtree, pending = set(), [task_id]
+        while pending:
+            current = pending.pop()
+            if current not in subtree:
+                subtree.add(current)
+                pending.extend(child.task_id for child in self.children(current))
+        closure, pending = set(subtree), list(subtree)
+        while pending:
+            current = pending.pop()
+            for dependent, prerequisite, kind in self.dependencies:
+                if (dependent == current and kind in {"blocks", "waits-for", "conditional-blocks"}
+                        and prerequisite not in closure):
+                    closure.add(prerequisite)
+                    pending.append(prerequisite)
+        return tuple(sorted(closure - subtree))
+
+    def target(self, task_id: str) -> str:
+        node = self.node(task_id)
+        if node.parent_id:
+            try:
+                parent = self.node(node.parent_id)
+            except StopIteration:
+                raise ValueError("delivery requires the parent target in the graph") from None
+            if not parent.branch_ref:
+                raise ValueError("parent target has no branch")
+            return parent.branch_ref
+        return self.default_ref
+
+
+@dataclass(frozen=True)
+class EpicReadiness:
+    graph: EpicGraph
+    task_id: str
+    state: Literal["ready", "waiting", "unknown", "held", "rejected"]
+    head_sha: str | None = None
+    tree_sha: str | None = None
+    blockers: tuple[tuple[str, str], ...] = ()
+    sources: tuple[GitDeliveryEvidence, ...] = ()
+    nested: tuple[EpicReadiness, ...] = ()
+    checks: HeadChecks | None = None
+    review: TreeVerdict | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.state == "ready"
+
+    @property
+    def missing_sources(self) -> tuple[GitDeliveryEvidence, ...]:
+        return tuple(source for source in self.sources if source.state == DeliveryState.PENDING)
+
+
+async def abandoned_archive_ids(conn, rows, *, project_id: str) -> set[str]:
+    """Archived lineage explicitly retired from delivery, retaining its history.
+
+    Plain delivery archives and active work remain required. A subtree archive
+    records one decision at its root, atomically with the archived rows. Older
+    commands wrote the same event after commit, so retained decisions work too.
+    """
+    abandoned = set()
+    for task_id, payload in await conn.execute(select(events.c.task_id, events.c.payload).where(
+        events.c.project_id == project_id, events.c.task_id.in_([row["id"] for row in rows]),
+        events.c.event_type == "task.delivery_abandoned",
+    )):
+        try:
+            decision = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decision, dict) and decision.get("disposition") in {"obsolete", "retire"}:
+            abandoned.add(task_id)
+    by_id = {row["id"]: row for row in rows}
+    excluded = set()
+    for initial in rows:
+        row = initial
+        while row is not None and row["archived"]:
+            if row["id"] in abandoned:
+                excluded.add(initial["id"])
+                break
+            row = by_id.get(row["parent_task_id"])
+    return excluded
+
+
+class EpicGraphReader:
+    """Read ordinary current task/completion/hold inputs in one caller transaction.
+
+    ``policy_on`` resolves current project policy through its existing owner.
+    ``required_on`` optionally excludes children that the task/gate owner has
+    explicitly waived. A terminal failure is not an implicit waiver.
+    """
+
+    def __init__(self, db, *, policy_on: Callable, required_on: Callable | None = None,
+                 source_base_on: Callable | None = None):
+        self.db = db
+        self.policy_on, self.required_on = policy_on, required_on
+        self.source_base_on = source_base_on
+
+    async def read_on(self, conn, epic_id: str) -> EpicGraph:
+        root = (await conn.execute(select(tasks).where(tasks.c.id == epic_id))).mappings().one()
+        project = (await conn.execute(select(projects).where(
+            projects.c.id == root["project_id"],
+        ))).mappings().one()
+        repository = (await conn.execute(select(repos).where(
+            repos.c.id == project["integration_repository_id"],
+            repos.c.project_id == project["id"],
+        ))).mappings().one()
+        fields = ("id", "project_id", "repo_id", "parent_task_id", "branch_name", "status",
+                  "updated_at", "legacy_completion_id", "task_type")
+        ordinary = select(*(tasks.c[name] for name in fields), tasks.c.claim_epoch,
+                          literal(False).label("archived")).union_all(select(
+            *(archived_tasks.c[name] for name in fields), literal(0).label("claim_epoch"),
+            literal(True).label("archived"),
+        )).cte("epic_ordinary_tasks")
+        descendants = select(ordinary).where(ordinary.c.id == epic_id).cte(
+            "epic_descendants", recursive=True,
+        )
+        descendants = descendants.union_all(select(ordinary).join(
+            descendants, ordinary.c.parent_task_id == descendants.c.id,
+        ).where(ordinary.c.project_id == root["project_id"]))
+        rows = list((await conn.execute(select(descendants))).mappings())
+        # Freeze prerequisite identities as well as hierarchy membership. A
+        # cross-epic prerequisite can itself depend on another source or hold.
+        closure = select(ordinary).where(ordinary.c.id.in_([row["id"] for row in rows])).cte(
+            "epic_authorization", recursive=True,
+        )
+        closure = closure.union(select(ordinary).outerjoin(
+            task_dependencies, and_(task_dependencies.c.depends_on_task_id == ordinary.c.id,
+                task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks"))),
+        ).join(closure, or_(task_dependencies.c.task_id == closure.c.id,
+                           ordinary.c.parent_task_id == closure.c.id)))
+        rows = list((await conn.execute(select(closure))).mappings())
+        # The immediate parent supplies the delivery target but is not another
+        # subtree to complete in this visit.
+        if root["parent_task_id"]:
+            parent = (await conn.execute(select(ordinary).where(
+                ordinary.c.id == root["parent_task_id"],
+            ))).mappings().one()
+            if parent["id"] not in {row["id"] for row in rows}:
+                rows.append(parent)
+        ids = [row["id"] for row in rows]
+        abandoned = await abandoned_archive_ids(conn, rows, project_id=root["project_id"])
+        holds: dict[str, list[str]] = {task_id: [] for task_id in ids}
+        containers = {row["parent_task_id"] for row in rows if row["parent_task_id"]}
+        for task_id, label in await conn.execute(select(task_labels.c.task_id,
+                                                      task_labels.c.label).where(
+            task_labels.c.task_id.in_(ids), task_labels.c.label.like("hold:%"),
+        )):
+            holds[task_id].append(label)
+        for task_id, key, value in await conn.execute(select(
+            task_metadata.c.task_id, task_metadata.c.key, task_metadata.c.value,
+        ).where(task_metadata.c.task_id.in_(ids),
+                task_metadata.c.key.in_(("manual_pause", "container")))):
+            if key == "manual_pause":
+                holds[task_id].append("manual_pause")
+            elif key == "container" and json.loads(value) is True:
+                containers.add(task_id)
+        for task_id, gate_id in await conn.execute(select(task_gates.c.task_id, gates.c.id)
+                                                  .join(gates, gates.c.id == task_gates.c.gate_id)
+                                                  .where(task_gates.c.task_id.in_(ids),
+                                                         gates.c.status == "open")):
+            holds[task_id].append("gate:" + gate_id)
+        nodes = []
+        default_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
+        requests = await load_delivery_requests(
+            self.db, ids, repository_id=repository["id"], target_ref=default_ref,
+            conn=conn, reduced=True,
+        )
+        for row in rows:
+            request = requests[row["id"]]
+            required = row["id"] not in abandoned and (
+                await self.required_on(conn, row) if self.required_on else True
+            )
+            base = await self.source_base_on(conn, row) if self.source_base_on else None
+            nodes.append(EpicNode(
+                request, row["parent_task_id"], "refs/heads/" + row["branch_name"].removeprefix(
+                    "refs/heads/") if row["branch_name"] else None,
+                await self.policy_on(conn, row, project), required, tuple(sorted(holds[row["id"]])),
+                base, row["id"] in containers,
+            ))
+        dependencies = tuple(await conn.execute(select(
+            task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+            task_dependencies.c.dep_type,
+        ).where(task_dependencies.c.task_id.in_(ids)).order_by(
+            task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+            task_dependencies.c.dep_type,
+        )))
+        return EpicGraph(project["id"], repository["id"], repository["url"], default_ref,
+                         epic_id, tuple(sorted(nodes, key=lambda node: node.task_id)), dependencies,
+                         () if project["status"] == "ACTIVE" else ("project_paused",))
+
+
+class EpicReadinessEvaluator:
+    """One fetched snapshot; nested targets use the same checks and batch path."""
+
+    def __init__(self, db, graph_reader: EpicGraphReader, reviews: TreeReviews, *,
+                 checks: Callable[[str, str, EpicPolicy], Awaitable[HeadChecks]]):
+        self.db, self.graph_reader, self.reviews, self.checks = db, graph_reader, reviews, checks
+
+    async def evaluate(self, graph: EpicGraph, snapshot: GitTruthSnapshot,
+                       *, task_id: str | None = None) -> EpicReadiness:
+        task_id = task_id or graph.epic_id
+        node = graph.node(task_id)
+        blockers, sources, nested = [], [], []
+        unknown, held, rejected = False, False, False
+        if node.holds or graph.project_holds:
+            return EpicReadiness(graph, task_id, "held", blockers=tuple(
+                (task_id, reason) for reason in (*graph.project_holds, *node.holds)))
+        observation = snapshot.observation
+        if (graph.project_id, graph.repository_id, graph.repository_url) != (
+            observation.project_id, observation.repository_id, observation.repository_url,
+        ) or not node.branch_ref:
+            return EpicReadiness(graph, task_id, "unknown", blockers=((task_id, "target_scope"),))
+        target = snapshot.for_target(node.branch_ref)
+        if target.observation.error or not target.target_oid:
+            return EpicReadiness(graph, task_id, "unknown", blockers=(
+                (task_id, target.observation.error or "target_ref_missing"),))
+        for prerequisite_id in graph.authorization(task_id):
+            prerequisite = next((item for item in graph.nodes
+                                 if item.task_id == prerequisite_id), None)
+            if prerequisite is None:
+                unknown = True
+                blockers.append((prerequisite_id, "authorization_missing"))
+                continue
+            if prerequisite.holds:
+                held = True
+                blockers.extend((prerequisite_id, reason) for reason in prerequisite.holds)
+            prerequisite_readiness = None
+            if prerequisite.container:
+                prerequisite_readiness = await self.evaluate(graph, snapshot,
+                                                             task_id=prerequisite_id)
+                nested.append(prerequisite_readiness)
+                if not prerequisite_readiness.ready:
+                    blockers.append((prerequisite_id, "prerequisite_" + prerequisite_readiness.state))
+                    unknown |= prerequisite_readiness.state == "unknown"
+                    held |= prerequisite_readiness.state == "held"
+                    rejected |= prerequisite_readiness.state == "rejected"
+            proof = await target.strict_is_delivered(
+                replace(prerequisite.request, target_ref=node.branch_ref),
+                source_base=prerequisite.source_base,
+            )
+            sources.append(proof)
+            if prerequisite_readiness and proof.source_oid != prerequisite_readiness.head_sha:
+                blockers.append((prerequisite_id, "prerequisite_source_changed"))
+            if not proof.satisfied:
+                unknown |= proof.state == DeliveryState.UNKNOWN
+                blockers.append((prerequisite_id, proof.reason))
+        for child in graph.children(task_id):
+            if child.holds:
+                held = True
+                blockers.extend((child.task_id, reason) for reason in child.holds)
+            if child.container:
+                readiness = await self.evaluate(graph, snapshot, task_id=child.task_id)
+                nested.append(readiness)
+                if not readiness.ready:
+                    blockers.append((child.task_id, "nested_" + readiness.state))
+                    unknown |= readiness.state == "unknown"
+                    held |= readiness.state == "held"
+                    rejected |= readiness.state == "rejected"
+            if child.request.task_status != "COMPLETED":
+                blockers.append((child.task_id, "work_" + child.request.task_status.lower()))
+                continue
+            proof = await target.strict_is_delivered(
+                replace(child.request, target_ref=node.branch_ref), source_base=child.source_base)
+            sources.append(proof)
+            if proof.state not in {
+                DeliveryState.CONTAINED, DeliveryState.NOT_APPLICABLE,
+            }:
+                blockers.append((child.task_id, proof.reason))
+                unknown |= proof.state == DeliveryState.UNKNOWN
+            if nested and nested[-1].task_id == child.task_id and nested[-1].ready:
+                # A closed nested epic must locate the aggregate just examined,
+                # not an old close that predates a newly collected child.
+                if proof.source_oid != nested[-1].head_sha:
+                    blockers.append((child.task_id, "nested_source_changed"))
+        head, tree, checks, verdict = target.target_oid, None, None, None
+        try:
+            tree = await snapshot.truth.git.atree_sha(observation.store, head)
+            if not node.policy.checks_required:
+                checks = await self._advisory_checks(graph.repository_id, head, node.policy)
+            elif not node.policy.check_trust:
+                # Required names the configured local runner has no command for.
+                blockers.append((task_id, "checks_producer_missing"))
+            else:
+                checks = await self.checks(graph.repository_id, head, node.policy)
+                if (checks.repository_id, checks.head_sha, checks.names, checks.trust) != (
+                    graph.repository_id, head, node.policy.check_names, node.policy.check_trust,
+                ):
+                    unknown = True
+                    blockers.append((task_id, "checks_scope_changed"))
+                elif checks.state != "green":
+                    unknown |= checks.state == "unknown"
+                    blockers.append((task_id, "checks_" + checks.state))
+            verdict = await self.reviews.verdict(ReviewSubject(
+                graph.project_id, graph.repository_id, task_id, tree,
+            ), node.policy.reviews)
+            if not verdict.satisfied:
+                rejected |= verdict.state == "rejected"
+                blockers.append((task_id, "review_" + verdict.state))
+        except (GitError, OSError, ValueError):
+            unknown = True
+            blockers.append((task_id, "head_evidence_unavailable"))
+        state = "held" if held else "rejected" if rejected else "unknown" if unknown else (
+            "waiting" if blockers else "ready")
+        return EpicReadiness(graph, task_id, state, head, tree, tuple(blockers), tuple(sources),
+                             tuple(nested), checks, verdict)
+
+    async def _advisory_checks(self, repository_id: str, head: str,
+                               policy: EpicPolicy) -> HeadChecks:
+        """Read optional epic checks to show them; no result here holds readiness."""
+        try:
+            return await self.checks(repository_id, head, policy)
+        except Exception:  # noqa: BLE001 - an unavailable advisory result is shown as unknown
+            return HeadChecks(repository_id, head, policy.check_names, policy.check_trust,
+                              "unknown")
+
+    async def current_on(self, conn, readiness: EpicReadiness,
+                         snapshot: GitTruthSnapshot) -> bool:
+        """Recheck ordinary graph/source/policy and remote OIDs at the action boundary.
+
+        Call inside the completion command's project lock. Repeat checks and
+        verdict lookup so a rerun or rejection observed after evaluation binds.
+        The task owner still enforces open-child and transition authorization.
+        """
+        current = await self.graph_reader.read_on(conn, readiness.graph.epic_id)
+        if current != readiness.graph:
+            return False
+        node = current.node(readiness.task_id)
+        target = snapshot.for_target(node.branch_ref)
+        if readiness.head_sha != target.target_oid or not await target.observation.is_fresh():
+            return False
+        for child in readiness.nested:
+            if not await self.current_on(conn, child, snapshot):
+                return False
+        refreshed = await self.evaluate(current, snapshot, task_id=readiness.task_id)
+        return refreshed.ready and refreshed.head_sha == readiness.head_sha
+
+    async def complete_on(self, conn, readiness: EpicReadiness, snapshot: GitTruthSnapshot, *,
+                          complete: Callable[[object, str, str], Awaitable[dict]]) -> dict:
+        """Delegate ordinary completion only after revalidation, with the exact head."""
+        await self.db.lock_hierarchy_project(conn, readiness.graph.project_id)
+        if not readiness.ready or not await self.current_on(conn, readiness, snapshot):
+            return {"success": False, "outcome": "changed", "task_id": readiness.task_id}
+        return await complete(conn, readiness.task_id, readiness.head_sha)
+
+    async def collect(self, readiness: EpicReadiness, snapshot: GitTruthSnapshot, *,
+                      submit_batch: Callable[..., Awaitable[dict]]) -> dict:
+        """Freeze eligible missing sources for the shared child/root batch builder.
+
+        The batch command repeats source/graph identity checks when freezing
+        these inputs. Publication is always its exact-candidate checked path;
+        this component never pushes an epic or an unchecked merge to main.
+        """
+        if readiness.state in {"unknown", "held", "rejected"}:
+            return {"success": False, "outcome": readiness.state}
+        node = readiness.graph.node(readiness.task_id)
+        target = snapshot.for_target(node.branch_ref)
+        async with self.db._engine.connect() as conn:
+            if await self.graph_reader.read_on(conn, readiness.graph.epic_id) != readiness.graph:
+                return {"success": False, "outcome": "changed"}
+        if not await target.observation.is_fresh():
+            return {"success": False, "outcome": "changed"}
+        refreshed = await self.evaluate(readiness.graph, snapshot, task_id=readiness.task_id)
+        if refreshed.state in {"unknown", "held", "rejected"}:
+            return {"success": False, "outcome": refreshed.state}
+        readiness = refreshed
+        missing = {source.request.task_id: source for source in readiness.missing_sources}
+        for child in readiness.nested:
+            source = missing.get(child.task_id)
+            if source and (not child.ready or source.source_oid != child.head_sha):
+                missing.pop(child.task_id)
+        ordered = _ordered_members(readiness.graph, missing)
+        if not ordered:
+            return {"success": True, "outcome": "nothing_to_collect"}
+        return await submit_batch(
+            project_id=readiness.graph.project_id, repository_id=readiness.graph.repository_id,
+            target_ref=node.branch_ref, expected_target=readiness.head_sha,
+            members=tuple({"task_id": task_id, "source_sha": missing[task_id].source_oid,
+                           "source_base": missing[task_id].source_base} for task_id in ordered),
+        )
+
+    async def deliver(self, readiness: EpicReadiness, snapshot: GitTruthSnapshot, *,
+                      submit_batch: Callable[..., Awaitable[dict]]) -> dict:
+        """Deliver a closed epic through the same exact-candidate batch path.
+
+        Even when the epic head is green, a moved parent/default target needs
+        its own built candidate and checks. No green epic authorizes a push of
+        an unchecked merge result. The batch publisher owns that final gate.
+        """
+        node = readiness.graph.node(readiness.task_id)
+        if not readiness.ready or node.request.task_status != "COMPLETED":
+            return {"success": False, "outcome": readiness.state if not readiness.ready
+                    else "work_open"}
+        async with self.db._engine.connect() as conn:
+            if not await self.current_on(conn, readiness, snapshot):
+                return {"success": False, "outcome": "changed"}
+        target_ref = readiness.graph.target(readiness.task_id)
+        if node.parent_id and readiness.graph.node(node.parent_id).holds:
+            return {"success": False, "outcome": "held"}
+        target = snapshot.for_target(target_ref)
+        proof = await target.strict_is_delivered(replace(node.request, target_ref=target_ref),
+                                                source_base=node.source_base)
+        if proof.state == DeliveryState.UNKNOWN:
+            return {"success": False, "outcome": "unknown", "reason": proof.reason}
+        if not await target.observation.is_fresh():
+            return {"success": False, "outcome": "changed"}
+        if proof.state in {
+            DeliveryState.CONTAINED, DeliveryState.NOT_APPLICABLE,
+        }:
+            return {"success": True, "outcome": "delivered"}
+        if proof.source_oid != readiness.head_sha:
+            return {"success": False, "outcome": "changed"}
+        return await submit_batch(
+            project_id=readiness.graph.project_id, repository_id=readiness.graph.repository_id,
+            target_ref=target_ref, expected_target=target.target_oid,
+            members=({"task_id": node.task_id, "source_sha": proof.source_oid,
+                      "source_base": proof.source_base},),
+        )
+
+
+def _ordered_members(graph: EpicGraph, members: dict) -> tuple[str, ...]:
+    """Stable dependency order for the same frozen inputs used by every batch."""
+    remaining, result = set(members), []
+    prerequisites = {task_id: {upstream for task, upstream, kind in graph.dependencies
+                              if task == task_id and kind in {"blocks", "waits-for",
+                                                              "conditional-blocks"}}
+                     for task_id in remaining}
+    while remaining:
+        ready = sorted(task_id for task_id in remaining if not prerequisites[task_id] & remaining)
+        if not ready:
+            raise ValueError("cyclic batch dependencies")
+        result.extend(ready)
+        remaining.difference_update(ready)
+    return tuple(result)
