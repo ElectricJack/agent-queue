@@ -497,6 +497,18 @@ visit rechecks the member's identity. Explicit eject refusals remain unchanged.
 Task archival or deletion cannot erase that instruction; worker task metadata
 and legacy ejection markers cannot
 authorize release. An ordinary supervisor abort continues withholding its inputs.
+On each root or epic target visit, compare the frozen boundary's required check
+names with the current project policy. If a named check was removed, supersede
+an open, unpromoted batch through the same audited release instruction so its
+unchanged inputs can pass admission and seal under the new policy. Never edit
+the old snapshot or treat old CI as proof for the replacement. Special epic sync
+and refresh batches replace their complete frozen inputs atomically, retaining
+their purpose under a fresh identity instead of using the ordinary frontier.
+Recheck the removed names under the project-policy lock and target freshness under the
+batch fence. Missing policy never authorizes supersession. Missing Git evidence,
+ambiguous member identity and explicit holds retain the batch and name the blocker;
+already delivered inputs settle normally. Promotion batches retain their separately pinned check sets.
+Check additions, ordering changes and version-only edits do not release a batch.
 Pause requires open intent and resume requires paused intent; repeated or invalid
 transitions refuse. Pause, resume, eject and seal-now default to preview and remain
 operator/supervisor controls scoped to the owning project. Eject returns
@@ -785,6 +797,25 @@ equal to the published default tip. The release CAS revalidates the preparation 
 epoch. This saves no new work, changes no resume point, and never admits an active claim,
 dirty checkout or unpublished detached HEAD. A failed preparation releases to READY;
 an external task stop uses the same proof and returns that unactivated task to READY too.
+
+A retained failed preparation may resume its own `handoff_pending` row in the same
+pool session. The retry must prove the exact session instance, preparing claim epoch,
+workspace acquisition receipt and generation, task assignment and canonical branch.
+It uses the pool clean/published checkout proof and a fenced self-transfer, restoring
+the same task and role to `reserved` before retrying preparation. It never requires
+the pool session to stop. If proof fails, retain the claim and workspace binding;
+the generic branch-busy retry ladder must not erase that evidence.
+
+The operator or project supervisor may preview this recovery with
+`aq integration release-owner --task-id TASK_ID --self-owned`, then apply it with
+`--apply`. This opt-in requires a retained preparation-failure record naming the
+exact instance, epoch, workspace and generation. It also works for a retained
+preparation whose repeated failures requested drain and disabled its workspace.
+An active claim, changed identity, unproved child cleanup, dirty or unpublished
+checkout is refused. Preview neither detaches nor changes ownership. Apply records
+the recovery and restores the reservation while retaining the claim, session and
+workspace locks; ordinary preparation or teardown still owns their lifecycle.
+The normal stopped-writer `release-owner` behavior remains the default.
 
 When the ordinary stop proof is unavailable, stop retains every binding and names the exact
 writer session and the supervisor recovery commands. `aq session kill` requests termination;
@@ -1183,6 +1214,9 @@ that keeps its frozen destinations and can be replayed. The reviewed event types
 playbook consumes are instead marked delivered with an audit reason, and only once the playbook
 runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
+Graceful runtime shutdown settles any in-flight pending-event claim before releasing
+its dispatch lease, including cancellation while the claim transaction is returning.
+A restarted consumer can then replay the retained event without waiting for lease expiry.
 
 ## 12. Events, gates, and operator controls
 

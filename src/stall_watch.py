@@ -69,8 +69,14 @@ def detect(snapshot: Snapshot, now: float, *, assigned: int, in_progress: int) -
                 kind = "STALE ACTIVE"
                 reason = "Task exceeded its configured time-in-state threshold"
         elif status == "READY" and age > READY_AFTER:
-            reasons = [r for r in snapshot.reasons.get(tid, []) if r["code"] in ROUTE_CODES]
-            if reasons:
+            from src.task_graph.readiness import DELIVERY_CODES, readiness_from_reasons
+
+            all_reasons = snapshot.reasons.get(tid, [])
+            reasons = [r for r in all_reasons if r["code"] in ROUTE_CODES]
+            if any(r["code"] in DELIVERY_CODES for r in all_reasons):
+                kind = "WAITING-ON-DELIVERY"
+                reason = readiness_from_reasons(all_reasons)["reason"]
+            elif reasons:
                 kind = "STUCK READY"
                 reason = "; ".join(f"{r['code']}: {r.get('detail', '')}" for r in reasons)
         if reason:

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/question_commands.py::QuestionCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
