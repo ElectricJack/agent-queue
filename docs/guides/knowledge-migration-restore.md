@@ -95,7 +95,7 @@ import. The table below is what
 | Grant or revoke policy authority | No | Yes, with the grant | Yes |
 | Share a record with another project | No | Yes, with the grant | Yes |
 | Share a **global** record | No | Needs elevation, **no** project pin, and the `knowledge_share` grant | Yes |
-| **Erase** (`knowledge redact`) | No | Yes, with the grant | Yes |
+| **Erase** (`knowledge redact`) | No | No | Yes |
 | Legacy import inventory (`knowledge import`) | No | No | Yes |
 | Task-mapping backfill or outbox replay (`record repair`) | No | No | Yes |
 
@@ -106,16 +106,16 @@ and `knowledge_redact`. Elevation alone is not enough — the principal's policy
 must also allow the operation, so a supervisor profile that accidentally
 carries the command name still cannot decide, verify, grant, share or erase.
 
-The last two rows are stronger than elevation: `knowledge_import` and
-`record repair` both check `PrincipalKind.LOCAL` outright
+The last three rows are stronger than elevation: `knowledge_redact`,
+`knowledge_import` and `record repair` check `PrincipalKind.LOCAL` outright
 ([src/commands/knowledge_commands.py](../../src/commands/knowledge_commands.py),
-`_cmd_knowledge_import` and `_cmd_record_repair`). `record repair` additionally
-refuses to apply unless `knowledge.enabled` is on.
+`_cmd_knowledge_import` and `_cmd_record_repair`, and
+[src/knowledge/redaction.py](../../src/knowledge/redaction.py), `redact`).
+`record repair` additionally refuses to apply unless `knowledge.enabled` is on.
 
-> **Note.** The K05 design describes `knowledge redact` as local-operator only.
-> The shipped authorisation code admits an elevated supervisor holding the
-> grant. Treat the design as the intent and the code as the behaviour: in a
-> rehearsal, prefer the local operator.
+> **Note.** The generic authorization grant does not bypass redaction's
+> local-principal check. An elevated supervisor holding `knowledge_redact`
+> still cannot erase payloads.
 
 Four further boundaries are worth stating because they surprise operators:
 
