@@ -542,6 +542,7 @@ class WaitAdapter(SourceAdapter):
     async def snapshot(self, source, *, conn, lock=True):
         from src.database.tables import playbook_v2_runs
         from src.playbooks.run_state import deserialize_snapshot
+        from src.playbooks.services import run_project_id
 
         row = (
             (
@@ -559,7 +560,7 @@ class WaitAdapter(SourceAdapter):
         if not row:
             raise AskError("ask.not_found", "Playbook run was not found")
         snap = deserialize_snapshot(row["snapshot"], version=row["snapshot_version"])
-        if snap.event.get("project_id") != source.project_id:
+        if await run_project_id(self.db, snap, conn=conn) != source.project_id:
             raise AskError("ask.not_found", "Playbook run was not found")
         engine = self.handler._v2_engine()
         artifact = engine._load(await engine._ref_for(snap))
@@ -768,7 +769,7 @@ class RecoveryAdapter(SourceAdapter):
         from src.database.queries.task_recovery_queries import recovery_ask_meaning
 
         meaning = recovery_ask_meaning(
-            row, incident, attempt, await self.db._recovery_owner(conn, row)
+            row, incident, attempt, await self.db._recovery_owner(conn, row), meta
         )
         return source_snapshot(
             source,
@@ -880,7 +881,10 @@ class FreeTextAdapter(SourceAdapter):
 
 def source_adapters(handler):
     """Constructed only by CommandHandler, with no caller-configurable action table."""
+    from src.asks.batch_scope import BatchScopeAdapter
+
     return [
+        BatchScopeAdapter(handler),
         HumanGateAdapter(handler),
         ProposalAdapter(handler),
         IntegrationAdapter(handler),

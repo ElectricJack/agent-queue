@@ -1,0 +1,95 @@
+{
+  "phase_create": {
+    "argument_reads_diagnostic_only": [
+      "label",
+      "title"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_phase_scope": "sha256:f652e353e4cba72c364b59b848e213b64acfbdbe9260dad6019691cdf7d34ec7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/phase_commands.py:PhaseCommandsMixin._cmd_phase_create",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'phase.title_required', 'error': 'title is required; name the phase (aq task phase-create --title ...).'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': f'hierarchy.{exc.code}', 'error': f'hierarchy.{exc.code}: {exc.detail}; phase creation was rolled back'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'phase': {'id': task_id, 'order': phase_state['order'], 'label': label, 'parent_id': phase_state['parent_id'], 'previous_phase_id': phase_state['previous'], 'blocked_by': phase_state['previous'], 'blocked_by_all': phase_state['gates']}}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:ac189ab65c452d42e1a64fdee94efbbf3e6177a9a9fe7655c757ab74532466b8",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_phases.py"
+    ]
+  },
+  "phase_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_phase_scope": "sha256:f652e353e4cba72c364b59b848e213b64acfbdbe9260dad6019691cdf7d34ec7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/phase_commands.py:PhaseCommandsMixin._cmd_phase_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'phases': phases}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b8433a50464a65088e9c9171cf9039f4035296b12e4c0bc2fff92cf8da5f4daf",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_phases.py"
+    ]
+  }
+}
