@@ -1,0 +1,27 @@
+{
+  "shared_definitions": {
+    "src/commands/job_commands.py::JobCommandsMixin._cmd_job_submit_integration": {
+      "baseline_span": [
+        80,
+        169
+      ],
+      "landing_span": [
+        55,
+        144
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/job_commands.py::JobCommandsMixin._retain_candidate": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/job_commands.py::JobCommandsMixin._retain_capture": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/job_commands.py::import from src.jobs.matter import candidate_document": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/job_commands.py::import from src.object_loop.artifacts import ArtifactError, retain_document, retain_file": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

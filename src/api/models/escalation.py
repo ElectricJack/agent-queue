@@ -21,6 +21,7 @@ class EscalationRecord(BaseModel):
     supervisor_owner: str
     task_title: str | None = None
     task_status: str | None = None
+    deep_link: str | None = None
     summary: str
     investigation: str
     decision_requested: str
@@ -108,6 +109,9 @@ class EscalationListResponse(BaseModel):
 
 
 class EscalationGetResponse(BaseModel):
+    ask_id: str | None = None
+    ask_url: str | None = None
+    deprecation: str | None = None
     success: bool = True
     escalation: EscalationRecord
     messages: list[EscalationMessage]
