@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import InteractiveTerminal from "../InteractiveTerminal";
+import { TERMINAL_FONT_FAMILY, TERMINAL_THEME } from "../terminalSetup";
 import { TerminalMock, FitAddonMock, TerminalSocketMock, ResizeObserverMock } from "../../testUtils/terminal";
 
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
@@ -11,6 +12,8 @@ vi.mock("../../api/client", () => api);
 
 let frames: FrameRequestCallback[] = [];
 beforeEach(() => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(1);
   TerminalMock.instances = []; FitAddonMock.instances = []; TerminalSocketMock.instances = []; ResizeObserverMock.instances = [];
   frames = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
@@ -19,10 +22,12 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 800, height: 400 } as DOMRect);
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); vi.useRealTimers(); });
 
 function terminal() {
   const view = render(<InteractiveTerminal name="Builder" sessionId="session-b" />);
+  act(() => vi.runOnlyPendingTimers());
+  fireEvent.click(screen.getByRole("button", { name: "Details for Builder" }));
   return { view, term: TerminalMock.instances[0]!, socket: TerminalSocketMock.instances[0]! };
 }
 function inputs(socket: TerminalSocketMock) { return socket.inputs().map((bytes) => new TextDecoder().decode(bytes)); }
@@ -73,24 +78,40 @@ describe("Interactive live terminal", () => {
     expect(socket.controls()).toEqual([{ type: "ack", bytes: bytes.length }]);
   });
 
-  it("disconnects without replay and reconnects only after explicit action", () => {
+  it("automatically reconnects without remounting or replaying input", () => {
     const { term, socket } = terminal();
     act(() => socket.ready());
     act(() => socket.serverClose());
     term.emitData("discard after disconnect");
-    expect(screen.getByRole("alert")).toHaveTextContent(/disconnected.*discarded/i);
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("Reconnecting… (attempt 1)");
     expect(screen.getByRole("button", { name: "Interrupt Builder" })).toBeDisabled();
-    expect(TerminalSocketMock.instances).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect terminal" }));
+    act(() => vi.advanceTimersByTime(500));
     const next = TerminalSocketMock.instances[1]!;
-    expect(term.disposed).toBe(true);
-    expect(ResizeObserverMock.instances[0]!.disconnect).toHaveBeenCalled();
-    act(() => TerminalMock.instances[1]!.emitData("discard during reconnect"));
+    expect(term.disposed).toBe(false);
+    expect(TerminalMock.instances).toHaveLength(1);
+    term.emitData("discard during reconnect");
     act(() => next.ready());
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("connected");
+    expect(term.write).toHaveBeenCalledWith(Uint8Array.of(27, 99), expect.any(Function));
     expect(next.inputs()).toEqual([]);
     fireEvent.click(screen.getByRole("button", { name: "Send Enter to Builder" }));
     expect(inputs(next)).toEqual(["\r"]);
     expect(socket.inputs()).toEqual([]);
+  });
+
+  it("can reconnect immediately and never reconnects after exit", () => {
+    const { socket } = terminal();
+    act(() => socket.ready());
+    act(() => socket.serverClose());
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect now" }));
+    act(() => vi.advanceTimersByTime(0));
+    const next = TerminalSocketMock.instances[1]!;
+    act(() => next.ready());
+    act(() => next.message(JSON.stringify({ type: "exit" })));
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(TerminalSocketMock.instances).toHaveLength(2);
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("exited");
+    expect(screen.queryByRole("button", { name: "Reconnect now" })).toBeNull();
   });
 
   it("disposes the old session, renderer and pending ACKs before showing another session", () => {
@@ -98,11 +119,13 @@ describe("Interactive live terminal", () => {
     act(() => socket.ready());
     act(() => socket.message(new TextEncoder().encode("old output")));
     view.rerender(<InteractiveTerminal name="Reviewer" sessionId="session-c" />);
+    act(() => vi.runOnlyPendingTimers());
     act(() => term.flushWrites());
     expect(socket.closed).toBe(true);
     expect(socket.controls()).toEqual([]);
     expect(term.disposed).toBe(true);
     expect(TerminalSocketMock.instances[1]!.url).toContain("/ws/terminal/session-c");
+    if (!screen.queryByRole("button", { name: "Send Enter to Reviewer" })) fireEvent.click(screen.getByRole("button", { name: "Details for Reviewer" }));
     expect(screen.getByRole("button", { name: "Send Enter to Reviewer" })).toBeDisabled();
   });
 
@@ -118,6 +141,19 @@ describe("Interactive live terminal", () => {
       expect(socket.controls()).toEqual([{ type: "resize", cols: 40 + index, rows: 12 }]);
       expect(TerminalMock.instances[index]!.cols).toBe(40 + index);
     });
+  });
+
+  it("defers the first connection of a hidden terminal until its host is laid out", () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 0, height: 0 } as DOMRect);
+    terminal();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(TerminalSocketMock.instances).toHaveLength(0);
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 800, height: 400 } as DOMRect);
+    act(() => { ResizeObserverMock.instances[0]!.emit(); frames.splice(0).forEach((frame) => frame(0)); });
+    act(() => vi.advanceTimersByTime(0));
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    act(() => TerminalSocketMock.instances[0]!.ready());
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("connected");
   });
 
   it("ignores hidden containers and clamps the browser renderer to server size limits", () => {
@@ -146,6 +182,22 @@ describe("Interactive live terminal", () => {
     expect(key.defaultPrevented).toBe(true);
     expect(screen.getByRole("button", { name: "Focus Builder terminal" })).toHaveFocus();
     expect(socket.inputs()).toEqual([]);
+  });
+
+  it("does not auto-focus a read-only terminal or take focus from a dialog", () => {
+    const view = render(<InteractiveTerminal name="Builder" sessionId="session-b" focusRequest="first" />);
+    const term = TerminalMock.instances[0]!;
+    act(() => vi.runOnlyPendingTimers());
+    const socket = TerminalSocketMock.instances[0]!;
+    expect(term.focus).not.toHaveBeenCalled();
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("open", "");
+    document.body.append(dialog);
+    act(() => socket.ready());
+    expect(term.focus).not.toHaveBeenCalled();
+    dialog.remove();
+    view.rerender(<InteractiveTerminal name="Builder" sessionId="session-b" focusRequest="second" />);
+    expect(term.focus).toHaveBeenCalledOnce();
   });
 
   it("lets keyboard users leave the terminal after its connection drops", () => {
@@ -179,9 +231,17 @@ describe("Interactive live terminal", () => {
     expect(term.options.theme?.foreground).not.toBe("#bbf7d0");
   });
 
+  it("draws with the theme the phone terminal shares", () => {
+    const { term } = terminal();
+    expect(term.options).toMatchObject({ theme: TERMINAL_THEME, fontFamily: TERMINAL_FONT_FAMILY });
+  });
+
   it("leaves only one live viewer after StrictMode re-mount and closes it on unmount", () => {
     const view = render(<StrictMode><InteractiveTerminal name="Builder" sessionId="session-b" /></StrictMode>);
+    expect(TerminalSocketMock.instances).toHaveLength(0);
+    act(() => vi.runOnlyPendingTimers());
     expect(TerminalSocketMock.instances.filter((socket) => !socket.closed)).toHaveLength(1);
+    act(() => TerminalSocketMock.instances[0]!.open());
     view.unmount();
     expect(TerminalSocketMock.instances.every((socket) => socket.closed)).toBe(true);
     expect(TerminalMock.instances.every((term) => term.disposed)).toBe(true);

@@ -1,5 +1,11 @@
 # Post-Action Reflection
 
+<!-- aq:historical -->
+> **Historical sample.** Illustrative content that nothing installs or loads. It
+> was written for an earlier runtime, so copying it will not reproduce the
+> behaviour it describes. Start at [the documentation home](../README.md); see
+> [historical material](../history/README.md).
+
 ## Intent
 After each significant action (task completion, hook execution, user request),
 evaluate the result and determine if follow-up work is needed.

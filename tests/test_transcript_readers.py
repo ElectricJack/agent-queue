@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import importlib
+import threading
 import time
 from pathlib import Path
 
@@ -15,6 +18,48 @@ from src.sessions.transcripts.codex import CodexTranscriptReader
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "transcripts" / "claude"
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+async def test_health_runs_while_transcript_decoding_is_blocked(tmp_path, monkeypatch, harness):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from src.api.health import router
+
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    decoding = asyncio.Event()
+    release = threading.Event()
+    module = importlib.import_module(f"src.sessions.transcripts.{harness}")
+    original = module._entry_from_line
+
+    def blocked_decoder(*args):
+        assert threading.get_ident() != loop_thread, "decoding must run outside the loop"
+        loop.call_soon_threadsafe(decoding.set)
+        assert release.wait(5), "test did not release the decoder"
+        return original(*args)
+
+    monkeypatch.setattr(module, "_entry_from_line", blocked_decoder)
+    row = ({"type": "user", "uuid": "u1", "message": {"content": "hello"}}
+           if harness == "claude" else
+           {"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}})
+    path = tmp_path / "backlog.jsonl"
+    path.write_text(json.dumps(row) + "\n")
+    reader = resolve_reader(harness)
+    task = asyncio.create_task(reader.read_new(path, 0))
+    try:
+        await asyncio.wait_for(decoding.wait(), 5)
+        app = FastAPI()
+        app.include_router(router)
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            response = await client.get("/health")
+        assert response.status_code in (200, 503)
+        assert not task.done(), "health must complete before decoding is released"
+    finally:
+        release.set()
+        entries, offset = await task
+    assert [entry.text for entry in entries] == ["hello"]
+    assert offset == path.stat().st_size
 
 
 def _slug(work_dir: str) -> str:
@@ -104,6 +149,110 @@ async def test_read_new_parses_fixture(tmp_path: Path):
     first_use = with_usage[0]
     assert first_use.usage["output_tokens"] == 25
     assert first_use.model == "claude-sonnet-4-5"
+
+
+async def test_claude_keeps_content_identity_separate_from_usage_call(tmp_path):
+    path = tmp_path / "calls.jsonl"
+    rows = [{
+        "type": "assistant", "uuid": uuid,
+        "message": {"id": "msg-shared", "content": uuid, "usage": {"output_tokens": 2}},
+    } for uuid in ("thinking-block", "text-block")]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    reader = ClaudeTranscriptReader()
+    entries, offset = await reader.read_new(path, 0)
+    assert [entry.uuid for entry in entries] == ["thinking-block", "text-block"]
+    assert [entry.usage_call_id for entry in entries] == ["msg-shared", "msg-shared"]
+    assert await reader.read_usage_baselines(path, offset) == {
+        "msg-shared": ["thinking-block", "text-block"]
+    }
+
+
+def _reconciliation_fixture(tmp_path):
+    path = tmp_path / "sample.jsonl"
+    usage = {"input_tokens": 10, "output_tokens": 2,
+             "cache_read_input_tokens": 100, "cache_creation_input_tokens": 20}
+    entries = [{
+        "type": "assistant", "uuid": uuid, "timestamp": 10,
+        "message": {"id": "msg-1", "usage": usage},
+    } for uuid in ("a1", "a2")]
+    path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+    ledger = [{
+        "id": f"ledger-{uuid}", "timestamp": 11, "model": "claude-x", "call_id": uuid,
+        "tokens_used": 132, "input_tokens": 10, "output_tokens": 2,
+        "cache_read_tokens": 100, "cache_write_tokens": 20,
+        "project_id": "p", "task_id": "t", "session_id": "s", "agent_id": "a",
+        "attempt_id": None,
+    } for uuid in ("a1", "a2")]
+    return path, ledger
+
+
+def test_reconciliation_preserves_evidence_and_proposes_idempotent_inverse(tmp_path):
+    from src.sessions.transcripts.reconciliation import evidence_hash, reconcile_claude_usage
+
+    path, ledger = _reconciliation_fixture(tmp_path)
+    before = evidence_hash(ledger)
+    report = reconcile_claude_usage([path], ledger, since=1, until=20)
+    assert evidence_hash(ledger) == before
+    assert report["covered_calls"] == 1
+    assert report["totals"]["proposed_reduction"]["tokens_used"] == 132
+    proposal = report["proposals"][0]
+    assert proposal["adjustment"] == {"input_tokens": -10, "output_tokens": -2,
+                                     "cache_read_tokens": -100, "cache_write_tokens": -20,
+                                     "tokens_used": -132}
+    assert all(proposal["reversal"][key] == -value
+               for key, value in proposal["adjustment"].items())
+    assert [original["row"] for original in proposal["originals"]] == ledger
+    assert proposal["attributed_adjustments"][0]["original_ledger_id"] == "ledger-a2"
+    assert proposal["attributed_adjustments"][0]["attribution"]["task_id"] == "t"
+    assert proposal["attributed_adjustments"][0]["adjustment"] == proposal["adjustment"]
+    assert report == reconcile_claude_usage([path], ledger, since=1, until=20)
+    # Appends outside the frozen window do not change correction provenance.
+    with path.open("a") as stream:
+        stream.write(json.dumps({"type": "assistant", "uuid": "later", "timestamp": 30,
+                                 "message": {"id": "msg-2", "usage": {"output_tokens": 1}}})
+                     + "\n")
+    assert report == reconcile_claude_usage([path], ledger, since=1, until=20)
+
+
+@pytest.mark.parametrize("issue", ["missing_row", "different_counters", "ambiguous_uuid",
+                                   "missing_split", "missing_call_id", "boundary_call"])
+def test_reconciliation_excludes_unproven_corrections(tmp_path, issue):
+    from src.sessions.transcripts.reconciliation import reconcile_claude_usage
+
+    path, ledger = _reconciliation_fixture(tmp_path)
+    paths = [path]
+    if issue == "missing_row":
+        ledger.pop()
+    elif issue == "different_counters":
+        ledger[0]["output_tokens"] += 1
+        ledger[0]["tokens_used"] += 1
+    elif issue == "missing_split":
+        ledger[0]["input_tokens"] = None
+    elif issue == "missing_call_id":
+        ledger[0]["call_id"] = None
+    elif issue == "boundary_call":
+        with path.open("a") as stream:
+            stream.write(json.dumps({"type": "assistant", "uuid": "outside", "timestamp": 30,
+                                     "message": {"id": "msg-1", "usage": {"output_tokens": 2}}})
+                         + "\n")
+    else:
+        copy = tmp_path / "ambiguous.jsonl"
+        copy.write_bytes(path.read_bytes())
+        paths.append(copy)
+    report = reconcile_claude_usage(paths, ledger, since=1, until=20)
+    assert report["proposals"] == []
+    assert report["totals"]["proposed_reduction"]["tokens_used"] == 0
+    assert report["excluded_calls"] or report["unmatched_claude_row_ids"]
+
+
+def test_reconciliation_rejects_duplicate_exports_and_wrong_windows(tmp_path):
+    from src.sessions.transcripts.reconciliation import reconcile_claude_usage
+
+    path, ledger = _reconciliation_fixture(tmp_path)
+    with pytest.raises(ValueError, match="duplicate ledger"):
+        reconcile_claude_usage([path], ledger + ledger, since=1, until=20)
+    with pytest.raises(ValueError, match="outside the frozen window"):
+        reconcile_claude_usage([path], ledger, since=12, until=20)
 
 
 @pytest.mark.asyncio

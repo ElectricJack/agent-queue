@@ -128,48 +128,48 @@ def test_a_corrupt_record_is_replaced_by_the_next_retire(data_dir):
 
 def test_seeding_skips_a_retired_default(data_dir):
     first = ensure_default_profiles(data_dir)
-    assert "worker-standard-medium-claude" in first["created"]
+    assert "worker-claude" in first["created"]
     assert first["retired"] == []
 
     vault_copy = (
         Path(data_dir) / "vault" / "agent-types"
-        / "worker-standard-medium-claude" / "profile.md"
+        / "worker-claude" / "profile.md"
     )
     vault_copy.unlink()
-    retire_default(data_dir, "worker-standard-medium-claude", "moved to -high")
+    retire_default(data_dir, "worker-claude", "this box has no Claude login")
 
     second = ensure_default_profiles(data_dir)
     assert second["created"] == []
-    assert second["retired"] == ["worker-standard-medium-claude"]
+    assert second["retired"] == ["worker-claude"]
     assert not vault_copy.exists()
     # Every other shipped default is still seeded, not collateral damage.
-    assert "worker-deep-high-claude" in second["skipped"]
+    assert "worker-codex" in second["skipped"]
 
 
 def test_seeding_restores_a_default_once_it_is_unretired(data_dir):
     ensure_default_profiles(data_dir)
     vault_copy = (
         Path(data_dir) / "vault" / "agent-types"
-        / "worker-fast-medium-claude" / "profile.md"
+        / "worker-claude" / "profile.md"
     )
     vault_copy.unlink()
-    retire_default(data_dir, "worker-fast-medium-claude")
+    retire_default(data_dir, "worker-claude")
     ensure_default_profiles(data_dir)
     assert not vault_copy.exists()
 
-    unretire_default(data_dir, "worker-fast-medium-claude")
+    unretire_default(data_dir, "worker-claude")
     result = ensure_default_profiles(data_dir)
-    assert result["created"] == ["worker-fast-medium-claude"]
+    assert result["created"] == ["worker-claude"]
     assert vault_copy.is_file()
 
 
 def test_a_retired_id_that_still_has_a_vault_copy_is_reported_as_skipped(data_dir):
     """Present wins: the tombstone only ever suppresses a *write*."""
     ensure_default_profiles(data_dir)
-    retire_default(data_dir, "worker-deep-high-claude")
+    retire_default(data_dir, "worker-codex")
 
     result = ensure_default_profiles(data_dir)
-    assert "worker-deep-high-claude" in result["skipped"]
+    assert "worker-codex" in result["skipped"]
     assert result["retired"] == []
 
 
@@ -202,7 +202,7 @@ async def handler(tmp_path):
 
 async def test_deleting_a_shipped_default_survives_the_next_startup(handler):
     data_dir = handler.config.data_dir
-    profile_id = "worker-fast-medium-claude"
+    profile_id = "worker-claude"
     vault_copy = Path(data_dir) / "vault" / "agent-types" / profile_id / "profile.md"
     assert vault_copy.is_file()
 
@@ -234,7 +234,7 @@ async def test_deleting_a_non_shipped_profile_writes_no_tombstone(handler):
 
 async def test_reseeding_clears_the_tombstone(handler):
     data_dir = handler.config.data_dir
-    profile_id = "worker-deep-high-claude"
+    profile_id = "worker-codex"
     await handler.execute("delete_profile", {"profile_id": profile_id})
     assert is_retired(data_dir, profile_id) is True
 
