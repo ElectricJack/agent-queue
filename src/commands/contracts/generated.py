@@ -177,6 +177,13 @@ def generated_registration(descriptor: CommandDescriptor):
         with principal_context(principal):
             return await _handler().execute(descriptor.name, payload)
 
+    from src.commands.resource_authorization import STATE_PREVIEW_COMMANDS
+
+    async def preview(args, principal):
+        from src.playbooks.state_preview import preview_command
+
+        return await preview_command(descriptor.name, args, principal)
+
     return CommandRegistration(
         descriptor.name,
         CommandContract(
@@ -193,10 +200,12 @@ def generated_registration(descriptor: CommandDescriptor):
                 side_effect=(SideEffectClass.READ if descriptor.effect_class == "read"
                              else SideEffectClass.COMPOSITE),
                 idempotency=IdempotencySpec(mode="none"), retry_safe=False,
+                supports_preview=descriptor.name in STATE_PREVIEW_COMMANDS,
             ),
             presentation=CommandPresentation(
                 title=descriptor.name.replace("_", " ").title(), summary=descriptor.description,
             ),
         ),
         invoke,
+        preview=preview if descriptor.name in STATE_PREVIEW_COMMANDS else None,
     )

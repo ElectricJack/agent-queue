@@ -165,7 +165,9 @@ def build_descriptor_snapshot(
     plugin's declared definition is explicit for that plugin. No schema keyword
     is reconstructed or dropped during either projection.
     """
-    from src.commands.resource_authorization import AUDITED_READS, resource_requirements
+    from src.commands.resource_authorization import (
+        AUDITED_READS, STATE_PREVIEW_COMMANDS, resource_requirements,
+    )
 
     inventory = {h.name: h for h in handlers}
     explicit = {d["name"]: d for d in explicit_definitions}
@@ -227,7 +229,7 @@ def build_descriptor_snapshot(
             idempotency_key_field=ec.idempotency.key_field if ec else None,
             retry_safe=ec.retry_safe if ec else False,
             timeout_seconds=ec.timeout_seconds if ec else None,
-            preview_available=ec.supports_preview if ec else False,
+            preview_available=ec.supports_preview if ec else name in STATE_PREVIEW_COMMANDS,
             receipt_projection=ec.receipt_projection if ec else (),
             denial_reason=PLAYBOOK_DENIALS.get(name), audit=tuple(audit),
             _playbook_schema=_json(schema), _transport_schema=_json(transport["input_schema"]),

@@ -584,6 +584,9 @@ class ConversationCommandsMixin:
             external_message_id=envelope.external_message_id,
         )
         if replay is not None:
+            if replay["routing_state"] != "conversation" or replay["ask_id"]:
+                return {"success": False, "error_code": "ask.input_owned",
+                        "error": "Shared intake owns this input", "receipt": replay["receipt"]}
             stored = await self.db.get_conversation(replay["conversation_id"])
             if (
                 replay["author_id"] != envelope.author_id
