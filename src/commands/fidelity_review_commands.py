@@ -12,8 +12,15 @@ Nothing here releases a batch.  A reviewer that fails its retries, or a
 dispatch that exceeds its bound, leaves the batch ``held`` and raises one ask.
 """
 
+from pydantic import ValidationError
 from sqlalchemy import select, update
 
+from src.api.auth import RequestScope
+from src.api.scope import (
+    fidelity_read_args_error, fidelity_review_read_context,
+    fidelity_review_task_for_session, held_task_for_session,
+)
+from src.asks.batch_scope import scope_ask, scope_source
 from src.asks.models import AskError
 from src.asks.operations import (
     FIDELITY_REVIEW_DISPATCH,
@@ -28,14 +35,20 @@ from src.commands.principal import (
     current_principal,
     principal_context,
 )
+from src.commands import task_changes
+from src.commands.contracts.builtin import TaskBatchReviewRecordArgs
+from src.database.queries import ingest_batch_queries as batches
 from src.database.queries.ingest_batch_queries import (
     assign_reviewer,
     get_batch,
+    live_digest,
+    store_live_digest,
     members,
     passing_receipt,
 )
 from src.database.tables import escalation_actions, tasks
 from src.models import DepType
+from src.integration.outbox import enqueue_batch_event
 from src.review_keys import FIDELITY_REVIEWER_PROFILE_ID, fidelity_review_dedup_key
 
 #: ``task_metadata`` key naming the batch a reviewer task reviews.
@@ -64,6 +77,212 @@ class _ReviewerExhausted(Exception):
 
 
 class FidelityReviewCommandsMixin:
+    async def _fidelity_read_context(self, command, args):
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.SESSION:
+            return None
+        scope = RequestScope(
+            kind="session", session_id=principal.session_id,
+            session_instance_token=principal.session_instance_token,
+            project_id=principal.project_id, task_id=principal.task_id,
+            elevated=principal.elevated,
+        )
+        if command == "get_task":
+            session = await self.db.get_session(principal.session_id)
+            if (session is not None and session.profile_id == FIDELITY_REVIEWER_PROFILE_ID
+                    and args.get("task_id") == session.task_id):
+                return None
+        context = await fidelity_review_read_context(self.db, scope)
+        if context is None:
+            if principal.profile_id != FIDELITY_REVIEWER_PROFILE_ID or principal.elevated:
+                return None
+            context = {}
+        if error := fidelity_read_args_error(command, args, scope, context):
+            return {"success": False, "error": error}
+        return context
+
+    async def _fidelity_member_detail(self, task, context):
+        """Member fields and edges only; no ambient queue/parent expansion."""
+        info = self._task_to_dict(task)
+        ids = context["task_ids"]
+        info.update(description=task.description, attachments=task.attachments,
+                    deliverables=task.deliverables,
+                    parent_task_id=task.parent_task_id if task.parent_task_id in ids else None)
+        info["batch_member"] = next(m for m in context["members"] if m["task_id"] == task.id)
+        info["fidelity"] = await self.db.get_task_meta(task.id, batches.MEMBER_FIDELITY_META)
+        info["context"] = await self.db.get_task_contexts(task.id)
+        info["labels"] = await self.db.get_task_labels(task.id)
+        info["depends_on"] = []
+        for edge in await self.db.get_typed_dependencies_detailed(task.id):
+            dep_id = edge["depends_on_task_id"]
+            if dep_id in ids:
+                dep = await self.db.get_task(dep_id)
+                info["depends_on"].append({"id": dep.id, "title": dep.title,
+                    "status": dep.status.value, "dep_type": edge["dep_type"],
+                    "reason": edge["description"]})
+        info["blocks"] = []
+        for dep_id in await self.db.get_dependents(task.id):
+            if dep_id in ids:
+                dep = await self.db.get_task(dep_id)
+                info["blocks"].append({"id": dep.id, "title": dep.title,
+                                       "status": dep.status.value})
+        children = [child for tid in sorted(ids) if (child := await self.db.get_task(tid))
+                    and child.parent_task_id == task.id]
+        info["children"] = {"total": len(children),
+            "done": sum(t.status.value == "COMPLETED" for t in children),
+            "ready": sum(t.status.value == "READY" and not t.is_blocked for t in children),
+            "blocked": sum(bool(t.is_blocked) for t in children),
+            "in_progress": sum(t.status.value in {"ASSIGNED", "IN_PROGRESS"} for t in children),
+        } if children else None
+        return info
+
+    async def _fidelity_list_tasks(self, args, context):
+        from src.commands.helpers import _format_task_tree, _count_subtree, _count_subtree_by_status
+
+        members = [await self.db.get_task(tid) for tid in sorted(context["task_ids"])]
+        members = [t for t in members if t is not None]
+        if args.get("status"):
+            members = [t for t in members if t.status.value == args["status"]]
+        else:
+            members = self._apply_completion_filter(members, args)
+        details = {}
+        for task in members:
+            detail = await self._fidelity_member_detail(task, context)
+            details[task.id] = {key: value for key, value in detail.items()
+                               if key not in {"batch_member", "fidelity", "context", "labels"}}
+        mode = args.get("display_mode") or "flat"
+        if mode == "flat":
+            return {"display_mode": "flat", "tasks": list(details.values()),
+                    "total": len(details), "hidden_completed": 0, "filtered": True}
+        ids = set(details)
+
+        def children(parent, seen):
+            return [{"task": t, "children": children(t.id, seen | {t.id})}
+                    for t in members if t.parent_task_id == parent and t.id not in seen]
+
+        trees = []
+        for root in members:
+            if root.parent_task_id in ids:
+                continue
+            subtree = children(root.id, {root.id})
+            completed, total = _count_subtree(subtree)
+            trees.append({"root": details[root.id],
+                          "formatted": _format_task_tree(root, subtree, compact=mode == "compact"),
+                          "subtask_completed": completed, "subtask_total": total,
+                          "subtask_by_status": _count_subtree_by_status(subtree)})
+        return {"display_mode": mode, "trees": trees, "tasks": list(details.values()),
+                "total": len(details), "total_root_tasks": len(trees), "total_tasks": len(details)}
+
+    async def _cmd_task_batch_review_record(self, args):
+        """Attest the current graph; scope answers never substitute for review."""
+        try:
+            request = TaskBatchReviewRecordArgs.model_validate(args)
+        except ValidationError as exc:
+            return {"success": False, "error_code": "invalid_receipt", "error": str(exc)}
+        principal = current_principal() or TRUSTED_LOCAL
+        async with self.db._engine.connect() as conn:
+            batch = await get_batch(conn, request.batch_id)
+        if batch is None:
+            return {"success": False, "error_code": "batch_not_found", "error": "Batch not found"}
+        if (request.project_id not in (None, batch["project_id"])
+                or principal.project_id not in (None, batch["project_id"])):
+            return {"success": False, "error_code": "not_authorized",
+                    "error": "out of scope: project mismatch"}
+        # Even a trusted caller must name a live, server-assigned reviewer. No
+        # caller-supplied reviewer/session id is accepted as receipt authority.
+        session_id = (principal.session_id if principal.kind is PrincipalKind.SESSION
+                      else batch["reviewer_session_id"])
+        scope = RequestScope(
+            kind="session", session_id=session_id, project_id=batch["project_id"],
+            session_instance_token=principal.session_instance_token,
+            task_id=principal.task_id or batch["reviewer_task_id"],
+        )
+        reviewer = await fidelity_review_task_for_session(self.db, scope, request.batch_id)
+        if reviewer is None:
+            return {"success": False, "error_code": "not_authorized",
+                    "error": "Only the live assigned fidelity reviewer may attest this batch"}
+        try:
+            async with task_changes.boundary(self.db, batch["project_id"]) as conn:
+                batch = await get_batch(conn, request.batch_id, lock=True)
+                current = await held_task_for_session(self.db, scope)
+                if (current is None or current.id != reviewer.id
+                        or batch["state"] not in batches.HELD_STATES
+                        or batch["reviewer_task_id"] != current.id
+                        or batch["reviewer_session_id"] != session_id
+                        or batch["reviewer_claim_epoch"] != current.claim_epoch):
+                    raise AskError("not_authorized", "Fidelity reviewer assignment changed")
+                stale = batches._stale(
+                    batch, request.expected_revision, request.expected_digest,
+                    await batches.live_digest(conn, request.batch_id, lock=True),
+                )
+                if stale:
+                    return stale
+                active = await members(conn, request.batch_id, state="active", lock=True)
+                required = {m["section_anchor"] for m in active}
+                if not required or required - request.section_verdicts.keys():
+                    return {"success": False, "error_code": "incomplete_review",
+                            "error": "Every active section requires a verdict",
+                            "missing_sections": sorted(required - request.section_verdicts.keys())}
+                passing = "scope_question" not in (
+                    *request.section_verdicts.values(), request.reverse_coverage_verdict,
+                    request.walkthrough_verdict,
+                )
+                ask = await scope_ask(self.db, conn, batch)
+                if passing and (batch["state"] == "needs_scope" or ask and (
+                        ask["decision_state"] != "answered" or ask["application_state"] != "applied"
+                )):
+                    return {"success": False, "error_code": "needs_scope",
+                            "error": "A scope answer is required before a fresh attestation"}
+                if not passing:
+                    if await passing_receipt(conn, request.batch_id, request.expected_revision):
+                        raise AskError("receipt_exists", "This revision already has a passing receipt")
+                    if ask and ask["decision_state"] == "answered":
+                        raise AskError("scope_answered", "Revise the graph for a new scope question")
+                # Freeze lineage in the existing JSONB envelope: these values
+                # remain evidence even if the batch or document later changes.
+                findings = {
+                    "findings": request.structural_findings,
+                    "lineage": {key: batch[key] for key in (
+                        "source_review_id", "source_revision", "source_content_sha256",
+                        "design_review_id", "design_revision", "design_content_sha256",
+                        "lineage_kind", "decision_id",
+                    )},
+                    "last_diff": (batch["check_results"] or {}).get("last_diff"),
+                }
+                recorded = await batches.record_receipt(
+                    conn, request.batch_id, structure_revision=request.expected_revision,
+                    structure_digest=request.expected_digest, reviewer_task_id=current.id,
+                    reviewer_session_id=session_id, passing=passing,
+                    section_verdicts=request.section_verdicts,
+                    reverse_coverage_verdict=request.reverse_coverage_verdict,
+                    walkthrough_verdict=request.walkthrough_verdict, structural_findings=findings,
+                )
+                if not recorded["success"]:
+                    return recorded
+                if not passing and ask and not recorded["replayed"]:
+                    raise AskError("scope_question_exists",
+                                   "This revision already has a different scope question")
+                state = "reviewing" if passing else "needs_scope"
+                await batches.set_state(conn, request.batch_id, state)
+                batch = {**batch, "state": state}
+                if not passing:
+                    publication = await self._ask_service().publish(scope_source(batch), conn=conn)
+                    if publication.reconciliation_case_ids:
+                        # Commit the quarantine created by AskService so the
+                        # supervisor can reconcile it; the batch stays held.
+                        return {"success": False, "error_code": "ask.idempotency_conflict",
+                                "error": "Scope ask identity conflicts",
+                                "ask_id": publication.ask["id"]}
+                    ask = publication.ask
+                await enqueue_batch_event(
+                    conn, batch, "batch.receipt_recorded" if passing else "batch.needs_scope",
+                )
+                return {"success": True, "batch_id": request.batch_id, "state": state,
+                        "passing": passing, "receipt": recorded["receipt"],
+                        "replayed": recorded["replayed"], "ask_id": ask["id"] if ask else None}
+        except AskError as exc:
+            return {"success": False, "error_code": exc.code, "error": str(exc)}
+
     async def _cmd_ensure_fidelity_review(self, args):
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is PrincipalKind.SESSION:
@@ -126,6 +345,9 @@ class FidelityReviewCommandsMixin:
             return batch
 
         async def record(conn, task_id, parent_id):
+            batch = await get_batch(conn, batch_id)
+            if await live_digest(conn, batch_id) != batch["structure_digest"]:
+                raise AskError("batch.stale_revision", "Live batch changed before reviewer dispatch")
             await self.db._upsert_meta(task_id, FIDELITY_REVIEW_META, {
                 "batch_id": batch_id, "structure_revision": revision,
             }, conn=conn)
@@ -142,6 +364,10 @@ class FidelityReviewCommandsMixin:
                     task_id, member["task_id"], DepType.RELATED.value,
                     description="fidelity review of this batch", conn=conn,
                 )
+            # The canonical snapshot includes these server-owned provenance
+            # links. Establish the review snapshot atomically with dispatch,
+            # so its first edit does not see its own assignment as drift.
+            await store_live_digest(conn, batch_id)
             batch = await get_batch(conn, batch_id)
             op = await get_operation(conn, batch["decision_id"], FIDELITY_REVIEW_DISPATCH,
                                      lock=True)

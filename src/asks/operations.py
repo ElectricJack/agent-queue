@@ -149,6 +149,9 @@ class ReviewOperations:
 
         async with self.db.immediate() as conn:
             review = await self.db.lock_review_for_mutation(review_id, conn)
+            from src.asks.reset_policy import skip_row
+            if await skip_row(conn, doc_reviews, review, review["project_id"]):
+                return {"application_state": "discarded"}
             decision = (
                 (
                     await conn.execute(
@@ -210,6 +213,8 @@ class ReviewOperations:
         ask = await self.db.get_ask(decision["ask_id"], conn=conn, lock=True)
         if not review or not ask:
             raise AskError("ask.application_unknown", "Decision source is missing")
+        if ask["context"].get("legacy_discarded"):
+            raise AskError("ask.discarded", "This decision belongs to discarded legacy work")
         return review
 
     async def project(self, decision, values, *, conn):
@@ -326,6 +331,8 @@ class ReviewOperations:
     async def apply(self, decision_id):
         async with self.db.immediate() as conn:
             decision = await self.db.get_ask_decision(decision_id, conn=conn)
+            if decision:
+                await self.locked(decision, conn)
         if not decision:
             raise AskError("ask.not_found", "Decision was not found")
         domain = decision["packet"]["domain"]

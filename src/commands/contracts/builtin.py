@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, StrictInt, StringConstraints, ValidationError, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -29,6 +29,49 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
+from src.observations.models import SnapshotArgs, SnapshotValue
+
+
+SplitText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class TaskSplitMoved(CommandArgs):
+    title: SplitText
+    acceptance: list[SplitText] = Field(min_length=1)
+    placement: Literal["operational_root", "child"] = Field(
+        description="Post-delivery operations become a root; finite build work stays beside the source."
+    )
+    delivery_targets: list[SplitText] = Field(
+        default_factory=list,
+        description="Same-project code leaves whose verified delivery gates operational work; include the source.",
+    )
+
+    @model_validator(mode="after")
+    def delivery_placement(self):
+        if (self.placement == "operational_root") != bool(self.delivery_targets):
+            raise ValueError("only operational_root requires delivery_targets")
+        return self
+
+
+class TaskSplitArgs(CommandArgs):
+    task_id: SplitText
+    retained_acceptance: list[SplitText] = Field(
+        min_length=1, description="Exact source criteria retained; together with moved.acceptance, an exhaustive partition."
+    )
+    moved: TaskSplitMoved
+    reason: SplitText
+    # Parent checkpoint generation. Roots and disabled integration use
+    # task_metadata.split.generation, initially zero, preserving code checks.
+    expected_generation: StrictInt = Field(
+        ge=0, description="Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0)."
+    )
+
+
+class TaskSplitValue(CommandValue):
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
 
 
 class CreateTaskArgs(CommandArgs):
@@ -258,7 +301,7 @@ class GateResolveValue(CommandValue):
     unblocked_task_ids: list[str]
 
 
-class ListTasksArgs(CommandArgs):
+class ListTasksArgs(SnapshotArgs, CommandArgs):
     """The arguments ``_cmd_list_tasks`` actually reads.
 
     ``limit`` is deliberately absent.  No path in
@@ -272,9 +315,14 @@ class ListTasksArgs(CommandArgs):
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
+    include_completed: bool | None = None
+    completed_only: bool | None = None
+    show_all: bool | None = None
+    labels: list[str] | None = None
+    any_label: list[str] | None = None
 
 
-class ListTasksValue(CommandValue):
+class ListTasksValue(SnapshotValue, CommandValue):
     """What ``list_tasks`` returns — in both of the shapes it has.
 
     ``_cmd_list_tasks`` (``src/commands/task_commands.py``) answers with one
@@ -294,10 +342,8 @@ class ListTasksValue(CommandValue):
     failed its contract, in either display mode, while the compiler validated
     against the same fiction and reported nothing.
 
-    Only keys this contract's own arguments can produce are modelled.
-    ``label_filter_scope`` is left out deliberately: it appears only for a
-    ``labels`` / ``any_label`` filter, which ``ListTasksArgs`` does not
-    expose, so no playbook step can reach it.
+    Snapshot mode adds the shared immutable observation envelope. Label
+    filters preserve their root-only annotation in hierarchical modes.
     """
 
     display_mode: str = "flat"
@@ -308,6 +354,7 @@ class ListTasksValue(CommandValue):
     hidden_completed: int = 0
     filtered: bool = False
     dependency_display: str | None = None
+    label_filter_scope: str | None = None
 
     # Tree and compact mode only.
     trees: list[dict[str, Any]] = Field(default_factory=list)
@@ -315,12 +362,12 @@ class ListTasksValue(CommandValue):
     total_tasks: int = 0
 
 
-class ListProjectsArgs(CommandArgs):
+class ListProjectsArgs(SnapshotArgs, CommandArgs):
     pass
 
 
-class ListProjectsValue(CommandValue):
-    projects: list[dict[str, Any]]
+class ListProjectsValue(SnapshotValue, CommandValue):
+    projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GetTaskArgs(CommandArgs):
@@ -423,6 +470,42 @@ class GetDownstreamTasksValue(CommandValue):
     tasks: list[dict[str, str]]
 
 
+class HeldBatchOperation(CommandArgs):
+    """Scoped operation. The command checks kind-specific fields and live membership."""
+
+    kind: Literal["rewrite", "split", "combine", "reparent", "rewire", "add_leaf",
+                  "move_to_root", "retire"]
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    changes: dict[str, Any] | None = None
+    task: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    parent_id: str | None = None
+    delivery_targets: list[str] | None = None
+    edges: list[dict[str, Any]] | None = None
+    remove_edges: list[dict[str, Any]] | None = None
+    reason: str | None = None
+    replacement_task_id: str | None = None
+    satisfied_by: str | None = None
+    rewire: dict[str, list[dict[str, Any]]] | None = None
+
+
+class TaskBatchUpdateArgs(CommandArgs):
+    proposal_id: str
+    project_id: str | None = None
+    payload: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    operations: list[HeldBatchOperation] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def update_shape(self):
+        if (self.payload is None) == (self.operations is None):
+            raise ValueError("Supply payload or operations")
+        if self.operations is not None and self.expected_revision is None:
+            raise ValueError("Held operations require expected_revision")
+        return self
+
+
 class TaskBatchCommitArgs(CommandArgs):
     proposal_id: str
     #: The human gate whose resolution approves this proposal.  Omitted, the
@@ -434,6 +517,41 @@ class TaskBatchCommitArgs(CommandArgs):
 
 class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
+
+
+class TaskBatchReleaseArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    project_id: str | None = None
+
+
+class TaskBatchReleaseValue(CommandValue):
+    batch_id: str | None = None
+    release_receipt: dict[str, Any] | None = None
+    released_task_ids: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    retryable: bool = False
+
+
+class TaskBatchRetireArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    reason: str = Field(min_length=1)
+    project_id: str | None = None
+
+    @model_validator(mode="after")
+    def retirement_reason(self):
+        if not self.reason.strip():
+            raise ValueError("Retirement requires a reason")
+        return self
+
+
+class TaskBatchRetireValue(CommandValue):
+    batch_id: str | None = None
+    state: str | None = None
+    already_retired: bool = False
+    error_code: str | None = None
 
 
 class TaskBatchValidateArgs(CommandArgs):
@@ -461,6 +579,29 @@ class TaskBatchValidateValue(CommandValue):
     hard: list[dict[str, Any]] = Field(default_factory=list)
     advisory: list[dict[str, Any]] = Field(default_factory=list)
     gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+FidelityVerdict = Literal["faithful", "fixed", "scope_question"]
+
+
+class TaskBatchReviewRecordArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    section_verdicts: dict[str, FidelityVerdict]
+    reverse_coverage_verdict: FidelityVerdict
+    walkthrough_verdict: FidelityVerdict
+    structural_findings: list[dict[str, Any]]
+    project_id: str | None = None
+
+
+class TaskBatchReviewRecordValue(CommandValue):
+    batch_id: str
+    state: str
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
 
 
 class TaskRoutePlanArgs(CommandArgs):
@@ -683,14 +824,14 @@ class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
     """The durable incident receipt returned to the triage playbook."""
 
 
-class GetStuckTasksArgs(CommandArgs):
+class GetStuckTasksArgs(SnapshotArgs, CommandArgs):
     assigned_threshold_seconds: int = Field(default=1800, ge=0)
     in_progress_threshold_seconds: int = Field(default=7200, ge=0)
     now: float | None = None
     project_id: str | None = None
 
 
-class GetStuckTasksValue(CommandValue):
+class GetStuckTasksValue(SnapshotValue, CommandValue):
     stuck: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
     now_used: float | None = None
@@ -834,6 +975,28 @@ def set_handler_provider(provider: Callable[[], Any] | None) -> None:
     """
     global _handler_provider
     _handler_provider = provider
+    from src.commands.contracts.registry import CONTRACTS
+
+    if provider is None:
+        CONTRACTS.configure_snapshot_provider(None)
+        return
+
+    offline = None
+
+    def snapshot_provider():
+        nonlocal offline
+        handler = provider()
+        if isinstance(getattr(type(handler), "command_descriptors", None), property):
+            return handler.command_descriptors
+        # Keep provider installation late-bound. Minimal adapter test doubles
+        # retain a cached offline inventory rather than manufacturing commands.
+        if offline is None:
+            from src.commands.command_inventory import offline_snapshot
+
+            offline = offline_snapshot(CONTRACTS.typed_contracts())
+        return offline
+
+    CONTRACTS.configure_snapshot_provider(snapshot_provider)
 
 
 def handler_provider_installed() -> bool:
@@ -856,6 +1019,10 @@ def _handler() -> Any:
 def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     """Map each legacy return shape to a declared business outcome."""
     refused = bool(raw.get("error")) or raw.get("success") is False
+    if name == "task_batch_release":
+        return "error" if refused else "already_released" if raw.get("already_released") else "released"
+    if name == "task_batch_retire":
+        return "error" if refused else "already_retired" if raw.get("already_retired") else "retired"
     if name == "ci_baseline_status" and (raw.get("success") is True or not refused):
         # A successful verdict explains ``unknown`` (no GitHub remote, checks
         # unreadable) in ``error``; that is the next tick's problem, not a
@@ -913,6 +1080,8 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if not raw.get("passed"):
             return "retryable" if raw.get("retryable") else "failed"
         return "passed"
+    if name == "task_batch_review_record":
+        return "recorded" if raw.get("passing") else "needs_scope"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -933,6 +1102,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _PROVIDER_REROUTE_OUTCOMES else "rejected"
     return {
+        "task_split": "split",
         "create_task": "created",
         "edit_task": "updated",
         "add_dependency": "linked",
@@ -987,6 +1157,9 @@ def _adapter(name: str, value_type: type[CommandValue]):
                 provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
                 detail=raw.get("error"),
             )
+        elif name in {"list_tasks", "list_projects", "get_stuck_tasks"} and "complete" in raw:
+            value = value_type(**{field: raw[field] for field in value_type.model_fields
+                                 if field in raw})
         elif outcome in {
             "rejected", "refused_routing_gate", "already_linked", "not_running", "not_approved",
         }:
@@ -1067,6 +1240,11 @@ def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
 # effect clauses use; ``test_presentation_labels_name_real_fields`` pins that.
 
 PRESENTATIONS: dict[str, CommandPresentation] = {
+    "task_split": CommandPresentation(
+        title="Split task acceptance",
+        summary="Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        outcome_labels={"split": "Split", "rejected": "Rejected"},
+    ),
     "get_stuck_tasks": CommandPresentation(
         title="Read stuck tasks",
         summary="Read aged active tasks, orphaned workers and failed routes in active projects.",
@@ -1358,6 +1536,44 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
     ),
+    "task_batch_release": CommandPresentation(
+        title="Release a reviewed ingestion batch",
+        summary="Verify source approval, the live graph and its fidelity receipt before release.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "expected_digest": "Expected digest", "project_id": "Project"},
+        outcome_labels={"released": "Released", "already_released": "Already released",
+                        "error": "Release refused"},
+        result_labels={"batch_id": "Batch", "release_receipt": "Release receipt",
+                       "released_task_ids": "Released tasks", "error_code": "Refusal code",
+                       "retryable": "Retryable"},
+        subject_labels={"task_graph": "the reviewed task graph"},
+    ),
+    "task_batch_retire": CommandPresentation(
+        title="Finalize an obsolete ingestion batch",
+        summary="Require prior supported retirement of every member and reviewer; retain evidence.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "reason": "Retirement reason", "project_id": "Project"},
+        outcome_labels={"retired": "Retired", "already_retired": "Already retired",
+                        "error": "Retirement refused"},
+        result_labels={"batch_id": "Batch", "state": "State", "already_retired": "Replay",
+                       "error_code": "Refusal code"},
+        subject_labels={"task_graph": "the obsolete task graph"},
+    ),
+    "task_batch_review_record": CommandPresentation(
+        title="Record a batch fidelity review",
+        summary="Attest every mapped section and whole-batch intent on the exact held graph.",
+        arg_labels={
+            "batch_id": "Held batch", "expected_revision": "Expected structure revision",
+            "expected_digest": "Expected structure digest", "section_verdicts": "Section verdicts",
+            "reverse_coverage_verdict": "Reverse coverage", "walkthrough_verdict": "Walkthrough",
+            "structural_findings": "Findings and dispositions", "project_id": "Project",
+        },
+        outcome_labels={"recorded": "Recorded", "needs_scope": "Needs scope answer",
+                        "rejected": "Rejected"},
+        result_labels={"batch_id": "Batch", "state": "State", "passing": "Passing",
+                       "receipt": "Receipt", "replayed": "Replayed", "ask_id": "Scope ask"},
+        subject_labels={"task_graph": "the held task graph"},
+    ),
     "task_batch_validate": CommandPresentation(
         title="Check a task batch",
         summary=(
@@ -1420,7 +1636,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         arg_labels={
             "project_id": "Project",
             "ref": "Branch or commit",
-            "max_attempts": "Repair attempts before escalating",
+            "max_attempts": "Repair attempts before escalating (0 = unlimited; default)",
         },
         outcome_labels={
             "green": "Green",
@@ -1771,6 +1987,12 @@ def _contract(
 def register_builtin_contracts(registry: ContractRegistry) -> None:
     definitions = (
         (
+            "task_split", TaskSplitArgs, TaskSplitValue, _outcomes("split"),
+            SideEffectClass.COMPOSITE,
+            (CreateClause(subject=EffectSubject.TASK), UpdateClause(subject=EffectSubject.TASK)),
+            IdempotencySpec(mode="none"), False,
+        ),
+        (
             "list_projects", ListProjectsArgs, ListProjectsValue, _outcomes("listed"),
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
@@ -1895,7 +2117,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "list_tasks",
             ListTasksArgs,
             ListTasksValue,
-            (OutcomeSpec(name="listed", classification=OutcomeClass.SUCCESS),),
+            _outcomes("listed"),
             SideEffectClass.READ,
             (ReadClause(subject=EffectSubject.TASK_LIST),),
             IdempotencySpec(mode="natural"),
@@ -1923,6 +2145,22 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             False,
         ),
         (
+            "task_batch_release", TaskBatchReleaseArgs, TaskBatchReleaseValue,
+            (OutcomeSpec(name="released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "task_batch_retire", TaskBatchRetireArgs, TaskBatchRetireValue,
+            (OutcomeSpec(name="retired", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_retired", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
             "task_batch_validate",
             TaskBatchValidateArgs,
             TaskBatchValidateValue,
@@ -1931,6 +2169,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "task_batch_review_record", TaskBatchReviewRecordArgs, TaskBatchReviewRecordValue,
+            _outcomes("recorded", "needs_scope"), SideEffectClass.COMPOSITE,
+            (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_route_plan",
@@ -2143,6 +2387,10 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.wait import register_wait_contracts
 
     register_wait_contracts(registry)
+
+    from src.commands.contracts.wait_v2 import register_wait_v2_contracts
+
+    register_wait_v2_contracts(registry)
     from src.commands.contracts.cron import register_cron_contracts
 
     register_cron_contracts(registry)

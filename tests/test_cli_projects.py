@@ -50,12 +50,10 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     """Plan 17: exact arg forwarding, not-found exit, key coercion, JSON errors."""
     from src.cli.app import cli
 
-    # -- details success: composes list_projects + list_tasks -------------
+    # Both calls are pinned to the project for project-scoped supervisors.
     client = _client({
-        "list_projects": {"projects": [
-            {"id": "p1", "name": "P One", "status": "ACTIVE",
-             "max_concurrent_agents": 2, "credit_weight": 1.0},
-        ]},
+        "get_project": {"id": "p1", "name": "P One", "status": "ACTIVE",
+                        "max_concurrent_agents": 2, "credit_weight": 1.0},
         "list_tasks": {"tasks": [
             {"status": "DEFINED"}, {"status": "DEFINED"}, {"status": "COMPLETED"},
         ]},
@@ -65,12 +63,14 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     assert result.exit_code == 0, result.output
     assert "p1" in result.output and "P One" in result.output
     assert "DEFINED" in result.output
+    assert client.execute.await_args_list[0].args == ("get_project", {"project_id": "p1"})
     assert client.execute.await_args_list[1].args == (
         "list_tasks", {"project_id": "p1", "include_completed": True},
     )
 
     # -- details unknown project: nonzero exit, no crash -------------------
-    client = _client({"list_projects": {"projects": []}, "list_tasks": {"tasks": []}})
+    client = _client({"get_project": {"success": False, "error": "Project not found"},
+                      "list_tasks": {"tasks": []}})
     with patch("src.cli.projects._get_client", return_value=client):
         result = runner.invoke(cli, ["project", "details", "nope"])
     assert result.exit_code == 1
@@ -478,3 +478,50 @@ def test_project_create_remote_flags_reach_server(runner, flag, value):
     assert args["private"] is True
     assert args["request_id"] == "widgets-create"
     assert "default_branch" not in args
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_repository_checkout_repair_previews_by_default_and_emits_evidence(runner, apply):
+    from src.cli.app import cli
+
+    evidence = {"success": True, "preview": not apply, "changed": apply,
+                "before": {"source_path": "/missing"}, "after": {"source_path": "/live"}}
+    client = _client({"repair_repository_checkout": evidence})
+    argv = ["project", "repair-repository-checkout", "--project-id", "p",
+            "--repository-id", "repo", "--expected-path", "/missing",
+            "--replacement-path", "/live", "--reason", "Moved checkout", "--json"]
+    if apply:
+        argv.append("--apply")
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"] == evidence
+    expected_args = {
+        "project_id": "p", "repository_id": "repo", "expected_path": "/missing",
+        "replacement_path": "/live", "reason": "Moved checkout",
+    }
+    if apply:
+        expected_args["apply"] = True
+    client.execute.assert_awaited_once_with("repair_repository_checkout", expected_args)
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_workspace_checkout_repair_previews_and_accepts_proof(runner, apply):
+    from src.cli.app import cli
+
+    evidence = {"success": True, "preview": not apply, "changed": apply, "proof": "digest",
+                "before": {"workspace_path": "/old"}, "after": {"workspace_path": "/live"}}
+    client = _client({"repair_workspace_checkout": evidence})
+    argv = ["project", "repair-workspace-checkout", "--project-id", "p", "--workspace-id", "base",
+            "--expected-path", "/old", "--replacement-path", "/live", "--reason", "Correct clone",
+            "--json"]
+    expected = dict(project_id="p", workspace_id="base", expected_path="/old",
+                    replacement_path="/live", reason="Correct clone")
+    if apply:
+        argv.extend(["--apply", "--expected-proof", "digest"])
+        expected.update(apply=True, expected_proof="digest")
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"] == evidence
+    client.execute.assert_awaited_once_with("repair_workspace_checkout", expected)
