@@ -314,6 +314,11 @@ function scheduleCoalescedInvalidation(
 function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   const type = event.event_type;
 
+  if (type.startsWith("wait.") || type.startsWith("continuation.") || type.startsWith("reservation.") || type.startsWith("task.")) {
+    scheduleCoalescedInvalidation(queryClient, ["wait-explain"], 250);
+    scheduleCoalescedInvalidation(queryClient, ["wait-graph"], 250);
+  }
+
   // The metrics sampler ticks once a second and owns no query cache of
   // its own — the Metrics page subscribes to the raw frame directly.
   if (type.startsWith("metrics.")) return;
@@ -361,6 +366,11 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   if ((type as string) === "dashboard_state.changed.v1") {
     queryClient.invalidateQueries({ queryKey: ["dashboard-state"] });
     return;
+  }
+
+  // Events are hints, never replacement state; even stale/replayed versions refetch.
+  if (/^(ask|review|project)\./.test(type)) {
+    void queryClient.invalidateQueries({ queryKey: ["asks"] });
   }
 
   // Prefix-based invalidation for the wave-4 event families (gate.*,
