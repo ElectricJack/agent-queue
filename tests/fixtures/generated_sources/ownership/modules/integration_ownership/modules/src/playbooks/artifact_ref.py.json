@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/artifact_ref.py::ArtifactRef": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
