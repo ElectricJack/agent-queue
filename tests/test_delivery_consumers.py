@@ -2104,19 +2104,94 @@ async def test_delivery_edge_uses_immutable_view_and_rechecks_rewind(world, tmp_
     base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
     git(origin.clone, "push", "--force", "origin", f"{base}:main")
     assert not await view.is_fresh("waiting")
+    changed = view._snapshot.reasons["waiting"][-1]
+    assert changed["code"] == "admission_delivery_changed"
+    assert "done" in changed["detail"]
     current = await observe_admission(db, ["waiting", "independent"], service)
     assert current.allowed == {"independent"}
     assert current.reasons["waiting"][0]["ref"] == "done"
     assert "independent" not in current.reasons
 
 
+@pytest.mark.parametrize("observation", ["fresh", "absent", "cold", "fetch_error"])
+async def test_delivery_edge_on_train_child_waits_for_default_branch(
+    active_git_world, observation, monkeypatch,
+):
+    from src.database.tables import task_branch_origins
+    from src.integration.admission import observe_admission
+    from src.models import AgentProfile
+
+    db, origin, observer = active_git_world
+    service = DevelopmentPrimitives(db, data_dir=observer.data_dir, git=observer.git)
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
+    await db.create_task(Task(
+        id="waiting", project_id="p", title="Operational root", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="router",
+        repo_id="r", branch_name="aq/waiting",
+    ))
+    await db.add_dependency("waiting", "reopened", "delivery-of")
+    git(origin.clone, "push", "origin", "main:dev")
+    await db.update_repo("r", default_branch="dev")
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="waiting-origin", task_id="waiting", repository_id="r",
+            branch_name="aq/waiting", parent_repository_id="r", parent_ref="dev",
+            base_sha=git(origin.clone, "rev-parse", "main"), creation_generation=0,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+
+    async def admission(**kwargs):
+        view = await observe_admission(db, ["waiting"], service, **kwargs)
+        assert not (await db.get_task("waiting")).is_blocked  # SQL projects completion only.
+        if view._snapshot.delivery_view is not None:
+            assert view._snapshot.delivery_view.targets["reopened"].target_ref == "refs/heads/dev"
+        return view
+
+    # Completed, but not even collected into its epic yet.
+    assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
+    with monkeypatch.context() as unavailable:
+        if observation == "absent":
+            db.set_prerequisite_observer(None)
+        elif observation == "fetch_error":
+            unavailable.setattr(observer.git, "afetch_origin", AsyncMock(side_effect=GitError("offline")))
+        pending = await admission(cached_only=observation == "cold")
+    db.set_prerequisite_observer(observer)
+    assert not pending.allowed, pending.reasons
+    assert pending.reasons["waiting"][0]["code"] == "prerequisite_delivery"
+    assert await pending.counts("p") == {}
+    # The failed fetch's backoff is recovered by the independent observer,
+    # rather than depending on a later train visit.
+    refresh = observer._delivery_refresh_task
+    if refresh is not None:
+        await asyncio.wait_for(asyncio.shield(refresh), 10)
+
+    # Collection is enough for a sibling blocks edge, never a delivery-of edge.
+    git(origin.clone, "checkout", "-q", "-B", "aq/epic", "origin/aq/epic")
+    git(origin.clone, "merge", "-q", "--no-ff", "-m", "Collect child", "aq/reopened")
+    git(origin.clone, "push", "origin", "aq/epic")
+    assert (await observer.observe(["reopened"])).satisfied("reopened")
+    assert not (await admission()).allowed
+
+    # Only landing the epic on the designated default branch releases the root.
+    git(origin.clone, "push", "origin", "aq/epic:dev")
+    delivered = await admission()
+    assert delivered.allowed == {"waiting"}, delivered.reasons
+    assert await delivered.counts("p") == {"worker": 1}
+    assert await delivered.is_fresh("waiting")
+    assert await delivered.matches(task_id="waiting")
+
+
 @pytest.mark.parametrize("observation", ["absent", "cold", "fetch_error"])
-async def test_unknown_delivery_observation_allows_edge_consumers(
+async def test_unknown_delivery_observation_withholds_edge_consumers(
     world, tmp_path, monkeypatch, observation,
 ):
     from src.integration.admission import observe_admission
     from src.integration.git_truth import GitTruth
     from src.models import AgentProfile
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.integration.service import IntegrationService
+    from src.orchestrator import Orchestrator
 
     db, _origin, observer, service = world
     await db.create_profile(AgentProfile(id="worker", name="worker"))
@@ -2126,24 +2201,63 @@ async def test_unknown_delivery_observation_allows_edge_consumers(
             db, git=observer.git, data_dir=tmp_path / "unknown-admission",
             truth=GitTruth(observer.git),
         ))
-    if observation == "fetch_error":
-        monkeypatch.setattr(observer.git, "afetch_origin", AsyncMock(side_effect=GitError("offline")))
     for tid in ("waiting", "independent"):
         await db.create_task(Task(
             id=tid, project_id="p", title=tid, description="", status=TaskStatus.READY,
             profile_id="worker", route_source="router",
         ))
     await db.add_dependency("waiting", "done", "delivery-of")
-    view = await observe_admission(
-        db, ["waiting", "independent"], service, cached_only=observation == "cold",
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("delivery-consumers.db")),
+        discord=DiscordConfig(bot_token="test", guild_id="123"), data_dir=str(tmp_path / "data"),
     )
-    assert view.allowed == {"waiting", "independent"}
-    assert view.reasons == {}
-    assert await view.is_fresh("waiting")
-    assert await view.matches(task_id="waiting")
-    assert await view.counts("p") == {"worker": 2}
+    orch = Orchestrator(config)
+    orch.db, orch.git, orch.development_integration = db, observer.git, service
+    orch.integration_service = IntegrationService(db, None, development_subject_runtime=object())
+    with monkeypatch.context() as unavailable:
+        if observation == "fetch_error":
+            unavailable.setattr(observer.git, "afetch_origin",
+                                AsyncMock(side_effect=GitError("offline")))
+        view = await observe_admission(
+            db, ["waiting", "independent"], service, cached_only=observation == "cold",
+        )
+        assert view.allowed == {"independent"}
+        why = view.reasons["waiting"][0]
+        assert why["code"] == "prerequisite_delivery" and why["ref"] == "done"
+        assert "unproven" in why["detail"]
+        assert {"absent": "observer absent", "cold": "cache cold",
+                "fetch_error": "fetch failed"}[observation] in why["detail"]
+        assert not await view.is_fresh("waiting")
+        assert not await view.matches(task_id="waiting")
+        if observation != "absent":
+            changed = view._snapshot.reasons["waiting"][-1]
+            assert changed["code"] == "admission_delivery_changed"
+            assert "done" in changed["detail"]
+        assert await view.matches(task_id="independent")
+        assert await view.counts("p") == {"worker": 1}
+        explained = await CommandHandler(orch, config)._cmd_explain_task({"task_id": "waiting"})
+        assert any(reason["code"] == "prerequisite_delivery" and "unproven" in reason["detail"]
+                   for reason in explained["reasons"])
+
+    if observation == "absent":
+        # Missing configuration is a visible blocker, not a spinning retry.
+        assert observer._delivery_refresh_task is None
+        return
+    refreshing = db._prerequisite_observer
+    refresh = refreshing._delivery_refresh_task
+    assert refresh is not None
+    # Repeated cold reads coalesce; no train tick or new admission fetch runs.
+    refreshing.request_delivery_refresh({"done"})
+    assert refreshing._delivery_refresh_task is refresh
+    await asyncio.wait_for(asyncio.shield(refresh), 10)
+    assert not refreshing._delivery_refresh_ids
+    recovered = await observe_admission(db, ["waiting", "independent"], service, cached_only=True)
+    assert recovered.allowed == {"waiting", "independent"}, recovered.reasons
+    assert await recovered.is_fresh("waiting")
+    assert await recovered.matches(task_id="waiting")
+    assert await recovered.counts("p") == {"worker": 2}
     await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
-    assert not await view.matches(task_id="waiting")
+    assert not await recovered.matches(task_id="waiting")
 
 
 @pytest.mark.parametrize('source_edge', ['blocks', 'delivery-of'])
@@ -2190,14 +2304,16 @@ async def test_admission_completes_while_retained_fsck_holds_repository(
         view = await asyncio.wait_for(observe_admission(
             db, ['waiting', 'independent'], service,
         ), 5)
-        # Unknown delivery remains admissible while the bounded Git read yields.
-        assert view.allowed == {'waiting', 'independent'}
-        assert not view.reasons.get('waiting')
+        # blocks can prepare; delivery-of needs positive evidence even while
+        # the bounded read yields to independent repository recovery.
+        expected = {'waiting', 'independent'} if source_edge == 'blocks' else {'independent'}
+        assert view.allowed == expected
+        assert bool(view.reasons.get('waiting')) == (source_edge == 'delivery-of')
         assert not recovery.done()
         # A subsequent reader also returns without a second fetch or cancellation.
         assert (await asyncio.wait_for(observe_admission(
             db, ['waiting', 'independent'], service,
-        ), 5)).allowed == {'waiting', 'independent'}
+        ), 5)).allowed == expected
         assert not recovery.done()
     finally:
         release.set()

@@ -275,7 +275,7 @@
   max-width: 100%;
 }
 @media (max-width: 767.98px) {
-  .dashboard-page :where(button, select, summary, input:not([type="checkbox"]):not([type="radio"])),
+  .dashboard-page :where(button, select, summary, textarea, input:not([type="checkbox"]):not([type="radio"])),
   [aria-label="Navigation"] :where(button, a) {
     min-height: 44px;
   }

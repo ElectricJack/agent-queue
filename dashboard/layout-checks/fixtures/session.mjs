@@ -33,6 +33,6 @@ export function showSession(body) {
 }
 
 export const routes = {
-  "POST /api/system/session-attach": () => ({ attach_command: "tmux attach -t fixture-session" }),
+  "POST /api/system/session-attach": () => ({ attach_command: "tmux attach -t " + "worker".repeat(40) }),
   "POST /api/system/session-show": showSession,
 };

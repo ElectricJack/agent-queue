@@ -347,6 +347,10 @@ hierarchy and stack comparisons, frontier policy and source inputs, delivery
 evidence, and PR freshness, input and lock failures; comparison details name the
 changed field or input group. Unknown observations permit preparation, but an
 identity or policy comparison that changed still requires a fresh admission pass.
+After publication, activation failures read the current guard diagnostics separately
+from the immutable selection decision. PR checkout refusals name the missing source
+or unavailable ancestry check; an otherwise unexplained rejection names
+`admission_recheck_unexplained` and the task, epoch and preparation stage.
 
 `src/task_graph/readiness.py` labels tasks `claimable`, `withheld`,
 `waiting_on_delivery` or `unknown` using that shared reader (or scoped frontier

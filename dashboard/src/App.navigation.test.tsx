@@ -525,6 +525,11 @@ describe("Roaming shell preferences", () => {
 describe("posted Focus link compatibility", () => {
   it.each([
     ["/focus", "/projects/p1/graph", "Command Center graph"],
+    ["/focus/", "/projects/p1/graph", "Command Center graph"],
+    ["/focus/tasks/a%2Fb%20c", "/tasks/a%2Fb%20c", "Task page"],
+    ["/focus/inbox/", "/inbox", "Needs you"],
+    ["/focus/conversations/", "/conversations", "Former Home chat"],
+    ["/conversations/c%2F1#reply", "/conversations?conversation=c%2F1#reply", "Former Home chat"],
     ["/focus/tasks/a%2Fb?tab=explain#why", "/tasks/a%2Fb?tab=explain#why", "Task page"],
     ["/focus/sessions/s1?started=123", "/sessions/s1?started=123", "Session page"],
     ["/focus/reports/r1", "/reports/r1", "Morning report read page"],

@@ -33,7 +33,20 @@ function review(body) {
   };
 }
 
+/** @param {import("@aq/ts-client").AskShowRequest} body */
+function ask(body) {
+  const source = body.alias_kind ? body.ask_id : body.ask_id.replace(/^ask-/, "");
+  const document = review({ review_id: source });
+  const version = { decision_generation: 1, source_fingerprint: "fixture", feedback_version: 0 };
+  return { success: true, ask: { ...version, id: `ask-${source}`, source_kind: "review", source_key: source,
+    project_id: "fixture", severity: "normal", next_actor: "human", context_state: "complete",
+    application_state: "not_started", decision_state: "pending", context: { title: document.review.title, why: "Review this proposal" } },
+    expected: version, actions: [{ action: "discuss", enabled: true }], inputs: [], history: [],
+    obligations: [], operations: [], source_health: "healthy", document: { revision: 2 } };
+}
+
 export const routes = {
+  "POST /api/review/ask-show": ask,
   "POST /api/review/ask-list": () => ({ success: true, items: [], count: 0, snapshot_at: 1, source_health: "healthy" }),
   "GET /api/reviews/pull-requests/summary": () => pullRequests,
   "POST /api/review/show": review,

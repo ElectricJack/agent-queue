@@ -57,7 +57,7 @@
         "return": "{'success': True, 'ask_id': ask['id'], 'preview': preview, 'expected': args['expected']}"
       }
     ],
-    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed grand-ember-55 canonical /asks URL migration; success/error branches, original-principal resource gates and typed contract are unchanged.",
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed grand-ember-55 canonical /asks URL migration; success/error branches, original-principal resource gates and typed contract are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed canonical /asks URL after Focus retirement (azure-delta-20); outcome protocol, resource gates and typed contract unchanged.",
     "schema_quality": "typed",
     "source_digest": "sha256:aaf6e3674fca77288f06c50c526901506ae563994c58d0b8e908eb367a3a7e1c",
     "tests": [
@@ -142,7 +142,7 @@
         "return": "error"
       }
     ],
-    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed grand-ember-55 canonical /asks URL migration; success/error branches, original-principal resource gates and typed contract are unchanged.",
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed grand-ember-55 canonical /asks URL migration; success/error branches, original-principal resource gates and typed contract are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed canonical /asks URL in the escalation alias after Focus retirement (azure-delta-20); outcome protocol, resource gates and typed contract unchanged.",
     "schema_quality": "typed",
     "source_digest": "sha256:a9196482bbf04f09797a89aa943d0f9e8b5259d38abe4e28ea2ca8c1a6020e39",
     "tests": [
