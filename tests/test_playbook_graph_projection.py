@@ -799,3 +799,21 @@ def test_an_llm_card_degrades_on_a_lookup_that_only_knows_the_session_surface():
     cards = {node["id"]: node["ai"] for node in graph["nodes"] if node["ai"]}
     assert (cards["classify-risk"]["provider"], cards["classify-risk"]["model"]) == (None, None)
     assert cards["escalate"]["provider"] == "openai"
+
+
+def test_graph_exposes_reviewed_execution_requirements_and_loop_limits():
+    from src.playbooks.definition import TrustedExecutionMetadata
+
+    definition = _definition().model_copy(update={
+        "required_features": ("state_v1",),
+        "trusted_execution": TrustedExecutionMetadata(
+            state_schema_version=2, required_capabilities=("playbook_state_notify", "message_send")),
+    })
+    graph = _project(definition)
+    assert graph["execution_requirements"] == {
+        "required_features": ["state_v1"], "state_schema_version": 2,
+        "required_capabilities": ["playbook_state_notify", "message_send"],
+    }
+    for node in graph["nodes"]:
+        if node["loop"]:
+            assert node["loop"]["max_iterations"] == definition.steps[node["id"]].max_iterations

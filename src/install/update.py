@@ -49,6 +49,7 @@ does not know, and the updater ignores output it does not understand.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -344,7 +345,7 @@ def validate_target_migrations(
     except (ValueError, SyntaxError) as error:
         raise UpdateRefused(
             f"target Alembic preflight failed: {error}",
-            "Repair the tracked branch's migration graph before deploying it.",
+            "Repair the selected target's migration graph before deploying it.",
         ) from error
 
 
@@ -389,6 +390,7 @@ def _plan_deploy(
                     "Push or remove those commits before deploying a release.",
                 )
     selection = selector.resolve(ref=ref, tag_glob=tag_glob)
+    validate_target_migrations(checkout, selection.commit, execute=execute)
     forward = _git(execute, checkout, "merge-base", "--is-ancestor", current, selection.commit).ok
     backward = _git(execute, checkout, "merge-base", "--is-ancestor", selection.commit, current).ok
     rollback = not forward and backward
@@ -402,6 +404,28 @@ def _plan_deploy(
             "selected release is older than the installed code",
             "Rerun with --allow-rollback to roll back code while keeping the database.",
         )
+    from dataclasses import replace
+    from .deploy import validate_boundary
+
+    boundaries = {}
+    for boundary in (record or {}).get("breaking_migrations", []):
+        validate_boundary(boundary)
+        boundaries[boundary["tag_oid"]] = boundary
+    for boundary in selector.migration_boundaries(
+        head=current if rollback else selection.commit,
+    ):
+        boundaries[boundary["tag_oid"]] = boundary
+    if rollback:
+        for boundary in boundaries.values():
+            if not _git(execute, checkout, "merge-base", "--is-ancestor",
+                        boundary["commit"], selection.commit).ok:
+                raise UpdateRefused(
+                    f"rollback_crosses_breaking_migration: {boundary['tag']} was admitted "
+                    f"with a breaking migration override by {boundary['admission']['override']['github_login']}",
+                    "--allow-rollback cannot cross this boundary. Select code at or after "
+                    "the breaking release; database recovery is a separate operator decision.",
+                )
+    selection = replace(selection, breaking_migrations=tuple(boundaries.values()))
     changed = selector.git("diff", "--name-only", current, selection.commit)
     subjects = selector.git("log", "--format=%h %s", f"{current}..{selection.commit}")
     return UpdatePlan(
@@ -435,54 +459,24 @@ def find_pg_dump(which: Callable[[str], str | None] = shutil.which) -> str | Non
     return None
 
 
-def backup_database(
-    config_path: Path,
-    destination: Path,
-    *,
-    execute: CommandRunner,
-    pg_dump: str | None,
-) -> tuple[bool, str]:
-    """`pg_dump -Fc` the configured database to *destination*.
+def backup_database(config_path: Path, destination: Path) -> tuple[bool, str]:
+    """Run the shared async backup and archive validation from the operator updater."""
+    from src.config import load_config
+    from src.database.backup import backup_database as write_backup, postgres_clients
 
-    The password travels in ``PGPASSWORD`` for the child only, never on the
-    command line where another process could read it.
-    """
-    if pg_dump is None:
-        return False, "pg_dump was not found"
     try:
-        from sqlalchemy.engine import make_url
-
-        from src.config import load_config
-
-        url = make_url(load_config(str(config_path)).database.url)
+        database_url = load_config(str(config_path)).database.url
     except Exception as error:  # noqa: BLE001 - reported, and the update stops
-        return False, f"could not read the database settings: {error}"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    if url.password:
-        env["PGPASSWORD"] = str(url.password)
-    argv = [
-        pg_dump,
-        "--format=custom",
-        "--host",
-        url.host or "localhost",
-        "--port",
-        str(url.port or 5432),
-        "--username",
-        url.username or "",
-        "--dbname",
-        url.database or "",
-        "--file",
-        str(destination),
-    ]
-    output = execute(argv, timeout=BACKUP_TIMEOUT, env=env)
-    if not output.ok:
-        destination.unlink(missing_ok=True)
-        return False, redact(output.message())
+        return False, redact(f"could not read the database settings: {error}")
+
+    async def write() -> None:
+        clients = await postgres_clients(database_url)
+        await write_backup(clients, destination)
+
     try:
-        destination.chmod(0o600)
-    except OSError:
-        pass
+        asyncio.run(write())
+    except Exception as error:  # noqa: BLE001 - a failed backup must stop the update
+        return False, _describe(error)
     return True, str(destination)
 
 
@@ -529,7 +523,6 @@ class Host:
     system: str = sys.platform
     arch: str = ""
     state_dir: Path = Path.home() / ".agent-queue"
-    pg_dump: str | None = None
     build: Callable[..., BuildOutcome] = build_bundle
     extras: list[str] = field(default_factory=lambda: ["cli"])
     clock: Callable[[], float] = time.time
@@ -638,9 +631,7 @@ def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool)
     if plan.migrations and backup:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         destination = host.state_dir / BACKUP_DIR / f"agent_queue-{plan.current[:12]}-{stamp}.dump"
-        ok, message = backup_database(
-            config_path, destination, execute=host.execute, pg_dump=host.pg_dump
-        )
+        ok, message = backup_database(config_path, destination)
         if not ok:
             step("Back up the database", False, message)
             raise UpdateRefused(
@@ -1046,6 +1037,18 @@ def _recover(
     return report
 
 
+def migration_boundary_descriptions(plan: UpdatePlan) -> list[str]:
+    if not plan.selection:
+        return []
+    return [
+        f"Breaking migration boundary {boundary['tag']} "
+        f"({boundary['commit'][:9]}): operator "
+        f"{boundary['admission']['override']['github_login']}; "
+        "--allow-rollback across this release is disabled"
+        for boundary in plan.selection.breaking_migrations
+    ]
+
+
 def describe(
     plan: UpdatePlan, *, backup: bool, daemon_running: bool, dashboard_server_running: bool = False
 ) -> list[str]:
@@ -1065,6 +1068,7 @@ def describe(
             "Includes database migrations: "
             + ("the database is backed up first" if backup else "NO backup (--no-backup)")
         )
+    lines.extend(migration_boundary_descriptions(plan))
     if plan.dependencies:
         lines.append("Reinstalls Python dependencies")
     if plan.dashboard_inputs:
