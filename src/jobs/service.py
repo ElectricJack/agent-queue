@@ -61,6 +61,7 @@ class JobService:
         input_ref=None,
         trusted_band=2,
         wait_identity=None,
+        wait_registration=None,
         queue_seconds=None,
         run_seconds=None,
         adapter_request_hash=None,
@@ -72,6 +73,11 @@ class JobService:
 
             return await submit(self, script)
         cfg = self.settings
+        if wait_identity is not None:
+            from src.waits.policy import enabled
+
+            if enabled(self.config, project_id):
+                raise JobError("jobs.verified_wait_required")
         if not cfg.enabled:
             raise JobError("jobs.disabled")
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
@@ -163,7 +169,7 @@ class JobService:
             "args": args,
             "input_mode": input_mode,
             "input_ref": input_ref,
-            "wait": wait_identity is not None,
+            "wait": wait_identity is not None or wait_registration is not None,
             "queue_seconds": queue_seconds,
             "run_seconds": run_seconds,
             "adapter_request_hash": adapter_request_hash,
@@ -186,6 +192,11 @@ class JobService:
             "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
             **session_env_caps(self.config),
         }
+        from src.build_cache import resolved_cache_settings
+
+        cache = await resolved_cache_settings(self.db, self.config, project_id)
+        if cache:
+            env["CCACHE_DIR" if cache.kind == "ccache" else "SCCACHE_DIR"] = cache.dir
         if preset in NODE_PRESETS:
             # npm/pnpm launchers and package scripts commonly use /usr/bin/env node.
             # Keep that server-resolved runtime on PATH inside the detached job.
@@ -231,6 +242,8 @@ class JobService:
             "adapter_request_hash": adapter_request_hash,
             "tool_versions": {"python": sys.version, "executable": sys.executable},
         }
+        if cache:
+            contract["build_cache"] = {"kind": cache.kind, "dir": cache.dir}
         if preset == "matter_render":
             import hashlib
 
@@ -299,6 +312,7 @@ class JobService:
             log_budget=cfg.log_budget_bytes,
             reservation=cfg.head_bytes + cfg.tail_bytes,
             wait_identity=wait_identity,
+            wait_registration=wait_registration,
         )
 
     async def cancel(self, job: dict):
@@ -663,13 +677,18 @@ class JobService:
                 remove_snapshot = False
                 if job["owner_kind"] == "integration" and job["input_mode"] == "snapshot":
                     snapshot = Path(job["contract"]["cwd"])
-                    root = Path(self.config.data_dir) / "job-snapshots"
+                    from src.projects.storage_binding import bound_path, read_binding
+
+                    root = bound_path(await read_binding(self.db, job["project_id"]),
+                                      Path(self.config.data_dir) / "job-snapshots")
                     ws = await self.db.get_workspace(job["workspace_id"])
                     # Only internally provisioned, disabled snapshots may be removed.
                     if (
                         ws and ws.kind_id == "job-snapshot" and not ws.enabled
                         and snapshot.parent == root
                         and job["workspace_id"] == "job-snapshot-" + snapshot.name
+                        and not (root / ".owners" / (snapshot.name + ".json")).exists()
+                        and not (root / ".owners" / (snapshot.name + ".json")).is_symlink()
                     ):
                         snapshot_ws = ws
                         from sqlalchemy import select

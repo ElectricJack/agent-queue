@@ -620,6 +620,8 @@ class _WorkerPublication:
     repository_url: str
     default_branch: str
     task_id: str = ""
+    batch_repair: dict | None = None
+    claim_epoch: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +726,8 @@ class GitPlugin(InternalPlugin):
         checkout_path: str,
         project,
         requested_branch: str | None,
+        *,
+        allow_batch_repair: bool = False,
     ) -> _WorkerPublication:
         """Authorize a worker's push or PR before any credential is selected.
 
@@ -749,14 +753,24 @@ class GitPlugin(InternalPlugin):
         own_branches = {f"aq/{task.id}"}
         if task.branch_name:
             own_branches.add(task.branch_name)
-        branch = requested_branch or task.branch_name or f"aq/{task.id}"
-        if branch not in own_branches:
+        assignment = None
+        if allow_batch_repair:
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            assignment = await BatchRepairAssignments(self._db._db).get(task)
+            if assignment and self._ctx.get_service("config").integration_git_first != "active":
+                raise GitError("batch repair publication requires Git-first active mode")
+        branch = (requested_branch or (assignment["branch"] if assignment else task.branch_name)
+                  or f"aq/{task.id}")
+        if branch not in own_branches and (assignment is None or branch != assignment["branch"]):
             raise GitError(f"branch '{branch}' is not this session's task branch")
         return _WorkerPublication(
             branch=branch,
             repository_url=await self._task_repository_url(task, project, checkout_path),
             default_branch=(project.repo_default_branch if project else None) or "main",
             task_id=task.id,
+            batch_repair=assignment if assignment and branch == assignment["branch"] else None,
+            claim_epoch=task.claim_epoch,
         )
 
     async def _task_repository_url(self, task, project, checkout_path: str) -> str:
@@ -838,13 +852,26 @@ class GitPlugin(InternalPlugin):
                 branch,
                 expected_remote_oid=expected_remote_oid,
                 event_bus=self._ctx._bus,
-                project_id=args.get("project_id"),
+                project_id=args.get("project_id") or (project.id if project else None),
             )
             return branch, oid, []
 
         publication = await self._worker_publication(
-            principal, checkout_path, project, requested_branch
+            principal, checkout_path, project, requested_branch, allow_batch_repair=True,
         )
+        if publication.batch_repair is not None:
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            policy = await self._publish_policy(
+                principal, project, publication.task_id, checkout_path=checkout_path,
+                repository_url=publication.batch_repair["repository_url"],
+            )
+            oid = await BatchRepairAssignments(self._db._db).publish(
+                publication.task_id, publication.batch_repair, git=git,
+                checkout=checkout_path, policy=policy, expected_oid=expected_remote_oid,
+                event_bus=self._ctx._bus, principal=principal, claim_epoch=publication.claim_epoch,
+            )
+            return publication.branch, oid, list(policy.notes)
         # The same reserved-path gate the daemon applies to task delivery,
         # measured from the default branch this checkout last fetched.
         base_ref: str | None = f"refs/remotes/origin/{publication.default_branch}"

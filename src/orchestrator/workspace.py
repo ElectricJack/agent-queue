@@ -195,10 +195,9 @@ class WorkspaceMixin:
         project = await self.db.get_project(task.project_id)
         integration_origin = None
         integration_fence = None
-        if getattr(project, "hierarchical_integration_mode", "disabled") in {
-            "hierarchy",
-            "train",
-        }:
+        from src.integration.train_policy import worker_integration_enabled
+
+        if await worker_integration_enabled(self.db, project):
             try:
                 integration_origin, integration_fence, _integration_role = (
                     await self._hierarchy_origin_and_fence(task, project)
@@ -1449,6 +1448,11 @@ class WorkspaceMixin:
         )
         if base is not None:
             self._register_slot_bases([ws], base.workspace_path)
+
+        if task.status == TaskStatus.RESUME_PENDING:
+            from src.wait_runtime.resume import verify_saved_branch
+
+            await verify_saved_branch(self, task, slot_dir)
 
         resume_branch = None if integration_origin is not None else await self._resume_branch_for(task)
 
