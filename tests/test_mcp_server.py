@@ -564,6 +564,22 @@ class TestDriftDetection:
             "gate_resolve",
             "gate_show",
             "project_ready",
+            # Read-only doctor observations, snapshot cleanup and playbook state
+            # (doctor_observation_commands.py, playbook_state_commands.py). Their
+            # shared schemas are deliberately fallback schemas so every descriptor
+            # projection reads one source (docs/specs/design/trust-and-ops.md 5.7,
+            # docs/guides/observation-snapshots.md, docs/guides/playbook-state.md);
+            # no typed LLM-facing definition is written for them.
+            "doctor_catalog",
+            "doctor_run",
+            "observation_snapshot_cleanup",
+            "playbook_state_delete",
+            "playbook_state_get",
+            "playbook_state_inspect",
+            "playbook_state_list",
+            "playbook_state_notify",
+            "playbook_state_reset",
+            "playbook_state_set",
         }
         from src.mcp_registration import effective_tool_definitions
 
@@ -702,6 +718,7 @@ class TestDriftDetection:
             "reconcile_collaborations",
             # Daemon-only git-first train dispatch uses a fallback schema.
             "integration_train_tick",
+            "integration_reconcile_git_truth",
             # Phase 2 managed-job substrate (src/commands/job_commands.py).
             # Excluded from MCP, the CLI and HTTP until the phase 3 adapters
             # land, so each carries a codegen-only fallback schema rather
@@ -724,6 +741,22 @@ class TestDriftDetection:
             # calls it over the CLI/HTTP surface and the session comes from the
             # bearer scope, so there is no LLM-facing definition to write.
             "subagent_event",
+            # Read-only doctor observations, snapshot cleanup and playbook state
+            # (doctor_observation_commands.py, playbook_state_commands.py). Their
+            # shared schemas are deliberately fallback schemas so every descriptor
+            # projection reads one source (docs/specs/design/trust-and-ops.md 5.7,
+            # docs/guides/observation-snapshots.md, docs/guides/playbook-state.md);
+            # no typed LLM-facing definition is written for them.
+            "doctor_catalog",
+            "doctor_run",
+            "observation_snapshot_cleanup",
+            "playbook_state_delete",
+            "playbook_state_get",
+            "playbook_state_inspect",
+            "playbook_state_list",
+            "playbook_state_notify",
+            "playbook_state_reset",
+            "playbook_state_set",
         }
         from src.mcp_registration import effective_tool_definitions
 

@@ -40,6 +40,8 @@ const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
 const MorningReportPage = lazy(() => import("./pages/reports/MorningReportPage"));
+const WaitingOn = lazy(() => import("./pages/WaitingOn"));
+const PlanPage = lazy(() => import("./pages/PlanPage"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 const FocusShell = lazy(() => import("./pages/focus/FocusShell"));
@@ -47,6 +49,7 @@ const FocusHome = lazy(() => import("./pages/focus/FocusHome"));
 const FocusTask = lazy(() => import("./pages/focus/FocusTask"));
 const FocusSession = lazy(() => import("./pages/focus/FocusSession"));
 const FocusReport = lazy(() => import("./pages/focus/FocusReport"));
+const FocusAsk = lazy(() => import("./pages/focus/FocusAsk"));
 const FocusReview = lazy(() => import("./pages/focus/FocusReview"));
 const FocusEscalation = lazy(() => import("./pages/focus/FocusEscalation"));
 const FocusInbox = lazy(() => import("./pages/focus/FocusInbox"));
@@ -176,12 +179,14 @@ export default function App() {
       <ProjectScopePaneSync />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
+          <Route path="plans/:taskId" element={<PlanPage />} />
           {/* Focus routes sit outside the three-column shell (mobile dashboard §4.1). */}
           <Route path="focus" element={<FocusShell />}>
             <Route index element={<FocusHome />} />
             <Route path="tasks/:taskId" element={<FocusTask />} />
             <Route path="sessions/:sessionId" element={<FocusSession />} />
             <Route path="reports/:reportId" element={<FocusReport />} />
+            <Route path="asks/:askId" element={<FocusAsk />} />
             <Route path="reviews/:reviewId" element={<FocusReview />} />
             <Route path="escalations/:escalationId" element={<FocusEscalation />} />
             <Route path="inbox" element={<FocusInbox />} />
@@ -194,6 +199,7 @@ export default function App() {
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="conversations" element={<GlobalChat />} />
+            <Route path="waiting" element={<WaitingOn />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="host-shell" element={<HostShell />} />
             <Route path="reviews" element={<ReviewsInbox />} />
