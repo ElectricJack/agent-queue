@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/knowledge_queries.py::KnowledgeQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
