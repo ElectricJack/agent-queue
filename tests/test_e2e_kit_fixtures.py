@@ -843,6 +843,8 @@ def s16_canary_surfaces(monkeypatch, request):
         if args[:2] == ("session", "token"):
             return {"token": "canary-token"}
         if args[:2] == ("task", "claim"):
+            # A busy fixture row must not select other queued work through --next.
+            assert args[2] == expected
             return responses.pop(0) if len(responses) > 1 else responses[0]
         raise AssertionError(args)
 
@@ -885,6 +887,35 @@ def test_s16_canary_retries_empty_claims_then_holds_its_pools_task(
                if args[:2] == ("task", "claim"))
 
 
+def test_s16_canary_retries_a_locked_ready_fixture(s16_canary_surfaces):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    responses.insert(0, {"result": "claim_conflict"})
+
+    worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert held == expected == worker.task_id
+    assert len(_claims(calls)) == 2
+
+
+@pytest.mark.parametrize("change", [
+    {"status": "IN_PROGRESS"}, {"assigned_agent": "other-worker"},
+    {"claimed_by": "other-session"}, {"is_blocked": True},
+])
+def test_s16_canary_does_not_retry_an_unavailable_fixture(
+    s16_canary_surfaces, monkeypatch, change,
+):
+    smoke, responses, calls, clock, _profile, _expected = s16_canary_surfaces
+    original = smoke.task_show
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {**original(task_id), **change})
+    responses[:] = [{"result": "claim_conflict"}]
+
+    with pytest.raises(smoke.Failure, match="claim_conflict"):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+    assert clock.now == 0
+
+
 @pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
 def test_s16_canary_does_not_retry_other_claim_failures(s16_canary_surfaces, result):
     smoke, responses, calls, clock, _profile, _expected = s16_canary_surfaces
@@ -908,12 +939,13 @@ def test_s16_canary_rejects_the_other_pools_held_task(s16_canary_surfaces):
     assert len(_claims(calls)) == 1
 
 
+@pytest.mark.parametrize("result", ["no_ready_work", "claim_conflict"])
 def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
-    s16_canary_surfaces,
+    s16_canary_surfaces, result,
 ):
     smoke, responses, calls, clock, profile, expected = s16_canary_surfaces
     # The shape of the CI failure this retry absorbs (run 37983264206).
-    responses[:] = [{"result": "no_ready_work", "session": {
+    responses[:] = [{"result": result, "session": {
         "id": "canary", "claims": 0, "claim_phase": "claiming",
     }}]
 
@@ -922,7 +954,7 @@ def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
 
     assert clock.now == 1
     assert len(_claims(calls)) > 1
-    for detail in (expected, "no_ready_work", "claim_phase", "READY", profile, "pin"):
+    for detail in (expected, result, "claim_phase", "READY", profile, "pin"):
         assert detail in str(error.value)
 
 
@@ -1468,8 +1500,9 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
 
     # S17 covers the phased development graph; S18 runs the command-only
     # durable failure-triage path; and S19 exercises planner-scoped graph
-    # filing under the fake provider; S20 proves ordinary train delivery.
-    assert set(by_key) == {f"S{number}" for number in range(1, 21)}
+    # filing under the fake provider; S20 proves ordinary train delivery;
+    # S21 proves held ingestion, assigned fidelity review and release replay.
+    assert set(by_key) == {f"S{number}" for number in range(1, 22)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
@@ -1482,6 +1515,7 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
     assert by_key["S20"].families == ("integration/train/provenance",)
+    assert by_key["S21"].families == ("ingestion/recovery/fidelity",)
 
 
 def test_ci_scenario_groups_cover_every_scenario_once():
@@ -1518,6 +1552,10 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
             raise failure
 
     monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {
+        "assignment_playbook_id": "project-router",
+    })
+    monkeypatch.setattr(smoke, "observe_scheduler_cycles", lambda _: calls.append(("cycle",)))
     monkeypatch.setattr(smoke, "_s16", manual_sweep)
     monkeypatch.setattr(smoke, "_restore_providers", lambda: calls.append(("restore providers",)))
     monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
@@ -1530,9 +1568,12 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
         assert smoke.s16_provider_failover({}) == "manual sweep complete"
     assert calls == [
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--no-enabled"),
+        ("cycle",),
         ("manual sweep",),
         ("restore providers",),
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--enabled"),
         ("readiness",),
     ]
 

@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/wait_runtime/legacy_projection.py::project_condition": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_projection.py::project_escalation": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged."
+  }
+}

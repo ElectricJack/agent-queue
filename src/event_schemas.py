@@ -577,7 +577,7 @@ _CONFIG_SCHEMAS: dict[str, EventSchema] = {
 # ---------------------------------------------------------------------------
 
 _PROFILE_SCHEMAS: dict[str, EventSchema] = {
-    # A synced profile's vault copy (the supervisor by default) gained the
+    # A shipped system profile's vault copy (unless it opted out) gained the
     # shipped ``## Capabilities`` grants it lacked.  ``added`` maps each
     # capability namespace to the appended names; ``trigger`` is ``startup``,
     # ``reload`` or ``doctor``.
@@ -1210,6 +1210,10 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id"],
         "optional": ["task_id"],
     },
+    "session.claim_file_missing": {
+        "required": ["session_id", "task_id", "claim_epoch"],
+        "optional": ["project_id"],
+    },
     # A session that had nothing left to do -- a recorded stop intent
     # (``aq task close``'s release, a drain, ``aq session kill``) or a spent
     # claim budget -- kept its harness process alive past the idle-stop grace,
@@ -1651,6 +1655,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.renamed": {
         "required": ["profile_id", "old_name", "name", "backup_path"],
+        "optional": ["seq"],
+    },
+    "pool.deleted": {
+        "required": ["profile_id", "depth", "sessions", "warnings"],
         "optional": ["seq"],
     },
 }

@@ -298,7 +298,9 @@ class PoolsMixin:
             for p in system_profiles
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
-        measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        measurement.pool_sessions = await self.db.list_sessions(
+            lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
+        )
         from src.waits.occupancy import continuation_occupancy, evictable_sessions
         evictable = await evictable_sessions(self.db, self.config)
         resuming, reserved = await continuation_occupancy(self.db, self.config)
@@ -1474,7 +1476,9 @@ class PoolsMixin:
         session = current
         # Re-check the shared exemption before timeout-driven cleanup. Death,
         # operator intent and provider failover still stop a waiting session.
-        if reason in {"stalled", "stuck_timeout", "claim_loop_stalled", "prepare_timeout"}:
+        if reason in {
+            "stalled", "stuck_timeout", "claim_loop_stalled", "prepare_timeout", "claim_file_missing",
+        }:
             task = await self.db.get_task(session.task_id) if session.task_id else None
             if task and await self.db.blocking_wait_for(session, task.claim_epoch, time.time()):
                 return
@@ -1545,15 +1549,30 @@ class PoolsMixin:
                         session.id, exc_info=True,
                     )
                 return
-            from src.claim_file import remove_claim_file
+            from src.claim_file import remove_claim_file, remove_claim_file_if_matches
             try:
-                remove_claim_file(session.work_dir)
+                if reason == "claim_file_missing":
+                    remove_claim_file_if_matches(
+                        session.work_dir, session.task_id, session.last_claim_epoch,
+                        session_id=session.id,
+                    )
+                else:
+                    remove_claim_file(session.work_dir)
             except Exception:
                 logger.debug("pool session %s: claim file removal failed", session.id)
         if session.state not in ("stopped", "quarantined"):
             await self.db.update_session(
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
+        if not other_live and still_owned:
+            slot = await self._slot_workspace_at(session.work_dir)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().detach_idle_slot_branch(slot)
+                except Exception:
+                    logger.warning(
+                        "pool session %s: branch release deferred", session.id, exc_info=True,
+                    )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(
