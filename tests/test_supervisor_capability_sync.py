@@ -138,8 +138,10 @@ def test_setting_reads_booleans_and_boolean_words():
 
 
 def test_supervisor_and_worker_templates_are_synced_by_default():
-    assert DEFAULT_SYNCED_PROFILE_IDS == {"supervisor", "worker-claude", "worker-codex"}
-    for name in ("worker-claude", "worker-codex"):
+    assert DEFAULT_SYNCED_PROFILE_IDS == {
+        "supervisor", "worker-claude", "worker-codex", "worker-opencode"
+    }
+    for name in ("worker-claude", "worker-codex", "worker-opencode"):
         assert capability_sync_enabled(name, _profile(name, []))
         assert not capability_sync_enabled(
             name, _profile(name, [], frontmatter="capability_sync: false\n")
@@ -600,14 +602,17 @@ def test_existing_supervisor_gains_object_evidence_reads(data_dir):
     assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
 
 
-@pytest.mark.parametrize("profile_id", ["worker-claude", "worker-codex"])
+@pytest.mark.parametrize("profile_id", ["worker-claude", "worker-codex", "worker-opencode"])
 @pytest.mark.parametrize("opt_out", [False, True])
 def test_existing_custom_worker_receives_routine_grants_without_replacing_operator_rules(
     tmp_path, profile_id, opt_out,
 ):
     data_dir = str(tmp_path)
     shipped = Path(shipped_profile_path(profile_id)).read_text()
-    grants = {"git_pull", "dry_run_playbook", "task_children", "task_progress", "get_git_status"}
+    grants = {
+        "git_pull", "git_push", "git_create_pr", "dry_run_playbook",
+        "task_children", "task_progress", "get_git_status",
+    }
     stale = shipped
     for grant in grants:
         assert f'    "{grant}",' in shipped

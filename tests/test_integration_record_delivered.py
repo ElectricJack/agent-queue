@@ -138,14 +138,21 @@ async def test_record_delivered_rolls_back_when_retention_publication_fails(worl
 @pytest.mark.parametrize(
     "kind", [PrincipalKind.SESSION, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK]
 )
-async def test_record_delivered_refuses_every_nonlocal_principal(world, kind):
-    request = await source(world)
+async def test_record_delivered_refuses_every_nonlocal_principal(kind, monkeypatch):
+    # Authorization is command logic; no repository or delivery proof is needed.
+    request = IntegrationRecordDeliveredArgs(
+        task_id="external", project_id="p", source_sha="a" * 40, base_sha="b" * 40,
+        reason="Attempt to record delivery as a nonlocal principal", dry_run=False,
+    )
+    record = AsyncMock()
+    monkeypatch.setattr(DeliveredClose, "record", record)
     handler = IntegrationCommandsMixin()
-    handler.db = world.db
+    handler.db = AsyncMock()
     with principal_context(ExecutionPrincipal(kind=kind, policy=DENY_ALL, elevated=True)):
         result = await handler._cmd_integration_record_delivered(request.model_dump())
     assert result["success"] is False and "local operator" in result["error"]
-    assert await world.db.get_task_completion("external") is None
+    record.assert_not_awaited()
+    assert handler.db.mock_calls == []
 
 
 async def test_record_delivered_default_movement_rolls_back_completion(world, monkeypatch):
@@ -193,7 +200,7 @@ async def test_record_delivered_refuses_another_tasks_reservation(world):
 async def idle_train(world):
     from sqlalchemy import insert
     from src.database import tables as t
-    from src.integration.subjects import PolicyArtifactPin, Subject, SubjectSchedule
+    from src.integration.runtime_contracts import PolicyArtifactPin, Subject, SubjectSchedule
     from src.commands.contracts.integration import IntegrationQuiesceArgs
 
     sha = "sha256:" + "1" * 64

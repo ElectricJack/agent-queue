@@ -120,6 +120,8 @@ export interface ChatTranscriptOverrides {
   sessionAddress?: string;
   /** Override the thread id. Default: `dashboard:${projectId}`. */
   threadIdOverride?: string;
+  /** Supervisor mail and replies from every surface. */
+  allThreads?: boolean;
 }
 
 export function useChatTranscript(
@@ -129,17 +131,21 @@ export function useChatTranscript(
   const qc = useQueryClient();
   const thread = overrides.threadIdOverride ?? threadIdFor(projectId);
   const toId = overrides.sessionAddress ?? `supervisor-${projectId}`;
+  const allThreads = overrides.allThreads ?? false;
+  const readThread = allThreads ? "all" : thread;
 
   const hydrate = useQuery({
-    queryKey: ["chat", "thread", projectId, thread, toId],
+    queryKey: ["chat", "thread", projectId, readThread, toId],
     queryFn: (): Promise<ChatMessagesResponse> =>
       fetchChatMessages(projectId, {
-        threadId: thread,
+        threadId: allThreads ? undefined : thread,
         limit: 200,
         sessionAddress: overrides.sessionAddress,
+        ...(allThreads ? { allThreads: true } : {}),
       }),
     enabled: !!projectId || !!overrides.sessionAddress,
     staleTime: 15_000,
+    refetchInterval: 10_000,
     // Surface a chat failure promptly. On the client default (retry: 3) the
     // backoff runs 1s + 2s + 4s, so a rejected session address sat on a blank
     // "connecting" pane for ~7s before the error text appeared.
@@ -166,7 +172,7 @@ export function useChatTranscript(
     setSendError(null);
     setIsSending(false);
     seenIds.current = new Set();
-  }, [projectId, thread, toId]);
+  }, [projectId, thread, toId, allThreads]);
 
   useEventStream({
     onEvent: useCallback(
@@ -174,18 +180,26 @@ export function useChatTranscript(
         const evProjectId = (event as { project_id?: string | null }).project_id;
         if (evProjectId && evProjectId !== projectId) return;
 
+        if (event.event_type.startsWith("message.")) {
+          const eventThread = (event as { thread_id?: string }).thread_id;
+          if (!allThreads && eventThread && eventThread !== thread) return;
+          // Delivery/reply events do not always carry a thread. Read timestamps
+          // also reconcile through the bounded poll when no event is emitted.
+          void qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, readThread] });
+        }
+
         if (event.event_type === "message.sent") {
-          if (event.thread_id !== thread) return;
+          if (!allThreads && event.thread_id !== thread) return;
           const msgId = event.message_id;
           if (seenIds.current.has(msgId)) return;
           seenIds.current.add(msgId);
           // Re-fetch to pull the full row (message.sent event doesn't carry body).
-          qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, thread] });
+          qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, readThread] });
           // Any non-user side arriving in this thread clears the thinking state.
           // The most reliable discriminator is to_kind — user-sent messages go
           // to a session; supervisor replies come back to a user recipient.
           const toKind = (event as { to_kind?: string }).to_kind;
-          if (toKind === "user") {
+          if (!allThreads && toKind === "user") {
             setThinking(null);
           }
           return;
@@ -222,7 +236,7 @@ export function useChatTranscript(
           );
         }
       },
-      [projectId, thread, qc],
+      [projectId, thread, readThread, allThreads, qc],
     ),
   });
 
@@ -246,11 +260,13 @@ export function useChatTranscript(
     const since = thinkingRef.current?.since ?? 0;
     if (since > 0) {
       const gotReply = rows.some(
-        (r) => r.from_kind !== "user" && (r.created_at ?? 0) >= since,
+        (r) => allThreads ? r.reply_to_id != null && rows.some((sent) => sent.id === r.reply_to_id
+          && sent.from_id === "dashboard" && (sent.created_at ?? 0) >= since)
+          : r.from_kind !== "user" && (r.created_at ?? 0) >= since,
       );
       if (gotReply) setThinking(null);
     }
-  }, [hydrate.data]);
+  }, [hydrate.data, allThreads]);
 
   const [sendError, setSendError] = useState<unknown>(null);
   const [isSending, setIsSending] = useState(false);
@@ -300,10 +316,10 @@ export function useChatTranscript(
           sessionAddress: overrides.sessionAddress,
         });
         // Keep the sent thread fresh even if the user switched away while sending.
-        qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, thread] });
+        qc.invalidateQueries({ queryKey: ["chat", "thread", projectId] });
         if (!isCurrent()) return;
         setPending((prev) =>
-          prev.map((p) => (p.id === optimistic.id ? { ...p, serverId: res.message_id } : p)),
+          prev.map((p) => (p.id === optimistic.id ? { ...p, pending: false, serverId: res.message_id } : p)),
         );
       } catch (err) {
         if (!isCurrent()) return;
@@ -348,5 +364,6 @@ export function useChatTranscript(
     isSending,
     sendError,
     thinking,
+    deliveryFailure: hydrate.data?.delivery_failure ?? null,
   };
 }

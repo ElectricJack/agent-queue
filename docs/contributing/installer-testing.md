@@ -67,9 +67,9 @@ The journeys it covers, each end to end on the composed registry:
 * **Missing provider** — a selected CLI is installed by its documented
   installer; one whose installer fails stops the run with the provider's own
   documentation; an unselected one is skipped and blocks nothing.
-* **Authentication failure** — an installed but unauthenticated harness stops at
-  the human with exit code 10, and the rerun after the login continues into a
-  ready daemon without reinstalling the CLI.
+* **Authentication failure** — an installed but unauthenticated harness records
+  a needs-user result without halting later onboarding steps. The run returns
+  exit code 10; rerunning after login reaches ready without reinstalling the CLI.
 * **Default activation** — only providers that are actually authenticated
   activate worker profiles, a later login adds its own without overwriting an
   edited profile, and `aq install` writes the activation record beside the
@@ -169,14 +169,17 @@ pass by analogy from another platform. The macOS harness does this itself: every
 row above that one unattended run cannot produce is written into its record as
 `unmet` with the reason, so the gap stays visible instead of disappearing.
 
-## Known gaps this coverage found
+## Ownership and private-value regressions
 
-* On a fresh managed install the PostgreSQL adapter creates `config.yaml` (it
-  writes the database URL into it), so the later onboarding step sees a file
-  that already exists and records it as *not owned*. `aq uninstall
-  --remove-config` therefore keeps AQ's own configuration and reports it as
-  "found on this host and reused". Filed as `noble-apex.22`; the integration
-  suite asserts the resources each adapter records, not this classification.
+The PostgreSQL credential step records a newly created `config.yaml` as owned.
+Later onboarding preserves that ownership, so uninstall can distinguish an
+AQ-created config from a reused one. The earlier `noble-apex.22` ownership
+gap is fixed; it is not an outstanding acceptance exception.
+
+`tests/test_install_onboarding.py` also covers private-value key bootstrap:
+material is persisted before its config reference, reruns preserve existing
+keys, and an existing reference with missing key material is reported rather
+than silently replaced.
 
 ## Running it
 
@@ -194,6 +197,9 @@ PostgreSQL service and writes `~/.agent-queue`:
 python3 scripts/acceptance/macos_acceptance.py --output ./macos-acceptance
 ```
 
-Neither needs PostgreSQL, a network or a provider account. If a test in this
-area starts wanting one, that is the signal that a seam is missing — add the
-injection point rather than the dependency.
+The installer seam tests do not use a PostgreSQL server, network or provider
+account themselves. The repository test runner still requires the separate
+disposable PostgreSQL test service through `POSTGRES_TEST_DSN`; see
+[testing](testing.md). If an installer adapter test starts accessing real host
+services, add the missing injection point. The macOS acceptance journey uses
+real services and downloads.
