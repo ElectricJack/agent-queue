@@ -515,6 +515,25 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "path": "/repos/myrepo/.aq/worktrees/slot-3",
         "reason": "cap_shrunk",
     },
+    "worktree.stale_claim_retired": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-5",
+        "path": "/repos/myrepo/.aq/worktrees/slot-5",
+        "holder_task_id": "steady-harbor-62",
+        "holder_claim_epoch": 1,
+        "holder_session_id": "sess-old",
+        "reason": "holder task is COMPLETED",
+        "actor": "claim",
+        "claimant_task_id": "task-new",
+    },
+    "worktree.sentinel_cleared": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-4",
+        "path": "/repos/myrepo/.aq/worktrees/slot-4",
+        "holder_task_id": "brisk-quest-34",
+        "branch": "aq/brisk-quest-34",
+        "reason": "task brisk-quest-34 is COMPLETED",
+    },
     "worktree.restored": {
         "project_id": "proj-1",
         "workspace_id": "ws-slot-2",
@@ -767,6 +786,23 @@ _CANONICAL_PAYLOADS["integration.resolution_push_observed"][
 # ``cleanup_requested``) and the cascade's ``route_needed.py``.
 _CANONICAL_PAYLOADS.update(
     {
+        "integration.publication_verified": {
+            "project_id": "proj-1",
+            "batch_id": "batch-1",
+            "revision": 1,
+            "repository_id": "repo-1",
+            "target_ref": "refs/heads/main",
+            "head_sha": "a" * 40,
+            "candidate_sha": "a" * 40,
+            "publication_verified": True,
+        },
+        # TrainLaneFactory._checks_changed invalidates exact-head readiness.
+        "integration.readiness_changed": {
+            "project_id": "proj-1",
+            "repository_id": "repo-1",
+            "head_sha": "a" * 40,
+            "reason": "checks_changed",
+        },
         "integration.completed_container_checkpoint_recovered": {
             "id": "recovery-1", "operator_id": "human:local-operator",
             "reason": "repair accepted final source", "task_id": "container-1",
@@ -1016,6 +1052,12 @@ _CANONICAL_PAYLOADS["pool.renamed"] = {
     "name": "Space Bunny",
     "backup_path": "/vault/agent-types/worker/profile.md.bak-1",
 }
+_CANONICAL_PAYLOADS["pool.deleted"] = {
+    "profile_id": "worker",
+    "depth": "profile",
+    "sessions": ["session-1"],
+    "warnings": [],
+}
 # This switch event is also the wake-up contract for already-parked pool claims.
 # Global worker pools §6.3 / §4 — emitted by ``_emit_placement_starved`` and
 # ``_announce_bounds_rescoped``.  No ``project_id``: a pool is a fleet now, and
@@ -1264,6 +1306,15 @@ _CANONICAL_PAYLOADS.update(
         },
     }
 )
+
+# Batch payloads mirror the transactional outbox envelope, including a missing
+# reviewer before dispatch has assigned the initial review task.
+_CANONICAL_PAYLOADS.update({
+    event: {"project_id": "my-app", "batch_id": "batch-1", "structure_revision": 1,
+            "structure_digest": "a" * 64,
+            "reviewer_task_id": None if event == "batch.held" else "reviewer-1"}
+    for event in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released")
+})
 
 # -- test-selection lifecycle events ---------------------------------------
 # Payloads mirror the literal dicts passed to ``bus.emit`` in
@@ -1906,6 +1957,28 @@ class TestAllEventTypesHaveSchemas:
     def test_timer_common_intervals_registered(self):
         for interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):
             assert f"timer.{interval}" in EVENT_SCHEMAS
+
+
+# Independent canonical payloads for implementation §7.5 (not generated from schemas).
+_CANONICAL_PAYLOADS.update({
+    name: {"wait_id": "wait-1", "project_id": "p-1", "generation": 1}
+    for name in (
+        "wait.registered", "wait.satisfied", "wait.cancelled", "wait.source_unavailable",
+        "wait.escalated",
+        "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
+    )
+})
+_CANONICAL_PAYLOADS.update({
+    name: {"continuation_id": "cont-1", "project_id": "p-1", "task_id": "t-1", "generation": 1}
+    for name in (
+        "continuation.suspended", "continuation.queued", "continuation.launched",
+        "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
+    )
+})
+_CANONICAL_PAYLOADS["continuation.loop_detected"] = {
+    "wait_id": "wait-1", "project_id": "p-1", "task_id": "t-1",
+    "registrations": [{"wait_id": "wait-1", "registered_at": 1800000000.0}],
+}
 
 
 class TestAllCanonicalPayloadsPassValidation:
