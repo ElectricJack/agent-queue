@@ -179,7 +179,7 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
     profile_id: n.profile_id, intelligence_class: n.intelligence_class, assigned_agent_id: n.assigned_agent_id,
     branch_name: n.branch_name, pr_url: n.pr_url, playbook_run_id: n.playbook_run_id,
     display_state: n.display_state, display_reason: n.display_reason,
-    claim_readiness: n.claim_readiness,
+    claim_readiness: n.claim_readiness, held_batch: n.held_batch,
     child_state_counts: n.child_state_counts, descendant_state_counts: n.descendant_state_counts,
   };
   return {
@@ -216,7 +216,7 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
     n.branch_name, n.pr_url, n.playbook_run_id, n.subtasks_total, n.subtasks_settled,
     n.phase_order, n.phase_label,
     n.display_state, n.display_reason, JSON.stringify(n.child_state_counts), JSON.stringify(n.descendant_state_counts),
-    JSON.stringify(n.claim_readiness),
+    JSON.stringify(n.claim_readiness), JSON.stringify(n.held_batch),
     // Only epics carry one; the canvas must repaint when its delivery moves.
     n.delivery ? JSON.stringify(n.delivery) : "",
     // The review strip draws id, state, kind and title from every wait.
