@@ -34,6 +34,12 @@ class _Task:
 
 
 @dataclass
+class _Project:
+    id: str = "agent-queue"
+    name: str = "agent-q"
+
+
+@dataclass
 class _Profile:
     id: str = "claude-opus"
     default_class: str = ""
@@ -803,6 +809,21 @@ class TestPromptDelivery:
         assert "aq session drain-ack" in spec.prompt
         assert "task-1" in spec.prompt
 
+    @pytest.mark.parametrize("harness_id", ["claude", "codex"])
+    def test_continuation_bootstrap_requires_delivery_ack_and_prime_retry(self, builder, harness_id):
+        spec = _build(builder, harness=replace(CLAUDE, id=harness_id), extra_env={
+            "AQ_CONTINUATION_ID": "resume-123", "AQ_CONTINUATION_GENERATION": "4",
+        })
+        assert "resuming continuation resume-123, generation 4" in spec.prompt
+        delivery = spec.prompt.index("1. Run `aq prime` once")
+        ack = spec.prompt.index("2. Run the exact `aq wait ack` command")
+        retry = spec.prompt.index("3. Run `aq prime` again")
+        assert delivery < ack < retry < spec.prompt.index("aq task close")
+        assert "`record.stale_claim`" in spec.prompt and "do not stop or exit" in spec.prompt
+        assert "`cancelled` wait outcome still requires `aq wait ack`" in spec.prompt
+        assert "you still hold the task claim" in spec.prompt
+        assert "Run `aq prime` first and follow" not in spec.prompt
+
     @pytest.mark.parametrize(
         ("profile_id", "project_id", "supervisor_inbox"),
         [
@@ -1180,10 +1201,10 @@ class TestWorkerToolEnv:
         for key in self.EXPECTED:
             monkeypatch.delenv(key, raising=False)
 
-    def _pool(self, builder, harness=CLAUDE):
+    def _pool(self, builder, harness=CLAUDE, *, project=None):
         return builder.build_pool_spec(
             profile=_Profile(id="standard-high-claude"),
-            project=_Task(id="proj-1"),
+            project=project if project is not None else _Task(id="proj-1"),
             agent_id="agent-1",
             harness=harness,
             work_dir="/wd/.aq/worktrees/slot-1",
@@ -1217,6 +1238,26 @@ class TestWorkerToolEnv:
         assert "drain-ack" in prompt
         assert "Do not poll claims" in prompt
         assert "daemon_unreachable / exit code 3, keep retrying" in prompt
+
+    @pytest.mark.parametrize("project_name", ["agent-q", "Agent Queue", ""])
+    @pytest.mark.parametrize("prompt_limit", [1024, 16_384], ids=["file", "inline"])
+    def test_pool_prompt_uses_exact_project_id(self, builder, project_name, prompt_limit):
+        project = _Project(name=project_name)
+        spec = self._pool(
+            builder,
+            harness=replace(CLAUDE, max_argv_prompt_bytes=prompt_limit),
+            project=project,
+        )
+        expected = (
+            "You are a pool worker for project agent-queue (profile standard-high-claude)."
+        )
+        assert spec.env["AQ_PROJECT_ID"] == project.id
+        assert spec.prompt.splitlines()[0] == expected
+        if prompt_limit == 1024:
+            prompts = [content for path, content in spec.files if path.endswith(".txt")]
+            assert prompts == [spec.prompt]
+        else:
+            assert spec.prompt in spec.command
 
     @pytest.mark.parametrize("global_enabled, override", [(True, None), (False, True)])
     def test_pool_prompt_uses_effective_wait_policy(self, builder, global_enabled, override):

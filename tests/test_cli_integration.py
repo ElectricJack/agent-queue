@@ -736,3 +736,19 @@ def test_fast_forward_pr_defaults_to_a_dry_run(apply):
     assert command == "integration_fast_forward_pr"
     assert args == {"task_id": "repair", "pr_number": 41, "dry_run": not apply,
                     **({"expected_head_sha": "a" * 40, "reason": "adopt repair"} if apply else {})}
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_rebind_batch_authority_forwards_preview_and_reason(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "rebound" if apply else "preview"})
+    argv = ["integration", "rebind-batch-authority", "batch", "--reason", "daemon restart"]
+    if apply:
+        argv.append("--apply")
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_rebind_batch_authority", {
+        "batch_id": "batch", "reason": "daemon restart", "dry_run": not apply,
+    })

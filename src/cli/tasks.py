@@ -745,6 +745,11 @@ def task_select(ctx: click.Context, project: str | None) -> None:
 
 @task.command("list")
 @click.option("-p", "--project", "project_id", default=None, help="Filter by project")
+@click.option(
+    "--all-projects", is_flag=True,
+    help="List across projects allowed by your token (cannot combine with --project)",
+)
+@click.option("--limit", type=click.IntRange(min=1), default=None, help="Maximum tasks to return")
 @click.option("--status", default=None, help="Filter by status (see `aq schema`)")
 @click.option(
     "--include-completed",
@@ -757,10 +762,15 @@ def task_select(ctx: click.Context, project: str | None) -> None:
 def task_list(
     ctx: click.Context,
     project_id: str | None,
+    all_projects: bool,
+    limit: int | None,
     status: str | None,
     include_completed: bool,
 ) -> None:
     """List tasks."""
+    if all_projects and project_id is not None:
+        raise click.UsageError("--all-projects cannot be combined with --project")
+
     from .adapters import task_proxy
     from .formatters import format_task_table
 
@@ -771,6 +781,8 @@ def task_list(
             args: dict[str, Any] = {}
             if project_id:
                 args["project_id"] = project_id
+            if limit is not None:
+                args["limit"] = limit
             if status:
                 args["status"] = status
             if include_completed:

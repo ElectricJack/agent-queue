@@ -21,7 +21,7 @@ from src.database.queries.integration_state_queries import session_attached_clau
 from src.integration.delegate_release import live_integration_owner
 from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState
-from src.integration.git_truth import GitTruth
+from src.integration.git_truth import GitTruth, snapshot_scope
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.truth_retention import retain_delivery, retain_objects
@@ -37,7 +37,8 @@ class GitTruthReconciler:
             raise ValueError("page size must be positive")
         self.db, self.git = db, git
         self.observer = DeliveryObserver(
-            db, git=git, data_dir=Path(data_dir) / "truth-reconciliation", truth=GitTruth(git),
+            db, git=git, data_dir=data_dir, store_name="repository",
+            truth=GitTruth(git, share_fetches=True, skip_unchanged=True),
         )
         self.owner_recovery = owner_recovery
         self.obsolete_close = obsolete_close
@@ -52,6 +53,10 @@ class GitTruthReconciler:
         self._lock = asyncio.Lock()
 
     async def tick(self, now):
+        with snapshot_scope(reuse=True):
+            return await self._tick(now)
+
+    async def _tick(self, now):
         if self._lock.locked():
             return {"outcome": "running"}
         async with self._lock:
@@ -245,9 +250,29 @@ class GitTruthReconciler:
         ]).encode()).hexdigest()
         domain = "git-truth:" + key
         async with self.db._engine.connect() as conn:
-            receipt = await conn.scalar(select(t.task_delivery_receipts.c.id).where(
+            recorded = (await conn.execute(select(
+                t.task_delivery_receipts.c.id,
+                exists().where(
+                    t.task_branch_origins.c.task_id == task_id,
+                    t.task_branch_origins.c.repository_id == request.repository_id,
+                    t.task_branch_origins.c.retired_at.is_(None),
+                ) | exists().where(
+                    t.task_integration_checkpoints.c.task_id == task_id,
+                    t.task_integration_checkpoints.c.repository_id == request.repository_id,
+                ) | exists().where(
+                    t.integration_branch_owners.c.owner_id == task_id,
+                    t.integration_branch_owners.c.repository_id == request.repository_id,
+                    t.integration_branch_owners.c.handoff_state != "released",
+                ),
+            ).where(
                 t.task_delivery_receipts.c.domain_key == domain,
-            ))
+            ))).first()
+        receipt = recorded[0] if recorded else None
+        # This exact historical witness already exists and there is nothing to
+        # mutate. A later projection is revisited next pass; receipts never
+        # replace Git proof, freshness or writer checks for actual repairs.
+        if recorded and not recorded[1]:
+            return False
         witness = None if receipt else await retain_delivery(snapshot, evidence)
         if not await view.fresh():
             return False

@@ -545,7 +545,9 @@ async def live_supervisor(db, *, project_id=None, session_id=LAUNCH_UUID, **over
     )
     return ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
-        policy=CapabilityPolicy.from_namespaces(aq_commands=["supervisor_inbox_reply"]),
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=["supervisor_inbox_reply", "message_reply", "message_inbox", "message_status"],
+        ),
         session_id=session_id,
         project_id=project_id,
         session_instance_token="live-token",
@@ -560,7 +562,7 @@ async def reply(handler, values, principal=TRUSTED_LOCAL):
 
 
 @pytest.mark.parametrize("queued_first", [False, True])
-async def test_project_supervisor_reply_passes_request_scope_and_dispatch(env, queued_first):
+async def test_global_supervisor_reply_passes_request_scope_with_project_configured(env, queued_first):
     from src.models import Project
 
     handler, db = env
@@ -569,7 +571,8 @@ async def test_project_supervisor_reply_passes_request_scope_and_dispatch(env, q
     handler.config.discord.project_id = "p"
     if queued_first:
         first = await post(handler)
-    principal = await live_supervisor(db, project_id="p")
+    await live_supervisor(db, project_id="p", session_id="project-supervisor")
+    principal = await live_supervisor(db)
     if queued_first:
         assert await db.route_queued_conversation_inputs("p") == 1
     else:
@@ -577,20 +580,90 @@ async def test_project_supervisor_reply_passes_request_scope_and_dispatch(env, q
     item = await db.get_conversation_input(first["input_id"])
     assert item["project_id"] is None
     notice = await db.get_message(first["supervisor_message_id"])
-    assert (notice.project_id, notice.to_id) == ("p", "supervisor-p")
+    assert (notice.project_id, notice.to_id) == (None, "supervisor-global")
 
     values = reply_args(first)
     scope = RequestScope(kind="session", session_id=principal.session_id,
-                         project_id="p", elevated=True)
+                         project_id=None, elevated=True)
     assert await check_request_scope("supervisor_inbox_reply", values, scope, db=db) is None
     assert "project_id" not in values
     result = await reply(handler, values, principal)
     assert result["success"], result
     assert (await db.get_conversation_input(first["input_id"]))["state"] == "answered"
-    assert (await db.get_message(result["reply_message_id"])).from_id == "supervisor-p"
+    assert (await db.get_message(result["reply_message_id"])).from_id == "supervisor-global"
     assert queued(handler.orchestrator.conversation_outbox, "reply")[-1]["payload"][
         "reply_message_id"
     ] == result["reply_message_id"]
+
+
+@pytest.mark.parametrize("consumed", [False, True])
+async def test_global_replies_to_legacy_project_input_without_reopening_history(env, consumed):
+    from src.models import Project
+
+    handler, db = env
+    await db.create_project(Project(id="p", name="Project"))
+    project = await live_supervisor(db, project_id="p", session_id="project-supervisor")
+    global_principal = await live_supervisor(db)
+    first = await post(handler)
+    async with db.immediate() as conn:
+        await conn.execute(update(messages).where(
+            messages.c.id == first["supervisor_message_id"],
+        ).values(to_id="supervisor-p", project_id="p",
+                 delivered_at=NOW if consumed else None,
+                 archived_at=NOW if consumed else None))
+    before = await db.get_conversation_input(first["input_id"])
+    assert (await reply(handler, reply_args(first), project))["error_code"] == "out_of_scope"
+    with principal_context(project):
+        status = await handler.execute("message_status", {
+            "message_id": first["supervisor_message_id"],
+        })
+        assert status["success"]
+        injected = await handler.execute("message_inbox", {
+            "to_kind": "session", "to_id": "supervisor-p", "inject": True,
+        })
+        assert injected["success"] and injected["injected"] == 0
+    assert await db.route_queued_conversation_inputs("p") == (0 if consumed else 1)
+    assert await db.route_queued_conversation_inputs("p") == 0
+    notice = await db.get_message(first["supervisor_message_id"])
+    assert notice.delivered_at == (NOW if consumed else None)
+    assert notice.archived_at == (NOW if consumed else None)
+    assert notice.to_id == ("supervisor-p" if consumed else "supervisor-global")
+    assert await db.get_conversation_input(first["input_id"]) == before
+    with principal_context(global_principal):
+        result = await handler.execute("message_reply", {
+            "message_id": first["supervisor_message_id"], "body": "Global answer",
+            "idempotency_key": reply_args(first)["idempotency_key"],
+        })
+    assert result["success"], result
+    reply_message = await db.get_message(result["reply_message_id"])
+    assert (reply_message.from_id, reply_message.project_id) == ("supervisor-global", None)
+    replay = await reply(handler, reply_args(first), global_principal)
+    assert replay["success"] and not replay["created"]
+
+
+async def test_legacy_reference_notice_moves_to_global_but_ask_discussion_stays_scoped(env):
+    from src.models import Project
+
+    _, db = env
+    await db.create_project(Project(id="p", name="Project"))
+    await live_supervisor(db, project_id="p", session_id="project-supervisor")
+    await live_supervisor(db)
+    async with db.immediate() as conn:
+        for ident, sender, body_kind in (
+            ("msg-reference-legacy", "discord-intake", "text"),
+            ("msg-ask-legacy", "human:discord:123", "ask_discussion"),
+        ):
+            await db.insert_ask_message({
+                "id": ident, "project_id": "p", "from_kind": "system",
+                "from_id": sender, "to_kind": "session", "to_id": "supervisor-p",
+                "body": "Legacy notice", "body_kind": body_kind, "created_at": NOW,
+            }, conn=conn)
+    assert await db.route_queued_conversation_inputs("p") == 1
+    reference = await db.get_message("msg-reference-legacy")
+    discussion = await db.get_message("msg-ask-legacy")
+    assert (reference.to_id, reference.project_id) == ("supervisor-global", None)
+    assert (discussion.to_id, discussion.project_id) == ("supervisor-p", "p")
+    assert await db.resolve_ask_supervisor("p") == ("supervisor-p", "p")
 
 
 @pytest.mark.parametrize("target", ["foreign_project", "wrong_conversation", "global"])
