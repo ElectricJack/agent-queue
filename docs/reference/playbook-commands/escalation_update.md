@@ -65,8 +65,10 @@ narrower question, a corrected severity — and end it in a state that no action
 produced, namely `cancelled` (the question stopped mattering) or `stale` (it went
 unanswered long enough that answering it is no longer meaningful). Resolving an
 incident by *acting on a human answer* is not this command; that is
-[`escalation_apply_reply`](escalation_apply_reply.md), which writes the terminal
-state itself.
+[`escalation_apply_reply`](escalation_apply_reply.md) when a bound question,
+gate or recovery service applies the answer, and
+[`escalation_resolve`](escalation_resolve.md) when the supervisor did the work
+itself and only has the outcome to report.
 
 ## When a playbook uses it
 
