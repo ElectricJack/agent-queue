@@ -725,6 +725,33 @@ def integration_close_delivered_pr(
     _execute(ctx, "integration_close_delivered_pr", args)
 
 
+@integration.command("fast-forward-pr")
+@click.option("--task-id", required=True, help="Completed repair task whose head to adopt.")
+@click.option("--pr", "pr_number", required=True, type=click.IntRange(min=1), help="Root PR.")
+@click.option("--apply", is_flag=True, help="Push the repair head; default is a dry run.")
+@click.option("--head", "expected_head_sha", help="Exact PR head reported by the dry run.")
+@click.option("--reason", help="Audit reason required when applying.")
+@click.pass_context
+@_handle_errors
+def integration_fast_forward_pr(
+    ctx: click.Context, task_id: str, pr_number: int, apply: bool,
+    expected_head_sha: str | None, reason: str | None,
+) -> None:
+    """Fast-forward a root PR's branch to a separately filed repair's published head.
+
+    The dry run reports `would_publish` or `already_published` with the PR head
+    (`previous_oid`) and the repair's passing head (`published_oid`). `--apply`
+    needs that PR head and a reason; it pushes under a server-acquired branch
+    lease. Protected targets, live writers, moved heads and non-descendants refuse.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "pr_number": pr_number, "dry_run": not apply}
+    args.update({k: v for k, v in (("expected_head_sha", expected_head_sha),
+                                   ("reason", reason)) if v is not None})
+    _execute(ctx, "integration_fast_forward_pr", args)
+
+
 @integration.command("redrive-root")
 @click.argument("task_id")
 @click.option("--apply", is_flag=True, help="Open the missing PR; default is a dry run.")

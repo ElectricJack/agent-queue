@@ -692,3 +692,33 @@ def test_repair_target_cli_apply_requires_both_heads_and_reason(options):
                                           *options])
     assert result.exit_code == 2
     client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("extra", [[], ["--head", "a" * 40], ["--reason", "adopt"]])
+def test_fast_forward_pr_apply_requires_head_and_reason(extra):
+    from src.cli.app import cli
+
+    client = _client({"success": True})
+    argv = ["integration", "fast-forward-pr", "--task-id", "repair", "--pr", "41", "--apply"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + extra)
+    assert result.exit_code == 2
+    assert "--apply requires --head and --reason" in result.output
+    client.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_fast_forward_pr_defaults_to_a_dry_run(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "would_publish"})
+    argv = ["integration", "fast-forward-pr", "--task-id", "repair", "--pr", "41"]
+    if apply:
+        argv += ["--apply", "--head", "a" * 40, "--reason", "adopt repair"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_fast_forward_pr"
+    assert args == {"task_id": "repair", "pr_number": 41, "dry_run": not apply,
+                    **({"expected_head_sha": "a" * 40, "reason": "adopt repair"} if apply else {})}
