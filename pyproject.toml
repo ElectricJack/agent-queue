@@ -4,8 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-queue"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.12"
+# PEP 639 metadata. `license` is the SPDX expression and `license-files`
+# ships the text in the sdist/wheel; both need setuptools>=77, which the
+# build-system pin above already guarantees.
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "asyncpg>=0.29.0",
     "sqlalchemy[asyncio]>=2.0",
@@ -60,7 +65,8 @@ dependencies = [
     "setuptools>=83.0.0",
     # --- Additional 2026 CVE remediation pins (all transitive) ---
     # Pillow — 20 CVEs (PYSEC-2026-2253..2257, 3451..3454, 3493..3496).
-    # Comes in via mkdocs-material (docs) and other transitive paths.
+    # Transitive. Its most direct route in was mkdocs-material, which left with
+    # the `docs` extra; the pin stays because other transitive paths remain.
     "pillow>=12.3.0",
     # PyJWT — 8 CVEs (PYSEC-2026-175..179). Comes in via google-auth /
     # cryptography-adjacent tooling in inbox extras.
@@ -88,8 +94,21 @@ dependencies = [
     # Twisted — PYSEC-2024-75, PYSEC-2026-160, PYSEC-2026-1992. Transitive.
     "twisted>=26.4.0",
     # Click — PYSEC-2026-2132. Also pinned in [cli] extras; hoisted here so
-    # transitive pulls (mkdocs, uvicorn, etc.) resolve to a safe version.
+    # transitive pulls (uvicorn, etc.) resolve to a safe version.
     "click>=8.3.3",
+    # WebSockets — the dashboard's live events (/ws/events) and every agent
+    # terminal (/ws/terminal/...) are WebSockets, and uvicorn only serves them
+    # when a WebSocket library is installed; uvicorn does not require one. A
+    # development venv got `websockets` only through google-genai (the `llm`
+    # extra), so the one-command install -- `pip install -e .[cli]` -- served
+    # HTTP but failed every WebSocket upgrade, and no terminal could connect.
+    "websockets>=14.0",
+    # uvicorn serves the daemon's API and the dashboard server
+    # (src/dashboard_server/, docs/specs/dashboard-server.md §1). It used to
+    # arrive only through `mcp`; a process we run directly declares it. The
+    # floor is a release with the WebSocket denial-response extension the
+    # dashboard server uses to refuse a handshake with the daemon's status.
+    "uvicorn>=0.30",
     # mcp — PYSEC-2026-3481, 3482, 3483. Also pinned in [mcp] extras; hoisted
     # here so transitive pulls (claude-agent-sdk, etc.) resolve to a safe
     # version. <2 because the FastMCP import moved in mcp 2.x.
@@ -127,6 +146,20 @@ mcp = [
     # 1.28.1 addresses PYSEC-2026-3481, 3482, 3483; <2 because FastMCP import moved in 2.x.
     "mcp>=1.28.1,<2",
 ]
+# Smart test selection's static impact engine (src/test_selection/static_impact.py
+# runs its ``impacted-tests`` command).  Pinned exactly: the fixture evaluation in
+# tests/test_selection_static_impact.py records this version's input semantics,
+# and a new version is adopted only once that evaluation passes on it.
+test-selection = [
+    "pytest-impacted==0.30.0",
+    "typesafe-sdk==0.7.1",
+]
+test-selection-fast = [
+    # Opt in with --only-binary=:all: on platforms with a compatible Rust wheel.
+    # The upstream fast extra leaves the extension version unconstrained.
+    "pytest-impacted[fast]==0.30.0",
+    "pytest-impacted-rs==0.30.0",
+]
 cli = [
     # 8.3.3 addresses PYSEC-2026-2132.
     "click>=8.3.3",
@@ -141,7 +174,13 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.23",
     "pytest-cov>=6.0",
+    "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.5",
+    # Property-based tests (random lifecycle sequences and invariants); see
+    # tests/test_task_lifecycle_properties.py.
+    "hypothesis>=6.100",
+    # Keep shard selection reproducible across CI runners and timing refreshes.
+    "pytest-split==0.11.0",
     "ruff>=0.4.0",
     "pre-commit>=3.5.0",
     # Pinned exactly: the whole packages/aq-client/ tree (README.md included)
@@ -152,14 +191,20 @@ dev = [
     "openapi-python-client==0.29.0",
     # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
     "wheel>=0.38.1",
+    # The test-selection extra's engine, so CI runs the fixture evaluation in
+    # tests/test_selection_static_impact.py (which checks the two pins agree).
+    # Keep the Python fallback here: CI must not require a Rust source build.
+    # Its wheel also installs top-level ``tests`` and ``docs`` packages into
+    # site-packages: this checkout's ``tests`` wins only while the repository
+    # root precedes site-packages on sys.path, as pytest arranges.
+    "pytest-impacted==0.30.0",
 ]
-docs = [
-    "mkdocs>=1.6",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.27",
-    # 11.0.1 addresses PYSEC-2026-2999, 3609, 3654 (transitive via
-    # mkdocs-material).
-    "pymdown-extensions>=11.0.1",
+# Smart test selection's dynamic-impact experiment (spec 2026-09-24 §5.2):
+# tests/test_selection_testmon_experiment.py records what testmon would select
+# and skips without it.  Evidence only -- never in `dev`, and `aq test` never
+# passes a --testmon flag.
+test-selection-dynamic = [
+    "pytest-testmon==2.2.0",
 ]
 
 [project.scripts]
@@ -174,6 +219,12 @@ aq = "src.cli.app:main"
 [tool.setuptools.packages.find]
 where = ["."]
 
+[tool.setuptools.package-data]
+# Prompts, harnesses and reviewed artifacts are runtime resources, not
+# checkout-relative files. The release script stages Vite output here too.
+src = ["**/*.md", "**/*.json", "**/*.sha256"]
+"src.dashboard_assets" = ["dist/**"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # ``packages/`` holds generated clients (aq-client) and a TypeScript package
@@ -184,7 +235,9 @@ testpaths = ["tests"]
 # cap plus ``--dist loadfile`` and CI passes them explicitly, while
 # ``pytest -p no:xdist`` (the documented serial path) unloads those options
 # with the plugin and errors on any left in addopts.
-addopts = "--durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
+# ``-p no:impacted``: pytest-impacted (dev extra) registers a pytest plugin that
+# would load into every pytest process; only its ``impacted-tests`` command is used.
+addopts = "-p no:impacted --durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",

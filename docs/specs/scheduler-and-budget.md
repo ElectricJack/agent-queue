@@ -4,18 +4,26 @@ tags: [spec, scheduler, budget, tokens]
 
 # Scheduler and Budget Specification
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../README.md) for what AQ does today, and
+> see [historical material](../history/README.md) for how this material is
+> organised.
+
 ## 1. Overview
 
 The scheduler and budget subsystem controls which tasks get assigned to which agents, in what order, and under what resource constraints. It is entirely deterministic and stateless: given the same snapshot of system state, it always produces the same assignment decisions. No LLM calls, no randomness, no side effects. All scheduling logic runs in-process inside the asyncio event loop.
 
-See [[design/agent-coordination]] for how coordination playbooks interact with the scheduler.
+See [design/agent-coordination](design/agent-coordination.md) for how coordination playbooks interact with the scheduler.
 
 The subsystem is split across two files:
 
 - `src/scheduler.py` — the core scheduling algorithm
 - `src/tokens/budget.py` — the configured fleet-wide budget plus budget math (target ratios, deficits, exhaustion checks)
 
-> **Removed.** `src/tokens/tracker.py` (`RateLimitWindow`) held a sliding-window token counter per (agent type, limit type). It had no production importer and no test, and it counted against a hand-configured cap rather than any provider's real quota, so it was deleted rather than carried. Provider headroom is an unstarted design (`docs/superpowers/specs/2026-08-24-usage-aware-concurrency.md`); whatever implements it will be sampler-driven and does not build on that dataclass.
+> **Removed.** `src/tokens/tracker.py` (`RateLimitWindow`) held a sliding-window token counter per (agent type, limit type). It had no production importer and no test, and it counted against a hand-configured cap rather than any provider's real quota, so it was deleted rather than carried. The usage-aware concurrency proposal is a historical design, not a description of current admission. Shipped provider availability and launch suppression are documented in [scheduling](../concepts/scheduling.md#provider-availability-and-failover); pool limits and resource shares remain separately configured.
 
 The scheduler is called once per orchestrator tick (roughly every 5 seconds). It produces a list of zero or more `AssignAction` objects, each pairing one idle agent with one ready task. The orchestrator then executes those assignments by updating the database and launching agent processes.
 
