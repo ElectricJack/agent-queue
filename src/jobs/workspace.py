@@ -87,7 +87,11 @@ async def candidate_workspace(db, config, args, digest):
     store = await primary_store(
         db, git, args["project_id"], args.get("repository_id"), args["store"], args["input_ref"],
     )
-    pool = WarmWorkspacePool(git, store, Path(config.data_dir) / "job-snapshots")
+    from src.projects.storage_binding import bound_path, read_binding
+
+    root = bound_path(await read_binding(db, args["project_id"]),
+                      Path(config.data_dir) / "job-snapshots")
+    pool = WarmWorkspacePool(git, store, root)
     owner = {"project_id": args["project_id"], "operation_id": args["operation_id"],
              "attempt": args.get("snapshot_group") or digest, "oid": args["input_ref"],
              "batch_id": args.get("workspace_batch_id") or args["operation_id"]}
