@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/object_loop.py`](../../../src/commands/contracts/object_loop.py) |
-| Contract fingerprint | `sha256:c0b2f7ce6506aa6d9910433ebd8e68dfa280b96a40ffedc191ad49971a81555f` |
+| Contract fingerprint | `sha256:2291daa388521b969a285c57ae42fb025bc9df19599777059cd76c3cb1276677` |
 
 ## Parameters
 
@@ -30,12 +30,16 @@
 
 | Field | Type | Description |
 |---|---|---|
+| `error` | `string \| null` | — |
+| `error_code` | `string \| null` | — |
 | `object_id` | `string \| null` | — |
 | `version` | `integer \| null` | — |
 | `state` | `object \| null` | — |
 | `created` | `boolean \| null` | — |
 | `outcome` | `string \| null` | — |
 | `approved` | `boolean \| null` | — |
+
+Projected into the run receipt: `error`, `error_code`.
 
 ## Nested objects
 

@@ -157,12 +157,18 @@ async def test_profile_gist_read_cancellation_reaps_process(tmp_path):
     access = _access(tmp_path, mode="hang")
     task = asyncio.create_task(access.read_profile_gist(GIST_URL))
     marker = tmp_path / "started"
+    # The fake gh creates the marker before its pid is written, so `exists()`
+    # can be true while the file is still empty: poll for the pid itself.
+    pid = None
     for _ in range(200):
-        if marker.exists():
+        try:
+            pid = int(marker.read_text().strip())
+        except (FileNotFoundError, ValueError):
+            pid = None
+        if pid is not None:
             break
         await asyncio.sleep(0.01)
-    assert marker.exists()
-    pid = int(marker.read_text())
+    assert pid is not None, "fake gh never recorded its pid"
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

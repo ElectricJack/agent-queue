@@ -2,7 +2,7 @@ import { NavLink, Outlet, useLocation, useParams } from "react-router-dom";
 import { useListNav } from "../shell/hotkeys/useListNav";
 import { PROJECT_TABS, TASK_TABS, isTaskTab, projectNavigation, workspaceHref } from "../shell/projectNavigation";
 import ProjectHeader from "./project/ProjectLayout";
-import { TaskWorkspaceProvider, useTaskWorkspace } from "./command-center/TaskWorkspace";
+import { TaskWorkspaceProvider } from "./command-center/TaskWorkspace";
 import TaskToolbar from "./command-center/TaskToolbar";
 
 function tabClass(active: boolean): string {
@@ -23,9 +23,7 @@ function CommandCenterViews() {
   const location = useLocation();
   const { tab } = projectNavigation(location.pathname);
   const showTasks = isTaskTab(tab);
-  const { knowledgeAvailable } = useTaskWorkspace();
-  const tabs = projectId ? [...TASK_TABS, ...PROJECT_TABS.filter((item) =>
-    (item.tab !== "knowledge" && item.tab !== "records") || knowledgeAvailable)] : TASK_TABS;
+  const tabs = projectId ? [...TASK_TABS, ...PROJECT_TABS] : TASK_TABS;
   const tabRef = useListNav<HTMLElement>({ axis: "horizontal" });
   return (
       <div className="flex h-full min-h-0 flex-col">
@@ -47,7 +45,7 @@ function CommandCenterViews() {
         </nav>
         {showTasks && <TaskToolbar />}
         {/* Keep URL filters in the provider; reset project-owned dialogs/forms. */}
-        <div key={`content:${projectId ?? "all"}`} className={showTasks
+        <div key={`content:${projectId ?? "all"}`} className={showTasks || tab === "tasks-knowledge"
           ? "min-h-0 flex-1 overflow-hidden"
           : "min-h-0 flex-1 overflow-y-auto p-6"}>
           <Outlet />
