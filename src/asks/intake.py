@@ -31,6 +31,7 @@ from src.database.tables import (
     escalation_messages,
     escalations,
     outbound_deliveries,
+    supervisor_conversations,
 )
 
 ASK_REFERENCE = re.compile(r"\bask-[A-Za-z0-9_-]+\b")
@@ -213,7 +214,9 @@ async def bound_ask(db, item, *, conn):
                 await conn.execute(
                     select(outbound_deliveries.c.payload).where(
                         outbound_deliveries.c.external_receipt_id == reference,
-                        outbound_deliveries.c.destination["channel_id"].astext
+                        outbound_deliveries.c.destination["transport"].as_string()
+                        == item["transport"],
+                        outbound_deliveries.c.destination["channel_id"].as_string()
                         == item["channel_id"],
                     )
                 )
@@ -245,6 +248,70 @@ async def bound_ask(db, item, *, conn):
     return legacy
 
 
+async def bound_conversation(item, *, conn):
+    """Resolve a reply receipt only within the observed destination and audience."""
+    rows = (await conn.execute(
+        select(supervisor_conversations)
+        .join(outbound_deliveries, outbound_deliveries.c.owner_id == supervisor_conversations.c.id)
+        .where(
+            outbound_deliveries.c.owner_kind == "conversation",
+            outbound_deliveries.c.ask_id.is_(None),
+            outbound_deliveries.c.payload["ask_id"].as_string().is_(None),
+            outbound_deliveries.c.payload["action"].as_string() == "reply",
+            outbound_deliveries.c.external_receipt_id == item["reference_message_id"],
+            outbound_deliveries.c.destination["transport"].as_string() == item["transport"],
+            outbound_deliveries.c.destination["channel_id"].as_string() == item["channel_id"],
+            supervisor_conversations.c.transport == item["transport"],
+            supervisor_conversations.c.guild_id == item["guild_id"],
+            supervisor_conversations.c.channel_id == item["channel_id"],
+            supervisor_conversations.c.external_thread_id == item["external_thread_id"],
+        )
+        .with_for_update(of=supervisor_conversations)
+    )).mappings().all()
+    eligible = {row["id"]: row for row in rows if item["author_id"] in row["audience"]}
+    if len(eligible) != 1:
+        return None
+    conversation = next(iter(eligible.values()))
+    return conversation if conversation["state"] != "closed" else None
+
+
+async def reference_notice(handler, item, *, code, text, conn):
+    """Keep a deduped public notice and a supervisor-readable refusal receipt."""
+    item = await discussion.attach_channel(handler, item, conn=conn)
+    now = time.time()
+    # The refused target may have a stale audience or destination. Bind this
+    # fixed notice to the authenticated input, not to that target's visibility.
+    await handler.db.reserve_outbound_delivery_in_transaction(
+        conn, owner_kind="conversation", owner_id=item["id"],
+        dedup_key=f"ask-reference:{item['id']}",
+        destination={"transport": item["transport"], "channel_id": item["channel_id"]},
+        payload={"action": "notice", "text": text, "input_id": item["id"],
+                 "ask_input": True, "author_id": item["author_id"],
+                 "reference_message_id": item["external_message_id"]},
+        due_at=now, now=now,
+    )
+    recipient, project = await handler.db.resolve_conversation_supervisor(
+        item["project_id"] or "", conn=conn
+    )
+    await handler.db.insert_ask_message({
+        "id": f"msg-reference-{item['id']}",
+        "project_id": project,
+        "from_kind": "system",
+        "from_id": "discord-intake",
+        "to_kind": "session",
+        "to_id": recipient or "conversation-queued",
+        "thread_id": f"conversation:{item['conversation_id']}",
+        "body": f"Discord reply {item['id']} could not be routed ({code}). "
+                f"Reference: {item['reference_message_id']}. A resend notice is queued.",
+        "created_at": time.time(),
+    }, conn=conn)
+    return await handler.db.update_ask_input(item["id"], {
+        "receipt": {"input_id": item["id"], "state": item["routing_state"],
+                    "error_code": code, "reference_message_id": item["reference_message_id"],
+                    "text": text},
+    }, conn=conn)
+
+
 async def clarify(handler, item, text, *, conn):
     item = await discussion.attach_channel(handler, item, conn=conn)
     await discussion.enqueue(handler, item, None, text, key=f"ask-clarify:{item['id']}", conn=conn)
@@ -259,7 +326,19 @@ async def clarify(handler, item, text, *, conn):
 
 
 async def route(handler, item):
-    routed = await _route(handler, item)
+    try:
+        routed = await _route(handler, item)
+    except Exception:
+        if item["reference_message_id"]:
+            async with handler.db.immediate() as conn:
+                current = await handler.db.get_ask_input(item["id"], conn=conn, lock=True)
+                if current["routing_state"] == "queued" and not current["receipt"]:
+                    await reference_notice(
+                        handler, current, code="ask.correlation_failed",
+                        text="I couldn't route that reply. Please resend it as a new message.",
+                        conn=conn,
+                    )
+        raise
     await handler._wake_conversation_input(routed)
     return routed
 
@@ -269,6 +348,25 @@ async def _route(handler, item):
     # Resolve identity without locking the input; source is always locked first.
     async with db.immediate() as conn:
         bound = await bound_ask(db, item, conn=conn)
+        if item["reference_message_id"] and not bound:
+            conversation = await bound_conversation(item, conn=conn)
+            item = await db.get_ask_input(item["id"], conn=conn, lock=True)
+            if item["routing_state"] != "queued":
+                return item
+            if conversation:
+                item = await db.update_ask_input(
+                    item["id"], {"conversation_id": conversation["id"]}, conn=conn
+                )
+                return await queue_conversation(handler, item, [], conn=conn)
+            item = await db.update_ask_input(
+                item["id"], {"routing_state": "clarification"}, conn=conn
+            )
+            return await reference_notice(
+                handler, item, code="ask.reference_unresolved",
+                text="I couldn't find the conversation for that reply. "
+                     "Please resend it as a new message, or reply to the current request card.",
+                conn=conn,
+            )
         explicit = set(ASK_REFERENCE.findall(item["text"] or ""))
         selected = bound or (next(iter(explicit)) if len(explicit) == 1 else None)
         candidate_page = await db.ask_candidates(item["project_id"], conn=conn)
@@ -417,53 +515,59 @@ async def _route(handler, item):
             )
         # Unbound prose goes to the owning supervisor with eligible references,
         # but must not become a decision on a guessed target.
-        item = await discussion.attach_channel(handler, item, conn=conn)
-        project = item["project_id"]
-        recipient, supervisor_project = await db.resolve_conversation_supervisor(
-            project or "", conn=conn
-        )
-        packet = {
-            "input_id": item["id"],
-            "conversation_id": item["conversation_id"],
-            "text": item["text"],
-            "eligible_asks": [
-                {"ask_id": a["id"], "expected": asdict(version_of(a))} for a in candidates[:20]
-            ],
-            "label": "UNTRUSTED HUMAN CONTEXT. Ask for an explicit target before deciding.",
-        }
-        import json
+        return await queue_conversation(handler, item, candidates, conn=conn)
 
-        message_id = f"msg-{item['id']}"
-        await db.insert_ask_message(
-            {
-                "id": message_id,
-                "project_id": supervisor_project,
-                "from_kind": "user",
-                "from_id": item["verified_actor"],
-                "to_kind": "session",
-                "to_id": recipient or "conversation-queued",
-                "thread_id": f"conversation:{item['conversation_id']}",
-                "body": "Answer this ordinary conversation with supervisor_inbox_reply.\n"
-                + json.dumps(packet),
-                "body_kind": "conversation_input",
-                "created_at": time.time(),
+
+async def queue_conversation(handler, item, candidates, *, conn):
+    db = handler.db
+    item = await discussion.attach_channel(handler, item, conn=conn)
+    project = item["project_id"]
+    recipient, supervisor_project = await db.resolve_conversation_supervisor(
+        project or "", conn=conn
+    )
+    packet = {
+        "input_id": item["id"],
+        "conversation_id": item["conversation_id"],
+        "text": item["text"],
+        "reference_message_id": item["reference_message_id"],
+        "eligible_asks": [
+            {"ask_id": a["id"], "expected": asdict(version_of(a))} for a in candidates[:20]
+        ],
+        "label": "UNTRUSTED HUMAN CONTEXT. Ask for an explicit target before deciding.",
+    }
+    import json
+
+    message_id = f"msg-{item['id']}"
+    await db.insert_ask_message(
+        {
+            "id": message_id,
+            "project_id": supervisor_project,
+            "from_kind": "user",
+            "from_id": item["verified_actor"],
+            "to_kind": "session",
+            "to_id": recipient or "conversation-queued",
+            "thread_id": f"conversation:{item['conversation_id']}",
+            "body": "Answer this ordinary conversation with supervisor_inbox_reply.\n"
+            + json.dumps(packet),
+            "body_kind": "conversation_input",
+            "created_at": time.time(),
+        },
+        conn=conn,
+    )
+    return await db.update_ask_input(
+        item["id"],
+        {
+            "routing_state": "conversation",
+            "supervisor_message_id": message_id,
+            "routing_evidence": {k: v for k, v in packet.items() if k != "text"},
+            "receipt": {
+                "input_id": item["id"],
+                "state": "queued",
+                "conversation_id": item["conversation_id"],
             },
-            conn=conn,
-        )
-        return await db.update_ask_input(
-            item["id"],
-            {
-                "routing_state": "conversation",
-                "supervisor_message_id": message_id,
-                "routing_evidence": {k: v for k, v in packet.items() if k != "text"},
-                "receipt": {
-                    "input_id": item["id"],
-                    "state": "queued",
-                    "conversation_id": item["conversation_id"],
-                },
-            },
-            conn=conn,
-        )
+        },
+        conn=conn,
+    )
 
 
 async def apply_input(handler, args):

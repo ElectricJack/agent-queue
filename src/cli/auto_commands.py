@@ -122,6 +122,7 @@ HANDCRAFTED_COVERAGE = {
     "cron_list",
     "cron_cancel",
     "reconcile_agent_cron",
+    "reconcile_project_schedules",
     "cron_delivery_begin",
     "cron_delivery_finish",
     "message_wait",
@@ -200,6 +201,7 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "reconcile_project_schedules",
     "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
     "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
     "integration_train_tick",  # daemon-only git-first train dispatch

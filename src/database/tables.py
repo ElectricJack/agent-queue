@@ -7770,3 +7770,30 @@ integration_close_attempts = Table(
                     "'finished','deferred','cancelled')", name="ck_integration_close_state"),
     CheckConstraint("version >= 0 AND attempts >= 0", name="ck_integration_close_counters"),
 )
+
+# Project-owned one-shot notices persist independently of sessions and task claims.
+project_schedules = Table(
+    "project_schedules",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("due_at", Float, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("cancelled_at", Float),
+    Column("fired_at", Float),
+    Column("message_id", Text),
+    UniqueConstraint("project_id", "idempotency_key", name="uq_project_schedules_key"),
+    CheckConstraint(
+        "(state = 'pending' AND cancelled_at IS NULL AND fired_at IS NULL AND message_id IS NULL) "
+        "OR (state = 'cancelled' AND cancelled_at IS NOT NULL AND fired_at IS NULL "
+        "AND message_id IS NULL) OR (state = 'fired' AND cancelled_at IS NULL "
+        "AND fired_at IS NOT NULL AND message_id IS NOT NULL)",
+        name="ck_project_schedules_receipt",
+    ),
+    Index("idx_project_schedules_due", "due_at", "id",
+          postgresql_where=text("state = 'pending'")),
+    Index("idx_project_schedules_project", "project_id", "due_at", "id"),
+)

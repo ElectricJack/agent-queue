@@ -23,6 +23,13 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
    with `aq review submit --task-id <held-task> --file <draft> --kind spec
    --title <title>`. Its approval triggers ingestion again. For explicitly
    classified design documents, the batch command supplies this safe graph.
+   If every approved design goal is already delivered, verify the merged PRs
+   or commits and use `task_batch_propose` with an empty change set and
+   `no_op: {reason, delivered_evidence: [<merged PR or commit citations>]}`.
+   Explain how the evidence covers every goal. Required follow-ups need their
+   own completion evidence. Record the returned `already_delivered` receipt
+   and close pass; this settlement creates no implementation-spec tasks.
+   An empty graph without `no_op` does not request settlement.
    Require the author to follow `docs/templates/spec.md` and the Spec
    supersession checklist in `docs/guides/reviews.md`: find approved specs
    replaced or overlapped (including this design), cite approved revisions,

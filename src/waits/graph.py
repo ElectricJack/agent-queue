@@ -17,6 +17,7 @@ from contextvars import ContextVar
 
 from sqlalchemy import event, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import task_dependencies, tasks, wait_edges, wait_priority_projection
 from src.models import BLOCKING_DEP_TYPES
@@ -89,15 +90,37 @@ async def background_graph_work():
 
 
 @timed_operation("db.wait_graph_lock")
-async def lock_graph(conn, *, timeout=None):
+async def lock_graph(conn, *, timeout=None, queued=False):
     """Take the transaction-scoped graph fence, or refuse with ``wait.graph_busy``.
 
-    Polls the non-blocking form so a refused waiter leaves its transaction
-    usable and hands its connection back promptly instead of convoying.
+    Ordinary background work polls briefly and releases its connection. Resume
+    reservation queues in PostgreSQL so back-to-back listener batches cannot
+    overtake it. Both paths leave a refused caller's transaction usable.
     """
     if timeout is None:
-        timeout = (BACKGROUND_GRAPH_LOCK_TIMEOUT if _background_graph_work.get()
+        timeout = (BACKGROUND_GRAPH_LOCK_TIMEOUT if _background_graph_work.get() and not queued
                    else GRAPH_LOCK_TIMEOUT)
+    if queued:
+        # A savepoint contains lock_timeout's transaction-aborting error and
+        # restores the caller's previous setting on rollback. On success the
+        # advisory lock survives RELEASE until the outer transaction ends.
+        async with conn.begin_nested():
+            previous = await conn.scalar(select(func.current_setting("lock_timeout")))
+            await conn.execute(select(func.set_config(
+                "lock_timeout", f"{max(1, int(timeout * 1000))}ms", True,
+            )))
+            try:
+                await conn.execute(select(func.pg_advisory_xact_lock(GRAPH_LOCK)))
+            except DBAPIError as exc:
+                if getattr(exc.orig, "sqlstate", None) == "55P03":
+                    raise WaitError(
+                        "wait.graph_busy",
+                        f"wait graph lock not acquired within {timeout:g}s; retry",
+                    ) from exc
+                raise
+            await conn.execute(select(func.set_config("lock_timeout", previous, True)))
+        track_graph_lock(conn)
+        return
     deadline = time.monotonic() + timeout
     delay = 0.005
     while not await conn.scalar(select(func.pg_try_advisory_xact_lock(GRAPH_LOCK))):

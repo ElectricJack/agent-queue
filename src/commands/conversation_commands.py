@@ -322,6 +322,7 @@ class ConversationCommandsMixin:
                 "conversation_id": conversation_id,
                 "input_id": input_id,
                 "reply_message_id": reply_message_id,
+                "reference_message_id": item["external_message_id"],
                 "text": discord_text,
             },
         )

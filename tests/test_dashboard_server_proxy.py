@@ -467,7 +467,10 @@ async def test_daemon_unreachable_is_503_with_retry_after_and_our_header(client)
     assert proxy.stats.snapshot()["http"]["count"] == 0
 
 
-async def test_upstream_ok_is_true_whenever_the_daemon_answers(stack):
+async def test_upstream_ok_is_true_whenever_the_daemon_answers(stack, monkeypatch):
+    # Exercise status handling without racing the production probe's short
+    # deadline on loaded CI workers. The separate 504 test covers header timeouts.
+    monkeypatch.setattr(proxy_module, "_PROBE_SECONDS", GUARD)
     assert await stack.proxy.upstream_ok() is True
     stack.daemon.health_status = 503  # degraded, but it answered
     assert await stack.proxy.upstream_ok() is True
