@@ -24,6 +24,8 @@ from src.database.tables import (
     tasks,
 )
 
+FIDELITY_REVIEW_DISPATCH = "fidelity_review.dispatch"
+
 
 async def operation(db, decision, kind, *, conn, dependencies=(), parameters=None):
     key = f"{kind}:{decision['id']}"
@@ -36,7 +38,7 @@ async def operation(db, decision, kind, *, conn, dependencies=(), parameters=Non
                 "reply_id": decision["evidence_entry_id"],
                 "idempotency_key": key,
                 "action_kind": "ask_operation",
-                "target_id": decision["review_id"],
+                "target_id": decision["review_id"] or decision["snapshot_id"],
                 "operation_kind": kind,
                 "operation_key": key,
                 "dependency_keys": list(dependencies),
@@ -58,6 +60,26 @@ async def get_operation(conn, decision_id, kind, *, lock=False):
     )
     row = (await conn.execute(stmt.with_for_update() if lock else stmt)).mappings().first()
     return dict(row) if row else None
+
+
+async def reserve_fidelity_review_dispatch(db, batch, *, conn):
+    """Reserve one reviewer dispatch per approved batch, on the batch transaction.
+
+    This is an intent only. ``ensure_fidelity_review`` owns task creation and
+    records success with the actual reviewer receipt, as ingestion does.
+    """
+    decision = await db.get_ask_decision(batch["decision_id"], conn=conn)
+    if (not decision or decision["packet"]["source"]["project_id"] != batch["project_id"]):
+        raise AskError("ask.not_found", "Batch approval decision was not found")
+    # Materialization reserved it with the revision it held at; later
+    # revisions reuse that row rather than conflicting on its parameters.
+    op = await get_operation(conn, decision["id"], FIDELITY_REVIEW_DISPATCH)
+    if op is None:
+        op = await operation(db, decision, FIDELITY_REVIEW_DISPATCH, conn=conn,
+                             parameters={"batch_id": batch["batch_id"]})
+    if op["parameters"].get("batch_id") != batch["batch_id"]:
+        raise AskError("ask.idempotency_conflict", "Decision dispatch belongs to another batch")
+    return op
 
 
 async def succeed(conn, op, receipt):
@@ -127,6 +149,9 @@ class ReviewOperations:
 
         async with self.db.immediate() as conn:
             review = await self.db.lock_review_for_mutation(review_id, conn)
+            from src.asks.reset_policy import skip_row
+            if await skip_row(conn, doc_reviews, review, review["project_id"]):
+                return {"application_state": "discarded"}
             decision = (
                 (
                     await conn.execute(
@@ -188,6 +213,8 @@ class ReviewOperations:
         ask = await self.db.get_ask(decision["ask_id"], conn=conn, lock=True)
         if not review or not ask:
             raise AskError("ask.application_unknown", "Decision source is missing")
+        if ask["context"].get("legacy_discarded"):
+            raise AskError("ask.discarded", "This decision belongs to discarded legacy work")
         return review
 
     async def project(self, decision, values, *, conn):
@@ -223,7 +250,7 @@ class ReviewOperations:
 
     async def before_filing(self, decision, conn):
         review = await self.locked(decision, conn)
-        await authorize_application(review, decision, conn=conn)
+        await authorize_application(review, decision, conn=conn, service=self.service)
         op = await get_operation(conn, decision["id"], "file_task", lock=True)
         if op["status"] == "succeeded":
             raise FilingExists()
@@ -304,6 +331,8 @@ class ReviewOperations:
     async def apply(self, decision_id):
         async with self.db.immediate() as conn:
             decision = await self.db.get_ask_decision(decision_id, conn=conn)
+            if decision:
+                await self.locked(decision, conn)
         if not decision:
             raise AskError("ask.not_found", "Decision was not found")
         domain = decision["packet"]["domain"]
@@ -339,16 +368,20 @@ class ReviewOperations:
                         select(escalation_actions.c.id).where(
                             escalation_actions.c.decision_id == decision["id"],
                             escalation_actions.c.status != "succeeded",
+                            escalation_actions.c.operation_kind.not_in(
+                                ["ingestion", FIDELITY_REVIEW_DISPATCH]),
                         )
                     )
                 ).first()
                 if remaining:
                     raise AskError("ask.application_unknown", "Decision has unfinished operations")
+                ingestion = await get_operation(conn, decision["id"], "ingestion")
+                dispatch_pending = ingestion and ingestion["status"] != "succeeded"
                 await self.project(
                     decision,
                     {
-                        "application_state": "applied",
-                        "next_actor": "none",
+                        "application_state": "applying" if dispatch_pending else "applied",
+                        "next_actor": "agent" if dispatch_pending else "none",
                         "updated_at": time.time(),
                     },
                     conn=conn,
@@ -358,6 +391,7 @@ class ReviewOperations:
             return {
                 **result,
                 "application_state": "applied",
+                "ingestion_state": "pending" if dispatch_pending else "acknowledged",
                 **({"playbook": playbook["receipt"]} if playbook else {}),
             }
         except Exception as exc:
@@ -424,7 +458,7 @@ class ReviewOperations:
         domain = decision["packet"]["domain"]
         async with self.db.immediate() as conn:
             review = await self.locked(decision, conn)
-            await authorize_application(review, decision, conn=conn)
+            await authorize_application(review, decision, conn=conn, service=self.service)
             apply = await get_operation(conn, decision["id"], "apply", lock=True)
             already_applied = apply["status"] == "succeeded"
             if already_applied and (
@@ -487,10 +521,10 @@ class ReviewOperations:
                         raise AskError(
                             "ask.application_unknown", "Feedback lacks a verified acceptance row"
                         )
-                    if item["required_before_release"] and domain["effective_option"] == "approve":
-                        raise AskError(
-                            "ask.application_unknown", "Prerequisite requires a returned revision"
-                        )
+                if domain["effective_option"] == "approve":
+                    from src.asks.coverage import cover_review_waiters
+
+                    await cover_review_waiters(self.db, decision, obligations, conn=conn)
                 task_gate = receipt["application_gate_id"]
             if domain["playbook"] and domain["effective_option"] == "approve":
                 pin = await get_operation(conn, decision["id"], "playbook", lock=True)
@@ -674,9 +708,14 @@ class ReviewOperations:
         at-least-once. Pinned artifact, mirror and notification writes reconcile
         their source receipts. Unknown stages are never generically reset.
         """
+        if kind == "ingestion":
+            from src.asks.ingestion import dispatch
+
+            return await dispatch(self.db, decision, self.service.hooks.emit,
+                                  self.service.vault_root)
         async with self.db.immediate() as conn:
             review = await self.locked(decision, conn)
-            await authorize_application(review, decision, conn=conn)
+            await authorize_application(review, decision, conn=conn, service=self.service)
             op = await get_operation(conn, decision["id"], kind, lock=True)
             if op is None or op["status"] == "succeeded":
                 return
@@ -689,7 +728,6 @@ class ReviewOperations:
                 if kind not in {
                     "mirror",
                     "review_event",
-                    "ingestion",
                     "notification",
                     "playbook",
                 } and not kind.startswith(("gate_event:", "task_event:")):
@@ -836,7 +874,7 @@ class ReviewOperations:
             "packet_sha256": decision["packet_sha256"],
             "operation_key": op["operation_key"],
         }
-        event = "spec.approved" if kind == "ingestion" else "review.decided"
+        event = "review.decided"
         if kind.startswith("gate_event:"):
             event = "gate.resolved"
             payload.update(
@@ -859,9 +897,6 @@ class ReviewOperations:
         async with self.db._engine.connect() as conn:
             applied = await get_operation(conn, decision["id"], "apply")
         payload["unblocked_task_ids"] = applied["receipt"]["unblocked_task_ids"]
-        if kind == "ingestion":
-            payload["spec_kind"] = domain["spec_kind"]
-            payload["spec_path"] = str(self.service._path(domain["review"]).resolve())
         async with self.db.immediate() as conn:
             await self.locked(decision, conn)
             stored = await get_operation(conn, decision["id"], kind, lock=True)
