@@ -47,6 +47,78 @@ async def _locked_intent(conn, *, wait_id, continuation_id=None, generation=None
     return intent
 
 
+async def retire_task_waits(conn, task_id, *, reason, now, wait_id=None):
+    """Retire execution state under graph/component task locks, retaining audit.
+
+    Archive/deletion retire all waits; ``wait_id`` selects only an orphan's state,
+    preserving replacement waits, task-level reservations and priority projection.
+    """
+    import json
+
+    from sqlalchemy import delete, insert
+    from src.database.tables import (
+        admission_reservations, events, wait_deadlines, wait_escalations,
+        wait_priority_projection,
+    )
+    from src.waits.decisions import WaitDecisions
+    from src.waits.graph import clear_edges, recompute_from
+
+    waits = (await conn.execute(select(wait_records).where(
+        wait_records.c.owner_kind.in_(("task", "scheduler")),
+        wait_records.c.owner_id == task_id, or_(wait_id is None, wait_records.c.id == wait_id),
+    ).order_by(wait_records.c.id).with_for_update())).mappings().all()
+    changed_keys = {f"task:{task_id}"}
+    for wait in waits:
+        if wait["outcome"] == "pending":
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == wait["id"],
+            ).values(outcome="cancelled", resolved_at=now, result_ref=f"{reason}:{task_id}"))
+            await conn.execute(insert(events).values(
+                event_type="wait.cancelled", project_id=wait["project_id"], task_id=task_id,
+                timestamp=now, payload=json.dumps({"wait_id": wait["id"],
+                    "project_id": wait["project_id"], "reason": reason}),
+            ))
+        if wait["cleared_at"] is None:
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == wait["id"],
+            ).values(blocking=False, cleared_at=now, version=wait_records.c.version + 1))
+        await conn.execute(update(wait_deadlines).where(
+            wait_deadlines.c.wait_id == wait["id"], wait_deadlines.c.fired_at.is_(None),
+            wait_deadlines.c.cancelled_at.is_(None),
+        ).values(cancelled_at=now))
+        changed_keys |= await clear_edges(conn, wait["id"], now=now)
+        incidents = (await conn.execute(select(wait_escalations.c.escalation_id).where(
+            wait_escalations.c.wait_id == wait["id"],
+        ))).scalars().all()
+        holds = (await conn.execute(select(continuations.c.id, continuations.c.facts).where(
+            continuations.c.wait_id == wait["id"],
+        ))).all()
+        # Infrastructure holds are continuation incidents; bind them to their intent.
+        bound = [{"escalation_id": incident_id} for incident_id in sorted(set(incidents))]
+        bound += [{"escalation_id": facts["hold_escalation_id"], "continuation_id": hold_id}
+                  for hold_id, facts in holds if facts.get("hold_escalation_id")]
+        for incident in bound:
+            await WaitDecisions.resolve_escalation(
+                conn, {**incident, "wait_id": wait["id"]},
+                {"note": reason}, outcome="cancelled", now=now,
+            )
+    intents = select(continuations.c.id).where(
+        continuations.c.task_id == task_id, or_(wait_id is None, continuations.c.wait_id == wait_id),
+    )
+    reservations = or_(admission_reservations.c.continuation_id.in_(intents),
+                       and_(wait_id is None, admission_reservations.c.task_id == task_id))
+    await conn.execute(update(admission_reservations).where(reservations,
+        admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+    ).values(state="cancelled"))
+    await conn.execute(update(continuations).where(continuations.c.id.in_(intents),
+        continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
+    ).values(resume_state="cancelled", hold_reason=reason, version=continuations.c.version + 1))
+    if waits:
+        await recompute_from(conn, changed_keys, now=now)
+    if wait_id is None:
+        await conn.execute(delete(wait_priority_projection).filter_by(task_id=task_id))
+
+
 async def checkpoint_continuation(
     conn,
     *,
@@ -190,18 +262,24 @@ def wait_outcome_envelope(wait, continuation=None, *, held_messages=(), decision
     """The same outcome envelope for in-place delivery and a fresh continuation."""
     if wait["outcome"] == "pending":
         raise WaitError("wait.checkpoint_invalid", "pending wait has no outcome envelope")
-    return {
+    envelope = {
         "kind": "wait_outcome",
         "wait_id": wait["id"],
         "continuation_generation": continuation["suspension_generation"] if continuation else None,
         "outcome": wait["outcome"],
         "condition": Condition.from_record(wait["condition"]).as_dict(),
         "result_ref": wait["result_ref"],
-        "decision": decision,
+        "decision": (decision if decision is not None
+                     else (wait.get("decision_inputs") or {}).get("supervisor_decision")),
         "summary_ref": f"continuation:{continuation['id']}" if continuation else None,
         "held_messages": list(held_messages),
         "next_action": "ack_then_continue",
     }
+    detail = envelope["decision"]
+    if isinstance(detail, dict) and detail.get("decision") == "lift":
+        envelope["decision"] = "lift"
+        envelope["facts"] = detail["facts"]
+    return envelope
 
 
 async def continuation_prime_context(conn, *, task_id, project_id, session_id):
@@ -270,6 +348,7 @@ async def continuation_prime_context(conn, *, task_id, project_id, session_id):
                 and_(messages.c.to_kind == "profile", messages.c.to_id == old["profile_id"]),
             ]
         )
+    published_ids = intent["facts"].get("resume_delivery", {}).get("held_message_ids")
     held = (
         (
             await conn.execute(
@@ -286,6 +365,7 @@ async def continuation_prime_context(conn, *, task_id, project_id, session_id):
                         ),
                     ),
                     or_(*recipients),
+                    messages.c.id.in_(published_ids) if published_ids is not None else True,
                 )
                 .order_by(messages.c.created_seq)
             )
@@ -301,3 +381,25 @@ async def continuation_prime_context(conn, *, task_id, project_id, session_id):
             wait, intent, held_messages=[m["id"] for m in held], decision=decision
         ),
     }
+
+
+async def measurement_medians(conn, project_id, *, now):
+    """Thirty-day medians with separate duration and complete resume-cost cohorts."""
+    from sqlalchemy import func
+    from src.database.tables import wait_measurements as measurements
+
+    recent = (measurements.c.project_id == project_id,
+              measurements.c.recorded_at >= now - 30 * 86400)
+    durations = (await conn.execute(select(
+        measurements.c.condition_kind, measurements.c.source_class,
+        func.count().label('count'),
+        func.percentile_cont(0.5).within_group(measurements.c.waited_seconds).label('median'),
+    ).where(*recent).group_by(measurements.c.condition_kind,
+                             measurements.c.source_class))).mappings().all()
+    total = (measurements.c.teardown_seconds + measurements.c.setup_seconds
+             + measurements.c.rebuild_seconds)
+    cost = (await conn.execute(select(
+        func.count().label('count'), func.percentile_cont(0.5).within_group(total).label('median'),
+    ).where(*recent, measurements.c.hibernated.is_(True), total.is_not(None)))).mappings().one()
+    return {'durations': {(r['condition_kind'], r['source_class']): dict(r) for r in durations},
+            'cost': dict(cost)}

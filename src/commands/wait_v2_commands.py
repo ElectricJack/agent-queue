@@ -4,7 +4,8 @@
 ``(args, *, principal, scope, handler)``. All names and arguments are contracted;
 scope is derived here, never taken from an agent's request. Owners must repeat
 the claim/generation fence inside their mutation transaction. Missing handlers
-refuse before any mutation, and v2 writes require the explicit activation flag.
+refuse before any mutation. Activation gates new registrations per project;
+persisted waits retain their recovery and acknowledgement paths during rollback.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from src.agent_waits import WaitError as LegacyWaitError
-
 from src.commands.contracts.wait_v2 import (
     SERVICE_WAIT_COMMANDS,
     SUPERVISOR_WAIT_COMMANDS,
@@ -23,7 +23,12 @@ from src.commands.contracts.wait_v2 import (
     caller_allowed,
     operator_wait_grant,
 )
-from src.commands.principal import PrincipalKind, current_principal
+from src.commands.principal import (
+    ExecutionPrincipal,
+    PrincipalKind,
+    current_principal,
+    principal_context,
+)
 from src.database.tables import wait_records
 from src.waits.conditions import Scope, WaitError
 
@@ -32,9 +37,130 @@ def refusal(code, message, **details):
     return {"success": False, "error_code": code, "error": str(message), **details}
 
 
+def service_source_commit(handler, service):
+    """A source watcher's ``commit(event)``: ``wait_source_commit`` as a named service."""
+
+    async def commit(event):
+        with principal_context(ExecutionPrincipal.service(service)):
+            return await handler.execute("wait_source_commit", event)
+
+    return commit
+
+
 class WaitV2CommandsMixin:
-    def _wait_v2_enabled(self):
-        return getattr(getattr(self.config, "wait_policy", None), "v2_enabled", False) is True
+    async def repair_wait_orphans(self, *, project_id=None):
+        """Doctor's mutating command boundary; never a public worker tool."""
+        from src.waits.recovery import repair_orphans
+
+        principal = current_principal()
+        if principal and principal.kind != PrincipalKind.LOCAL and not principal.elevated:
+            raise WaitError("wait.out_of_scope", "orphan repair requires operator authority")
+        if principal and principal.project_id:
+            if project_id and project_id != principal.project_id:
+                raise WaitError("wait.out_of_scope", "orphan repair requires project authority")
+            project_id = principal.project_id
+        return await repair_orphans(self.db, project_id=project_id)
+
+    async def _record_continuation_prime_delivery(self, session_id):
+        if not session_id:
+            return
+        import time
+        from src.database.tables import continuations
+        from src.waits.resume_ack import mark_delivered
+
+        session = await self.db.get_session(session_id)
+        principal = current_principal()
+        if (not session or not principal or principal.kind != PrincipalKind.SESSION
+                or principal.session_id != session_id
+                or principal.session_instance_token != session.instance_token):
+            return
+        async with self.db._engine.begin() as conn:
+            intent_id = await conn.scalar(select(continuations.c.id).where(
+                continuations.c.new_session_id == session_id,
+                continuations.c.resume_state == "launching",
+            ))
+            if intent_id:
+                await mark_delivered(conn, continuation_id=intent_id, session_id=session_id,
+                                     instance_token=session.instance_token,
+                                     claim_epoch=session.last_claim_epoch, now=time.time())
+
+    async def _wait_mutation_fence(self, name, principal, *, mutating):
+        if (not mutating or principal is None
+                or principal.kind != PrincipalKind.SESSION):
+            return None
+        engine = getattr(self.db, "_engine", None)
+        if engine is None:
+            # A stub-wired handler has no store and so no registered waits;
+            # principal resolution treats the same wiring as database-unavailable.
+            return None
+        from src.waits.fencing import mutation_fence
+
+        async with engine.connect() as conn:
+            return await mutation_fence(conn, name, principal)
+
+    async def wait_reroute_target(self, project_id, target):
+        """Keep routing policy and command dependencies out of the waits package."""
+        if not self._validate_routing_class(target):
+            return {"class_hint": target}, None
+        from src.commands.routing_commands import validate_route_preference
+
+        (preference, mode), error = await validate_route_preference(
+            self, project_id, target, "strict",
+        )
+        return {"prefer_target": preference, "prefer_mode": mode}, error
+
+    async def wait_escalation_create(self, conn, args):
+        """Internal escalation_create boundary, atomic with deadline/loop registration."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            return await self._create_escalation(args, conn=conn)
+
+    async def wait_service_command(self, name, args):
+        """Bind service authority here, keeping the waits package independent."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            return await self.execute(name, args)
+
+    async def wait_service_lease(self, listener, *, release=False):
+        with principal_context(ExecutionPrincipal.service("waits-listener")):
+            return await self.wait_listener_lease(listener, release=release)
+
+    async def wait_service_drain(self, listener, watermark):
+        with principal_context(ExecutionPrincipal.service("waits-listener")):
+            return await self.wait_listener_drain(listener, watermark)
+
+    async def wait_service_quarantine_deadline(self, timers, deadline, refusal):
+        """Internal service mutation; no public worker quarantine authority."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            self._wait_listener_authorize(timers.service.listener)
+            return await timers.quarantine(deadline, refusal)
+
+    async def wait_service_resume_stalls(self, lifecycle):
+        """Internal maintenance boundary; never exposes service authority to agents."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            self._wait_listener_authorize(lifecycle.service.listener)
+            return await lifecycle.report_resume_stalls()
+
+    def _wait_listener_authorize(self, listener, *, release=False):
+        principal = current_principal()
+        if (principal is None or principal.kind != PrincipalKind.SERVICE
+                or listener.service.orch is not self.orchestrator):
+            raise WaitError("wait.out_of_scope", "listener requires its service principal")
+
+    async def wait_listener_lease(self, listener, *, release=False):
+        """Internal service mutation boundary; never an agent command or tool."""
+        self._wait_listener_authorize(listener, release=release)
+        return await listener.lease(release=release)
+
+    async def wait_listener_drain(self, listener, watermark):
+        """Commit dispatch and cursor advancement together at the command boundary."""
+        self._wait_listener_authorize(listener)
+        return await listener.drain(watermark)
+
+    def _wait_v2_enabled(self, project_id=None):
+        from src.waits.policy import enabled
+
+        principal = current_principal()
+        project_id = getattr(principal, "project_id", None) or project_id
+        return enabled(self.config, project_id)
 
     async def _wait_v2_row(self, wait_id):
         async with self.db._engine.connect() as conn:
@@ -109,7 +235,7 @@ class WaitV2CommandsMixin:
             PrincipalKind.SERVICE,
         }:
             return refusal("wait.out_of_scope", "registration requires an authenticated owner")
-        if not self._wait_v2_enabled():
+        if not self._wait_v2_enabled(args.get("project_id")):
             return refusal("wait.disabled", "verified wait registration is disabled")
         if principal.kind != PrincipalKind.SERVICE and (values.owner_kind or values.owner_id):
             return refusal("wait.out_of_scope", "owner scope is server-derived")
@@ -118,6 +244,11 @@ class WaitV2CommandsMixin:
                 return refusal(
                     "wait.upgrade_required",
                     "use a schema_version=2 condition",
+                    detail={"example": {
+                        "schema_version": 2,
+                        "condition": {"kind": "task", "task_id": "producer-task"},
+                        "idempotency_key": "settlement",
+                    }},
                     example={
                         "schema_version": 2,
                         "condition": {"kind": "task", "task_id": "producer-task"},
@@ -144,11 +275,12 @@ class WaitV2CommandsMixin:
 
     async def _wait_v2_get(self, values, args):
         await self._wait_v2_authorize_target(args)
+        canonical_row = await self._wait_v2_row(values.wait_id)
         if values.consume:
             acknowledgement = await self._wait_v2_command(
                 "wait_ack",
                 {
-                    "wait_id": values.wait_id,
+                    "wait_id": canonical_row["id"] if canonical_row else values.wait_id,
                     **{
                         k: v
                         for k, v in args.items()
@@ -197,8 +329,11 @@ class WaitV2CommandsMixin:
         return {"success": True, "waits": rows, "count": len(rows)}
 
     async def _wait_v2_cancel(self, args):
-        if not self._wait_v2_enabled():
-            return refusal("wait.disabled", "verified wait writes are disabled")
+        if current_principal().kind == PrincipalKind.SERVICE:
+            scope = await self._wait_v2_scope(args, mutation=True)
+            return await self._wait_v2_invoke("wait_cancel", args, scope=scope)
+        if args.get("owner_kind") or args.get("owner_id"):
+            raise WaitError("wait.out_of_scope", "owner scope is server-derived")
         filters = await self._wait_v2_read_filter(args)
         scope = await self._wait_v2_authorize_target(
             args,
@@ -253,7 +388,17 @@ class WaitV2CommandsMixin:
                 record["session_id"] != scope.session_id
                 or (scope.claim_epoch is not None and record["claim_epoch"] != scope.claim_epoch)
             ):
-                raise WaitError("continuation.stale_generation", "wait holder changed")
+                from src.database.tables import continuations
+
+                async with self.db._engine.connect() as conn:
+                    resumed = await conn.scalar(select(continuations.c.id).where(
+                        continuations.c.wait_id == record["id"],
+                        continuations.c.new_session_id == scope.session_id,
+                        continuations.c.task_id == scope.owner_id,
+                        continuations.c.resume_state.in_(("launching", "delivered", "acknowledged")),
+                    ))
+                if not resumed:
+                    raise WaitError("continuation.stale_generation", "wait holder changed")
             return scope
         return filters
 
@@ -342,11 +487,6 @@ class WaitV2CommandsMixin:
                 scope = await self._wait_v2_authorize_target(
                     params, holder=name in {"wait_checkpoint", "wait_ack"}
                 )
-            if (
-                name not in {"wait_explain", "wait_graph", "wait_legacy_bridge"}
-                and not self._wait_v2_enabled()
-            ):
-                return refusal("wait.disabled", "verified wait writes are disabled")
             return await self._wait_v2_invoke(name, params, scope=scope)
         except (WaitError, LegacyWaitError) as exc:
             code = "wait.out_of_scope" if exc.code == "out_of_scope" else exc.code

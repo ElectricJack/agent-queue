@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitDecideArgs,
 ) -> Response[WaitDecideResponse | WaitDecideResponse422]:
-    """Wait decide.
+    """Record a supervisor decision for a verified wait.
 
-     Wait decide.
+     Record a supervisor decision for a verified wait.
 
     Args:
         body (WaitDecideArgs):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitDecideArgs,
 ) -> WaitDecideResponse | WaitDecideResponse422 | None:
-    """Wait decide.
+    """Record a supervisor decision for a verified wait.
 
-     Wait decide.
+     Record a supervisor decision for a verified wait.
 
     Args:
         body (WaitDecideArgs):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitDecideArgs,
 ) -> Response[WaitDecideResponse | WaitDecideResponse422]:
-    """Wait decide.
+    """Record a supervisor decision for a verified wait.
 
-     Wait decide.
+     Record a supervisor decision for a verified wait.
 
     Args:
         body (WaitDecideArgs):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitDecideArgs,
 ) -> WaitDecideResponse | WaitDecideResponse422 | None:
-    """Wait decide.
+    """Record a supervisor decision for a verified wait.
 
-     Wait decide.
+     Record a supervisor decision for a verified wait.
 
     Args:
         body (WaitDecideArgs):

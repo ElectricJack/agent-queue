@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: WaitLiftArgs,
 ) -> Response[WaitDecideResponse | WaitLiftResponse422]:
-    """Wait lift.
+    """Lift an escalated verified wait with an authorized decision.
 
-     Wait lift.
+     Lift an escalated verified wait with an authorized decision.
 
     Args:
         body (WaitLiftArgs):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: WaitLiftArgs,
 ) -> WaitDecideResponse | WaitLiftResponse422 | None:
-    """Wait lift.
+    """Lift an escalated verified wait with an authorized decision.
 
-     Wait lift.
+     Lift an escalated verified wait with an authorized decision.
 
     Args:
         body (WaitLiftArgs):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: WaitLiftArgs,
 ) -> Response[WaitDecideResponse | WaitLiftResponse422]:
-    """Wait lift.
+    """Lift an escalated verified wait with an authorized decision.
 
-     Wait lift.
+     Lift an escalated verified wait with an authorized decision.
 
     Args:
         body (WaitLiftArgs):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: WaitLiftArgs,
 ) -> WaitDecideResponse | WaitLiftResponse422 | None:
-    """Wait lift.
+    """Lift an escalated verified wait with an authorized decision.
 
-     Wait lift.
+     Lift an escalated verified wait with an authorized decision.
 
     Args:
         body (WaitLiftArgs):
