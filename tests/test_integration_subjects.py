@@ -9,19 +9,21 @@ prove the same rules are enforced by the schema itself.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from src.database import Database, tables
+from src.database import tables
 from src.database.tables import (
     integration_subject_journal,
     integration_subjects,
     playbook_artifacts,
 )
 from src.integration.models import BranchKey, Fence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     DEFAULT_MAX_WAIT_SECONDS,
     OUTCOME_DETAILS,
     PHASE1_ADAPTED_COMMANDS,
@@ -60,7 +62,6 @@ from src.integration.subjects import (
     schedule_values,
     subject_key,
 )
-from tests.db_fixtures import lease_dsn
 
 NOW = 1_000_000.0
 HEAD = "a" * 40
@@ -98,7 +99,8 @@ def _subject(**overrides) -> Subject:
 def test_schema_vocabularies_match_the_typed_model():
     assert tables.INTEGRATION_SUBJECT_KINDS == tuple(SubjectKind)
     assert tables.INTEGRATION_SUBJECT_PHASES == tuple(SubjectPhase)
-    assert tables.INTEGRATION_SUBJECT_ENGINES == tuple(SubjectEngine)
+    assert set(SubjectEngine) <= set(tables.INTEGRATION_SUBJECT_ENGINES)
+    assert tuple(SubjectEngine) == (SubjectEngine.RECONCILER,)
     assert tables.INTEGRATION_WRITER_STATUSES == tuple(WriterStatus)
     assert tables.INTEGRATION_JOURNAL_KINDS == tuple(JournalKind)
     assert tables.INTEGRATION_JOURNAL_MODES == tuple(JournalMode)
@@ -158,7 +160,7 @@ def test_ports_wrap_existing_command_contracts_unchanged():
     adapted = {name for names in PHASE1_ADAPTED_COMMANDS.values() for name in names}
     assert adapted <= DESIGN_INTEGRATION_COMMANDS
     # No primitive name shadows an existing command except the seal it adapts.
-    assert {p.value for p in Primitive} & DESIGN_INTEGRATION_COMMANDS == {"integration_seal"}
+    assert not {p.value for p in Primitive} & DESIGN_INTEGRATION_COMMANDS
 
 
 def test_outcomes_outside_the_closed_set_are_refused():
@@ -267,7 +269,7 @@ def test_subject_identity_rules():
     assert subject.head == HeadIdentity(
         repository_id="repo", ref="refs/heads/main", sha=HEAD, generation=2, base_sha=BASE
     )
-    assert subject.engine is SubjectEngine.LEGACY and subject.is_live
+    assert subject.engine is SubjectEngine.RECONCILER and subject.is_live
     with pytest.raises(ValidationError, match="not bound to a task"):
         _subject(task_id="t1")
     with pytest.raises(ValidationError, match="requires its task id"):
@@ -453,9 +455,8 @@ async def test_ports_answer_closed_outcomes_or_unknown():
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("subjects"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("subjects")
     async with database._engine.begin() as conn:
         for sha in (ARTIFACT, NEW_ARTIFACT):
             await conn.execute(
@@ -470,7 +471,6 @@ async def db(tmp_path):
                 )
             )
     yield database
-    await database.close()
 
 
 def _row(subject: Subject) -> dict:
@@ -488,16 +488,75 @@ async def _insert_raw(db, **overrides):
 
 async def test_creation_is_idempotent_and_never_overwrites(db):
     first, created = await db.ensure_integration_subject(_row(_subject()))
-    assert created and first["version"] == 0 and first["engine"] == "legacy"
+    assert created and first["version"] == 0 and first["engine"] == "reconciler"
     again, created = await db.ensure_integration_subject(
         _row(_subject(id="subject-2", phase=SubjectPhase.TESTING))
     )
     assert not created and again["id"] == "subject-1" and again["phase"] == "building"
     assert Subject.from_row(again) == _subject()
-    by_key = await db.get_integration_subject_by_key(
-        project_id="p", kind="root_batch", subject_key=_subject().subject_key
-    )
-    assert by_key == again
+
+
+@pytest.mark.parametrize("same_id", [True, False])
+async def test_concurrent_creation_returns_one_unchanged_subject(db, same_id):
+    for round_number in range(10):
+        barrier = asyncio.Barrier(8)
+
+        async def create(index):
+            values = _row(
+                _subject(
+                    id=f"race-{round_number}-{0 if same_id else index}",
+                    subject_key=f"root_batch:repo:race-{round_number}",
+                    phase=SubjectPhase.BUILDING if index % 2 else SubjectPhase.TESTING,
+                    policy=PIN if index % 2 else PIN.model_copy(
+                        update={"artifact_sha256": NEW_ARTIFACT}
+                    ),
+                )
+            )
+            async with db._engine.begin() as conn:
+                await barrier.wait()
+                return await db.ensure_integration_subject_on(conn, values)
+
+        results = await asyncio.gather(*(create(index) for index in range(8)))
+        assert sum(created for _, created in results) == 1
+        winner = next(row for row, created in results if created)
+        assert all(row == winner for row, _ in results)
+        assert await db.get_integration_subject(winner["id"]) == winner
+
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_subjects))).all()) == 10
+
+
+@pytest.mark.parametrize(
+    "overrides, other_id, constraint",
+    [
+        ({}, "subject-1", "integration_subjects_pkey"),
+        ({"phase": SubjectPhase.ADMITTING}, "subject-2", "uq_integration_subjects_admitting_root"),
+        ({"batch_id": "batch-1"}, "subject-2", "uq_integration_subjects_batch"),
+    ],
+)
+async def test_creation_refuses_a_collision_with_a_different_natural_key(
+    db, overrides, other_id, constraint
+):
+    original, created = await db.ensure_integration_subject(_row(_subject(**overrides)))
+    assert created
+    with pytest.raises(IntegrityError, match=constraint):
+        await db.ensure_integration_subject(
+            _row(
+                _subject(
+                    **overrides,
+                    id=other_id,
+                    subject_key="root_batch:repo:other-request",
+                )
+            )
+        )
+    assert await db.get_integration_subject(original["id"]) == original
+    async with db._engine.connect() as conn:
+        collided = await conn.execute(
+            select(integration_subjects.c.id).where(
+                integration_subjects.c.subject_key == "root_batch:repo:other-request"
+            )
+        )
+        assert collided.first() is None
 
 
 @pytest.mark.parametrize(
@@ -571,39 +630,6 @@ async def test_a_done_subject_never_reopens(db):
             await conn.execute(update(integration_subjects).values(phase="building", **reopened))
 
 
-async def test_due_pages_are_keyset_ordered_and_skip_done_and_future(db):
-    for index, due in enumerate((NOW - 5, NOW - 5, NOW - 1, NOW + 10)):
-        await _insert_raw(
-            db,
-            id=f"s{index}",
-            subject_key=f"root_batch:repo:r{index}",
-            next_due_at=due,
-            due_set_at=due,
-        )
-    closed = schedule_values(
-        SubjectSchedule.close(now=NOW, reason="published", max_wait_seconds=60)
-    )
-    await _insert_raw(db, id="s-done", subject_key="root_batch:repo:done", phase="done", **closed)
-    await _insert_raw(
-        db, id="s-held", subject_key="root_batch:repo:held", next_due_at=None, gate_id="g"
-    )
-    first = await db.due_integration_subject_page(now=NOW, after=None, limit=2)
-    assert [row["id"] for row in first] == ["s0", "s1"]
-    rest = await db.due_integration_subject_page(
-        now=NOW, after=(first[-1]["next_due_at"], first[-1]["id"]), limit=10
-    )
-    assert [row["id"] for row in rest] == ["s2"]
-    assert (
-        await db.due_integration_subject_page(now=NOW, after=None, limit=10, kinds=["source"]) == []
-    )
-    assert (
-        await db.due_integration_subject_page(now=NOW, after=None, limit=10, engine="reconciler")
-        == []
-    )
-    with pytest.raises(ValueError):
-        await db.due_integration_subject_page(now=NOW, after=None, limit=0)
-
-
 async def test_versioned_writes_refuse_a_stale_visit(db):
     await db.ensure_integration_subject(_row(_subject()))
     wait = schedule_values(
@@ -651,17 +677,20 @@ async def test_an_event_wakes_without_invalidating_the_visit_in_flight(db):
             )
         )
     )
-    # The event pulls the due time forward, never back, and keeps the version.
-    assert await db.wake_integration_subjects(now=NOW + 10, batch_ids=["nope"]) == 0
-    assert await db.wake_integration_subjects(now=NOW + 10, subject_ids=["subject-1"]) == 1
+    # An answered gate wakes the subject the way ``gates`` does: due now and
+    # stamped, with the version untouched.
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(integration_subjects)
+            .where(integration_subjects.c.id == "subject-1")
+            .values(next_due_at=NOW + 10, wake_requested_at=NOW + 10)
+        )
     woken = await db.get_integration_subject("subject-1")
     assert (woken["next_due_at"], woken["wake_requested_at"], woken["version"]) == (
         NOW + 10,
         NOW + 10,
         0,
     )
-    assert await db.wake_integration_subjects(now=NOW + 20, subject_ids=["subject-1"]) == 1
-    assert (await db.get_integration_subject("subject-1"))["next_due_at"] == NOW + 10
 
     # A visit that started before the wake still writes, and stays due now.
     later = schedule_values(
@@ -688,16 +717,6 @@ async def test_an_event_wakes_without_invalidating_the_visit_in_flight(db):
             visit_started_at=NOW + 25,
         )
     assert settled["next_due_at"] == NOW + 900
-
-
-async def test_wakes_reach_held_subjects_by_writer_task_and_gate(db):
-    held = schedule_values(SubjectSchedule.hold(now=NOW, gate_id="gate-9", max_wait_seconds=60))
-    writer = {"writer_status": "filed", "writer_task_id": "repair-1"}
-    await db.ensure_integration_subject({**_row(_subject()), **held, **writer})
-    assert await db.wake_integration_subjects(now=NOW + 5, gate_ids=["gate-9"]) == 1
-    row = await db.get_integration_subject("subject-1")
-    assert (row["gate_id"], row["next_due_at"]) == ("gate-9", NOW + 5)
-    assert await db.wake_integration_subjects(now=NOW + 6, writer_task_ids=["repair-1"]) == 1
 
 
 def _journal(**overrides) -> dict:

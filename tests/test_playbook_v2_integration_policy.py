@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.integration.models import BranchKey, Fence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIEvidence,
     CIState,
     GateArgs,
@@ -47,8 +47,8 @@ from src.playbooks.validation import (
 )
 from tests.playbook_v2_engine_helpers import artifact_ref_for
 
-BUNDLE = Path("tests/fixtures/playbooks/v2/agent-queue-root-train")
-TEMPLATE = Path("tests/fixtures/playbooks/v2/root-train")
+BUNDLE = Path("tests/fixtures/playbooks/historical-v2/agent-queue-root-train")
+TEMPLATE = Path("tests/fixtures/playbooks/historical-v2/root-train")
 BASE = "a" * 40
 HEAD = "b" * 40
 
@@ -158,9 +158,11 @@ def test_malformed_tables_rejected(raw_policy, mutation, match):
     elif mutation == "overdue_false":
         table["cases"][-1]["when"]["right"]["value"] = False
     elif mutation == "unknown_binding":
-        table["cases"][1]["when"]["value"]["binding"] = "invented"
+        case = next(case for case in table["cases"] if case["rule"] == "unknown-facts")
+        case["when"]["value"]["binding"] = "invented"
     elif mutation == "unknown_path":
-        table["cases"][1]["when"]["value"]["path"] = "invented"
+        case = next(case for case in table["cases"] if case["rule"] == "unknown-facts")
+        case["when"]["value"]["path"] = "invented"
     elif mutation == "missing_argument":
         del actions["build"]["inputs"]["members"]
     elif mutation == "unbounded_default":
@@ -185,7 +187,14 @@ def test_compiler_reads_author_block_and_rejects_invented_table(artifact, tmp_pa
     source_path = tmp_path / "source.md"
     source_path.write_text((BUNDLE / "source.md").read_text())
     source = PlaybookSource.load(source_path, vault_root=tmp_path)
-    body = {name: artifact.model_dump(mode="json")[name] for name in ("rules", "steps")}
+    # Test author-policy ingestion with a retained executable command. The
+    # historical sealing/build/promotion rules are no longer activatable.
+    dumped = artifact.model_dump(mode="json")
+    body = {
+        "rules": [rule for rule in dumped["rules"] if rule["id"] == "cleanup-promoted"],
+        "steps": {name: step for name, step in dumped["steps"].items()
+                  if name.startswith("cleanup-promoted--")},
+    }
     lookups = dict(
         contracts=RegistryContractLookup(),
         profiles=NullProfileLookup(),
@@ -267,6 +276,55 @@ def test_unclaimed_queue_time_is_not_repair_failure(artifact):
     assert decision.messages
 
 
+def test_a_table_can_eject_the_earliest_conflicting_member_by_derived_path(raw_policy, artifact):
+    from src.integration.runtime_contracts import ConflictFacts, EjectArgs
+
+    table = copy.deepcopy(raw_policy)
+    root = table["tables"]["root_batch"]
+    case = next(case for case in root["cases"] if case["rule"] == "writer-unclaimed-expired")
+    case["action"] = "eject-unclaimed"
+    del root["actions"]["capacity"]
+    root["actions"]["eject-unclaimed"] = {
+        "primitive": "eject",
+        "inputs": {
+            "member_task_id": {"type": "binding_ref", "binding": "s", "path": "conflict_member"},
+            "reason": {"type": "literal", "value": "writer-unclaimed-after-budget"},
+        },
+        "outcomes": {
+            "ejected": {"kind": "progress", "phase": "building"},
+            "not_a_member": {"kind": "backoff", "seconds": 30, "ceiling_seconds": 3600},
+            "unknown": {"kind": "backoff", "seconds": 30, "ceiling_seconds": 3600},
+        },
+    }
+    variant = artifact.model_copy(
+        update={"integration_policy": IntegrationPolicy.model_validate(table)}
+    )
+    subject = make_subject(
+        variant,
+        SubjectPhase.REPAIRING,
+        writer=WriterLease(status=WriterStatus.FILED, task_id="repair"),
+        budget=WriterBudget(
+            ordinal=0, intelligence_class="standard-high", started_at=100, deadline_at=150,
+            attempt_limit=3,
+        ),
+    )
+    members = tuple(
+        MemberFacts(task_id=name, head_sha=HEAD, base_sha=BASE, review="approved")
+        for name in ("alpha", "bravo", "charlie")
+    )
+    # Conflicts arrive unordered; the manifest order chooses the member.
+    conflicts = (ConflictFacts(member_task_id="charlie"), ConflictFacts(member_task_id="bravo"))
+    decision = CompiledIntegrationPolicy(variant).evaluate(
+        subject, make_facts(subject, members=members, conflicts=conflicts)
+    )
+    assert decision.request == EjectArgs(
+        member_task_id="bravo", reason="writer-unclaimed-after-budget"
+    )
+    # Without a conflict the line has no member to name; it is never guessed.
+    with pytest.raises(ValueError):
+        CompiledIntegrationPolicy(variant).evaluate(subject, make_facts(subject, members=members))
+
+
 def test_green_decision_preserves_exact_expected_old_fence(artifact):
     subject = make_subject(artifact, SubjectPhase.PROMOTABLE)
     fence = Fence(
@@ -308,7 +366,9 @@ def test_publication_never_infers_publisher_fence_from_repair_writer(artifact):
     writer = WriterLease(status=WriterStatus.WORKING, task_id="repair", fence_token=7)
     subject = make_subject(artifact, SubjectPhase.PROMOTABLE, writer=writer)
     facts = make_facts(subject, ci=(CIEvidence(head_sha=HEAD, state=CIState.GREEN),))
-    plain = SubjectFacts.model_validate(facts.model_dump(exclude={"publisher_fence"}))
+    plain = SubjectFacts.model_validate(
+        facts.model_dump(exclude={"publisher_fence", "competing_lease"})
+    )
     decision = CompiledIntegrationPolicy(artifact).evaluate(subject, plain)
     assert decision.rule == "publisher-fence-unavailable"
     assert decision.primitive == Primitive.WAIT

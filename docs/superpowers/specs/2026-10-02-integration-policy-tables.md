@@ -53,7 +53,9 @@ phase(subject, decision, outcome) -> SubjectPhase | None
 The evaluator verifies the subject's exact artifact pin and observation
 identity/version/phase. It binds `s` to `SubjectFacts.binding()` and `subject`
 to the durable row. Derived projections supply `tested_head`, typed
-`merge_members`, and `next_writer_ordinal`; they perform no live lookup. Resolved
+`merge_members`, `next_writer_ordinal` and `conflict_member` (the earliest
+conflicting member in manifest order, since lists are not addressable by path);
+they perform no live lookup. Resolved
 inputs are validated by the foundation's primitive argument model. Decisions
 carry the matched rule, facts digest and pinned artifact identity. Scheduling
 checks decision/outcome identity and clamps its wait to the subject's immutable

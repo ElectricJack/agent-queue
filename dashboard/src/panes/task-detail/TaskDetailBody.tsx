@@ -1,3 +1,4 @@
+import TaskKnowledgeSection from "../../pages/knowledge/TaskKnowledgeSection";
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ClipboardEvent, DragEvent } from "react";
@@ -12,7 +13,6 @@ import {
   useTask,
   useGates,
   useResolveGate,
-  useDeleteTask,
   useReopenWithFeedback,
   useTaskAttachments,
   useUploadTaskAttachment,
@@ -21,15 +21,17 @@ import {
   type TaskCompletionDetail,
   type TaskRef,
 } from "../../api/hooks";
-import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../../api/branchDiscard";
-import { integrationRemovalRefusal } from "../../api/deleteRefusals";
-import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
+import { EpicDeliveryPanel, EpicStatus } from "../../components/EpicDelivery";
+import TaskDisplayStatus, { EpicActivitySummary } from "../../components/TaskDisplayStatus";
+import { rolledState } from "../../components/epicActivityFormat";
 import TaskActions from "../../components/TaskActions";
+import DeleteTaskModal from "../../components/DeleteTaskModal";
 import TaskCollaboration from "../../components/TaskCollaboration";
 import TaskComments from "../../components/TaskComments";
 import TaskSubtaskList from "../../components/TaskSubtaskList";
 import TaskSessions from "../../components/TaskSessions";
+import TaskWaitPanel from "../../components/TaskWaitPanel";
 import TaskAttention from "../../components/TaskAttention";
 import TaskProviderRouting, { ProviderIntentChip } from "../../components/TaskProviderRouting";
 import TaskDescription from "../../components/TaskDescription";
@@ -40,6 +42,8 @@ import type { TaskDetailArgs } from "./manifest";
 import { useReviews } from "../../api/reviews";
 import { taskPreview } from "./preview";
 import { prefetchTaskPane } from "./prefetch";
+import { isIngestHeld } from "../../pages/command-center/statusPillModel";
+import IngestionSections, { HeldStatusPill } from "./IngestionSections";
 
 /** One row of the deliverables checklist, verdict included. */
 type DeliverableRow = { id: string; kind: string; target: string; met: boolean; reason: string };
@@ -82,6 +86,8 @@ export interface TaskDetailBodyProps {
   onOpenTask: (taskId: string) => void;
   /** Leave the detail: after a delete, and before a terminal or session opens. */
   onClose: () => void;
+  /** Route-owned detail leaves its URL selection in history when navigating away. */
+  onLeave?: () => void;
   /** Session links remember the task pane so Back restores it (desktop pane only). */
   fromTaskPane?: boolean;
   /** Pane-host wiring (toolbar, local shortcuts, "open full page"); the route passes none. */
@@ -92,7 +98,7 @@ export interface TaskDetailBodyProps {
  * Task detail content, shared by the right-surface pane and the focus route
  * (mobile dashboard §4.1: one component, one fetch policy).
  */
-export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPane = false, host }: TaskDetailBodyProps) {
+export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = onClose, fromTaskPane = false, host }: TaskDetailBodyProps) {
   const queryClient = useQueryClient();
   const { data: task, isError } = useTask(taskId);
   useEffect(() => prefetchTaskPane(queryClient, taskId), [queryClient, taskId]);
@@ -103,27 +109,18 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
     enabled: !!task?.project_id,
   });
   const resolveGate = useResolveGate();
-  const deleteTask = useDeleteTask();
   const reopenWithFeedback = useReopenWithFeedback();
   const attachments = useTaskAttachments(taskId, !!task);
   const uploadAttachment = useUploadTaskAttachment();
   const deleteAttachment = useDeleteTaskAttachment();
 
   const [modal, setModal] = useState<LocalModal>(null);
-  // Branches a refused delete is asking about; see api/branchDiscard.
-  const [branchPrompt, setBranchPrompt] = useState<DiscardBranch[] | null>(null);
-  const [branchChoice, setBranchChoice] = useState<BranchChoice>("keep");
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ complete: number; total: number } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const location = useLocation();
-
-  // An integration refusal is not worth another attempt: history is a permanent
-  // record (explained in plain words), and any other hold names the command that
-  // clears it. Either way the dialog says so instead of offering the button.
-  const integrationRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
 
   const loose = task as TaskWithLooseFields | undefined;
   // Until the full read lands, the header shows what the row or card showed.
@@ -249,7 +246,13 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
           {task?.title ?? preview?.title ?? "Loading…"}
         </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          {status && <StatusBadge status={status} />}
+          {task && <TaskWaitPanel key={`wait-${task.id}`} taskId={task.id} projectId={task.project_id ?? ""} />}
+
+          {task && isIngestHeld(task.held_batch) ? <HeldStatusPill task={task} /> : task?.delivery_status && !rolledState(task, task.delivery_status) ? (
+            <EpicStatus delivery={task.delivery_status} status={task.status} />
+          ) : (
+            status && <TaskDisplayStatus task={task ?? { status, display_state: preview?.display_state, display_reason: preview?.display_reason }} />
+          )}
           {projectId && <span className="text-gray-400">{projectId}</span>}
           {priority != null && (
             <span className="rounded bg-gray-800 px-2 py-0.5 text-gray-300">
@@ -278,15 +281,23 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
             </span>
           )}
         </div>
+        {task && <EpicActivitySummary task={task} />}
       </header>
 
-      {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={onClose} onOpenTerminal={onClose} />}
+      {task && <IngestionSections task={task} onOpenTask={onOpenTask} />}
+      {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={onClose} onOpenTerminal={onLeave} />}
 
       {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
 
+      {task && <TaskWaitPanel key={`wait-${task.id}`} taskId={task.id} projectId={task.project_id ?? ""} />}
+
+      {task?.delivery_status && <EpicDeliveryPanel delivery={task.delivery_status} onOpenTask={onOpenTask} />}
+
       {task && <TaskProviderRouting task={task} />}
 
-      {task && <TaskDescription key={task.id} task={task} />}
+      {task && <TaskKnowledgeSection key={task.id} projectId={task.project_id ?? ""} taskId={task.id}>
+        <TaskDescription task={task} />
+      </TaskKnowledgeSection>}
 
       {task && (
         <section>
@@ -348,7 +359,7 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
         </section>
       )}
 
-      {task && <TaskSessions taskId={taskId} onOpenSession={onClose} fromTaskPane={fromTaskPane} />}
+      {task && <TaskSessions taskId={taskId} onOpenSession={onLeave} fromTaskPane={fromTaskPane} />}
 
       {task && <TaskSubtaskList taskId={taskId} />}
 
@@ -518,63 +529,8 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
         <TaskRefSection title="Blocks" items={task!.blocks!} onOpen={onOpenTask} />
       )}
 
-      <Modal open={modal === "close"} onClose={() => setModal(null)} title="Delete Task">
-        <div className="space-y-4">
-          <p className="text-sm text-gray-300">
-            Delete <strong>{task?.title}</strong> and any descendant tasks? This cannot be undone.
-          </p>
-          {branchPrompt && (
-            <BranchDiscardPrompt
-              branches={branchPrompt}
-              choice={branchChoice}
-              onChoose={setBranchChoice}
-            />
-          )}
-          {integrationRefusal && (
-            <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
-          )}
-          {deleteTask.isError && !branchPrompt && !integrationRefusal && (
-            <p role="alert" className="text-sm text-red-300">
-              Could not delete task. {deleteTask.error.message}
-            </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => { setBranchPrompt(null); setModal(null); }}
-              className="rounded-md border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() =>
-                deleteTask.mutate(
-                  {
-                    task_id: taskId,
-                    cascade: true,
-                    ...(branchPrompt ? { branches: branchChoice } : {}),
-                  },
-                  {
-                    onSuccess: () => { setBranchPrompt(null); setModal(null); },
-                    onError: (error) => {
-                      const awaiting = branchesAwaitingChoice(error);
-                      if (awaiting) setBranchPrompt(awaiting);
-                    },
-                  },
-                )
-              }
-              disabled={deleteTask.isPending || !!integrationRefusal}
-              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
-            >
-              {deleteTask.isPending
-                ? "Deleting..."
-                : branchPrompt && branchChoice === "delete"
-                  ? "Delete task and branches"
-                  : "Delete task and descendants"}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
+      {modal === "close" && task && <DeleteTaskModal task={task}
+        onClose={() => setModal(null)} onDeleted={onClose} />}
       <Modal open={modal === "reopen"} onClose={() => setModal(null)} title="Reopen with Feedback">
         <div className="space-y-4">
           <textarea

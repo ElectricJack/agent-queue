@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -111,6 +111,41 @@ describe("ProjectSubject", () => {
     mockProject(project);
   });
 
+  it.each([false, true])("an unrelated stale save preserves server supervisor state (loaded %s)", async (enabled) => {
+    let serverEnabled = enabled;
+    mockProject({ ...project, supervisor_enabled: enabled });
+    const mutateAsync = mockEdit(vi.fn().mockImplementation(async (body) => {
+      if ("supervisor_enabled" in body) serverEnabled = body.supervisor_enabled;
+      return project;
+    }));
+    const view = renderSubject();
+    serverEnabled = !enabled;
+    await userEvent.clear(screen.getByLabelText("Name"));
+    await userEvent.type(screen.getByLabelText("Name"), "Demo v2");
+    await act(async () => view.action("save").onClick());
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0]![0]).not.toHaveProperty("supervisor_enabled");
+    expect(serverEnabled).toBe(!enabled);
+  });
+
+  it("saves the project supervisor toggle and restores it on discard", async () => {
+    const mutateAsync = mockEdit();
+    const view = renderSubject();
+    const toggle = screen.getByRole("switch", { name: "Project supervisor" });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+    expect(view.action("save").disabled).toBe(false);
+    view.action("discard").onClick();
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(mutateAsync).not.toHaveBeenCalled();
+    await userEvent.click(toggle);
+    view.action("save").onClick();
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ supervisor_enabled: true }),
+    ));
+  });
+
   it("renders repo_url read-only and enables Save once edited", async () => {
     const mutateAsync = vi.fn().mockResolvedValue(project);
     vi.spyOn(hooks, "useEditProject").mockReturnValue({
@@ -171,8 +206,8 @@ describe("ProjectSubject", () => {
     await waitFor(() => expect(toolbar.find((a) => a.id === "save")).toBeDefined());
     toolbar.find((a) => a.id === "save")!.onClick();
 
-    // An untouched identity sends no git_identity_* keys, so a save of other
-    // fields never clobbers it.
+    // An untouched identity or supervisor switch sends no key, so a save of
+    // other fields never clobbers a value changed elsewhere since load.
     await waitFor(() =>
       expect(mutateAsync).toHaveBeenCalledWith({
         project_id: "demo",
