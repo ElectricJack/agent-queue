@@ -47,9 +47,8 @@ refusing it (the policy compiler is where an unbounded wait is rejected).
 
 **Events never invalidate a visit.** A visit writes back with
 `update_integration_subject_on(expected_version=…)`, a compare-and-swap on
-`version`. `wake_integration_subjects` (by subject, task, writer task, batch or
-gate) only pulls `next_due_at` forward and stamps `wake_requested_at`; it never
-bumps `version`. A visit that passes `visit_started_at` and finds a wake at or
+`version`. A wake (an answered gate, `src/integration/gates.py`) only pulls
+`next_due_at` forward and stamps `wake_requested_at`; it never bumps `version`. A visit that passes `visit_started_at` and finds a wake at or
 after it keeps the subject due now. A lost event costs latency, never progress.
 
 **Identity and policy are pinned by trigger.** `integration_subject_identity_pinned`
@@ -98,6 +97,10 @@ root subject exists per `(project, repository)`
 (`uq_integration_subjects_admitting_root`); how many sealed batches may coexist
 stays policy. An unbound admitting root whose request is no longer outstanding
 can never seal, so the seed for the replacing request closes it as `superseded`.
+Concurrent creation also replays when callers share the deterministic subject
+id: either the primary key or natural key may conflict first. A uniqueness
+collision without a matching natural key still raises its constraint violation;
+it cannot adopt a different subject or bypass the admitting-root or batch limits.
 
 ## Not in this task
 

@@ -15,7 +15,7 @@ from src.database.tables import (
     repos,
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
-from src.integration.owner_recovery import PRESERVED_AND_RELEASED, PRESERVED_PREFIX, RELEASED
+from src.integration.owner_recovery import PRESERVED_AND_RELEASED, RELEASED, recovery_ref_allowed
 
 
 async def batch_recovery_progress(db, recovery, operation, stage, target) -> dict | None:
@@ -79,7 +79,7 @@ async def batch_recovery_progress(db, recovery, operation, stage, target) -> dic
         recovery is None
         or not is_valid_git_oid(sha or "")
         or not is_valid_git_oid(base or "")
-        or ref != PRESERVED_PREFIX + row["owner_row_id"]
+        or not recovery_ref_allowed(ref, target.branch, row["owner_row_id"], sha)
         or manifest != (row["previous_dossier"] or {}).get("manifest")
         or manifest.get("batch_id") != batch["id"]
         or manifest.get("source_manifest_digest") != batch["source_manifest_digest"]
@@ -94,7 +94,16 @@ async def batch_recovery_progress(db, recovery, operation, stage, target) -> dic
     async with recovery._mutex(checkout):
         await git.afetch_origin(checkout, repository_url=repository_url, lock_held=True)
     remote = await git.als_remote_ref(checkout, ref)
-    if remote.state is not RemoteRefState.PRESENT or remote.oid != sha:
+    direct = ref == target.branch.removeprefix("refs/heads/")
+    published = remote if direct else await git.als_remote_ref(checkout, target.branch)
+    contained = (
+        published.state is RemoteRefState.PRESENT
+        and await git.ais_ancestor(checkout, sha, published.oid, strict=True)
+    )
+    if not (
+        remote.state is RemoteRefState.PRESENT and (remote.oid == sha or (direct and contained))
+        or remote.state is RemoteRefState.ABSENT and contained
+    ):
         raise GitError("preserved batch progress ref does not match its recorded exact SHA")
     if await git.ais_ancestor(checkout, base, sha, strict=True) is not True:
         raise GitError("preserved batch progress does not descend from its frozen subject")
