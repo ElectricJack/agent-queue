@@ -84,9 +84,11 @@ reviews, change their bytes, invent new obligations, or infer success from age.
 
 1. Deploy packet/feedback fencing for every approval caller. There must be no old
    approval writer alongside the new one. Pending application operations hold work.
-2. Operator applies the forward migrations. Actual chain: ledger **91**, source
-   fences **92**, shared input/outbox **93**. The design's provisional cleanup ID 93
-   was consumed by transport; H09 must allocate the next free sequential revision.
+2. Operator applies the forward migrations. Actual revision IDs: ledger
+   `a00000000096`, source fences `a00000000097`, shared input/outbox
+   `a00000000098`. The design used provisional 91/92/93 labels; those numbers
+   belong to unrelated revisions in the merged chain. H09 must allocate the next
+   free sequential revision rather than reuse a provisional ID.
 3. Inspect `aq ask reconcile --help` and `aq ask cutover --help`. Run
    `aq ask reconcile --project-id PROJECT` (dry-run default). The result contains
    bounded source actions, conflicts, durable cursor position and inventory hash.
@@ -152,6 +154,12 @@ retaining unknown does not reconcile an outstanding HTTP write. H09 additionally
 requires elapsed compatibility and observed operational acceptance.
 
 ## Operational acceptance and rollback
+
+Configuration changes fence pinned shared writers only at the current and last
+observed destination; other destinations retain their ownership. Legacy and
+missing-pin rows require explicit cutover and are not automatically migrated.
+See [configuration fencing and migration](../specs/design/ask-channel-config-fencing.md).
+Reverting YAML cannot enable a retired writer.
 
 H08-OPS records an authorized test-project sample: one new ask, one migrated root,
 a deterministic decision, ambiguous text across two asks, discussion and conditional
