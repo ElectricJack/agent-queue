@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import and_, func, select, union_all
+from sqlalchemy import and_, column, func, select, true, union_all
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
@@ -53,6 +54,41 @@ async def read_pull_request_snapshot(db) -> tuple[list[dict], float | None]:
     async with db._engine.connect() as conn:
         row = (await conn.execute(select(pull_request_inbox_snapshot))).mappings().first()
     return (row["payload"], row["updated_at"]) if row else ([], None)
+
+
+async def read_pull_request_project_counts(db) -> tuple[list[dict], float | None]:
+    """Aggregate the durable snapshot without loading PR details or contacting GitHub."""
+    snapshot = pull_request_inbox_snapshot
+    items = func.jsonb_array_elements(snapshot.c.payload).table_valued(
+        column("value", JSONB),
+    )
+    project_id = items.c.value["project_id"].astext
+    counts = (
+        select(
+            project_id.label("project_id"),
+            func.count(func.distinct(func.lower(items.c.value["url"].astext))).label(
+                "open_pr_count",
+            ),
+        )
+        .select_from(snapshot.join(items, true()))
+        .group_by(project_id)
+        .subquery()
+    )
+    statement = (
+        select(
+            projects.c.id.label("project_id"), projects.c.name.label("project_name"),
+            projects.c.repo_url,
+            func.coalesce(counts.c.open_pr_count, 0).label("open_pr_count"),
+            select(snapshot.c.updated_at).scalar_subquery().label("snapshot_at"),
+        )
+        .select_from(projects.outerjoin(counts, projects.c.id == counts.c.project_id))
+        .where(projects.c.status == "ACTIVE")
+        .order_by(func.lower(projects.c.name), projects.c.id)
+    )
+    async with db._engine.connect() as conn:
+        rows = [dict(row) for row in (await conn.execute(statement)).mappings()]
+    updated_at = rows[0]["snapshot_at"] if rows else None
+    return rows, updated_at
 
 
 async def write_pull_request_snapshot(db, items: list[dict], *, now: float | None = None) -> None:
