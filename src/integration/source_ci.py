@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.task_templates import render_task_template
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,7 @@ async def observe_source_ci(*, row, source, client, handler, pull=None):
             # Bounded by policy: an outage that outlasts the attempts is a
             # named blocker for a human, not another observation loop.
             logger.warning(
-                "source CI infrastructure blocker %s for task %s at %s after %s "
+                "source CI blocker %s for task %s at %s after %s "
                 "consecutive observations",
                 recorded["blocker"], row["id"], source["head"][:12],
                 recorded.get("infra_observations"),
@@ -219,111 +220,17 @@ def repair_description(observation):
         if item["name"] in evidence["failing_checks"]
     )
     return (
-        f"Authorized source CI repair for task {observation.task_id}, PR {source['pr_url']}.\n"
-        f"Repository {source['repository_id']}; source branch {source['branch']}; "
-        f"exact source base {source['base']}, head {source['head']}, "
-        f"checkpoint generation {source['generation']}.\n"
-        f"Observed {observation.state} under policy generation {observation.policy_generation}.\n"
-        f"Failing/cancelled checks:\n{checks}\n\n"
-        "Work in your assigned root branch. Fetch and merge the exact source head "
-        "above, preserving it as an ancestor; resolve all necessary code, test, "
-        "migration and generated-artifact issues. Use the failed check links and "
-        "record concrete failures and fixes. A red run is repairable only because at "
-        "least one required check genuinely failed; any cancelled check listed beside "
-        "it is infrastructure and is never fixed in code or counted as success. "
-        "Re-chain colliding migration "
-        "revisions and regenerate generated files. Run focused and relevant area checks "
-        "with aq test, publish your assigned branch and close with exact test evidence. "
-        "The delivery service observes this branch's own exact CI and queues further "
-        "bounded repair if needed; only its fully checked candidate can reach main. "
-        "Do not rewrite the source branch or publish main."
+        render_task_template(
+            "source-ci-reopen",
+            task_id=observation.task_id,
+            source_pr_url=source["pr_url"],
+            source_repository_id=source["repository_id"],
+            source_branch=source["branch"],
+            source_base=source["base"],
+            source_head=source["head"],
+            source_generation=source["generation"],
+            state=observation.state,
+            policy_generation=observation.policy_generation,
+            checks=checks,
+        )
     )
-
-
-class RootAdmissionReader:
-    """Fresh exact-source Git/GitHub facts, without review-poller prerequisites."""
-
-    def __init__(self, promotion):
-        self.promotion = promotion
-
-    async def observe_many(self, members, policy):
-        """One open-PR listing per repository prunes stale branches before Git I/O."""
-        repositories = {}
-        observations = []
-        # One fetch of all heads per repository per admission pass, not per member.
-        fetched = set()
-        for member in members:
-            repository_id = member["repository_id"]
-            if repository_id not in repositories:
-                try:
-                    resolved = await self.promotion._resolve_repository(repository_id)
-                    binding = await self.promotion.git.bind_github_repository(resolved.origin_url)
-                    client = self.promotion.git._github_client(binding)
-                    pulls = await client.paged_list(
-                        f"/repositories/{binding.repository_id}/pulls?state=open&per_page=100"
-                    )
-                    if any(pull.get("state") != "open" or not pull.get("html_url") for pull in pulls):
-                        raise ValueError("open PR listing is malformed")
-                    repositories[repository_id] = {
-                        pull["html_url"]: pull for pull in pulls if pull.get("state") == "open"
-                    }
-                except Exception as exc:
-                    repositories[repository_id] = exc
-            pulls = repositories[repository_id]
-            if isinstance(pulls, Exception):
-                result = {"reason": "source_observation_unavailable", "error": str(pulls)}
-            elif member["pr_url"] not in pulls:
-                result = {"reason": "pr_closed"}
-            else:
-                result = await self(member, policy, pull=pulls[member["pr_url"]],
-                                    fetched=fetched)
-                fetched.add(repository_id)
-            observations.append(result)
-        return observations
-
-    async def __call__(self, member, policy, *, pull=None, fetched=None):
-        import time
-
-        from src.git.manager import RemoteRefState
-
-        try:
-            resolved = await self.promotion._resolve_repository(member["repository_id"])
-            git = self.promotion.git
-            binding = await git.bind_github_repository(resolved.origin_url)
-            client = git._github_client(binding)
-            if pull is None:
-                pull = await client.pull_request(member["pr_url"])
-            if pull.get("state") != "open":
-                return {"reason": "pr_closed"}
-            head, base = pull.get("head") or {}, pull.get("base") or {}
-            if (head.get("sha") != member["source_head"]
-                    or head.get("ref") != member["source_branch"].removeprefix("refs/heads/")
-                    or (head.get("repo") or {}).get("id") != binding.repository_id
-                    or (base.get("repo") or {}).get("id") != binding.repository_id
-                    or base.get("ref") != member["default_branch"].removeprefix("refs/heads/")):
-                return {"reason": "pr_identity_changed"}
-            # No CI before admission: batch candidate CI is the only gate.
-            evidence = {}
-            await self.promotion._ensure_retained_repository(resolved)
-            store = str(resolved.retained_git_dir)
-            async with git.arepository_transaction(store):
-                if fetched is None or member["repository_id"] not in fetched:
-                    await self.promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
-                remote = await git.als_remote_ref(store, member["source_branch"])
-                target = await git.als_remote_ref(store, member["default_branch"])
-                if remote.state is not RemoteRefState.PRESENT or remote.oid != member["source_head"]:
-                    return {"reason": "source_ref_changed"}
-                if target.state is not RemoteRefState.PRESENT:
-                    return {"reason": "target_unavailable"}
-                contained = await git.ais_ancestor(
-                    store, member["source_head"], target.oid, strict=True,
-                )
-                if contained is True:
-                    return {"reason": "already_delivered"}
-                if contained is not False:
-                    return {"reason": "ancestry_unknown"}
-                tree = await self.promotion._tree_oid(resolved.retained_git_dir, member["source_head"])
-            return {"reason": None, "tree": tree, "checks": evidence,
-                    "target_sha": target.oid, "observed_at": time.time()}
-        except Exception as exc:
-            return {"reason": "source_observation_unavailable", "error": str(exc)}
