@@ -9,8 +9,17 @@ For a disabled project, logical `supervisor-<pid>`, runtime
 `session:supervisor-global`. Preserve the message's project, thread, sender,
 priority and identity. The address suffix selects the recipient project;
 the sender's project context can differ. The global address remains global.
+An immutable session ID belonging to a named project supervisor follows the
+same rule, including messages queued before disabling it. Worker session IDs
+retain their existing recipients.
 Internal event notices and existing unread backlog obey the same routing.
 Read or archived history is unchanged.
+
+Provider failover notices remain once per batch per project. Their stable
+`reroute:<batch>:<project>` thread identifies an already sent notice regardless
+of its current recipient, including after enabling or disabling a project
+supervisor. Projects sharing the global supervisor still receive separate
+notices in their own threads.
 
 The session lens refuses direct cold starts and wakes of disabled project
 supervisors. Disabling records stop intent; reconciliation waits for the
@@ -18,6 +27,10 @@ current turn to finish, then stops the instance. This also drains project
 supervisors already running when the default changes. Enabling is lazy: the
 next message starts the project supervisor. Doctor reports live supervisors
 of disabled projects, including those still draining.
+
+Dashboard settings saves include `supervisor_enabled` only when the operator
+changes the toggle. Saving unrelated settings from a stale form must not
+overwrite a later supervisor enable/disable decision.
 
 Acceptance checks cover schema/migration defaults, all three recipient forms,
 project context preservation, internal notices/backlog, cold-start/wake

@@ -53,8 +53,8 @@ fi
 # run anyway and fail with `relation "projects" does not exist`, which reads
 # like eighteen product regressions in the capability report rather than one
 # broken environment (task vivid-rapids).
-if ! python3 "$REPO_ROOT/scripts/e2e/probe.py" --url "$AQ_E2E_API_URL"; then
-    echo "refusing to run the scenarios against an unusable database" >&2
+if ! python3 "$REPO_ROOT/scripts/e2e/probe.py" --url "$AQ_E2E_API_URL" --wait 15; then
+    echo "refusing to run the scenarios without daemon readiness" >&2
     exit 2
 fi
 
