@@ -26,7 +26,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import yaml
+
 from src.profiles.capabilities import NAMESPACES
+from src.profiles.parser import parse_frontmatter
 from src.profiles.retired_defaults import is_retired
 
 #: ``## Config`` keys whose value changes behaviour rather than presentation.
@@ -326,12 +329,13 @@ def reseed_profile(
     root: str | None = None,
     backup: bool = True,
 ) -> dict[str, Any]:
-    """Overwrite one vault profile with the shipped default.
+    """Restore one shipped profile while retaining its vault display name.
 
     The explicit counterpart to :func:`src.vault.ensure_default_profiles`'s
     write-if-absent rule: startup never clobbers an operator's file, but an
     operator who has read the drift report can ask for the shipped version
-    back one profile at a time.  The previous file is copied to
+    back one profile at a time. A nonempty name in valid vault frontmatter
+    remains operator-owned, even during a full reseed. The previous file is copied to
     ``profile.md.bak-<epoch>`` first unless ``backup=False``.
 
     Returns a dict with ``profile_id``, ``path``, ``backup_path`` (``None``
@@ -351,6 +355,27 @@ def reseed_profile(
 
     with open(shipped_path, "rb") as handle:
         shipped_bytes = handle.read()
+    if existed:
+        try:
+            with open(dst, encoding="utf-8") as handle:
+                vault_text = handle.read()
+        except UnicodeDecodeError:
+            vault_text = ""
+        vault_frontmatter, _ = parse_frontmatter(vault_text)
+        shipped_text = shipped_bytes.decode("utf-8")
+        shipped_frontmatter, _ = parse_frontmatter(shipped_text)
+        if vault_frontmatter.name and vault_frontmatter.name != shipped_frontmatter.name:
+            match = re.match(r"\A---\r?\n(.*?)\r?\n---(.*)\Z", shipped_text, re.DOTALL)
+            if match is None:
+                raise ValueError(f"'{profile_id}' shipped profile has no valid frontmatter")
+            metadata = yaml.safe_load(match.group(1))
+            metadata["name"] = vault_frontmatter.name
+            shipped_bytes = (
+                "---\n"
+                + yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True)
+                + "---"
+                + match.group(2)
+            ).encode("utf-8")
     _atomic_write_bytes(dst, shipped_bytes, fallback_mode_source=shipped_path)
     return {
         "profile_id": profile_id,

@@ -1,0 +1,13 @@
+{
+  "scheduler_stack_inputs_measurement": {
+    "authority": "msg-ab86b9766c2f42b9ba4920aba585b577",
+    "global_grant": "msg-7f2f68c1",
+    "global_request": "msg-9f895e0d",
+    "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
+    "measured_engine_lines": 85316,
+    "measured_owned_total": 160879,
+    "measured_table_count": 45,
+    "source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+    "task_id": "solid-impact-56"
+  }
+}
