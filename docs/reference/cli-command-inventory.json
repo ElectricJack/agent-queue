@@ -21131,6 +21131,8 @@
         "required": [],
         "optional": [
           "--project",
+          "--all-projects",
+          "--limit",
           "--status",
           "--include-completed",
           "--json",

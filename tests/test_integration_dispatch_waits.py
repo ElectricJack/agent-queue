@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from src.commands import CommandHandler
 from src.commands.principal import TRUSTED_LOCAL, principal_context
@@ -198,7 +198,11 @@ async def test_train_visit_preserves_wait_when_ci_observation_is_unavailable(wor
 
 
 @pytest.mark.parametrize("restart", [False, True])
-async def test_skipped_ci_event_retries_unchanged_success_without_blocking_cursor(world, restart):
+@pytest.mark.parametrize("previously_dispatched", [False, True])
+async def test_skipped_ci_event_retries_unchanged_success_without_blocking_cursor(
+    world, restart, previously_dispatched,
+):
+    from src.database.tables import wait_listener_cursors, wait_measurements
     from src.waits.conditions import Condition, WaitError
     from src.waits.listener import WaitSourceListener
 
@@ -224,6 +228,14 @@ async def test_skipped_ci_event_retries_unchanged_success_without_blocking_curso
     outbox = {event["seq"]: event for event in await rows(world, wait_source_events)}
     assert outbox[success["seq"]]["dispatched_at"] is None
     assert outbox[later]["dispatched_at"] is not None
+    cursor = (await rows(world, wait_listener_cursors))[0]["last_seq"]
+    if previously_dispatched:
+        # Reproduce the durable state left by older daemons: the failed
+        # observation was stamped dispatched and the cursor already passed it.
+        async with world.db._engine.begin() as conn:
+            await conn.execute(update(wait_source_events).where(
+                wait_source_events.c.seq == success["seq"],
+            ).values(dispatched_at=case.now[0]))
     case.service.registry.observe.assert_awaited_once()
     # A normal listener tick respects provider backoff even though its cursor
     # has passed the failed event. No new source revision is needed to retry.
@@ -241,6 +253,58 @@ async def test_skipped_ci_event_retries_unchanged_success_without_blocking_curso
     assert outbox[success["seq"]]["dispatched_at"] is not None
     assert len([event for event in outbox.values()
                 if event["source_key"] == success["source_key"]]) == 2  # pending, success
+    assert (await rows(world, wait_listener_cursors))[0]["last_seq"] == cursor
+    measurements = await rows(world, wait_measurements)
+    await case.service.listener.tick()
+    assert await rows(world, wait_measurements) == measurements
+
+
+async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_state(world):
+    from src.waits.conditions import Condition
+
+    case = await runtime(world)
+    case.provider.required = case.provider.required.model_copy(update={
+        "names": ("linux", "windows"),
+    })
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    assert len(first.detail["dispatch"]["wait_ids"]) == 2
+    for wait in await rows(world):
+        await world.db.wait_source_commit(
+            source_key=wait["source_key"], generation=wait["source_generation"],
+            revision="pending-hint", outcome_ref="pending", payload={"conclusion": "pending"},
+        )
+    # Dispatch the pending hints normally. Reconciliation must not treat these
+    # already dispatched hints as success, nor repeatedly replay one per pass.
+    await case.service.listener.tick()
+    observe = AsyncMock(wraps=case.service.registry.observe)
+    case.service.registry.observe = observe
+    case.service.listener.retry_batch_size = 1
+    await case.service.listener.tick()
+    assert observe.await_count == 1
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    await case.service.listener.tick()
+    assert observe.await_count == 2  # the other source gets its bounded turn
+    await case.service.listener.tick()
+    assert observe.await_count == 2  # no hammering unchanged pending sources
+
+    case.provider.green.add(first.candidate_sha)
+    case.now[0] += 61
+    head = case.orch.wait_ci_watcher.head(Condition.from_record((await rows(world))[0]["condition"]))
+    await case.exact.refresh(head)
+    # Simulate the old daemon consuming terminal events without applying them.
+    dispatch = case.service.listener._dispatch
+    case.service.listener._dispatch = AsyncMock(return_value=0)
+    await case.service.listener.tick()
+    case.service.listener._dispatch = AsyncMock(wraps=dispatch)
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    await case.service.listener.tick()
+    assert sum(row["outcome"] == "satisfied" for row in await rows(world)) == 1
+    await case.service.listener.tick()
+    assert all(row["outcome"] == "satisfied" for row in await rows(world))
+    dispatched = case.service.listener._dispatch.await_args_list
+    assert len(dispatched) == 2
+    assert all(call.args[1]["payload"]["conclusion"] == "success" for call in dispatched)
 
 
 async def test_train_ci_deadline_stays_in_supervisor_inbox_during_discord_reconcile(world):
