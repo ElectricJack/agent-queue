@@ -478,6 +478,15 @@ failure, or if the reconciler finds `claim_phase = 'preparing'` with
 `now − claim_phase_at > swarm.prepare_timeout` (default 120 s, e.g. daemon crash
 mid-reset): `release_claim` (§11.2) runs with context `slot_reset_failed`,
 `task_metadata.needs_attention = slot_reset_failed`, and the response is `prepare_failed`.
+A cleanly aborted child/parent merge conflict without a managed train origin
+(including ordinary `pull_request` and manual projects) instead releases the claim
+to `BLOCKED` with `needs_attention = child_preparation_conflict`. The metadata of
+the same name retains the child, parent and merge heads, conflicting files and
+scrubbed reason. The checkout and published branches are preserved. No train
+repair or slot-reset retry ladder applies; the supervisor resolves the conflict
+before resuming the task. The response remains `prepare_failed`, with the normal
+reason, retry delay and session claim phase. Managed train origins retain their
+existing isolated repair path.
 Every permanent preparation failure (slot reset, attached integration writer, unpublished
 repair target, branch fence) is described once by `src/preparation_failure.py` and that one
 description is what every surface carries: the response `reason`, the session's
@@ -584,6 +593,15 @@ callers join the same generation and observe its actual failure or success.
 A notification cannot restart a still-live preparation. Deferred responses are
 fenced to their session instance and claim binding, and one failed preparation
 records one refusal even when several callers await its result.
+
+A completed refusal is observable before new-work drain/disable admission checks:
+the preparation itself may have stopped the session after refusing a foreign
+claim. Its original diagnostic is consumed once, without charging the refusal
+budget again. This exception never serves a cached success or admits new work.
+The response must still match the session launch, project, agent, task creation,
+claim epoch and retained preparation start. Mismatched polls leave the cached
+response untouched; ordinary drain responses remain unchanged when no matching
+refusal is pending.
 
 Each attempt logs monotonic phase start/completion and total timing, including
 frontier selection, owner/lease checks, fetch, checkout, reset, setup and shared
@@ -1135,6 +1153,14 @@ Three budgets are kept apart, because they measure different things and cannot a
 | worker-filed root `create_task` | + 2 (gate, task_gates) | 1 | — |
 | `aq prime` per claim | — | — | ≤ 2,000 tokens, logged |
 | push-vs-pull A/B (same 50-task set, `lifecycle: task` vs `pool` cap 5) | — | — | report wall-clock, tokens, cold starts; no threshold — the measurement D4 asks for |
+
+The executable PostgreSQL budgets in `tests/perf/test_claim_statements.py` cap
+the whole claim at 20 statements and the selection/holder portion at 10,
+including persisted claim diagnostics. The current project is joined to the
+preparation fence after admission, so long polls cannot reuse stale integration
+settings. Holder recording chains the session and workspace writes through
+`UPDATE ... RETURNING`; metadata insertion and replacement use a single upsert.
+Diagnostic additions must fit these bounds rather than raise them.
 
 `tests/perf/` seeds this scale (fixture reused by all perf tests), runs on a Postgres
 service in CI, and asserts the table. SQLite runs the same suite with timing relaxed 4×,

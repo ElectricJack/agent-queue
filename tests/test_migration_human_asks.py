@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -210,7 +211,9 @@ async def test_standalone_bytes_and_approval_provenance_are_immutable(db):
 
 def test_revision_is_single_head_with_named_checks_jsonb_and_bare_defaults():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == ["a00000000098"]
+    assert len(script.get_heads()) == 1
+    assert "a00000000099" in {revision.revision for revision in script.walk_revisions()}
+    assert script.get_revision("a00000000099").down_revision == "a00000000098"
     assert script.get_revision("a00000000098").down_revision == "a00000000097"
     assert script.get_revision("a00000000097").down_revision == "a00000000096"
     assert script.get_revision("a00000000096").down_revision == "a00000000095"
@@ -337,16 +340,33 @@ async def test_source_fences_refuse_downgrade_without_discarding_evidence(db, fe
             await trans.rollback()
 
 
-async def test_input_upgrade_replays_and_preserves_historical_text(db):
+@pytest.fixture
+async def transport_upgrade_connection(db):
+    # The lease pool resets rows, not schema. Always restore historical DDL,
+    # including when the upgrade or its assertions fail.
+    async with db._engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            yield conn
+        finally:
+            await trans.rollback()
+
+
+async def test_input_upgrade_replays_and_preserves_historical_text(transport_upgrade_connection):
+    conn = transport_upgrade_connection
     revision = migration("a00000000098_human_ask_transport")
     def upgrade(conn):
         with Operations.context(MigrationContext.configure(conn)):
             revision.upgrade()
-    async with db._engine.begin() as conn:
+    async with conn.begin_nested():
         await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
+        await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN project_id"))
         await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN source_version"))
         await conn.run_sync(upgrade)
         await conn.run_sync(upgrade)
+        assert not await conn.run_sync(
+            lambda bind: compare_metadata(MigrationContext.configure(bind), metadata)
+        )
         await conn.execute(sa.text("""
             INSERT INTO conversation_inputs
             (id, transport, external_message_id, verified_actor, author_id, channel_id,
@@ -361,14 +381,18 @@ async def test_input_upgrade_replays_and_preserves_historical_text(db):
                 await conn.execute(sa.text("UPDATE conversation_inputs SET routing_state='guessed'"))
 
 
-async def test_transport_upgrade_from_historical_outbox_preserves_receipts(db):
+@pytest.mark.parametrize("missing_columns", [True, False])
+async def test_transport_upgrade_from_historical_outbox_preserves_receipts(
+    transport_upgrade_connection, missing_columns
+):
+    conn = transport_upgrade_connection
     revision = migration('a00000000098_human_ask_transport')
 
     def upgrade(conn):
         with Operations.context(MigrationContext.configure(conn)):
             revision.upgrade()
 
-    async with db._engine.begin() as conn:
+    async with conn.begin_nested():
         await conn.execute(sa.text("""
             INSERT INTO outbound_deliveries
             (id, owner_kind, owner_id, dedup_key, destination, payload, payload_hash, marker,
@@ -376,16 +400,39 @@ async def test_transport_upgrade_from_historical_outbox_preserves_receipts(db):
             VALUES ('old-report', 'morning', 'r', 'old-key', '{}', '{}', 'hash', 'marker',
                     'sent', 1, 'confirmed-message', 2, 1, 2)
         """))
-        for name in ('ask_id', 'binding_id', 'project_id', 'decision_generation', 'display_version',
-                     'mode_generation', 'root_generation', 'send_kind', 'write_started_at', 'attempt_token'):
-            await conn.execute(sa.text(f'ALTER TABLE outbound_deliveries DROP COLUMN {name} CASCADE'))
-        for name in ('ask_action_tokens', 'ask_external_bindings', 'human_communication_modes'):
-            await conn.execute(sa.text(f'DROP TABLE {name}'))
+        if missing_columns:
+            for name in (
+                'ask_id', 'binding_id', 'project_id', 'decision_generation', 'display_version',
+                'mode_generation', 'root_generation', 'send_kind', 'write_started_at', 'attempt_token',
+            ):
+                await conn.execute(sa.text(
+                    f'ALTER TABLE outbound_deliveries DROP COLUMN {name} CASCADE'
+                ))
+            for name in ('ask_action_tokens', 'ask_external_bindings', 'human_communication_modes'):
+                await conn.execute(sa.text(f'DROP TABLE {name}'))
+        else:
+            # A partial upgrade can leave the columns present without their FKs.
+            foreign_keys = await conn.run_sync(
+                lambda bind: sa.inspect(bind).get_foreign_keys('outbound_deliveries')
+            )
+            for foreign_key in foreign_keys:
+                await conn.execute(sa.text(
+                    f'ALTER TABLE outbound_deliveries DROP CONSTRAINT "{foreign_key["name"]}"'
+                ))
         await conn.run_sync(upgrade)
         await conn.run_sync(upgrade)
+        assert not await conn.run_sync(
+            lambda bind: compare_metadata(MigrationContext.configure(bind), metadata)
+        )
         assert await conn.scalar(sa.text(
             "SELECT external_receipt_id FROM outbound_deliveries WHERE id='old-report'"
         )) == 'confirmed-message'
         with pytest.raises(IntegrityError, match='ck_outbound_deliveries_ask'):
             async with conn.begin_nested():
                 await conn.execute(sa.text("UPDATE outbound_deliveries SET owner_kind='ask'"))
+        for column in ('ask_id', 'binding_id', 'project_id'):
+            with pytest.raises(IntegrityError, match='foreign key constraint'):
+                async with conn.begin_nested():
+                    await conn.execute(sa.text(
+                        f"UPDATE outbound_deliveries SET {column} = 'missing-reference'"
+                    ))
