@@ -245,6 +245,36 @@ async def test_route_refuses_a_task_no_route_may_change(handler, orch, state):
     assert (after.route_source, after.profile_id) == (before.route_source, before.profile_id)
 
 
+@pytest.mark.parametrize("assigned", [False, True])
+@pytest.mark.parametrize("command, extra", [
+    ("task_route", {"prefer": "codex"}),
+    ("task_route_override", {"profile_id": "standard-high-codex", "reason": REASON}),
+])
+async def test_resume_pending_route_refusal_names_pause_route_resume(
+    handler, orch, assigned, command, extra,
+):
+    await _create(orch.db, "t", status=TaskStatus.RESUME_PENDING)
+    if assigned:
+        await orch.db.create_agent(Agent(
+            id="resume-agent", name="resume-agent", profile_id="standard-high-codex",
+        ))
+        await orch.db.update_task("t", assigned_agent_id="resume-agent")
+    before = await orch.db.get_task("t")
+
+    refused = await handler.execute(command, {"task_id": "t", **extra})
+
+    assert refused["success"] is False and refused["code"] == NOT_ROUTABLE, refused
+    assert "RESUME_PENDING" in refused["error"]
+    assert "aq task pause --task-id t" in refused["error"]
+    assert f"aq task {command.removeprefix('task_').replace('_', '-')}" in refused["error"]
+    assert "aq task resume --task-id t" in refused["error"]
+    assert "stop it first" not in refused["error"]
+    after = await orch.db.get_task("t")
+    assert (after.status, after.profile_id, after.assigned_agent_id, after.route) == (
+        before.status, before.profile_id, before.assigned_agent_id, before.route,
+    )
+
+
 async def test_route_refuses_a_playbook_a_service_and_a_worker_that_did_not_file_it(
     handler, orch
 ):
@@ -647,6 +677,12 @@ async def _seed_run(db, run_id: str, task_id: str, *, lifecycle: str, started_at
         ("failed", {"plan_a": {"task_id": "t", "reason": "workspace_requirement",
                                "detail": "feature: no worker candidate at class deep-high"}},
          None, "route_no_candidates", "workspace_requirement", "workspace_requirement"),
+        ("failed", {"plan_a": {"task_id": "t", "reason": "prefer_target_unavailable",
+                               "detail": "kinds.bugfix: selected class deep-high; "
+                                         "deep-high-claude: reserved for lanes "
+                                         "['code-design', 'design-review']"}},
+         None, "route_no_candidates", "prefer_target_unavailable",
+         "deep-high-claude: reserved for lanes ['code-design', 'design-review']"),
         ("completed", {"plan_a": {"task_id": "t", "providers": ["claude", "codex"],
                                   "candidates": [{"profile_id": "standard-high-codex"}]}},
          None, "route_held", "claude, codex", "claude, codex"),
