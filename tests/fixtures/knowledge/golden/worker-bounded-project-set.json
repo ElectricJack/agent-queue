@@ -1,0 +1,170 @@
+{
+  "budget": {
+    "max_bytes": 16384,
+    "max_tokens": 4096,
+    "reserved_bytes": 64,
+    "reserved_tokens": 64,
+    "token_unit": "upper_bound_bytes:utf8"
+  },
+  "delivery_rules": {
+    "bundle_id": "bundle-worker-bounded-project-set",
+    "claim_epoch": 1,
+    "events": [
+      {
+        "bundle_id": "bundle-worker-bounded-project-set",
+        "final_state": "delivered",
+        "transport": "cli-plain",
+        "transport_key": "bundle-worker-bounded-project-set:cli-plain"
+      }
+    ],
+    "owner_id": "attempt-worker-bounded-project-set",
+    "owner_kind": "task_attempt",
+    "prepared_at": "2026-10-01T00:00:00Z",
+    "role": "worker"
+  },
+  "expected": {
+    "allowed_identities": [
+      "rec-evidence-log-retained@rev-0002:evidence",
+      "rec-summary-prior@rev-0001:context"
+    ],
+    "duplicate_delivery": {
+      "attempts": [
+        {
+          "bundle_id": "bundle-worker-bounded-project-set",
+          "expected_new": true,
+          "final_state": "delivered",
+          "transport": "cli-plain",
+          "transport_key": "bundle-worker-bounded-project-set:cli-plain"
+        }
+      ]
+    },
+    "forbidden_records": {},
+    "omitted_reasons": {},
+    "required_budget_diagnostic": false
+  },
+  "fixture_id": "worker-bounded-project-set",
+  "input_hashes": {
+    "budget": "add3832036e9d5753e793cb2034c7a187eabd0c64ffbbd326c88c0b19838ae07",
+    "delivery_rules": "f5ac7f3f1e7c789e0eacc38d5567e4a04710f60e7aaf911f21d29f851614dfb4",
+    "expected": "bd6a1352c8ea9ca92e33eeaf987d81e07158f303cfa373defa2e9378ad46b5ed",
+    "fixture_id": "7ad05bde67e84e135b8e2e2bcd06b825bb94676a91e9c41be1b2b8264cec8413",
+    "labels": "6c981d2c57ae0f8fbe6dd61f885e2ab37f2e0138e33493e2c6dd0d13e3b95c79",
+    "observation": "ee80ed694c88f915503b06b1a6fbc25368bbbf3e41221909a71a07dc438856da",
+    "records": "11ecfd8e36b57aeb08b6a1d292304062fa716991be48d37d5650ec3c8af52033",
+    "scenario": "cba976208a654d3d4b9da5e4df9ade5296bc08f94ea9e7154d1b356683079f3c",
+    "schema_version": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "source_class": "85da8434c70bf817c2ac9335166317668a0ec40e2b135919aa200edbd2e9d23a",
+    "synthetic": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+  },
+  "labels": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "opencode",
+      "local"
+    ]
+  },
+  "observation": {
+    "citations": [
+      {
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-worker-bounded-project-set",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      },
+      {
+        "content_sha256": "f65314e21d075e2948509d2c7767be387b5086cf8ffa7b141e1f2eac382580d6",
+        "kind": "injected",
+        "owner": {
+          "claim_epoch": 1,
+          "owner_id": "attempt-worker-bounded-project-set",
+          "owner_kind": "task_attempt"
+        },
+        "record_id": "rec-summary-prior",
+        "revision_id": "rev-0001"
+      }
+    ],
+    "deliveries": [
+      {
+        "bundle_id": "bundle-worker-bounded-project-set",
+        "final_state": "delivered",
+        "new": true,
+        "transport": "cli-plain",
+        "transport_key": "bundle-worker-bounded-project-set:cli-plain"
+      }
+    ],
+    "diagnostics": [],
+    "metadata": {
+      "prepared_at": "2026-10-01T00:00:00Z",
+      "synthetic": true
+    },
+    "omissions": [],
+    "owner": {
+      "claim_epoch": 1,
+      "owner_id": "attempt-worker-bounded-project-set",
+      "owner_kind": "task_attempt"
+    },
+    "rendered": "Contextual evidence (synthetic fixture)\n[rec-evidence-log-retained@rev-0002:evidence] synthetic-log-evidence; unverified; current\nObserved log line: the rail rejected the schema change at step three.\n[rec-summary-prior@rev-0001:context] synthetic-agent-assertion; unverified; current\nA prior agent summary said the deploy failed at step three.\n",
+    "rendered_sha256": "0c93afa383c1338f0450cac48dde9e533600f784f234df5b2d10a002e673254c",
+    "selected": [
+      {
+        "authority": "unverified",
+        "content_sha256": "dd7c64c59c9a3f086103d4ac84500213eb8dc157fd163ca569fac8b4660eefd1",
+        "evidence": "synthetic-log-evidence",
+        "excerpt": "Observed log line: the rail rejected the schema change at step three.",
+        "freshness": "current",
+        "kind": "evidence",
+        "record_id": "rec-evidence-log-retained",
+        "revision_id": "rev-0002"
+      },
+      {
+        "authority": "unverified",
+        "content_sha256": "f65314e21d075e2948509d2c7767be387b5086cf8ffa7b141e1f2eac382580d6",
+        "evidence": "synthetic-agent-assertion",
+        "excerpt": "A prior agent summary said the deploy failed at step three.",
+        "freshness": "current",
+        "kind": "context",
+        "record_id": "rec-summary-prior",
+        "revision_id": "rev-0001"
+      }
+    ],
+    "usage": {
+      "bytes": 408,
+      "method": "upper_bound_bytes:utf8",
+      "tokens": 408
+    }
+  },
+  "records": [
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-log-evidence",
+      "excerpts": {
+        "body": "Observed log line: the rail rejected the schema change at step three."
+      },
+      "freshness": "current",
+      "kind": "evidence",
+      "record_id": "rec-evidence-log-retained",
+      "revision_id": "rev-0002"
+    },
+    {
+      "authority": "unverified",
+      "evidence": "synthetic-agent-assertion",
+      "excerpts": {
+        "body": "A prior agent summary said the deploy failed at step three."
+      },
+      "freshness": "current",
+      "kind": "context",
+      "record_id": "rec-summary-prior",
+      "revision_id": "rev-0001"
+    }
+  ],
+  "scenario": "Global supervisors must explicitly choose bounded project sets or global summaries",
+  "schema_version": 1,
+  "source_class": "synthetic",
+  "synthetic": true
+}

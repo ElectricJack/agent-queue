@@ -1,42 +1,26 @@
-"""Consistency check for document reviews (``reviews.consistency``).
+"""Review consistency checks. Repairs replay immutable decision application.
 
-The review service keeps three things in step: the ``doc_reviews`` row, the
-gate it opened (``await_id`` = the review id), and the vault file it writes
-beside them.  The service guards against a *diverged* vault file, but three
-ways of drifting past that guard remain and this check reconciles them:
-
-* the vault file went missing (deleted, or a failed write the service logged
-  and swallowed) — **fixed** by rewriting it from the current revision, and
-  any *approved* reviews whose gate the fix should unblock get their gate
-  resolved ``approved``;
-* the review is ``approved`` but its gate is still ``open`` (``decide``
-  swallows a failed ``resolve_gate`` and leaves it here, spec §10) — **fixed**
-  by resolving the gate ``approved`` through the orchestrator.
-
-Everything else is report-only (surfaced in ``data``, never touched):
-
-* the gate was *resolved* while its review is not approved;
-* the gate was deleted altogether;
-* a task still waits on a *withdrawn* review's gate.
-
-``--fix`` therefore only ever (a) resolves gates for approved reviews whose
-gate is still open, and (b) rewrites vault files whose body is missing — both
-idempotent.  Diverged files are left byte-identical on purpose.
+Historical approved projections without feedback receipts remain held for explicit
+reconciliation; doctor never manufactures approval from a state label. Diverged
+vault files remain untouched. Pinned playbook effects use the same operation service.
 """
 
 from __future__ import annotations
 
 import logging
-import time
-from datetime import date
 from pathlib import Path
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
-from src.reviews.vault import body_sha256, render, split_frontmatter, write_atomic
+from src.reviews.vault import (
+    body_sha256,
+    frontmatter_for,
+    split_frontmatter,
+)
 
 logger = logging.getLogger(__name__)
 
 CHECK_ID = "reviews.consistency"
+PLAYBOOK_CHECK_ID = "reviews.playbook_artifacts"
 OWNER = "reviews"
 
 #: States whose gate is *meant* to stay open — a human is still to decide.
@@ -54,19 +38,11 @@ def _vault_root(ctx: DoctorContext) -> Path:
     return Path(root)
 
 
-def _frontmatter_for(review: dict) -> dict:
+def _frontmatter_for(
+    review: dict, playbook: dict | None = None, spec_kind: str | None = None,
+) -> dict:
     """The frontmatter the service would write if it were to rewrite the file."""
-    created = date.fromisoformat(time.strftime("%Y-%m-%d", time.localtime(review["created_at"])))
-    return {
-        "title": review["title"],
-        "status": review["state"],
-        "kind": review["kind"],
-        "review": review["id"],
-        "revision": review["current_revision"],
-        "project": review["project_id"],
-        "author_task": review["author_task_id"] or "",
-        "date": created,
-    }
+    return frontmatter_for(review, playbook, spec_kind)
 
 
 def _vault_file_state(root: Path, review: dict, current_sha256: str) -> str:
@@ -109,6 +85,18 @@ async def _evaluate(ctx: DoctorContext, review: dict) -> dict:
                 out["gate"] = "withdrawn_waiters"
                 out["waiters"] = waiters
 
+    from sqlalchemy import select
+    from src.database.tables import ask_decisions, escalation_actions
+
+    async with ctx.db._engine.connect() as conn:
+        unfinished = (await conn.execute(select(escalation_actions.c.id).join(
+            ask_decisions, ask_decisions.c.id == escalation_actions.c.decision_id,
+        ).where(
+            ask_decisions.c.review_id == review["id"],
+            ask_decisions.c.review_revision == review["current_revision"],
+            escalation_actions.c.status != "succeeded",
+        ))).scalars().all()
+    out["pending_operations"] = list(unfinished)
     current = await ctx.db.get_review_revision(review["id"], review["current_revision"])
     if current is None:
         out["vault"] = "none"
@@ -129,6 +117,9 @@ async def _check(ctx: DoctorContext) -> CheckResult:
     data: dict = {}
     fixable = False
     for ev in evals:
+        if ev["pending_operations"]:
+            data.setdefault("pending_operations", {})[ev["id"]] = ev["pending_operations"]
+            fixable = True
         if ev["gate"] in ("none", "missing"):
             data.setdefault("gate_missing", []).append(ev["id"])
         elif ev["gate"] == "approved_gate_open":
@@ -164,51 +155,125 @@ async def _check(ctx: DoctorContext) -> CheckResult:
 
 
 async def _fix(ctx: DoctorContext) -> CheckResult:
-    if ctx.db is None:
-        return CheckResult(id=CHECK_ID, severity=Severity.INFO, detail="database not configured")
+    from src.asks.operations import ReviewOperations
 
-    root = _vault_root(ctx)
-    by_id = {r["id"]: r for r in await ctx.db.list_reviews()}
-    pre = {ev["id"]: ev for ev in await _evaluate_all(ctx)}
-
-    resolved: list[str] = []
-    for rid, ev in pre.items():
-        if ev["gate"] != "approved_gate_open":
-            continue
-        review = by_id[rid]
-        handler = getattr(ctx, "handler", None)
-        orchestrator = getattr(handler, "orchestrator", None)
-        if orchestrator is None:
-            logger.warning("doctor: no orchestrator to resolve review %s gate", rid)
-            continue
-        try:
-            await orchestrator._resolve_gate_and_emit(
-                review["gate_id"], resolved_by=_RESOLVED_BY, resolution="approved"
-            )
-            resolved.append(rid)
-        except Exception:
-            logger.exception("doctor: resolving review %s gate failed", rid)
-
-    rewritten: list[str] = []
-    for rid, ev in pre.items():
-        if ev["vault"] != "missing":
-            continue
-        review = by_id[rid]
-        current = await ctx.db.get_review_revision(review["id"], review["current_revision"])
-        if current is None:
-            continue
-        try:
-            write_atomic(root / review["vault_path"], render(_frontmatter_for(review), current["content"]))
-            rewritten.append(rid)
-        except OSError:
-            logger.exception("doctor: rewriting review %s vault file failed", rid)
-
+    handler = getattr(ctx, "handler", None)
+    repaired, rewritten, held = [], [], {}
+    if ctx.db is not None and handler is not None:
+        operations = ReviewOperations(handler._review_service())
+        for ev in await _evaluate_all(ctx):
+            review = await ctx.db.get_review(ev["id"])
+            if (ev["gate"] != "approved_gate_open" and ev["vault"] != "missing"
+                    and not review.get("pending_decision_id") and not ev["pending_operations"]):
+                continue
+            result = await operations.reconcile_review(ev["id"])
+            if result["application_state"] == "applied":
+                repaired.append(ev["id"])
+                if ev["vault"] == "missing":
+                    rewritten.append(ev["id"])
+            else:
+                held[ev["id"]] = result.get("error", "Decision application is pending")
     result = await _check(ctx)
-    result.fix_applied = bool(resolved or rewritten)
-    if resolved:
-        result.data["resolved"] = resolved
-    if rewritten:
-        result.data["rewritten"] = rewritten
+    result.fix_applied = bool(repaired)
+    result.data.update(repaired=repaired, rewritten=rewritten, held=held)
+    return result
+
+
+async def _approved_playbook_pins(ctx: DoctorContext) -> list[tuple[dict, dict]]:
+    """``(review, revision)`` for the latest approved review of each playbook."""
+    latest: dict[str, tuple[dict, dict]] = {}
+    for review in await ctx.db.list_reviews():
+        if review["state"] != "approved" and not review.get("pending_decision_id"):
+            continue
+        revision = await ctx.db.get_review_revision(review["id"], review["current_revision"])
+        pin = (revision or {}).get("playbook")
+        if not pin or not revision.get("playbook_artifact"):
+            continue
+        key = f"{pin.get('scope')}:{pin.get('scope_identifier') or ''}:{pin['playbook_id']}"
+        seen = latest.get(key)
+        if seen is None or (review.get("decided_at") or 0) > (seen[0].get("decided_at") or 0):
+            latest[key] = (review, revision)
+    return [latest[key] for key in sorted(latest)]
+
+
+async def _playbook_findings(ctx: DoctorContext) -> tuple[int, list[dict]]:
+    pins = await _approved_playbook_pins(ctx)
+    activations = await ctx.db.list_playbook_activations()
+    findings: list[dict] = []
+    for review, revision in pins:
+        pin = revision["playbook"]
+        sha = pin["artifact_sha256"]
+        finding = {
+            "review_id": review["id"],
+            "revision": revision["revision"],
+            "playbook_id": pin["playbook_id"],
+            "artifact_sha256": sha,
+        }
+        if await ctx.db.get_playbook_artifact_row(sha) is None:
+            findings.append({**finding, "problem": "not_stored"})
+            continue
+        mine = [row for row in activations if row["playbook_id"] == pin["playbook_id"]
+                and row["scope"] == pin["scope"]
+                and (row.get("scope_identifier") or "") == (pin.get("scope_identifier") or "")
+                and row["enabled"]]
+        if not any(row.get("active_artifact_sha256") == sha for row in mine):
+            findings.append(
+                {
+                    **finding,
+                    "problem": "not_activated",
+                    "active_artifact_sha256": [row.get("active_artifact_sha256") for row in mine],
+                    "next_step": (
+                        f"aq playbook activate --playbook-id {pin['playbook_id']} "
+                        f"--artifact-sha256 {sha}"
+                    ),
+                }
+            )
+    return len(pins), findings
+
+
+async def _check_playbooks(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None or not hasattr(ctx.db, "list_playbook_activations"):
+        return CheckResult(
+            id=PLAYBOOK_CHECK_ID, severity=Severity.INFO, detail="database not configured"
+        )
+    checked, findings = await _playbook_findings(ctx)
+    if not findings:
+        return CheckResult(
+            id=PLAYBOOK_CHECK_ID,
+            severity=Severity.OK,
+            detail=f"{checked} approved playbook review(s) stored and activated",
+            data={"checked": checked},
+        )
+    not_stored = [f for f in findings if f["problem"] == "not_stored"]
+    return CheckResult(
+        id=PLAYBOOK_CHECK_ID,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} approved playbook review(s) are not live: "
+            f"{len(not_stored)} with no stored artifact (--fix stores it), "
+            f"{len(findings) - len(not_stored)} stored but not activated"
+        ),
+        fixable=bool(not_stored),
+        data={"checked": checked, "findings": findings},
+    )
+
+
+async def _fix_playbooks(ctx: DoctorContext) -> CheckResult:
+    from src.asks.operations import ReviewOperations
+
+    handler = getattr(ctx, "handler", None)
+    applied, held = [], {}
+    if ctx.db is not None and handler is not None:
+        operations = ReviewOperations(handler._review_service())
+        for review, revision in await _approved_playbook_pins(ctx):
+            result = await operations.reconcile_review(review["id"])
+            if result["application_state"] == "applied":
+                applied.append(review["id"])
+            else:
+                held[review["id"]] = result.get("error", "Decision application is pending")
+    result = await _check_playbooks(ctx)
+    result.fix_applied = bool(applied)
+    result.data.update(reconciled=applied, held=held)
     return result
 
 
@@ -219,7 +284,13 @@ def review_checks() -> list[DoctorCheck]:
             run=_check,
             fix=_fix,
             owner=OWNER,
-        )
+        ),
+        DoctorCheck(
+            id=PLAYBOOK_CHECK_ID,
+            run=_check_playbooks,
+            fix=_fix_playbooks,
+            owner=OWNER,
+        ),
     ]
 
 

@@ -1,0 +1,1 @@
+Fix these issues in this workspace, then run `aq task close` again. The task is still yours — it stays IN_PROGRESS under your claim.
