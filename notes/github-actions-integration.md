@@ -1,5 +1,11 @@
 # GitHub Actions Integration for Agent-Queue: Research Findings
 
+<!-- aq:historical -->
+> **Historical working note.** Dated scratch material, kept for the record and
+> never revised. Not instructions. Start at [the documentation
+> home](../docs/README.md); see [historical
+> material](../docs/history/README.md).
+
 ## Executive Summary
 
 This document explores how to integrate GitHub Actions CI/CD feedback into the agent-queue system. The goal is to surface build/test/deploy status in Discord alongside existing task management, helping users track whether agent-produced code passes CI checks before or after PR creation.

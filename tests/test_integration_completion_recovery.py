@@ -1,10 +1,30 @@
 from types import SimpleNamespace
 import pytest
 from sqlalchemy import insert, update
-from src.database.tables import integration_branch_owners, task_session_attempts, tasks
+from src.database.tables import integration_branch_owners, projects, task_session_attempts
 from src.integration.ownership import BranchKey, BranchOwnership
 from src.models import TaskStatus, Workspace, RepoSourceType
 from tests.test_integration_review_evidence import review_case, _git  # noqa: F401
+
+
+async def test_drain_reconciles_finished_owner_handoffs(review_case, monkeypatch):  # noqa: F811
+    from unittest.mock import AsyncMock
+    from src.integration import completion_recovery
+
+    db = review_case["db"]
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="train",
+            hierarchical_integration_desired_mode="disabled",
+            hierarchical_integration_draining=True,
+        ))
+    reconcile = AsyncMock(return_value=[])
+    monkeypatch.setattr(completion_recovery, "reconcile_closed_integration_owners", reconcile)
+    orch = SimpleNamespace(db=db, _integration_owner_reconcile_after=0)
+
+    await completion_recovery.reconcile_ready_integration_owners(orch)
+
+    reconcile.assert_awaited_once_with(orch, "p", ready_only=False)
 
 @pytest.mark.parametrize("safe", [True, False, "missing_attempt"])
 @pytest.mark.parametrize("pool", [True, False])
@@ -99,34 +119,3 @@ async def test_stopped_released_workspace_owner_is_reconciled(
         ws = await db.get_workspace("ws")
         assert ws.locked_by_task_id == "review"
         assert ws.locked_by_agent_id == "agent"
-
-
-
-@pytest.mark.parametrize("moved_head", [False, True])
-async def test_flush_recovers_only_exact_completed_root_pr(review_case, monkeypatch, moved_head):  # noqa: F811
-    from unittest.mock import AsyncMock
-    from src.integration.completion_recovery import recover_completed_pr_links
-
-    case = review_case
-    db = case["db"]
-    await db.update_project("p", hierarchical_integration_mode="train")
-    async with db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == "leaf").values(parent_task_id=None))
-    pr_url = "https://github.com/acme/widgets/pull/123"
-    git = case["promotion"].git
-    monkeypatch.setattr(git, "afind_open_pr", AsyncMock(return_value=pr_url))
-    monkeypatch.setattr(
-        git,
-        "aget_pr_identity",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                base_ref="main",
-                head_ref="aq/leaf",
-                head_oid=case["base"] if moved_head else case["head"],
-            )
-        ),
-    )
-    result = await recover_completed_pr_links(db, case["promotion"], "p")
-    assert (await db.get_task("leaf")).pr_url == (None if moved_head else pr_url)
-    assert result == ([] if moved_head else ["leaf"])
-    assert await recover_completed_pr_links(db, case["promotion"], "p") == []

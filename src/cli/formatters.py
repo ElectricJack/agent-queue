@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 
 from rich.console import Group
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -71,6 +72,75 @@ def _status_text(status: str) -> Text:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Dependency grouping helpers
+# ---------------------------------------------------------------------------
+
+# Display labels per dep type. "blocking" is the bucket for every edge type
+# that gates scheduling (blocks / waits-for / conditional-blocks); provenance
+# types are edges that document relationships without gating.
+_DEP_LABELS = {
+    "blocks": "blocked-by",
+    "waits-for": "blocked-by",
+    "conditional-blocks": "blocked-by",
+    "parent-child": "part-of",
+    "discovered-from": "discovered-from",
+    "related": "related",
+    "duplicates": "duplicates",
+    "supersedes": "supersedes",
+}
+
+_DEP_LABEL_ORDER = [
+    ("blocked-by", "Blocked by"),
+    ("part-of", "Part of"),
+    ("discovered-from", "Discovered from"),
+    ("related", "Related"),
+    ("duplicates", "Duplicates"),
+    ("supersedes", "Supersedes"),
+]
+
+
+# Display label per bucket key, including the "untyped" fallback. Used by
+# every render site that needs to pick a label from a bucket key.
+_DEP_BUCKET_LABELS = dict(_DEP_LABEL_ORDER)
+_DEP_BUCKET_LABELS["untyped"] = "Depends on"
+
+
+def _group_deps_by_type(entries: list[str | dict] | None) -> list[tuple[str, list[str]]]:
+    """Group dependency entries by dep_type into labelled buckets.
+
+    Accepts either plain IDs (strings) or dicts with at least ``id`` and,
+    optionally, ``dep_type``. Returns an ordered list of
+    ``(bucket_key, [id, ...])`` pairs ready to render. Plain strings are
+    grouped under the ``"untyped"`` bucket. Buckets follow the canonical
+    order:  blocked-by, part-of, discovered-from, related, duplicates,
+    supersedes, untyped.
+    """
+    buckets: dict[str, list[str]] = {}
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            dep_id = entry.get("id") or entry.get("depends_on_task_id") or ""
+            dep_type = entry.get("dep_type") or "untyped"
+            label = _DEP_LABELS.get(dep_type, dep_type)
+        else:
+            dep_id = str(entry)
+            label = "untyped"
+        if not dep_id:
+            continue
+        buckets.setdefault(label, []).append(str(dep_id))
+    result: list[tuple[str, list[str]]] = []
+    for key, _display in _DEP_LABEL_ORDER + [("untyped", "Depends on")]:
+        ids = buckets.pop(key, None)
+        if ids:
+            result.append((key, ids))
+    # Preserve unknown labels (forward-compat) after known buckets.
+    for key, ids in buckets.items():
+        if ids:
+            result.append((key, ids))
+    return result
+
+
+# ---------------------------------------------------------------------------
 def format_task_table(
     tasks: list[Any],
     title: str = "Tasks",
@@ -101,16 +171,19 @@ def format_task_table(
             type_icon = TASK_TYPE_ICONS.get(task.task_type, "")
 
         pri_text = Text(str(task.priority), style=priority_style(task.priority))
+        readiness = _as_mapping(getattr(task, "claim_readiness", None))
 
         row = [task.id]
         if show_project:
             row.append(task.project_id)
         row.extend(
             [
-                _status_text(task.status),
+                _status_text(readiness.get("label", task.status)),
                 pri_text,
                 type_icon,
-                _truncate(task.title, 50),
+                Text(_truncate(task.title, 50) + (
+                    "\n" + readiness["reason"] if readiness.get("reason") else ""
+                )),
                 task.assigned_agent_id or "—",
             ]
         )
@@ -123,10 +196,77 @@ def format_task_table(
     return table
 
 
+def _as_mapping(value: Any) -> dict[str, Any]:
+    """A free-form object field as a dict: a plain dict or a generated model."""
+    if isinstance(value, dict):
+        return value
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            data = to_dict()
+        except Exception:  # noqa: BLE001 - an unreadable field renders as absent
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _route_fields(task: Any) -> list[tuple[str, str]]:
+    """Who routed the task and why (mandatory routing §10).
+
+    ``Route`` is the source and the target; the router's lane, rule and
+    reason, or an override's author and reason, follow when recorded.  The
+    filer's preference is shown even before a route exists, because until the
+    router runs it is the only statement of what was asked for.
+    """
+    source = getattr(task, "route_source", None)
+    prefer = _preference_fields(task)
+    if not isinstance(source, str) or not source:
+        return prefer
+    profile = getattr(task, "profile_id", None)
+    klass = getattr(task, "intelligence_class", None)
+    target = ""
+    if isinstance(profile, str) and profile:
+        target = f" -> {profile}" + (f" ({klass})" if isinstance(klass, str) and klass else "")
+    fields = prefer + [("Route", f"{source}{target}")]
+    route = _as_mapping(getattr(task, "route", None))
+    override = _as_mapping(route.get("override"))
+    if source == "override" and override:
+        by, why = override.get("by") or "?", override.get("reason") or ""
+        fields.append(("Override", f"by {by}: {why}"))
+        return fields
+    lane, rule = route.get("lane"), route.get("rule")
+    if lane or rule:
+        parts = (rule, f"lane {lane}" if lane else None)
+        fields.append(("Route rule", " / ".join(str(part) for part in parts if part)))
+    if route.get("reason"):
+        fields.append(("Route reason", str(route["reason"])))
+    return fields
+
+
+def _preference_fields(task: Any) -> list[tuple[str, str]]:
+    """The preference the router weighs, and how it turned out (§4).
+
+    The stored pair is what was asked for; ``route.preference`` is the router's
+    verdict -- whether it decided the route, and why not when it did not.
+    """
+    target = getattr(task, "prefer_target", None)
+    route = _as_mapping(getattr(task, "route", None))
+    decided = _as_mapping(route.get("preference"))
+    if not isinstance(target, str) or not target:
+        return []
+    mode = getattr(task, "prefer_mode", None) or decided.get("mode") or "soft"
+    row = f"{target} ({mode})"
+    if decided and not decided.get("honoured", True):
+        row += f" not honoured: {decided.get('fallback_reason') or 'unknown'}"
+    elif decided:
+        row += " honoured"
+    return [("Routing preference", row)]
+
+
 def format_task_detail(
     task: Any,
-    deps_on: list[str] | None = None,
-    dependents: list[str] | None = None,
+    deps_on: list[str | dict] | None = None,
+    dependents: list[str | dict] | None = None,
     subtask_stats: tuple[int, int] | None = None,
 ) -> Panel:
     """Format a single task as a detailed Rich panel."""
@@ -139,6 +279,9 @@ def format_task_detail(
 
     # Header line
     lines.append(Text(f"{status_icon} {status}", style=status_style))
+    readiness = _as_mapping(getattr(task, "claim_readiness", None))
+    if readiness and not readiness.get("claimable"):
+        lines.append(Text(f"{readiness['label']}: {readiness.get('reason', '')}", style="yellow"))
     lines.append("")
 
     # Core fields
@@ -155,6 +298,23 @@ def format_task_detail(
         fields.append(("PR", task.pr_url))
     if task.parent_task_id:
         fields.append(("Parent", task.parent_task_id))
+    # Provider intent, the re-route marker and the derived hold
+    # (provider-failover D8, D17, D18).  ``class_only`` is the unremarkable
+    # default and stays quiet; a generated client model may carry UNSET.
+    intent = getattr(task, "provider_intent", None)
+    if isinstance(intent, str) and intent and intent != "class_only":
+        fields.append(("Provider intent", intent))
+    rerouted = getattr(task, "rerouted_from", None)
+    if isinstance(rerouted, str) and rerouted:
+        fields.append(("Re-routed from", rerouted))
+    fields.extend(_route_fields(task))
+    hold = getattr(task, "provider_hold", None)
+    hold_get = hold.get if isinstance(hold, dict) else (lambda k: getattr(hold, k, None))
+    hold_kind = hold_get("kind") if hold is not None else None
+    if isinstance(hold_kind, str) and hold_kind:
+        fields.append(
+            ("Held", f"{hold_kind} (provider {hold_get('provider')} is {hold_get('state')})")
+        )
 
     for label, value in fields:
         line = Text()
@@ -162,19 +322,29 @@ def format_task_detail(
         line.append(value, style="white")
         lines.append(line)
 
-    # Dependencies
+    # Dependencies — grouped by edge type so a parent-child edge is
+    # never mistaken for a real blocker (see format_task_detail docstring).
     if deps_on:
         lines.append("")
-        dep_line = Text()
-        dep_line.append("  Depends on: ", style="bold cyan")
-        dep_line.append(", ".join(deps_on), style="bright_cyan")
-        lines.append(dep_line)
+        for _key, _ids in _group_deps_by_type(deps_on):
+            dep_line = Text()
+            dep_line.append(f"  {_DEP_BUCKET_LABELS.get(_key, _key)}: ", style="bold cyan")
+            dep_line.append(", ".join(_ids), style="bright_cyan")
+            lines.append(dep_line)
 
     if dependents:
-        dep_line = Text()
-        dep_line.append("  Blocks: ", style="bold cyan")
-        dep_line.append(", ".join(dependents), style="bright_yellow")
-        lines.append(dep_line)
+        lines.append("")
+        # Downstream edges are always blocking by definition (see blocked_predicate):
+        # a task that depends on the parent cannot be READY until the parent completes.
+        # So we render the raw IDs under "Blocks:", not by edge type.
+        lines.append(Text("  Blocks: ", style="bold cyan") + Text(
+            ", ".join(
+                item.get("id") if isinstance(item, dict) else str(item)
+                for item in dependents
+                if (item.get("id") if isinstance(item, dict) else item) is not None
+            ),
+            style="bright_yellow",
+        ))
 
     # Subtask progress bar
     if subtask_stats and subtask_stats[1] > 0:
@@ -241,6 +411,26 @@ def format_task_detail(
 # ---------------------------------------------------------------------------
 
 
+def format_flock(result: dict):
+    """The execution roster is exhaustive; worker definitions follow it."""
+    from rich.console import Group
+    from src.cli.adapters import agent_proxy
+
+    table = Table(title="Flock sessions", expand=True)
+    for column in ("Session", "Role", "Scope", "Provider / model / class", "Task", "State",
+                   "Uptime", "Activity"):
+        table.add_column(column)
+    for row in result.get("sessions", []):
+        table.add_row(
+            row["session_id"], row["role"], row["scope"],
+            " / ".join(row.get(key) or "unknown" for key in
+                       ("provider", "model", "intelligence_class")),
+            row.get("task_id") or "—", row["state"],
+            f"{int(row['uptime_seconds'])}s", _relative_time(row.get("last_activity")),
+        )
+    return Group(table, format_agent_table([agent_proxy(row) for row in result.get("agents", [])]))
+
+
 def format_agent_table(agents: list[Any]) -> Table:
     """Format a list of agents as a Rich table."""
     table = Table(
@@ -299,7 +489,6 @@ def format_project_table(projects: list[Any]) -> Table:
     table.add_column("ID", style="bold bright_magenta", no_wrap=True)
     table.add_column("Name", style="white")
     table.add_column("Status", no_wrap=True)
-    table.add_column("Channel", style="cyan", no_wrap=True)
     table.add_column("Agents", justify="right")
     table.add_column("Tokens Used", justify="right", style="dim")
 
@@ -312,7 +501,6 @@ def format_project_table(projects: list[Any]) -> Table:
             project.id,
             project.name,
             status_text,
-            project.discord_channel_id or "—",
             str(project.max_concurrent_agents),
             f"{project.total_tokens_used:,}" if project.total_tokens_used else "—",
         )
@@ -334,7 +522,8 @@ def format_status_overview(
 
     # Task summary
     total = sum(task_counts.values())
-    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING"}
+    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING",
+                       "WAITING", "HIBERNATED", "RESUME_PENDING"}
     active = sum(v for k, v in task_counts.items() if k in active_statuses)
     completed = task_counts.get("COMPLETED", 0)
     failed = task_counts.get("FAILED", 0)
@@ -374,6 +563,194 @@ def format_status_overview(
 # ---------------------------------------------------------------------------
 # Generic formatters — reusable across many commands
 # ---------------------------------------------------------------------------
+
+
+def _review_value(value: Any, key: str, default: Any = None) -> Any:
+    """Read a review field from dict or generated-client response shapes."""
+    if isinstance(value, dict):
+        result = value.get(key, default)
+    else:
+        result = getattr(value, key, default)
+        if result is default:
+            extras = getattr(value, "additional_properties", None)
+            if isinstance(extras, dict):
+                result = extras.get(key, default)
+    return default if type(result).__name__ == "Unset" else result
+
+
+def _review_text(value: Any, key: str, default: str = "—") -> str:
+    result = _review_value(value, key)
+    return default if result is None or result == "" else str(result)
+
+
+def format_ask_list(data: Any) -> Group:
+    label = {"waiting": "Waiting on AQ", "history": "History"}.get(data.get("view"), "Needs you")
+    table = Table(title=f"{label}: {data['count']} · {data['source_health']}")
+    for label in ("Request", "Question", "Project", "Severity", "Version", "Status"):
+        table.add_column(label)
+    for ask in data["items"]:
+        table.add_row(*[Text(str(value)) for value in (
+            ask["id"], ask["context"].get("title", ""), ask.get("project_id", ""), ask.get("severity", ""),
+            ask["decision_generation"],
+            "Held while paused" if ask.get("held_while_paused") else ask.get("decision_state", ""),
+        )])
+    return Group(table, Text(f"Snapshot: {data['snapshot_at']}"),
+                 Text(f"Next cursor: {data['next_cursor']}" if data.get("next_cursor") else ""))
+
+
+def format_ask_detail(data: Any) -> Group:
+    ask = data["ask"]
+    context = ask["context"]
+    lines = [Text(context.get("title", ask["id"]), style="bold"),
+             Text(context.get("why", "")), Text(context.get("waiting_effect", "")),
+             Text(f"Version: {data['expected']}"),
+             Text(f"Application: {ask.get('application_state', 'unknown')}")]
+    for action in data["actions"]:
+        if action.get("option_key"):
+            lines.append(Text(f"{action['label']}: {action['effect']}"))
+        if action.get("disabled_reason"):
+            lines.append(Text(action["disabled_reason"], style="yellow"))
+    if data.get("decision"):
+        lines.append(Text(f"Decision receipt: {data['decision']['id']}"))
+    import json
+    for name in ("document", "inputs", "history", "obligations", "operations"):
+        if data.get(name):
+            lines.extend([Text(name.title(), style="bold"),
+                          Text(json.dumps(data[name], ensure_ascii=False, indent=2))])
+    for name in ("requested_by", "blocked_work", "links"):
+        if context.get(name):
+            lines.append(Text(f"{name}: {json.dumps(context[name], ensure_ascii=False)}"))
+    lines.append(Text(f"Prepare: aq ask prepare --ask-id {ask['id']} --expected '<version JSON>' "
+                      "--option-key <choice>"))
+    return Group(*lines)
+
+
+def format_ask_preview(data: Any) -> Group:
+    import json
+
+    preview = data["preview"]
+    return Group(Text("Prepared decision — review all effects and feedback", style="bold"),
+                 Text(f"Preview: {preview['id']} · expires {preview.get('expires_at', 'unknown')}"),
+                 Text(json.dumps(preview["packet"], ensure_ascii=False, indent=2)),
+                 Text(f"Packet SHA-256: {preview['packet_sha256']}"))
+
+
+def format_ask_receipt(data: Any) -> Group:
+    import json
+
+    return Group(Text("Request receipt", style="bold"),
+                 Text(json.dumps(data, ensure_ascii=False, indent=2)))
+
+
+def format_review_detail(data: Any) -> Group:
+    """Render a review's selected revision and, when requested, its comments."""
+    review = _review_value(data, "review", {})
+    revision = _review_value(data, "revision", {})
+    current_revision = _review_text(review, "current_revision")
+    shown_revision = _review_text(revision, "revision", current_revision)
+
+    header = Table.grid(padding=(0, 1))
+    header.add_column(style="bold bright_cyan", no_wrap=True)
+    header.add_column()
+    header.add_column(style="bold bright_cyan", no_wrap=True)
+    header.add_column()
+    header.add_row("ID", _review_text(review, "id"), "Title", _review_text(review, "title"))
+    header.add_row("Kind", _review_text(review, "kind"), "State", _review_text(review, "state"))
+    header.add_row(
+        "Revision",
+        f"{shown_revision} / {current_revision}",
+        "Vault state",
+        _review_text(data, "vault_state"),
+    )
+    response_route = _review_value(data, "response_route", {})
+    header.add_row("Response", _review_text(response_route, "summary"), "", "")
+    gate = _review_value(data, "gate")
+    if gate:
+        header.add_row("Gate", _review_text(gate, "id"), "Gate state", _review_text(gate, "status"))
+    waiters = _review_value(data, "dependent_task_ids", []) or []
+    if waiters:
+        header.add_row("Dependents", ", ".join(waiters), "", "")
+    if _review_value(review, "withdrawn_by"):
+        header.add_row("Withdrawn by", _review_text(review, "withdrawn_by"),
+                       "Surface", _review_text(review, "withdrawn_via", "unknown"))
+        withdrawn_at = _review_value(review, "withdrawn_at")
+        stamp = (datetime.fromtimestamp(withdrawn_at).astimezone().isoformat(timespec="seconds")
+                 if withdrawn_at is not None else "—")
+        header.add_row("Withdrawn at", stamp, "Reason", Text(_review_text(review, "withdrawal_reason")))
+
+    content = _review_text(revision, "content", "")
+    renderables: list[Any] = [
+        Panel(header, title="[bold bright_white]Document review[/]", border_style="bright_blue"),
+        Markdown(content),
+    ]
+    if _review_value(review, "state") == "withdrawn":
+        renderables.insert(1, Text(
+            "Dependent work still requires approval. Reopen with: aq review reopen "
+            f"--review-id {_review_text(review, 'id')} --revision {current_revision}"
+        ))
+    dispatches = _review_value(data, "dispatches", []) or []
+    if dispatches:
+        activity = Table(title="Adversarial review dispatches", border_style="bright_black")
+        for name in ("Profile", "Revision", "Comments", "Task", "State"):
+            activity.add_column(name)
+        for dispatch in dispatches:
+            activity.add_row(
+                _review_text(dispatch, "profile_id"),
+                _review_text(dispatch, "revision"),
+                "included" if _review_value(dispatch, "with_comments") else "clean room",
+                _review_text(dispatch, "task_id"),
+                _review_text(dispatch, "task_state"),
+            )
+        renderables.append(activity)
+    comments = _review_value(data, "comments", []) or []
+    for index, comment in enumerate(comments, 1):
+        heading_path = _review_value(comment, "heading_path", []) or []
+        heading = " / ".join(str(part) for part in heading_path) or "—"
+        resolved = _review_value(comment, "resolved_in_revision")
+        resolved_text = f"revision {resolved}" if resolved is not None else "open"
+        metadata = Text()
+        metadata.append("Quote: ", style="bold")
+        metadata.append(_review_text(comment, "quote"))
+        metadata.append("\nHeading: ", style="bold")
+        metadata.append(heading)
+        metadata.append("\nRevision: ", style="bold")
+        metadata.append(_review_text(comment, "revision"))
+        metadata.append("\nResolved: ", style="bold")
+        metadata.append(resolved_text)
+        renderables.append(
+            Panel(
+                Group(metadata, Text(), Text(_review_text(comment, "body", ""))),
+                title=f"[bold]Comment {index}[/]",
+                border_style="bright_black",
+            )
+        )
+    return Group(*renderables)
+
+
+def format_review_table(reviews: list[Any]) -> Table:
+    """Render review rows returned by ``aq review list``."""
+    table = Table(
+        title="Document reviews",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("ID", style="bold bright_cyan", no_wrap=True)
+    table.add_column("Title", ratio=1)
+    table.add_column("Kind", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Rev", justify="right", no_wrap=True)
+    table.add_column("Relation", no_wrap=True)
+    for review in reviews:
+        table.add_row(
+            _review_text(review, "id"),
+            _review_text(review, "title"),
+            _review_text(review, "kind"),
+            _review_text(review, "state"),
+            _review_text(review, "current_revision"),
+            _review_text(review, "relation"),
+        )
+    return table
 
 
 def format_confirmation(data: dict) -> Text:
@@ -577,37 +954,57 @@ def format_task_deps(data: dict) -> Group:
         header.append(f"  {icon} {status}", style="dim")
     lines.append(header)
 
-    deps = data.get("depends_on", [])
-    if deps:
-        lines.append(Text("  Depends on:", style="bold"))
-        for d in deps:
-            did = d.get("id", d) if isinstance(d, dict) else str(d)
-            dtitle = d.get("title", "") if isinstance(d, dict) else ""
-            dstatus = d.get("status", "") if isinstance(d, dict) else ""
+    def _entry_id(e):
+        return e.get("id", e) if isinstance(e, dict) else str(e)
+
+    def _entry_field(e, key):
+        return e.get(key, "") if isinstance(e, dict) else ""
+
+    def _render(rows, arrow):
+        for e in rows:
             line = Text()
-            line.append(f"    ← {did}", style="bright_cyan")
-            if dtitle:
-                line.append(f" {dtitle}", style="white")
-            if dstatus:
-                line.append(f"  ({dstatus})", style="dim")
+            line.append(f"    {arrow} {_entry_id(e)}", style="bright_cyan")
+            title = _entry_field(e, "title")
+            if title:
+                line.append(f" {title}", style="white")
+            status = _entry_field(e, "status")
+            if status:
+                line.append(f"  ({status})", style="dim")
             lines.append(line)
 
-    blocks = data.get("blocks", [])
+    # Incoming (upstream) edges. Group by edge type so a parent-child edge to
+    # the epic is never mistaken for a real blocker (see _group_deps_by_type).
+    deps = data.get("depends_on") or []
+    if deps:
+        for _key, _ids in _group_deps_by_type(deps):
+            lines.append(Text(f"  {_DEP_BUCKET_LABELS.get(_key, _key)}:", style="bold"))
+            _render([x for x in deps if _entry_id(x) in _ids], "←")
+
+    # Downstream edges a task blocks are always blocking by definition, so they
+    # render flat under "Blocks:" rather than being split by edge type.
+    blocks = data.get("blocks") or []
     if blocks:
         lines.append(Text("  Blocks:", style="bold"))
-        for b in blocks:
-            bid = b.get("id", b) if isinstance(b, dict) else str(b)
-            btitle = b.get("title", "") if isinstance(b, dict) else ""
-            bstatus = b.get("status", "") if isinstance(b, dict) else ""
-            line = Text()
-            line.append(f"    → {bid}", style="bright_cyan")
-            if btitle:
-                line.append(f" {btitle}", style="white")
-            if bstatus:
-                line.append(f"  ({bstatus})", style="dim")
-            lines.append(line)
+        _render(blocks, "→")
 
-    if not deps and not blocks:
+    # Provenance edges (discovered-from, related, ...) never gate scheduling;
+    # render them last, dimmed, to keep them visually distinct from blockers.
+    provenance = data.get("provenance") or []
+    if provenance:
+        for _key, _ids in _group_deps_by_type(provenance):
+            lines.append(Text(f"  {_DEP_BUCKET_LABELS.get(_key, _key)}:", style="bold dim"))
+            for e in [x for x in provenance if _entry_id(x) in _ids]:
+                line = Text()
+                line.append(f"    ← {_entry_id(e)}", style="dim")
+                title = _entry_field(e, "title")
+                if title:
+                    line.append(f" {title}", style="dim")
+                status = _entry_field(e, "status")
+                if status:
+                    line.append(f"  ({status})", style="dim")
+                lines.append(line)
+
+    if not deps and not blocks and not provenance:
         lines.append(Text("  No dependencies.", style="dim"))
     return Group(*lines)
 
@@ -710,6 +1107,7 @@ def format_profile_detail(data: dict) -> Panel:
         "model",
         "permission_mode",
         "codex_full_auto",
+        "codex_service_tier",
         "claude_dangerously_skip_permissions",
     ):
         val = data.get(key)
@@ -1031,8 +1429,13 @@ def format_prompt_list(data: dict) -> Table:
     return table
 
 
-def format_workspace_list(data: dict) -> Table:
-    """Format list_workspaces response as a table."""
+def format_workspace_list(data: dict) -> Table | Group:
+    """Format list_workspaces response as a table.
+
+    The Owner column shows the owner classification the daemon could prove
+    and the Checkout column the bounded probe result; a footer names a
+    partial readback, which is never evidence that a workspace is free.
+    """
     workspaces = data.get("workspaces", [])
     table = Table(
         title="Workspaces",
@@ -1045,18 +1448,49 @@ def format_workspace_list(data: dict) -> Table:
     table.add_column("Path", style="dim", ratio=1)
     table.add_column("Type", style="dim")
     table.add_column("Lock", style="dim")
+    table.add_column("Owner", style="dim")
+    table.add_column("Checkout", style="dim")
     for ws in workspaces:
         lock = ""
         if ws.get("locked_by_task_id"):
             lock = f"🔒 {ws['locked_by_task_id']}"
+        elif ws.get("locked_by_agent_id"):
+            lock = f"🔒 agent {ws['locked_by_agent_id']}"
+        owner = ws.get("owner") or {}
+        owner_text = owner.get("classification", "")
+        session = owner.get("session") or {}
+        if session.get("id"):
+            owner_text = f"{owner_text} ({session['id']})"
+        if owner.get("fence") == "mismatch":
+            owner_text += " fence≠"
+        checkout = ws.get("git_status") or ""
+        if checkout == "ok":
+            checkout = (ws.get("branch") or "") + (" *" if ws.get("dirty") else "")
         table.add_row(
             ws.get("id", ""),
             ws.get("name", "—"),
             ws.get("workspace_path", ""),
             ws.get("source_type", ""),
             lock,
+            owner_text,
+            checkout,
         )
-    return table
+    diagnostics = data.get("diagnostics")
+    if not diagnostics or diagnostics.get("complete", True):
+        return table
+    parts = [f"owner facts: {diagnostics.get('owner_facts', 'unknown')}"]
+    counts = diagnostics.get("git_status_counts") or {}
+    unfinished = {k: v for k, v in counts.items() if k in ("timeout", "not_started", "error")}
+    if unfinished:
+        parts.append(", ".join(f"{v} {k}" for k, v in sorted(unfinished.items())))
+    footer = Text()
+    footer.append(
+        f"  Partial readback ({'; '.join(parts)}) within "
+        f"{diagnostics.get('deadline_seconds', '?')}s. ",
+        style="yellow",
+    )
+    footer.append(diagnostics.get("authority", ""), style="dim")
+    return Group(table, footer)
 
 
 def format_active_tasks_all(data: dict) -> Group:
@@ -1170,54 +1604,702 @@ def format_task_recent_activity(data: dict) -> Group:
 # ---------------------------------------------------------------------------
 
 
-def format_pool_table(pools: list[dict]) -> Table:
-    """Format ``pool_status`` rows (one per project/profile) as a Rich table."""
+def _pool_project_summary(row: dict) -> str:
+    """The **Projects** cell for one pool row: where its workers actually are.
+
+    A pool is fleet-wide now, so placement is the one thing an operator
+    cannot read off the aggregate columns.  One compact token per project
+    (``web:2i/1b`` — idle/busy/starting/draining, zero parts omitted) keeps
+    the one-line-per-pool shape the table had when the project was a column.
+    """
+    summary = []
+    for project in row.get("projects") or []:
+        counts = "/".join(
+            f"{project.get(field, 0)}{suffix}"
+            for field, suffix in (
+                ("running_idle", "i"),
+                ("running_busy", "b"),
+                ("starting", "s"),
+                ("draining", "d"),
+            )
+            if project.get(field, 0)
+        )
+        summary.append(f"{project.get('project_id', '?')}:{counts or '0'}")
+    return "  ".join(summary) if summary else "—"
+
+
+def _pool_quarantine_notes(pools: list[dict]) -> Text | None:
+    """Quarantine detail for every ``(pool, project)`` inside its backoff.
+
+    Quarantine used to have a column of its own, and it cannot keep one: the
+    reason carries the startup-output excerpt for a session that died on
+    launch, which does not fit beside ten numeric columns, and a bare "until
+    14:02:11" with no reason is useless to an operator.  So it moves below
+    the table, where it has the full terminal width.
+
+    Built as a :class:`~rich.text.Text` rather than console markup because
+    the reason is captured process output and may contain square brackets.
+    """
+    notes = Text()
+    for row in pools:
+        for project in row.get("projects") or []:
+            quarantined_until = project.get("quarantined_until")
+            if not quarantined_until:
+                continue
+            if notes:
+                notes.append("\n")
+            notes.append(
+                "  {} in {} — quarantined until {}".format(
+                    row.get("profile_id", "?"),
+                    project.get("project_id", "?"),
+                    time.strftime("%H:%M:%S", time.localtime(quarantined_until)),
+                ),
+                style="yellow",
+            )
+            reason = project.get("quarantined_reason")
+            if reason:
+                notes.append(f" — {reason}", style="dim yellow")
+    if not notes:
+        return None
+    return Text("Quarantined\n", style="bold yellow") + notes
+
+
+def format_pool_table(pools: list[dict]):
+    """Format ``pool_status`` rows (one per **profile**) for ``aq pool status``.
+
+    The leading Project column is gone with per-project pool identity
+    (global-worker-pools §6.1): bounds, ``desired`` and the supply counters
+    are fleet-wide sums, and *where* those workers sit is summarised in the
+    trailing Projects column instead of multiplying the rows.
+
+    Returns a bare :class:`~rich.table.Table` unless something is
+    quarantined, in which case the table is grouped with the quarantine
+    notes that used to be a column.
+    """
     table = Table(
         title="Worker pools",
         title_style="bold bright_white",
         border_style="bright_black",
         expand=True,
+        # Per-cell padding makes the minimum column widths exceed 120 chars
+        # with Codex tier, clipping Projects even though it can fold.
+        padding=(0, 0),
     )
-    table.add_column("Project", style="bold bright_magenta", no_wrap=True)
-    table.add_column("Profile", style="cyan", no_wrap=True)
+    table.add_column("Profile", style="bold cyan", overflow="fold")
+    table.add_column("Codex tier")
     table.add_column("Min", justify="right")
     table.add_column("Max", justify="right")
+    table.add_column("Min/pp", justify="right")
     table.add_column("Desired", justify="right")
     table.add_column("Idle", justify="right")
     table.add_column("Busy", justify="right")
-    table.add_column("Starting", justify="right")
-    table.add_column("Draining", justify="right")
+    table.add_column("Start", justify="right")
+    table.add_column("Drain", justify="right")
     table.add_column("Ready", justify="right")
-    # Wraps: the reason carries the startup-output excerpt for a session that
-    # died on launch, which is the whole point of showing it -- a bare
-    # "until 14:02:11" told an operator nothing they could act on.
-    table.add_column("Quarantined", style="yellow", overflow="fold", max_width=48)
+    table.add_column("Outside", justify="right")
+    table.add_column(
+        "Projects", style="bright_magenta", overflow="fold", min_width=22
+    )
 
     for row in pools:
-        quarantined_until = row.get("quarantined_until")
-        if quarantined_until:
-            quarantined = "until " + time.strftime(
-                "%H:%M:%S", time.localtime(quarantined_until)
-            )
-            reason = row.get("quarantined_reason")
-            if reason:
-                quarantined += f" — {reason}"
-        else:
-            quarantined = "—"
         table.add_row(
-            row.get("project_id", ""),
-            row.get("profile_id", ""),
+            Text(row.get("name") or row.get("profile_id", ""))
+            if not row.get("name") or row["name"] == row.get("profile_id")
+            else Text(f"{row['name']}\n{row.get('profile_id', '')}"),
+            row.get("service_tier") or "—",
             str(row.get("min_active", 0)),
             "∞" if row.get("max_active") is None else str(row.get("max_active")),
+            str(row.get("min_per_project", 0) or 0),
             str(row.get("desired", 0)),
             str(row.get("running_idle", 0)),
             str(row.get("running_busy", 0)),
             str(row.get("starting", 0)),
             str(row.get("draining", 0)),
             str(row.get("ready", 0)),
-            quarantined,
+            str(len(row.get("outside_pools", []))),
+            _pool_project_summary(row),
         )
 
+    notes = [
+        n
+        for n in (
+            _pool_input_notes(pools),
+            _pool_provider_notes(pools),
+            _pool_quarantine_notes(pools),
+        )
+        if n
+    ]
+    return table if not notes else Group(table, *(part for n in notes for part in (Text(), n)))
+
+
+def _pool_input_notes(pools: list[dict]) -> Text | None:
+    """Named prompt matches for workers that need a human decision."""
+    notes = Text()
+    for row in pools:
+        for instance in row.get("instances", []):
+            if instance.get("state") != "blocked_on_input":
+                continue
+            if not notes:
+                notes.append("Blocked on input\n", style="bold yellow")
+            seconds = float(instance.get("unchanged_seconds") or 0)
+            notes.append(
+                f"  {row.get('profile_id', '?')}: {instance.get('name', '?')} — "
+                f"{instance.get('input_prompt', 'interactive prompt')} "
+                f"(unchanged {seconds:.0f}s)\n",
+                style="yellow",
+            )
+    return notes if notes else None
+
+
+def _pool_provider_notes(pools: list[dict]) -> Text | None:
+    """Pools sized to zero because their provider is unavailable (provider-failover D13).
+
+    Kept apart from quarantine and ``placement_starved``: nothing is wrong
+    with the pool or its projects -- the login it draws on is down.
+    """
+    notes = Text()
+    for row in pools:
+        down = row.get("provider_unavailable")
+        if not down:
+            continue
+        if notes:
+            notes.append("\n")
+        until = down.get("until")
+        notes.append(
+            "  {} — provider {} {}{}".format(
+                row.get("profile_id", "?"),
+                down.get("provider", "?"),
+                down.get("state", "unavailable"),
+                (
+                    " until " + time.strftime("%H:%M:%S", time.localtime(until))
+                    if until
+                    else ""
+                ),
+            ),
+            style="red",
+        )
+        if down.get("reason"):
+            notes.append(f" — {down['reason']}", style="dim red")
+    if not notes:
+        return None
+    return Text("Provider unavailable (sized to zero)\n", style="bold red") + notes
+
+
+#: Effective provider state -> Rich style for ``aq provider status``.
+_PROVIDER_STATE_STYLES = {
+    "available": "bold green",
+    "degraded": "bold yellow",
+    "exhausted": "bold red",
+    "unauthenticated": "bold red",
+    "failing": "bold red",
+    "disabled": "bold bright_black",
+}
+
+
+def _until_text(ts: float | None) -> str:
+    """``in 42m`` for an expected recovery, ``—`` when none is known."""
+    if not ts:
+        return "—"
+    delta = ts - time.time()
+    if delta <= 0:
+        return "due"
+    if delta < 3600:
+        return f"in {max(1, int(delta / 60))}m"
+    if delta < 86400:
+        return f"in {delta / 3600:.1f}h"
+    return f"in {delta / 86400:.1f}d"
+
+
+def _allocation_table(title: str, columns: tuple[str, ...], rows: list) -> Table:
+    """Plain-text cells keep task titles and operator ids out of Rich markup."""
+    table = Table(title=title, title_style="bold", border_style="bright_black")
+    for column in columns:
+        table.add_column(column, overflow="fold")
+    for row in rows:
+        table.add_row(*(Text("—" if value is None else str(value)) for value in row))
+    return table
+
+
+def _allocation_ceiling(value: dict) -> str:
+    maximum = (
+        "unbounded"
+        if value.get("unbounded") or value.get("max_active") is None
+        else value["max_active"]
+    )
+    return (
+        f"min {value.get('min_active', 0)}, max {maximum} "
+        f"across {value.get('pool_profiles', 0)} enabled pool profiles"
+    )
+
+
+def _allocation_state(value: dict) -> str:
+    if value.get("lifecycle") != "pool":
+        return f"{value.get('lifecycle', '?')}; enabled={value.get('enabled', True)}; no pool"
+    maximum = value.get("max_active")
+    return (
+        f"pool; enabled={value.get('enabled', True)}; min={value.get('min_active')}; "
+        f"max={'unbounded' if maximum is None else maximum}; "
+        f"min/project={value.get('min_per_project')}"
+    )
+
+
+def _allocation_sessions(rows: list[dict]) -> Group:
+    parts = [Text("Live sessions", style="bold")]
+    for row in rows:
+        parts.append(
+            Text(
+                f"Session {row['session_id']} — {row.get('project_id') or '—'} / "
+                f"{row.get('profile_id') or '—'}"
+            )
+        )
+        parts.append(
+            Text(
+                f"  {row['activity']} / {row['state']}; "
+                f"idle seconds: {row.get('idle_seconds', '—')}; "
+                f"action: {row.get('action', 'none')}"
+            )
+        )
+        if row.get("task_id"):
+            parts.append(Text(f"  Task {row['task_id']}: {row.get('task_title') or '—'}"))
+    return Group(*parts)
+
+
+def _allocation_warnings(data: dict) -> list[Text]:
+    return [
+        Text(
+            f"{'BLOCKING' if warning.get('blocking') else 'Warning'} "
+            f"{warning.get('code', '')}: {warning.get('message', '')} "
+            f"({', '.join(warning.get('subjects') or [])})"
+            f"{' [acknowledged]' if warning.get('acknowledged') else ''}",
+            style="yellow",
+        )
+        for warning in data.get("warnings", [])
+    ]
+
+
+def _allocation_affected(data: dict) -> list:
+    parts = []
+    if data.get("pinned"):
+        parts.append(
+            _allocation_table(
+                "Pinned tasks",
+                ("Task", "Project", "Profile", "Status", "Waits"),
+                [
+                    (
+                        row["task_id"],
+                        row.get("project_id"),
+                        row["profile_id"],
+                        row["status"],
+                        row.get("waits", False),
+                    )
+                    for row in data["pinned"]
+                ],
+            )
+        )
+    if data.get("manual_agents"):
+        parts.append(
+            _allocation_table(
+                "Manual agents — push eligibility",
+                ("Agent", "Profile", "Harness", "Before", "After"),
+                [
+                    (
+                        row["agent_id"],
+                        row["profile_id"],
+                        row.get("effective_harness"),
+                        row["push_before"],
+                        row["push_after"],
+                    )
+                    for row in data["manual_agents"]
+                ],
+            )
+        )
+    preference = data.get("preference")
+    if preference:
+        parts.append(
+            Text(
+                f"New work for {preference['project_id']}: "
+                f"{preference.get('before') or 'default routing'} -> "
+                f"{preference.get('after') or 'default routing'}"
+            )
+        )
+    parts.extend(_allocation_warnings(data))
+    return parts
+
+
+def format_provider_allocation_status(data: dict) -> Group:
+    """The complete fleet view, retaining per-project and excluded-profile context."""
+    global_max = data.get("global_max_active")
+    parts = [Text(f"Global pool ceiling: {'unbounded' if global_max is None else global_max}")]
+    if data.get("redacted"):
+        parts.append(
+            Text(
+                "Other projects' detail is redacted; counts and bounds remain fleet-wide.",
+                style="yellow",
+            )
+        )
+    if not data.get("providers"):
+        parts.append(Text("No ordinary worker providers configured.", style="dim"))
+    counters = ("ready", "idle", "busy", "starting", "draining", "unresponsive")
+    for group in data.get("providers", []):
+        parts.append(
+            Text(
+                f"{group['vendor']} ({group['provider']}) — {group.get('state', 'available')}",
+                style="bold",
+            )
+        )
+        parts.append(Text(f"Aggregate configured ceiling: {_allocation_ceiling(group['ceiling'])}"))
+        parts.append(
+            Text(
+                "Fleet supply: "
+                + ", ".join(f"{key}={group['supply'].get(key, 0)}" for key in counters)
+            )
+        )
+        profiles = group.get("profiles", [])
+        parts.append(
+            _allocation_table(
+                "Worker profiles — bounds per profile",
+                ("Profile", "Harness", "Class", "Configuration", "Pins / preferred"),
+                [
+                    (
+                        row["profile_id"] + (f"\n{row['name']}" if row.get("name") else ""),
+                        row["harness"],
+                        row.get("intelligence_class"),
+                        _allocation_state(row),
+                        f"{row['pinned']['count']} / {row['preferred']['count']}",
+                    )
+                    for row in profiles
+                ],
+            )
+        )
+        supply_rows, session_rows, pin_rows = [], [], []
+        for row in profiles:
+            supply_rows.append(
+                (row["profile_id"], "fleet", *(row["supply"].get(key) for key in counters))
+            )
+            for project in row.get("projects", []):
+                supply_rows.append(
+                    (
+                        row["profile_id"],
+                        project.get("project_id"),
+                        *(project.get(key) for key in counters),
+                    )
+                )
+            for session in row.get("sessions", []):
+                session_rows.append({**session, "profile_id": row["profile_id"]})
+            for intent in ("pinned", "preferred"):
+                pin_rows.extend(
+                    (task_id, row["profile_id"], intent)
+                    for task_id in row[intent].get("task_ids", [])
+                )
+            hidden = row.get("hidden") or {}
+            if any(hidden.values()):
+                parts.append(
+                    Text(
+                        f"{row['profile_id']} hidden detail: "
+                        + ", ".join(f"{key}={value}" for key, value in hidden.items())
+                    )
+                )
+        parts.append(
+            _allocation_table("Demand and supply", ("Profile", "Project", *counters), supply_rows)
+        )
+        if session_rows:
+            parts.append(_allocation_sessions(session_rows))
+        if pin_rows:
+            parts.append(
+                _allocation_table("Explicit task intent", ("Task", "Profile", "Intent"), pin_rows)
+            )
+        if group.get("manual_agents"):
+            parts.append(Text("Manual agents and overrides", style="bold"))
+            for agent in group["manual_agents"]:
+                parts.append(
+                    Text(
+                        f"Agent {agent['agent_id']} ({agent.get('name', '')}) "
+                        f"— {agent['profile_id']}"
+                    )
+                )
+                parts.append(
+                    Text(
+                        f"  {agent['state']}; enabled={agent['enabled']}; "
+                        f"effective: {agent.get('effective_harness')} / "
+                        f"{agent.get('effective_class')}"
+                    )
+                )
+                parts.append(
+                    Text(
+                        f"  Overrides: harness={agent.get('harness')}, "
+                        f"class={agent.get('intelligence_class')}, "
+                        f"model={agent.get('model')}"
+                    )
+                )
+                if agent.get("current_task_id"):
+                    parts.append(
+                        Text(
+                            f"  Task {agent['current_task_id']}: "
+                            f"{agent.get('current_task_title') or '—'}"
+                        )
+                    )
+        event = group.get("last_allocation")
+        if event:
+            parts.append(
+                Text(
+                    f"Last allocation: {event.get('request_id')} {event.get('status')} by {event.get('actor')}"
+                )
+            )
+    if data.get("projects"):
+        parts.append(
+            _allocation_table(
+                "Project routing preferences",
+                ("Project", "Preferred provider", "Agent cap"),
+                [
+                    (
+                        row["project_id"],
+                        row.get("preferred_provider") or "default routing",
+                        row.get("max_concurrent_agents"),
+                    )
+                    for row in data["projects"]
+                ],
+            )
+        )
+    if data.get("diagnostics"):
+        parts.append(
+            _allocation_table(
+                "Excluded from bulk selection",
+                ("Kind", "Id", "Reason"),
+                [(row["kind"], row["id"], row["reason"]) for row in data["diagnostics"]],
+            )
+        )
+    return Group(*parts)
+
+
+def format_provider_allocation_preview(data: dict) -> Group:
+    """Print the reviewed set and the exact impact bound to its token."""
+    parts = [
+        Text(f"{data.get('vendor', '')} ({data['provider']}) allocation preview", style="bold")
+    ]
+    parts.append(
+        Text(
+            f"Required scope: {data['required_scope']}; drain: {data['request'].get('drain', 'graceful')}"
+        )
+    )
+    parts.append(
+        _allocation_table(
+            "Profiles — before and after",
+            ("Profile", "Selected", "Before", "After", "Changed fields"),
+            [
+                (
+                    row["profile_id"],
+                    row["selected"],
+                    _allocation_state(row["before"]),
+                    _allocation_state(row["after"]),
+                    ", ".join(row.get("changed_fields", [])),
+                )
+                for row in data.get("profiles", [])
+            ],
+        )
+    )
+    ceiling = data["ceiling"]
+    parts.append(
+        Text(
+            f"Aggregate configured ceiling: Before {_allocation_ceiling(ceiling['before'])}; "
+            f"After {_allocation_ceiling(ceiling['after'])}"
+        )
+    )
+    if data.get("project_limits"):
+        parts.append(
+            _allocation_table(
+                "Project-effective limits",
+                ("Project", "Profile", "Before", "After"),
+                [
+                    (
+                        row["project_id"],
+                        row["profile_id"],
+                        "no pool"
+                        if row["lifecycle_before"] != "pool"
+                        else row.get("effective_max_before")
+                        if row.get("effective_max_before") is not None
+                        else "unbounded",
+                        "no pool"
+                        if row["lifecycle_after"] != "pool"
+                        else row.get("effective_max_after")
+                        if row.get("effective_max_after") is not None
+                        else "unbounded",
+                    )
+                    for row in data["project_limits"]
+                ],
+            )
+        )
+    if data.get("sessions"):
+        parts.append(_allocation_sessions(data["sessions"]))
+    busy = data.get("busy") or {}
+    if busy.get("session_ids"):
+        parts.append(
+            Text(
+                f"Busy authorization set — sessions: {', '.join(busy['session_ids'])}; "
+                f"tasks: {', '.join(busy.get('task_ids', []))}"
+            )
+        )
+    parts.extend(_allocation_affected(data))
+    if data.get("blocked"):
+        parts.append(
+            Text("BLOCKED: acknowledge the blocking warnings before apply.", style="bold yellow")
+        )
+    parts.append(Text(f"Preview token: {data['preview_token']}"))
+    return Group(*parts)
+
+
+def format_provider_allocation_apply(data: dict) -> Group:
+    """Applied and compensated rows with the durable request id."""
+    parts = [
+        Text(f"Allocation {data.get('request_id', '—')}: {data.get('status', '?')}", style="bold")
+    ]
+    if data.get("profiles"):
+        parts.append(
+            _allocation_table(
+                "Profile results",
+                ("Profile", "Status", "Before", "After", "Error / compensation"),
+                [
+                    (
+                        row["profile_id"],
+                        row["status"],
+                        _allocation_state(row["before"]),
+                        _allocation_state(row["after"]),
+                        row.get("error") or row.get("compensation_error"),
+                    )
+                    for row in data["profiles"]
+                ],
+            )
+        )
+    ceiling = data.get("ceiling")
+    if ceiling:
+        parts.append(
+            Text(
+                f"Aggregate configured ceiling: Before {_allocation_ceiling(ceiling['before'])}; "
+                f"After {_allocation_ceiling(ceiling['after'])}"
+            )
+        )
+    if data.get("session_actions"):
+        parts.append(
+            _allocation_table(
+                "Session actions",
+                ("Session", "Project", "Action", "Error"),
+                [
+                    (row["session_id"], row.get("project_id"), row["action"], row.get("error"))
+                    for row in data["session_actions"]
+                ],
+            )
+        )
+    parts.extend(_allocation_affected(data))
+    return Group(*parts)
+
+
+def format_provider_table(providers: list[dict]):
+    """Format ``provider_status`` rows (one per provider) for ``aq provider status``.
+
+    The evidence ring and transitions of ``--verbose`` follow the table per
+    provider, newest first.
+    """
+    table = Table(
+        title="Provider availability",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Provider", style="bold cyan", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Since", no_wrap=True)
+    table.add_column("Recovery", no_wrap=True)
+    table.add_column("Held", justify="right")
+    table.add_column("Moved", justify="right")
+    table.add_column("Last OK", no_wrap=True)
+    table.add_column("Usage", no_wrap=True)
+    table.add_column("Reason", overflow="fold")
+
+    extras: list = []
+    for row in providers:
+        state = str(row.get("state") or "")
+        label = Text(state, style=_PROVIDER_STATE_STYLES.get(state, ""))
+        override = row.get("override")
+        if override:
+            label.append(f" (override, {_until_text(override.get('until'))})", style="magenta")
+        usage = row.get("usage")
+        usage_text = (
+            f"{usage.get('window')} {float(usage.get('used_percent') or 0):g}%" if usage else "—"
+        )
+        vendor = row.get("vendor")
+        name = f"{row.get('provider', '')}" + (f" ({vendor})" if vendor else "")
+        table.add_row(
+            name,
+            label,
+            _relative_time(row.get("since")),
+            _until_text(row.get("until")),
+            str(row.get("held", 0)),
+            str(row.get("rerouted", 0)),
+            _relative_time(row.get("last_success_at")),
+            usage_text,
+            str(row.get("reason") or "—"),
+        )
+        if row.get("remediation") and state not in ("available", "degraded"):
+            extras.append(
+                Text(f"{row.get('provider')}: ", style="bold")
+                + Text(str(row["remediation"]), style="yellow")
+            )
+        for entry in row.get("evidence") or []:
+            signal = f"/{entry['signal']}" if entry.get("signal") else ""
+            where = entry.get("project_id") or ""
+            extras.append(
+                Text(
+                    f"  {row.get('provider')} evidence {_relative_time(entry.get('at'))}: "
+                    f"{entry.get('kind')}{signal} {where}".rstrip(),
+                    style="dim",
+                )
+            )
+        for tr in row.get("transitions") or []:
+            extras.append(
+                Text(
+                    f"  {row.get('provider')} {_relative_time(tr.get('at'))}: "
+                    f"{tr.get('from_state')} -> {tr.get('to_state')} "
+                    f"({tr.get('actor')}) {tr.get('reason') or ''}".rstrip(),
+                    style="dim",
+                )
+            )
+    return table if not extras else Group(table, Text(), *extras)
+
+
+def format_provider_held_tasks(tasks: list[dict]) -> Table:
+    """Format ``provider_held_tasks`` rows for ``aq provider held-tasks`` (D18, D20)."""
+    table = Table(
+        title="Held by provider",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Task", style="bold cyan", no_wrap=True)
+    table.add_column("Pri", justify="right")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Profile", no_wrap=True)
+    table.add_column("Provider", no_wrap=True)
+    table.add_column("Hold", no_wrap=True)
+    table.add_column("Recovery", no_wrap=True)
+    table.add_column("Title", overflow="fold")
+
+    for row in tasks:
+        state = str(row.get("state") or "")
+        kind = str(row.get("kind") or "")
+        if row.get("ahead") is not None:
+            kind += f" ({row['ahead']} ahead)"
+        table.add_row(
+            str(row.get("task_id") or ""),
+            str(row.get("priority", "")),
+            str(row.get("status") or ""),
+            str(row.get("profile_id") or "—"),
+            Text(
+                f"{row.get('provider', '')} {state}".strip(),
+                style=_PROVIDER_STATE_STYLES.get(state, ""),
+            ),
+            kind,
+            _until_text(row.get("until")),
+            _truncate(str(row.get("title") or ""), 60),
+        )
     return table
 
 

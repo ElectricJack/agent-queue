@@ -10,7 +10,6 @@ flat ``dict`` of arguments and returns a ``dict`` — domain data on success,
 from __future__ import annotations
 
 import logging
-import os
 import time
 from datetime import datetime, timezone
 
@@ -91,7 +90,8 @@ class OpsCommandsMixin:
         if isinstance(only, str):
             only = [c.strip() for c in only.split(",") if c.strip()]
 
-        ctx = DoctorContext(config=self.config, db=self.db, handler=self)
+        ctx = DoctorContext(config=self.config, db=self.db, handler=self,
+                            leave_gated=bool(args.get("leave_gated")))
         try:
             result = await run_doctor(registry, ctx, fix=bool(args.get("fix")), only=only)
         except Exception as exc:
@@ -114,6 +114,92 @@ class OpsCommandsMixin:
     # costs
     # -----------------------------------------------------------------------
 
+    async def _cmd_benchmark_stage_record(self, args: dict) -> dict:
+        """Append one measured monotonic stage for the held task."""
+        from src.benchmark.report import STAGES
+        from src.commands.principal import PrincipalKind, current_principal
+
+        principal = current_principal()
+        task_id = args.get("task_id")
+        stage = args.get("stage")
+        span_id = args.get("span_id")
+        start = args.get("started_monotonic_ns")
+        end = args.get("ended_monotonic_ns")
+        if (not isinstance(task_id, str) or not task_id
+                or not isinstance(span_id, str) or not 1 <= len(span_id) <= 120
+                or stage not in STAGES
+                or type(start) is not int or type(end) is not int
+                or start < 0 or end < start or end - start > 30 * 86400 * 1_000_000_000):
+            return {"success": False, "error": "invalid task, span, stage or monotonic bounds"}
+        if principal is not None and principal.kind in {
+            PrincipalKind.SESSION, PrincipalKind.PLAYBOOK,
+        } and not principal.elevated and principal.task_id not in {None, task_id}:
+            return {"success": False, "error": "out of scope: stage task must be the held task"}
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return {"success": False, "error": "stage task must be active"}
+        if principal is not None and principal.project_id not in {None, task.project_id}:
+            return {"success": False, "error": "out of scope: project_id mismatch"}
+        if principal is not None and principal.kind == PrincipalKind.SESSION and not principal.elevated:
+            epoch = args.get("claim_epoch")
+            if epoch is not None and (type(epoch) is not int or epoch < 0):
+                return {"success": False, "error": "claim_epoch must be a nonnegative integer"}
+            refusal = await self._assert_session_owns(
+                task_id, session_id=principal.session_id, claim_epoch=epoch
+            )
+            if refusal:
+                return refusal
+            session = await self.db.get_session(principal.session_id)
+            if (session is None or session.project_id != task.project_id
+                    or session.task_id != task_id
+                    or session.state not in {"starting", "running", "draining"}
+                    or session.agent_id != task.assigned_agent_id):
+                return {"success": False, "error": "out of scope: this session no longer owns the task"}
+        session_attempt_id = None
+        if principal is not None and principal.session_id:
+            session_attempt_id = await self.db.get_open_task_session_attempt_id(
+                principal.session_id, task_id
+            )
+        try:
+            inserted = await self.db.record_benchmark_stage(
+                span_id=span_id, project_id=task.project_id, task_id=task_id,
+                session_attempt_id=session_attempt_id, stage=stage,
+                started_monotonic_ns=start, ended_monotonic_ns=end,
+                owner_session_id=(principal.session_id if principal is not None
+                                  and principal.kind == PrincipalKind.SESSION
+                                  and not principal.elevated else None),
+                claim_epoch=args.get("claim_epoch"),
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        return {"success": True, "span_id": span_id, "inserted": inserted,
+                "duration_ms": (end - start) / 1_000_000, "stage": stage,
+                "session_attempt_id": session_attempt_id}
+
+    async def _cmd_get_benchmark_report(self, args: dict) -> dict:
+        """Export a frozen, explicit paired task set with observed usage."""
+        from src.benchmark.report import _manifest_pairs, build_report
+        from src.commands.principal import PrincipalKind, current_principal
+
+        principal = current_principal()
+        if principal is not None and principal.kind in {
+            PrincipalKind.SESSION, PrincipalKind.PLAYBOOK,
+        } and not principal.elevated:
+            return {"success": False, "error": "out of scope: benchmark reports require an operator or supervisor"}
+        manifest = args.get("manifest")
+        if not isinstance(manifest, dict):
+            return {"success": False, "error": "manifest must be an object"}
+        try:
+            _pairs, task_ids = _manifest_pairs(manifest)
+            project_id = manifest["project_id"]
+            if principal is not None and principal.project_id not in {None, project_id}:
+                return {"success": False, "error": "out of scope: project_id mismatch"}
+            evidence = await self.db.get_benchmark_evidence(project_id, task_ids)
+            return {"success": True, **build_report(manifest, evidence, self.config.pricing)}
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+
     async def _cmd_get_costs(self, args: dict) -> dict:
         """Roll the token ledger up into money using ``pricing:`` from config.
 
@@ -126,10 +212,10 @@ class OpsCommandsMixin:
             ``{"success": True, "rows": [...], "total_cost_usd": float,
             "unpriced_tokens": int, "pricing_models": [...]}``.
 
-        Honesty rule (design §7): a row is priced only when it carries both a
-        ``model`` that matches a pricing entry **and** an input/output split.
-        Everything else counts toward ``unpriced_tokens`` with ``cost_usd``
-        left null — the ledger is never priced at a guessed rate.
+        Honesty rule (design §7): a model must match a configured rate before
+        any component is priced. Cache read/write components additionally
+        require their own explicit rates; missing rates leave those tokens
+        unpriced. A partial priced subtotal never implies complete cost.
 
         The rule applies *within* a row too.  ``get_cost_rollup`` buckets by
         ``(group, model)``, so one bucket can hold both split and unsplit
@@ -141,12 +227,12 @@ class OpsCommandsMixin:
         """
         group_by = args.get("group_by") or "project"
         if group_by not in ("project", "profile", "day"):
-            return {"error": f"group_by must be project, profile or day (got {group_by!r})"}
+            return {"success": False, "error": f"group_by must be project, profile or day (got {group_by!r})"}
 
         try:
             since_ts = _parse_since(args.get("since"))
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         project_id = args.get("project_id") or self._active_project_id
 
@@ -158,7 +244,7 @@ class OpsCommandsMixin:
             )
         except Exception as exc:
             logger.exception("cost rollup failed")
-            return {"error": f"cost rollup failed: {type(exc).__name__}: {exc}"}
+            return {"success": False, "error": f"cost rollup failed: {type(exc).__name__}: {exc}"}
 
         pricing = self.config.pricing
         rows: list[dict] = []
@@ -168,25 +254,41 @@ class OpsCommandsMixin:
         for row in rollup:
             model = row.get("model")
             entry = pricing.match(model) if model else None
-            split_tokens = (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
+            input_tokens = row.get("input_tokens") or 0
+            output_tokens = row.get("output_tokens") or 0
+            cache_read = row.get("cache_read_tokens") or 0
+            cache_write = row.get("cache_write_tokens") or 0
+            split_tokens = input_tokens + output_tokens + cache_read + cache_write
             total_tokens = row.get("tokens_used", 0) or 0
             cost: float | None = None
+            priced_tokens = 0
             if entry is not None and split_tokens:
-                cost = (row.get("input_tokens") or 0) * entry.input_per_mtok / 1_000_000 + (
-                    row.get("output_tokens") or 0
-                ) * entry.output_per_mtok / 1_000_000
-                total_cost += cost
-                # Tokens in this bucket that carried no split are not covered
-                # by `cost` — count them as unpriced rather than losing them.
-                row_unpriced = max(0, total_tokens - split_tokens)
-            else:
-                row_unpriced = total_tokens
+                cost = (input_tokens * entry.input_per_mtok
+                        + output_tokens * entry.output_per_mtok) / 1_000_000
+                priced_tokens = input_tokens + output_tokens
+                if entry.cache_read_per_mtok is not None:
+                    cost += cache_read * entry.cache_read_per_mtok / 1_000_000
+                    priced_tokens += cache_read
+                if entry.cache_write_per_mtok is not None:
+                    cost += cache_write * entry.cache_write_per_mtok / 1_000_000
+                    priced_tokens += cache_write
+                if priced_tokens:
+                    total_cost += cost
+                else:
+                    cost = None
+            # Historic unsplit rows, unknown models and missing cache rates
+            # remain explicit even when another component was priced.
+            row_unpriced = max(0, total_tokens - priced_tokens)
             unpriced += row_unpriced
             rows.append(
                 {
                     **row,
                     "cost_usd": cost,
                     "unpriced_tokens": row_unpriced,
+                    "unpriced_cache_read_tokens": cache_read if entry is None or entry.cache_read_per_mtok is None else 0,
+                    "unpriced_cache_write_tokens": cache_write if entry is None or entry.cache_write_per_mtok is None else 0,
+                    "unattributed_tokens": max(0, total_tokens - split_tokens),
+                    "cost_complete": row_unpriced == 0,
                     "pricing_model": entry.model if entry else None,
                 }
             )
@@ -199,6 +301,7 @@ class OpsCommandsMixin:
             "since": since_ts,
             "total_cost_usd": round(total_cost, 6),
             "unpriced_tokens": unpriced,
+            "cost_complete": unpriced == 0,
             "pricing_models": [m.model for m in pricing.models],
         }
 
@@ -240,382 +343,300 @@ class OpsCommandsMixin:
     # worker pools — sizing and bounds (swarm-work-model §11)
     # -----------------------------------------------------------------------
 
+    def _pool_provider_unavailable(self, profile, now: float) -> dict | None:
+        """``provider_unavailable`` for a pool row, or ``None`` (provider-failover D13)."""
+        availability = getattr(self.orchestrator, "provider_availability", None)
+        if availability is None or profile is None:
+            return None
+        provider = availability.provider_for_profile(profile)
+        if not availability.suppresses(provider, now):
+            return None
+        row = availability.row(provider)
+        return {
+            "provider": provider,
+            "state": availability.effective_state(provider, now),
+            "reason": row.effective_reason(now) if row is not None else "",
+            "until": row.effective_until(now) if row is not None else None,
+        }
+
     async def _cmd_pool_status(self, args: dict) -> dict:
-        """Supply/demand/bounds snapshot for every worker pool.  Backs ``aq pool status``."""
-        project_ids = {args["project_id"]} if args.get("project_id") else None
-        (
-            supply,
-            demand,
-            bounds,
-            profiles_by_key,
-            _caps,
-            _projects,
-        ) = await self.orchestrator._measure_pools(project_ids)
+        """Supply/demand/bounds snapshot for every worker pool.  Backs ``aq pool status``.
+
+        One row per **profile** — a pool is a fleet of durable workers shared
+        across every project, and sizing is fleet-wide (global-worker-pools
+        §6.1).  The per-project detail an operator still needs ("where are my
+        workers actually running", "why is this project not growing") is
+        nested in ``projects`` rather than dropped, and quarantine lives
+        there because a quarantine was never a property of a global pool.
+
+        ``project_id`` is retained as a **view filter** over ``projects`` and
+        ``instances``, never as pool identity: bounds, ``desired`` and the
+        top-level counters stay fleet-wide whether or not one is passed,
+        because filtering them would misreport the pool the sizer acts on.
+        """
+        from src.pool_claims import pool_claim_loop_stall_seconds
+        from src.scheduler import PoolProjectSupply
+        from src.sessions.input_prompts import find_awaiting_input_sessions
+
+        view = (args.get("project_id") or "").strip() or None
+        measurement = await self.orchestrator._measure_pools(for_display=True)
         now = time.time()
-        sessions_by_key: dict[tuple[str, str], list] = {}
-        for session in await self.db.list_sessions(lifecycle="pool"):
+        sessions_by_profile: dict[str, list] = {}
+        pool_sessions = measurement.pool_sessions
+        measured_profiles = {key.profile_id for key in measurement.supply}
+        for session in pool_sessions:
             if session.project_id is None or session.state == "stopped":
                 continue
-            if project_ids is not None and session.project_id not in project_ids:
+            if view is not None and session.project_id != view:
                 continue
-            sessions_by_key.setdefault((session.project_id, session.profile_id), []).append(session)
+            if session.profile_id not in measured_profiles:
+                continue
+            sessions_by_profile.setdefault(session.profile_id, []).append(session)
+
+        awaiting_input = await find_awaiting_input_sessions(
+            pool_sessions,
+            now=now,
+            stall_seconds=pool_claim_loop_stall_seconds(self.config.swarm),
+            harness_registry=self.orchestrator.harness_registry,
+            providers=self.orchestrator.session_providers,
+            config=self.config,
+        )
+        awaiting_by_session = {finding.session.id: finding for finding in awaiting_input}
+
+        # Task-lifecycle sessions are intentionally excluded from sizing, but
+        # silently omitting a live session that consumes the same class and
+        # harness made a zero-busy pool look healthy while all worktree slots
+        # were held elsewhere.  Associate those sessions with every pool that
+        # can serve their execution route without folding them into supply.
+        all_profiles = {profile.id: profile for profile in measurement.all_profiles}
+        pool_routes: dict[tuple[str, str], list[str]] = {}
+        for key, profile in measurement.profiles.items():
+            harness = str(getattr(profile, "harness", "") or "").strip()
+            default_class = str(getattr(profile, "default_class", "") or "").strip()
+            if harness and default_class:
+                pool_routes.setdefault((harness, default_class), []).append(key.profile_id)
+        outside_by_profile: dict[str, list[dict]] = {}
+        task_sessions = await self.db.list_sessions(lifecycle="task", live_only=True)
+        routed_sessions = []
+        for session in task_sessions:
+            if view is not None and session.project_id != view:
+                continue
+            profile = all_profiles.get(session.profile_id)
+            harness = str(session.harness or getattr(profile, "harness", "") or "").strip()
+            intelligence_class = str(
+                session.intelligence_class or getattr(profile, "default_class", "") or ""
+            ).strip()
+            matched = pool_routes.get((harness, intelligence_class), [])
+            if matched:
+                routed_sessions.append((session, harness, intelligence_class, matched))
+        task_titles = await self.db.get_task_titles(
+            [
+                session.task_id
+                for sessions in sessions_by_profile.values()
+                for session in sessions
+                if session.task_id is not None
+            ]
+            + [
+                session.task_id
+                for session, _harness, _intelligence_class, _matched in routed_sessions
+                if session.task_id is not None
+            ]
+        )
+        for session, harness, intelligence_class, matched in routed_sessions:
+            detail = {
+                "session_id": session.id,
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "harness": harness,
+                "intelligence_class": intelligence_class,
+                "name": session.name,
+                "state": session.state,
+                "task_id": session.task_id,
+                "task_title": task_titles.get(session.task_id),
+                "started_at": session.started_at,
+            }
+            for profile_id in matched:
+                outside_by_profile.setdefault(profile_id, []).append(detail)
+
         pools = []
-        for key in sorted(supply, key=lambda k: (k.project_id, k.profile_id)):
-            sup, (lo, hi) = supply[key], bounds[key]
-            want = sup.running_busy + demand.get(key, 0)
+        for key in sorted(measurement.supply, key=lambda k: k.profile_id):
+            sup = measurement.supply[key]
+            lo, hi = measurement.bounds[key]
+            ready = measurement.demand.get(key, 0)
+            # The same arithmetic ``size_pools`` runs, on the same fleet-wide
+            # numbers, so what an operator reads here is what the sizer will
+            # converge on next tick.
+            want = sup.running_busy + ready
             desired = max(lo, want) if hi is None else min(max(lo, want), hi)
             desired = max(desired, sup.running_busy + sup.starting)
-            row = {
-                "project_id": key.project_id,
-                "profile_id": key.profile_id,
-                # An operator kill-switch on the (global) profile.  Disabled
-                # pools keep their row — that is how the dashboard offers the
-                # toggle that turns them back on — and are sized to zero.
-                "enabled": getattr(profiles_by_key.get(key), "enabled", True),
-                "min_active": lo,
-                "max_active": hi,
-                "desired": desired,
-                "running_idle": sup.running_idle,
-                "running_busy": sup.running_busy,
-                "starting": sup.starting,
-                "draining": sup.draining,
-                "ready": demand.get(key, 0),
-                "instances": [],
-            }
-            for session in sessions_by_key.get((key.project_id, key.profile_id), []):
-                task = await self.db.get_task(session.task_id) if session.task_id else None
-                idle_since = session.last_activity or session.started_at
-                row["instances"].append(
+            profile = measurement.profiles.get(key)
+            service_tier = None
+            if getattr(profile, "harness", None) == "codex":
+                from src.sessions.spec import _is_codex_cli, codex_service_tier_for
+
+                harness = self.orchestrator.harness_registry.get("codex")
+                if harness is not None and _is_codex_cli(harness):
+                    class_config = self.orchestrator.session_spec_builder._resolve_class_config(
+                        profile, harness, None, for_display=True,
+                    )
+                    service_tier = codex_service_tier_for(profile, class_config)
+
+            from src.scheduler import project_pool_candidates
+
+            projects = []
+            for cand in project_pool_candidates(measurement.candidates.get(key, [])):
+                if view is not None and cand.project_id != view:
+                    continue
+                local = sup.by_project.get(cand.project_id) or PoolProjectSupply()
+                until, reason = self.orchestrator._pool_quarantine_state(
+                    cand.project_id, key.profile_id, now
+                )
+                projects.append(
                     {
-                        "session_id": session.id,
-                        "name": session.name,
-                        "state": session.state,
-                        "task_id": session.task_id,
-                        "task_title": task.title if task is not None else None,
-                        "idle_seconds": (
-                            max(0.0, now - idle_since)
-                            if session.task_id is None and session.claim_phase is None
-                            else None
-                        ),
-                        "started_at": session.started_at,
-                        "quarantine_reason": (
-                            session.end_reason if session.state == "quarantined" else None
-                        ),
+                        "project_id": cand.project_id,
+                        "ready": cand.ready,
+                        "running_idle": local.running_idle,
+                        "running_busy": local.running_busy,
+                        "evictable": local.evictable,
+                        "starting": local.starting,
+                        "draining": local.draining,
+                        "max_concurrent_agents": cand.project_cap,
+                        "workspace_capacity": cand.workspace_capacity,
+                        # A deadline on its own left an operator staring at a
+                        # pool that will not grow with nothing to act on.
+                        "quarantined_until": until,
+                        "quarantined_reason": reason if until else None,
                     }
                 )
-            until, reason = self.orchestrator._pool_quarantine_state(
-                key.project_id, key.profile_id, now
-            )
-            if until:
-                row["quarantined_until"] = until
-                # A timestamp alone left an operator staring at a pool that
-                # will not grow with nothing to act on.
-                row["quarantined_reason"] = reason
-            pools.append(row)
-        return {"success": True, "pools": pools}
+            if view is not None and not projects:
+                # The filter named a project this pool has no standing in;
+                # reporting global bounds under it would be misleading.
+                continue
 
-    def _system_profile_path(self, agent_type: str) -> str:
-        """Vault path of the system profile markdown for *agent_type*."""
-        return os.path.join(self.config.data_dir, "vault", "agent-types", agent_type, "profile.md")
+            instances = []
+            for session in sessions_by_profile.get(key.profile_id, []):
+                idle_since = session.last_activity or session.started_at
+                blocked = awaiting_by_session.get(session.id)
+                instance = {
+                    "session_id": session.id,
+                    # A worker's workspace fixes its project at launch, so
+                    # this is the only place the binding stays visible.
+                    "project_id": session.project_id,
+                    "name": session.name,
+                    "state": "blocked_on_input" if blocked is not None else session.state,
+                    "task_id": session.task_id,
+                    "task_title": task_titles.get(session.task_id),
+                    "idle_seconds": (
+                        max(0.0, now - idle_since)
+                        if session.task_id is None and session.claim_phase is None
+                        else None
+                    ),
+                    "started_at": session.started_at,
+                    "quarantine_reason": (
+                        session.end_reason if session.state == "quarantined" else None
+                    ),
+                }
+                if blocked is not None:
+                    instance.update(
+                        input_prompt=blocked.signature.name,
+                        unchanged_seconds=round(blocked.unchanged_seconds, 1),
+                    )
+                instances.append(instance)
 
-    @staticmethod
-    def _deprecated_project_id(args: dict) -> list[str]:
-        """Warn (once, in the response) when a caller still passes ``project_id``.
-
-        Pool lifecycle and bounds are properties of the profile, which is
-        global: the same durable worker serves several projects.  ``project_id``
-        is accepted and ignored for one release so existing scripts and the
-        MCP tool schema keep working.
-        """
-        if not (args.get("project_id") or "").strip():
-            return []
-        return [
-            (
-                "project_id is deprecated and ignored: pool lifecycle and bounds are "
-                "configured on the system profile and apply to every project."
-            )
-        ]
-
-    async def _pool_profile_target(self, profile_id: str, *, require_pool: bool):
-        """Resolve the (global) profile a pool edit applies to."""
-        target = await self.db.get_profile(profile_id)
-        if target is None:
-            return None
-        if require_pool and getattr(target, "lifecycle", "task") != "pool":
-            return None
-        return target
-
-    async def _write_pool_profile_config(self, profile_id: str, updates: dict, *,
-                                         require_pool: bool):
-        """Persist profile config, with the vault as source of truth.
-
-        The vault ``## Config`` block is the source of truth (swarm spec §14),
-        so operator edits are written into the **system** profile markdown at
-        ``vault/agent-types/<id>/profile.md`` and then synced back into the
-        ``agent_profiles`` row.  Writing only the DB row would let a later
-        vault sync silently revert the operator edit.
-
-        The DB row is also updated directly and first, so the very next
-        orchestrator tick sees the change even if the sync is slow.
-        """
-        import dataclasses
-
-        target = await self._pool_profile_target(profile_id, require_pool=require_pool)
-        if target is None:
-            return None
-
-        if updates:
-            await self.db.update_profile(target.id, **updates)
-        await self._write_pool_profile_config_to_vault(target.id, updates)
-        return dataclasses.replace(target, **updates)
-
-    async def _write_pool_profile_config_to_vault(self, profile_id: str, updates: dict) -> None:
-        """Merge *updates* into the system profile's ``## Config`` and re-sync.
-
-        Failures are logged, never raised: the DB row has already been updated
-        by the caller, so a read-only vault degrades ``pool scale`` to the old
-        (non-durable) behaviour rather than failing the command outright.
-        """
-        if not updates:
-            return
-        from pathlib import Path
-
-        from src.profiles.parser import update_config_keys
-        from src.profiles.sync import sync_profile_text_to_db
-
-        path = Path(self._system_profile_path(profile_id))
-        try:
-            markdown = path.read_text(encoding="utf-8") if path.is_file() else ""
-            markdown = update_config_keys(markdown, updates)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(markdown, encoding="utf-8")
-        except OSError:
-            logger.warning(
-                "pool profile edit: could not write vault profile %s — changes applied to the "
-                "agent_profiles row only, and will revert on the next vault sync",
-                path,
-                exc_info=True,
-            )
-            return
-
-        result = await sync_profile_text_to_db(
-            markdown, self.db, source_path=str(path), fallback_id=profile_id
-        )
-        if not result.success:
-            logger.warning(
-                "pool profile edit: wrote %s but the DB re-sync failed: %s", path, result.errors
-            )
-
-    async def _cmd_pool_set_lifecycle(self, args: dict) -> dict:
-        """Set a profile's task/pool lifecycle.  Backs ``aq pool set-lifecycle``.
-
-        The lifecycle is a property of the profile and therefore global: the
-        same durable worker serves every project.  Sizing still happens per
-        project at runtime (one pool per project/profile under that project's
-        ``max_concurrent_agents``) — only the configuration is shared.
-        """
-        profile_id = args.get("profile_id")
-        lifecycle = args.get("lifecycle")
-        warnings = self._deprecated_project_id(args)
-        if not profile_id:
-            return {"success": False, "error": "profile_id is required"}
-        if lifecycle not in {"task", "pool"}:
-            return {"success": False, "error": "lifecycle must be task or pool"}
-        if lifecycle == "pool" and not getattr(self.config.swarm, "enabled", True):
-            return {
-                "success": False,
-                "error": "cannot set lifecycle to pool while swarm.enabled is false",
-            }
-        # The sizing knobs are pool-only configuration.  Clear them together
-        # with the lifecycle change so the durable profile can be re-synced
-        # by the profile parser (which deliberately rejects those keys on a
-        # task profile).
-        updates = {"lifecycle": lifecycle}
-        if lifecycle == "task":
-            updates.update(
-                min_active=None,
-                max_active=None,
-                max_claims_per_session=None,
-            )
-        profile = await self._write_pool_profile_config(
-            profile_id, updates, require_pool=False
-        )
-        if profile is None:
-            return {"success": False, "error": f"no profile '{profile_id}'"}
-        if lifecycle == "task":
-            # Do not let workers from the former pool take another task while
-            # the reconciler drains them.  Active tasks retain their session
-            # until their normal close/release path completes.  The profile is
-            # global, so every project's pool for it drains.
-            for session in await self.db.list_sessions(lifecycle="pool", live_only=True):
-                if session.profile_id != profile_id:
-                    continue
-                await self.db.update_session(session.id, desired_state="stopped")
-                await self.orchestrator.bus.emit(
-                    "pool.session_drained",
-                    {
-                        "project_id": session.project_id,
-                        "profile_id": profile_id,
-                        "session_id": session.id,
-                        "name": session.name,
-                        "reason": "lifecycle_changed",
-                    },
-                )
-        # The profile edit is global, but lifecycle events are project-routed.
-        # Fan out to every project even when a compatibility caller supplied
-        # ``project_id``: that input does not make the profile configuration
-        # local, and every payload must satisfy the project event schema.
-        project_ids = [project.id for project in await self.db.list_projects()]
-        for project_id in project_ids:
-            await self.orchestrator.bus.emit(
-                "pool.lifecycle_changed",
+            pools.append(
                 {
-                    "project_id": project_id,
-                    "profile_id": profile_id,
-                    "lifecycle": lifecycle,
-                },
-            )
-        return {
-            "success": True,
-            "profile_id": profile_id,
-            "lifecycle": lifecycle,
-            "warnings": warnings,
-        }
-
-    async def _cmd_pool_set_enabled(self, args: dict) -> dict:
-        """Turn a pool profile on or off.  Backs ``aq pool set-enabled``.
-
-        ``enabled`` is the operator kill-switch for a whole pool profile: the
-        profile keeps its definition, its vault markdown and its
-        ``pool_status`` row, so a disabled pool stays visible and can be
-        switched back on.  What changes is eligibility for *new* work —
-
-        * sizing: ``_measure_pools`` reports bounds ``(0, 0)`` for a disabled
-          profile, so the sizer drains idle workers.  ``desired`` is still
-          floored at ``busy + starting``, so a worker mid-task keeps its
-          session and finishes the task it holds;
-        * claims: ``task_claim`` answers ``drain_requested`` for a disabled
-          profile, so a busy worker takes no further task after this one.
-
-        Like every other pool edit the switch lives on the (global) system
-        profile and therefore applies to every project's pool for it.
-        """
-        profile_id = args.get("profile_id")
-        enabled = args.get("enabled")
-        warnings = self._deprecated_project_id(args)
-        if not profile_id:
-            return {"success": False, "error": "profile_id is required"}
-        if not isinstance(enabled, bool):
-            return {"success": False, "error": "enabled must be a boolean"}
-        profile = await self._write_pool_profile_config(
-            profile_id, {"enabled": enabled}, require_pool=True
-        )
-        if profile is None:
-            return {"success": False, "error": f"no pool profile '{profile_id}'"}
-        for project in await self.db.list_projects():
-            await self.orchestrator.bus.emit(
-                "pool.enabled_changed",
-                {
-                    "project_id": project.id,
-                    "profile_id": profile_id,
-                    "enabled": enabled,
-                },
-            )
-        return {
-            "success": True,
-            "profile_id": profile_id,
-            "enabled": enabled,
-            "warnings": warnings,
-        }
-
-    async def _cmd_pool_scale(self, args: dict) -> dict:
-        """Set a pool profile's min/max active-session bounds.  Backs ``aq pool scale``.
-
-        Bounds live on the (global) system profile and apply to every project's
-        pool for that profile; each project's ``max_concurrent_agents`` still
-        caps its own pool at runtime, which is what ``project_caps`` reports.
-        """
-        profile_id = args.get("profile_id")
-        warnings = self._deprecated_project_id(args)
-        if not profile_id:
-            return {"success": False, "error": "profile_id is required"}
-        has_min, has_max = "min" in args, "max" in args
-        lo, hi = args.get("min"), args.get("max")
-        if not has_min and not has_max:
-            return {"success": False, "error": "nothing to change: pass min and/or max"}
-        target = await self._pool_profile_target(profile_id, require_pool=True)
-        if target is None:
-            return {"success": False, "error": f"no pool profile '{profile_id}'"}
-        min_active = lo if has_min else target.min_active
-        max_active = hi if has_max else target.max_active
-        if min_active is None or min_active < 0:
-            return {"success": False, "error": "min must be >= 0"}
-        if max_active is not None and max_active < 1:
-            return {"success": False, "error": "max must be >= 1"}
-        if max_active is not None and max_active < min_active:
-            return {"success": False, "error": "max must be >= min"}
-        updates = {}
-        if has_min:
-            updates["min_active"] = lo
-        if has_max:
-            updates["max_active"] = hi
-        profile = await self._write_pool_profile_config(
-            profile_id, updates, require_pool=True
-        )
-
-        # Runtime sizing stays per project: report each active project's cap
-        # and the max that actually applies there.
-        project_caps = []
-        effective_by_project: dict[str, int | None] = {}
-        for project in await self.db.list_projects():
-            cap = getattr(project, "max_concurrent_agents", None)
-            effective = (
-                cap if profile.max_active is None else min(profile.max_active, cap)
-            ) if cap is not None else profile.max_active
-            effective_by_project[project.id] = effective
-            project_caps.append(
-                {
-                    "project_id": project.id,
-                    "max_concurrent_agents": cap,
-                    "effective_max_active": effective,
+                    "profile_id": key.profile_id,
+                    "name": getattr(profile, "name", "") or key.profile_id,
+                    "service_tier": service_tier,
+                    # An operator kill-switch on the (global) profile.  Disabled
+                    # pools keep their row — that is how the dashboard offers the
+                    # toggle that turns them back on — and are sized to zero.
+                    "enabled": getattr(profile, "enabled", True),
+                    "min_active": lo,
+                    "max_active": hi,
+                    "min_per_project": getattr(profile, "min_per_project", None) or 0,
+                    "desired": desired,
+                    "running_idle": sup.running_idle,
+                    "running_busy": sup.running_busy,
+                    "evictable": sup.evictable,
+                    "starting": sup.starting,
+                    "draining": sup.draining,
+                    "ready": ready,
+                    "blocked_on_input": sum(
+                        finding.session.profile_id == key.profile_id
+                        for finding in awaiting_input
+                    ),
+                    "projects": projects,
+                    "instances": instances,
+                    "outside_pools": outside_by_profile.get(key.profile_id, []),
+                    "provider_unavailable": self._pool_provider_unavailable(profile, now),
                 }
             )
 
-        terminated: list[str] = []
-        if args.get("now"):
-            sessions = await self.db.list_sessions(lifecycle="pool")
-            by_project: dict[str, list] = {}
-            for s in sessions:
-                if s.profile_id == profile_id and s.state in ("running", "stalled"):
-                    by_project.setdefault(s.project_id, []).append(s)
-            for project_id, live in by_project.items():
-                effective = effective_by_project.get(project_id, profile.max_active)
-                if effective is None:
+        # The measurement walks active projects, so a pool with no project to
+        # place a worker in has no row there -- and a fresh install, whose
+        # first pools exist before its first project, was told "No worker
+        # pools configured."  A configured pool is listed regardless, sized
+        # by its bounds, with nothing running and no project placement yet.
+        if view is None:
+            measured = {row["profile_id"] for row in pools}
+            for profile in sorted(all_profiles.values(), key=lambda p: p.id):
+                if (
+                    ":" in profile.id
+                    or getattr(profile, "lifecycle", "task") != "pool"
+                    or profile.id in measured
+                ):
                     continue
-                idle = sorted((s for s in live if not s.task_id), key=lambda s: s.started_at or 0)
-                for s in idle[: max(0, len(live) - effective)]:
-                    await self.orchestrator._terminate_pool_session(s, reason="scaled")
-                    terminated.append(s.id)
+                pools.append(
+                    {
+                        "profile_id": profile.id,
+                        "name": profile.name or profile.id,
+                        "enabled": getattr(profile, "enabled", True),
+                        "min_active": getattr(profile, "min_active", None) or 0,
+                        "max_active": getattr(profile, "max_active", None),
+                        "min_per_project": getattr(profile, "min_per_project", None) or 0,
+                        "desired": 0,
+                        "running_idle": 0,
+                        "running_busy": 0,
+                        "starting": 0,
+                        "draining": 0,
+                        "ready": 0,
+                        "blocked_on_input": 0,
+                        "projects": [],
+                        "instances": [],
+                        "outside_pools": [],
+                        "note": "no active project yet; workers start when a project has ready tasks",
+                    }
+                )
+            pools.sort(key=lambda row: row["profile_id"])
+        return {"success": True, "pools": pools}
 
-        response = {
-            "success": True,
-            "profile_id": profile_id,
-            "min_active": profile.min_active,
-            "max_active": profile.max_active,
-            "project_caps": project_caps,
-            "terminated": terminated,
-            "warnings": warnings,
-        }
-        for project_cap in project_caps:
-            await self.orchestrator.bus.emit(
-                "pool.bounds_changed",
-                {
-                    "project_id": project_cap["project_id"],
-                    "profile_id": profile_id,
-                    "min_active": profile.min_active,
-                    "max_active": profile.max_active,
-                    "project_cap": project_cap["max_concurrent_agents"],
-                    "effective_max_active": project_cap["effective_max_active"],
-                },
-            )
-        return response
+    async def _cmd_pool_rename(self, args: dict) -> dict:
+        """Rename a pool's display name, preserving its stable profile ID."""
+        from src.commands.pool_admin import rename_pool
+
+        return await rename_pool(self, args)
+
+    async def _cmd_pool_set_lifecycle(self, args: dict) -> dict:
+        """Set the global profile lifecycle, draining former pool sessions."""
+        from src.commands.pool_admin import command_response, set_pool_lifecycle
+
+        return command_response(await set_pool_lifecycle(self, args))
+
+    async def _cmd_pool_set_enabled(self, args: dict) -> dict:
+        """Set the global pool profile's operator kill-switch."""
+        from src.commands.pool_admin import command_response, set_pool_enabled
+
+        return command_response(await set_pool_enabled(self, args))
+
+    async def _cmd_pool_scale(self, args: dict) -> dict:
+        """Set global pool bounds, optionally stopping surplus idle workers now."""
+        from src.commands.pool_admin import command_response, set_pool_bounds
+
+        return command_response(await set_pool_bounds(self, args))
+
+    async def _cmd_pool_delete(self, args: dict) -> dict:
+        """Delete a global pool, stopping its sessions and invalidating its routes."""
+        from src.commands.pool_admin import delete_pool
+
+        return await delete_pool(self, args)

@@ -3,10 +3,9 @@
 
 The dedup rule is the reason this table needs a query layer at all, so most
 of what follows pins it down: an unchanged reading must not write a row, and
-a changed one always must.  Everything runs on SQLite and, when
-``POSTGRES_TEST_DSN`` is set, on PostgreSQL too — ``window`` is a reserved
-word there, and the grouped-max used by ``latest_provider_usage`` is the kind
-of statement that quietly differs per dialect.
+a changed one always must. Everything runs on PostgreSQL — ``window`` is a
+reserved word there, and the grouped-max used by ``latest_provider_usage``
+needs coverage on the production backend.
 """
 
 from __future__ import annotations
@@ -15,31 +14,14 @@ import pytest
 from sqlalchemy import insert, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from src.database import Database
 from src.database.tables import provider_usage_snapshots
-from src.models import ProviderUsageSnapshot
-from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
-
-POSTGRES_DSN = ensure_worker_postgres_dsn()
+from src.providers import ProviderUsageSnapshot
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
-async def any_db(request, tmp_path):
-    """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI)."""
-    if request.param == "postgres":
-        if not POSTGRES_DSN:
-            pytest.skip("POSTGRES_TEST_DSN not set")
-        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
-
-        database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
-        await database.initialize()
-        await database.reset_for_tests()
-    else:
-        database = Database(lease_dsn("provider_usage.db"))
-        await database.initialize()
-    yield database
-    await database.close()
+@pytest.fixture
+async def any_db(reuse_database):
+    """One session-initialized database, with rows reset between tests."""
+    return await reuse_database("provider_usage.db")
 
 
 def snap(
@@ -105,6 +87,60 @@ async def test_an_unchanged_repeat_of_the_newest_row_is_dropped(any_db):
 
     assert written == 0
     assert await count_rows(any_db) == 1
+
+
+async def test_a_dropped_repeat_still_advances_last_seen_at(any_db):
+    """Spec amendment A3 --- the reason the column exists.
+
+    Dropping the row is right (the value did not move) but the *confirmation*
+    is information: without it a reader cannot tell a window steady at 88%
+    from a producer that died an hour ago, and would call the healthy one
+    stale.  ``observed_at`` must not move, or the sparkline would grow a step
+    where nothing happened.
+    """
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+
+    written = await any_db.record_provider_usage([snap(observed_at=5_000.0)])
+
+    assert written == 0
+    assert await count_rows(any_db) == 1
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["observed_at"] == 1_000.0
+    assert row["last_seen_at"] == 5_000.0
+
+
+async def test_last_seen_at_never_walks_backwards(any_db):
+    """``max(last_seen_at, observed_at)`` --- a replayed old reading is not news."""
+    await any_db.record_provider_usage([snap(observed_at=1_000.0)])
+    await any_db.record_provider_usage([snap(observed_at=5_000.0)])
+
+    await any_db.record_provider_usage([snap(observed_at=2_000.0)])
+
+    assert (await any_db.latest_provider_usage())[0]["last_seen_at"] == 5_000.0
+
+
+async def test_a_batch_of_repeats_writes_one_row_seen_at_the_newest_clock(any_db):
+    """Dedup within a batch still has to carry the last confirmation out."""
+    written = await any_db.record_provider_usage(
+        [snap(observed_at=1_000.0), snap(observed_at=1_030.0), snap(observed_at=1_060.0)]
+    )
+
+    assert written == 1
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["observed_at"] == 1_000.0
+    assert row["last_seen_at"] == 1_060.0
+
+
+async def test_a_new_value_starts_its_own_confirmation_clock(any_db):
+    """The superseded row's ``last_seen_at`` is not touched by its successor."""
+    await any_db.record_provider_usage([snap(used_percent=88.0, observed_at=1_000.0)])
+
+    await any_db.record_provider_usage([snap(used_percent=89.0, observed_at=4_000.0)])
+
+    row = (await any_db.latest_provider_usage())[0]
+    assert row["used_percent"] == 89.0
+    assert row["observed_at"] == 4_000.0
+    assert row["last_seen_at"] == 4_000.0
 
 
 async def test_a_changed_percent_always_writes(any_db):

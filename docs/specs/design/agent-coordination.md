@@ -4,9 +4,17 @@ tags: [design, coordination, multi-agent, workflows]
 
 # Agent Coordination — Playbook-Driven Multi-Agent Workflows
 
+<!-- aq:historical -->
+> **Design record — not current documentation.** A spec states the behaviour
+> intended when it was approved; it is written before the code and is not
+> revised to track it. Where this page and the code disagree, the code is right.
+> Start at [the documentation home](../../README.md) for what AQ does today, and
+> see [historical material](../../history/README.md) for how this material is
+> organised.
+
 **Status:** Draft (category-filter portion deferred — see note below)
-**Principles:** [[guiding-design-principles]] (#2 visible and editable, #3 structure guides intelligence, #7 events not coupling)
-**Related:** [[playbooks]], [[vault]], [[specs/scheduler-and-budget]], [[specs/models-and-state-machine]], [[specs/orchestrator]]
+**Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 visible and editable, #3 structure guides intelligence, #7 events not coupling)
+**Related:** [playbooks](playbooks.md), [vault](vault.md), [specs/scheduler-and-budget](../scheduler-and-budget.md), [specs/models-and-state-machine](../models-and-state-machine.md), [specs/orchestrator](../orchestrator.md)
 
 ---
 
@@ -67,7 +75,7 @@ task chains should be prioritized to unblock downstream work.
 
 ## 2. Vision
 
-Agent coordination rules should be defined as **[[playbooks]]** — the same system
+Agent coordination rules should be defined as **[playbooks](playbooks.md)** — the same system
 used for automation. A coordination playbook describes how agents collaborate on a
 type of work: what pipeline stages exist, how work flows between agents, and what
 happens when something goes wrong.
@@ -88,14 +96,14 @@ strategy.
 
 ### Coordination Playbook
 
-A coordination playbook is a regular [[playbooks|playbook]] (same format, same
+A coordination playbook is a regular [playbook](playbooks.md) (same format, same
 execution model) whose purpose is to orchestrate multi-agent work rather than
 execute a single task. It triggers on events like `task.created` or
 `workflow.started` and its actions involve creating tasks, assigning agents, and
 managing the flow between them.
 
 Coordination playbooks live alongside other playbooks in the
-[[vault|vault]]:
+[vault](vault.md):
 - `vault/system/playbooks/` for system-wide coordination patterns
 - `vault/projects/{id}/playbooks/` for project-specific coordination
 - `vault/agent-types/{type}/playbooks/` for agent-type-specific behavior
@@ -127,11 +135,11 @@ A preference (not a hard requirement) for which agent should handle a task. Affi
 is based on:
 - **Context continuity** — prefer the agent that previously worked on related tasks
   (it has relevant conversation history and workspace state). Over time,
-  [[self-improvement|agent-type memory]] reduces the
+  [agent-type memory](self-improvement.md) reduces the
   cost of context loss, but affinity still helps for in-flight workflows.
 - **Workspace locality** — prefer an agent that already has the workspace locked
 - **Type matching** — a review task should go to a review agent, not a coding agent.
-  Agent types are defined by [[profiles|profiles]]
+  Agent types are defined by [profiles](profiles.md)
   in the vault.
 
 Affinity is advisory. The scheduler respects it when possible but overrides it when
@@ -330,9 +338,14 @@ a second, opt-in mode alongside it, split by profile `lifecycle`: `lifecycle: ta
 profiles keep push unchanged; `lifecycle: pool` profiles instead pull — a fixed-size pool
 of long-running sessions each call `aq task claim [--next] [--wait S]` against the ready
 frontier the coordination-playbook DAG already produces. The scheduler still owns *how
-many* pool sessions exist per `(project, profile)` (`_reconcile_pools` in
+many* pool sessions exist per **profile**, fleet-wide (`_reconcile_pools` in
 `src/orchestrator/pools.py`, sized by `size_pools` in `src/scheduler.py` — the same
-deficit/fair-share caps as push) and *which* work is admissible (project state, budget);
+deficit/fair-share caps as push), *which project* each of them launches into
+(`place_pool_actions`, where per-project caps, workspace capacity, quarantine and the
+`min_per_project` warm floor apply — see
+[shared pool fairness](shared-pool-fairness.md) for project shares and repair priority, and
+`docs/superpowers/specs/2026-09-08-global-worker-pools-design.md`), and *which* work is
+admissible (project state, budget);
 a pool session only decides *which admissible task it takes next*, because the consumer
 is the only party that knows precisely when it is free. Off by default
 (`swarm.enabled: false`); nothing above this section changes when it is on.
@@ -361,13 +374,13 @@ Workflows are tracked in the database alongside tasks:
 ### Workflow ↔ PlaybookRun Relationship
 
 A coordination playbook is executed by the same
-[[playbooks#6. Execution Model|PlaybookRunner]] as any other playbook. The
+[PlaybookRunner](playbooks.md#6-execution-model) as any other playbook. The
 `workflow_id` is created in the first node of the playbook and tracked through
 the conversation. The playbook's nodes create tasks, listen for events, and manage
 stage transitions — all through the standard node → LLM → tools → transition flow.
 
 This means: **no new execution engine is needed.** Coordination is just another
-thing [[playbooks]] can do.
+thing [playbooks](playbooks.md) can do.
 
 ### Agent Affinity Implementation
 
@@ -467,8 +480,8 @@ Ship with sensible defaults that encode current best practices:
 | `exploration` | EXPLORATION task | Parallel multi-agent investigation |
 
 These are starting points. Users customize or replace them by editing the markdown
-in the [[vault|vault]] — per
-[[guiding-design-principles#2. Everything is visible and editable|principle #2]].
+in the [vault](vault.md) — per
+[principle #2](guiding-design-principles.md#2-everything-is-visible-and-editable).
 
 ---
 
@@ -534,3 +547,23 @@ in the [[vault|vault]] — per
 6. **Visualization.** The dashboard should show workflows as pipelines — stages
    with tasks in each, agent assignments, and current progress. How does this
    relate to the playbook graph visualization in `playbooks.md`?
+
+## Collaboration threads
+
+Coordination between agents is normally asynchronous through the task graph:
+one task's output feeds another's input, and the scheduler decides ordering.
+The exception is work where the same goal needs to be settled *now*, while
+both agents are running on their own branches — e.g. two writers reconciling
+the ordering they will commit in, or a reviewer tailing a writer's push. For
+that case there is a bounded, ordered collaboration thread between 2–4 members,
+each on its own worktree and claim. The thread carries small, ordered
+messages (40 max, 4 KiB each), a shared deadline (default and max 120 minutes),
+and typed terminal reasons (`thread_closed`, `peer_failed`, `peer_gone`,
+`partner_not_running`) that let a waiting agent stop waiting without
+re-registering.
+
+The thread is an *additional* coordination surface, not a replacement for the
+queue: scheduling still makes the ordering decision, and every member keeps
+its own claim and workspace. For the worker-facing CLI, limits, and the loop
+pattern (accept → show → send → wait → read), see
+[agent-collaboration.md](../../guides/agent-collaboration.md).

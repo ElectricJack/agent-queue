@@ -7,8 +7,8 @@ through this ABC — never importing platform-specific types directly.
 
 The adapter handles lifecycle management (start/stop/readiness) and provides
 access to the ``CommandHandler`` and ``Supervisor`` instances wired into the
-transport.  Notification delivery is handled separately by event bus handlers
-(e.g. ``DiscordNotificationHandler``) that subscribe to ``notify.*`` events.
+transport. Durable digest/escalation services and non-Discord consumers may
+subscribe to shared domain events independently.
 
 Lifecycle::
 
@@ -55,9 +55,7 @@ class MessagingAdapter(ABC):
     # -------------------------------------------------------------------
     # Messaging (optional)
     # -------------------------------------------------------------------
-    # Primary notification delivery is handled by event bus handlers
-    # (e.g. DiscordNotificationHandler).  These methods are retained for
-    # backward compatibility and direct use by platform-specific code.
+    # These methods are retained as transport-neutral compatibility seams.
 
     async def send_message(
         self,

@@ -10,28 +10,16 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 
 from src.intelligence_classes import resolve_class
+from src.routing.sources import ROLE, ROLE_PROFILE_IDS
 from src.sessions.spec import _infer_provider_from_harness, _is_codex_cli
 
-
-#: The generic worker ladder is matched by id prefix rather than enumerated.
-#: Since the provider-explicit rename the shipped ids are
-#: ``worker-<tier>-<level>-<provider>`` (``worker-standard-medium-claude``,
-#: ``worker-deep-high-claude``, …) and an operator's vault carries the whole
-#: tier x level x provider ladder, so no literal set stays complete.  The
-#: ``harness == "claude"`` gate in :func:`_generic_worker_profile` is what
-#: keeps the ``-codex`` / ``-gemini`` siblings provider-bound.
-_GENERIC_WORKER_PREFIX = "worker-"
 
 #: Stage profiles whose bundled capabilities are class-backed the same way a
 #: generic worker's are.  These are single-purpose and stay enumerated.
 _CLASS_CAPABILITY_PROFILES = frozenset({
     "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest",
+    "fidelity-reviewer",
 })
-
-
-def _generic_worker_id(profile_id: str) -> bool:
-    """True for any profile id on the generic worker ladder."""
-    return profile_id.startswith(_GENERIC_WORKER_PREFIX)
 
 
 def _value(source, name: str) -> str:
@@ -51,11 +39,13 @@ def resolve_profile(profiles: Mapping, profile_id: str | None):
     return profiles.get(profile_id)
 
 
-def resolve_task_profile(task, project, profiles: Mapping):
-    """Task/project requirements only; never substitute the candidate worker."""
-    return resolve_profile(
-        profiles, _value(task, "profile_id") or _value(project, "default_profile_id")
-    )
+def resolve_task_profile(task, profiles: Mapping):
+    """The task's own route only; never a project default or the candidate worker.
+
+    Mandatory routing §8: a project supplies no default profile, so an
+    unrouted task resolves to ``None`` until its router routes it.
+    """
+    return resolve_profile(profiles, _value(task, "profile_id"))
 
 
 def resolve_agent_profile(agent, profiles: Mapping):
@@ -63,17 +53,28 @@ def resolve_agent_profile(agent, profiles: Mapping):
 
 
 def _generic_worker_profile(profile) -> bool:
-    # Tags are deliberately not used: a provider-specific copy can retain
-    # "generic" tags from its source. Bundled class-backed capabilities use
-    # provider mappings; an explicit copied/custom harness stays binding.
+    from src.commands.operator_authority import is_operator_profile
+
+    if is_operator_profile(profile):
+        return False
+    # The live worker ladder is operator-owned, so IDs are not a contract.
+    # A class-backed Claude worker profile (pool or task lifecycle) is the
+    # generic worker route: the original Claude task-worker templates keep
+    # their class-only compatibility path.  A Codex/Gemini profile, pool or
+    # task, remains an explicit execution binding — a pool route is a
+    # (harness, class) pair (``src/profiles/catalog.py`` derives one rung per
+    # pair, and ``pools.task_lifecycle_shadow`` reports duplicates of one), so
+    # a Codex pool must never start an idle Claude worker in its name.
+    # Tags are deliberately not used because copied profiles retain them.
     profile_id = _value(profile, "id")
     return (
-        (profile_id in _CLASS_CAPABILITY_PROFILES or _generic_worker_id(profile_id))
+        _value(profile, "lifecycle") in {"pool", "task"}
         and _value(profile, "harness") == "claude"
-        and (
-            bool(_value(profile, "default_class"))
-            or (_generic_worker_id(profile_id) and not _value(profile, "model"))
-        )
+        and bool(_value(profile, "default_class"))
+    ) or (
+        profile_id in _CLASS_CAPABILITY_PROFILES
+        and _value(profile, "harness") == "claude"
+        and bool(_value(profile, "default_class"))
     )
 
 
@@ -89,6 +90,13 @@ def _class_model(class_id: str, harness, classes: Mapping | None) -> str:
     if cls is None:
         return ""
     provider = _value(harness, "provider") or _infer_provider_from_harness(harness)
+    if not provider:
+        # A vendorless harness resolves its model from a slice keyed by its
+        # own id -- the fallback ``SessionSpecBuilder`` launches with.  Without
+        # it the router would refuse a worker the builder can launch.
+        harness_id = _value(harness, "id")
+        config = resolve_class(cls, harness_id) if harness_id else {}
+        return str(config.get("model") or "").strip()
     config = resolve_class(cls, "codex") if provider == "openai" and _is_codex_cli(harness) else {}
     if not config:
         config = resolve_class(cls, provider)
@@ -121,8 +129,32 @@ def task_agent_mismatch(
     None for intelligence_classes means a legacy caller has no class snapshot;
     an explicit empty snapshot instead reports missing requested classes.
     """
+    from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES, is_operator_profile
+
+    # Role routes name a durable role definition, not just a capability bundle.
+    # Apply the same identity rule in scheduler matching and fresh admission.
+    if _value(task, "route_source") == ROLE and _value(agent, "profile_id") != _value(
+        task, "profile_id"
+    ):
+        return (
+            f"requires role agent with profile '{task.profile_id}'; "
+            f"worker '{agent.id}' uses '{agent.profile_id}'"
+        )
+    if _value(agent, "profile_id") in ROLE_PROFILE_IDS and _value(task, "route_source") != ROLE:
+        return f"worker '{agent.id}' is reserved for role profile '{agent.profile_id}'"
+
+    task_kind = getattr(getattr(task, "task_type", None), "value", getattr(task, "task_type", None))
+    operator = task_kind == "operator"
+    if operator != is_operator_profile(task_profile) or operator != is_operator_profile(agent_profile):
+        return "task and worker must have the same operator role"
     required_class = _value(task, "intelligence_class")
     worker_class = _value(agent, "intelligence_class") or _value(agent_profile, "default_class")
+    if operator:
+        required_class = required_class or _value(task_profile, "default_class")
+        harness = _value(agent, "harness") or _value(agent_profile, "harness")
+        if (required_class not in OPERATOR_CLASSES or worker_class != required_class
+                or harness not in OPERATOR_HARNESSES):
+            return "operator work requires an exact frontier standard-high/deep-high worker"
     if required_class and worker_class and required_class != worker_class:
         return (
             f"requires intelligence class '{required_class}'; worker '{agent.id}' "
