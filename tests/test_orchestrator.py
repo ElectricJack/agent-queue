@@ -947,6 +947,9 @@ async def orch(tmp_path):
     # live in test_worktree_prepare.py / test_worktree_reaper.py /
     # test_merge_slot.py.
     config.worktrees.enabled = False
+    # The runtime injection does not intercept message-driven supervisor
+    # launches. Keep background delivery on the in-memory session provider.
+    config.sessions.provider = "fake"
     o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
     install_already_routed(o)

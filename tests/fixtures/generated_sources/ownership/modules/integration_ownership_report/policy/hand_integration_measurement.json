@@ -219,7 +219,7 @@
       "src/integration/failure_groups.py": 254,
       "src/integration/finished_owners.py": 443,
       "src/integration/fixer_batches.py": 242,
-      "src/integration/fixer_runtime.py": 529,
+      "src/integration/fixer_runtime.py": 552,
       "src/integration/fixers.py": 520,
       "src/integration/gates.py": 369,
       "src/integration/generated_merge_driver.py": 59,
@@ -447,7 +447,7 @@
     },
     "groups": {
       "companions": 10308,
-      "engine": 82420,
+      "engine": 82443,
       "guards": 633,
       "policy": 493,
       "policy_sources": 1021,
@@ -681,7 +681,7 @@
         3350
       ]
     },
-    "total": 157507,
+    "total": 157530,
     "unknown": [],
     "unknown_sinks": []
   }
