@@ -17,6 +17,7 @@ def test_integration_group_exposes_train_controls():
         "resume-batch",
         "abort-batch",
         "settle-batch",
+        "rerequest-check",
         "refresh-epic",
         "reverify-epic",
         "record-root-noop",
@@ -63,3 +64,28 @@ def test_manual_apply_requires_preview_digest_before_contacting_daemon():
     result = CliRunner().invoke(cli, ["integration", "off", "p", "--reason", "manual", "--apply"])
     assert result.exit_code == 2
     assert "--expected-plan-digest" in result.output
+
+
+@pytest.mark.parametrize("applying", [False, True])
+def test_check_rerequest_cli_forwards_named_check_and_candidate(monkeypatch, applying):
+    calls = []
+    module = importlib.import_module("src.cli.integration")
+    monkeypatch.setattr(module, "_execute", lambda ctx, name, args: calls.append((name, args)))
+    args = ["integration", "rerequest-check", "batch", "--check", "Tests (postgres-integration)"]
+    if applying:
+        args.extend(["--apply", "--candidate-sha", "a" * 40, "--reason", "Phantom job"])
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert calls == [("integration_rerequest_check", {
+        "batch_id": "batch", "check_name": "Tests (postgres-integration)",
+        "expected_candidate_sha": "a" * 40 if applying else None,
+        "reason": "Phantom job" if applying else "", "dry_run": not applying,
+    })]
+
+
+def test_check_rerequest_apply_requires_previewed_head():
+    result = CliRunner().invoke(cli, [
+        "integration", "rerequest-check", "batch", "--check", "Tests", "--apply",
+    ])
+    assert result.exit_code == 2
+    assert "--apply requires --candidate-sha and --reason" in result.output
