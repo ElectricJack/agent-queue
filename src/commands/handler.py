@@ -54,11 +54,13 @@ from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.git_identity_commands import GitIdentityCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
+from src.commands.project_relocation_commands import ProjectRelocationCommandsMixin
 from src.commands.policy_commands import PolicyCommandsMixin
 from src.commands.operator_commands import OperatorCommandsMixin
 from src.commands.operator_authority import bind_operator_dispatch, operator_grant_var
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
+from src.commands.task_split_commands import TaskSplitCommandsMixin
 from src.commands.routing_commands import RoutingCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.task_subtask_commands import TaskSubtaskCommandsMixin
@@ -369,9 +371,11 @@ class CommandHandler(
     SystemCommandsMixin,
     GitIdentityCommandsMixin,
     ProjectCommandsMixin,
+    ProjectRelocationCommandsMixin,
     PolicyCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
+    TaskSplitCommandsMixin,
     RoutingCommandsMixin,
     TaskCommentCommandsMixin,
     TaskSubtaskCommandsMixin,

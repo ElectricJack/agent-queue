@@ -1065,11 +1065,83 @@ async def _seed_repeated_parent_conflict(db, *, deadline_at: float = 300.0):
     return current_head
 
 
-async def test_second_parent_conflict_reuses_current_stage_without_resetting_budget(db):
+async def _retain_delegate_delivery(
+    db, tmp_path, *, task_id="repair-operation-1", delivered=False,
+):
+    """A completed delegate has real undelivered source evidence, like worker close."""
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+    from src.integration.git_truth import GitTruth
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import TaskCompletion
+    from tests.git_seed_helpers import clone_seed, init_bare_seed
+
+    remote, work = tmp_path / "origin.git", tmp_path / "work"
+    init_bare_seed(remote)
+    clone_seed(remote, work)
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(work), *args], text=True).strip()
+    git("config", "user.name", "Repair Test")
+    git("config", "user.email", "repair@example.test")
+    (work / "base").write_text("base")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    git("push", "-q", "origin", "main")
+    git("checkout", "-qb", "aq/parent")
+    (work / "repair").write_text("repair")
+    git("add", ".")
+    git("commit", "-qm", "repair")
+    head = git("rev-parse", "HEAD")
+    git("push", "-q", "origin", "aq/parent")
+    await db.update_repo("repo", url=str(remote))
+    completion_id = "repair-completed"
+    if delivered:
+        git("push", "-q", "origin", f"{head}:refs/heads/main")
+    await db.save_task_completion(TaskCompletion(
+        id=completion_id, task_id=task_id, outcome="pass", commits=[head], completed_at=130.0,
+    ))
+    await GitProvenance(
+        GitManager(), str(work), repository_url=str(remote),
+    ).write_completion(CompletedSource(
+        CompletionIdentity("p", "repo", task_id, completion_id), head,
+    ))
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=GitManager(), data_dir=tmp_path / "observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
+    return work, head
+
+
+@pytest.mark.parametrize("proof", ["missing", "contained"])
+async def test_parent_repair_continuation_refuses_unproven_reopen(db, tmp_path, proof):
+    import subprocess
+
+    from src.database.queries.hierarchy_queries import HierarchyError
+    from src.integration.repair import RepairService
+
+    current_head = await _seed_repeated_parent_conflict(db)
+    if proof == "contained":
+        work, head = await _retain_delegate_delivery(db, tmp_path)
+        subprocess.run(
+            ["git", "-C", str(work), "push", "origin", f"{head}:refs/heads/main"],
+            check=True, capture_output=True,
+        )
+    before = await _repair_stage(db, "operation", 1)
+    task_before = await db.get_task("repair-operation-1")
+    with pytest.raises(HierarchyError):
+        await RepairService(db).start("operation", current_head, "operation", now=150.0)
+    assert await _repair_stage(db, "operation", 1) == before
+    task = await db.get_task("repair-operation-1")
+    assert task.status is TaskStatus.COMPLETED
+    assert task.description == task_before.description
+
+
+async def test_second_parent_conflict_reuses_current_stage_without_resetting_budget(db, tmp_path):
     """A later exact conflict resumes the detached debugger under its frozen budget."""
     from src.integration.repair import RepairService
 
     current_head = await _seed_repeated_parent_conflict(db)
+    await _retain_delegate_delivery(db, tmp_path)
     service = RepairService(db)
     before = await _repair_stage(db, "operation", 1)
 
@@ -2377,6 +2449,8 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
     before = await _repair_stage(db, "operation", 0)
     commands = ClaimCommandsMixin()
     commands.db = db
+    commands._development_integration = lambda: None
+    commands.config = SimpleNamespace(integration=SimpleNamespace(default_mode="pull_request"))
     commands.orchestrator = SimpleNamespace(
         _task_control_lock=lambda _task_id: asyncio.Lock(), claim_waiters={},
         _worktree_slots=lambda: SimpleNamespace(reset_slot_for_task=AsyncMock(return_value="aq/parent")),
@@ -2745,9 +2819,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
             "decided_at": 100, "decided_by": "supervisor-p",
         })
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if held:
+        args.update(override_hold=True, reason="Owner recovery proved the fence free")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
     assert result["restarted"] == delegate
     assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
@@ -2757,6 +2832,11 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
         incident = await db.get_task_meta(delegate, "supervisor_recovery_incident")
         assert incident["decision"] == "superseded"
         assert incident["decision_history"][-1]["decision_reason"] == "Fence not released"
+        assert incident["decided_by"] == "human:local-operator"
+        assert "Owner recovery proved the fence free" in incident["decision_reason"]
+        comments = (await db.list_task_comments(delegate))["comments"]
+        audit = next(row for row in comments if "overridden by restart" in row["body"])
+        assert audit["author_id"] == "human:local-operator"
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2784,7 +2864,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
 
 
 @pytest.mark.parametrize("fence_state", ["attached", "handoff_pending"])
-async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
+@pytest.mark.parametrize("override_hold", [False, True])
+async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(
+    db, fence_state, override_hold,
+):
     """A fence no handoff can prove free is refused, naming the control to run."""
     service, delegate = await _continuous_parent_stage(db)
     streak = {"cause": "context_thrash", "count": 2}
@@ -2808,12 +2891,19 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
             handoff_state=fence_state, session_id="dead",
         ))
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if override_hold:
+        args.update(override_hold=True, reason="Retry branch recovery after diagnosis")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
-    assert "aq integration reserve-owner --task-id" in result["error"]
-    assert "aq integration release-owner --task-id" in result["error"]
+    assert result["success"] is False
+    if override_hold:
+        assert "aq integration reserve-owner --task-id" in result["error"]
+        assert "aq integration release-owner --task-id" in result["error"]
+    else:
+        assert result["error_code"] == "task_recovery.held"
+        assert result["recovery_hold"] == held
+        assert "--override-hold --reason" in result["error"]
     restored = await db.get_task(delegate)
     assert restored.status is TaskStatus.BLOCKED
     assert (restored.profile_id, restored.intelligence_class, restored.route_source,
@@ -2823,6 +2913,8 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
     )
     assert await db.get_task_meta(delegate, "worker_failure_streak") == streak
     assert await db.get_task_meta(delegate, "supervisor_recovery_incident") == held
+    comments = (await db.list_task_comments(delegate))["comments"]
+    assert not any("overridden by restart" in row["body"] for row in comments)
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -5416,6 +5508,9 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
     from src.intelligence_classes import IntelligenceClass
     from tests.session_dispatch_helpers import fake_provider
 
+    # Exercise retained-repair launch in isolation: the active background train
+    # otherwise retires this deliberately seeded legacy parent operation.
+    await session_orch.integration_service.stop()
     db = session_orch.db
     await _configure_db(db)
     await db.update_profile(
@@ -7386,11 +7481,12 @@ async def test_pending_primary_release_recovers_stranded_debug_delegate(db, reco
 @pytest.mark.parametrize("invalid", [
     None, "session", "detached", "epoch", "claim", "intent", "subject", "resolved",
 ])
-async def test_parent_repair_prime_reads_only_current_attached_conflict(db, invalid):
+async def test_parent_repair_prime_reads_only_current_attached_conflict(db, tmp_path, invalid):
     from src.integration.repair import RepairService
     from src.prime.sections import build_task_context_section
 
     current_head = await _seed_repeated_parent_conflict(db)
+    await _retain_delegate_delivery(db, tmp_path)
     await RepairService(db).start("operation", current_head, "operation", now=150.0)
     repair_id = "repair-operation-1"
     async with db.immediate() as conn:
@@ -8096,7 +8192,9 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
 
 
 @pytest.mark.parametrize("archived", [False, True])
-async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(ordinary_env, archived):
+async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(
+    ordinary_env, archived, tmp_path,
+):
     from src.integration.train import TrainTarget
     from src.integration.train_sources import DatabaseBatches
 
@@ -8110,6 +8208,7 @@ async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(ordi
         await conn.execute(update(integration_batches).where(
             integration_batches.c.id == "ordinary").values(lifecycle="repairing", updated_at=1000))
     if archived:
+        await _retain_delegate_delivery(env.db, tmp_path, task_id=task_id, delivered=True)
         await env.db.archive_task(task_id)
     resumed = await asyncio.gather(*(env.service.resume_completed(
         task_id, batch_id="ordinary", attempt=1) for _ in range(4)))
@@ -8184,7 +8283,9 @@ async def test_ordinary_repair_is_filed_ahead_of_ordinary_work(ordinary_env):
 
 
 @pytest.mark.parametrize("archived", [False, True])
-async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordinary_env, archived):
+async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(
+    ordinary_env, archived, tmp_path,
+):
     from src.integration.repair import OrdinaryRepairService
 
     env = ordinary_env
@@ -8202,6 +8303,7 @@ async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordi
     await env.db.update_task(task_id, status=TaskStatus.COMPLETED)
     env.now += 10
     if archived:
+        await _retain_delegate_delivery(env.db, tmp_path, task_id=task_id, delivered=True)
         await env.db.archive_task(task_id)
         assert await env.db.get_task(task_id) is None
     restarted = OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now)
@@ -8954,3 +9056,55 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("ordinal", [0, 1])
+async def test_unlimited_stage_has_no_deadline_or_attempt_exhaustion(db, ordinal):
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    for boundary in ("parent", "root"):
+        policy[boundary]["repair"].update(
+            primary_seconds=0, debug_seconds=0, primary_attempts=ordinal, debug_attempts=0,
+        )
+    await _seed_parent_operation(db, policy=policy)
+    service = RepairService(db, clock=lambda: 100.0)
+    started = await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    assert started["deadline_at"] is None
+    if ordinal:
+        escalated = await service.record_result("operation", "failed-check", now=101.0)
+        assert escalated["action"] == "dispatch_debug"
+    for attempt in range(1, 6):
+        evidence_id = f"unlimited-failure-{attempt}"
+        await _add_parent_evidence(db, evidence_id, run_id=evidence_id, conclusion="failure")
+        result = await service.record_result("operation", evidence_id, now=100_000.0 + attempt)
+        assert result == {"outcome": "continue", "action": "repair", "attempts": attempt}
+    stage = await _repair_stage(db, "operation", ordinal)
+    assert stage["deadline_at"] is None and stage["state"] == "active"
+    assert (await service.expire("operation", ordinal, now=1_000_000))["outcome"] == "not_due"
+    assert await service.due_stages(now=1_000_000) == []
+    if not ordinal:
+        replay = await service.start("operation", STARTING_SHA, "failed-check", now=1_000_000)
+        assert replay["deadline_at"] is None
+
+
+@pytest.mark.parametrize("ordinal,reason", [(0, "writer_claimed"), (1, "writer_claimed"),
+                                           (1, "writer_unclaimed")])
+async def test_deferring_a_stage_with_unlimited_duration_removes_its_deadline(db, ordinal, reason):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    stage = await _repair_stage(db, "operation", 0)
+    stage["policy"] = {**stage["policy"], "primary_seconds": 0, "debug_seconds": 0}
+    stage["ordinal"] = ordinal
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            ordinal=ordinal, policy=stage["policy"]))
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        result = await service._defer_expiry_on(conn, dict(operation), stage, {
+            "task_id": "delegate", "task_status": "READY", "claim_epoch": 1,
+        }, reason=reason, now=200.0)
+    assert result["deadline_at"] is None
+    assert (await _repair_stage(db, "operation", ordinal))["deadline_at"] is None
