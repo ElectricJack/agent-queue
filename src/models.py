@@ -468,6 +468,7 @@ class Project:
     git_identity_name: str | None = None
     git_identity_email: str | None = None
     supervisor_enabled: bool = False
+    storage_binding: dict | None = None
 
 
 @dataclass
@@ -712,6 +713,7 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    generation: int = 0  # incremented on acquisition; fences preparation against reassignment
     # ``"<code>: <detail>"`` and timestamp of the last disable (src/workspace_disable.py).
     disabled_reason: str | None = None
     disabled_at: float | None = None
@@ -776,6 +778,8 @@ class WorkspaceKind:
     # Shell commands run once inside a freshly created slot, and again when
     # the list changes (worktree-execution §3.6).  Operator-authored config.
     worktree_setup: list[str] = field(default_factory=list)
+    # Optional per-kind bound; the project concurrency limit still applies.
+    max_slots: int | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -1099,6 +1103,7 @@ class Message:
     created_seq: int | None = None  # server sequence for typed message waits
     last_notified_at: float | None = None
     notification_attempts: int = 0
+    provenance: dict | None = None
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
@@ -1516,6 +1521,9 @@ class SessionRecord:
     failed_preparation: dict | None = None
     #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
     claim_refusal: dict | None = None
+
+    #: Turn health and recovery backoff for named supervisors; instance-fenced.
+    supervisor_health: dict | None = None
 
     llm_provider: str | None = None
     model: str | None = None

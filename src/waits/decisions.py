@@ -20,7 +20,7 @@ from src.database.tables import (
     integration_branch_owners, messages, sessions, task_context, tasks, wait_deadlines,
     wait_edges, wait_escalations, wait_records,
 )
-from src.waits.conditions import Condition, WaitError
+from src.waits.conditions import Condition, Scope, WaitError
 from src.waits.explain import owner_key
 from src.waits.graph import lock_component_tasks, lock_graph
 from src.waits.listener import ListenerUnavailable
@@ -93,13 +93,26 @@ class WaitDecisions:
                                               "project_id": wait["project_id"], **payload}),
         ))
 
-    async def resolve_escalation(self, conn, escalation, event, *, outcome, now):
+    @staticmethod
+    async def resolve_escalation(conn, escalation, event, *, outcome, now):
         """Withdraw an operational incident without inventing a human answer."""
         incident = (await conn.execute(select(escalations).where(
             escalations.c.id == escalation["escalation_id"],
         ).with_for_update())).mappings().first()
-        if not incident or incident["source_kind"] != "wait":
+        continuation_id = escalation.get("continuation_id")
+        expected_kind = "continuation" if continuation_id else "wait"
+        if not incident or incident["source_kind"] != expected_kind:
             return {"success": False}
+        if continuation_id:
+            bound = await conn.scalar(select(continuations.c.id).where(
+                continuations.c.id == continuation_id,
+                continuations.c.wait_id == escalation["wait_id"],
+                continuations.c.task_id == incident["task_id"],
+            ))
+            if not bound or not incident["source_identity"].startswith(
+                f"continuation:{continuation_id}:",
+            ):
+                return {"success": False}
         if incident["state"] in {"resolved", "cancelled", "stale"}:
             return {"success": True}
         evidence = {"wait_id": escalation["wait_id"], "source_seq": event.get("seq"),
@@ -224,6 +237,124 @@ class WaitDecisions:
             return {"success": True, "wait_id": wait["id"], "decision": decision,
                     "outcome": "cancelled" if decision in {"wake", "cancel", "reroute"}
                     else "pending", "generation": escalation["generation"]}
+
+    async def cancel(self, args, *, principal, scope, handler):
+        """``wait_cancel``: commit ``cancelled`` and queue it, never hold the task.
+
+        In place, the holder receives a ``wait_outcome`` and acknowledges it with
+        ``wait_ack``. A hibernation intent whose stop has not begun is tombstoned
+        and the wait continues in place, because its writer is still live; once
+        the stop began only the transition owner may settle it. A parked wait
+        queues its continuation, so the resumed writer reads the cancellation.
+        """
+        async with self.service.orch.db._engine.begin() as conn:
+            await lock_graph(conn)
+            candidate = (await conn.execute(select(wait_records).where(
+                (wait_records.c.id == args["wait_id"])
+                | (wait_records.c.legacy_id == args["wait_id"]),
+            ))).mappings().first()
+            if not candidate or not cancel_scope_allows(candidate, scope, principal):
+                raise WaitError("wait.out_of_scope", "wait is outside the caller scope")
+            if candidate["owner_kind"] == "scheduler":
+                raise WaitError("wait.out_of_scope", "scheduler waits follow scheduler_wait_sync")
+            if isinstance(scope, dict) and principal.kind == "session":
+                await self.authorize(conn, principal, candidate["project_id"])
+            cond = Condition.from_record(candidate["condition"])
+            endpoints = (await conn.execute(select(wait_edges.c.waiter_key,
+                                                   wait_edges.c.blocker_key).where(
+                wait_edges.c.wait_id == candidate["id"], wait_edges.c.active.is_(True),
+            ))).all()
+            keys = {owner_key(candidate), *(key for edge in endpoints for key in edge)}
+            if cond.kind in {"task", "dependency"}:
+                keys.add(f"task:{cond.parameters['task_id']}")
+            if cond.kind == "dependency":
+                keys.add(f"task:{cond.parameters['depends_on_task_id']}")
+            await lock_component_tasks(conn, keys)
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.id == candidate["owner_id"],
+            ).with_for_update())).mappings().first() if candidate["owner_kind"] == "task" else None
+            dispatcher = self.service.dispatcher
+            if dispatcher is None:
+                raise WaitError("wait.unavailable", "transactional dispatch owner is unavailable")
+            # Cancellation asserts no source outcome. The graph lock serializes
+            # it with dispatch, so an orphan needs no functioning source reader.
+            wait = dict((await conn.execute(select(wait_records).where(
+                wait_records.c.id == candidate["id"],
+            ).with_for_update())).mappings().one())
+            if wait["outcome"] != "pending":
+                # Replays of an earlier cancel (or a lost race with the source)
+                # report the committed row, as the v1 verb did.
+                return {"success": True, "wait_id": wait["id"], "wait": wait,
+                        "changed": False,
+                        "warnings": [f"wait already resolved: {wait['outcome']}"]}
+            if (isinstance(scope, Scope) and scope.principal != "service"
+                    and (wait["session_id"] != scope.session_id
+                         or (scope.claim_epoch is not None
+                             and wait["claim_epoch"] != scope.claim_epoch))):
+                raise WaitError("continuation.stale_generation", "wait holder changed")
+            try:
+                _, continuation = await fence_owner(conn, wait, task)
+            except WaitError as exc:
+                # A supervisor can retire a stale task wait even before it has
+                # escalated. Never impersonate its lost holder, send a wake or
+                # modify the task/new claim while cleaning up the old wait.
+                privileged = principal.kind == "local" or (
+                    principal.kind == "session" and isinstance(scope, dict)
+                    and principal.elevated
+                )
+                if exc.code not in {"wait.out_of_scope", "stale_claim"} or not privileged or not (
+                    wait["owner_kind"] == "task"
+                ):
+                    raise
+                from src.database.queries.continuation_queries import retire_task_waits
+
+                await retire_task_waits(
+                    conn, wait["owner_id"], wait_id=wait["id"],
+                    reason="supervisor_orphan_cancel", now=self.clock(),
+                )
+                await self.audit(conn, wait, "wait.orphan_cancelled", self.clock(),
+                                 supervisor_session_id=principal.session_id)
+                row = dict((await conn.execute(select(wait_records).where(
+                    wait_records.c.id == wait["id"],
+                ))).mappings().one())
+                return {"success": True, "wait_id": row["id"], "wait": row}
+            if continuation is None and wait["sleep_decision"] == "hibernate":
+                wait = await self.withdraw_intent(conn, wait)
+            result = await dispatcher.finish(
+                conn, wait, outcome="cancelled", result_ref=f"wait-cancel:{wait['id']}",
+                event={"cancelled_by": principal.kind}, task=task, continuation=continuation,
+                changed_keys=keys,
+            )
+            if not result.get("committed"):
+                raise WaitError("wait.out_of_scope", "wait changed before cancellation commit")
+            row = dict((await conn.execute(select(wait_records).where(
+                wait_records.c.id == wait["id"],
+            ))).mappings().one())
+            return {"success": True, "wait_id": row["id"], "wait": row, "changed": True}
+
+    @staticmethod
+    async def withdraw_intent(conn, wait):
+        """Tombstone a pre-stop hibernation intent; the live writer keeps its slot."""
+        intent = (await conn.execute(select(continuations).where(
+            continuations.c.wait_id == wait["id"],
+            continuations.c.resume_state == "sleeping",
+            continuations.c.stopped_at.is_(None),
+        ).with_for_update())).mappings().first()
+        if intent and (intent["facts"] or {}).get("hibernation", {}).get("stop_started_at"):
+            raise WaitError("wait.unavailable", "hibernation stop is in progress; retry later")
+        if intent:
+            await conn.execute(update(continuations).where(
+                continuations.c.id == intent["id"],
+            ).values(resume_state="cancelled", hold_reason="wait_cancel",
+                     version=intent["version"] + 1))
+        inputs = {**(wait["decision_inputs"] or {}), "cancelled_hibernation":
+                  intent["id"] if intent else None}
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == wait["id"], wait_records.c.version == wait["version"],
+        ).values(sleep_decision="in_place", decision_inputs=inputs, version=wait["version"] + 1))
+        return dict((await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait["id"],
+        ))).mappings().one())
 
     @staticmethod
     async def authorize(conn, principal, project_id):
@@ -378,3 +509,14 @@ class WaitDecisions:
                 body=json.dumps({"wait_id": wait["id"], "decision": detail,
                                  "next_step": "checkpoint_then_end_turn"}),
             ))
+
+
+def cancel_scope_allows(wait, scope, principal):
+    """Re-check, under the graph lock, the owner the command boundary authorized."""
+    if scope is None:
+        return principal is not None and principal.kind == "service"
+    if isinstance(scope, Scope):
+        return all(wait[key] == getattr(scope, key)
+                   for key in ("project_id", "owner_kind", "owner_id"))
+    return all(value is None or wait[key] == value for key, value in scope.items()
+               if key in {"project_id", "owner_kind", "owner_id"})

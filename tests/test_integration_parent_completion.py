@@ -4175,9 +4175,25 @@ async def test_verified_noop_refuses_a_child_branch_advanced_from_its_reserved_b
     assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
 
 
-async def test_parent_completion_pins_exact_verification_for_rollover(db):
-    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
-    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+async def test_parent_completion_pins_exact_verification_for_rollover(db, tmp_path):
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+    from src.integration.git_truth import GitTruth
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import TaskCompletion
+    from tests.test_delivery_consumers import Origin, git
+
+    origin = Origin(tmp_path)
+    base = git(origin.clone, "rev-parse", "origin/main")
+    head = origin.work("parent", "verified parent")
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1, base_sha=base)
+    await db.update_repo("repo", url=origin.url)
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=GitManager(), data_dir=tmp_path / "observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
+    await _code_receipt(db, children[0], base, head)
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_parent_verifications).values(
@@ -4186,7 +4202,7 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
                 parent_task_id="parent",
                 episode_id=checkpointed["episode_id"],
                 generation=0,
-                head_sha="c" * 40,
+                head_sha=base,
                 required_check_version="parent-v1",
                 created_at=1.5,
             )
@@ -4197,7 +4213,7 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
                 operation_id=checkpointed["operation_id"],
                 parent_task_id="parent",
                 parent_generation=1,
-                parent_head_sha="d" * 40,
+                parent_head_sha=head,
                 producer_id="forge-observer",
                 workflow_id="workflow",
                 run_id="run",
@@ -4211,11 +4227,11 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
         )
         await conn.execute(update(tasks).where(tasks.c.id == "parent").values(status="IN_PROGRESS"))
 
-    verified = await hierarchy.verify_parent("parent", 1, "d" * 40, ["check-unit"])
+    verified = await hierarchy.verify_parent("parent", 1, head, ["check-unit"])
     assert verified["outcome"] == "verified"
     checkpoint = await db.get_integration_checkpoint("parent")
     assert checkpoint["current_verification_id"] == verified["verification_id"]
-    assert checkpoint["checkpoint_sha"] == "d" * 40
+    assert checkpoint["checkpoint_sha"] == head
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_repair_stages).values(
@@ -4224,18 +4240,18 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
                 policy=_boundary().repair.model_dump(mode="json"),
                 intelligence_class="medium",
                 profile_id="integrator",
-                starting_sha="a" * 40,
+                starting_sha=base,
                 trigger_id="check-unit",
                 current_subject={
                     "kind": "parent",
                     "generation": 1,
-                    "head_sha": "d" * 40,
+                    "head_sha": head,
                 },
                 deadline_event_id=f"repair-deadline-{checkpointed['operation_id']}-0",
                 success_subject={
                     "kind": "parent",
                     "generation": 1,
-                    "head_sha": "d" * 40,
+                    "head_sha": head,
                 },
                 success_evidence_id="check-unit",
                 started_at=1.0,
@@ -4257,7 +4273,7 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
 
     with pytest.raises(Exception, match="integration completion"):
         await db.transition_task("parent", TaskStatus.COMPLETED, force=True)
-    assert (await hierarchy.complete_parent("parent", 1, "d" * 40))["outcome"] == "invariant_error"
+    assert (await hierarchy.complete_parent("parent", 1, head))["outcome"] == "invariant_error"
     async with db.immediate() as conn:
         await conn.execute(
             update(integration_branch_owners)
@@ -4278,7 +4294,7 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
             .values(state="human_required")
         )
     assert (
-        await hierarchy.complete_parent("parent", 1, "d" * 40)
+        await hierarchy.complete_parent("parent", 1, head)
     )["outcome"] == "invariant_error"
     async with db.immediate() as conn:
         await conn.execute(
@@ -4286,7 +4302,7 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
             .where(integration_repair_operations.c.id == checkpointed["operation_id"])
             .values(state="escalated")
         )
-    completed = await hierarchy.complete_parent("parent", 1, "d" * 40)
+    completed = await hierarchy.complete_parent("parent", 1, head)
     assert completed["outcome"] == "completed"
     assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
     assert (await db.get_integration_operation(checkpointed["operation_id"]))["state"] == "completed"
@@ -4326,6 +4342,14 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
     assert completed_checkpoint["last_completed_operation_id"] == checkpointed["operation_id"]
     assert completed_checkpoint["last_completed_verification_id"] == verified["verification_id"]
 
+    for task_id in ["parent", *children]:
+        close_id = "close-" + task_id
+        await db.save_task_completion(TaskCompletion(
+            id=close_id, task_id=task_id, outcome="pass", commits=[head], completed_at=10.0,
+        ))
+        await GitProvenance(
+            GitManager(), str(origin.clone), repository_url=origin.url,
+        ).write_completion(CompletedSource(CompletionIdentity("p", "repo", task_id, close_id), head))
     await db.transition_task("parent", TaskStatus.READY, assigned_agent_id=None)
     rolled = await db.get_integration_checkpoint("parent")
     assert rolled["episode_id"] is None
@@ -4338,10 +4362,10 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
         db,
         checkpoint_verifier=lambda _task, _repo, head: head,
         ancestry_verifier=lambda _repo, ancestor, descendant: (
-            ancestor == "d" * 40 and descendant == "d" * 40
+            ancestor == head and descendant == head
         ),
     )
-    next_episode = await rollover.checkpoint_parent("parent", "d" * 40, 2)
+    next_episode = await rollover.checkpoint_parent("parent", head, 2)
     readiness = await rollover.readiness("parent")
     assert next_episode["episode_id"] != checkpointed["episode_id"]
     assert readiness["outcome"] == "ready"

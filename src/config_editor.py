@@ -295,7 +295,7 @@ def _dataclass_to_schema(cls: type) -> dict[str, Any]:
     }
 
 
-def _schema_default(value):
+def _schema_default(value: Any) -> Any:
     """Normalize nested dataclass maps as well as section dataclasses."""
     if dataclasses.is_dataclass(value):
         return dataclasses.asdict(value)

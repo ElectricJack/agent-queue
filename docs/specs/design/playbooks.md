@@ -20,6 +20,25 @@ tags: [design, playbooks, automation, workflows]
 
 ---
 
+## Current V2 authoring contract (2026-10-14)
+
+The historical model below is superseded for executable V2 policy by the
+[building-block authoring and rollout guide](../../guides/playbook-building-blocks.md).
+The compiler emits exactly `rules` and `steps`; the server derives metadata from
+reviewed source. Catalogue coverage and caller authority are independent, including
+review verbs. The four denied commands remain `run_command`, `shutdown`,
+`restart_daemon`, `update_and_restart`; registered commands retain scope, capability,
+claim and human-decision checks.
+
+V2 supports bounded lexical collections, finite immutable observation snapshots,
+state CAS and notification episodes, plus script steps. State is retained through
+recompile/disable/removal; operator reset or reviewed version migration can re-alert.
+Incomplete coverage never authorizes absence clearing. Scripts run as ordinary
+processes with timeout/output caps and JSON parsing, enabled by default via config.
+There is no sandbox isolation, launcher prerequisite or real-host acceptance gate.
+Protected output uses authorized readback; ambiguous launches are not replayable.
+Installation, targeted artifact rebuilds and rollback remain explicit operator work.
+
 ## 1. Problem Statement
 
 The current automation system (rules + hooks) has served as a solid foundation but
