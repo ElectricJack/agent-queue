@@ -468,6 +468,7 @@ class Project:
     git_identity_name: str | None = None
     git_identity_email: str | None = None
     supervisor_enabled: bool = False
+    storage_binding: dict | None = None
 
 
 @dataclass
@@ -1102,6 +1103,7 @@ class Message:
     created_seq: int | None = None  # server sequence for typed message waits
     last_notified_at: float | None = None
     notification_attempts: int = 0
+    provenance: dict | None = None
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
@@ -1519,6 +1521,9 @@ class SessionRecord:
     failed_preparation: dict | None = None
     #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
     claim_refusal: dict | None = None
+
+    #: Turn health and recovery backoff for named supervisors; instance-fenced.
+    supervisor_health: dict | None = None
 
     llm_provider: str | None = None
     model: str | None = None

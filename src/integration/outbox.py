@@ -33,6 +33,7 @@ PROMOTION_EVENT_TYPES = frozenset({
 # them. Scope/release notifications are observable but have no required action.
 BATCH_EVENT_TYPES = frozenset({
     "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+    "integration.publication_verified",
 })
 ACTIVE_OUTBOX_EVENT_TYPES = PROMOTION_EVENT_TYPES | BATCH_EVENT_TYPES
 
@@ -43,6 +44,7 @@ UNSUBSCRIBED_EVENT_TYPES = frozenset({
     "batch.needs_scope",
     "batch.released",
     "integration.root_delivered",
+    "integration.publication_verified",
     "integration.human_blocked",
     "integration.cleanup_pending",
     "task.integration_configuration_blocked",
@@ -220,6 +222,7 @@ class IntegrationOutbox:
         before_dispatch: Callable[[str], Awaitable[None]] | None = None,
         max_wait_seconds: float = DEFAULT_MAX_WAIT_SECONDS,
         project_max_wait: ProjectMaxWait | None = None,
+        publication_wake: Callable[[str, dict], Awaitable[None]] | None = None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("page_size must be positive")
@@ -232,6 +235,7 @@ class IntegrationOutbox:
         self._clock = clock
         self._before_dispatch = before_dispatch
         self._max_wait_seconds, self._project_max_wait = max_wait_seconds, project_max_wait
+        self._publication_wake = publication_wake
         self._cursor: tuple[float, str] | None = None
         self._cycle_end: tuple[float, str] | None = None
 
@@ -247,6 +251,11 @@ class IntegrationOutbox:
             try:
                 if self._before_dispatch is not None:
                     await self._before_dispatch(row["project_id"])
+                if (row["event_type"] == "integration.publication_verified"
+                        and self._publication_wake is not None):
+                    # At least once across retries/restarts, with the durable
+                    # event ID for observers and external deployment owners.
+                    await self._publication_wake(row["event_type"], dict(row["payload"]))
                 accepted = await self._accept_event(
                     row["event_type"], dict(row["payload"]), row["id"])
                 if not accepted:
