@@ -14,6 +14,8 @@ import os
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -27,6 +29,7 @@ from src.profiles.drift import (
     STATUS_OK,
     STATUS_RETIRED,
     STATUS_UNREADABLE,
+    _capabilities_json_span,
     diff_profile,
     merge_profile_grants,
     reseed_profile,
@@ -874,6 +877,168 @@ async def test_check_is_ok_when_nothing_is_seeded_yet(
     assert result.severity == Severity.OK
 
 
+# --- fleet capability doctor check -----------------------------------------
+
+
+CAPABILITY_CHECK = "profiles.capability_drift"
+
+
+def _shipped_text(profile_id):
+    return (
+        Path(__file__).parents[1] / "src/profiles/defaults" / profile_id / "profile.md"
+    ).read_text(encoding="utf-8")
+
+
+def _capability_context(data_dir):
+    return DoctorContext(config=_Config(data_dir))
+
+
+def test_fleet_capability_check_is_registered_with_a_fix():
+    check = src.doctor.default_registry().get(CAPABILITY_CHECK)
+    assert check is not None
+    assert check.owner == "profiles"
+    assert check.fix is not None
+
+
+@pytest.mark.parametrize("profile_id", system_profile_ids())
+async def test_fleet_capability_check_repairs_each_shipped_role(data_dir, profile_id):
+    original = _shipped_text(profile_id)
+    # Use the incident's command for workers and another real contract grant
+    # for roles whose defaults do not include review_feedback_complete.
+    grant = (
+        "review_feedback_complete" if profile_id.startswith("worker-")
+        else parse_profile(original).capabilities["aq_commands"][0]
+    )
+    stale, removed = _drop_one_aq_command_grant(original, grant)
+    assert removed == grant
+    stale = stale.replace('"aq_commands": [', '"aq_commands": ["operator_custom_command",', 1)
+    stale += "\n## Operator Notes\nKeep café rules.\n"
+    vault = _vault(data_dir, profile_id)
+    _write(vault, stale)
+    ctx = _capability_context(data_dir)
+
+    before = await profile_checks_mod._check_capability_drift(ctx)
+    assert before.severity == Severity.WARN
+    assert before.data["checked"] == 1
+    (row,) = before.data["profiles"]
+    assert row["profile_id"] == profile_id
+    assert row["missing"] == {"aq_commands": [grant]}
+    assert grant in before.detail
+    assert profile_id in before.detail
+    assert vault.read_text(encoding="utf-8") == stale
+
+    report = await src.doctor.run_doctor(
+        src.doctor.default_registry(), ctx, fix=True, only=[CAPABILITY_CHECK]
+    )
+    assert report["exit_code"] == 0
+    assert report["checks"][0]["fix_applied"] is True
+    assert report["checks"][0]["severity"] == "ok"
+    repaired = vault.read_text(encoding="utf-8")
+    parsed = parse_profile(repaired)
+    assert parsed.errors == []
+    assert parsed.capabilities["aq_commands"].count(grant) == 1
+    assert "operator_custom_command" in parsed.capabilities["aq_commands"]
+    start, end = _capabilities_json_span(repaired)
+    stale_start, stale_end = _capabilities_json_span(stale)
+    assert repaired[:start] == stale[:stale_start]
+    assert repaired[end:] == stale[stale_end:]
+    backups = list(vault.parent.glob("profile.md.bak-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == stale
+    second = await profile_checks_mod._fix_capability_drift(ctx)
+    assert second.fix_applied is False
+    assert vault.read_text(encoding="utf-8") == repaired
+    assert list(vault.parent.glob("profile.md.bak-*")) == backups
+
+
+async def test_fleet_capability_fix_preserves_opt_out_and_custom_profiles(data_dir):
+    opted_out = _shipped_text("worker-codex").replace(
+        '    "review_feedback_complete",\n', ""
+    ).replace("---\n", "---\ncapability_sync: false\n", 1)
+    _write(_vault(data_dir, "worker-codex"), opted_out)
+    custom = SHIPPED_WITH_GRANTS.replace("id: reviewer", "id: custom")
+    _write(_vault(data_dir, "custom"), custom)
+    ctx = _capability_context(data_dir)
+    result = await profile_checks_mod._check_capability_drift(ctx)
+    assert result.severity == Severity.INFO
+    assert "review_feedback_complete" in result.detail
+    assert "capability_sync: false" in result.detail
+    assert result.data["checked"] == 1
+    await profile_checks_mod._fix_capability_drift(ctx)
+    assert _vault(data_dir, "worker-codex").read_text() == opted_out
+    assert _vault(data_dir, "custom").read_text() == custom
+    assert not list(Path(data_dir).rglob("*.bak-*"))
+
+
+@pytest.mark.parametrize("broken", [
+    "---\nid: worker-codex\nname: Worker\n---\n\n## Role\nLegacy worker.\n",
+    '---\nid: worker-codex\nname: Worker\n---\n\n## Capabilities\n```json\n{bad}\n```\n',
+])
+async def test_fleet_capability_check_reports_broken_profiles_without_rewriting(data_dir, broken):
+    vault = _vault(data_dir, "worker-codex")
+    _write(vault, broken)
+    ctx = _capability_context(data_dir)
+    before = await profile_checks_mod._check_capability_drift(ctx)
+    assert before.severity == Severity.WARN
+    assert before.data["profiles"][0]["errors"]
+    await profile_checks_mod._fix_capability_drift(ctx)
+    assert vault.read_text() == broken
+    assert not list(vault.parent.glob("*.bak-*"))
+
+
+async def test_fleet_capability_check_reports_no_config_or_seeded_profiles(data_dir):
+    for configured_dir in ("", data_dir):
+        result = await profile_checks_mod._check_capability_drift(
+            _capability_context(configured_dir)
+        )
+        assert result.severity == Severity.INFO
+
+
+async def test_fleet_and_legacy_fixes_sync_db_and_publish_once(data_dir, monkeypatch):
+    profile_id = "supervisor"
+    stale = _shipped_text(profile_id).replace('    "task_show",\n', "", 1)
+    _write(_vault(data_dir, profile_id), stale)
+    sync = AsyncMock(return_value=SimpleNamespace(success=True, errors=[]))
+    monkeypatch.setattr("src.profiles.sync.sync_profile_text_to_db", sync)
+    bus = SimpleNamespace(emit=AsyncMock())
+    ctx = _capability_context(data_dir)
+    ctx.db = object()
+    ctx.handler = SimpleNamespace(orchestrator=SimpleNamespace(bus=bus))
+    report = await src.doctor.run_doctor(
+        src.doctor.default_registry(), ctx, fix=True,
+        only=[CAPABILITY_CHECK, "profiles.supervisor_capability_drift"],
+    )
+    assert report["exit_code"] == 0
+    assert all(row["severity"] == "ok" for row in report["checks"])
+    sync.assert_awaited_once()
+    assert sync.call_args.kwargs["fallback_id"] == profile_id
+    assert "task_show" in parse_profile(sync.call_args.args[0]).capabilities["aq_commands"]
+    bus.emit.assert_awaited_once()
+    assert bus.emit.call_args.args[1]["added"] == {"aq_commands": ["task_show"]}
+    assert len(list(_vault(data_dir, profile_id).parent.glob("*.bak-*"))) == 1
+
+
+async def test_fleet_capability_fix_reports_db_sync_failure(data_dir, monkeypatch):
+    stale = _shipped_text("worker-codex").replace('    "review_feedback_complete",\n', "")
+    _write(_vault(data_dir, "worker-codex"), stale)
+    sync = AsyncMock(return_value=SimpleNamespace(success=False, errors=["database unavailable"]))
+    monkeypatch.setattr("src.profiles.sync.sync_profile_text_to_db", sync)
+    ctx = _capability_context(data_dir)
+    ctx.db = object()
+    report = await src.doctor.run_doctor(
+        src.doctor.default_registry(), ctx, fix=True, only=[CAPABILITY_CHECK]
+    )
+    assert report["exit_code"] == 2
+    assert "database unavailable" in report["checks"][0]["detail"]
+    assert report["checks"][0]["fix_applied"] is False
+    # The additive file repair is preserved, with its original backup.
+    assert "review_feedback_complete" in parse_profile(
+        _vault(data_dir, "worker-codex").read_text()
+    ).capabilities["aq_commands"]
+    (backup,) = _vault(data_dir, "worker-codex").parent.glob("*.bak-*")
+    assert backup.read_text() == stale
+
+
 # --- command surface -------------------------------------------------------
 
 
@@ -1000,7 +1165,7 @@ async def test_profile_reseed_grants_only_merges_instead_of_overwriting(handler)
     assert after["profiles"][0]["status"] == STATUS_DRIFTED
 
 
-def _drop_one_aq_command_grant(text: str) -> tuple[str, str]:
+def _drop_one_aq_command_grant(text: str, grant: str | None = None) -> tuple[str, str]:
     """Remove one ``aq_commands`` entry from ``text``'s Capabilities block.
 
     Round-trips through JSON (rather than regex line-splicing) so the
@@ -1013,6 +1178,10 @@ def _drop_one_aq_command_grant(text: str) -> tuple[str, str]:
 
     start, end = drift_mod._capabilities_json_span(text)
     data = _json.loads(text[start:end])
-    removed = data["aq_commands"].pop()
+    if grant is None:
+        removed = data["aq_commands"].pop()
+    else:
+        data["aq_commands"].remove(grant)
+        removed = grant
     new_block = _json.dumps(data, indent=2)
     return text[:start] + new_block + text[end:], removed
