@@ -57,12 +57,16 @@ local policy, not as a universal default.
 | Create and manage a project | [Project onboarding](guides/project-onboarding.md) |
 | Operate pull-based workers | [Worker pools](guides/worker-pools.md) |
 | Coordinate running agents on one shared goal | [Agent collaboration threads](guides/agent-collaboration.md) |
+| Schedule recurring agent prompt wake-ups | [Agent cron](guides/agent-cron.md) |
 | Handle a provider that ran out of usage or logged out | [Provider outage](guides/provider-outage.md) |
 | Keep tests from exhausting the host | [Resource gating](guides/resource-gating.md) |
 | Configure plugins and MCP | [Plugins and MCP](guides/plugins-and-mcp.md) |
 | Configure digests and answer an escalation | [Escalations](guides/escalations.md) |
 | Diagnose a daemon, task, session, or delivery issue | [Operations](guides/operations.md) |
 | Deliver development branches | [Development integration](guides/development-integration.md) |
+| Operate train batch controls | [Git-first train runbook](guides/git-first-train-runbook.md#supervisor-controls) |
+| Configure promotion branches and their PR gates | [Promotion flows](guides/promotion-flow.md) — draft with task-marked pending mechanisms |
+| Prepare, deploy or recover a release | [Releases](guides/releases.md) — shipped deploy/restore and task-marked preparation work |
 | Understand database migration authority | [Migrations](guides/migrations.md) |
 
 ## Reference

@@ -1,0 +1,10 @@
+{
+  "shared": {
+    "src/commands/fidelity_review_commands.py::FidelityReviewCommandsMixin._cmd_task_batch_review_record": {
+      "reason": "Records a fenced fidelity review, changes batch review state and enqueues the corresponding integration outbox event; the complete command is charged."
+    },
+    "src/commands/fidelity_review_commands.py::import from src.integration.outbox import enqueue_batch_event": {
+      "reason": "Imports the integration outbox writer used to notify policy when batch fidelity receipts or scope state change."
+    }
+  }
+}

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/escalation.py`](../../../src/commands/contracts/escalation.py) |
-| Contract fingerprint | `sha256:7a8fdcba34f46434358b5cba39297aae60deabdfd716921a6ecb395e7d7e59ba` |
+| Contract fingerprint | `sha256:153a5837b925022fc32042e951bfd04f1f7cd48a259d9307573edd6598d5ab67` |
 
 ## Parameters
 
@@ -22,6 +22,7 @@
 |---|---|---|---|---|
 | `project_id` | `string` | yes | — | — |
 | `task_id` | `string \| null` | no | `null` | — |
+| `task_title` | `string \| null` | no | `null` | — |
 | `source_kind` | `string` | yes | — | — |
 | `source_identity` | `string` | yes | — | — |
 | `incident_key` | `string` | yes | — | — |
