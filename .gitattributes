@@ -28,6 +28,24 @@ src/tools/command_catalogue.json merge=aq-generated linguist-generated
 openapi.json merge=aq-generated linguist-generated
 packages/aq-client/** merge=aq-generated linguist-generated
 scripts/aq-client-boilerplate.sha256 merge=aq-generated linguist-generated
+tests/integration_ownership.json merge=aq-generated linguist-generated
+tests/integration_ownership_report.json merge=aq-generated linguist-generated
+# Approved policy and provenance live in tests/fixtures/generated_sources.
+# Only their deterministic projections are disposable during assembly.
+tests/fixtures/playbooks/v2/*/artifact.json merge=aq-generated linguist-generated
+tests/fixtures/playbooks/v2/*/artifact.sha256 merge=aq-generated linguist-generated
+tests/fixtures/playbooks/v2/*/source.md merge=aq-generated linguist-generated
+tests/fixtures/playbooks/v2/*/manifest.md merge=aq-generated linguist-generated
+tests/fixtures/playbooks/v2/*/diagnostics.json merge=aq-generated linguist-generated
+src/prompts/reviewed_playbooks/*/artifact.json merge=aq-generated linguist-generated
+src/prompts/reviewed_playbooks/*/artifact.sha256 merge=aq-generated linguist-generated
+src/prompts/reviewed_playbooks/*/source.md merge=aq-generated linguist-generated
+src/prompts/reviewed_playbooks/*/manifest.md merge=aq-generated linguist-generated
+src/prompts/reviewed_playbooks/*/diagnostics.json merge=aq-generated linguist-generated
+docs/playbooks/integration-only/default-pipeline/artifact.json merge=aq-generated linguist-generated
+docs/playbooks/integration-only/default-pipeline/artifact.sha256 merge=aq-generated linguist-generated
+docs/playbooks/integration-only/default-pipeline/source.md merge=aq-generated linguist-generated
+docs/playbooks/integration-only/default-pipeline/manifest.md merge=aq-generated linguist-generated
 
 # Hand-maintained, but branches almost only append module globs and areas to
 # it: keep both sides' lines instead of conflicting.
