@@ -1,8 +1,8 @@
 """Reviewed script programs and limits; no process execution or authored host paths.
 
-E3 embeds ``ScriptProgram`` in its ScriptStep. Keeping this foundation independent
-of definition.py lets old artifacts remain byte-identical and unsupported scripts
-remain unactivatable until the executor ships.
+``ScriptStep`` embeds ``ScriptProgram``. Keeping the program policy independent
+of definition.py preserves legacy artifact identities and shares pin validation
+with proposal compilation and the ordinary-process job backend.
 """
 
 from __future__ import annotations
@@ -85,9 +85,12 @@ class ScriptLimits(FrozenModel):
 class ScriptProgram(FrozenModel):
     """Source-authored DTO, independently of the compiler's semantic body.
 
-    Runtime is a reviewed operator manifest identifier, never a host path. Argv
-    has a literal first element; all other elements and ``arguments`` are values.
-    Exactly one of script/argv/shell is legal. No template engine touches code.
+    Runtime names the operator's opt-in runtime manifest, never a host path; it
+    is only checked when a manifest is configured (``host`` by convention
+    otherwise). The executable is a relative name resolved under the runtime
+    root or the configured search path. Argv has a literal first element; all
+    other elements and ``arguments`` are values. Exactly one of script/argv/shell
+    is legal. No template engine touches code.
     """
 
     runtime: Identifier
@@ -158,7 +161,7 @@ class ScriptProgram(FrozenModel):
 
 def script_environment(
     authored: tuple[str, ...], allowed: tuple[str, ...], supplied: dict[str, str],
-    *, home: str,
+    *, home: str, path: str = "/usr/bin:/bin",
 ) -> dict[str, str]:
     """Never read os.environ; HOME points at the execution scratch directory."""
     permitted = set(authored) & set(allowed)
@@ -166,7 +169,7 @@ def script_environment(
         raise ScriptError("script_environment_denied")
     if len(supplied) > 64 or sum(len(k.encode()) + len(v.encode()) for k, v in supplied.items()) > 32768:
         raise ScriptError("script_environment_too_large")
-    result = {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C", "HOME": home}
+    result = {"PATH": path, "LANG": "C", "LC_ALL": "C", "HOME": home}
     for name, value in supplied.items():
         try:
             environment_name(name)
