@@ -801,6 +801,23 @@ _RETAINED_EXCLUSIONS_HELD: ContextVar[frozenset[str]] = ContextVar(
     "retained_store_exclusions_held", default=frozenset())
 
 
+def _repack_output_only(before: tuple, after: tuple) -> bool:
+    """Whether *after* adds nothing to *before* beyond one new pack family.
+
+    Derived metadata (repack refreshes ``info/packs``) is not object content.
+    """
+    known = {entry[0] for entry in before}
+    families = set()
+    for path, _size, _inode in set(after) - set(before):
+        if _RETAINED_METADATA_RE.fullmatch(path):
+            continue
+        match = _RETAINED_PACK_RE.fullmatch(path)
+        if path in known or match is None:
+            return False
+        families.add(match.group(1))
+    return len(families) <= 1
+
+
 def _retained_increment(previous: tuple, current: tuple) -> tuple[tuple, tuple] | None:
     """Object files added since *previous* and the inventory they complete.
 
@@ -1256,14 +1273,14 @@ class GitManager:
     async def _amaintenance_exclusion(
         self, args: list[str], cwd: str | None, timeout: float,
     ) -> AsyncIterator[float]:
-        """Exclude full verification while foreground maintenance rewrites packs.
+        """Serialize diagnostic fsck and maintenance with full verification.
 
         Separate from the repository transaction: its callers may already hold
         that lock. Git's global options (notably maintenance's `-c`) are skipped
         when identifying the command. Independent Git processes still require
         the verifier's bounded retry.
         """
-        if _git_subcommand(args) not in {"gc", "repack", "maintenance"}:
+        if _git_subcommand(args) not in {"fsck", "gc", "repack", "maintenance"}:
             yield timeout
             return
         loop = asyncio.get_running_loop()
@@ -3277,15 +3294,16 @@ class GitManager:
         the result carries that clean result over with its original age, so the
         background refresh still comes due on schedule. Unverified additions,
         a failed repack or a failed check leave the store to the full check.
-        The store exclusion is held throughout, so no full check overlaps.
+        The store exclusion is held throughout, so no full check overlaps. The
+        repack may run beside other writers, so anything added beyond its own
+        pack also leaves the store to the full check.
         """
         loop = asyncio.get_running_loop()
         async with self._aretained_store_exclusion(git_dir, deadline=loop.time() + timeout):
             key, before = await asyncio.to_thread(_retained_store_state, git_dir)
             cached = self._retained_baseline(key)
             result = await self.arun_git_result(
-                args, cwd=cwd, lock_held=True, env={"LC_ALL": "C"},
-                timeout=timeout, low_priority=True,
+                args, cwd=cwd, env={"LC_ALL": "C"}, timeout=timeout, low_priority=True,
             )
             if (result.returncode or result.stderr.strip() or cached is None
                     or before is None or before != cached[0]):
@@ -3306,7 +3324,8 @@ class GitManager:
                 return result
             after = await asyncio.to_thread(_object_store_fingerprint, key)
             verified = self.__dict__.setdefault("_retained_verified", {})
-            if after is not None and verified.get(key) == cached:
+            if (after is not None and _repack_output_only(before, after)
+                    and verified.get(key) == cached):
                 verified[key] = (after, cached[1])
         return result
 
