@@ -1542,6 +1542,10 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     for filename in sorted(os.listdir(defaults_dir)):
         if not filename.endswith(".md"):
             continue
+        if filename in {
+            "blocked-task-escalation.md", "supervisor-digest.md", "supervisor-hourly-report.md",
+        }:
+            continue
         src_path = os.path.join(
             os.path.dirname(__file__),
             "prompts",

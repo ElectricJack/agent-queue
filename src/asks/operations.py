@@ -24,6 +24,8 @@ from src.database.tables import (
     tasks,
 )
 
+FIDELITY_REVIEW_DISPATCH = "fidelity_review.dispatch"
+
 
 async def operation(db, decision, kind, *, conn, dependencies=(), parameters=None):
     key = f"{kind}:{decision['id']}"
@@ -58,6 +60,26 @@ async def get_operation(conn, decision_id, kind, *, lock=False):
     )
     row = (await conn.execute(stmt.with_for_update() if lock else stmt)).mappings().first()
     return dict(row) if row else None
+
+
+async def reserve_fidelity_review_dispatch(db, batch, *, conn):
+    """Reserve one reviewer dispatch per approved batch, on the batch transaction.
+
+    This is an intent only. ``ensure_fidelity_review`` owns task creation and
+    records success with the actual reviewer receipt, as ingestion does.
+    """
+    decision = await db.get_ask_decision(batch["decision_id"], conn=conn)
+    if (not decision or decision["packet"]["source"]["project_id"] != batch["project_id"]):
+        raise AskError("ask.not_found", "Batch approval decision was not found")
+    # Materialization reserved it with the revision it held at; later
+    # revisions reuse that row rather than conflicting on its parameters.
+    op = await get_operation(conn, decision["id"], FIDELITY_REVIEW_DISPATCH)
+    if op is None:
+        op = await operation(db, decision, FIDELITY_REVIEW_DISPATCH, conn=conn,
+                             parameters={"batch_id": batch["batch_id"]})
+    if op["parameters"].get("batch_id") != batch["batch_id"]:
+        raise AskError("ask.idempotency_conflict", "Decision dispatch belongs to another batch")
+    return op
 
 
 async def succeed(conn, op, receipt):
@@ -127,6 +149,9 @@ class ReviewOperations:
 
         async with self.db.immediate() as conn:
             review = await self.db.lock_review_for_mutation(review_id, conn)
+            from src.asks.reset_policy import skip_row
+            if await skip_row(conn, doc_reviews, review, review["project_id"]):
+                return {"application_state": "discarded"}
             decision = (
                 (
                     await conn.execute(
@@ -188,6 +213,8 @@ class ReviewOperations:
         ask = await self.db.get_ask(decision["ask_id"], conn=conn, lock=True)
         if not review or not ask:
             raise AskError("ask.application_unknown", "Decision source is missing")
+        if ask["context"].get("legacy_discarded"):
+            raise AskError("ask.discarded", "This decision belongs to discarded legacy work")
         return review
 
     async def project(self, decision, values, *, conn):
@@ -304,6 +331,8 @@ class ReviewOperations:
     async def apply(self, decision_id):
         async with self.db.immediate() as conn:
             decision = await self.db.get_ask_decision(decision_id, conn=conn)
+            if decision:
+                await self.locked(decision, conn)
         if not decision:
             raise AskError("ask.not_found", "Decision was not found")
         domain = decision["packet"]["domain"]
@@ -339,7 +368,8 @@ class ReviewOperations:
                         select(escalation_actions.c.id).where(
                             escalation_actions.c.decision_id == decision["id"],
                             escalation_actions.c.status != "succeeded",
-                            escalation_actions.c.operation_kind != "ingestion",
+                            escalation_actions.c.operation_kind.not_in(
+                                ["ingestion", FIDELITY_REVIEW_DISPATCH]),
                         )
                     )
                 ).first()
