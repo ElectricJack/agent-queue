@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ..models.digest_status_response_delivery_health import DigestStatusResponseDeliveryHealth
     from ..models.digest_window_record import DigestWindowRecord
     from ..models.discord_cutover_status import DiscordCutoverStatus
+    from ..models.discord_intake_diagnostics import DiscordIntakeDiagnostics
 
 
 T = TypeVar("T", bound="DigestStatusResponse")
@@ -36,6 +37,10 @@ class DigestStatusResponse:
         open_escalations (int | Unset):  Default: 0.
         pending_escalation_deliveries (int | Unset):  Default: 0.
         cutover (DiscordCutoverStatus | None | Unset):
+        intake (DiscordIntakeDiagnostics | Unset): Inbound Discord messages the gateway ignored, counted by reason code.
+
+            In-memory and sliding: it covers the last ``window_seconds`` and is empty
+            after a restart.  ``available`` is false when no gateway is connected.
         settings_errors (list[str] | Unset):
         warnings (list[str] | Unset):
     """
@@ -53,6 +58,7 @@ class DigestStatusResponse:
     open_escalations: int | Unset = 0
     pending_escalation_deliveries: int | Unset = 0
     cutover: DiscordCutoverStatus | None | Unset = UNSET
+    intake: DiscordIntakeDiagnostics | Unset = UNSET
     settings_errors: list[str] | Unset = UNSET
     warnings: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -103,6 +109,10 @@ class DigestStatusResponse:
         else:
             cutover = self.cutover
 
+        intake: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.intake, Unset):
+            intake = self.intake.to_dict()
+
         settings_errors: list[str] | Unset = UNSET
         if not isinstance(self.settings_errors, Unset):
             settings_errors = self.settings_errors
@@ -138,6 +148,8 @@ class DigestStatusResponse:
             field_dict["pending_escalation_deliveries"] = pending_escalation_deliveries
         if cutover is not UNSET:
             field_dict["cutover"] = cutover
+        if intake is not UNSET:
+            field_dict["intake"] = intake
         if settings_errors is not UNSET:
             field_dict["settings_errors"] = settings_errors
         if warnings is not UNSET:
@@ -152,6 +164,7 @@ class DigestStatusResponse:
         from ..models.digest_status_response_delivery_health import DigestStatusResponseDeliveryHealth
         from ..models.digest_window_record import DigestWindowRecord
         from ..models.discord_cutover_status import DiscordCutoverStatus
+        from ..models.discord_intake_diagnostics import DiscordIntakeDiagnostics
 
         d = dict(src_dict)
         destination = d.pop("destination")
@@ -214,6 +227,13 @@ class DigestStatusResponse:
 
         cutover = _parse_cutover(d.pop("cutover", UNSET))
 
+        _intake = d.pop("intake", UNSET)
+        intake: DiscordIntakeDiagnostics | Unset
+        if isinstance(_intake, Unset):
+            intake = UNSET
+        else:
+            intake = DiscordIntakeDiagnostics.from_dict(_intake)
+
         settings_errors = cast(list[str], d.pop("settings_errors", UNSET))
 
         warnings = cast(list[str], d.pop("warnings", UNSET))
@@ -232,6 +252,7 @@ class DigestStatusResponse:
             open_escalations=open_escalations,
             pending_escalation_deliveries=pending_escalation_deliveries,
             cutover=cutover,
+            intake=intake,
             settings_errors=settings_errors,
             warnings=warnings,
         )
