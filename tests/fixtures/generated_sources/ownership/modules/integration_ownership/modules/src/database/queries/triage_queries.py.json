@@ -1,0 +1,25 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/triage_queries.py::ensure_triage_task": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/triage_queries.py::_write_seen::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 77,
+      "owner": "_write_seen",
+      "owner_fingerprint": "468c68ede298fe11e0233c3f04d740807bd69a96aa6dc541ba3b33c59e22e31f",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/triage_queries.py::_write_seen::51be9b5b9698cee60f963e966b52a7527686e8e5a5f266c953c9f4919f14106d": {
+      "call": "update",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 74,
+      "owner": "_write_seen",
+      "owner_fingerprint": "468c68ede298fe11e0233c3f04d740807bd69a96aa6dc541ba3b33c59e22e31f",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

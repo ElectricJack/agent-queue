@@ -1,0 +1,900 @@
+{
+  "approve_pull_request": {
+    "argument_reads_diagnostic_only": [
+      "head_sha",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_approve_pull_request",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('unauthorized', 'Only the local operator may approve pull requests')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid', 'A task and 40-character head SHA are required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'Task has no unique active-project pull request')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid', 'Task has no bound GitHub repository')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale_head', 'PR is absent from the current snapshot or head moved')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('credentials', 'The saved gh login is not a human GitHub user')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale_head', 'PR head moved or the PR closed')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('unexpected_response', 'GitHub did not confirm a human head-pinned approval')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('credentials', 'Could not read the saved gh user identity')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(exc.category, str(exc))"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'url': row['pr_url'], 'head_sha': sha, 'review_id': review.get('id'), 'integration_flush': flush}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e2e43be75f91add1b11e3cbad128cbe4f94fa581f080ea97466c0a80ce7b9cb9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_api_pull_requests.py"
+    ]
+  },
+  "review_attachment_add": {
+    "argument_reads_diagnostic_only": [
+      "content_type",
+      "data_base64",
+      "review_id",
+      "revision"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_attachment_access": "sha256:54732f508e3bfbcafd819588e68f8b675cbc0351bc42dab0da01f5c1b503f426",
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_attachment_add",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_revision', 'revision must be a positive integer')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_image', 'only PNG, JPEG, GIF, and WebP are allowed')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('too_large', 'image exceeds the 10 MiB cap')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('too_large', 'image must be 1 byte to 10 MiB')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'attachment': {'id': attachment_id, 'review_id': review['id'], 'revision': revision, 'sha256': hashlib.sha256(data).hexdigest(), 'content_type': claimed_type, 'size': len(data), 'url': f'/api/reviews/{review['id']}/revisions/{revision}/attachments/{attachment_id}', **fields}}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_metadata', f'{field} must have 1 to {limit} characters')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_metadata', f'{field} must be a stable identifier')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_metadata', f'{field} cannot contain control characters')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_image', 'image must be valid base64')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_image', str(exc.detail))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale_revision', 'only the current open review revision accepts images')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('packet_dispatched', 'a dispatched review packet cannot gain images')"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:363a2f536101a896c6c79b1af3a409baa38e1ed2eab515e29ac95f17ba5994be",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_object_loop_playbook.py",
+      "tests/test_review_commands.py"
+    ]
+  },
+  "review_attachment_list": {
+    "argument_reads_diagnostic_only": [
+      "review_id",
+      "revision"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_review_attachment_access": "sha256:54732f508e3bfbcafd819588e68f8b675cbc0351bc42dab0da01f5c1b503f426",
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_attachment_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_revision', 'revision must be a positive integer')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'attachments': [{key: value for key, value in row.items() if key not in {'path', 'created_at'}} | {'url': f'/api/reviews/{review['id']}/revisions/{revision}/attachments/{row['id']}'} for row in rows]}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:8397d15e053d77f24d57429b1cb413d31cda0e4f90b870bbd3af3b1e07797473",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_review_commands.py"
+    ]
+  },
+  "review_comment": {
+    "argument_reads_diagnostic_only": [
+      "body",
+      "heading_path",
+      "quote",
+      "review_id",
+      "revision",
+      "source_discussion_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_decider_label": "sha256:9c8715a278649d95745a5ef94e1aeed05cf5b7813e9404171ffc5181c7506438",
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_comment",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('human_only', 'Only a human can promote discussion into formal feedback')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **await self._review_service().comment(review_id=review['id'], revision=args.get('revision'), quote=args.get('quote'), heading_path=list(args.get('heading_path') or []), body=str(args.get('body') or ''), author=label, source_discussion_id=args.get('source_discussion_id'))}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_dispatched', 'this worker holds no dispatch for this review')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('wrong_revision', 'comment on the revision pinned to this dispatch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('anchor_required', 'a dispatched reviewer must anchor each finding')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(error.code, error.message)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d1e117bd6daab4118527e21412893d546e1b8fdc0d632b44573f0bb146952794",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_github_issue_triage.py",
+      "tests/test_review_commands.py"
+    ]
+  },
+  "review_decide": {
+    "argument_reads_diagnostic_only": [
+      "decision",
+      "dispositions",
+      "expected",
+      "idempotency_key",
+      "note",
+      "preview_id",
+      "responder_class",
+      "responder_profile",
+      "review_id",
+      "revision"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_decider_label": "sha256:9c8715a278649d95745a5ef94e1aeed05cf5b7813e9404171ffc5181c7506438",
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_decide",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('ask.not_decider', 'Unexpected decision fields; authority is server-owned')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_in_review', 'decision must be approve, request_changes or reject')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('routing.choice_forbidden', \"responder_profile is not accepted: the revision task is routed by the project's router; pass responder_class as its class hint\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_responder', 'responder routing applies only to feedback decisions')"
+      },
+      {
+        "protocol": "explicit_boolean_expression",
+        "return": "{'success': result['application_state'] == 'applied', **result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(exc.code, str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_responder_class', f'intelligence class {responder_class!r} not found in vault; {available}')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_responder_class', f'{class_error}; {available}')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(error.code, error.message)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2656faf2eb68628eab278de383db4b195b0942c76311c04a0e5840fd4ed27835",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_github_issue_triage.py",
+      "tests/test_object_loop_playbook.py",
+      "tests/test_policy_profiles.py",
+      "tests/test_review_commands.py"
+    ]
+  },
+  "review_delegate": {
+    "argument_reads_diagnostic_only": [
+      "review_id",
+      "to"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_delegate",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('local_operator_only', 'review delegation requires local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object_review_audience', 'Experiment reviews go to the supervisor; the final result goes to Jack.')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **await self._review_service().delegate(review_id=review['id'], to=str(args.get('to') or ''))}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(getattr(error, 'code', 'not_found'), str(error))"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:1bd9d0e114c5bcaae240295d3c5345c4e794109e881310d19e4b796dde8a7d96",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_review_commands.py"
+    ]
+  },
+  "review_dispatch": {
+    "argument_reads_diagnostic_only": [
+      "count",
+      "focus",
+      "force",
+      "intelligence_class",
+      "review_id",
+      "revision",
+      "to",
+      "with_comments"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_dispatch",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('operator_only', 'review dispatch requires an operator or supervisor')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('routing.choice_forbidden', \"review dispatch no longer names reviewer profiles: pass --count and --class; the router picks each reviewer's profile, excluding the author's provider\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_count', f'count must be an integer from 1 to {DISPATCH_MAX_COUNT}')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_class', class_error if isinstance(class_id, str) else 'class must be a string')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('focus_too_large', 'focus must be at most 4000 characters')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', f'review {review['id']!r} was not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('review_closed', f'review {review['id']!r} is {current['state']}')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('revision_not_found', f'invalid review revision {revision!r}')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('revision_not_found', f'review {review['id']!r} has no revision {revision}')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('duplicate_dispatch', f'review {review['id']} revision {revision} was already dispatched to {len(prior)} reviewer(s); use --force to dispatch more')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**creation_error, 'review_id': review['id'], 'dispatches': results}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'review_id': review['id'], 'dispatches': results}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:3fd402c3a378ebd85c410e800dfd3bd68898b760196ef70bee520ea81e40c196",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_review_commands.py"
+    ]
+  },
+  "review_import_edits": {
+    "argument_reads_diagnostic_only": [
+      "review_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_import_edits",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('local_operator_only', 'importing review edits requires local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **await self._review_service().import_edits(review_id=review['id'], by=principal.describe())}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(error.code, error.message)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:adc407f7f9e2ef6fa3e4a56eeb62bd95a3d669acffff2bf22cd501029b4f1d23",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_review_commands.py",
+      "tests/test_review_playbooks.py"
+    ]
+  },
+  "review_list": {
+    "argument_reads_diagnostic_only": [
+      "kind",
+      "project_id",
+      "state",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', 'project belongs to another session')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', 'task_id must be the task this worker holds')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'reviews': await self.db.list_reviews(project_id=project_id, state=args.get('state'), kind=args.get('kind'), task_id=task_id)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:1c5b55b0de995748ff8d00082484d545db851dab44f633dd69cf84e9e8a633ea",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "review_reopen": {
+    "argument_reads_diagnostic_only": [
+      "review_id",
+      "revision"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20",
+      "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_reopen",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('unauthorized', 'only the local operator may reopen from the dashboard')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', 'only the author task may reopen this review')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('bad_revision', 'revision must be a positive integer')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(error.code, error.message)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:0df0242e53e60cfeab72935186fd811fa7d3037532b77b43f666c58872f66d28",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_review_playbooks.py"
+    ]
+  },
+  "review_show": {
+    "argument_reads_diagnostic_only": [
+      "comments",
+      "diff_from",
+      "review_id",
+      "revision"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_review_attachment_access": "sha256:54732f508e3bfbcafd819588e68f8b675cbc0351bc42dab0da01f5c1b503f426",
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20",
+      "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_show",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **shown, 'attachments': attachments, 'response_route': await self._review_response_route(review, current)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_dispatched', 'dispatched reviewer may read only its pinned packet')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(error.code, error.message)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:06af894a67f174873ddbb41a875fa2c270ab7f277b04562b43713edd69fd42a5",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_review_commands.py",
+      "tests/test_review_playbooks.py"
+    ]
+  },
+  "review_submit": {
+    "argument_reads_diagnostic_only": [
+      "changes",
+      "content",
+      "kind",
+      "playbook_id",
+      "resolves",
+      "review_id",
+      "task_id",
+      "title"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20",
+      "_review_playbook_pin": "sha256:e0fb56414704076cfdd63e56da6972761b6702d14eeb054772b0162cd06e294a",
+      "_submit_project": "sha256:a7139bc097b09acbd47f2ce432970a9f84829e7d8e0df592a03c930b669d3684",
+      "_v2_script_pins": "sha256:df9571fab0a09392b96e81813381b44e8ae9121ec9b69beda17eb67a483daed3",
+      "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_submit",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_utf8', 'content must be UTF-8 text')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **await service.submit(project_id=project_id, author_task_id=author_task_id, kind=kind, title=str(args.get('title') or ''), content=content, submitted_by=principal.describe(), decider=decider, single_author=bool(experiment and experiment['final_result']), playbook=playbook), **({'playbook': playbook.meta} if playbook else {})}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', 'task_id must be the task this worker holds')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **await service.revise(review_id=review['id'], content=content, changes_note=str(args.get('changes') or ''), resolves=list(args.get('resolves') or []), submitted_by=principal.describe(), submitted_task_id=submitted_task_id, playbook=playbook), **({'playbook': playbook.meta} if playbook else {})}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(error.code, error.message)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', f'this revision task must update review {assigned_id}; use aq review submit --review-id {assigned_id} --file <draft.md> --changes \"<comment dispositions and evidence>\"')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object_result_language', error)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', 'only the assigned revision task may answer requested changes')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object_result_kind', 'Submit the final result as an other review.')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('object_result_language', error)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:170db8480c85c42685e44df867aed0f1a13a21cc10742f5b12f1b3ea2a7dd006",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_github_issue_triage.py",
+      "tests/test_object_loop_playbook.py",
+      "tests/test_review_commands.py",
+      "tests/test_task_attachments_api.py",
+      "tests/test_playbook_script.py"
+    ]
+  },
+  "review_withdraw": {
+    "argument_reads_diagnostic_only": [
+      "reason",
+      "review_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20",
+      "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/review_commands.py:ReviewCommandsMixin._cmd_review_withdraw",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_decider', 'only the author task may withdraw this review')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error(error.code, error.message)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:908771af1b8ae466c60cf53c33e4a8586bb80817910f05fd7719c8c26c7e2b26",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_review_commands.py",
+      "tests/test_review_playbooks.py"
+    ]
+  }
+}
