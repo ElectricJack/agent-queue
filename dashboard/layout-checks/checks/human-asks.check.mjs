@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { expectLayout } from "../probes.mjs";
 import { REVIEW_ID, REVIEW_MARKDOWN } from "../fixtures/reviews.mjs";
 
 export const name = "human-asks";
@@ -34,10 +35,11 @@ export async function run(t) {
   t.stub.override("POST /api/review/ask-decide", () => ({ success: true, decision_id: "decision-rollout", application_state: "pending" }));
   let acknowledge;
   t.stub.override("POST /api/review/ask-reply", () => new Promise(resolve => { acknowledge = () => resolve({ success: true, input_id: "input-rollout" }); }));
-  await t.page.goto(t.url(`/focus/asks/${ask.id}`), { waitUntil: "networkidle0" });
+  await t.page.goto(t.url(`/asks/${ask.id}`), { waitUntil: "networkidle0" });
   const discuss = 'section[aria-label="Discuss"] textarea';
   const approve = 'button::-p-text(Prepare Approve)';
   await t.page.waitForSelector(discuss);
+  await expectLayout(t, { primary: [approve] });
   await t.page.focus(discuss);
   await t.page.keyboard.type("How is restart handled?");
   assert.equal(await t.page.$eval(approve, el => el.disabled), true, "discussion draft must hold approval");
@@ -68,5 +70,15 @@ export async function run(t) {
   await t.page.waitForFunction(() => !document.querySelector('section[aria-label="Decision preview"]'));
   assert.equal(t.stub.requests.filter(r => r.path === "/api/review/ask-decide").length, 1);
   assert.equal(t.stub.requests.filter(r => r.path === "/api/review/ask-reply").length, 1);
+  // The same shell also serves the inbox and non-review quick decisions.
+  ask.source_kind = "escalation";
+  ask.context.title = "Choose the next step " + "long-identifier".repeat(20);
+  await t.page.goto(t.url("/inbox"), { waitUntil: "networkidle0" });
+  await t.page.waitForSelector(`a[href="/asks/${ask.id}"]`);
+  await expectLayout(t);
+  await t.page.click(`a[href="/asks/${ask.id}"]`);
+  await t.page.waitForSelector(discuss);
+  await expectLayout(t, { primary: [approve] });
+  await t.shot("quick-ask");
   assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "narrow viewport overflow");
 }

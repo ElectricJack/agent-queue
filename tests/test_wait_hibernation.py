@@ -1339,6 +1339,81 @@ async def test_held_stop_recovers_on_later_tick_and_withdraws_incident(
     case.provider.stop.assert_not_awaited()
 
 
+@pytest.mark.parametrize('status', ['COMPLETED', 'FAILED', 'BLOCKED'])
+@pytest.mark.parametrize('outcome', ['pending', 'satisfied', 'cancelled'])
+@pytest.mark.parametrize('cleared', [False, True])
+async def test_terminal_stop_hold_retires_on_one_lifecycle_dispatch(env, status, outcome, cleared):
+    from src.wait_runtime.lifecycle import WaitLifecycle
+    from tests.test_wait_dispatch import runtime
+
+    await capture(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(status=status))
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='stop_uncertain', saved_head='a' * 40,
+            facts={'hibernation': {'stop_proof_attempts': 1, 'stop_retry_at': NOW}},
+        ))
+        await conn.execute(update(wait_records).values(
+            outcome=outcome, resolved_at=NOW if outcome != 'pending' else None,
+            result_ref='original-result' if outcome != 'pending' else None,
+            cleared_at=NOW if cleared else None, blocking=not cleared,
+        ))
+    before = await env.db.get_task('owner')
+    service = runtime(env, clock=lambda: NOW + 100, registry=build_registry())
+    service.command = AsyncMock(wraps=service.command)
+    service.lifecycle.hibernate.advance = AsyncMock(side_effect=AssertionError('must not stop/save'))
+    try:
+        await service.lifecycle.tick()
+        await asyncio.gather(*service.lifecycle._hibernate_tasks.values())
+        service.lifecycle.hibernate.advance.assert_not_awaited()
+        # A fresh lifecycle also observes durable retirement, not an in-memory guard.
+        service.lifecycle = WaitLifecycle(service, clock=lambda: NOW + 200)
+        await service.lifecycle.tick()
+        await service.lifecycle.tick()
+        assert service.command.await_count == 1
+        assert not service.lifecycle._hibernate_tasks
+    finally:
+        await service.lifecycle.stop()
+    row = await intent(env)
+    assert row['resume_state'] == 'cancelled' and row['hold_reason'] == 'task_terminal'
+    assert row['stopped_at'] is None and 'workspace_released_at' not in row['facts']
+    assert row['summary'] == 'Goal: resume the exact checked tree.' and row['saved_head'] == 'a' * 40
+    assert await env.db.get_task('owner') == before
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait['cleared_at'] is not None and not wait['blocking']
+        if outcome != 'pending':
+            assert (wait['outcome'], wait['resolved_at'], wait['result_ref']) == (
+                outcome, NOW, 'original-result')
+        else:
+            assert wait['outcome'] == 'cancelled'
+
+
+@pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])
+async def test_cleared_wait_retires_lingering_stop_hold_without_changing_live_task(env, outcome):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='stop_uncertain',
+        ))
+        await conn.execute(update(wait_records).values(
+            outcome=outcome, resolved_at=NOW, cleared_at=NOW, blocking=False,
+        ))
+    before = await env.db.get_task('owner')
+    service = runtime(env, clock=lambda: NOW + 10, registry=build_registry())
+    service.command = AsyncMock(wraps=service.command)
+    try:
+        await service.lifecycle.tick()
+        await asyncio.gather(*service.lifecycle._hibernate_tasks.values())
+        await service.lifecycle.tick()
+        assert service.command.await_count == 1
+    finally:
+        await service.lifecycle.stop()
+    assert (await intent(env))['resume_state'] == 'cancelled'
+    assert await env.db.get_task('owner') == before
+
+
 @pytest.mark.parametrize('proof', ['alive', 'unavailable'])
 async def test_stop_proof_retries_exhaust_without_releasing_checkout(env, monkeypatch, proof):
     from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS
@@ -2376,6 +2451,70 @@ async def test_resume_hold_requires_new_current_provider_generation(env):
     assert row['hold_reason'] is None
 
 
+@pytest.mark.parametrize('inherited_pass', [False, True])
+@pytest.mark.parametrize('changed_task', ['owner', 'unrelated'])
+async def test_resume_refreshes_own_admission_despite_backlog_and_other_graph_changes(
+    env, monkeypatch, inherited_pass, changed_task,
+):
+    from contextlib import nullcontext
+    from src.integration import admission
+    from src.models import AgentProfile, RepoConfig, RepoSourceType, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    await env.db.create_profile(AgentProfile(id='worker', name='Worker', lifecycle='pool'))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url='https://example.test/repo',
+        source_type=RepoSourceType.CLONE, checkout_base_path='/tmp/resume-admission'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    await env.db.create_workspace(Workspace(id='available', project_id='p',
+        workspace_path='/tmp/resume-available', source_type=RepoSourceType.CLONE,
+        kind_id='project-repo'))
+    await env.db.create_task(Task(id='unrelated', project_id='p', title='Other', description=''))
+    await env.db.update_task('unrelated', status='READY')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker', route_source='override'))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    for n in range(20):
+        await env.db.wait_source_commit(source_key='message:backlog', generation=0,
+            revision=str(n), outcome_ref=f'message:{n}', payload={})
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    scheduler = SchedulerWaitService(orch, clock=lambda: NOW + 30)
+    driver = ResumeTransaction(SimpleNamespace(orch=orch, scheduler=scheduler),
+                               clock=lambda: NOW + 30)
+    observe = admission.observe_admission
+    observations = []
+
+    async def moving_graph(db, ids, *args, **kwargs):
+        view = await observe(db, ids, *args, **kwargs)
+        observations.append((set(ids), kwargs['cached_only']))
+        # Continuous work elsewhere must not spoil this task's snapshot.
+        await db.add_dependency(changed_task, 'source')
+        return view
+
+    monkeypatch.setattr(admission, 'observe_admission', moving_graph)
+    async with scheduler.reader.prepared() if inherited_pass else nullcontext():
+        action = await driver.reserve('c', 1)
+    assert observations[-1] == ({'owner'}, False)
+    if changed_task == 'owner':
+        assert action is None
+        assert (await intent(env))['resume_state'] == 'queued'
+    else:
+        assert action is not None and action.continuation_id == 'c'
+        assert (await intent(env))['resume_state'] == 'reserved'
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_source_events.c.seq).where(
+            wait_source_events.c.source_key == 'message:backlog',
+            wait_source_events.c.dispatched_at.is_(None),
+        ).limit(1)) is not None  # Admission did not need to drain even one event.
+
+
 def test_turn_measurement_counts_all_calls_and_streaming_maxima():
     from src.sessions.transcripts import TranscriptEntry
     from src.wait_runtime.measurements import first_turn_tokens
@@ -2389,6 +2528,122 @@ def test_turn_measurement_counts_all_calls_and_streaming_maxima():
                entry('a', 12), entry('b', 20, done=True), entry('later', 500, done=True)]
     assert first_turn_tokens(entries, since=NOW) == 34
     assert first_turn_tokens(entries[:3], since=NOW) is None
+
+
+async def test_turn_cost_cache_reuses_missing_usage_and_invalidates_changed_files(
+    tmp_path, monkeypatch,
+):
+    import json
+    from collections import OrderedDict
+
+    from src.sessions.transcripts.claude import ClaudeTranscriptReader, slug_work_dir
+    from src.wait_runtime import measurements
+
+    session = SimpleNamespace(harness="claude", session_key="key", work_dir="/worker")
+    db = SimpleNamespace(get_session=AsyncMock(return_value=session))
+    reader = ClaudeTranscriptReader(base_dir=tmp_path)
+    path = tmp_path / ".claude" / "projects" / slug_work_dir(session.work_dir) / "key.jsonl"
+    path.parent.mkdir(parents=True)
+    pending = {"type": "assistant", "uuid": "a", "timestamp": "2026-10-25T00:00:00Z",
+               "message": {"id": "a", "content": [{"type": "text", "text": "pending"}],
+                           "usage": {"input_tokens": 3}}}
+    path.write_text(json.dumps(pending) + "\n")
+    read = AsyncMock(wraps=reader.read_new)
+    monkeypatch.setattr(reader, "read_new", read)
+    monkeypatch.setattr(measurements, "resolve_reader", lambda _harness: reader)
+    cache = OrderedDict()
+    for _ in range(3):
+        assert await measurements.session_turn_tokens(db, "s", since=0, cache=cache) is None
+    assert read.await_count == 1
+
+    completed = {**pending, "uuid": "b", "message": {
+        **pending["message"], "id": "b", "usage": {"output_tokens": 5}, "stop_reason": "end_turn",
+    }}
+    with path.open("a") as stream:
+        stream.write(json.dumps(completed) + "\n")
+    assert await measurements.session_turn_tokens(db, "s", since=0, cache=cache) == 8
+    assert read.await_count == 2
+    assert await measurements.session_turn_tokens(db, "s", since=0, cache=cache) == 8
+    assert read.await_count == 2
+
+    # Replacement/truncation, missing files, and distinct start times cannot
+    # reuse a previous completed turn or its cached missing-usage observation.
+    path.unlink()
+    assert await measurements.session_turn_tokens(db, "s", since=0, cache=cache) is None
+    path.write_text(json.dumps(completed) + "\n")
+    assert await measurements.session_turn_tokens(db, "s", since=0, cache=cache) == 5
+    assert await measurements.session_turn_tokens(db, "s", since=2e9, cache=cache) is None
+    assert read.await_count == 4
+    monkeypatch.setattr(measurements, "TURN_TOKEN_CACHE_SIZE", 2)
+    for since in (1, 2, 3):
+        await measurements.session_turn_tokens(db, "s", since=since, cache=cache)
+    assert len(cache) == 2
+
+
+async def test_turn_cost_cache_tolerates_eviction_during_stat(tmp_path, monkeypatch):
+    import threading
+    from collections import OrderedDict
+
+    from src.wait_runtime import measurements
+
+    path = tmp_path / "transcript"
+    path.write_text("pending")
+    session = SimpleNamespace(harness="claude", session_key="key", work_dir="/worker")
+    db = SimpleNamespace(get_session=AsyncMock(return_value=session))
+    reader = SimpleNamespace(resolve_session=lambda _session: path,
+                             read_new=AsyncMock(return_value=([], 7)))
+    monkeypatch.setattr(measurements, "resolve_reader", lambda _harness: reader)
+    cache = OrderedDict()
+    assert await measurements.session_turn_tokens(db, "s", since=0, cache=cache) is None
+    entered, release = threading.Event(), threading.Event()
+    signature = measurements._signature
+
+    def slow_stat(path):
+        entered.set()
+        assert release.wait(5)
+        return signature(path)
+
+    monkeypatch.setattr(measurements, "_signature", slow_stat)
+    pending = asyncio.create_task(measurements.session_turn_tokens(db, "s", since=0, cache=cache))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        cache.clear()  # Another wait can evict the entry while this stat runs.
+    finally:
+        release.set()
+    assert await pending is None
+    reader.read_new.assert_awaited_once()
+
+
+async def test_turn_cost_reduction_runs_off_the_event_loop(tmp_path, monkeypatch):
+    import threading
+
+    from collections import OrderedDict
+    from src.wait_runtime import measurements
+
+    path = tmp_path / "transcript"
+    path.write_text("pending")
+    session = SimpleNamespace(harness="claude", session_key="key", work_dir="/worker")
+    db = SimpleNamespace(get_session=AsyncMock(return_value=session))
+    reader = SimpleNamespace(resolve_session=lambda _session: path,
+                             read_new=AsyncMock(return_value=([], 7)))
+    monkeypatch.setattr(measurements, "resolve_reader", lambda _harness: reader)
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_reduce(entries, *, since):
+        entered.set()
+        assert release.wait(5)
+        return 23
+
+    monkeypatch.setattr(measurements, "first_turn_tokens", slow_reduce)
+    pending = asyncio.create_task(measurements.session_turn_tokens(
+        db, "s", since=0, cache=OrderedDict(),
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        assert not pending.done()  # The loop can run while reduction is blocked.
+    finally:
+        release.set()
+    assert await pending == 23
 
 
 async def test_completed_turn_costs_arriving_after_ack_are_recorded(env, monkeypatch):
@@ -2420,6 +2675,15 @@ async def test_completed_turn_costs_arriving_after_ack_are_recorded(env, monkeyp
     assert sample['setup_seconds'] == 3 and sample['rebuild_seconds'] == 10
     await measurements.capture_costs(lifecycle, env.wait_id)
     assert observed.await_count == 2
+    # A later sweep must leave completed cost accounting untouched, even after
+    # the normal sampling cooldown expires.
+    lifecycle.clock = lambda: NOW + 110
+    sample_update = AsyncMock(side_effect=AssertionError("completed costs were written again"))
+    monkeypatch.setattr(measurements, 'update_sample', sample_update)
+    await measurements.capture_costs(lifecycle, env.wait_id)
+    assert observed.await_count == 2
+    sample_update.assert_not_awaited()
+    assert (await intent(env))['facts']['usage_checked_at'] == NOW + 70
 
 
 async def test_slow_scheduler_observation_does_not_exhaust_resume_graph_retry(env, monkeypatch):

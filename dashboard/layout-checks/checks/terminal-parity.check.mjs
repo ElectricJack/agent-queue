@@ -173,7 +173,7 @@ export async function run(t) {
     "a touch drag on the host shell terminal did not scroll back");
 
   // ---- The agent session terminal, same phone, same moment.
-  await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url(`/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
   await t.page.waitForFunction((selector) => document.querySelector(selector)?.textContent === "connected", { timeout: 15_000 }, PHONE_STATUS);
   await t.page.waitForFunction((selector) => [...document.querySelectorAll(`${selector} .xterm-rows span`)]
     .some((s) => s.textContent?.includes("ansi-red")), { timeout: 15_000 }, PHONE_HOST);

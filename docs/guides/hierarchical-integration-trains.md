@@ -390,6 +390,13 @@ the task's original age. The hot-file fix (Phase A5) must ship before or with
 this policy. Explicit `refresh-epic --apply` remains available. Push-event runs
 never count as PR checks.
 
+Status retires an old `pr_conflicting` diagnostic when a historical code receipt
+matches the completed task's current source and root target. This includes a
+cherry-picked delivery whose carrying commit differs from the PR head. Receipts
+for another repository, target, head or an older completion leave the diagnostic
+visible. This read-only reconciliation does not change train admission or Git
+delivery truth.
+
 Root admission first probes the fetched target and source with local `merge-tree`.
 A source conflict reports `pr_conflicting` without a GitHub read; conflicts confined
 to files marked `merge=aq-generated` follow the build's regeneration policy instead.
@@ -478,7 +485,7 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration seal-now --project PROJECT_ID --apply` requests an immediate visit to freeze eligible root inputs when the target is idle.
 - `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
 - `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
-- `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
+- `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch, including one whose target ref is confirmed missing. Preview reports `target_missing: true` and a null target SHA in that case; unavailable Git evidence still refuses abort. The train automatically aborts an open epic refresh when its target disappears. Abort tells its batch fixer to stop and preserves the checkout and history.
 - `aq integration settle-batch BATCH_ID` previews settlement when every frozen source is already on its target. A legacy epic-sync instead requires every frozen source on the designated default branch; preview reports that default `target_ref` and its SHA, and replay can resume cleanup of an already promoted sync. An epic refresh settles once its epic has the frozen default head as an ancestor, including a merge its repair published to the epic; until then `abort-batch` withdraws it. Apply with `--apply --target-sha TARGET_SHA --reason REASON`. It records delivery without advancing the target; normal guarded branch cleanup still runs, and active human holds and incomplete or unavailable source proof refuse settlement. See the [required-job and settlement specification](../specs/design/required-job-train-settlement.md).
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
 - `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.

@@ -151,7 +151,7 @@ try {
       for (const color of ["red", "indexed", "truecolor", "blueBackground"]) assert.ok(reference[color]);
       const shellImage = await shot("host-shell");
 
-      const viewer = await open(`/focus/sessions/${SESSION}`, SESSION);
+      const viewer = await open(`/sessions/${SESSION}`, SESSION);
       assert.deepEqual(await palette(page), reference);
       const agentImage = await shot("agent-terminal");
       const initial = sizeOf(viewer);

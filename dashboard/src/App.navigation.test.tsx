@@ -33,6 +33,7 @@ vi.mock("./api/hooks", () => ({
   useDeleteProject: () => ({ mutateAsync: actions.remove, isPending: false }),
   useTask: (id: string) => ({ data: { id, title: `Task ${id}` }, isError: false, refetch: vi.fn() }),
 }));
+vi.mock("./api/asks", () => ({ useAsks: () => ({ data: { items: [], count: 0, source_health: "healthy", snapshot_at: 0 } }) }));
 vi.mock("./api/reviews", () => ({
   useWaitingReviewCount: () => 0,
   useReviews: () => ({ data: { reviews: [] } }),
@@ -53,12 +54,6 @@ vi.mock("./shell/palette/Palette", async () => {
   };
 });
 vi.mock("./shell/hotkeys/CheatSheetModal", () => ({ default: () => null }));
-// The focus shell has no pane surface; its banner is on every focus route, so it
-// carries the pane-store probe there (inside App's ShellPaneProvider).
-vi.mock("./components/ConnectionBanner", async (importOriginal) => {
-  const { default: Banner } = await importOriginal<typeof import("./components/ConnectionBanner")>();
-  return { default: () => <><Banner /><PaneState /></> };
-});
 vi.mock("./pages/command-center/Graph", () => ({ default: () => <WorkspaceProbe title="Command Center graph" /> }));
 vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Tasks & Knowledge" /> }));
 vi.mock("./pages/command-center/TaskWorkspace", () => ({
@@ -84,12 +79,13 @@ vi.mock("./pages/PlanPage", () => ({ default: function PlanStub() { return <h1>P
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
 vi.mock("./pages/reports/MorningReportPage", () => ({ default: () => <h1>Morning report read page</h1> }));
 vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
-// The focus home's sections read agents, pools, usage and task graphs; this
-// suite is about routing, so the home renders its chrome around empty sections.
-vi.mock("./pages/focus/ActiveSessions", () => ({ default: () => null }));
-vi.mock("./pages/metrics/ProviderUsage", () => ({ default: () => null }));
-vi.mock("./pages/focus/FocusTaskList", () => ({ default: () => null }));
-vi.mock("./panes/task-detail/TaskDetailBody", () => ({ default: () => <p>Task detail body</p> }));
+vi.mock("./pages/TaskDetail", () => ({ default: () => <h1>Task page</h1> }));
+vi.mock("./pages/SessionDetail", () => ({ default: () => <h1>Session page</h1> }));
+vi.mock("./pages/AskPage", () => ({ default: () => <h1>Ask page</h1> }));
+vi.mock("./pages/EscalationPage", () => ({ default: () => <h1>Escalation page</h1> }));
+vi.mock("./pages/BatchDetail", () => ({ default: () => <h1>Batch page</h1> }));
+vi.mock("./pages/InboxPage", () => ({ default: () => <h1>Needs you</h1> }));
+vi.mock("./pages/reviews/ReviewPage", () => ({ default: () => <h1>Review page</h1> }));
 
 function WorkspaceProbe({ title }: { title: string }) {
   const { projectId } = useParams();
@@ -111,13 +107,9 @@ function PaneProbe() {
     <button onClick={() => pane.open("contextual-settings", { subject: "project", subjectId: "p1" })}>Open settings pane</button></>;
 }
 
-function PaneState() {
-  return <output aria-label="Pane state">{useShellPaneStore().state.kind}</output>;
-}
-
 function Location() {
   const location = useLocation();
-  return <output aria-label="Current location">{location.pathname}{location.search}</output>;
+  return <output aria-label="Current location">{location.pathname}{location.search}{location.hash}</output>;
 }
 
 let server: FakeDashboardStateServer;
@@ -236,9 +228,9 @@ describe("Dashboard navigation", () => {
 
   it.each([
     ["/system/events", "Waiting for events…"],
-    ["/system/gates", "No open gates."],
+    ["/system/gates", "No requests in this view."],
     ["/work/events", "Waiting for events…"],
-    ["/work/gates", "No open gates."],
+    ["/work/gates", "No requests in this view."],
   ])("routes legacy %s to tasks and opens the requested activity tab", async (path, content) => {
     renderApp(path + "?q=needle");
     await screen.findByRole("heading", { name: "Tasks & Knowledge" });
@@ -479,7 +471,7 @@ describe("Roaming shell preferences", () => {
     server.write("shell_preferences", savedSurface({ kind: "drawer", activity_tab: "events" }));
     renderApp("/system/gates");
     await screen.findByRole("heading", { name: "Tasks & Knowledge" });
-    expect(await screen.findByText("No open gates.")).toBeInTheDocument();
+    expect(await screen.findByText("No requests in this view.")).toBeInTheDocument();
     await waitFor(() =>
       expect(server.document("shell_preferences").value).toMatchObject({
         right_surface: { kind: "drawer", activity_tab: "gates" },
@@ -530,54 +522,27 @@ describe("Roaming shell preferences", () => {
   });
 });
 
-describe("focus routes", () => {
-  function renderFocus(path: string) {
-    return render(
-      <QueryClientProvider client={testQueryClient()}>
-        <TestDashboardState server={server}>
-          <MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>
-        </TestDashboardState>
-      </QueryClientProvider>,
-    );
-  }
-  beforeEach(() => {
-    // A desktop left the task pane and a wide surface open (roaming).
-    server.write("shell_preferences", {
-      ...SHELL_PREFERENCE_DEFAULTS,
-      right_surface: { ...SHELL_PREFERENCE_DEFAULTS.right_surface, kind: "pane", width: 760,
-        pane: { view: "task-detail", args: { taskId: "task-p1" } } },
-    });
-  });
-  const puts = () => server.calls.filter((call) => call.op === "put");
-
-  it.each(["/focus", "/focus/tasks/t1", "/focus/sessions/s1", "/focus/reports/r1"])(
-    "%s renders the focus shell, not the rail", async (path) => {
-      renderFocus(path);
-      expect(await screen.findByRole("banner")).toBeInTheDocument();
-      expect(screen.queryByText("Global flock sidebar")).toBeNull();
-    });
-
-  it("never restores or writes the roaming pane on a focus route", async () => {
-    renderFocus("/focus/tasks/t1");
-    await screen.findByRole("link", { name: "Open in full dashboard" });
-    await waitFor(() => expect(server.calls.some((call) => call.op === "list")).toBe(true));
-    await act(async () => { await new Promise((done) => setTimeout(done, 50)); });
-    expect(screen.getByLabelText("Pane state")).toHaveTextContent("closed");
-    expect(puts()).toEqual([]);
-  });
-
-  it("still restores the roaming pane on a desktop route", async () => {
-    renderFocus("/agents");
-    await waitFor(() => expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"open"'));
-  });
-
-  it("Back from a cold deep link, and an unknown focus path, land on the focus home", async () => {
-    renderFocus("/focus/tasks/t1");
-    act(() => screen.getByRole("button", { name: "Back" }).click());
-    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(/^\/focus$/));
-    cleanup();
-    renderFocus("/focus/nope");
-    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(/^\/focus$/));
+describe("posted Focus link compatibility", () => {
+  it.each([
+    ["/focus", "/projects/p1/graph", "Command Center graph"],
+    ["/focus/tasks/a%2Fb?tab=explain#why", "/tasks/a%2Fb?tab=explain#why", "Task page"],
+    ["/focus/sessions/s1?started=123", "/sessions/s1?started=123", "Session page"],
+    ["/focus/reports/r1", "/reports/r1", "Morning report read page"],
+    ["/focus/asks/a1", "/asks/a1", "Ask page"],
+    ["/focus/reviews/r1?revision=2#goal", "/reviews/r1?revision=2#goal", "Review page"],
+    ["/focus/escalations/e1", "/escalations/e1", "Escalation page"],
+    ["/focus/batches/b1", "/batches/b1", "Batch page"],
+    ["/focus/inbox", "/inbox", "Needs you"],
+    ["/focus/conversations", "/conversations", "Former Home chat"],
+    ["/focus/conversations/c%2F1?before=10#reply", "/conversations?before=10&conversation=c%2F1#reply", "Former Home chat"],
+    ["/focus?project=p2&q=needle", "/projects/p2/tasks-knowledge?q=needle&kind=task", "Tasks & Knowledge"],
+    ["/focus/nope", "/projects/p1/graph", "Command Center graph"],
+  ])("%s opens the main dashboard", async (oldPath, destination, heading) => {
+    renderApp(oldPath);
+    await screen.findByRole("heading", { name: heading });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(destination);
+    expect(screen.getByText("Global flock sidebar")).toBeInTheDocument();
+    expect(screen.queryByText("Focus view")).not.toBeInTheDocument();
   });
 });
 

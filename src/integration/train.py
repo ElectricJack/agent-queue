@@ -39,7 +39,7 @@ from src.integration.candidate_baseline import (
     red_brief,
 )
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks, HybridChecks
-from src.integration.git_truth import GitTruthSnapshot
+from src.integration.git_truth import GitTruthSnapshot, snapshot_scope
 from src.integration.models import RepairPolicy
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.runtime_contracts import HeadIdentity
@@ -61,6 +61,7 @@ BLOCKED_WAIT_SECONDS = 10.0
 BLOCKED_MAX_WAIT_SECONDS = 60.0
 # Events accelerate readiness; an idle lane still revisits Git after a lost event.
 IDLE_REOBSERVATION_SECONDS = 30.0
+MINIMUM_VISIT_INTERVAL_SECONDS = 30.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -494,6 +495,7 @@ class IntegrationTrain:
         visit_timeout_seconds: float = 900.0,
         repository_concurrency: int = REPOSITORY_CONCURRENCY,
         event_driven: bool = False,
+        minimum_visit_interval_seconds: float = MINIMUM_VISIT_INTERVAL_SECONDS,
         waits=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -501,6 +503,8 @@ class IntegrationTrain:
             raise ValueError("visit timeout must be positive")
         if repository_concurrency < 1:
             raise ValueError("repository concurrency must be positive")
+        if minimum_visit_interval_seconds < 0:
+            raise ValueError("minimum visit interval must be nonnegative")
         self.targets, self.batches, self.lane_for = targets, batches, lane_for
         self.repair, self.clock = repair, clock
         # Without a baseline service the train cannot compare the target, so it
@@ -509,6 +513,7 @@ class IntegrationTrain:
         self.visit_timeout_seconds = visit_timeout_seconds
         self.repository_concurrency = repository_concurrency
         self.event_driven = event_driven
+        self.minimum_visit_interval_seconds = minimum_visit_interval_seconds
         self.waits = waits
         self.on_wake: Callable[[], None] | None = None
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
@@ -521,6 +526,10 @@ class IntegrationTrain:
         self, now: float | None = None, *, target: TrainTarget | None = None,
     ) -> dict[str, list[str]]:
         """Bound each repository's visits; give new and longest-waiting targets a turn."""
+        with snapshot_scope(reuse=True):
+            return await self._tick(now, target=target)
+
+    async def _tick(self, now, *, target):
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
             return {'started': [], 'running': [], 'skipped': ['tick_in_progress'], 'deferred': []}
@@ -553,6 +562,9 @@ class IntegrationTrain:
                         and (lane.last.detail or {}).get("reason") != "settling"):
                     continue
                 if (lane.not_before > now
+                        or (not lane.requested and lane.start
+                            and (lane.last is None or lane.last.target == target)
+                            and now < lane.started_at + self.minimum_visit_interval_seconds)
                         or occupied.get(target.repository_id, 0) >= self.repository_concurrency
                         or not self._admit(target.key, now)):
                     deferred.append(label)
@@ -841,7 +853,8 @@ class IntegrationTrain:
             # Publication moved the ref; readiness must examine the collected
             # head, rather than the snapshot from before the child batch landed.
             if visit.state == "delivered":
-                snapshot = await lane.snapshot()
+                with snapshot_scope():
+                    snapshot = await lane.snapshot()
             completion = await lane.complete_epic(snapshot)
             events = [item for item in completion if item.get("blocking") is False]
             blockers += tuple(item for item in completion if item.get("blocking") is not False)
@@ -860,7 +873,8 @@ class IntegrationTrain:
             if visit.state == "delivered" and depart_next:
                 # Re-fetch after settlement: the successor must be built and
                 # checked on the newly observed delivery tip, in this turn.
-                successor = await self._visit_target(target, depart_next=False)
+                with snapshot_scope():
+                    successor = await self._visit_target(target, depart_next=False)
                 if successor.batch_id and successor.batch_id != visit.batch_id:
                     return replace(successor, detail={
                         **(successor.detail or {}), "settled_batch_id": visit.batch_id,
