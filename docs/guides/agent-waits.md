@@ -88,6 +88,19 @@ acknowledging another session's wait or crossing a project boundary.
 `source_unavailable`, cancellation and a failed producer are explicit outcomes;
 none implies success. See [wake context](wake-context-compaction.md).
 
+Transient resume workspace failures get up to three attempts with backoff while
+retaining the checkout. For a repaired workspace or launch hold, a supervisor can requeue
+the exact continuation generation without changing the resolved wait:
+
+```bash
+aq wait decide --wait-id WAIT_ID --decision requeue \
+  --continuation-id CONTINUATION_ID --expected-generation GENERATION \
+  --note 'Infrastructure repaired; retry this saved continuation'
+```
+
+Pause and uncertain-stop holds require their own recovery. Requeue is audited;
+the hold incident resolves when the fresh session receives its resume context.
+
 ## Deadlines and human input
 
 Operational deadlines escalate to the supervisor without waking the worker or
@@ -97,6 +110,17 @@ human. Extension preserves the original wait age and ceiling anchor. Repeated
 registration cannot reset the age. Human waits have no automatic deadline and
 require hibernation support. The supervisor resolves one with verified human
 evidence or an explicit `aq wait lift --response ...`; a worker cannot lift it.
+
+Operational wait and continuation incidents remain internal during Discord
+reconciliation and delivery retries. Only a committed `escalate_to_human` decision
+authorizes a wait incident's human delivery. Unread supervisor notices follow the
+message delivery engine's existing global-supervisor fallback.
+
+The wait service periodically refreshes pending CI subscriptions independently of
+train visits, including after activation is disabled for new waits. GitHub quota
+failures retain the subscription and retry after the provider's backoff; they are
+not source-unavailable outcomes. Remote verification is bounded so a stalled
+GitHub request cannot indefinitely retain the wait graph fence.
 
 Managed job admission remains opt-in (`resources.jobs.enabled`). Job results and
 logs remain under the job owner; inspect `aq job result JOB_ID --json`. Matter

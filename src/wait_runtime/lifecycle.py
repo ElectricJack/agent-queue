@@ -52,6 +52,10 @@ class WaitLifecycle:
             raise WaitError("wait.out_of_scope", "registration needs a bound owner")
         if args["condition"]["kind"] == "human" and not policy.hibernation_enabled:
             raise WaitError("wait.disabled", "human waits require hibernation support")
+        from src.waits.loops import prepare_progress
+
+        await prepare_progress(conn, [{"owner_kind": scope.owner_kind, "owner_id": scope.owner_id,
+                                      "project_id": scope.project_id, "session_id": scope.session_id}])
         await lock_graph(conn)
         anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
         if scope.project_id not in self.medians:
@@ -276,6 +280,8 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
+            if intent['facts'].get('workspace_retry', {}).get('due_at', 0) > self.clock():
+                continue
             key = (intent["id"], intent["suspension_generation"])
             pending = self._resume_tasks.get(key)
             if pending is not None and not pending.done():
