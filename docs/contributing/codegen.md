@@ -5,9 +5,9 @@ what generates each one, and what fails if you edit it yourself.
 
 ## Why this page exists
 
-Roughly 1,450 of AQ's tracked files are generated. They are committed — so a
-fresh checkout builds without a code-generation step, and so a diff shows the
-consequence of an interface change — but they are **not source**. Hand-editing
+AQ commits generated contracts and the Python API client so diffs show the
+consequence of an interface change. The TypeScript client is regenerated
+locally before dashboard commands. Generated artifacts are **not source**. Hand-editing
 one produces a change that the next regeneration silently reverts, and several
 of them have drift guards that will fail your build first.
 
@@ -28,7 +28,7 @@ This page is the list, in the order a change is most likely to reach them.
 | Artefact | Generated from | Command | Committed? |
 |---|---|---|---|
 | [`openapi.json`](../../openapi.json) | The FastAPI app, built offline from the checkout | `./scripts/regenerate-api-client.sh --offline` | yes |
-| [`packages/aq-client/`](../../packages/aq-client/) (1,442 files) | `openapi.json` + a pinned `openapi-python-client` | the same command | yes |
+| [`packages/aq-client/`](../../packages/aq-client/) (generated tree) | `openapi.json` + a pinned `openapi-python-client` | the same command | yes |
 | `packages/aq-ts-client/src/` | `openapi.json` + `@hey-api/openapi-ts` | `./scripts/regenerate-ts-client.sh --from-file` | **no** — gitignored |
 | [`src/playbook_v2_schema.json`](../../src/playbook_v2_schema.json) | The Playbook V2 Pydantic model | `python scripts/generate-playbook-schema.py` | yes |
 | [`docs/reference/cli-command-inventory.json`](../reference/cli-command-inventory.json) | The live `aq` Click tree | `python scripts/generate-cli-command-inventory.py` | yes |
@@ -36,7 +36,9 @@ This page is the list, in the order a change is most likely to reach them.
 | [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md) (one page per registered command, plus the index) | The command contract registry — the generated block only | `python scripts/gen-command-docs.py` | yes |
 | [`docs/reference/configuration-schema.json`](../reference/configuration-schema.json) | `AppConfig` | `python scripts/generate-config-schema-inventory.py` | yes |
 | [`tests/selection_catalogue.json`](../../tests/selection_catalogue.json) | `tests/selection_areas.yaml` + the test modules on disk | `python scripts/generate-selection-catalogue.py` | yes |
-| `tests/integration_ownership*.json` | Authored policy and fixed historical inputs in `tests/fixtures/generated_sources/ownership/` | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/integration_ownership*.json`, `tests/fixtures/generated_sources/ownership/*.json` | Authored module rows, policy sections and fixed historical inputs in `tests/fixtures/generated_sources/ownership/modules/` | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/fixtures/contracts/generated-command-audit.json` | Reviewed producer evidence in `tests/fixtures/contracts/command_audit_modules/`, one file per producer module | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/test_command_descriptors.py` | Authored Python definitions in `tests/fixtures/generated_sources/command_descriptors/` | `python scripts/generate-recorded-artifacts.py` | yes |
 | [`src/prompts/reviewed_playbooks/`](../../src/prompts/reviewed_playbooks/) | Shipped playbook markdown, through a human review step | `python scripts/rebuild-reviewed-playbook-artifacts.py` | yes |
 | [`module-inventory.json`](../plans/documentation-overhaul/module-inventory.json), [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json) | `git ls-files` + ownership rules | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` — **owning shard only**, see [below](#the-documentation-coverage-manifest) | yes |
 
@@ -93,8 +95,96 @@ normal publication authority and verification.
 
 Ownership policy and historical measurements are authored inputs, not new
 measurements at assembly time. Their canonical copies live in
-`tests/fixtures/generated_sources/ownership/`; generation reproduces the existing
-manifest and historical report without changing ceilings, revisions or fingerprints.
+`tests/fixtures/generated_sources/ownership/modules/<artifact>/`: `modules/`
+groups keyed evidence by source module, `policy/` holds individual reviewed
+policy sections and historical measurements, and `fingerprints/` holds existing
+fingerprint buckets. Edit the relevant shard after review. Generation combines
+the shards without measuring new ceilings, revisions or fingerprints. The two
+former canonical JSON files under `ownership/` are now generated compatibility
+projections, as are the copies under `tests/`.
+
+The producer audit likewise lives in
+`tests/fixtures/contracts/command_audit_modules/<producer-path>.json`; add or
+edit the reviewed command row in its producer module, then regenerate. The
+descriptor tests are assembled verbatim from numbered `.py.inc` definitions under
+`tests/fixtures/generated_sources/command_descriptors/`. Edit the definition's
+fragment; new definitions can use a new filename without editing an index or
+renumbering existing fragments. Their executable assertions remain authored.
+Both aggregate files use the generated merge path. Independent module or
+definition edits combine; conflicting edits to the same reviewed source shard
+remain source conflicts requiring resolution. Duplicate evidence is refused.
+
+`python scripts/bookkeeping_sources.py [--check]` rebuilds or checks only these
+bookkeeping projections. It never refreshes a command digest or invents review
+evidence. The full regeneration command includes the same step through
+`generate-recorded-artifacts.py`.
+
+### Legacy bookkeeping migration
+
+An older branch may carry reviewed evidence only in the former aggregates:
+`tests/fixtures/generated_sources/ownership/integration_ownership.json`,
+`tests/fixtures/generated_sources/ownership/integration_ownership_report.json`,
+`tests/fixtures/contracts/generated-command-audit.json`, or
+`tests/test_command_descriptors.py`. Those deltas must be transferred before
+regeneration. The train checks both source sides against their own shards,
+including clean single-sided changes, before restoring any generated output.
+Unrepresented evidence produces an **Unmigrated legacy bookkeeping evidence**
+conflict naming the paths and this recipe. Normal regeneration and `--check`
+also refuse committed or edited aggregate evidence absent from the shards;
+they leave that evidence untouched.
+
+1. Before merging or regenerating, retain the old PR head and its merge base
+   with current `origin/dev`. Save both versions and their exact diff for all
+   four paths outside the checkout. Include any compatibility ownership changes
+   present only in `tests/integration_ownership*.json` and reconcile them too.
+2. Merge current dev and resolve ordinary authored-source conflicts. Keep the
+   saved evidence while transferring its additions, edits **and deletions** to
+   the current shards. Preserve concurrent dev evidence. Resolve overlapping
+   reviewed changes explicitly; choosing an entire aggregate loses evidence.
+3. Ownership rows in `shared`, `exclusions`, `storage_sinks`,
+   `generic_dependencies`, `shared_state`, and `shared_definitions` belong under
+   `tests/fixtures/generated_sources/ownership/modules/<artifact>/modules/`,
+   grouped by the row key's module before `::`, with the existing
+   `{section: {key: value}}` wrapper. Non-path keys use
+   `modules/_other/<section>.json`. Other top-level sections, including reviewed
+   historical measurements, ceilings and exceptions, belong in
+   `policy/<section>.json`. Transfer fingerprint list changes to
+   `fingerprints/<field>/<first-hex-character>.json`. Preserve reviewed pins;
+   never remeasure baselines to satisfy a check.
+4. Transfer audit rows verbatim into
+   `tests/fixtures/contracts/command_audit_modules/<producer-path>.json`, keyed
+   by command name. Preserve digests, consumers, notes and reviewed metadata.
+   Remove deleted rows; a producer move removes its old row and adds its new
+   row. Do not bulk-refresh digests.
+5. Transfer exact changed descriptor definitions and decorated tests to the
+   matching numbered `.py.inc` fragments under
+   `tests/fixtures/generated_sources/command_descriptors/`. The preamble owns
+   imports and the docstring. Place new definitions in lexical order before
+   use without renumbering existing fragments. Preserve assertions, bytes and
+   separators, and remove deleted definitions.
+6. Resolve the four aggregate conflicts to the corresponding shard projections
+   **after** porting every saved delta. `python scripts/bookkeeping_sources.py`
+   projects these now-reviewed shards; stage the resolved paths and commit the
+   reviewed migration before running the full generation check if the old HEAD
+   still contains unported aggregates. Then run
+   `scripts/regenerate-generated.sh` and its `--check` mode. Review the output
+   against both the saved delta and current dev evidence. Verify that no row,
+   policy exception, pin or assertion vanished. Run the generated-artifact,
+   generated-command-contract, descriptor, integration-size and selection
+   catalogue tests plus branch-specific checks. Commit shards and projections
+   together, then publish from the held branch.
+
+Older Git versions supply only temporary blobs to a low-level merge driver.
+The default `aq-generated` driver conservatively leaves changed legacy files
+conflicted when it cannot prove their provenance. For a branch whose deltas
+are already ported, callers may configure the same driver with explicit
+`--base-ref <merge-base> --current-ref <our-head> --other-ref <their-head>`
+before its `%O %A %B %P` arguments. It verifies those refs against all supplied
+blobs, validates each source side, then merges. This is an evidence check, not
+an override. Untouched legacy branches and migrated branches still merge and
+regenerate through the train. The final batch sweep rechecks its frozen merge
+inputs through `AQ_GENERATED_MERGE_INPUTS`, supplied by the integration runner
+in its otherwise isolated subprocess environment; ambient values are discarded.
 
 Reviewed playbooks similarly have explicit canonical inputs under
 `tests/fixtures/generated_sources/playbooks/`: a readable `definition.json`, the
@@ -148,7 +238,8 @@ flowchart LR
     A[src/api/models<br/>codegen routers] --> B[openapi.json]
     B --> C[packages/aq-client/<br/>Python, committed]
     B --> D[packages/aq-ts-client/src/<br/>TypeScript, gitignored]
-    C --> E[aq CLI]
+    C --> E[Python consumers]
+    CLI[aq CLI] --> EXEC[POST /api/execute]
     D --> F[dashboard]
 ```
 
@@ -168,17 +259,17 @@ aq test tests/test_api_client_contract.py
 ```
 
 ```text
-======================== 9 passed, 8 warnings in 17.80s ========================
+======================== 9 passed, 8 warnings in 17.80s =================
 ```
 
 `--offline` is the canonical path: `create_app()` builds the whole route
 surface from the command registry, so the spec is a pure function of the
 checkout and cannot pick up another instance's state
 ([`src/api/spec.py`](../../src/api/spec.py)). The other two modes exist for
-completeness — no argument fetches from a running daemon at
-`AGENT_QUEUE_API_URL` (default `http://127.0.0.1:8081`), and `--from-file`
-reuses the saved spec. Both render through the same writer so the committed
-file stays indented and diffable; the daemon serves it minified, and writing
+completeness — no argument fetches from a running daemon (the Python script
+uses `AGENT_QUEUE_API_URL`, default `http://127.0.0.1:8081`; the TypeScript
+script uses `http://127.0.0.1:8081`), and `--from-file` reuses the saved spec.
+Both render through the same writer so the committed file stays indented and diffable; the daemon serves it minified, and writing
 that straight to disk produces an undiffable single line the drift guard
 rejects.
 
@@ -247,8 +338,10 @@ box that had never installed the client. So:
   shares the main checkout's venv but carries no `AQ_DB_SCOPE`. Both refusals
   happen before anything is regenerated. A missing or dangling install is
   installed; one that already points here is refreshed.
-* Detection and install use the same `python3` (`importlib` for one,
-  `-m pip` for the other), so they cannot be about two different environments.
+* Detection, offline spec generation and install use the same interpreter:
+  the checkout's `.venv/bin/python` when executable, otherwise `python3` on
+  `PATH`. Detection uses `importlib`; install uses `-m pip`. They cannot inspect
+  one environment and install into another.
 
 Nothing in a slot needs the reinstall: `tests/test_api_client_contract.py`
 imports the client from the checkout's `packages/aq-client/`, not from the
@@ -281,8 +374,10 @@ when you want the error rather than the surprise — for instance,
 [`scripts/e2e-dashboard.sh`](../../scripts/e2e-dashboard.sh) refuses to start
 if the directory is missing and tells you exactly this command.
 
-`packages/aq-ts-client/src/index.ts` is the one file in that directory that is
-*not* generated; `.gitignore` negates it explicitly.
+`packages/aq-ts-client/src/index.ts` is generated too. Only `package.json`
+and `tsconfig.json` are tracked in that package. The `.gitignore` negation for
+`src/index.ts` cannot re-include a file inside the excluded `src/` directory;
+generation supplies the entry point before dashboard commands run.
 
 ## The playbook JSON schema
 
@@ -319,7 +414,7 @@ CLI inventory current: 328 leaf commands
 Regenerate without `--check` when you add, rename or retire a command.
 [`tests/test_cli_inventory.py`](../../tests/test_cli_inventory.py) is the
 enforcing test, and CI runs it in its own suite arm
-([CI](ci.md#the-four-suite-arms)) so a CLI change cannot be lost in the noise
+([CI](ci.md#the-suite-arms)) so a CLI change cannot be lost in the noise
 of the default arm.
 
 ## The playbook command pages
@@ -390,16 +485,24 @@ as `hibernation-main-refresh-contract-changes.json`.
 
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
-pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
-built-in handlers. Adding a handler or changing its return branches requires
+pinned in the authored `tests/fixtures/contracts/command_audit_modules/` shards
+and projected into `tests/fixtures/contracts/generated-command-audit.json`, keyed
+by all built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
+
+The restart hold correction records `restart_task`'s optional `override_hold` and
+`reason` arguments in `restart-hold-contract-changes.json`. Removing exactly that
+transport delta restores the pre-hold dev catalogue bytes. The producer audit
+pins the explicit refusal and delegated restart paths; recovery tests cover exact
+hold fencing, release authority and recorded provenance.
 
 After reviewing a handler's return branches and contract fields, refresh its
 source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
 (repeat `--command` for each reviewed handler). The default mode, also available
 as `--check`, reports digest drift without writing. This command updates only
-the selected handler digests; return
+the selected handler digests in their owning module shards and refreshes the
+aggregate projection; return
 branches and other audit evidence stay authored. A reviewed helper requires
 `--helper <existing-helper-name>` with exactly one `--command`; this updates only
 that command's existing helper pin, preserving the handler and other helper
@@ -526,7 +629,7 @@ now reaches `main` only after CI has tested the combination ([CI](ci.md#concurre
 | Symptom | Cause | Recovery |
 |---|---|---|
 | `Error: openapi-python-client X is installed but packages/aq-client/ is generated by Y` | Wrong generator version. | `pip install 'openapi-python-client==Y'`. Deliberate upgrade? Bump `GENERATOR_VERSION` and commit the regenerated tree with it. |
-| `Error: ruff is not installed, and the generator's post hooks format the generated Python with it.` | No ruff on `PATH`. | `pip install -e '.[dev]'`. The generator only *warns* and exits 0 without it, which would record unformatted output as canonical. |
+| `Error: ruff is not installed, and the generator's post hooks format the generated Python with it.` | No ruff on `PATH`. | `pip install -e '.[dev]'`. The upstream generator only warns without it; this script fails before generation to avoid recording unformatted output as canonical. |
 | `Error: --install is refused in a worker session (AQ_DB_SCOPE=worker).` | A slot's `pip` is the environment the daemon and every other slot share. | Regenerate without `--install`; nothing in a slot needs it ([why](#the-script-leaves-the-environment-alone)). |
 | `Error: --install would re-point this environment's agent-queue-api-client` | The installed client imports from another tree — typically a worktree sharing the main checkout's venv. | Usually nothing: regenerate without `--install`. To move the install deliberately, run the `python3 -m pip install -e …` line the error prints. |
 | `import agent_queue_api_client` resolves into `.aq/worktrees/slot-N/` | A pre-2026-09-20 script ran in that slot and re-pointed the shared venv. | From the main checkout, outside a slot: `python3 -m pip install -e packages/aq-client`. |

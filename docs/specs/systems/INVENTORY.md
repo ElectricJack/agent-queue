@@ -704,4 +704,3 @@ re-split them without a reason:
   spec should quote the review id and approval state at writing time.
 - **Open-task snapshot.** The epic column is a 2026-10-20 snapshot. Child
   specs re-query before writing their PLANNED section.
-

@@ -7,8 +7,9 @@
 > Start at [the documentation home](../README.md) for what AQ does today.
 
 **Date:** 2026-09-20
-**Status:** proposed — the design the `bold-rapids` implementation tasks are held
-to; written ahead of the code, and nothing here has shipped
+**Status:** implemented historical design record (`bold-rapids` complete). For current
+commands, defaults and recovery behaviour, use the [operator guide](../guides/provider-outage.md)
+and [providers system spec](systems/providers.md).
 **Epic:** `bold-rapids` — *Provider failover: re-route work when a provider runs
 out of usage or loses its login*
 **Implemented by:** `bold-rapids.2` (availability state), `.3` (pin semantics and
