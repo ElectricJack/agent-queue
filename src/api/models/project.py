@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from src.observations.models import SnapshotValue
 
 
 class ProjectSummary(BaseModel):
@@ -141,7 +142,7 @@ class WorkspaceListDiagnostics(BaseModel):
     authority: str
 
 
-class ListProjectsResponse(BaseModel):
+class ListProjectsResponse(SnapshotValue):
     projects: list[ProjectSummary] = []
 
 
@@ -328,6 +329,20 @@ class RepairWorkspaceCheckoutResponse(BaseModel):
     event_id: int | None = None
 
 
+class ProjectRelocateResponse(BaseModel):
+    success: bool
+    preview: bool | None = None
+    digest: str | None = None
+    plan: dict[str, Any] | None = None
+    blockers: list[str] = []
+    already_applied: bool = False
+    binding: dict[str, Any] | None = None
+    recovery_manifest: str | None = None
+    rollback: str | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
 class SetActiveProjectResponse(BaseModel):
     active_project: str | None = None
     name: str | None = None
@@ -347,6 +362,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "resume_project": ResumeProjectResponse,
     "set_default_branch": SetDefaultBranchResponse,
     "get_project": GetProjectResponse,
+    "project_relocate": ProjectRelocateResponse,
     "add_workspace": AddWorkspaceResponse,
     "list_workspaces": ListWorkspacesResponse,
     "remove_workspace": RemoveWorkspaceResponse,
