@@ -3007,6 +3007,15 @@ class SessionReconciler:
                 continue
             if await self._disabled_project_supervisor(row):
                 continue
+            from src.sessions.supervisor_health import is_supervisor, reconcile
+
+            if is_supervisor(row):
+                try:
+                    if await reconcile(self, row, now=now):
+                        continue
+                except Exception:
+                    logger.warning("supervisor health recovery failed for %s", row.name, exc_info=True)
+                    continue
             waiting, _ = await self._wait_lease(row, now)
             if waiting:
                 continue
@@ -3089,6 +3098,8 @@ class SessionReconciler:
             if address is None or row.state in _LIVE_STATES:
                 continue
             if self._is_deferred(row.name):
+                continue
+            if now < (row.supervisor_health or {}).get("next_retry_at", 0):
                 continue
             last = row.last_activity or row.started_at or 0.0
             backoff = self.sessions_config.restart_backoff_seconds * max(row.restarts, 1)

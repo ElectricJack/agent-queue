@@ -288,7 +288,7 @@ async def cancellation_policy(
 
 def _attempt_key(ctx: StepContext) -> str:
     iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
-    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt)
+    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt, ctx.iteration_path)
 
 
 def _fail(
@@ -372,7 +372,7 @@ class LiveAgentTaskExecutor:
         child_principal = narrow_for_child(step, ctx.principal, profile_policy, ctx.step_id)
 
         try:
-            objective = resolve_value(step.objective, ctx.scope)
+            objective = resolve_value(step.objective, ctx.scope, ctx.evaluation_budget)
         except ValueResolutionError as exc:
             return _fail(
                 "input_resolution_failed",
@@ -485,6 +485,7 @@ class LiveAgentTaskExecutor:
             run_id=ctx.run_id,
             step_id=ctx.step_id,
             iteration=-1 if ctx.iteration_index is None else ctx.iteration_index,
+            iteration_path=ctx.iteration_path,
             kind="agent_task",
             match={"task_id": child_task_id},
             deadline_at=min(deadlines) if deadlines else None,
