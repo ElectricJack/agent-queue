@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/commands/playbook_commands.py::PlaybookCommandsMixin._cmd_update_playbook_source": {
+      "baseline_span": [
+        408,
+        678
+      ],
+      "landing_span": [
+        408,
+        677
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}
