@@ -500,6 +500,16 @@ nothing; claim again.
 | `prepare_failed` | the workspace could not be prepared | see the next section |
 | `out_of_scope` | the task is not this session's to touch | do not retry |
 
+In a stacked train project `no_ready_work` can name why stacked work was not
+selected. `stack_snapshot_changed` means a pinned stack ref moved while the
+claim was checking it; the claim re-observes up to three times, then refuses,
+and `stack_evidence` names the ref with its expected and observed OIDs.
+`stack_snapshot_unavailable` means Git gave no stack evidence at all (a failed
+or backed-off fetch): stacked dependents are withheld, while roots and work
+whose prerequisites have delivered still claim, and `stack_evidence.reason`
+carries the Git error. A run of `stack_snapshot_unavailable` points at the
+repository fetch, not the task graph.
+
 ## `slot_reset_failed`: the workspace could not be made clean
 
 **Symptom.** A claim comes back `prepare_failed`, and the task carries

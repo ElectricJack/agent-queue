@@ -146,6 +146,7 @@ class World:
                 smoke.api_checked("set_playbook_enabled", {
                     "playbook_id": smoke.FAILOVER_PLAYBOOK, "enabled": True,
                 })
+                smoke.wait_for_restored_readiness()
             except BaseException:
                 self.poisoned = True
                 raise
