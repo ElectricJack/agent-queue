@@ -106,6 +106,13 @@ describe("selected session attempts", () => {
     mount();
     expect(await screen.findByRole("tab", { name: "Pane" })).toBeInTheDocument();
   });
+  it("opens a running session on the pane tab", async () => {
+    state.session.started_at = 100;
+    request.mockResolvedValue({ data: { task_id: "task-a", sessions: [{ ...oldAttempt, ended_at: null, state: "running" }] } });
+    mount();
+    expect(await screen.findByRole("tab", { name: "Pane" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Live interactive terminal")).toBeInTheDocument();
+  });
   it("allows the shared terminal for a matching current attempt", async () => {
     state.session.started_at = 100;
     request.mockResolvedValue({ data: { task_id: "task-a", sessions: [{ ...oldAttempt, ended_at: null, state: "running" }] } });
