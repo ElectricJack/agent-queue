@@ -1,0 +1,11 @@
+{
+  "exclusions": {
+    "src/projects/github.py::GitHubAuthStatus.to_dict": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/projects/github.py::GhClient": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/projects/github.py::GitHubError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/projects/github.py::parse_github_repository": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/projects/github.py::scrub_secrets": "Generic credential scrubber shared by GitHub clients, authentication diagnostics and Git transport; contains no integration policy or state."
+  }
+}

@@ -417,6 +417,7 @@ def wait_ack(ctx, wait_id, continuation_id, generation, claim_epoch):
             "cancel",
             "reroute",
             "escalate_to_human",
+            "requeue",
         ]
     ),
     required=True,
@@ -425,11 +426,12 @@ def wait_ack(ctx, wait_id, continuation_id, generation, claim_epoch):
 @click.option("--extend-seconds", type=click.FloatRange(min=60, max=86400), default=None)
 @click.option("--to", default=None)
 @click.option("--expected-generation", type=click.IntRange(min=1), default=None)
+@click.option("--continuation-id", default=None)
 @click.option("--project", "project_id", default=None)
 @click.pass_context
 @_handle_errors
 def wait_decide(ctx, **params):
-    """Record a supervisor decision on an escalated wait."""
+    """Record a supervisor decision on a wait or held continuation."""
     emit(ctx, _execute(ctx, "wait_decide", {k: v for k, v in params.items() if v is not None}))
 
 
