@@ -235,6 +235,7 @@ class CheckWatcher:
                 raise WaitError("wait.unavailable", "CI observation is backing off",
                                 retry_after=due - self.clock()) from exc
             if isinstance(exc, (TimeoutError, ConnectionError)):
+                self._backoff[repo_id] = self.clock() + 60
                 raise WaitError("wait.unavailable", "CI observation temporarily unavailable",
                                 retry_after=300) from exc
             return self._snapshot(cond, "unavailable", "provider_unavailable",

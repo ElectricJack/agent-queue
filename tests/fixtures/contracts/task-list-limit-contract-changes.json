@@ -1,0 +1,721 @@
+{
+  "source_base": "3deb7954d8ec711b4a62321879a39c2a82255c50",
+  "reason": "Add an optional positive flat-live limit. Snapshot paging, outcomes, result schemas and authorization stay unchanged; preserve prior compatibility recordings.",
+  "previous_cli_catalogue_sha256": "e688cbb6b101db3bf624cf268b9727727163554a5b7786d3af2afad4f2ad91c9",
+  "cli_catalogue_sha256": "b85c8b8713ebd03220f121a17859d9fb9f7890a4a232751a79aee63ef98c75a1",
+  "contracts": {
+    "list_tasks": {
+      "previous_fingerprint": "sha256:6f4227faba6e74f07f46e7ee2caafebdb9455f41028fe15cc9d6e50c507eef26",
+      "fingerprint": "sha256:a04b86d33fc2cb1969ec9e471b5b8ccf3006228efde28577fe1a101653ebca91",
+      "execution": {
+        "schema_generation": 1,
+        "name": "list_tasks",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "pagination": {
+              "anyOf": [
+                {
+                  "const": "snapshot",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "snapshot_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "page_token": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "page_size": {
+              "anyOf": [
+                {
+                  "maximum": 500,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "display_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "show_dependencies": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_completed": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "completed_only": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "show_all": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "labels": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "any_label": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "success": {
+              "default": true,
+              "type": "boolean"
+            },
+            "complete": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "execution_status": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "error_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reasons": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "snapshot_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "producer": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "producer_version": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "observed_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "materialized_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "expires_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "interval_started_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "interval_finished_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "coverage": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "identity_manifest": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "page_tokens": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "artifacts": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "page_count": {
+              "default": 0,
+              "type": "integer"
+            },
+            "page_kind": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "page_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "display_mode": {
+              "default": "flat",
+              "type": "string"
+            },
+            "tasks": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "total": {
+              "default": 0,
+              "type": "integer"
+            },
+            "hidden_completed": {
+              "default": 0,
+              "type": "integer"
+            },
+            "filtered": {
+              "default": false,
+              "type": "boolean"
+            },
+            "dependency_display": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "label_filter_scope": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "trees": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "total_root_tasks": {
+              "default": 0,
+              "type": "integer"
+            },
+            "total_tasks": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "listed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "list_tasks",
+        "side_effect": "read",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [
+          {
+            "subject": "task_list",
+            "when": {
+              "arg_present": null,
+              "arg_equals": null
+            },
+            "kind": "read"
+          }
+        ],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      }
+    }
+  },
+  "transport_definitions": {
+    "list_tasks": {
+      "previous_definition": {
+        "name": "list_tasks",
+        "description": "List tasks, optionally filtered by project or status. IMPORTANT: By default, completed/failed/blocked tasks are HIDDEN and only active tasks are returned. When presenting results from the default filter, say 'N active tasks' (not just 'N tasks'). Use show_all=true or include_completed=true to include finished tasks. Use completed_only=true to see only finished tasks. An explicit status filter overrides all convenience flags. Supports three display modes: 'flat' (default list), 'tree' (hierarchical view with subtasks), and 'compact' (root tasks with progress bars). Tree and compact modes require project_id. Use show_dependencies=true to annotate each task with its upstream depends_on and downstream blocks relationships \u2014 useful for understanding blocking chains.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string",
+              "description": "Filter by project ID (optional, but required for tree/compact modes)"
+            },
+            "status": {
+              "type": "string",
+              "description": "Filter by exact status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc. When provided, show_all, include_completed, and completed_only are ignored."
+            },
+            "show_all": {
+              "type": "boolean",
+              "description": "When true, return ALL tasks regardless of status (active + completed + failed + blocked). Default false (only active tasks are shown)."
+            },
+            "include_completed": {
+              "type": "boolean",
+              "description": "When true, return all tasks including completed/failed/blocked. Alias for show_all. Default false."
+            },
+            "completed_only": {
+              "type": "boolean",
+              "description": "When true, return ONLY completed/failed/blocked tasks. Default false."
+            },
+            "display_mode": {
+              "type": "string",
+              "enum": [
+                "flat",
+                "tree",
+                "compact"
+              ],
+              "description": "How to format the task list. 'flat' (default) returns a JSON array of task objects. 'tree' returns a hierarchical view using box-drawing characters showing parent/subtask relationships \u2014 ideal for plans with subtasks. 'compact' returns each root task with a progress bar summarizing subtask completion. When display_mode is 'tree' or 'compact', the response includes a 'display' field with pre-formatted text."
+            },
+            "show_dependencies": {
+              "type": "boolean",
+              "description": "When true, each task in the result includes 'depends_on' (list of upstream tasks with id and status) and 'blocks' (list of downstream task IDs). Also adds a 'dependency_display' field with pre-formatted text showing dependency relationships. Use this when the user asks about task dependencies, blocking chains, or why a task is waiting. Default false."
+            },
+            "pagination": {
+              "anyOf": [
+                {
+                  "const": "snapshot",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pagination"
+            },
+            "snapshot_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Snapshot Id"
+            },
+            "page_token": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Page Token"
+            },
+            "page_size": {
+              "anyOf": [
+                {
+                  "maximum": 500,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Page Size"
+            }
+          }
+        }
+      },
+      "definition": {
+        "name": "list_tasks",
+        "description": "List tasks, optionally filtered by project or status. IMPORTANT: By default, completed/failed/blocked tasks are HIDDEN and only active tasks are returned. When presenting results from the default filter, say 'N active tasks' (not just 'N tasks'). Use show_all=true or include_completed=true to include finished tasks. Use completed_only=true to see only finished tasks. An explicit status filter overrides all convenience flags. Supports three display modes: 'flat' (default list), 'tree' (hierarchical view with subtasks), and 'compact' (root tasks with progress bars). Tree and compact modes require project_id. Use show_dependencies=true to annotate each task with its upstream depends_on and downstream blocks relationships \u2014 useful for understanding blocking chains.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string",
+              "description": "Filter by project ID (optional, but required for tree/compact modes)"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum tasks in a flat live listing, after filtering. The total remains uncapped. Use page_size for snapshots."
+            },
+            "status": {
+              "type": "string",
+              "description": "Filter by exact status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc. When provided, show_all, include_completed, and completed_only are ignored."
+            },
+            "show_all": {
+              "type": "boolean",
+              "description": "When true, return ALL tasks regardless of status (active + completed + failed + blocked). Default false (only active tasks are shown)."
+            },
+            "include_completed": {
+              "type": "boolean",
+              "description": "When true, return all tasks including completed/failed/blocked. Alias for show_all. Default false."
+            },
+            "completed_only": {
+              "type": "boolean",
+              "description": "When true, return ONLY completed/failed/blocked tasks. Default false."
+            },
+            "display_mode": {
+              "type": "string",
+              "enum": [
+                "flat",
+                "tree",
+                "compact"
+              ],
+              "description": "How to format the task list. 'flat' (default) returns a JSON array of task objects. 'tree' returns a hierarchical view using box-drawing characters showing parent/subtask relationships \u2014 ideal for plans with subtasks. 'compact' returns each root task with a progress bar summarizing subtask completion. When display_mode is 'tree' or 'compact', the response includes a 'display' field with pre-formatted text."
+            },
+            "show_dependencies": {
+              "type": "boolean",
+              "description": "When true, each task in the result includes 'depends_on' (list of upstream tasks with id and status) and 'blocks' (list of downstream task IDs). Also adds a 'dependency_display' field with pre-formatted text showing dependency relationships. Use this when the user asks about task dependencies, blocking chains, or why a task is waiting. Default false."
+            },
+            "pagination": {
+              "anyOf": [
+                {
+                  "const": "snapshot",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pagination"
+            },
+            "snapshot_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Snapshot Id"
+            },
+            "page_token": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Page Token"
+            },
+            "page_size": {
+              "anyOf": [
+                {
+                  "maximum": 500,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Page Size"
+            }
+          }
+        }
+      },
+      "previous_sha256": "3f93d388c2ada0385712cf2cc6f42c0f075b2ce1a4487c49faf03f30af479e1c",
+      "sha256": "405874b5c48dfeec7109545d953c691f4d201e90033b9b160539365c495da86c"
+    }
+  },
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/review-pipeline.artifact.json": {
+      "previous_sha256": "e1ec9ce89cd9943d60073ada5915f0d1fc8a7b0c9ce69a6d961ac84e3eb64c51",
+      "sha256": "9ec61fe64869ab7de051a8c89f4cd6eaf0e7c863005dfec3b1a4c797a315b103",
+      "preserved_previous_path": "tests/fixtures/playbooks/task-list-limit-before/review-pipeline.artifact.json"
+    },
+    "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json": {
+      "previous_sha256": "aced2e2f87341fc30dbddd2b5ad1769f2b80c75978f8eae2cc6f8835015bf5d5",
+      "sha256": "2becee2b708bafe7d4c8d84a1ff067c71152ecbaddb4da773d87d9cd74114137",
+      "preserved_previous_path": "tests/fixtures/playbooks/task-list-limit-before/review-pipeline.v6.artifact.json"
+    },
+    "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json": {
+      "previous_sha256": "d5a45916ad70238686c5f0532b28f54ecef1a70a8111f39f28bda8771d11088d",
+      "sha256": "50174e01136ad1767407e173b587f89ea476c3897550b4a88633ff58ce38c8f9",
+      "preserved_previous_path": "tests/fixtures/playbooks/task-list-limit-before/stuck-task-watch/artifact.json"
+    },
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/artifact.json": {
+      "previous_sha256": "0768ba1ccb8aa14f126a58dff55fa291e6c208399a8bd01124f044112b63c910",
+      "sha256": "3456b0943a15ec05c3d7ea8bdd86c6f558e472adc7cb3686c2326cd95917a1db",
+      "preserved_previous_path": "tests/fixtures/playbooks/task-list-limit-before/stuck-task-watch-reminder/artifact.json"
+    },
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/artifact.sha256": {
+      "previous_sha256": "98d67c4f25bda886ce22d6b9787a8d69b7a64f1bc980c391a8589297cac13d79",
+      "sha256": "a95703477c057ab093f934ab341ad9c29a9269c44dcd7364c4217b5dd7edfa25",
+      "preserved_previous_path": "tests/fixtures/playbooks/task-list-limit-before/stuck-task-watch-reminder/artifact.sha256"
+    },
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/manifest.md": {
+      "previous_sha256": "9a6b7b877fce2335c72bcfb221ab7911c6703e61f1a50139bbb61a7146f8b04a",
+      "sha256": "d2e0b583cf0a2e4ce5e363213f3362c2f590619772c75f60cdb518e5491b524e",
+      "preserved_previous_path": "tests/fixtures/playbooks/task-list-limit-before/stuck-task-watch-reminder/manifest.md"
+    }
+  }
+}

@@ -676,6 +676,11 @@
             "type": "string",
             "description": "Filter by project ID (optional, but required for tree/compact modes)"
           },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum tasks in a flat live listing, after filtering. The total remains uncapped. Use page_size for snapshots."
+          },
           "status": {
             "type": "string",
             "description": "Filter by exact status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc. When provided, show_all, include_completed, and completed_only are ignored."
