@@ -35,7 +35,9 @@ def apply_agent_overrides(profile, agent, *, agent_profile=None):
     return effective
 
 
-def resolve_launch_settings(profile, harness, builder, task_class=None) -> dict:
+def resolve_launch_settings(
+    profile, harness, builder, task_class=None, *, for_display: bool = False,
+) -> dict:
     """The LLM settings actually used by the shared SessionSpecBuilder."""
     provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
     class_id = (
@@ -44,7 +46,15 @@ def resolve_launch_settings(profile, harness, builder, task_class=None) -> dict:
         or getattr(profile, "default_class", None)
         or None
     )
-    model = builder._resolve_model(profile, harness, task_class)
+    # Retired classes can remain on historical worker definitions. A roster
+    # read is not a launch attempt: show the unresolved class without invoking
+    # the launch resolver (and warning once per historical worker per poll).
+    retired = (
+        for_display and class_id
+        and class_id not in builder._intelligence_classes
+        and not getattr(profile, "_agent_model_override", None)
+    )
+    model = "" if retired else builder._resolve_model(profile, harness, task_class)
     return {
         "llm_provider": provider or None,
         "model": model or None,
