@@ -8,7 +8,9 @@ are patched — nothing here touches Docker or a real process.
 
 from __future__ import annotations
 
+import gzip
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +20,72 @@ from click.testing import CliRunner
 import src.cli.daemon as daemon_mod
 from src.cli.app import cli
 from src.sessions.env import AQ_MARKER_KEYS, DAEMON_ENV_STRIP_KEYS, DB_ISOLATION_KEYS
+
+
+def test_post_start_doctor_uses_cli_instead_of_daemon_entrypoint(monkeypatch):
+    response = MagicMock()
+    response.__enter__.return_value.status = 200
+    run = MagicMock(return_value=SimpleNamespace(stdout="", stderr="", returncode=0))
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+    monkeypatch.setattr(
+        daemon_mod, "_resolve_agent_queue_bin",
+        lambda: pytest.fail("daemon entrypoint treats doctor as a config path"),
+    )
+    with patch("urllib.request.urlopen", return_value=response):
+        daemon_mod._post_daemon_checks()
+    command = run.call_args.args[0]
+    assert command[:4] == [daemon_mod.sys.executable, "-m", "src.cli.app", "doctor"]
+    assert command[4:] == ["--check", "pools.stale_worktree_checkouts", "--fix"]
+
+
+def test_log_rotation_preserves_bytes_and_retains_only_its_newest_archives(tmp_path, monkeypatch):
+    log = tmp_path / "custom.log"
+    content = b"subprocess output\xff\n" * 10
+    log.write_bytes(content)
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 1)
+    monkeypatch.setattr(daemon_mod.time, "strftime", lambda _: "20261004120000")
+    for timestamp in ("20261001120000", "20261002120000", "20261003120000"):
+        (tmp_path / f"custom.log.{timestamp}.gz").write_bytes(b"old archive")
+    unrelated = tmp_path / "other.log.20261001120000.gz"
+    unrelated.write_bytes(b"other log")
+    malformed = tmp_path / "custom.log.backup.gz"
+    malformed.write_bytes(b"manual backup")
+
+    daemon_mod._rotate_if_needed(str(log))
+
+    assert log.read_bytes() == b""
+    with gzip.open(tmp_path / "custom.log.20261004120000.gz", "rb") as archive:
+        assert archive.read() == content
+    assert not (tmp_path / "custom.log.20261001120000.gz").exists()
+    assert (tmp_path / "custom.log.20261002120000.gz").exists()
+    assert (tmp_path / "custom.log.20261003120000.gz").exists()
+    assert unrelated.read_bytes() == b"other log"
+    assert malformed.read_bytes() == b"manual backup"
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_small_or_missing_log_is_not_rotated(tmp_path, monkeypatch, exists):
+    log = tmp_path / "daemon.log"
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 4)
+    if exists:
+        log.write_bytes(b"four")
+    daemon_mod._rotate_if_needed(str(log))
+    assert list(tmp_path.glob("*.gz")) == []
+    assert log.exists() is exists
+    if exists:
+        assert log.read_bytes() == b"four"
+
+
+def test_rotation_failure_preserves_active_log_and_existing_archive(tmp_path, monkeypatch):
+    log = tmp_path / "daemon.log"
+    log.write_bytes(b"active output")
+    backup = tmp_path / "daemon.log.20261004120000.gz"
+    backup.write_bytes(b"existing archive")
+    monkeypatch.setattr(daemon_mod, "MAX_LOG_SIZE_BYTES", 1)
+    monkeypatch.setattr(daemon_mod.time, "strftime", lambda _: "20261004120000")
+    daemon_mod._rotate_if_needed(str(log))
+    assert log.read_bytes() == b"active output"
+    assert backup.read_bytes() == b"existing archive"
 
 
 @pytest.fixture(autouse=True)
@@ -115,7 +183,7 @@ def test_start_scrubs_session_environment_before_launch(
 
     def popen(*args, **kwargs):
         child_environment.update(kwargs["env"])
-        return SimpleNamespace(pid=123)
+        return SimpleNamespace(pid=123, poll=lambda: None)
 
     class HealthyResponse:
         status = 200
@@ -147,7 +215,6 @@ def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
     import itertools
     import urllib.error
     import urllib.request
-    from types import SimpleNamespace
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text("{}")
@@ -162,9 +229,17 @@ def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
     monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
     monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: False)
     monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
-    monkeypatch.setattr(daemon_mod.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(pid=123))
+    proc = MagicMock(pid=123)
+    proc.poll.return_value = None
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", lambda *a, **kw: proc)
     signals = []
     monkeypatch.setattr(daemon_mod.os, "kill", lambda pid, sig: signals.append(sig))
+
+    def terminate():
+        signals.append(daemon_mod.signal.SIGTERM)
+        proc.poll.return_value = -15
+
+    proc.terminate.side_effect = terminate
     ticks = itertools.count(step=15)
     monkeypatch.setattr(daemon_mod.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(daemon_mod.time, "sleep", lambda _: None)
@@ -176,6 +251,330 @@ def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
     assert daemon_mod.start_daemon() is expected
     assert (tmp_path / "pid").exists() is expected
     assert any(sig != 0 for sig in signals) is (not expected)
+
+
+@pytest.fixture
+def startup_case(tmp_path, monkeypatch):
+    """A launched child and monotonic clock, with every external probe stubbed."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}")
+    for name, path in {
+        "CONFIG_PATH": config_path,
+        "PID_FILE": tmp_path / "daemon.pid",
+        "LOG_PATH": tmp_path / "daemon.log",
+    }.items():
+        monkeypatch.setattr(daemon_mod, name, str(path))
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
+    monkeypatch.setattr("src.cli.client._resolve_api_url", lambda: "http://daemon.test")
+    proc = MagicMock(pid=123)
+    proc.poll.return_value = None
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", lambda *a, **kw: proc)
+    raw_kill = MagicMock(side_effect=AssertionError("startup must use its child handle"))
+    monkeypatch.setattr(daemon_mod.os, "kill", raw_kill)
+    clock = SimpleNamespace(now=0.0, sleeps=[])
+
+    def sleep(seconds):
+        clock.sleeps.append(seconds)
+        clock.now += seconds
+
+    monkeypatch.setattr(
+        daemon_mod, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep),
+    )
+    post_start = MagicMock()
+    monkeypatch.setattr(daemon_mod, "_post_daemon_checks", post_start)
+    return SimpleNamespace(
+        proc=proc, clock=clock, post_start=post_start, raw_kill=raw_kill,
+        pid_file=tmp_path / "daemon.pid",
+    )
+
+
+def _health_response(status=200):
+    response = MagicMock()
+    response.__enter__.return_value.status = status
+    return response
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_start_keeps_child_that_becomes_healthy_during_timeout_diagnostics(
+    startup_case, monkeypatch, status,
+):
+    import urllib.error
+
+    diagnostics_done = False
+
+    def tail(lines):
+        nonlocal diagnostics_done
+        assert lines == 30
+        assert startup_case.clock.now == daemon_mod.DAEMON_START_TIMEOUT_SECONDS
+        startup_case.clock.now += 10  # initialization finishes during formatting
+        diagnostics_done = True
+
+    def health(url, *, timeout):
+        assert url == "http://daemon.test/health"
+        assert 0 < timeout <= 1
+        if not diagnostics_done:
+            raise urllib.error.URLError("not listening yet")
+        if status == 503:
+            raise urllib.error.HTTPError(url, status, "degraded", {}, None)
+        return _health_response(status)
+
+    monkeypatch.setattr(daemon_mod, "_tail_log", tail)
+    monkeypatch.setattr("urllib.request.urlopen", health)
+
+    assert daemon_mod.start_daemon() is True
+    assert diagnostics_done
+    assert startup_case.pid_file.read_text() == "123"
+    startup_case.proc.terminate.assert_not_called()
+    startup_case.proc.kill.assert_not_called()
+    startup_case.raw_kill.assert_not_called()
+    startup_case.post_start.assert_called_once_with()
+    assert not (startup_case.pid_file.parent / "daemon.lock").exists()
+
+
+def test_start_allows_slow_initialization_within_bounded_budget(startup_case, monkeypatch):
+    import urllib.error
+
+    def health(url, *, timeout):
+        if startup_case.clock.now < 40:
+            raise urllib.error.URLError("still initializing")
+        return _health_response()
+
+    monkeypatch.setattr("urllib.request.urlopen", health)
+    tail = MagicMock()
+    monkeypatch.setattr(daemon_mod, "_tail_log", tail)
+
+    assert daemon_mod.start_daemon() is True
+    assert 30 < startup_case.clock.now < daemon_mod.DAEMON_START_TIMEOUT_SECONDS
+    tail.assert_not_called()
+    startup_case.proc.terminate.assert_not_called()
+
+
+@pytest.mark.parametrize("force_kill", [False, True])
+def test_start_stops_truly_unhealthy_child_after_final_probe(
+    startup_case, monkeypatch, force_kill,
+):
+    import urllib.error
+
+    monkeypatch.setattr(daemon_mod, "DAEMON_START_TIMEOUT_SECONDS", 1.25)
+    events = []
+    probe_timeouts = []
+
+    def health(url, *, timeout):
+        events.append("health")
+        probe_timeouts.append(timeout)
+        raise urllib.error.URLError("not listening")
+
+    monkeypatch.setattr("urllib.request.urlopen", health)
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: events.append("diagnostics"))
+    startup_case.proc.terminate.side_effect = lambda: events.append("terminate")
+    startup_case.proc.kill.side_effect = lambda: events.append("kill")
+    waits = []
+
+    def wait(*, timeout):
+        waits.append(timeout)
+        if force_kill and len(waits) == 1:
+            raise daemon_mod.subprocess.TimeoutExpired("agent-queue", timeout)
+        startup_case.proc.poll.return_value = -9 if force_kill else -15
+        return startup_case.proc.poll.return_value
+
+    startup_case.proc.wait.side_effect = wait
+
+    assert daemon_mod.start_daemon() is False
+    assert events[events.index("diagnostics"):][:3] == ["diagnostics", "health", "terminate"]
+    assert startup_case.clock.now == 1.25
+    assert startup_case.clock.sleeps[-1] == 0.25
+    assert probe_timeouts == [1, 0.75, 0.25, 1]
+    assert waits == ([5, 5] if force_kill else [5])
+    assert startup_case.proc.kill.call_count == int(force_kill)
+    assert not startup_case.pid_file.exists()
+    startup_case.raw_kill.assert_not_called()
+    startup_case.post_start.assert_not_called()
+
+
+@pytest.mark.parametrize("replacement_pid", [None, "456"])
+def test_start_detects_exited_child_without_signaling_or_removing_successor(
+    startup_case, monkeypatch, replacement_pid,
+):
+    startup_case.proc.poll.return_value = 42
+
+    def tail(_):
+        if replacement_pid:
+            startup_case.pid_file.write_text(replacement_pid)
+
+    monkeypatch.setattr(daemon_mod, "_tail_log", tail)
+    probe = MagicMock(side_effect=AssertionError("exited child cannot become healthy"))
+    monkeypatch.setattr("urllib.request.urlopen", probe)
+
+    assert daemon_mod.start_daemon() is False
+    assert startup_case.clock.now == 0
+    if replacement_pid:
+        assert startup_case.pid_file.read_text() == replacement_pid
+    else:
+        assert not startup_case.pid_file.exists()
+    probe.assert_not_called()
+    startup_case.raw_kill.assert_not_called()
+    startup_case.proc.terminate.assert_not_called()
+    startup_case.proc.kill.assert_not_called()
+
+
+def test_start_does_not_accept_health_from_another_listener_after_child_exits(
+    startup_case, monkeypatch,
+):
+    def health(url, *, timeout):
+        startup_case.proc.poll.return_value = 42
+        startup_case.pid_file.write_text("456")
+        return _health_response()
+
+    monkeypatch.setattr("urllib.request.urlopen", health)
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: None)
+
+    assert daemon_mod.start_daemon() is False
+    assert startup_case.pid_file.read_text() == "456"
+    startup_case.proc.terminate.assert_not_called()
+    startup_case.proc.kill.assert_not_called()
+    startup_case.post_start.assert_not_called()
+
+
+def test_start_timeout_targets_launched_child_and_preserves_replacement_pid_file(
+    startup_case, monkeypatch,
+):
+    import urllib.error
+
+    monkeypatch.setattr(daemon_mod, "DAEMON_START_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(
+        "urllib.request.urlopen", MagicMock(side_effect=urllib.error.URLError("not listening")),
+    )
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: startup_case.pid_file.write_text("456"))
+
+    def wait(*, timeout):
+        startup_case.proc.poll.return_value = -15
+        return -15
+
+    startup_case.proc.wait.side_effect = wait
+
+    assert daemon_mod.start_daemon() is False
+    startup_case.proc.terminate.assert_called_once_with()
+    startup_case.proc.kill.assert_not_called()
+    startup_case.raw_kill.assert_not_called()
+    assert startup_case.pid_file.read_text() == "456"
+
+
+def test_start_does_not_force_kill_a_child_that_exited_at_grace_deadline(
+    startup_case, monkeypatch,
+):
+    import urllib.error
+
+    monkeypatch.setattr(daemon_mod, "DAEMON_START_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(
+        "urllib.request.urlopen", MagicMock(side_effect=urllib.error.URLError("not listening")),
+    )
+    monkeypatch.setattr(daemon_mod, "_tail_log", lambda _: None)
+
+    def wait(*, timeout):
+        startup_case.proc.poll.return_value = 0
+        if startup_case.proc.wait.call_count == 1:
+            raise daemon_mod.subprocess.TimeoutExpired("agent-queue", timeout)
+        return 0
+
+    startup_case.proc.wait.side_effect = wait
+
+    assert daemon_mod.start_daemon() is False
+    startup_case.proc.terminate.assert_called_once_with()
+    startup_case.proc.kill.assert_not_called()
+    assert not startup_case.pid_file.exists()
+
+
+def test_tail_log_reads_bounded_suffix_of_large_log(tmp_path, monkeypatch):
+    import builtins
+
+    log = tmp_path / "large.log"
+    with log.open("wb") as handle:
+        handle.seek(16 * 1024 * 1024)  # sparse file; do not allocate a giant test buffer
+        handle.write(b"\n")
+        for index in range(100):
+            handle.write(f"[red]literal log {index}[/]\n".encode())
+    monkeypatch.setattr(daemon_mod, "LOG_PATH", str(log))
+    reads = []
+
+    class BoundedReader:
+        def __enter__(self):
+            self.handle = builtins.open(log, "rb")
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def seek(self, offset, whence=0):
+            return self.handle.seek(offset, whence)
+
+        def read(self, size=-1):
+            assert 0 < size <= daemon_mod.LOG_TAIL_MAX_BYTES
+            data = self.handle.read(size)
+            reads.append(len(data))
+            return data
+
+        def readlines(self):
+            raise AssertionError("must never scan the whole log")
+
+    monkeypatch.setattr(daemon_mod, "open", lambda *a, **kw: BoundedReader(), raising=False)
+    output = MagicMock()
+    monkeypatch.setattr(daemon_mod.console, "print", output)
+
+    daemon_mod._tail_log(30)
+
+    assert sum(reads) == daemon_mod.LOG_TAIL_MAX_BYTES
+    assert [call.args[0] for call in output.call_args_list] == [
+        f"[red]literal log {index}[/]" for index in range(70, 100)
+    ]
+    assert all(call.kwargs == {"markup": False, "highlight": False} for call in output.call_args_list)
+
+
+def test_tail_log_bounds_huge_line_and_replaces_split_utf8(tmp_path, monkeypatch):
+    log = tmp_path / "huge-line.log"
+    log.write_bytes(b"\xff" + "\u20ac".encode() * daemon_mod.LOG_TAIL_MAX_BYTES + b" end")
+    monkeypatch.setattr(daemon_mod, "LOG_PATH", str(log))
+    output = MagicMock()
+    monkeypatch.setattr(daemon_mod.console, "print", output)
+
+    daemon_mod._tail_log(30)
+
+    output.assert_called_once()
+    line = output.call_args.args[0]
+    assert len(line) <= daemon_mod.LOG_TAIL_MAX_BYTES
+    assert line.startswith("\ufffd")
+    assert line.endswith(" end")
+
+
+@pytest.mark.parametrize(
+    "contents, budget, expected",
+    [
+        (b"first\nlast\n", 64 * 1024, ["first", "last"]),
+        (b"older line\npartial line\ntwo\nthree\n", 16, ["two", "three"]),
+        (b"old\nhello\nlast\n", 12, ["hello", "last"]),
+    ],
+    ids=["short-log", "clipped-first-line", "complete-line-boundary"],
+)
+def test_tail_log_preserves_complete_recent_lines(tmp_path, monkeypatch, contents, budget, expected):
+    log = tmp_path / "daemon.log"
+    log.write_bytes(contents)
+    monkeypatch.setattr(daemon_mod, "LOG_PATH", str(log))
+    monkeypatch.setattr(daemon_mod, "LOG_TAIL_MAX_BYTES", budget)
+    output = MagicMock()
+    monkeypatch.setattr(daemon_mod.console, "print", output)
+
+    daemon_mod._tail_log(30)
+
+    assert [call.args[0] for call in output.call_args_list] == expected
+
+
+@pytest.mark.parametrize("lines", [0, -1])
+def test_tail_log_nonpositive_line_count_does_no_io(monkeypatch, lines):
+    read = MagicMock(side_effect=AssertionError("no log read requested"))
+    monkeypatch.setattr(daemon_mod, "open", read, raising=False)
+    daemon_mod._tail_log(lines)
+    read.assert_not_called()
 
 
 @pytest.fixture
@@ -208,7 +607,14 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
     assert "Config not found" in result.output
     assert "started" not in result.output.lower()
 
-    config_path.write_text("database:\n  url: postgresql://localhost/aq\n")
+    config_path.write_text(
+        "messaging_platform: none\ndatabase:\n  url: postgresql://localhost:5533/agent_queue\n"
+    )
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "services:\n  postgres:\n    environment:\n      POSTGRES_DB: agent_queue\n"
+        '    ports: ["5533:5432"]\n'
+    )
 
     # -- Already running: succeed idempotently without a second spawn ------
     with patch.object(daemon_mod, "_find_daemon_pid", return_value=4242):
@@ -219,10 +625,10 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
 
     # -- Postgres configured, Docker down and unstartable ------------------
     # The database probe is patched, not left to the box: on a machine that
-    # happens to run PostgreSQL on 5432 the Docker branch is never reached.
+    # happens to run PostgreSQL on 5533 the Docker branch is never reached.
     with patch.object(daemon_mod, "_find_daemon_pid", return_value=None), \
          patch.object(daemon_mod, "_database_reachable", return_value=False), \
-         patch.object(daemon_mod, "_find_compose_file", return_value="/x/docker-compose.yml"), \
+         patch.object(daemon_mod, "_find_compose_file", return_value=str(compose_file)), \
          patch.object(daemon_mod, "_is_docker_running", return_value=False), \
          patch.object(daemon_mod, "_start_docker_desktop", return_value=False):
         result = runner.invoke(cli, ["start", "--no-dashboard"])
@@ -238,7 +644,7 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
          patch.object(daemon_mod, "_database_reachable", return_value=False), \
          patch.object(daemon_mod, "_is_docker_running", return_value=True), \
          patch.object(daemon_mod, "_is_container_running", return_value=False), \
-         patch.object(daemon_mod, "_find_compose_file", return_value="/x/docker-compose.yml"), \
+         patch.object(daemon_mod, "_find_compose_file", return_value=str(compose_file)), \
          patch.object(daemon_mod.subprocess, "run", side_effect=[inspect_missing, compose_fail]):
         result = runner.invoke(cli, ["start", "--no-dashboard"])
     assert result.exit_code == 1, result.output
@@ -337,6 +743,7 @@ def test_start_and_stop_ignore_dashboard_server_when_daemon_pid_file_is_missing(
         return MagicMock(returncode=1, stdout="")
 
     proc = MagicMock(pid=12345)
+    proc.poll.return_value = None
     health = MagicMock()
     health.__enter__.return_value.status = 200
     kill = MagicMock()
@@ -458,7 +865,7 @@ def test_resolve_daemon_falls_back_to_path_without_venv_entry_point(
 
 def _config(tmp_path, monkeypatch, body: str) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(body, encoding="utf-8")
+    config_path.write_text("messaging_platform: none\n" + body, encoding="utf-8")
     monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(config_path))
     monkeypatch.setattr(daemon_mod, "CONFIG_DIR", str(tmp_path))
 
@@ -511,17 +918,78 @@ def test_an_unreachable_database_without_a_compose_file_names_the_installer(
     assert "aq install" in output
 
 
-def test_an_unreachable_database_in_a_checkout_still_starts_the_dev_container(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+def test_an_unreachable_matching_database_starts_the_dev_container(
+    tmp_path, monkeypatch, host,
 ):
-    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5432/aq\n")
+    _config(tmp_path, monkeypatch, f"database:\n  url: postgresql://{host}:5533/agent_queue\n")
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "services:\n  postgres:\n    environment:\n      POSTGRES_DB: agent_queue\n"
+        '    ports: ["5533:5432"]\n'
+    )
     monkeypatch.setattr(daemon_mod, "_database_reachable", lambda: False)
-    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: "/x/docker-compose.yml")
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: str(compose_file))
     called: list[bool] = []
     monkeypatch.setattr(daemon_mod, "_ensure_docker_postgres", lambda: called.append(True) or True)
 
     assert daemon_mod._ensure_database() is True
     assert called == [True]
+
+
+@pytest.mark.parametrize("url", [
+    "postgresql://localhost:5432/agent_queue",  # native server on a different port
+    "postgresql://db.internal:5533/agent_queue",  # remote server on the same port
+    "postgresql://localhost:5533/other_database",
+    "postgresql:///agent_queue",  # socket/default host is not a proven compose endpoint
+    "postgresql://localhost:5533/agent_queue?host=db.internal",
+])
+def test_unreachable_external_database_never_starts_compose(tmp_path, monkeypatch, capsys, url):
+    _config(tmp_path, monkeypatch, f"database:\n  url: {url}\n")
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text(
+        "services:\n  postgres:\n    environment:\n      POSTGRES_DB: agent_queue\n"
+        '    ports: ["5533:5432"]\n'
+    )
+    monkeypatch.setattr(daemon_mod, "_database_reachable", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: str(compose_file))
+    monkeypatch.setattr(daemon_mod, "_ensure_docker_postgres",
+                        lambda: pytest.fail("must not start an unrelated database"))
+
+    assert daemon_mod._ensure_database() is False
+    assert "no PostgreSQL server is answering" in capsys.readouterr().out
+
+
+def test_database_compose_match_uses_effective_configuration(tmp_path, monkeypatch):
+    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5533/agent_queue\n")
+    (tmp_path / "config.production.yaml").write_text(
+        "database:\n  url: postgresql://external:5533/agent_queue\n"
+    )
+    monkeypatch.setenv("AGENT_QUEUE_ENV", "production")
+    compose_file = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+
+    assert not daemon_mod._database_matches_compose(str(compose_file))
+
+
+@pytest.mark.parametrize(("definition", "matches"), [
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["127.0.0.1:5533:5432"]', True),
+    ('environment: [POSTGRES_DB=agent_queue]\n    ports: ["5533:5432/tcp"]', True),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: '
+     '[{host_ip: "127.0.0.1", published: "5533", target: 5432}]', True),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["192.0.2.1:5533:5432"]', False),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["5533:5432/udp"]', False),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["5533:6543"]', False),
+    ('environment: {POSTGRES_DB: agent_queue}\n    ports: ["${PG_PORT}:5432"]', False),
+    ('environment: {POSTGRES_DB: "${PG_DATABASE}"}\n    ports: ["5533:5432"]', False),
+    ('environment: {}\n    ports: ["5533:5432"]', False),
+    ('environment: [', False),
+])
+def test_compose_endpoint_requires_a_proven_match(tmp_path, monkeypatch, definition, matches):
+    _config(tmp_path, monkeypatch, "database:\n  url: postgresql://localhost:5533/agent_queue\n")
+    compose_file = tmp_path / "docker-compose.yml"
+    compose_file.write_text("services:\n  postgres:\n    " + definition + "\n")
+
+    assert daemon_mod._database_matches_compose(str(compose_file)) is matches
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +1077,7 @@ def test_start_backs_up_only_when_db_is_behind_code(
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: HealthResp())
 
     def popen(*a, **k):
-        return SimpleNamespace(pid=123)
+        return SimpleNamespace(pid=123, poll=lambda: None)
 
     monkeypatch.setattr(daemon_mod.subprocess, "Popen", popen)
 
@@ -619,69 +1087,90 @@ def test_start_backs_up_only_when_db_is_behind_code(
     assert backup_calls == expected, f"expected {expected!r}, got {backup_calls!r}"
 
 
-def test_backup_database_dumps_and_passes_integrity(tmp_path, monkeypatch):
-    """A pg_dump that lands on disk with the marker survives the integrity check.
+@pytest.fixture
+def predeploy_backup(tmp_path, monkeypatch):
+    """Real archive orchestration, with only the client process boundary stubbed."""
+    import src.database.backup as backups
 
-    The docker steps are stubbed by writing the dump file ourselves where
-    ``docker cp`` would have placed it.
-    """
     monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
+    monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(
+        "src.config.load_config",
+        lambda _: SimpleNamespace(
+            database=SimpleNamespace(url="postgresql://custom:secret@localhost:6543/custom_db")
+        ),
+    )
+    restore = tmp_path / "pg_restore"
+    restore.touch()
+    (tmp_path / "psql").touch()
+    state = SimpleNamespace(archive=b"PGDMPmock archive", error=None, calls=[], docker=False)
+    monkeypatch.setattr(
+        "src.install.update.find_pg_dump",
+        lambda: None if state.docker else str(tmp_path / "pg_dump"),
+    )
+    monkeypatch.setattr(backups.shutil, "which", lambda _: "/usr/bin/docker")
 
-    docker_calls: list[list[str]] = []
+    async def execute(argv, **kwargs):
+        state.calls.append((argv, kwargs))
+        if argv[:2] == ["docker", "ps"]:
+            return b"serving-container\n"
+        if argv[:2] == ["docker", "inspect"]:
+            return b'{"5432/tcp":[{"HostPort":"6543"}]}'
+        if "--version" in argv:
+            return b"pg_dump (PostgreSQL) 18.0\n"
+        if any(Path(arg).name == "pg_dump" for arg in argv):
+            kwargs["destination"].write_bytes(state.archive)
+            if state.error:
+                raise backups.BackupError(state.error)
+        if "--list" in argv:
+            return b"; Archive created at 2026-10-06 00:00:00 UTC\n"
+        return b""
 
-    # Simulate `docker cp` by writing the fake dump to the destination path.
-    def stub_run(cmd, **kw):
-        docker_calls.append(list(cmd))
-        args = list(cmd)
-        # "docker cp aq-postgres:/tmp/pre-deploy-<ts>.sql <out>" — copy step
-        if "cp" in args:
-            with open(args[-1], "w") as f:
-                f.write("-- pg_dump tail\nunrestrict;\n")
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+    monkeypatch.setattr(backups, "_run", execute)
+    return state
 
-    monkeypatch.setattr(daemon_mod.subprocess, "run", stub_run)
 
+@pytest.mark.parametrize("docker", [False, True])
+def test_backup_database_dumps_and_passes_integrity(tmp_path, predeploy_backup, docker):
+    """Local and Docker clients both produce private, inspected custom archives."""
+    predeploy_backup.docker = docker
     daemon_mod._backup_database()
+    dump, = tmp_path.glob("pre-deploy-*.dump")
+    assert dump.read_bytes() == b"PGDMPmock archive"
+    assert dump.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob("*.sql"))
+    argv, kwargs = next(
+        (argv, kwargs) for argv, kwargs in predeploy_backup.calls
+        if any(Path(arg).name == "pg_dump" for arg in argv) and "--version" not in argv
+    )
+    assert "--format=custom" in argv
+    assert "secret" not in " ".join(argv)
+    assert kwargs["env"]["PGPASSWORD"] == "secret"
+    if docker:
+        assert "serving-container" in argv and "custom_db" in argv
+    else:
+        assert "postgresql://custom@localhost:6543/custom_db" in argv
+    assert any("--list" in argv for argv, _ in predeploy_backup.calls)
 
-    # The docker steps ran in order: pg_dump, cp, rm.
-    kinds = [c[1] for c in docker_calls]
-    assert kinds == ["exec", "cp", "exec"], f"wrong docker step order: {kinds}"
 
-    # The dump file landed on disk and carries the marker.
-    dumps = list(tmp_path.glob("pre-deploy-*.sql"))
-    assert dumps, "no dump file was written"
-    assert "unrestrict" in dumps[0].read_text().lower()
-
-
-def test_backup_database_raises_on_missing_integrity_marker(tmp_path, monkeypatch):
-    """A dump without the marker comment must abort with SystemExit(15)."""
-    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
-
-    def stub_run(cmd, **kw):
-        args = list(cmd)
-        if "cp" in args:
-            with open(args[-1], "w") as f:
-                f.write("-- incomplete pg_dump, no marker\n")
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(daemon_mod.subprocess, "run", stub_run)
-
+@pytest.mark.parametrize("docker", [False, True])
+@pytest.mark.parametrize("archive", [b"", b"incomplete dump"])
+def test_backup_database_raises_on_missing_integrity_marker(tmp_path, predeploy_backup, docker, archive):
+    predeploy_backup.docker = docker
+    predeploy_backup.archive = archive
     with pytest.raises(SystemExit, match="15"):
         daemon_mod._backup_database()
+    assert not list(tmp_path.glob("pre-deploy-*.dump"))
 
 
-def test_backup_database_raises_on_docker_failure(tmp_path, monkeypatch):
-    """A failed docker step must abort with SystemExit(13)."""
-    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
-
-    import subprocess as _sp
-    def failing_run(cmd, **kw):
-        raise _sp.CalledProcessError(1, list(cmd))
-
-    monkeypatch.setattr(daemon_mod.subprocess, "run", failing_run)
-
+@pytest.mark.parametrize("docker", [False, True])
+def test_backup_database_raises_on_client_failure(tmp_path, predeploy_backup, docker, capsys):
+    predeploy_backup.docker = docker
+    predeploy_backup.error = "connection refused"
     with pytest.raises(SystemExit, match="13"):
         daemon_mod._backup_database()
+    assert "connection refused" in capsys.readouterr().out
+    assert not list(tmp_path.glob("pre-deploy-*.dump"))
 
 
 def test_start_holds_its_lock_while_it_waits_for_the_database(tmp_path, monkeypatch, no_popen):
@@ -879,3 +1368,19 @@ def test_a_lock_is_only_released_by_the_owner_that_was_seen(tmp_path):
     assert (tmp_path / "daemon.lock").is_dir()
     assert release_start_lock(lock, owner=__import__("os").getpid()) is True
     assert not (tmp_path / "daemon.lock").exists()
+
+
+def test_stop_agent_sessions_kills_pool_task_and_named_sessions_only(monkeypatch):
+    from types import SimpleNamespace
+
+    commands = []
+    monkeypatch.setattr(daemon_mod, "_tmux_socket", lambda: "fixture-socket")
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return SimpleNamespace(returncode=0, stdout="p-worker--fixture\ns-task\nn-supervisor\npersonal\n")
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+    assert daemon_mod.stop_agent_sessions(quiet=True) == 3
+    assert [argv[-1] for argv in commands[1:]] == ["p-worker--fixture", "s-task", "n-supervisor"]
+    assert all(argv[2] == "fixture-socket" for argv in commands)

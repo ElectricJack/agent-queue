@@ -1,4 +1,4 @@
-"""Question routing against isolated SQLite; only the terminal provider is fake."""
+"""Question routing against disposable PostgreSQL; only the terminal provider is fake."""
 
 import asyncio
 import importlib.util
@@ -16,6 +16,8 @@ from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStat
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.provider import NudgeDeferred, SessionSpec
+from src.sessions.questions import _machine_input
+from src.sessions.reconciler import stall_reminder
 from src.sessions.transcripts.base import TranscriptEntry
 from tests.db_fixtures import lease_dsn
 
@@ -138,39 +140,37 @@ async def capture(env, text="May I delete the production database?"):
     return svc, rows[0]
 
 
-async def reserve_escalated_answer(svc, q, escalated=None):
-    escalated = escalated or await svc.escalate(
-        q["id"], "Verified project facts still require a human decision"
-    )
-    accepted = await svc.db.accept_escalation_reply(
-        escalated["escalation_id"],
-        transport="dashboard",
-        external_message_id="test-reply:" + q["id"],
-        verified_actor="human:dashboard:test",
-        text="Test human answer",
-    )
-    await svc.db.begin_escalation_action(
-        escalated["escalation_id"],
-        reply_id=accepted["reply"]["id"],
-        expected_revision=accepted["escalation"]["revision"],
-        idempotency_key="test-action:" + q["id"],
-        action_kind="question_answer",
-        target_id=q["id"],
-        parameters={},
-        executor="session:test-supervisor",
-    )
-    return escalated["escalation_id"]
+async def versioned_answer(svc, question_id, body):
+    """Drive the real human boundary, returning the source row for delivery assertions."""
+    import uuid
+
+    from src.asks.models import SourceIdentity
+    from src.commands.handler import CommandHandler
+
+    handler = CommandHandler(SimpleNamespace(
+        db=svc.db, bus=svc.bus, agent_questions=svc, plugin_registry=None,
+    ), svc.config)
+    q = await svc.db.get_agent_question(question_id)
+    ask = await handler._publish_source_ask(
+        SourceIdentity(q["project_id"], "question", question_id, {"id": question_id}))
+    args = {"ask_id": ask["id"], "expected": {k: ask[k] for k in (
+        "decision_generation", "source_fingerprint", "feedback_version")},
+        "option_key": "answer", "overall_note": body, "idempotency_key": str(uuid.uuid4())}
+    preview = await handler.execute("ask_prepare_decision", args)
+    if not preview["success"]:
+        return preview
+    result = await handler.execute("ask_decide", {**args, "preview_id": preview["preview"]["id"]})
+    saved = await svc.db.get_agent_question(question_id)
+    if result.get("error"):
+        return {**saved, **result}
+    if result.get("application_state") == "failed":
+        return {**saved, "error": saved["reason"] or "Answer was not delivered"}
+    return saved
 
 
-async def escalated_answer(svc, q, body, *, actor="human"):
-    escalation_id = await reserve_escalated_answer(svc, q)
-    return await svc.answer(
-        q["id"],
-        body,
-        actor=actor,
-        human=True,
-        verified_escalation_id=escalation_id,
-    )
+async def escalated_answer(svc, q, body):
+    await svc.escalate(q["id"], "Verified project facts still require a human decision")
+    return await versioned_answer(svc, q["id"], body)
 
 
 async def supervisor(env, *, project_id=None):
@@ -241,11 +241,7 @@ async def test_terminal_reply_resolves_but_machine_stall_nudge_does_not(env):
     await svc.observe(
         env.row,
         [
-            entry(
-                'No progress for 8 min. Report status, finish the task, or report a blocker with `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>"`.',
-                role="user",
-                ident="nudge",
-            )
+            entry(stall_reminder("t1", 8), role="user", ident="nudge")
         ],
     )
     assert (await env.db.get_agent_question(q["id"]))["state"] == "supervisor"
@@ -253,6 +249,37 @@ async def test_terminal_reply_resolves_but_machine_stall_nudge_does_not(env):
     assert (await env.db.get_agent_question(q["id"]))["state"] == "resolved"
     await svc.observe(env.row, [entry()])
     assert await env.db.list_agent_questions() == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        stall_reminder("repair-repair-batch-integration-batch-a15aca37ba71d0ed81b96d73a8f624b7-1", 12),
+        (
+            "No progress for 12 min on task wise-ember.17. Close or continue: if the work is "
+            'done run `aq task close wise-ember.17 --outcome pass|fail --summary "..."` then ...'
+        ),
+        (
+            "No progress for 8 min. Report status, finish the task, or report a blocker with "
+            "`aq message send --to user:dashboard`."
+        ),
+    ],
+    ids=["current", "close-or-continue", "report-status"],
+)
+def test_every_stall_reminder_wording_is_machine_input(text):
+    """A transcript can replay a reminder typed by an older daemon."""
+    assert _machine_input(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "No progress for 12 min on task t1: `aq task close`, or keep working. Also use staging.",
+        "No progress on the flaky test yet -- keep the staging database?",
+    ],
+)
+def test_a_reply_that_merely_starts_like_a_reminder_is_not_machine_input(text):
+    assert not _machine_input(text)
 
 
 async def test_routine_routes_once_to_logical_project_supervisor_without_timeout(env):
@@ -310,17 +337,10 @@ async def test_answer_exact_instance_once_concurrent_and_restart(env):
     await peer.initialize()
     try:
         other = AgentQuestionService(peer, env.bus, env.registry, env.config)
-        escalated = await svc.escalate(q["id"], "Human decision remains after investigation")
-        escalation_id = await reserve_escalated_answer(svc, q, escalated)
+        await svc.escalate(q["id"], "Human decision remains after investigation")
         answers = await asyncio.gather(
-            svc.answer(
-                q["id"], "Use staging", actor="human:a", human=True,
-                verified_escalation_id=escalation_id,
-            ),
-            other.answer(
-                q["id"], "Use production", actor="human:b", human=True,
-                verified_escalation_id=escalation_id,
-            ),
+            versioned_answer(svc, q["id"], "Use staging"),
+            versioned_answer(other, q["id"], "Use production"),
         )
     finally:
         await peer.close()
@@ -330,7 +350,9 @@ async def test_answer_exact_instance_once_concurrent_and_restart(env):
     assert saved["state"] == "delivered"
     assert len(env.provider.sent_nudges) == 1
     assert env.provider.sent_nudges[0][0] == "p-worker"
-    assert saved["answer"] in env.provider.sent_nudges[0][1]
+    assert f"question:{q['id']}:answer" in env.provider.sent_nudges[0][1]
+    stored = await env.db.get_message(f"question:{q['id']}:answer")
+    assert stored.body.endswith("\n" + saved["answer"])
     assert (await env.db.get_session("s")).last_activity >= env.now
 
 
@@ -339,8 +361,7 @@ async def test_answer_exact_instance_once_concurrent_and_restart(env):
 )
 async def test_stale_provenance_never_delivers(env, change):
     svc, q = await capture(env)
-    escalated = await svc.escalate(q["id"], "Human decision remains after investigation")
-    escalation_id = await reserve_escalated_answer(svc, q, escalated)
+    await svc.escalate(q["id"], "Human decision remains after investigation")
     if change == "token":
         await env.db.update_session("s", instance_token="new")
     elif change == "task":
@@ -360,10 +381,9 @@ async def test_stale_provenance_never_delivers(env, change):
                 instance_token="replacement",
             )
         )
-    answer = await svc.answer(
-        q["id"], "Approved", actor="human", human=True,
-        verified_escalation_id=escalation_id,
-    )
+    answer = await versioned_answer(svc, q["id"], "Approved")
+    # Source refusal leaves the question untouched; the lifecycle tick marks it stale.
+    await svc.tick()
     assert answer.get("error") or answer["state"] == "stale"
     assert (await env.db.get_agent_question(q["id"]))["state"] == "stale"
     assert env.provider.sent_nudges == []
@@ -389,6 +409,112 @@ async def test_draft_defers_without_losing_answer(env):
     await service(env).tick()
     assert (await env.db.get_agent_question(q["id"]))["state"] == "delivered"
     assert len(provider.sent_nudges) == 1
+
+
+#: Within the 16000-character answer limit, and far beyond what a harness
+#: composer shows verbatim: 180 lines of 80 columns.
+LONG_ANSWER = "\n".join(
+    f"Step {i:03}: " + " ".join(["check the fixture before the run."] * 2) for i in range(180)
+)
+
+
+@pytest.mark.parametrize("answer", ["tests/config.py", LONG_ANSWER], ids=["short", "long"])
+async def test_answer_nudge_is_one_line_pointing_at_a_body_the_worker_can_read(env, answer):
+    """Claude Code collapses a typed burst over 800 characters to ``[Pasted
+    text #N +M lines]`` and shows only the last rows of input taller than its
+    window, so a typed answer could never be confirmed as submitted
+    (bold-bridge, after clear-lantern-82).  The terminal gets one line naming
+    the durable answer; the worker reads it with its own ``message_status``."""
+    import textwrap
+
+    from src.commands.handler import CommandHandler
+    from src.sessions.questions import _machine_input
+
+    svc, q = await capture(env, "Where is the test configuration?")
+    assert not q["requires_human"]
+    assert len(answer) <= 16000
+    result = await svc.answer(q["id"], answer, actor="session:super", human=False)
+    assert result["state"] == "delivered"
+
+    message_id = f"question:{q['id']}:answer"
+    pointer = f"[aq question answered] Handle `aq message status {message_id} --json`."
+    assert env.provider.sent_nudges == [("p-worker", pointer)]
+    # Two rows of an 80-column composer, whatever the answer; and machine
+    # framing, so its echo in the transcript is never read as a human reply.
+    assert len(textwrap.wrap("❯ " + pointer, 80, subsequent_indent="  ")) <= 2
+    assert _machine_input(pointer)
+
+    stored = await env.db.get_message(message_id)
+    assert stored.body == f"[aq question {q['id']} answer from session:super]\n{answer}"
+    assert (stored.project_id, stored.to_kind, stored.to_id) == ("p", "session", "s")
+    assert stored.body_kind == "agent_question"
+    # The question service owns the claim-fenced delivery; the message engine
+    # must never type a second notification for the same answer.
+    assert stored.delivered_at is not None
+    assert await env.db.get_pending_messages("session", "s") == []
+
+    handler = CommandHandler(
+        SimpleNamespace(db=env.db, bus=env.bus, agent_questions=svc, plugin_registry=None),
+        env.config,
+    )
+    worker = {"kind": "session", "session_id": "s", "task_id": "t", "project_id": "p"}
+    read = await handler.execute(
+        "message_status", {"message_id": message_id, "_scope": {**worker, "elevated": False}}
+    )
+    assert read["message"]["body"] == stored.body
+    other = {**worker, "session_id": "other-session", "elevated": False}
+    refused = await handler.execute("message_status", {"message_id": message_id, "_scope": other})
+    assert refused == {"success": False, "error": f"Message '{message_id}' not found"}
+
+    await service(env).tick()
+    assert len(env.provider.sent_nudges) == 1
+
+
+async def test_retried_answer_delivery_reuses_one_durable_body(env):
+    class DraftProvider(FakeProvider):
+        drafts = 2
+
+        async def nudge(self, handle, text):
+            if self.drafts:
+                self.drafts -= 1
+                raise NudgeDeferred("user draft")
+            await super().nudge(handle, text)
+
+    provider = DraftProvider()
+    provider.sessions = env.provider.sessions
+    env.registry._instances["fake"] = provider
+    svc, q = await capture(env)
+    assert (await escalated_answer(svc, q, "Use staging"))["state"] == "answered"
+    message_id = f"question:{q['id']}:answer"
+    first = await env.db.get_message(message_id)
+    assert first.body == f"[aq question {q['id']} answer from human:local-operator]\nUse staging"
+    await service(env).tick()
+    assert (await env.db.get_agent_question(q["id"]))["state"] == "answered"
+    await service(env).tick()
+    assert (await env.db.get_agent_question(q["id"]))["state"] == "delivered"
+    assert provider.sent_nudges == [
+        ("p-worker", f"[aq question answered] Handle `aq message status {message_id} --json`.")
+    ]
+    assert (await env.db.get_message(message_id)).created_at == first.created_at
+
+
+async def test_disabled_messages_hold_the_answer_until_its_pointer_can_be_read(env):
+    """``message_status`` refuses while messages are disabled, so a pointer
+    typed then would strand the answer behind a delivered receipt."""
+    svc, q = await capture(env)
+    await svc.escalate(q["id"], "Human decision needed")
+    env.config.messages.enabled = False
+    result = await versioned_answer(svc, q["id"], "Use staging")
+    assert result["state"] == "answered" and "error" not in result
+    await service(env).tick()
+    assert env.provider.sent_nudges == []
+    assert await env.db.get_message(f"question:{q['id']}:answer") is None
+    assert await service(env).is_waiting(env.row)
+
+    env.config.messages.enabled = True
+    await service(env).tick()
+    assert (await env.db.get_agent_question(q["id"]))["state"] == "delivered"
+    assert len(env.provider.sent_nudges) == 1
 
 
 async def test_human_questions_have_one_durable_supervisor_handoff_and_no_direct_notification(env):
@@ -564,15 +690,11 @@ async def test_claim_mutation_waits_until_answer_submission_finishes(env):
     provider.sessions = env.provider.sessions
     env.registry._instances["fake"] = provider
     svc, q = await capture(env)
-    escalated = await svc.escalate(q["id"], "Human decision remains after investigation")
-    escalation_id = await reserve_escalated_answer(svc, q, escalated)
+    await svc.escalate(q["id"], "Human decision remains after investigation")
     answer = asyncio.create_task(
-        svc.answer(
-            q["id"], "Use staging", actor="human", human=True,
-            verified_escalation_id=escalation_id,
-        )
+        versioned_answer(svc, q["id"], "Use staging")
     )
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     change = asyncio.create_task(env.db.update_task("t", claim_epoch=8))
     done, _ = await asyncio.wait({change}, timeout=0.05)
     try:
@@ -705,7 +827,8 @@ async def test_permanent_missing_input_capability_does_not_suspend_recovery_fore
     svc, q = await capture(env)
     result = await escalated_answer(svc, q, "Use staging")
     assert result.get("error"), "unsupported input must be an explicit command error"
-    assert result["state"] == "stale"
+    await svc.tick()
+    assert (await env.db.get_agent_question(q["id"]))["state"] == "stale"
     assert (await env.db.get_agent_question(q["id"]))["answer"] is None
     assert not await svc.is_waiting(env.row)
     assert env.provider.sent_nudges == []
@@ -811,10 +934,6 @@ async def test_question_response_models_preserve_durable_delivery_fields(env):
     assert QuestionListResponse.model_validate(envelope).model_dump() == envelope
     escalated = await svc.escalate(question["id"], "Human decision needed")
     assert AgentQuestionDetail.model_validate(escalated).model_dump() == escalated
-    escalation_id = await reserve_escalated_answer(svc, question, escalated)
-    answered = await svc.answer(
-        question["id"], "Use staging", actor="local", human=True,
-        verified_escalation_id=escalation_id,
-    )
+    answered = await versioned_answer(svc, question["id"], "Use staging")
     assert answered["state"] == "delivered"
     assert AgentQuestionDetail.model_validate(answered).model_dump() == answered
